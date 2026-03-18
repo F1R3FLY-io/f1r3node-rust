@@ -133,9 +133,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
 
-        let wallets_content = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,\
-                               50000000000000\\
-             n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n";
+        let wallets_content =
+            "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,50000000000000\n\
+             1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n";
         fs::write(&wallets_file, wallets_content).unwrap();
 
         let result = VaultParser::parse(&wallets_file);
