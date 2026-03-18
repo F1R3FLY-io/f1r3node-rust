@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - master
+  pull_request:
+    branches:
+      - dev
+      - master
+      - "feature/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # AES/SSE2 CPU features for gxhash (required by PathMap crate)
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+        run: cargo clippy --workspace
+
+  test:
+    name: Test (${{ matrix.crate }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - casper
+          - rspace_plus_plus
+          - rholang
+          - shared
+          - node
+          - models
+          - crypto
+          - block-storage
+          - comm
+          - graphz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.crate }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
+      - name: Run tests
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        run: |
+          mkdir -p /tmp/test-logs
+          cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.crate }}
+          path: /tmp/test-logs/
+          retention-days: 7
