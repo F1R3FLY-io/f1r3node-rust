@@ -6,21 +6,17 @@ use async_trait::async_trait;
 use prost::bytes::Bytes;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::{
-    comm::{kademlia_rpc_service_client::KademliaRpcServiceClient, Lookup, Ping},
-    rust::{
-        discovery::{
-            kademlia_rpc::KademliaRPC,
-            utils::{to_node, to_peer_node},
-        },
-        errors::CommError,
-        metrics_constants::{
-            DISCOVERY_GRPC_METRICS_SOURCE, LOOKUP_METRIC, LOOKUP_TIME_METRIC, PING_METRIC,
-            PING_TIME_METRIC,
-        },
-        peer_node::PeerNode,
-        utils::{is_valid_inet_address, is_valid_public_inet_address, resolve_hostname_to_ip},
-    },
+use crate::comm::kademlia_rpc_service_client::KademliaRpcServiceClient;
+use crate::comm::{Lookup, Ping};
+use crate::rust::discovery::kademlia_rpc::KademliaRPC;
+use crate::rust::discovery::utils::{to_node, to_peer_node};
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    DISCOVERY_GRPC_METRICS_SOURCE, LOOKUP_METRIC, LOOKUP_TIME_METRIC, PING_METRIC, PING_TIME_METRIC,
+};
+use crate::rust::peer_node::PeerNode;
+use crate::rust::utils::{
+    is_valid_inet_address, is_valid_public_inet_address, resolve_hostname_to_ip,
 };
 
 /// Rust implementation of GrpcKademliaRPC
@@ -69,7 +65,8 @@ impl GrpcKademliaRPC {
     }
 
     /// Execute a function with a gRPC client, handling resource management
-    /// This includes: channel creation, deadline setting on client, and proper cleanup
+    /// This includes: channel creation, deadline setting on client, and proper
+    /// cleanup
     async fn with_client_ping(&self, peer: &PeerNode, ping_msg: Ping) -> Result<bool, CommError> {
         let start = Instant::now();
         // Create channel
@@ -131,7 +128,8 @@ impl GrpcKademliaRPC {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to connect to peer for lookup: {}", e);
-                return Ok(Vec::new()); // Return empty list for connection failures
+                return Ok(Vec::new()); // Return empty list for connection
+                                       // failures
             }
         };
 
@@ -221,12 +219,16 @@ impl KademliaRPC for GrpcKademliaRPC {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Once;
+    use std::time::Duration;
+
     use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::EnvFilter;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
-    use std::{sync::Once, time::Duration};
 
     static INIT: Once = Once::new();
 
@@ -303,7 +305,8 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), // Localhost with high port
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), /* Localhost with
+                                                                             * high port */
         };
 
         // Test that ping returns false for non-existent peer (should fail quickly)
@@ -327,7 +330,8 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), // Localhost with high port
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), /* Localhost with
+                                                                             * high port */
         };
 
         let key = b"lookup_key";

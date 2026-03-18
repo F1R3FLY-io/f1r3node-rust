@@ -1,10 +1,6 @@
-use crate::rust::interpreter::compiler::exports::{
-    CollectVisitInputs, CollectVisitOutputs, FreeMap, ProcVisitInputs,
-};
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
-use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_remainder;
-use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
+use std::collections::HashMap;
+use std::result::Result;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, ETuple, Expr, Par, Var};
 use models::rust::par_map::ParMap;
@@ -14,10 +10,15 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::union;
-use std::collections::HashMap;
-use std::result::Result;
-
 use rholang_parser::ast::{AnnProc, Collection, KeyValuePair};
+
+use crate::rust::interpreter::compiler::exports::{
+    CollectVisitInputs, CollectVisitOutputs, FreeMap, ProcVisitInputs,
+};
+use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_remainder;
+use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 
 pub fn normalize_collection<'ast>(
     proc: &'ast Collection<'ast>,
@@ -259,15 +260,10 @@ pub fn normalize_collection<'ast>(
     }
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/CollectMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// CollectMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-    use crate::rust::interpreter::compiler::normalize::VarSort::{NameSort, ProcSort};
-    use crate::rust::interpreter::errors::InterpreterError;
-    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-    use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
-    use crate::rust::interpreter::util::prepend_expr;
     use models::create_bit_vector;
     use models::rhoapi::{KeyValuePair, Par};
     use models::rust::utils::{
@@ -277,6 +273,13 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+    use crate::rust::interpreter::compiler::normalize::VarSort::{NameSort, ProcSort};
+    use crate::rust::interpreter::errors::InterpreterError;
+    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+    use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
+    use crate::rust::interpreter::util::prepend_expr;
 
     fn get_normalized_par(rho: &str) -> Par {
         ParBuilderUtil::mk_term(rho).expect("Compilation failed to normalize Par")

@@ -1,10 +1,13 @@
 // See comm/src/test/scala/coop/rchain/comm/discovery/KademliaRPCSpec.scala
 
-use super::kademlia_rpc_runtime::*;
-use comm::rust::discovery::{grpc_kademlia_rpc::GrpcKademliaRPC, kademlia_rpc::KademliaRPC};
+use std::time::Duration;
+
+use comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC;
+use comm::rust::discovery::kademlia_rpc::KademliaRPC;
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use rand::RngCore;
-use std::time::Duration;
+
+use super::kademlia_rpc_runtime::*;
 
 #[tokio::test]
 async fn ping_remote_peer_send_and_receive_positive_response() {

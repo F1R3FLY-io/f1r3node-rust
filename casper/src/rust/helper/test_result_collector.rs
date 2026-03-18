@@ -1,16 +1,15 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/TestResultCollector.scala
 
-use std::{collections::HashMap, sync::Mutex};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
-use models::{
-    rhoapi::{expr::ExprInstance, ListParWithRandom, Par},
-    rust::{rholang::implicits::single_expr, utils::new_gbool_par},
-};
-use rholang::rust::interpreter::{
-    contract_call::ContractCall,
-    rho_type::{RhoBoolean, RhoNumber, RhoString},
-    system_processes::ProcessContext,
-};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{ListParWithRandom, Par};
+use models::rust::rholang::implicits::single_expr;
+use models::rust::utils::new_gbool_par;
+use rholang::rust::interpreter::contract_call::ContractCall;
+use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString};
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 struct IsAssert;
 
@@ -46,9 +45,8 @@ impl IsComparison {
         if let Some(expr) = single_expr(&p) {
             match expr.expr_instance.unwrap() {
                 ExprInstance::ETupleBody(etuple) => match etuple.ps.as_slice() {
-                    [expected_par, operator_par, actual_par] => {
-                        RhoString::unapply(operator_par).map(|operator| (expected_par.clone(), operator, actual_par.clone()))
-                    }
+                    [expected_par, operator_par, actual_par] => RhoString::unapply(operator_par)
+                        .map(|operator| (expected_par.clone(), operator, actual_par.clone())),
                     _ => None,
                 },
 
@@ -182,9 +180,7 @@ pub struct TestResultCollector {
 }
 
 impl Default for TestResultCollector {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl TestResultCollector {
@@ -197,9 +193,7 @@ impl TestResultCollector {
         }
     }
 
-    pub fn get_result(&self) -> TestResult {
-        self.result.try_lock().unwrap().clone()
-    }
+    pub fn get_result(&self) -> TestResult { self.result.try_lock().unwrap().clone() }
 
     pub fn update(&self, test_result: TestResult) {
         self.result.lock().unwrap().clone_from(&test_result);
@@ -270,20 +264,17 @@ impl TestResultCollector {
                         }
                     } else {
                         println!("\nreturning Unit");
-                        
                     }
                 } else if let Some(condition) = RhoBoolean::unapply(&assertion) {
                     println!("\ncondition: {:?}", condition);
 
                     let curr_test_result = self.get_result();
-                    let new_test_result = curr_test_result.add_assertion(
-                        attempt,
-                        RhoTestAssertion::RhoAssertTrue {
+                    let new_test_result =
+                        curr_test_result.add_assertion(attempt, RhoTestAssertion::RhoAssertTrue {
                             test_name,
                             is_success: condition,
                             clue,
-                        },
-                    );
+                        });
                     self.update(new_test_result);
 
                     if let Err(e) = produce(
@@ -298,14 +289,12 @@ impl TestResultCollector {
                     println!("\nfailed to evaluate assertion: {:?}", assertion);
 
                     let curr_test_result = self.get_result();
-                    let new_test_result = curr_test_result.add_assertion(
-                        attempt,
-                        RhoTestAssertion::RhoAssertTrue {
+                    let new_test_result =
+                        curr_test_result.add_assertion(attempt, RhoTestAssertion::RhoAssertTrue {
                             test_name,
                             is_success: false,
                             clue: format!("Failed to evaluate assertion: {:?}", assertion),
-                        },
-                    );
+                        });
                     self.update(new_test_result);
 
                     if let Err(e) = produce(
@@ -325,7 +314,6 @@ impl TestResultCollector {
                 self.update(new_test_result);
             } else {
                 println!("\nreturning Unit");
-                
             }
         } else {
             panic!("SystemProcesses: is_contract_call failed");

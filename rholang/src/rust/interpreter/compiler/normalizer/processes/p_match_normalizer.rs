@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{Match, MatchCase, Par};
+use models::rust::utils::union;
+use rholang_parser::ast::{AnnProc, Case};
+
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
-use models::rhoapi::{Match, MatchCase, Par};
-use models::rust::utils::union;
-use std::collections::HashMap;
-
-use rholang_parser::ast::{AnnProc, Case};
 
 pub fn normalize_p_match<'ast>(
     expression: &'ast AnnProc<'ast>,
@@ -15,7 +16,8 @@ pub fn normalize_p_match<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    //We don't have any CaseImpl inside Rust AST, so we should work with simple Case struct
+    //We don't have any CaseImpl inside Rust AST, so we should work with simple
+    // Case struct
     fn lift_case<'ast>(
         case: &'ast Case<'ast>,
     ) -> Result<(&'ast AnnProc<'ast>, &'ast AnnProc<'ast>), InterpreterError> {
@@ -63,14 +65,11 @@ pub fn normalize_p_match<'ast>(
             parser,
         )?;
 
-        init_acc.0.insert(
-            0,
-            MatchCase {
-                pattern: Some(pattern_result.par.clone()),
-                source: Some(case_body_result.par.clone()),
-                free_count: bound_count as i32,
-            },
-        );
+        init_acc.0.insert(0, MatchCase {
+            pattern: Some(pattern_result.par.clone()),
+            source: Some(case_body_result.par.clone()),
+            free_count: bound_count as i32,
+        });
         init_acc.1 = case_body_result.free_map;
         init_acc.2 = union(
             union(init_acc.2.clone(), pattern_result.par.locally_free.clone()),
@@ -92,33 +91,32 @@ pub fn normalize_p_match<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use models::{
-        create_bit_vector,
-        rhoapi::{Match, MatchCase, Par, Receive, ReceiveBind},
-        rust::utils::{
-            new_boundvar_par, new_elist_par, new_freevar_expr, new_freevar_par, new_gint_par,
-            new_send, new_wildcard_par,
-        },
+    use models::create_bit_vector;
+    use models::rhoapi::{Match, MatchCase, Par, Receive, ReceiveBind};
+    use models::rust::utils::{
+        new_boundvar_par, new_elist_par, new_freevar_expr, new_freevar_par, new_gint_par, new_send,
+        new_wildcard_par,
     };
 
-    use crate::rust::interpreter::{
-        compiler::{exports::ProcVisitInputs, normalize::VarSort},
-        errors::InterpreterError,
-        test_utils::utils::proc_visit_inputs_and_env,
-        util::prepend_expr,
-    };
+    use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+    use crate::rust::interpreter::compiler::normalize::VarSort;
+    use crate::rust::interpreter::errors::InterpreterError;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
+    use crate::rust::interpreter::util::prepend_expr;
 
     #[test]
     fn p_match_should_fail_if_a_free_variable_is_used_twice_in_the_target() {
         // match 47 { case (y | y) => Nil }
+        use rholang_parser::ast::Case;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::Case;
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -164,17 +162,20 @@ mod tests {
 
     #[test]
     fn p_match_should_have_a_free_count_of_1_if_the_case_contains_a_wildcard_and_a_free_variable() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{Case, Var};
         use rholang_parser::SourcePos;
 
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -254,13 +255,15 @@ mod tests {
     #[test]
     fn p_match_should_handle_a_match_inside_a_for_comprehension() {
         // for (@x <- @Nil) { match x { case 42 => Nil ; case y => Nil } | @Nil!(47)
+        use rholang_parser::ast::{Bind, Case, Names, SendType, Source};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{Bind, Case, Names, SendType, Source};
 
         let parser = rholang_parser::RholangParser::new();
 
-        // Create the complete Par structure: for (@x <- @Nil) { match x { case 42 => Nil ; case y => Nil } } | @Nil!(47)
+        // Create the complete Par structure: for (@x <- @Nil) { match x { case 42 =>
+        // Nil ; case y => Nil } } | @Nil!(47)
 
         // Create Match body: match x { case 42 => Nil ; case y => Nil }
         let x_eval =
@@ -367,10 +370,11 @@ mod tests {
     #[test]
     fn p_match_should_handle_a_match_inside_a_for_pattern() {
         // for (@{match {x | y} { 47 => Nil }} <- @Nil) { Nil }
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{Bind, Case, Id, Names, Source, Var};
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let parser = rholang_parser::RholangParser::new();
 

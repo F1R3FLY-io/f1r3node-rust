@@ -1,10 +1,12 @@
 // See casper/src/main/scala/coop/rchain/casper/util/DagOperations.scala
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata};
-use shared::rust::store::key_value_store::KvStoreError;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct DagOperations;
 
@@ -13,16 +15,15 @@ pub struct DagOperations;
 struct OrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for OrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for OrderedBlockMetadata {
     fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap in Rust is a max-heap and we want highest block_number first (like Scala PriorityQueue)
-        // Scala uses BlockMetadata.orderingByNum, which orders by block_number, then by block_hash
-        // Since BinaryHeap is max-heap and we want max block_number first, use direct ordering
+        // BinaryHeap in Rust is a max-heap and we want highest block_number first (like
+        // Scala PriorityQueue) Scala uses BlockMetadata.orderingByNum, which
+        // orders by block_number, then by block_hash Since BinaryHeap is
+        // max-heap and we want max block_number first, use direct ordering
         BlockMetadata::ordering_by_num(&self.0, &other.0)
     }
 }
@@ -32,15 +33,14 @@ impl Ord for OrderedBlockMetadata {
 struct ReverseOrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for ReverseOrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for ReverseOrderedBlockMetadata {
     fn cmp(&self, other: &Self) -> Ordering {
         // Equivalent to Scala's SortedSet with BlockMetadata.orderingByNum.reverse
-        // Reverse ordering: highest blocknum first (equivalent to orderingByNum.reverse)
+        // Reverse ordering: highest blocknum first (equivalent to
+        // orderingByNum.reverse)
         BlockMetadata::ordering_by_num(&self.0, &other.0).reverse()
     }
 }
@@ -62,15 +62,17 @@ impl DagOperations {
 
     /// Determines the ancestors to a set of blocks which are not common to all
     /// blocks in the set. Each starting block is assigned an index (hence the
-    /// usage of slice with indices) and this is used to refer to that block in the result.
-    /// A block B is an ancestor of a starting block with index i if the BitSet for
-    /// B contains i.
+    /// usage of slice with indices) and this is used to refer to that block in
+    /// the result. A block B is an ancestor of a starting block with index
+    /// i if the BitSet for B contains i.
     ///
-    /// The `blocks` parameter is a slice of blocks to determine uncommon ancestors of.
-    /// The `dag` parameter provides the DAG representation for traversing parent relationships.
+    /// The `blocks` parameter is a slice of blocks to determine uncommon
+    /// ancestors of. The `dag` parameter provides the DAG representation
+    /// for traversing parent relationships.
     ///
-    /// Returns a map from uncommon ancestor blocks to BitSets, where a block B is
-    /// an ancestor of starting block with index i if B's BitSet contains i.
+    /// Returns a map from uncommon ancestor blocks to BitSets, where a block B
+    /// is an ancestor of starting block with index i if B's BitSet contains
+    /// i.
     pub async fn uncommon_ancestors(
         blocks: &[BlockMetadata],
         dag: &KeyValueDagRepresentation,
@@ -87,9 +89,7 @@ impl DagOperations {
                 .collect::<Result<Vec<_>, _>>()
         }
 
-        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool {
-            set == common_set
-        }
+        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool { set == common_set }
 
         let init_map: HashMap<BlockMetadata, HashSet<u8>> = blocks
             .iter()
@@ -124,8 +124,10 @@ impl DagOperations {
                 .0;
 
             // Note: Instead of BitSet in Rust and union function from models/util.rs,
-            // We have used HashSets<u8> and extend function which provides the correct set semantic that match the original Scala BitSet behavior,
-            // while the current BitSet implementation and union functions in the Rust side is designed for different use cases (bitwise operations, not set operations).
+            // We have used HashSets<u8> and extend function which provides the correct set
+            // semantic that match the original Scala BitSet behavior, while the
+            // current BitSet implementation and union functions in the Rust side is
+            // designed for different use cases (bitwise operations, not set operations).
             let curr_set = curr_map.get(&curr_block).cloned().unwrap_or_default();
 
             let curr_parents = parents(&curr_block, dag).await?;
@@ -201,9 +203,10 @@ impl DagOperations {
         })
     }
 
-    /// Conceptually, the LUCA is the lowest point at which the histories of b1 and b2 diverge.
-    /// We compute by finding the first block that is the "lowest" (has highest blocknum) block common
-    /// for both blocks' ancestors.
+    /// Conceptually, the LUCA is the lowest point at which the histories of b1
+    /// and b2 diverge. We compute by finding the first block that is the
+    /// "lowest" (has highest blocknum) block common for both blocks'
+    /// ancestors.
     pub async fn lowest_universal_common_ancestor_many(
         blocks: &[BlockMetadata],
         dag: &KeyValueDagRepresentation,
@@ -257,9 +260,10 @@ impl DagOperations {
         .ok_or_else(|| KvStoreError::KeyNotFound("No common ancestor found".to_string()))
     }
 
-    /// Conceptually, the LUCA is the lowest point at which the histories of b1 and b2 diverge.
-    /// We compute by finding the first block that is the "lowest" (has highest blocknum) block common
-    /// for both blocks' ancestors.
+    /// Conceptually, the LUCA is the lowest point at which the histories of b1
+    /// and b2 diverge. We compute by finding the first block that is the
+    /// "lowest" (has highest blocknum) block common for both blocks'
+    /// ancestors.
     pub async fn lowest_universal_common_ancestor(
         b1: &BlockMetadata,
         b2: &BlockMetadata,

@@ -4,15 +4,14 @@ use colored::Colorize;
 use eyre::Result;
 use tokio::runtime::Runtime;
 
-use crate::rust::effects::{console_io::ConsoleIO, repl_client::ReplClientService};
+use crate::rust::effects::console_io::ConsoleIO;
+use crate::rust::effects::repl_client::ReplClientService;
 
 /// --- ReplRuntime translation ---
 pub struct ReplRuntime;
 
 impl Default for ReplRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl ReplRuntime {
@@ -22,12 +21,11 @@ impl ReplRuntime {
   ╩╚═└─┘┴ ┴┴ ┴┴┘└┘  ╝╚╝└─┘─┴┘└─┘  ╩╚═╚═╝╩  ╩═╝
 "#;
 
-    pub fn new() -> Self {
-        Self {}
-    }
+    pub fn new() -> Self { Self {} }
 
     /// Scala: def replProgram[F[_]: Monad: ConsoleIO: ReplClient]: F[Boolean]
-    /// Rust: returns Ok(true) if loop continued, Ok(false) if terminated (on ":q" or failed run)
+    /// Rust: returns Ok(true) if loop continued, Ok(false) if terminated (on
+    /// ":q" or failed run)
     pub fn repl_program<C, R>(&self, rt_handle: &Runtime, console: &mut C, repl: &R) -> Result<bool>
     where
         C: ConsoleIO,
@@ -79,7 +77,8 @@ impl ReplRuntime {
         }
     }
 
-    /// Scala: def evalProgram[F[_]: Monad: ReplClient: ConsoleIO](fileNames, printUnmatchedSendsOnly, language): F[Unit]
+    /// Scala: def evalProgram[F[_]: Monad: ReplClient: ConsoleIO](fileNames,
+    /// printUnmatchedSendsOnly, language): F[Unit]
     pub fn eval_program<C, R>(
         &self,
         rt_handle: &Runtime,
@@ -120,8 +119,7 @@ impl ReplRuntime {
         let results =
             rt_handle.block_on(repl.eval_files(&file_names, print_unmatched_sends_only, language));
 
-        let labeled: Vec<(String, Result<String>)> =
-            file_names.into_iter().zip(results).collect();
+        let labeled: Vec<(String, Result<String>)> = file_names.into_iter().zip(results).collect();
 
         print_results(console, &labeled)?;
         Ok(())
@@ -132,6 +130,4 @@ impl ReplRuntime {
     }
 }
 
-fn if_read_mode() -> bool {
-    std::io::stdin().is_terminal()
-}
+fn if_read_mode() -> bool { std::io::stdin().is_terminal() }

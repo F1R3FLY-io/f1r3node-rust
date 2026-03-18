@@ -1,6 +1,10 @@
 //! Command-line options definition using clap
 //!
-//! This module defines all command-line arguments and subcommands for the F1r3fly node.
+//! This module defines all command-line arguments and subcommands for the
+//! F1r3fly node.
+
+use std::path::PathBuf;
+use std::time::Duration;
 
 use casper::rust::util::comm::listen_at_name::Name;
 use clap::builder::ValueParser;
@@ -8,8 +12,6 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
-use std::path::PathBuf;
-use std::time::Duration;
 
 use super::converters::{NameConverter, PrivateKeyConverter, PublicKeyConverter, VecNameConverter};
 
@@ -124,7 +126,8 @@ pub struct RunOptions {
     #[arg(long = "network-id")]
     pub network_id: Option<String>,
 
-    /// Make node automatically trying to propose block after new block added or new deploy received
+    /// Make node automatically trying to propose block after new block added or
+    /// new deploy received
     #[arg(long = "autopropose", action = ArgAction::SetTrue)]
     pub autopropose: bool,
 
@@ -136,11 +139,13 @@ pub struct RunOptions {
     #[arg(long = "dynamic-ip", action = ArgAction::SetTrue)]
     pub dynamic_ip: bool,
 
-    /// If node has to create genesis block but no bonds file is provided, bonds file with a list of random public keys is generated
+    /// If node has to create genesis block but no bonds file is provided, bonds
+    /// file with a list of random public keys is generated
     #[arg(long = "autogen-shard-size")]
     pub autogen_shard_size: Option<u32>,
 
-    /// Disable the node to start from Last Finalized State, instead it will start from genesis
+    /// Disable the node to start from Last Finalized State, instead it will
+    /// start from genesis
     #[arg(long = "disable-lfs", action = ArgAction::SetTrue)]
     pub disable_lfs: bool,
 
@@ -148,7 +153,8 @@ pub struct RunOptions {
     #[arg(long = "host")]
     pub host: Option<String>,
 
-    /// Use random ports in case F1r3fly Protocol port and/or Kademlia port are not free
+    /// Use random ports in case F1r3fly Protocol port and/or Kademlia port are
+    /// not free
     #[arg(long = "use-random-ports", action = ArgAction::SetTrue)]
     pub use_random_ports: bool,
 
@@ -192,7 +198,8 @@ pub struct RunOptions {
     #[arg(long = "protocol-grpc-max-recv-message-size")]
     pub protocol_grpc_max_recv_message_size: Option<u32>,
 
-    /// Maximum size of messages that can be received via transport layer streams
+    /// Maximum size of messages that can be received via transport layer
+    /// streams
     #[arg(long = "protocol-grpc-max-recv-stream-message-size")]
     pub protocol_grpc_max_recv_stream_message_size: Option<u32>,
 
@@ -284,7 +291,8 @@ pub struct RunOptions {
     #[arg(long = "shard-name")]
     pub shard_name: Option<String>,
 
-    /// Float value representing that the node tolerates up to fault-tolerance-threshold fraction of the total weight to equivocate
+    /// Float value representing that the node tolerates up to
+    /// fault-tolerance-threshold fraction of the total weight to equivocate
     #[arg(long = "fault-tolerance-threshold")]
     pub fault_tolerance_threshold: Option<f32>,
 
@@ -296,11 +304,13 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key", hide = true)]
     pub validator_private_key: Option<String>,
 
-    /// Path to the base16 encoded private key to use for signing a proposed blocks
+    /// Path to the base16 encoded private key to use for signing a proposed
+    /// blocks
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval for the casper loop to maintain requested blocks and missing
+    /// dependent blocks
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
 
@@ -320,7 +330,8 @@ pub struct RunOptions {
     #[arg(long = "max-parent-depth")]
     pub max_parent_depth: Option<i32>,
 
-    /// Node will request for fork choice tips if the latest FCT is more then forkChoiceStaleThreshold old
+    /// Node will request for fork choice tips if the latest FCT is more then
+    /// forkChoiceStaleThreshold old
     #[arg(long = "fork-choice-stale-threshold", value_parser = ValueParser::new(parse_duration))]
     pub fork_choice_stale_threshold: Option<Duration>,
 
@@ -328,11 +339,14 @@ pub struct RunOptions {
     #[arg(long = "fork-choice-check-if-stale-interval", value_parser = ValueParser::new(parse_duration))]
     pub fork_choice_check_if_stale_interval: Option<Duration>,
 
-    /// Float value representing that the node waits until at least synchrony-constraint-threshold fraction of the validators proposed at least one block
+    /// Float value representing that the node waits until at least
+    /// synchrony-constraint-threshold fraction of the validators proposed at
+    /// least one block
     #[arg(long = "synchrony-constraint-threshold")]
     pub synchrony_constraint_threshold: Option<f32>,
 
-    /// Long value representing how far ahead of the last finalized block the node is allowed to propose
+    /// Long value representing how far ahead of the last finalized block the
+    /// node is allowed to propose
     #[arg(long = "height-constraint-threshold")]
     pub height_constraint_threshold: Option<i64>,
 
@@ -340,7 +354,8 @@ pub struct RunOptions {
     #[arg(long = "frrd-max-peer-queue-size")]
     pub frrd_max_peer_queue_size: Option<u32>,
 
-    /// Fair round robin dispatcher give up and try next peer after skipped packets
+    /// Fair round robin dispatcher give up and try next peer after skipped
+    /// packets
     #[arg(long = "frrd-give-up-after-skipped")]
     pub frrd_give_up_after_skipped: Option<u32>,
 
@@ -348,11 +363,13 @@ pub struct RunOptions {
     #[arg(long = "frrd-drop-peer-after-retries")]
     pub frrd_drop_peer_after_retries: Option<u32>,
 
-    /// Plain text file consisting of lines of the form `<pk> <stake>`, which defines the bond amounts for each validator at genesis
+    /// Plain text file consisting of lines of the form `<pk> <stake>`, which
+    /// defines the bond amounts for each validator at genesis
     #[arg(long = "bonds-file")]
     pub bonds_file: Option<String>,
 
-    /// Plain text file consisting of lines of the form `<algorithm> <pk> <balance>`, which defines the wallets that exist at genesis
+    /// Plain text file consisting of lines of the form `<algorithm> <pk>
+    /// <balance>`, which defines the wallets that exist at genesis
     #[arg(long = "wallets-file")]
     pub wallets_file: Option<String>,
 
@@ -380,15 +397,18 @@ pub struct RunOptions {
     #[arg(long = "number-of-active-validators")]
     pub number_of_active_validators: Option<u32>,
 
-    /// Number of signatures from bonded validators required for Ceremony Master to approve the genesis block
+    /// Number of signatures from bonded validators required for Ceremony Master
+    /// to approve the genesis block
     #[arg(long = "required-signatures")]
     pub required_signatures: Option<i32>,
 
-    /// Each `approve-interval` Ceremony Master (CM) checks if it have gathered enough signatures to approve the genesis block
+    /// Each `approve-interval` Ceremony Master (CM) checks if it have gathered
+    /// enough signatures to approve the genesis block
     #[arg(long = "approve-interval", value_parser = ValueParser::new(parse_duration))]
     pub approve_interval: Option<Duration>,
 
-    /// Time window in which BlockApproval messages will be accumulated before checking conditions
+    /// Time window in which BlockApproval messages will be accumulated before
+    /// checking conditions
     #[arg(long = "approve-duration", value_parser = ValueParser::new(parse_duration))]
     pub approve_duration: Option<Duration>,
 
@@ -458,7 +478,8 @@ pub struct KeygenOptions {
     pub location: PathBuf,
 }
 
-/// Eval subcommand - Starts a thin client that will evaluate rholang in file on a existing running node
+/// Eval subcommand - Starts a thin client that will evaluate rholang in file on
+/// a existing running node
 #[derive(Args, Debug, Clone)]
 pub struct EvalOptions {
     /// Rholang files to evaluate
@@ -473,7 +494,8 @@ pub struct EvalOptions {
     pub language: String,
 }
 
-/// Deploy subcommand - Deploy a Rholang source file to Casper on an existing running node
+/// Deploy subcommand - Deploy a Rholang source file to Casper on an existing
+/// running node
 #[derive(Args, Debug, Clone)]
 pub struct DeployOptions {
     /// The amount of phlo to use for the transaction
@@ -531,7 +553,8 @@ pub struct VisualizeDagOptions {
     pub show_justification_lines: bool,
 }
 
-/// Is finalized subcommand - Check if the given block has been finalized by Casper
+/// Is finalized subcommand - Check if the given block has been finalized by
+/// Casper
 #[derive(Args, Debug, Clone)]
 pub struct IsFinalizedOptions {
     /// The hash value of the block to check
@@ -569,7 +592,8 @@ pub struct ContAtNameOptions {
     pub content: Vec<String>,
 }
 
-/// Find deploy subcommand - Searches for a block containing the deploy with provided id
+/// Find deploy subcommand - Searches for a block containing the deploy with
+/// provided id
 #[derive(Args, Debug, Clone)]
 pub struct FindDeployOptions {
     /// Id of the deploy
@@ -577,7 +601,8 @@ pub struct FindDeployOptions {
     pub deploy_id: String,
 }
 
-/// Propose subcommand - Force Casper to propose a block based on its accumulated deploys
+/// Propose subcommand - Force Casper to propose a block based on its
+/// accumulated deploys
 #[derive(Args, Debug, Clone)]
 pub struct ProposeOptions {
     /// Print unmatched sends

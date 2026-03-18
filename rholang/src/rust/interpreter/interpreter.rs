@@ -1,7 +1,8 @@
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::Par;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::Par;
 use tracing::{event, Level};
 
 use super::accounting::_cost;
@@ -13,7 +14,8 @@ use super::reduce::DebruijnInterpreter;
 //See rholang/src/main/scala/coop/rchain/rholang/interpreter/Interpreter.scala
 
 // NOTE: Manual marks are used instead of trace_i() for async operations.
-// This is the correct pattern for async code and matches Scala's Span[F].traceI() semantics.
+// This is the correct pattern for async code and matches Scala's
+// Span[F].traceI() semantics.
 #[derive(Clone, Debug, Default)]
 pub struct EvaluateResult {
     pub cost: Cost,
@@ -101,8 +103,9 @@ impl Interpreter for InterpreterImpl {
         log_mem_step("after_parsing_cost");
 
         // Using tracing events for async context
-        // Scala spans: "set-initial-cost", "charge-parsing-cost", "build-normalized-term", "reduce-term"
-        // Implemented as debug events since this is an async function
+        // Scala spans: "set-initial-cost", "charge-parsing-cost",
+        // "build-normalized-term", "reduce-term" Implemented as debug events
+        // since this is an async function
         let evaluation_result: Result<EvaluateResult, InterpreterError> = {
             // Trace: set-initial-cost (matching Scala's Span[F].traceI("set-initial-cost"))
             {
@@ -120,16 +123,19 @@ impl Interpreter for InterpreterImpl {
                 log_mem_step("after_set_initial_cost");
             }
 
-            // Trace: charge-parsing-cost (matching Scala's Span[F].traceI("charge-parsing-cost"))
+            // Trace: charge-parsing-cost (matching Scala's
+            // Span[F].traceI("charge-parsing-cost"))
             {
                 event!(
                     Level::DEBUG,
                     mark = "started-charge-parsing-cost",
                     "inj_attempt"
                 );
-                // Scala: charge[F](parsingCost) is inside for-comprehension with .handleErrorWith at the end
-                // In Rust, we must catch charge errors explicitly to match Scala's monadic error handling.
-                // If charge fails (e.g., OutOfPhlogistonsError), convert to EvaluateResult with errors.
+                // Scala: charge[F](parsingCost) is inside for-comprehension with
+                // .handleErrorWith at the end In Rust, we must catch charge
+                // errors explicitly to match Scala's monadic error handling. If
+                // charge fails (e.g., OutOfPhlogistonsError), convert to EvaluateResult with
+                // errors.
                 if let Err(e) = self.c.charge(parsing_cost.clone()) {
                     event!(
                         Level::DEBUG,
@@ -147,37 +153,38 @@ impl Interpreter for InterpreterImpl {
                 log_mem_step("after_charge_parsing_cost");
             }
 
-            // Trace: build-normalized-term (matching Scala's Span[F].traceI("build-normalized-term"))
+            // Trace: build-normalized-term (matching Scala's
+            // Span[F].traceI("build-normalized-term"))
             let parsed = {
                 event!(
                     Level::DEBUG,
                     mark = "started-build-normalized-term",
                     "inj_attempt"
                 );
-                let result =
-                    match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env) {
-                        Ok(p) => {
-                            event!(
-                                Level::DEBUG,
-                                mark = "finished-build-normalized-term",
-                                "inj_attempt"
-                            );
-                            Ok(p)
-                        }
-                        Err(e) => {
-                            event!(
-                                Level::DEBUG,
-                                mark = "failed-build-normalized-term",
-                                "inj_attempt"
-                            );
-                            log_mem_step("build_normalized_term_error");
-                            Err(self.handle_error(
-                                initial_phlo.clone(),
-                                parsing_cost.clone(),
-                                InterpreterError::ParserError(e.to_string()),
-                            ))
-                        }
-                    };
+                let result = match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
+                {
+                    Ok(p) => {
+                        event!(
+                            Level::DEBUG,
+                            mark = "finished-build-normalized-term",
+                            "inj_attempt"
+                        );
+                        Ok(p)
+                    }
+                    Err(e) => {
+                        event!(
+                            Level::DEBUG,
+                            mark = "failed-build-normalized-term",
+                            "inj_attempt"
+                        );
+                        log_mem_step("build_normalized_term_error");
+                        Err(self.handle_error(
+                            initial_phlo.clone(),
+                            parsing_cost.clone(),
+                            InterpreterError::ParserError(e.to_string()),
+                        ))
+                    }
+                };
                 match result {
                     Ok(p) => p,
                     Err(err) => return err,
@@ -241,8 +248,8 @@ impl InterpreterImpl {
                 mergeable: HashSet::new(),
             }),
 
-            // For Out Of Phlogistons error initial cost is used because evaluated cost can be higher
-            // all phlos are consumed
+            // For Out Of Phlogistons error initial cost is used because evaluated cost can be
+            // higher all phlos are consumed
             InterpreterError::OutOfPhlogistonsError => Ok(EvaluateResult {
                 cost: initial_cost,
                 errors: vec![error],

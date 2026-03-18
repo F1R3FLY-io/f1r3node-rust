@@ -1,5 +1,6 @@
-// Port of casper/src/test/scala/coop/rchain/node/revvaultexport/RhoTrieTraverserTest.scala
-// 1:1 conversion of the "traverse the TreeHashMap" test
+// Port of casper/src/test/scala/coop/rchain/node/revvaultexport/
+// RhoTrieTraverserTest.scala 1:1 conversion of the "traverse the TreeHashMap"
+// test
 
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::rholang::runtime::RuntimeOps;
@@ -14,7 +15,8 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 const _SHARD_ID: &str = "root-shard";
 
-/// 1:1 port of RhoTrieTraverserTest.scala - "traverse the TreeHashMap" should "work"
+/// 1:1 port of RhoTrieTraverserTest.scala - "traverse the TreeHashMap" should
+/// "work"
 #[tokio::test]
 async fn traverse_the_tree_hash_map_should_work() {
     let total = 1;
@@ -83,7 +85,8 @@ new
         // Wrap runtime with RuntimeOps to access higher-level operations
         let mut runtime_ops = RuntimeOps::new(runtime);
 
-        // 1. Obtain empty state hash (includes fixed registry channels according to Scala test)
+        // 1. Obtain empty state hash (includes fixed registry channels according to
+        //    Scala test)
         let hash1 = runtime_ops
             .empty_state_hash()
             .await
@@ -96,7 +99,8 @@ new
             .reset(&empty_hash_b2)
             .expect("Failed to reset runtime to empty state");
 
-        // Bootstrap registry directly (avoids heavy Registry.rho deploy which overflows stack)
+        // Bootstrap registry directly (avoids heavy Registry.rho deploy which overflows
+        // stack)
         runtime_ops
             .process_deploy(standard_deploys::registry(_SHARD_ID))
             .await
@@ -208,7 +212,8 @@ new
                                     .map(|(k, v)| (hex::encode(k), *v))
                                     .collect::<Vec<(String, i64)>>()
                             );
-                            //panic!("Key '{}' not found in traversed trie map", key);
+                            //panic!("Key '{}' not found in traversed trie
+                            // map", key);
                         }
                     }
                 }

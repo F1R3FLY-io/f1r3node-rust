@@ -1,31 +1,26 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.
+// scala
 
-use crate::{
-    rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send},
-    rust::rholang::sorter::{
-        bundle_sort_matcher::BundleSortMatcher,
-        connective_sort_matcher::ConnectiveSortMatcher,
-        expr_sort_matcher::ExprSortMatcher,
-        match_sort_matcher::MatchSortMatcher,
-        new_sort_matcher::NewSortMatcher,
-        receive_sort_matcher::ReceiveSortMatcher,
-        score_tree::{Score, ScoreAtom, Tree},
-        unforgeable_sort_matcher::UnforgeableSortMatcher,
-    },
-};
-
-use super::{score_tree::ScoredTerm, send_sort_matcher::SendSortMatcher, sortable::Sortable};
+use super::score_tree::ScoredTerm;
+use super::send_sort_matcher::SendSortMatcher;
+use super::sortable::Sortable;
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send};
+use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
+use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
+use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
+use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
+use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
+use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
+use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
 
 pub struct ParSortMatcher;
 
 impl Sortable<Par> for ParSortMatcher {
     fn sort_match(par: &Par) -> ScoredTerm<Par> {
         let sends: Vec<ScoredTerm<Send>> = {
-            let mut _sends: Vec<ScoredTerm<Send>> = par
-                .sends
-                .iter()
-                .map(SendSortMatcher::sort_match)
-                .collect();
+            let mut _sends: Vec<ScoredTerm<Send>> =
+                par.sends.iter().map(SendSortMatcher::sort_match).collect();
 
             ScoredTerm::sort_vec(&mut _sends);
             _sends
@@ -43,22 +38,16 @@ impl Sortable<Par> for ParSortMatcher {
         };
 
         let exprs: Vec<ScoredTerm<Expr>> = {
-            let mut _exprs: Vec<ScoredTerm<Expr>> = par
-                .exprs
-                .iter()
-                .map(ExprSortMatcher::sort_match)
-                .collect();
+            let mut _exprs: Vec<ScoredTerm<Expr>> =
+                par.exprs.iter().map(ExprSortMatcher::sort_match).collect();
 
             ScoredTerm::sort_vec(&mut _exprs);
             _exprs
         };
 
         let news: Vec<ScoredTerm<New>> = {
-            let mut _news: Vec<ScoredTerm<New>> = par
-                .news
-                .iter()
-                .map(NewSortMatcher::sort_match)
-                .collect();
+            let mut _news: Vec<ScoredTerm<New>> =
+                par.news.iter().map(NewSortMatcher::sort_match).collect();
 
             ScoredTerm::sort_vec(&mut _news);
             _news
@@ -138,12 +127,12 @@ impl Sortable<Par> for ParSortMatcher {
                 .chain(
                     receive_scores
                         .into_iter()
-                        .chain(expr_scores.into_iter())
-                        .chain(news_scores.into_iter())
-                        .chain(match_scores.into_iter())
-                        .chain(bundle_scores.into_iter())
-                        .chain(connective_scores.into_iter())
-                        .chain(unforgeable_scores.into_iter())
+                        .chain(expr_scores)
+                        .chain(news_scores)
+                        .chain(match_scores)
+                        .chain(bundle_scores)
+                        .chain(connective_scores)
+                        .chain(unforgeable_scores)
                         .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                             connective_used_score,
                         )]),

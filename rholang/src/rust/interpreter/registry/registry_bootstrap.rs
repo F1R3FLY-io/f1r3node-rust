@@ -1,11 +1,12 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/registry/RegistryBootstrap.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/registry/
+// RegistryBootstrap.scala
+
+use std::collections::BTreeMap;
+
+use models::rhoapi::{New, Par, Receive, ReceiveBind, Send};
+use models::rust::utils::{new_boundvar_par, new_freevar_par};
 
 use crate::rust::interpreter::system_processes::FixedChannels;
-use models::{
-    rhoapi::{New, Par, Receive, ReceiveBind, Send},
-    rust::utils::{new_boundvar_par, new_freevar_par},
-};
-use std::collections::BTreeMap;
 
 pub fn ast() -> Par {
     Par::default().with_news(vec![

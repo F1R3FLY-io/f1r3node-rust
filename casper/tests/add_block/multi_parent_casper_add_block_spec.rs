@@ -1,8 +1,6 @@
-// See casper/src/test/scala/coop/rchain/casper/addblock/MultiParentCasperAddBlockSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/addblock/
+// MultiParentCasperAddBlockSpec.scala
 
-use crate::helper::block_util::resign_block;
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -24,8 +22,13 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use ValidBlock::Valid;
 
+use crate::helper::block_util::resign_block;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+
 /// Test fixture that holds common test data
-/// Equivalent to Scala class fields: val genesis = buildGenesis() and private val SHARD_ID = genesis.genesisBlock.shardId
+/// Equivalent to Scala class fields: val genesis = buildGenesis() and private
+/// val SHARD_ID = genesis.genesisBlock.shardId
 struct TestContext {
     genesis: GenesisContext,
     shard_id: String,
@@ -215,10 +218,10 @@ async fn multi_parent_casper_should_create_valid_blocks_when_peek_syntax_is_pres
 async fn multi_parent_casper_should_propose_and_replay_peek() {
     let ctx = TestContext::new().await;
 
-    // Scala: (1 to 50).toList.map { _ => ... }.parSequence_ , I'll change number to 10 iterations
-    // Note: Running sequentially due to TestNode not being Send (SafetyOracle trait object limitation)
-    // TestNode contains safety_oracle: Box<dyn SafetyOracle>,
-    // Trait objects dyn Trait is not Send by default
+    // Scala: (1 to 50).toList.map { _ => ... }.parSequence_ , I'll change number to
+    // 10 iterations Note: Running sequentially due to TestNode not being Send
+    // (SafetyOracle trait object limitation) TestNode contains safety_oracle:
+    // Box<dyn SafetyOracle>, Trait objects dyn Trait is not Send by default
     // tokio::spawn requires Send so that tasks can migrate between threads
     for _ in 1..=10 {
         let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
@@ -477,7 +480,8 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     );
 }
 
-// See [[/docs/casper/images/minimal_equivocation_neglect.png]] but cross out genesis block
+// See [[/docs/casper/images/minimal_equivocation_neglect.png]] but cross out
+// genesis block
 #[tokio::test]
 #[ignore = "Scala ignore"]
 async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_required_for_parents_of_proper_nodes(
@@ -701,7 +705,8 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
 
     let _ = nodes[0].shutoff(); // nodes(0) rejects normal adding process for blockThatPointsToInvalidBlock
 
-    // Create packet message from signed invalid block and send from node 0 to node 1
+    // Create packet message from signed invalid block and send from node 0 to node
+    // 1
     let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
         &nodes[0].local,
         "test", // network_id
@@ -720,7 +725,8 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
         .await
         .expect("Node 1 should handle receive");
 
-    // Verify the invalid block was recorded in the DAG (better than checking log messages)
+    // Verify the invalid block was recorded in the DAG (better than checking log
+    // messages)
     let dag = nodes[1].casper.block_dag().await.unwrap();
     let invalid_blocks = dag.invalid_blocks();
 
@@ -922,8 +928,9 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
         .await
         .unwrap();
 
-    // Slashing should reduce the offender to the configured bond floor (currently 1 in tests).
-    // Older behavior allowed 0, so keep this tolerant to either floor.
+    // Slashing should reduce the offender to the configured bond floor (currently 1
+    // in tests). Older behavior allowed 0, so keep this tolerant to either
+    // floor.
     let min_stake = bonds.iter().map(|b| b.stake).min().unwrap_or(0);
     assert!(
         min_stake <= 1,
@@ -1061,8 +1068,8 @@ async fn build_block_with_invalid_justification(
 
     let block_that_points_to_invalid_block = BlockMessage {
         block_hash: serialized_block_hash,
-        header: header,
-        body: body,
+        header,
+        body,
         justifications: serialized_justifications,
         sender: Bytes::new(),
         seq_num: 0,

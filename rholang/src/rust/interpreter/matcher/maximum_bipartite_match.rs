@@ -1,11 +1,10 @@
-use std::{
-    cmp::Eq,
-    collections::{BTreeMap, BTreeSet},
-    fmt::Debug,
-    hash::Hash,
-};
+use std::cmp::Eq;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Debug;
+use std::hash::Hash;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/MaximumBipartiteMatch.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+// MaximumBipartiteMatch.scala
 pub struct MaximumBipartiteMatch<P, T, R>
 where
     P: Debug + Clone,
@@ -97,7 +96,8 @@ where
                                 self.try_claim_match(candidate.clone(), pattern, match_result)
                             }
                             None => {
-                                // println!("\nthis candidate doesn't match, proceed to the others");
+                                // println!("\nthis candidate doesn't match, proceed to the
+                                // others");
                                 self.find_match((p, candidates.to_vec()))
                             }
                         }
@@ -129,28 +129,24 @@ where
             Some(previous_pattern) => {
                 // try to find a different match for the previous pattern
                 if self.find_match(previous_pattern) {
-                    // if found, we can match current pattern with this candidate despite it being taken
+                    // if found, we can match current pattern with this candidate despite it being
+                    // taken
                     self.claim_match(candidate, pattern, result);
                     true
                 } else {
-                    // else, current pattern can't be matched with this candidate given the current matches, try others
+                    // else, current pattern can't be matched with this candidate given the current
+                    // matches, try others
                     self.find_match(pattern)
                 }
             }
         }
     }
 
-    fn reset_seen(&mut self) {
-        self.seen_targets.clear();
-    }
+    fn reset_seen(&mut self) { self.seen_targets.clear(); }
 
-    fn not_seen(&self, candidate: Candidate<T>) -> bool {
-        !self.seen_targets.contains(&candidate)
-    }
+    fn not_seen(&self, candidate: Candidate<T>) -> bool { !self.seen_targets.contains(&candidate) }
 
-    fn add_seen(&mut self, candidate: Candidate<T>) {
-        self.seen_targets.insert(candidate);
-    }
+    fn add_seen(&mut self, candidate: Candidate<T>) { self.seen_targets.insert(candidate); }
 
     fn get_match(&self, candidate: Candidate<T>) -> Option<Pattern<P, T>> {
         self.matches.get(&candidate).map(|x| x.0.clone())

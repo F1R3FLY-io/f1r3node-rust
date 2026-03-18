@@ -1,19 +1,16 @@
 // See rholang/src/test/scala/coop/rchain/rholang/InterpreterSpec.scala
 
-use models::rhoapi::{expr, Expr, Par};
-use rholang::rust::interpreter::accounting::costs::{parsing_cost, subtraction_cost_with_value};
-use rholang::rust::interpreter::{
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    storage::storage_printer,
-    test_utils::resources::with_runtime,
-};
 use std::collections::HashSet;
 
-fn storage_contents(runtime: &RhoRuntimeImpl) -> String {
-    storage_printer::pretty_print(runtime)
-}
+use models::rhoapi::{expr, Expr, Par};
+use rholang::rust::interpreter::accounting::costs::{parsing_cost, subtraction_cost_with_value};
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::storage::storage_printer;
+use rholang::rust::interpreter::test_utils::resources::with_runtime;
+
+fn storage_contents(runtime: &RhoRuntimeImpl) -> String { storage_printer::pretty_print(runtime) }
 
 async fn success(runtime: &mut RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
     execute(runtime, term).await.map(|res| {
@@ -78,19 +75,22 @@ async fn interpreter_should_restore_rspace_to_its_prior_state_after_evaluation_e
         let final_content = storage_contents(&runtime);
         println!("\nRust - Final storage:\n{}", final_content);
 
-        // IMPORTANT: While the semantic state is identical between the initial and final state
-        // (as verified by comparing checkpoint roots above), the textual representation produced
-        // by the pretty_printer differs significantly. This is expected behavior and not a bug.
-        // The differences include:
+        // IMPORTANT: While the semantic state is identical between the initial
+        // and final state (as verified by comparing checkpoint roots
+        // above), the textual representation produced
+        // by the pretty_printer differs significantly. This is expected
+        // behavior and not a bug. The differences include:
         //
         // 1. Variable ordering in the output
         // 2. Different naming of variables (@{x0}, @{y1}, etc.)
-        // 3. Different representation of Unforgeable IDs (e.g., Unforgeable(0x07))
+        // 3. Different representation of Unforgeable IDs (e.g.,
+        //    Unforgeable(0x07))
         // 4. Different text formatting (whitespace, line breaks)
         //
-        // Therefore, instead of comparing string representations directly, we verify semantic
-        // equivalence through checkpoint root hashes, which accurately represent the state.
-        //assert_eq!(finalContent, init_storage);
+        // Therefore, instead of comparing string representations directly, we
+        // verify semantic equivalence through checkpoint root hashes,
+        // which accurately represent the state.
+        // assert_eq!(finalContent, init_storage);
     })
     .await
 }

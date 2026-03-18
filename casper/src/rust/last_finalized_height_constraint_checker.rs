@@ -1,9 +1,10 @@
-// See casper/src/main/scala/coop/rchain/casper/LastFinalizedHeightConstraintChecker.scala
+// See casper/src/main/scala/coop/rchain/casper/
+// LastFinalizedHeightConstraintChecker.scala
 
-use super::{
-    blocks::proposer::propose_result::CheckProposeConstraintsResult, casper::CasperSnapshot,
-    errors::CasperError, validator_identity::ValidatorIdentity,
-};
+use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
+use super::casper::CasperSnapshot;
+use super::errors::CasperError;
+use super::validator_identity::ValidatorIdentity;
 
 pub fn check(
     snapshot: &CasperSnapshot,

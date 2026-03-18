@@ -1,36 +1,33 @@
 // See node/src/main/scala/coop/rchain/node/runtime/ServersInstances.scala
 
-use std::net::IpAddr;
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{future::Future, net::SocketAddr};
 
-use crate::rust::{
-    api::{
-        admin_web_api::AdminWebApi,
-        grpc_package::{acquire_external_server, acquire_internal_server},
-        web_api::WebApi,
-    },
-    configuration::NodeConf,
-    runtime::api_servers::APIServers,
-    web::{routes::Routes, shared_handlers::AppState},
-};
 use comm::rust::discovery::kademlia_handle_rpc::{handle_lookup, handle_ping};
 use comm::rust::discovery::kademlia_rpc::KademliaRPC;
 use comm::rust::discovery::kademlia_store::KademliaStore;
+use comm::rust::discovery::node_discovery::NodeDiscovery;
+use comm::rust::discovery::utils::acquire_kademlia_rpc_server;
 use comm::rust::peer_node::PeerNode;
-use comm::rust::{
-    discovery::{node_discovery::NodeDiscovery, utils::acquire_kademlia_rpc_server},
-    rp::connect::ConnectionsCell,
-    transport::grpc_transport_server::{DispatchFn, HandleStreamedFn, TransportServer},
-};
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::transport::grpc_transport_server::{DispatchFn, HandleStreamedFn, TransportServer};
 use futures::FutureExt;
 use shared::rust::grpc::grpc_server::GrpcServer;
 use shared::rust::shared::f1r3fly_events::EventStream;
-use std::str::FromStr;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
+
+use crate::rust::api::admin_web_api::AdminWebApi;
+use crate::rust::api::grpc_package::{acquire_external_server, acquire_internal_server};
+use crate::rust::api::web_api::WebApi;
+use crate::rust::configuration::NodeConf;
+use crate::rust::runtime::api_servers::APIServers;
+use crate::rust::web::routes::Routes;
+use crate::rust::web::shared_handlers::AppState;
 
 const HTTP_BIND_RETRY_ATTEMPTS: usize = 60;
 const HTTP_BIND_RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -104,7 +101,8 @@ impl ServersInstances {
     /// * `host` - Host address for servers
     /// * `address` - Address string for logging
     /// * `node_conf` - Node configuration
-    /// * `rp_conf` - RChain Protocol configuration (needed for transport server)
+    /// * `rp_conf` - RChain Protocol configuration (needed for transport
+    ///   server)
     /// * `rp_connections` - Connections cell (needed for AppState)
     /// * `node_discovery` - Node discovery service (needed for AppState)
     /// * `block_report_api` - Block report API (needed for AppState)
@@ -330,7 +328,8 @@ impl ServersInstances {
         // Metrics can be configured separately if needed
 
         // Extract lifecycle handles from gRPC servers
-        // Note: After taking the handle, the GrpcServer will no longer manage its own lifecycle
+        // Note: After taking the handle, the GrpcServer will no longer manage its own
+        // lifecycle
 
         let transport_server_arc = Arc::new(transport_server);
 

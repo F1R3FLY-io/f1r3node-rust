@@ -4,7 +4,8 @@ use models::rhoapi::{MatchCase, Par, Var};
 use super::has_locally_free::HasLocallyFree;
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - foldMatch
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+// SpatialMatcher.scala - foldMatch
 pub trait FoldMatch<T, P> {
     fn fold_match(
         &mut self,

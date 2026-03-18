@@ -64,7 +64,6 @@ impl TrieExporter for RSpaceExporterImpl {
     fn get_nodes(&self, start_path: NodePath, skip: i32, take: i32) -> Vec<TrieNode<KeyHash>> {
         let source_trie_store = RadixHistory::create_store(self.source_history_store.clone());
 
-        
         RSpaceExporterInstance::traverse_history(
             start_path,
             skip,

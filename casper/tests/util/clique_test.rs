@@ -1,8 +1,9 @@
 // See casper/src/test/scala/coop/rchain/casper/util/CliqueTest.scala
 
-use casper::rust::util::clique::Clique;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+
+use casper::rust::util::clique::Clique;
 
 struct CliqueTest;
 

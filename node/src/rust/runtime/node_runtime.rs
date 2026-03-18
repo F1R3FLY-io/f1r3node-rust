@@ -1,17 +1,19 @@
 // See node/src/main/scala/coop/rchain/node/runtime/NodeRuntime.scala
 
-use casper::rust::errors::CasperError;
-use comm::rust::peer_node::NodeIdentifier;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+
+use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::errors::CasperError;
+use comm::rust::peer_node::NodeIdentifier;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use crate::rust::{configuration::NodeConf, effects::node_discover, node_environment};
-
-use casper::rust::blocks::proposer::proposer::ProposerResult;
+use crate::rust::configuration::NodeConf;
+use crate::rust::effects::node_discover;
+use crate::rust::node_environment;
 
 type ProposerQueueEntry = (
     Arc<dyn casper::rust::casper::Casper + Send + Sync>,
@@ -66,15 +68,14 @@ impl NodeRuntime {
     /// # Arguments
     /// * `node_conf` - Node configuration
     /// * `id` - Node identifier derived from TLS certificate
-    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self {
-        Self { node_conf, id }
-    }
+    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self { Self { node_conf, id } }
 
     /// Main node entry point
     ///
     /// Initializes all node subsystems and starts the main runtime loop.
     ///
-    /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
+    /// Returns `Ok(())` on successful node shutdown, or an error if
+    /// initialization fails
     pub async fn main(&self) -> eyre::Result<()> {
         info!("NodeRuntime.main() called");
 
@@ -97,8 +98,9 @@ impl NodeRuntime {
 
         // Create transport client
         let transport = {
-            use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
             use std::collections::HashMap;
+
+            use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
 
             let channels_map = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
@@ -152,7 +154,8 @@ impl NodeRuntime {
             self.node_conf.peers_discovery.heartbeat_batch_size as usize,
         );
 
-        // Wrap RPConf in RPConfCell for shared mutable access (allows dynamic IP updates)
+        // Wrap RPConf in RPConfCell for shared mutable access (allows dynamic IP
+        // updates)
         let rp_conf_cell = comm::rust::rp::rp_conf::RPConfCell::new(rp_conf.clone());
 
         // Create requested blocks tracking
@@ -502,7 +505,8 @@ impl NodeRuntime {
         let mut critical_tasks: JoinSet<NamedTaskResult> = JoinSet::new();
 
         // === CRITICAL TASKS: Tier 1 - Server Infrastructure ===
-        // All server failures are critical - if a server dies, the node cannot function properly
+        // All server failures are critical - if a server dies, the node cannot function
+        // properly
 
         info!("Starting critical server tasks...");
 
@@ -521,7 +525,8 @@ impl NodeRuntime {
         );
 
         // Node discovery loop (Tier 3: Supportive)
-        // Start BEFORE wait_for_first_connection so it can help establish the first connection
+        // Start BEFORE wait_for_first_connection so it can help establish the first
+        // connection
         let nd_clone = node_discovery.clone();
         let rp_conn_clone = rp_connections.clone();
         let rp_conf_cell_clone = rp_conf_cell.clone();
@@ -540,7 +545,8 @@ impl NodeRuntime {
         });
 
         // Clear connections loop (Tier 3: Supportive)
-        // Start BEFORE wait_for_first_connection to match Scala connectivityStream behavior
+        // Start BEFORE wait_for_first_connection to match Scala connectivityStream
+        // behavior
         let rp_conn_clone2 = rp_connections.clone();
         let rp_conf_cell_clone2 = rp_conf_cell.clone();
         let transport_clone2 = transport.clone();
@@ -559,8 +565,9 @@ impl NodeRuntime {
         });
 
         // Wait for first connection (unless standalone)
-        // This runs in parallel with the connectivity tasks above (Transport Server, Kademlia Server,
-        // Node Discovery Loop, Clear Connections Loop), matching Scala's connectivityStream behavior
+        // This runs in parallel with the connectivity tasks above (Transport Server,
+        // Kademlia Server, Node Discovery Loop, Clear Connections Loop),
+        // matching Scala's connectivityStream behavior
         if !self.node_conf.standalone {
             info!("Waiting for first connection...");
             wait_for_first_connection(rp_connections.clone()).await?;
@@ -570,8 +577,9 @@ impl NodeRuntime {
         }
 
         // Engine initialization (Tier 2: Critical - runs once)
-        // started it as a separate task because it is not a long-running task and we want to keep the critical tasks separate.
-        // Also running it as a separate task avoids warning log that critical task should run forever.
+        // started it as a separate task because it is not a long-running task and we
+        // want to keep the critical tasks separate. Also running it as a
+        // separate task avoids warning log that critical task should run forever.
         let mut engine_init_handler = Some(tokio::spawn(async move {
             info!("Running engine initialization...");
             match engine_init().await {
@@ -597,7 +605,8 @@ impl NodeRuntime {
             run_update_fork_choice_loop(update_fork_choice_loop).await
         });
 
-        // Mergeable channels GC loop (Tier 2: Critical - runs indefinitely when enabled)
+        // Mergeable channels GC loop (Tier 2: Critical - runs indefinitely when
+        // enabled)
         if let Some(gc_loop) = mergeable_channels_gc_loop {
             spawn_named_task(
                 &mut critical_tasks,
@@ -634,7 +643,8 @@ impl NodeRuntime {
                     100, // max_parallel_blocks - match Scala parallelism
                 );
 
-                // BlockProcessorInstance::create spawns the processing task and returns a result receiver
+                // BlockProcessorInstance::create spawns the processing task and returns a
+                // result receiver
                 match instance.create() {
                     Ok(mut result_rx) => {
                         // Drain results (we're just logging for now)
@@ -680,7 +690,8 @@ impl NodeRuntime {
                     Ok(mut result_rx) => {
                         // Drain results (logged inside proposer_instance)
                         while let Some(_result) = result_rx.recv().await {
-                            // Results are already logged inside ProposerInstance
+                            // Results are already logged inside
+                            // ProposerInstance
                         }
                         info!("Proposer instance completed");
                         Ok(())
@@ -855,7 +866,8 @@ impl NodeRuntime {
         }
 
         // Step 2: Perform resource cleanup (metrics, logging, etc.)
-        // Block store cleanup happens automatically via Drop when block_store goes out of scope
+        // Block store cleanup happens automatically via Drop when block_store goes out
+        // of scope
         match Self::perform_shutdown_cleanup().await {
             Ok(_) => info!("Resource cleanup completed successfully"),
             Err(e) => {
@@ -874,9 +886,10 @@ impl NodeRuntime {
     /// - Stops metrics reporters (stubbed - coming in separate PR)
     /// - Logs shutdown messages
     ///
-    /// Note: Block store cleanup is handled automatically by Rust's Drop implementation
-    /// when variables go out of scope. This matches Scala's approach which relies on
-    /// Resource finalizers rather than explicit close() calls.
+    /// Note: Block store cleanup is handled automatically by Rust's Drop
+    /// implementation when variables go out of scope. This matches Scala's
+    /// approach which relies on Resource finalizers rather than explicit
+    /// close() calls.
     async fn perform_shutdown_cleanup() -> eyre::Result<()> {
         info!("Starting shutdown cleanup...");
 
@@ -1070,7 +1083,8 @@ async fn clear_connections_loop(
         };
 
         // Clear connections: heartbeats, ConnectionsCell update, Kademlia removal
-        // (with bootstrap pinning), and gRPC disconnect — all handled inside clear_connections.
+        // (with bootstrap pinning), and gRPC disconnect — all handled inside
+        // clear_connections.
         match comm::rust::rp::connect::clear_connections(
             &connections,
             &rp_conf,
@@ -1131,8 +1145,8 @@ async fn clear_connections_loop(
 
 /// Wait for the first peer connection
 ///
-/// Polls the connections cell every second until at least one connection exists.
-/// Only called when not in standalone mode.
+/// Polls the connections cell every second until at least one connection
+/// exists. Only called when not in standalone mode.
 async fn wait_for_first_connection(
     connections: comm::rust::rp::connect::ConnectionsCell,
 ) -> eyre::Result<()> {
@@ -1192,8 +1206,8 @@ async fn run_update_fork_choice_loop(update_fork_choice_loop: CasperLoop) -> eyr
 /// Run the mergeable channels garbage collection loop indefinitely
 ///
 /// Periodically garbage collects mergeable channel data for blocks that are
-/// provably unreachable. Required for multi-parent mode to prevent early deletion.
-/// Errors are logged but don't stop the loop.
+/// provably unreachable. Required for multi-parent mode to prevent early
+/// deletion. Errors are logged but don't stop the loop.
 async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()> {
     tracing::info!("Mergeable channels GC loop started");
     loop {
@@ -1210,7 +1224,8 @@ async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()>
     }
 }
 
-/// Helper function to await gRPC server task completion with proper error wrapping
+/// Helper function to await gRPC server task completion with proper error
+/// wrapping
 ///
 /// Wraps a gRPC server `JoinHandle` to provide:
 /// - Named server identification in logs
@@ -1222,7 +1237,8 @@ async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()>
 /// * `server_name` - Human-readable name for logging
 ///
 /// # Returns
-/// Returns `Ok(())` if server completes successfully, or an error if it fails/panics
+/// Returns `Ok(())` if server completes successfully, or an error if it
+/// fails/panics
 async fn await_server_task(
     handle: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     server_name: &str,
@@ -1248,7 +1264,8 @@ async fn await_server_task(
     }
 }
 
-/// Helper function to await HTTP server task completion with proper error wrapping
+/// Helper function to await HTTP server task completion with proper error
+/// wrapping
 ///
 /// Wraps an HTTP server `JoinHandle` to provide:
 /// - Named server identification in logs
@@ -1260,7 +1277,8 @@ async fn await_server_task(
 /// * `server_name` - Human-readable name for logging
 ///
 /// # Returns
-/// Returns `Ok(())` if server completes successfully, or an error if it fails/panics
+/// Returns `Ok(())` if server completes successfully, or an error if it
+/// fails/panics
 async fn await_http_server_task(
     handle: tokio::task::JoinHandle<Result<(), eyre::Error>>,
     server_name: &str,
@@ -1298,7 +1316,8 @@ async fn await_http_server_task(
 /// * `node_conf` - Node configuration
 ///
 /// # Returns
-/// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
+/// Returns `Ok(())` on successful node shutdown, or an error if initialization
+/// fails
 pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Starting RChain node runtime...");
 
@@ -1324,11 +1343,10 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
 /// * `program` - The async program to run
 ///
 /// # Returns
-/// Returns `Ok(())` on successful completion, or logs the error and exits with code 1
+/// Returns `Ok(())` on successful completion, or logs the error and exits with
+/// code 1
 async fn handle_unrecoverable_errors<F>(program: F) -> eyre::Result<()>
-where
-    F: Future<Output = eyre::Result<()>>,
-{
+where F: Future<Output = eyre::Result<()>> {
     match program.await {
         Ok(_) => {
             info!("Node program completed successfully. Exiting.");

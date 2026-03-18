@@ -2,12 +2,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose, Engine as _};
-use p256::{
-    elliptic_curve::sec1::ToEncodedPoint,
-    pkcs8::{DecodePrivateKey, EncodePrivateKey},
-    PublicKey as P256PublicKey, SecretKey as P256SecretKey,
-};
+use base64::engine::general_purpose;
+use base64::Engine as _;
+use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
+use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
 use rand::rngs::OsRng;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use x509_certificate::X509Certificate;
@@ -35,22 +34,26 @@ pub enum CertificateError {
     RcgenError(#[from] rcgen::Error),
 }
 
-/// CertificateHelper provides functionality for secp256r1 certificates and F1r3fly peer identity
+/// CertificateHelper provides functionality for secp256r1 certificates and
+/// F1r3fly peer identity
 pub struct CertificateHelper;
 
 impl CertificateHelper {
     /// The elliptic curve name used by F1r3fly
     pub const ELLIPTIC_CURVE_NAME: &'static str = "secp256r1";
 
-    /// Validate that a public key uses the expected elliptic curve (secp256r1/P-256)
+    /// Validate that a public key uses the expected elliptic curve
+    /// (secp256r1/P-256)
     ///
-    /// In Rust with p256::PublicKey, we know it's always P-256/secp256r1 by type,
-    /// but we should still validate the key is well-formed and on the correct curve.
+    /// In Rust with p256::PublicKey, we know it's always P-256/secp256r1 by
+    /// type, but we should still validate the key is well-formed and on the
+    /// correct curve.
     pub fn is_expected_elliptic_curve(public_key: &P256PublicKey) -> bool {
         // Validate the public key is well-formed by trying to get its encoded point
         let encoded_point = public_key.to_encoded_point(false);
 
-        // Should be 65 bytes: 0x04 prefix + 32-byte x + 32-byte y for uncompressed P-256
+        // Should be 65 bytes: 0x04 prefix + 32-byte x + 32-byte y for uncompressed
+        // P-256
         if encoded_point.len() != 65 {
             return false;
         }
@@ -60,16 +63,19 @@ impl CertificateHelper {
             return false;
         }
 
-        // Try to create a new PublicKey from the SEC1 encoding to validate it's on the curve
-        // This validates that the point actually lies on the secp256r1 curve
+        // Try to create a new PublicKey from the SEC1 encoding to validate it's on the
+        // curve This validates that the point actually lies on the secp256r1
+        // curve
         use p256::elliptic_curve::sec1::FromEncodedPoint;
         let ct_option = P256PublicKey::from_encoded_point(&encoded_point);
 
-        // CtOption is a constant-time Option equivalent - check if it contains a valid value
+        // CtOption is a constant-time Option equivalent - check if it contains a valid
+        // value
         ct_option.is_some().into()
     }
 
-    /// Compute the public address from a secp256r1 public key using F1r3fly's algorithm
+    /// Compute the public address from a secp256r1 public key using F1r3fly's
+    /// algorithm
     ///
     /// Algorithm:
     /// 1. Extract x,y coordinates from EC public key (32 bytes each)
@@ -171,18 +177,21 @@ impl CertificateHelper {
 
     /// Generate a new secp256r1 key pair
     ///
-    /// When useNonBlockingRandom is true, uses a non-blocking random source (equivalent to /dev/urandom)
-    /// When false, uses a blocking secure random source (equivalent to /dev/random)
-    /// See crypto/src/main/scala/coop/rchain/crypto/util/SecureRandomUtil.scala
+    /// When useNonBlockingRandom is true, uses a non-blocking random source
+    /// (equivalent to /dev/urandom) When false, uses a blocking secure
+    /// random source (equivalent to /dev/random) See crypto/src/main/scala/
+    /// coop/rchain/crypto/util/SecureRandomUtil.scala
     pub fn generate_key_pair(use_non_blocking_random: bool) -> (P256SecretKey, P256PublicKey) {
         let secret_key = if use_non_blocking_random {
-            // Non-blocking random: equivalent to Scala's SecureRandomUtil.secureRandomNonBlocking
-            // Uses ThreadRng which is non-blocking and fast (similar to /dev/urandom)
+            // Non-blocking random: equivalent to Scala's
+            // SecureRandomUtil.secureRandomNonBlocking Uses ThreadRng which is
+            // non-blocking and fast (similar to /dev/urandom)
             use rand::thread_rng;
             P256SecretKey::random(&mut thread_rng())
         } else {
             // Blocking random: equivalent to Scala's new SecureRandom()
-            // Uses OsRng which is cryptographically secure but may block (similar to /dev/random)
+            // Uses OsRng which is cryptographically secure but may block (similar to
+            // /dev/random)
             P256SecretKey::random(&mut OsRng)
         };
 
@@ -447,7 +456,8 @@ impl CertificatePrinter {
     }
 
     /// Format a private key as PEM string from P256SecretKey
-    /// Corresponds to CertificatePrinter.printPrivateKey(keyPair.getPrivate) in Scala
+    /// Corresponds to CertificatePrinter.printPrivateKey(keyPair.getPrivate) in
+    /// Scala
     pub fn print_private_key_from_secret(
         secret_key: &P256SecretKey,
     ) -> Result<String, CertificateError> {

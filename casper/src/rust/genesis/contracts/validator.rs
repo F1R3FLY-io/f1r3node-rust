@@ -1,4 +1,5 @@
-// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/Validator.scala
+// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/Validator.
+// scala
 
 use crypto::rust::public_key::PublicKey;
 

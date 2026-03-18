@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
+use models::rhoapi::connective::ConnectiveInstance;
+
 use super::free_context::FreeContext;
 use super::id_context::{IdContextPos, IdContextSpan};
-use models::rhoapi::connective::ConnectiveInstance;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FreeMap<T: Clone> {
@@ -22,9 +24,7 @@ impl<T: Clone> FreeMap<T> {
     }
 
     pub fn get(&self, name: &str) -> Option<FreeContext<T>>
-    where
-        T: Clone,
-    {
+    where T: Clone {
         self.level_bindings.get(name).cloned()
     }
 
@@ -33,14 +33,11 @@ impl<T: Clone> FreeMap<T> {
         let (name, typ, source_span) = binding;
 
         let mut new_level_bindings = self.level_bindings.clone();
-        new_level_bindings.insert(
-            name,
-            FreeContext {
-                level: self.next_level,
-                typ,
-                source_span,
-            },
-        );
+        new_level_bindings.insert(name, FreeContext {
+            level: self.next_level,
+            typ,
+            source_span,
+        });
 
         FreeMap {
             next_level: self.next_level + 1,
@@ -77,7 +74,8 @@ impl<T: Clone> FreeMap<T> {
         new_free_map
     }
 
-    /// Returns the new map, and a list of the shadowed variables with their spans
+    /// Returns the new map, and a list of the shadowed variables with their
+    /// spans
     pub fn merge(
         &self,
         free_map: FreeMap<T>,
@@ -85,14 +83,11 @@ impl<T: Clone> FreeMap<T> {
         let (acc_env, shadowed) = free_map.level_bindings.into_iter().fold(
             (self.level_bindings.clone(), Vec::new()),
             |(mut acc_env, mut shadowed), (name, free_context)| {
-                acc_env.insert(
-                    name.clone(),
-                    FreeContext {
-                        level: free_context.level + self.next_level,
-                        typ: free_context.typ,
-                        source_span: free_context.source_span,
-                    },
-                );
+                acc_env.insert(name.clone(), FreeContext {
+                    level: free_context.level + self.next_level,
+                    typ: free_context.typ,
+                    source_span: free_context.source_span,
+                });
 
                 (acc_env, {
                     if self.level_bindings.contains_key(&name) {
@@ -149,17 +144,11 @@ impl<T: Clone> FreeMap<T> {
         }
     }
 
-    pub fn count(&self) -> usize {
-        self.next_level + self.wildcards.len() + self.connectives.len()
-    }
+    pub fn count(&self) -> usize { self.next_level + self.wildcards.len() + self.connectives.len() }
 
-    pub fn count_no_wildcards(&self) -> usize {
-        self.next_level
-    }
+    pub fn count_no_wildcards(&self) -> usize { self.next_level }
 }
 
 impl<T: Clone> Default for FreeMap<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

@@ -4,14 +4,14 @@
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
-use shared::rust::ByteVector;
 use shared::rust::store::key_value_store::KeyValueStore;
+use shared::rust::ByteVector;
 
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_action::{HistoryAction, HistoryActionTrait};
-use crate::rspace::history::radix_tree::{Node, RadixTreeImpl, empty_node, hash_node};
+use crate::rspace::history::radix_tree::{empty_node, hash_node, Node, RadixTreeImpl};
 
 pub struct RadixHistory {
     root_hash: Blake2b256Hash,
@@ -54,7 +54,7 @@ impl RadixHistory {
 
     pub fn empty_root_node_hash() -> Blake2b256Hash {
         let node_hash_bytes = hash_node(&empty_node()).0;
-        
+
         Blake2b256Hash::from_bytes(node_hash_bytes)
     }
 

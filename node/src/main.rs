@@ -1,24 +1,26 @@
+use std::path::PathBuf;
+
 use casper::rust::util::comm::deploy_runtime::DeployRuntime;
 use casper::rust::util::comm::grpc_deploy_service::GrpcDeployService;
 use casper::rust::util::comm::grpc_propose_service::GrpcProposeService;
-use clap::{error::ErrorKind, CommandFactory, Parser};
-use crypto::rust::{
-    private_key::PrivateKey, signatures::secp256k1::Secp256k1,
-    signatures::signatures_alg::SignaturesAlg, util::key_util::KeyUtil,
-};
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::util::key_util::KeyUtil;
 use eyre::Result;
-use node::rust::configuration::commandline::options::{GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT};
+use node::rust::configuration::commandline::options::{
+    OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
+};
 use node::rust::configuration::config_check::{
     check_host, check_ports, load_private_key_from_file,
 };
-use node::rust::configuration::{
-    commandline::options::OptionsSubCommand, KamonConf, NodeConf, Options, Profile,
-};
+use node::rust::configuration::{KamonConf, NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
-use std::path::PathBuf;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -56,7 +58,8 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
-        // we should not bother about blocking calls in this case since we are expecting consecutive execution
+        // we should not bother about blocking calls in this case since we are expecting
+        // consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
     }
@@ -67,14 +70,16 @@ fn main() -> Result<()> {
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
     // Create merged configuration from CLI options and config file
-    let default_dir = std::env::var("DEFAULT_DIR").map(|path| PathBuf::from(path))
+    let default_dir = std::env::var("DEFAULT_DIR")
+        .map(PathBuf::from)
         .or_else(|_| std::env::current_dir().map(|path| path.join("node/src/main/resources")))?;
 
     let (node_conf, profile, config_file, kamon_conf) =
         node::rust::configuration::builder::build(&default_dir, options)?;
 
-    // Set system property for data directory (equivalent to Scala's System.setProperty)
-    // SAFETY: This is called early in node startup before spawning threads that read env vars
+    // Set system property for data directory (equivalent to Scala's
+    // System.setProperty) SAFETY: This is called early in node startup before
+    // spawning threads that read env vars
     unsafe {
         std::env::set_var(
             "RNODE_DATA_DIR",
@@ -316,7 +321,8 @@ fn generate_key(
     Ok(())
 }
 
-/// Get private key from either direct key or file path (equivalent to Scala's getPrivateKey)
+/// Get private key from either direct key or file path (equivalent to Scala's
+/// getPrivateKey)
 fn get_private_key(
     maybe_private_key: Option<PrivateKey>,
     maybe_private_key_path: Option<PathBuf>,

@@ -8,9 +8,7 @@ pub struct Clique;
 
 impl Clique {
     pub fn find_maximum_clique_by_weight<A>(edges: &[(A, A)], weights: &HashMap<A, i64>) -> i64
-    where
-        A: Eq + Hash + Clone + Ord,
-    {
+    where A: Eq + Hash + Clone + Ord {
         let max_weight = weights.values().max().cloned().unwrap_or(0);
         Self::find_cliques_recursive(edges)
             .iter()
@@ -32,9 +30,7 @@ impl Clique {
 
     // e is a list of undirected edges
     pub fn find_cliques_recursive<A>(e: &[(A, A)]) -> Vec<Vec<A>>
-    where
-        A: Eq + Hash + Clone,
-    {
+    where A: Eq + Hash + Clone {
         let adj = Self::get_adj(e);
 
         fn expand<A>(
@@ -115,9 +111,7 @@ impl Clique {
 
     // e is a list of undirected edges
     fn get_node_set<A>(e: &[(A, A)]) -> HashSet<A>
-    where
-        A: Eq + Hash + Clone,
-    {
+    where A: Eq + Hash + Clone {
         e.iter()
             .flat_map(|it| vec![it.0.clone(), it.1.clone()])
             .collect()
@@ -125,9 +119,7 @@ impl Clique {
 
     // e is a list of undirected edges
     fn get_adj<A>(e: &[(A, A)]) -> HashMap<A, HashSet<A>>
-    where
-        A: Eq + Hash + Clone,
-    {
+    where A: Eq + Hash + Clone {
         let directed_edges: Vec<(A, A)> = e
             .iter()
             .flat_map(|it| vec![(it.0.clone(), it.1.clone()), (it.1.clone(), it.0.clone())])

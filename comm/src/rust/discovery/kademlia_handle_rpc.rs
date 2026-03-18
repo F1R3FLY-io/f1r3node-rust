@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use prost::bytes::Bytes;
 
-use crate::rust::{errors::CommError, peer_node::PeerNode};
-
 use super::kademlia_store::KademliaStore;
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
 
 /// Metrics source for discovery kademlia handlers
 const METRICS_SOURCE: &str = "discovery.kademlia";

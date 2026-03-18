@@ -1,3 +1,27 @@
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::hash::keccak256::Keccak256;
+use crypto::rust::hash::sha_256::Sha256Hasher;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::ed25519::Ed25519;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
+use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rust::casper::protocol::casper_message;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::rholang::implicits::single_expr;
+use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
+use shared::rust::{BitSet, Byte};
+
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
@@ -12,31 +36,9 @@ use super::rho_type::{
     RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
-use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::hash::keccak256::Keccak256;
-use crypto::rust::hash::sha_256::Sha256Hasher;
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::ed25519::Ed25519;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
-use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
-use models::rust::casper::protocol::casper_message;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::rholang::implicits::single_expr;
-use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
-use shared::rust::BitSet;
-use shared::rust::Byte;
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
-// NOTE: Not implementing Logger
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.
+// scala NOTE: Not implementing Logger
 pub type RhoSysFunction = Box<
     dyn Fn(
             (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -57,9 +59,7 @@ pub struct InvalidBlocks {
 }
 
 impl Default for InvalidBlocks {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl InvalidBlocks {
@@ -85,117 +85,61 @@ pub fn byte_name(b: Byte) -> Par {
 pub struct FixedChannels;
 
 impl FixedChannels {
-    pub fn stdout() -> Par {
-        byte_name(0)
-    }
+    pub fn stdout() -> Par { byte_name(0) }
 
-    pub fn stdout_ack() -> Par {
-        byte_name(1)
-    }
+    pub fn stdout_ack() -> Par { byte_name(1) }
 
-    pub fn stderr() -> Par {
-        byte_name(2)
-    }
+    pub fn stderr() -> Par { byte_name(2) }
 
-    pub fn stderr_ack() -> Par {
-        byte_name(3)
-    }
+    pub fn stderr_ack() -> Par { byte_name(3) }
 
-    pub fn ed25519_verify() -> Par {
-        byte_name(4)
-    }
+    pub fn ed25519_verify() -> Par { byte_name(4) }
 
-    pub fn sha256_hash() -> Par {
-        byte_name(5)
-    }
+    pub fn sha256_hash() -> Par { byte_name(5) }
 
-    pub fn keccak256_hash() -> Par {
-        byte_name(6)
-    }
+    pub fn keccak256_hash() -> Par { byte_name(6) }
 
-    pub fn blake2b256_hash() -> Par {
-        byte_name(7)
-    }
+    pub fn blake2b256_hash() -> Par { byte_name(7) }
 
-    pub fn secp256k1_verify() -> Par {
-        byte_name(8)
-    }
+    pub fn secp256k1_verify() -> Par { byte_name(8) }
 
-    pub fn get_block_data() -> Par {
-        byte_name(10)
-    }
+    pub fn get_block_data() -> Par { byte_name(10) }
 
-    pub fn get_invalid_blocks() -> Par {
-        byte_name(11)
-    }
+    pub fn get_invalid_blocks() -> Par { byte_name(11) }
 
-    pub fn vault_address() -> Par {
-        byte_name(12)
-    }
+    pub fn vault_address() -> Par { byte_name(12) }
 
-    pub fn deployer_id_ops() -> Par {
-        byte_name(13)
-    }
+    pub fn deployer_id_ops() -> Par { byte_name(13) }
 
-    pub fn reg_lookup() -> Par {
-        byte_name(14)
-    }
+    pub fn reg_lookup() -> Par { byte_name(14) }
 
-    pub fn reg_insert_random() -> Par {
-        byte_name(15)
-    }
+    pub fn reg_insert_random() -> Par { byte_name(15) }
 
-    pub fn reg_insert_signed() -> Par {
-        byte_name(16)
-    }
+    pub fn reg_insert_signed() -> Par { byte_name(16) }
 
-    pub fn reg_ops() -> Par {
-        byte_name(17)
-    }
+    pub fn reg_ops() -> Par { byte_name(17) }
 
-    pub fn sys_authtoken_ops() -> Par {
-        byte_name(18)
-    }
+    pub fn sys_authtoken_ops() -> Par { byte_name(18) }
 
-    pub fn gpt4() -> Par {
-        byte_name(20)
-    }
+    pub fn gpt4() -> Par { byte_name(20) }
 
-    pub fn dalle3() -> Par {
-        byte_name(21)
-    }
+    pub fn dalle3() -> Par { byte_name(21) }
 
-    pub fn text_to_audio() -> Par {
-        byte_name(22)
-    }
+    pub fn text_to_audio() -> Par { byte_name(22) }
 
-    pub fn grpc_tell() -> Par {
-        byte_name(25)
-    }
+    pub fn grpc_tell() -> Par { byte_name(25) }
 
-    pub fn dev_null() -> Par {
-        byte_name(26)
-    }
+    pub fn dev_null() -> Par { byte_name(26) }
 
-    pub fn abort() -> Par {
-        byte_name(27)
-    }
+    pub fn abort() -> Par { byte_name(27) }
 
-    pub fn ollama_chat() -> Par {
-        byte_name(28)
-    }
+    pub fn ollama_chat() -> Par { byte_name(28) }
 
-    pub fn ollama_generate() -> Par {
-        byte_name(29)
-    }
+    pub fn ollama_generate() -> Par { byte_name(29) }
 
-    pub fn ollama_models() -> Par {
-        byte_name(30)
-    }
+    pub fn ollama_models() -> Par { byte_name(30) }
 
-    pub fn deploy_data() -> Par {
-        byte_name(31)
-    }
+    pub fn deploy_data() -> Par { byte_name(31) }
 }
 
 pub struct BodyRefs;
@@ -952,12 +896,10 @@ impl SystemProcesses {
             .await
         {
             Ok(_) => Ok(vec![]),
-            Err(e) => {
-                Err(InterpreterError::NonDeterministicProcessFailure {
-                    cause: Box::new(e),
-                    output_not_produced: vec![],
-                })
-            }
+            Err(e) => Err(InterpreterError::NonDeterministicProcessFailure {
+                cause: Box::new(e),
+                output_not_produced: vec![],
+            }),
         }
     }
 
@@ -1152,7 +1094,8 @@ impl SystemProcesses {
                             client_port as u64
                         };
 
-                        // Use GrpcClientService abstraction for proper NoOp handling on observer nodes
+                        // Use GrpcClientService abstraction for proper NoOp handling on observer
+                        // nodes
                         match self
                             .grpc_client_service
                             .tell(&client_host, port, &notification_payload)
@@ -1238,12 +1181,14 @@ impl SystemProcesses {
     }
 
     /*
-     * The following functions below can be removed once rust-casper calls create_rho_runtime.
-     * Until then, they must remain in the rholang directory to avoid circular dependencies.
+     * The following functions below can be removed once rust-casper calls
+     * create_rho_runtime. Until then, they must remain in the rholang
+     * directory to avoid circular dependencies.
      */
 
     // See casper/src/test/scala/coop/rchain/casper/helper/TestResultCollector.scala
-    // TODO remove this once Rust node will be completed ( this stuff already moved under Casper, double check related files)
+    // TODO remove this once Rust node will be completed ( this stuff already moved
+    // under Casper, double check related files)
     pub async fn handle_message(
         &self,
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1417,7 +1362,8 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.
+    // scala
 
     pub async fn secp256k1_sign(
         &mut self,
@@ -1461,7 +1407,8 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.
+    // scala
 
     pub async fn sys_auth_token_make(
         &mut self,
@@ -1535,7 +1482,8 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/CasperInvalidBlocksContract.scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/
+    // CasperInvalidBlocksContract.scala
 
     pub async fn casper_invalid_blocks_set(
         &self,
@@ -1721,9 +1669,8 @@ impl IsComparison {
         if let Some(expr) = single_expr(&p) {
             match expr.expr_instance.unwrap() {
                 ExprInstance::ETupleBody(etuple) => match etuple.ps.as_slice() {
-                    [expected_par, operator_par, actual_par] => {
-                        RhoString::unapply(operator_par).map(|operator| (expected_par.clone(), operator, actual_par.clone()))
-                    }
+                    [expected_par, operator_par, actual_par] => RhoString::unapply(operator_par)
+                        .map(|operator| (expected_par.clone(), operator, actual_par.clone())),
                     _ => None,
                 },
 

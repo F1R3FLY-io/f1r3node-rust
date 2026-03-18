@@ -1,18 +1,16 @@
 // See comm/src/test/scala/coop/rchain/comm/transport/StreamHandlerSpec.scala
 
-use comm::rust::{
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    transport::{
-        chunker::Chunker,
-        stream_handler::{Circuit, StreamError, StreamHandler},
-        transport_layer::Blob,
-    },
-};
+use std::sync::Arc;
+
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::transport::chunker::Chunker;
+use comm::rust::transport::stream_handler::{Circuit, StreamError, StreamHandler};
+use comm::rust::transport::transport_layer::Blob;
 use futures::stream;
 use models::routing::{Chunk, Packet};
 use prost::bytes::Bytes;
-use rand::{rngs::StdRng, Rng, SeedableRng};
-use std::sync::Arc;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use tokio_stream::Stream;
 
 const NETWORK_ID: &str = "test";
@@ -185,14 +183,16 @@ mod stream_handler_spec {
         .await;
 
         // then
-        // The circuit breaker may cause either MaxSizeReached or NotFullMessage depending on timing
+        // The circuit breaker may cause either MaxSizeReached or NotFullMessage
+        // depending on timing
         match err {
             StreamError::MaxSizeReached => {
                 // Direct circuit breaker error
             }
             StreamError::NotFullMessage { .. } => {
-                // Circuit breaker stopped processing, resulting in incomplete message
-                // This is also a valid outcome for mid-stream circuit breaking
+                // Circuit breaker stopped processing, resulting in incomplete
+                // message This is also a valid outcome for
+                // mid-stream circuit breaking
             }
             other => {
                 panic!(
@@ -285,9 +285,7 @@ mod stream_handler_spec {
 
     /// Handle a stream and expect success
     async fn handle_stream<S>(stream: S) -> comm::rust::transport::messages::StreamMessage
-    where
-        S: Stream<Item = Chunk> + Unpin,
-    {
+    where S: Stream<Item = Chunk> + Unpin {
         let cache = Arc::new(dashmap::DashMap::new());
         StreamHandler::handle_stream(stream, never_break, &cache)
             .await

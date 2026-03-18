@@ -1,12 +1,14 @@
-use axum::{extract::State, response::Json, routing::get, Router};
-use serde::Serialize;
 use std::collections::HashSet;
+
+use axum::extract::State;
+use axum::response::Json;
+use axum::routing::get;
+use axum::Router;
+use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::rust::web::{
-    shared_handlers::{AppError, AppState},
-    version_info::get_version_info_str,
-};
+use crate::rust::web::shared_handlers::{AppError, AppState};
+use crate::rust::web::version_info::get_version_info_str;
 pub struct StatusInfo;
 
 #[derive(Debug, Serialize, ToSchema)]

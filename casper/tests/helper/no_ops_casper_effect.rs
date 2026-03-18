@@ -1,32 +1,27 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/NoOpsCasperEffect.scala
 
-use crate::util::test_mocks::MockKeyValueStore;
-use async_trait::async_trait;
-use casper::rust::validator_identity::ValidatorIdentity;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation},
-    key_value_block_store::KeyValueBlockStore,
-};
-use casper::rust::{
-    block_status::{BlockError, InvalidBlock, ValidBlock},
-    casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper},
-    errors::CasperError,
-    util::rholang::runtime_manager::RuntimeManager,
-};
+use async_trait::async_trait;
+use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
+use casper::rust::errors::CasperError;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::{
-    block_hash::{BlockHash, BlockHashSerde},
-    block_implicits::get_random_block_default,
-    block_metadata::BlockMetadata,
-    casper::protocol::casper_message::{BlockMessage, DeployData},
-    validator::Validator,
-};
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_implicits::get_random_block_default;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+
+use crate::util::test_mocks::MockKeyValueStore;
 
 pub struct NoOpsCasperEffect {
     estimator_func: Vec<BlockHash>,
@@ -42,11 +37,13 @@ pub struct NoOpsCasperEffect {
 unsafe impl Send for NoOpsCasperEffect {}
 unsafe impl Sync for NoOpsCasperEffect {}
 
-// For testing purposes, we'll implement Clone manually by creating stub instances
+// For testing purposes, we'll implement Clone manually by creating stub
+// instances
 impl Clone for NoOpsCasperEffect {
     fn clone(&self) -> Self {
-        // Create a clone that shares the same underlying storage so that blocks added to one instance
-        // are visible to cloned instances (which is necessary for the engine tests to work)
+        // Create a clone that shares the same underlying storage so that blocks added
+        // to one instance are visible to cloned instances (which is necessary
+        // for the engine tests to work)
 
         // Create new KeyValueBlockStore with shared underlying storage
         // Note: We need to share the underlying data between clones for tests to work
@@ -75,7 +72,8 @@ impl Clone for NoOpsCasperEffect {
 
 impl NoOpsCasperEffect {
     pub fn new(
-        _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
+        _blocks: Option<HashMap<BlockHash, BlockMessage>>, /* No longer used - blocks stored in
+                                                            * actual KeyValueBlockStore */
         estimator_func: Option<Vec<BlockHash>>,
         runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
@@ -107,7 +105,8 @@ impl NoOpsCasperEffect {
     }
 
     /// Create NoOpsCasperEffect with externally provided shared kvm data
-    /// This ensures all storages use the SAME kvm (like Scala's InMemoryStoreManager)
+    /// This ensures all storages use the SAME kvm (like Scala's
+    /// InMemoryStoreManager)
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
         runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
@@ -115,8 +114,8 @@ impl NoOpsCasperEffect {
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     ) -> Self {
-        // Use the provided shared kvm data for BOTH block store and approved block store
-        // This matches Scala's behavior where all storages share one kvm
+        // Use the provided shared kvm data for BOTH block store and approved block
+        // store This matches Scala's behavior where all storages share one kvm
         let block_store = KeyValueBlockStore::new(
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
@@ -154,9 +153,7 @@ impl NoOpsCasperEffect {
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-        Ok(())
-    }
+    async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
 
     fn normalized_initial_fault(
         &self,
@@ -173,50 +170,41 @@ impl MultiParentCasper for NoOpsCasperEffect {
         Ok(self.block_dag_storage.clone())
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore {
-        &self.block_store
-    }
+    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-    fn get_validator(&self) -> Option<ValidatorIdentity> {
-        None
-    }
+    fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
-    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
-        todo!()
-    }
+    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
 
     fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
         self.runtime_manager.clone()
     }
 
-    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
-        Ok(false)
-    }
+    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
 }
 
 #[async_trait]
 impl Casper for NoOpsCasperEffect {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
-            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
+            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for \
+             heartbeat tests"
+                .to_string(),
         ))
     }
 
     fn contains(&self, hash: &BlockHash) -> bool {
-        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test logic)
+        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test
+        // logic)
         match self.block_store.get(hash) {
             Ok(maybe_block) => maybe_block.is_some(),
             Err(_) => false,
         }
     }
 
-    fn dag_contains(&self, _hash: &BlockHash) -> bool {
-        false
-    }
+    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
 
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool {
-        false
-    }
+    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
     fn deploy(
         &self,
@@ -232,13 +220,9 @@ impl Casper for NoOpsCasperEffect {
         Ok(self.estimator_func.clone())
     }
 
-    fn get_version(&self) -> i64 {
-        1
-    }
+    fn get_version(&self) -> i64 { 1 }
 
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        Ok(Vec::new())
-    }
+    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
 
     async fn validate(
         &self,
@@ -286,18 +270,22 @@ impl Casper for NoOpsCasperEffect {
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         // For test purposes, this is not used by our tests but we need to implement it
-        // In a real implementation, this would return the actual approved block from storage
+        // In a real implementation, this would return the actual approved block from
+        // storage
         Err(CasperError::RuntimeError(
             "get_approved_block not implemented for NoOpsCasperEffect test helper".to_string(),
         ))
     }
 }
 
-// Additional test-friendly methods for compatibility with the old MockCasper API
+// Additional test-friendly methods for compatibility with the old MockCasper
+// API
 impl NoOpsCasperEffect {
-    /// Add a block to the actual KeyValueBlockStore (preserving Scala test logic)
+    /// Add a block to the actual KeyValueBlockStore (preserving Scala test
+    /// logic)
     pub fn add_block_to_store(&mut self, block: BlockMessage) {
-        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap fallback
+        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap
+        // fallback
         match self.block_store.put_block_message(&block) {
             Ok(_) => {
                 tracing::debug!(
@@ -309,11 +297,13 @@ impl NoOpsCasperEffect {
         }
     }
 
-    /// Add block to DAG storage and update latest messages (like Scala blockDagStorage.insert)
+    /// Add block to DAG storage and update latest messages (like Scala
+    /// blockDagStorage.insert)
     pub fn add_to_dag(&mut self, block_hash: BlockHash) {
         use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
-        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
+        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala
+        // test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
             self.block_dag_storage.dag_set.insert(block_hash.clone());
@@ -397,10 +387,12 @@ impl NoOpsCasperEffect {
         }
     }
 
-    /// Insert block to both block store and DAG (matches Scala blockDagStorage.insert pattern)
+    /// Insert block to both block store and DAG (matches Scala
+    /// blockDagStorage.insert pattern)
     ///
-    /// This method provides a more Scala-like API that combines storage and DAG operations
-    /// matching the pattern: blockDagStorage.insert(block, approved)
+    /// This method provides a more Scala-like API that combines storage and DAG
+    /// operations matching the pattern: blockDagStorage.insert(block,
+    /// approved)
     pub fn insert_block(&mut self, block: BlockMessage, approved: bool) {
         // First add to block store
         self.add_block_to_store(block.clone());

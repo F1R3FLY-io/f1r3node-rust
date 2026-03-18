@@ -1,88 +1,75 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeSyntax.scala
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    future::Future,
-    mem,
-    sync::OnceLock,
-    time::Instant,
-};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
+use std::mem;
+use std::sync::OnceLock;
+use std::time::Instant;
 
-use crypto::rust::{
-    hash::blake2b512_random::Blake2b512Random, public_key::PublicKey, signatures::signed::Signed,
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{
+    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
-use models::{
-    rhoapi::{
-        expr::ExprInstance, g_unforgeable::UnfInstance, tagged_continuation::TaggedCont,
-        BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
-    },
-    rust::{
-        block::state_hash::StateHash,
-        block_hash::BlockHash,
-        casper::{
-            pretty_printer::PrettyPrinter,
-            protocol::casper_message::{
-                Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
-            },
-        },
-        normalizer_env::normalizer_env_from_deploy,
-        par_map_type_mapper::ParMapTypeMapper,
-        par_set_type_mapper::ParSetTypeMapper,
-        sorted_par_hash_set::SortedParHashSet,
-        sorted_par_map::SortedParMap,
-        utils::new_freevar_par,
-        validator::Validator,
-    },
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    accounting::has_cost::HasCost,
-    compiler::compiler::Compiler,
-    env::Env,
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    merging::rholang_merging_logic::RholangMergingLogic,
-    rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl},
-    system_processes::{BlockData, DeployData as SystemProcessDeployData},
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::sorted_par_hash_set::SortedParHashSet;
+use models::rust::sorted_par_map::SortedParMap;
+use models::rust::utils::new_freevar_par;
+use models::rust::validator::Validator;
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::has_cost::HasCost;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::system_processes::{
+    BlockData, DeployData as SystemProcessDeployData,
 };
-use rspace_plus_plus::rspace::{
-    hashing::{blake2b256_hash::Blake2b256Hash, stable_hash_provider},
-    history::{instances::radix_history::RadixHistory, Either},
-    merger::merging_logic::NumberChannelsEndVal,
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
-use crate::rust::{
-    errors::CasperError,
-    metrics_constants::{
-        BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
-        BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
-    },
-    rholang::types::eval_collector::EvalCollector,
-    util::{
-        construct_deploy, event_converter,
-        rholang::{
-            costacc::{
-                close_block_deploy::CloseBlockDeploy, pre_charge_deploy::PreChargeDeploy,
-                refund_deploy::RefundDeploy, slash_deploy::SlashDeploy,
-            },
-            interpreter_util,
-            system_deploy::SystemDeployTrait,
-            system_deploy_result::SystemDeployResult,
-            system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError},
-            system_deploy_util,
-            tools::Tools,
-        },
-    },
+use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
+use crate::rust::rholang::types::eval_collector::EvalCollector;
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
+use crate::rust::util::rholang::system_deploy_user_error::{
+    SystemDeployPlatformFailure, SystemDeployUserError,
+};
+use crate::rust::util::rholang::tools::Tools;
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
+use crate::rust::util::{construct_deploy, event_converter};
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self {
-        Self { runtime }
-    }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
 }
 
 #[allow(type_alias_bounds)]
@@ -99,8 +86,9 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
 
 impl RuntimeOps {
     /**
-     * Because of the history legacy, the emptyStateHash does not really represent an empty trie.
-     * The `emptyStateHash` is used as genesis block pre state which the state only contains registry
+     * Because of the history legacy, the emptyStateHash does not really
+     * represent an empty trie. The `emptyStateHash` is used as genesis
+     * block pre state which the state only contains registry
      * fixed channels in the state.
      */
     pub async fn empty_state_hash(&mut self) -> Result<StateHash, CasperError> {
@@ -111,10 +99,12 @@ impl RuntimeOps {
         Ok(checkpoint.root.bytes().into())
     }
 
-    /* Compute state with deploys (genesis block) and System deploys (regular block) */
+    /* Compute state with deploys (genesis block) and System deploys (regular
+     * block) */
 
     /**
-     * Evaluates deploys and System deploys with checkpoint to get final state hash
+     * Evaluates deploys and System deploys with checkpoint to get final
+     * state hash
      */
     pub async fn compute_state(
         &mut self,
@@ -227,12 +217,15 @@ impl RuntimeOps {
                     return Err(CasperError::RuntimeError(format!(
                         "Unexpected system error during play of system deploy: {}",
                         error_msg
-                    )))
+                    )));
                 }
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
                 } => {
-                    return Err(CasperError::RuntimeError("Unreachable code path. This is likely caused by a bug in the runtime.".to_string()))
+                    return Err(CasperError::RuntimeError(
+                        "Unreachable code path. This is likely caused by a bug in the runtime."
+                            .to_string(),
+                    ));
                 }
             }
         }
@@ -285,7 +278,8 @@ impl RuntimeOps {
     /* Deploy evaluators */
 
     /**
-     * Evaluates deploys on root hash with checkpoint to get final state hash
+     * Evaluates deploys on root hash with checkpoint to get final state
+     * hash
      */
     pub async fn play_deploys_for_state(
         &mut self,
@@ -318,7 +312,8 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_deploys_for_state.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "play_deploys_for_state.mem step={} rss_kb={} delta_prev_kb={} \
+                     delta_total_kb={}",
                     step,
                     curr,
                     curr as i64 - prev as i64,
@@ -363,7 +358,8 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates deploys on root hash with checkpoint to get final state hash
+     * Evaluates deploys on root hash with checkpoint to get final state
+     * hash
      */
     pub async fn play_deploys_for_genesis(
         &mut self,
@@ -385,7 +381,8 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
+     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund
+     * calls)
      */
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
@@ -417,7 +414,8 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_deploy_with_cost_accounting.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "play_deploy_with_cost_accounting.mem step={} rss_kb={} delta_prev_kb={} \
+                     delta_total_kb={}",
                     step,
                     curr,
                     curr as i64 - prev as i64,
@@ -519,7 +517,8 @@ impl RuntimeOps {
 
                     Either::Left(error) => {
                         // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
+                        // Include deploy identifiers so operators can quickly isolate toxic
+                        // deploys.
                         let refund_amount = pd.refund_amount();
                         let failure_context = format!(
                             "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
@@ -638,8 +637,9 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge proposing.
-                // Keep behavior deterministic by selecting the maximum observed numeric value.
+                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
+                // proposing. Keep behavior deterministic by selecting the
+                // maximum observed numeric value.
                 let num = ch_values
                     .iter()
                     .map(|datum| {
@@ -775,7 +775,8 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_system_deploy_internal.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "play_system_deploy_internal.mem deploy_type={} step={} rss_kb={} \
+                     delta_prev_kb={} delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -840,7 +841,8 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "eval_system_deploy.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "eval_system_deploy.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} \
+                     delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -1153,7 +1155,8 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "evaluate_system_source.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "evaluate_system_source.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} \
+                     delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -1168,7 +1171,8 @@ impl RuntimeOps {
         };
         log_mem_step("start");
 
-        // Using tracing events for async - Span[F].traceI("evaluate-system-source") from Scala
+        // Using tracing events for async - Span[F].traceI("evaluate-system-source")
+        // from Scala
         tracing::debug!(target: "f1r3fly.casper.evaluate-system-source", "evaluate-system-source-started");
         let eval_start = Instant::now();
         log_mem_step("before_build_env");
@@ -1248,7 +1252,8 @@ impl RuntimeOps {
 
         if validators_pars.is_empty() {
             tracing::warn!(
-                "No result from getActiveValidators query for state {}; treating as no active validators",
+                "No result from getActiveValidators query for state {}; treating as no active \
+                 validators",
                 PrettyPrinter::build_string_bytes(start_hash)
             );
             return Ok(Vec::new());
@@ -1347,22 +1352,21 @@ impl RuntimeOps {
             _ => SortedParHashSet::create_from_empty(),
         };
 
-        ps
-            .map_iter(|v| {
-                if v.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Validator in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else {
-                    match v.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GByteArray in validator data".to_string(),
-                        )),
-                    }
+        ps.map_iter(|v| {
+            if v.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Validator in bonds map wasn't a single string.".to_string(),
+                ))
+            } else {
+                match v.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GByteArray in validator data".to_string(),
+                    )),
                 }
-            })
-            .collect::<Result<Vec<_>, _>>()
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
     }
 
     fn to_bond_vec(bonds_map: Par) -> Result<Vec<Bond>, CasperError> {
@@ -1375,37 +1379,36 @@ impl RuntimeOps {
             _ => SortedParMap::create_from_empty(),
         };
 
-        ps
-            .map_iter(|(validator, bond)| {
-                if validator.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Validator in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else if bond.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Stake in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else {
-                    let validator_name = match validator.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GByteArray in validator data".to_string(),
-                        )),
-                    }?;
+        ps.map_iter(|(validator, bond)| {
+            if validator.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Validator in bonds map wasn't a single string.".to_string(),
+                ))
+            } else if bond.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Stake in bonds map wasn't a single string.".to_string(),
+                ))
+            } else {
+                let validator_name = match validator.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GByteArray in validator data".to_string(),
+                    )),
+                }?;
 
-                    let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GInt(g_int) => Ok(*g_int),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GInt in stake data".to_string(),
-                        )),
-                    }?;
+                let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GInt in stake data".to_string(),
+                    )),
+                }?;
 
-                    Ok(Bond {
-                        validator: validator_name,
-                        stake: stake_amount,
-                    })
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()
+                Ok(Bond {
+                    validator: validator_name,
+                    stake: stake_amount,
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
     }
 }

@@ -1,19 +1,19 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PLetNormalizer.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/processes/PLetNormalizer.scala
 
-use super::exports::InterpreterError;
-use crate::rust::interpreter::compiler::{
-    exports::{ProcVisitInputs, ProcVisitOutputs},
-    normalize::normalize_ann_proc,
-    span_utils::SpanContext,
-};
-use models::rhoapi::Par;
 use std::collections::HashMap;
-use uuid::Uuid;
 
+use models::rhoapi::Par;
 use rholang_parser::ast::{
     AnnProc, Bind, Id, LetBinding, Name, NameDecl, Names, SendType, Source, Var,
 };
 use rholang_parser::SourceSpan;
+use uuid::Uuid;
+
+use super::exports::InterpreterError;
+use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::span_utils::SpanContext;
 
 pub fn normalize_p_let<'ast>(
     bindings: &'ast smallvec::SmallVec<[LetBinding<'ast>; 1]>,
@@ -25,9 +25,10 @@ pub fn normalize_p_let<'ast>(
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
     if concurrent {
-        // RHOLANG-RS IMPROVEMENT: Could use semantic naming based on actual variable names
-        // e.g., "__let_x_0_L5C10" for variable 'x' at binding index 0, line 5, col 10
-        // This would extract name hints from lhs.name for Single bindings and lhs for Multiple
+        // RHOLANG-RS IMPROVEMENT: Could use semantic naming based on actual variable
+        // names e.g., "__let_x_0_L5C10" for variable 'x' at binding index 0,
+        // line 5, col 10 This would extract name hints from lhs.name for Single
+        // bindings and lhs for Multiple
         let variable_names: Vec<String> = (0..bindings.len())
             .map(|_| Uuid::new_v4().to_string())
             .collect();
@@ -70,7 +71,8 @@ pub fn normalize_p_let<'ast>(
                     let_span // Fallback to let construct span
                 };
                 let variable_span = SpanContext::variable_span_from_binding(rhs_span, i);
-                // RHOLANG-RS IMPROVEMENT: Could use SpanContext::send_span_from_binding for better accuracy
+                // RHOLANG-RS IMPROVEMENT: Could use SpanContext::send_span_from_binding for
+                // better accuracy
                 let send_span = SpanContext::synthetic_construct_span(rhs_span, 10); // Offset to mark as send
 
                 // Create send: variable_name!(rhs[0], rhs[1], ...)
@@ -124,9 +126,10 @@ pub fn normalize_p_let<'ast>(
                 input_binds.push(smallvec::SmallVec::from_vec(vec![bind]));
             } else {
                 // Multiple binding
-                // RHOLANG-RS IMPROVEMENT: For Multiple bindings, lhs is Var<'ast>, not AnnName<'ast>
-                // Could extract precise position from Var::Id(id) => id.pos, vs Var::Wildcard (no position)
-                // Currently deriving from first rhs, but should distinguish between these cases
+                // RHOLANG-RS IMPROVEMENT: For Multiple bindings, lhs is Var<'ast>, not
+                // AnnName<'ast> Could extract precise position from Var::Id(id)
+                // => id.pos, vs Var::Wildcard (no position) Currently deriving
+                // from first rhs, but should distinguish between these cases
                 let lhs_span = rhs.first().map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
                 let variable_span = SpanContext::variable_span_from_binding(lhs_span, i);
 
@@ -135,7 +138,8 @@ pub fn normalize_p_let<'ast>(
 
                 // Add wildcards for remaining values if rhs has more than lhs names
                 // RHOLANG-RS LIMITATION: Var::Wildcard has no position data in rholang-rs
-                // Our wildcard_span_with_context approach is actually optimal given this constraint
+                // Our wildcard_span_with_context approach is actually optimal given this
+                // constraint
                 while names.len() < rhs.len() {
                     names.push(Name::NameVar(Var::Wildcard));
                 }
@@ -290,8 +294,9 @@ pub fn normalize_p_let<'ast>(
             // becomes: match [rhs1, rhs2, ...] { [x, _, _, ...] => body }
 
             // RHOLANG-RS IMPROVEMENT: Could leverage lhs position data more precisely
-            // For Var::Id(id), use id.pos directly; for Var::Wildcard, no position available
-            // Currently using first rhs as context, but could be more semantic
+            // For Var::Id(id), use id.pos directly; for Var::Wildcard, no position
+            // available Currently using first rhs as context, but could be more
+            // semantic
             let lhs_span = rhs.first().map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
             let rhs_list_span = if rhs.len() > 1 {
                 SpanContext::merge_two_spans(rhs[0].span, rhs[rhs.len() - 1].span)
@@ -367,8 +372,9 @@ pub fn normalize_p_let<'ast>(
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn test_translate_single_declaration_into_match_process() {
@@ -557,9 +563,10 @@ mod tests {
 
     #[test]
     fn test_translate_sequential_declarations_into_nested_matches() {
+        use rholang_parser::SourceSpan;
+
         use super::*;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::SourceSpan;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();

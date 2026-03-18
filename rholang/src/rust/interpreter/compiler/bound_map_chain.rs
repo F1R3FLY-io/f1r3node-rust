@@ -74,17 +74,11 @@ impl<T: Clone> BoundMapChain<T> {
         BoundMapChain { chain: new_chain }
     }
 
-    pub fn get_count(&self) -> usize {
-        self.chain.first().map_or(0, |map| map.get_count())
-    }
+    pub fn get_count(&self) -> usize { self.chain.first().map_or(0, |map| map.get_count()) }
 
-    pub fn depth(&self) -> usize {
-        self.chain.len() - 1
-    }
+    pub fn depth(&self) -> usize { self.chain.len() - 1 }
 }
 
 impl<T: Clone> Default for BoundMapChain<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

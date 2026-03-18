@@ -1,6 +1,8 @@
 extern crate tonic_prost_build;
 
-use std::{env, path::Path, process::Command};
+use std::env;
+use std::path::Path;
+use std::process::Command;
 
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
@@ -38,15 +40,12 @@ fn main() {
         .btree_map(".")
         .message_attribute(".", "#[repr(C)]")
         .bytes(".")
-        .compile_protos(
-            &proto_files,
-            &[
-                proto_src_dir.clone(),
-                proto_src_models_dir.clone(),
-                manifest_dir.clone(),
-                scala_proto_base_dir.clone(),
-            ],
-        )
+        .compile_protos(&proto_files, &[
+            proto_src_dir.clone(),
+            proto_src_models_dir.clone(),
+            manifest_dir.clone(),
+            scala_proto_base_dir.clone(),
+        ])
         .expect("Failed to compile proto files");
 
     let git_hash = Command::new("git")

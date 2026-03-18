@@ -1,38 +1,31 @@
-// See casper/src/test/scala/coop/rchain/casper/merging/MergeNumberChannelSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/merging/MergeNumberChannelSpec.
+// scala
 
-use futures::future::join_all;
 use std::collections::HashMap;
 
-use casper::rust::{
-    merging::{
-        block_index, conflict_set_merger, dag_merger, deploy_chain_index::DeployChainIndex,
-        deploy_index::DeployIndex,
-    },
-    rholang::runtime::RuntimeOps,
-    util::{event_converter, rholang::runtime_manager::RuntimeManager},
-};
+use casper::rust::merging::deploy_chain_index::DeployChainIndex;
+use casper::rust::merging::deploy_index::DeployIndex;
+use casper::rust::merging::{block_index, conflict_set_merger, dag_merger};
+use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::event_converter;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use futures::future::join_all;
+use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    g_unforgeable::UnfInstance, BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par,
-    TaggedContinuation,
+    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    merging::rholang_merging_logic::RholangMergingLogic,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    rho_type::RhoNumber,
-};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    hot_store_trie_action::HotStoreTrieAction,
-    merger::{
-        channel_change::ChannelChange,
-        event_log_index::EventLogIndex,
-        merging_logic::{self, NumberChannelsDiff},
-        state_change::StateChange,
-        state_change_merger,
-    },
-};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::RhoNumber;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
+use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
+use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
 use crate::util::rholang::resources::mk_runtime_manager;
@@ -83,9 +76,7 @@ new return in {
 }
 "#;
 
-fn par_rho(ori: &str, append_rho: &str) -> String {
-    format!("{}|{}", ori, append_rho)
-}
+fn par_rho(ori: &str, append_rho: &str) -> String { format!("{}|{}", ori, append_rho) }
 
 fn make_sig(hex: &str) -> Vec<u8> {
     let hex_str = if hex.starts_with("0x") {
@@ -96,9 +87,7 @@ fn make_sig(hex: &str) -> Vec<u8> {
     hex::decode(hex_str).unwrap()
 }
 
-fn make_sig_pb(hex: &str) -> prost::bytes::Bytes {
-    prost::bytes::Bytes::from(make_sig(hex))
-}
+fn make_sig_pb(hex: &str) -> prost::bytes::Bytes { prost::bytes::Bytes::from(make_sig(hex)) }
 
 fn base_rho_seed() -> Blake2b512Random {
     let bytes: [u8; 128] = [1; 128];

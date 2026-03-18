@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
-use crate::rust::configuration::model::{NodeConf, TlsConf};
-use comm::rust::{peer_node::NodeIdentifier, transport::generate_certificate_if_absent};
+use comm::rust::peer_node::NodeIdentifier;
+use comm::rust::transport::generate_certificate_if_absent;
 use crypto::rust::util::certificate_helper::CertificateHelper;
-
 use tokio::{fs, io};
 use tracing::{error, info};
+
+use crate::rust::configuration::model::{NodeConf, TlsConf};
 
 /// Create a NodeIdentifier from the given configuration
 ///
@@ -57,11 +58,14 @@ fn certificate_public_key_to_node_name(public_key: Vec<u8>) -> eyre::Result<Stri
 
 fn can_create_data_dir(data_dir: &Path) -> eyre::Result<()> {
     if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir)
-            .map_err(|e| eyre::eyre!(format!(
-                "The data dir must be a directory and have read and write permissions:\n{}\nError: {}",
-                data_dir.display(), e
-            )))?;
+        std::fs::create_dir_all(data_dir).map_err(|e| {
+            eyre::eyre!(format!(
+                "The data dir must be a directory and have read and write \
+                 permissions:\n{}\nError: {}",
+                data_dir.display(),
+                e
+            ))
+        })?;
     }
     Ok(())
 }

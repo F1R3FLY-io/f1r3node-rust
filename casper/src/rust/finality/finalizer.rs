@@ -5,29 +5,37 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata, validator::Validator};
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::validator::Validator;
 use shared::rust::env;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::safety::clique_oracle::CliqueOracle;
 
-/// Block can be recorded as last finalized block (LFB) if Safety oracle outputs fault tolerance (FT)
-/// for this block greater then some predefined threshold. This is defined by [`CliqueOracle::compute_output`]
-/// function, which requires some target block as input arg.
+/// Block can be recorded as last finalized block (LFB) if Safety oracle outputs
+/// fault tolerance (FT) for this block greater then some predefined threshold.
+/// This is defined by [`CliqueOracle::compute_output`] function, which requires
+/// some target block as input arg.
 ///
-/// Therefore: Finalizer has a scope of search, defined by tips and previous LFB - each of this blocks can be next LFB.
+/// Therefore: Finalizer has a scope of search, defined by tips and previous LFB
+/// - each of this blocks can be next LFB.
 ///
-/// We know that LFB advancement is not necessary continuous, next LFB might not be direct child of current one.
+/// We know that LFB advancement is not necessary continuous, next LFB might not
+/// be direct child of current one.
 ///
-/// Therefore: we cannot start from current LFB children and traverse DAG from the bottom to the top, calculating FT
-/// for each block. Also its computationally ineffective.
+/// Therefore: we cannot start from current LFB children and traverse DAG from
+/// the bottom to the top, calculating FT for each block. Also its
+/// computationally ineffective.
 ///
-/// But we know that scope of search for potential next LFB is constrained. Block A can be finalized only
-/// if it has more then half of total stake in bonds map of A translated from tips throughout main parent chain.
-/// IMPORTANT: only main parent relation gives weight to potentially finalized block.
+/// But we know that scope of search for potential next LFB is constrained.
+/// Block A can be finalized only if it has more then half of total stake in
+/// bonds map of A translated from tips throughout main parent chain. IMPORTANT:
+/// only main parent relation gives weight to potentially finalized block.
 ///
 /// Therefore: Finalizer should seek for next LFB going through 2 steps:
-///   1. Find messages in scope of search that have more then half of the stake translated through main parent chain
+///   1. Find messages in scope of search that have more then half of the stake
+///      translated through main parent chain
 ///     from tips down to the message.
 ///   2. Execute [`CliqueOracle::compute_output`] on these targets.
 ///   3. First message passing FT threshold becomes the next LFB.
@@ -117,7 +125,8 @@ impl Finalizer {
         )
     }
 
-    /// weight map as per message, look inside [`CliqueOracle::get_corresponding_weight_map`] description for more info
+    /// weight map as per message, look inside
+    /// [`CliqueOracle::get_corresponding_weight_map`] description for more info
     async fn message_weight_map_f(
         message: &BlockMetadata,
         dag: &KeyValueDagRepresentation,
@@ -125,7 +134,8 @@ impl Finalizer {
         CliqueOracle::get_corresponding_weight_map(&message.block_hash, dag).await
     }
 
-    /// If more then half of total stake agree on message - it is considered to be safe from orphaning.
+    /// If more then half of total stake agree on message - it is considered to
+    /// be safe from orphaning.
     pub fn cannot_be_orphaned(
         message_weight_map: &WeightMap,
         agreeing_weight_map: &WeightMap,
@@ -138,7 +148,8 @@ impl Finalizer {
         let active_stake_total: i64 = message_weight_map.values().sum();
         let active_stake_agreeing: i64 = agreeing_weight_map.values().sum();
 
-        // in theory if each stake is high enough, e.g. i64::MAX, sum of them might result in negative value
+        // in theory if each stake is high enough, e.g. i64::MAX, sum of them might
+        // result in negative value
         assert!(
             active_stake_total > 0,
             "Long overflow when computing total stake"
@@ -152,7 +163,8 @@ impl Finalizer {
     }
 
     /// Cheap upper bound on FT without clique search.
-    /// Since max clique weight <= sum(agreeing stake), this is a safe prune bound.
+    /// Since max clique weight <= sum(agreeing stake), this is a safe prune
+    /// bound.
     fn fault_tolerance_upper_bound(
         message_weight_map: &WeightMap,
         agreeing_weight_map: &WeightMap,
@@ -165,13 +177,15 @@ impl Finalizer {
         (agreeing_stake * 2.0 - total_stake) / total_stake
     }
 
-    /// Create an agreement given validator that agrees on a message and weight map of a message.
-    /// If validator is not present in message bonds map or its stake is zero, None is returned
+    /// Create an agreement given validator that agrees on a message and weight
+    /// map of a message. If validator is not present in message bonds map
+    /// or its stake is zero, None is returned
     fn record_agreement(
         message_weight_map: &WeightMap,
         agreeing_validator: &Validator,
     ) -> Option<(Validator, i64)> {
-        // if validator is not bonded according to message weight map - there is no agreement translated.
+        // if validator is not bonded according to message weight map - there is no
+        // agreement translated.
         let stake_agreed = message_weight_map
             .get(agreeing_validator)
             .copied()
@@ -184,7 +198,8 @@ impl Finalizer {
     }
 
     /// Find the highest finalized message.
-    /// Scope of the search is constrained by the lowest height (height of current last finalized message).
+    /// Scope of the search is constrained by the lowest height (height of
+    /// current last finalized message).
     pub async fn run<F, Fut>(
         dag: &KeyValueDagRepresentation,
         fault_tolerance_threshold: f32,
@@ -214,19 +229,21 @@ impl Finalizer {
          * Stream of agreements passed down from all latest messages to main parents.
          * Starts with agreements of latest message on themselves.
          *
-         * The goal here is to create stream of agreements breadth first, so on each step agreements by all
-         * validator are recorded, and only after that next level of main parents is visited.
+         * The goal here is to create stream of agreements breadth first, so on each
+         * step agreements by all validator are recorded, and only after that
+         * next level of main parents is visited.
          */
         let lms = dag.latest_messages()?;
         let latest_messages_count = lms.len();
 
-        // sort latest messages by agreeing validator to ensure random ordering does not change output
+        // sort latest messages by agreeing validator to ensure random ordering does not
+        // change output
         let mut sorted_latest_messages: Vec<(Validator, BlockMetadata)> = lms.into_iter().collect();
         sorted_latest_messages.sort_by(|(v1, _), (v2, _)| v1.cmp(v2));
 
         // Step 1: Traverse agreement layers and aggregate agreements per target block.
-        // This avoids materializing a large stream of duplicate (message, weight-map, agreement)
-        // tuples that would later be deduplicated by block hash.
+        // This avoids materializing a large stream of duplicate (message, weight-map,
+        // agreement) tuples that would later be deduplicated by block hash.
         let mut aggregated_agreements: HashMap<
             BlockHash,
             (BlockMetadata, SharedWeightMap, WeightMap),

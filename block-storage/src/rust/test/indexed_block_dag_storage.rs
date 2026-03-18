@@ -1,16 +1,18 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/IndexedBlockDagStorage.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
+// IndexedBlockDagStorage.scala
 
-use dashmap::DashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use models::rust::{block_hash::BlockHash, casper::protocol::casper_message::BlockMessage};
+use dashmap::DashMap;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::dag::{
-    block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation},
-    equivocation_tracker_store::EquivocationTrackerStore,
+use crate::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
+use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,

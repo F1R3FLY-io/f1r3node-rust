@@ -15,7 +15,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{Level, event};
+use tracing::{event, Level};
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::{HistoryRepositoryError, RSpaceError};
@@ -23,18 +23,18 @@ use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
 use super::logging::BasicLogger;
-use super::r#match::Match;
 use super::metrics_constants::{
     CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, REVERT_SOFT_CHECKPOINT_SPAN,
     RSPACE_METRICS_SOURCE,
 };
+use super::r#match::Match;
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
+use super::trace::event::{Consume, Event, IOEvent, Produce, COMM};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -92,7 +92,11 @@ where
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
-        event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
+        event!(
+            Level::DEBUG,
+            mark = "started-create-checkpoint",
+            "create_checkpoint"
+        );
         let mem_profile_enabled = block_creator_phase_substep_profile_enabled();
         let read_rss_kb = || -> Option<u64> {
             let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -159,7 +163,11 @@ where
         log_mem_step("after_restore_installs");
 
         // Mark the completion of create-checkpoint
-        event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
+        event!(
+            Level::DEBUG,
+            mark = "finished-create-checkpoint",
+            "create_checkpoint"
+        );
         log_mem_step("finish");
 
         Ok(Checkpoint {
@@ -534,7 +542,11 @@ where
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-consume") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
+        event!(
+            Level::DEBUG,
+            mark = "started-locked-consume",
+            "locked_consume"
+        );
 
         // println!("\nHit locked_consume");
         // println!(
@@ -542,7 +554,14 @@ where
         // {:?}>",     patterns, channels
         // );
 
-        self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+        self.log_consume(
+            consume_ref,
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+        );
 
         let channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         // println!("\nchannel_to_indexed_data: {:?}", channel_to_indexed_data);
@@ -587,11 +606,19 @@ where
                 //     "consume: data found for <patterns: {:?}> at <channels: {:?}>",
                 //     patterns, channels
                 // );
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                event!(
+                    Level::DEBUG,
+                    mark = "finished-locked-consume",
+                    "locked_consume"
+                );
                 Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
             }
             None => {
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                event!(
+                    Level::DEBUG,
+                    mark = "finished-locked-consume",
+                    "locked_consume"
+                );
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 Ok(None)
             }
@@ -626,7 +653,11 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
+        event!(
+            Level::DEBUG,
+            mark = "started-locked-produce",
+            "locked_produce"
+        );
 
         // println!("\nHit locked_produce");
         let grouped_channels = self.store.get_joins(&channel);
@@ -646,7 +677,11 @@ where
 
         match extracted {
             Some(produce_candidate) => {
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                event!(
+                    Level::DEBUG,
+                    mark = "finished-locked-produce",
+                    "locked_produce"
+                );
                 Ok(self
                     .process_match_found(produce_candidate)
                     .map(|consume_result| {
@@ -654,7 +689,11 @@ where
                     }))
             }
             None => {
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                event!(
+                    Level::DEBUG,
+                    mark = "finished-locked-produce",
+                    "locked_produce"
+                );
                 Ok(self.store_data(channel, data, persist, produce_ref.clone()))
             }
         }

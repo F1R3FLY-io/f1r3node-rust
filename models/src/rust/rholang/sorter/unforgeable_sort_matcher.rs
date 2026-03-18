@@ -1,11 +1,10 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/UnforgeableSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/
+// UnforgeableSortMatcher.scala
 
-use crate::rhoapi::{g_unforgeable::UnfInstance, GUnforgeable};
-
-use super::{
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
+use crate::rhoapi::g_unforgeable::UnfInstance;
+use crate::rhoapi::GUnforgeable;
 
 pub struct UnforgeableSortMatcher;
 
@@ -17,34 +16,27 @@ impl Sortable<GUnforgeable> for UnforgeableSortMatcher {
                     term: GUnforgeable {
                         unf_instance: Some(UnfInstance::GPrivateBody(gpriv.clone())),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::PRIVATE,
-                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(gpriv.id.clone())],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::PRIVATE, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(gpriv.id.clone()),
+                    ]),
                 },
 
                 UnfInstance::GDeployerIdBody(id) => ScoredTerm {
                     term: GUnforgeable {
                         unf_instance: Some(UnfInstance::GDeployerIdBody(id.clone())),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::DEPLOYER_AUTH,
-                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(
-                            id.public_key.clone(),
-                        )],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOYER_AUTH, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(id.public_key.clone()),
+                    ]),
                 },
 
                 UnfInstance::GDeployIdBody(deploy_id) => ScoredTerm {
                     term: GUnforgeable {
                         unf_instance: Some(UnfInstance::GDeployIdBody(deploy_id.clone())),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::DEPLOY_ID,
-                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(
-                            deploy_id.sig.clone(),
-                        )],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOY_ID, vec![
+                        Tree::<ScoreAtom>::create_leaf_from_bytes(deploy_id.sig.clone()),
+                    ]),
                 },
 
                 UnfInstance::GSysAuthTokenBody(token) => ScoredTerm {

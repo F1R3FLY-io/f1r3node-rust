@@ -1,33 +1,29 @@
-// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala - ParSortMatcherSpec
+// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala -
+// ParSortMatcherSpec
 
+use std::collections::BTreeMap;
+
+use models::create_bit_vector;
 use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
     VarRefBody,
 };
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Connective, ConnectiveBody, EMap, Expr, KeyValuePair, Match, MatchCase, New, Receive,
-    ReceiveBind, VarRef,
+    Connective, ConnectiveBody, EMap, Expr, KeyValuePair, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, VarRef,
 };
 use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::{
     new_boundvar_expr, new_boundvar_par, new_bundle_par, new_ediv_expr_gint, new_eeq_expr_gint,
     new_egt_expr_gbool, new_egte_expr_gbool, new_elt_expr_gint, new_elte_expr_gint, new_emap_par,
     new_emethod_expr, new_eminus_expr_gint, new_emult_expr_gint, new_eneq_expr_gint, new_eor_expr,
     new_eplus_expr_gint, new_eplus_par, new_eplus_par_gint, new_eset_par, new_freevar_expr,
-    new_freevar_par, new_gbool_expr, new_gbool_par, new_gint_par, new_gstring_expr, new_guri_expr,
-    new_key_value_pair, new_new_par, new_send_par, new_wildcard_par,
+    new_freevar_par, new_gbool_expr, new_gbool_par, new_gint_expr, new_gint_par, new_gstring_expr,
+    new_guri_expr, new_key_value_pair, new_new_par, new_send_par, new_wildcard_par,
 };
-use models::{
-    create_bit_vector,
-    rhoapi::Par,
-    rhoapi::Send,
-    rust::{
-        rholang::sorter::{par_sort_matcher::ParSortMatcher, sortable::Sortable},
-        utils::new_gint_expr,
-    },
-};
-use std::collections::BTreeMap;
 
 #[test]
 fn par_should_sort_so_that_smaller_integers_come_first() {
@@ -1033,9 +1029,10 @@ fn par_should_sort_exprs_in_order_of_ground_vars_arithmetic_comparisons_logical(
     let result = ParSortMatcher::sort_match(&par_expr);
 
     assert_eq!(
-    result.term, sorted_par_expr,
-    "Expressions were not sorted in the correct order: ground, vars, arithmetic, comparisons, logical"
-  );
+        result.term, sorted_par_expr,
+        "Expressions were not sorted in the correct order: ground, vars, arithmetic, comparisons, \
+         logical"
+    );
 }
 
 #[test]
@@ -1298,9 +1295,10 @@ fn par_should_sort_logical_connectives_in_varref_bool_int_string_uri_bytearray_o
     let result = ParSortMatcher::sort_match(&par_expr);
 
     assert_eq!(
-    result.term, sorted_par_expr,
-    "Logical connectives were not sorted in 'varref', 'bool', 'int', 'string', 'uri', 'bytearray' order"
-  );
+        result.term, sorted_par_expr,
+        "Logical connectives were not sorted in 'varref', 'bool', 'int', 'string', 'uri', \
+         'bytearray' order"
+    );
 }
 
 #[test]

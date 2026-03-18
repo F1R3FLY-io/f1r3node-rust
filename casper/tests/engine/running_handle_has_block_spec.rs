@@ -1,21 +1,20 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/RunningHandleHasBlockSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/
+// RunningHandleHasBlockSpec.scala
 
-use crate::engine::setup::TestFixture;
+use std::collections::{HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use casper::rust::engine::block_retriever::RequestState;
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use models::{
-    casper::BlockRequestProto,
-    routing::{protocol::Message::Packet, Protocol},
-    rust::{
-        block_hash::BlockHash,
-        casper::protocol::casper_message::{BlockRequest, HasBlock},
-    },
-};
-use prost::{bytes::Bytes, Message};
-use std::{
-    collections::{HashMap, HashSet},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use models::casper::BlockRequestProto;
+use models::routing::protocol::Message::Packet;
+use models::routing::Protocol;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{BlockRequest, HasBlock};
+use prost::bytes::Bytes;
+use prost::Message;
+
+use crate::engine::setup::TestFixture;
 
 const HASH_BYTES: &[u8] = b"hash";
 
@@ -23,7 +22,8 @@ struct TestContext {
     hash: BlockHash,
     hb: HasBlock,
     // Note: Using full TestFixture for convenience, though this test only needs
-    // engine, block_retriever, and transport_layer. The overhead is acceptable for test simplicity.
+    // engine, block_retriever, and transport_layer. The overhead is acceptable for test
+    // simplicity.
     fixture: TestFixture,
 }
 
@@ -55,7 +55,9 @@ impl TestContext {
         }
     }
 
-    // Scala: val br = BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).right.get).get)
+    // Scala: val br =
+    // BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).
+    // right.get).get)
     fn to_block_request(protocol: &Protocol) -> BlockRequest {
         if let Some(message) = &protocol.message {
             if let Packet(packet_data) = message {
@@ -75,10 +77,12 @@ impl TestContext {
             .as_millis() as u64
     }
 
-    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] = kp(kp(Right(())))
-    // Note: Not ported because TransportLayerTestImpl doesn't require setting success responses.
+    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] =
+    // kp(kp(Right(()))) Note: Not ported because TransportLayerTestImpl doesn't
+    // require setting success responses.
 
-    // Scala: private def alwaysDoNotIgnoreF: BlockHash => Task[Boolean] = _ => false.pure[Task]
+    // Scala: private def alwaysDoNotIgnoreF: BlockHash => Task[Boolean] = _ =>
+    // false.pure[Task]
     fn always_do_not_ignore_f(_hash: BlockHash) -> Result<bool, casper::rust::errors::CasperError> {
         Ok(false)
     }
@@ -103,18 +107,15 @@ async fn block_retriever_should_store_on_a_waiting_list_and_dont_request_if_requ
 
     let request_state_before = {
         let mut map = HashMap::new();
-        map.insert(
-            ctx.hash.clone(),
-            RequestState {
-                timestamp: TestContext::current_millis(),
-                initial_timestamp: TestContext::current_millis(),
-                peers: HashSet::new(),
-                received: false,
-                in_casper_buffer: false,
-                waiting_list: vec![other_peer],
-                peer_requery_cursor: 0,
-            },
-        );
+        map.insert(ctx.hash.clone(), RequestState {
+            timestamp: TestContext::current_millis(),
+            initial_timestamp: TestContext::current_millis(),
+            peers: HashSet::new(),
+            received: false,
+            in_casper_buffer: false,
+            waiting_list: vec![other_peer],
+            peer_requery_cursor: 0,
+        });
         map
     };
 
@@ -164,18 +165,15 @@ async fn block_retriever_should_request_block_and_add_peer_to_waiting_list_if_pe
 
     let request_state_before = {
         let mut map = HashMap::new();
-        map.insert(
-            ctx.hash.clone(),
-            RequestState {
-                timestamp: TestContext::current_millis(),
-                initial_timestamp: TestContext::current_millis(),
-                peers: HashSet::new(),
-                received: false,
-                in_casper_buffer: false,
-                waiting_list: vec![],
-                peer_requery_cursor: 0,
-            },
-        );
+        map.insert(ctx.hash.clone(), RequestState {
+            timestamp: TestContext::current_millis(),
+            initial_timestamp: TestContext::current_millis(),
+            peers: HashSet::new(),
+            received: false,
+            in_casper_buffer: false,
+            waiting_list: vec![],
+            peer_requery_cursor: 0,
+        });
         map
     };
 
@@ -311,8 +309,9 @@ async fn running_handle_has_block_should_not_call_send_hash_to_block_receiver_if
 ) {
     let ctx = TestContext::new().await;
     // given
-    // Note: Scala passes null as peer because it's not used when ignore_message_f returns true.
-    // In Rust, we can't pass null for PeerNode, so we create a dummy peer instead.
+    // Note: Scala passes null as peer because it's not used when ignore_message_f
+    // returns true. In Rust, we can't pass null for PeerNode, so we create a
+    // dummy peer instead.
     let dummy_peer = TestContext::peer_node("dummy", 40400);
 
     // when

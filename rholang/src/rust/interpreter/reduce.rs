@@ -1,5 +1,11 @@
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, LazyLock, RwLock};
+use std::task::{Context, Poll};
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -7,15 +13,15 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, Match, MatchCase, New, ParWithRandom,
-    Receive, ReceiveBind, Send, Var,
+    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
+    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New,
+    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
-use models::rhoapi::{ETuple, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_zipper::RholangReadZipper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -26,26 +32,12 @@ use models::rust::utils::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
-use std::collections::{BTreeMap, BTreeSet};
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, LazyLock, RwLock};
-use std::task::{Context, Poll};
-
-use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
-};
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
-use crate::rust::interpreter::rho_type::RhoTuple2;
 
 use super::accounting::_cost;
 use super::accounting::costs::{
-    bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost,
-    bigint_multiplication_cost, bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost,
-    bigrat_comparison_cost, bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
+    bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
+    bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
+    bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
     byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
     method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
@@ -61,10 +53,17 @@ use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
-use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use crate::rust::interpreter::accounting::costs::{
+    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
+    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
+    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+};
+use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::rho_type::RhoTuple2;
 
 /// Minimum remaining stack space (in bytes) before growing.
-/// When the current stack has less than this amount remaining, a new stack segment is allocated.
+/// When the current stack has less than this amount remaining, a new stack
+/// segment is allocated.
 // 128 KB is too small: a single recursion frame in the Rholang interpreter
 // (eval → produce/consume → dispatch → eval) consumes more than 128 KB between
 // stacker checks, so the overflow happens before stacker can grow the stack.
@@ -73,9 +72,7 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
-fn parse_env_flag(value: &str) -> bool {
-    value == "1" || value.eq_ignore_ascii_case("true")
-}
+fn parse_env_flag(value: &str) -> bool { value == "1" || value.eq_ignore_ascii_case("true") }
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
@@ -100,15 +97,16 @@ static REDUCE_OP_PROFILE_ENABLED: LazyLock<bool> =
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
-/// The Rholang interpreter uses deep async recursion: eval → produce/consume → dispatch → eval.
-/// Each poll of this recursive future chain adds stack frames. In debug builds, unoptimized
-/// async state machines consume ~1-2KB per recursion level, causing stack overflow with the
-/// default 2MB thread stack.
+/// The Rholang interpreter uses deep async recursion: eval → produce/consume →
+/// dispatch → eval. Each poll of this recursive future chain adds stack frames.
+/// In debug builds, unoptimized async state machines consume ~1-2KB per
+/// recursion level, causing stack overflow with the default 2MB thread stack.
 ///
-/// `StackGrowingFuture` wraps each recursive entry point (eval, produce, consume, dispatch).
-/// On each poll, `stacker::maybe_grow` checks remaining stack space. If below STACK_RED_ZONE,
-/// it allocates a new STACK_GROW_SIZE segment and runs the poll there. This allows arbitrarily
-/// deep Rholang recursion (e.g., longslow.rho with 32768 iterations) without stack overflow.
+/// `StackGrowingFuture` wraps each recursive entry point (eval, produce,
+/// consume, dispatch). On each poll, `stacker::maybe_grow` checks remaining
+/// stack space. If below STACK_RED_ZONE, it allocates a new STACK_GROW_SIZE
+/// segment and runs the poll there. This allows arbitrarily deep Rholang
+/// recursion (e.g., longslow.rho with 32768 iterations) without stack overflow.
 ///
 /// See: https://github.com/F1R3FLY-io/f1r3node/issues/305
 /// See: https://github.com/F1R3FLY-io/f1r3node/issues/306
@@ -121,8 +119,9 @@ impl<F: Future> Future for StackGrowingFuture<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // SAFETY: Structural pin projection on a single-field struct with no Drop impl.
-        // `inner` is only accessed through this pinned projection, and StackGrowingFuture
-        // does not implement Unpin when F doesn't, preserving pin guarantees.
+        // `inner` is only accessed through this pinned projection, and
+        // StackGrowingFuture does not implement Unpin when F doesn't,
+        // preserving pin guarantees.
         let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
         stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || inner.poll(cx))
     }
@@ -153,11 +152,13 @@ trait Method {
 }
 
 /**
- * Materialize a send in the store, optionally returning the matched continuation.
+ * Materialize a send in the store, optionally returning the matched
+ * continuation.
  *
  * @param chan  The channel on which data is being sent.
  * @param data  The par objects holding the processes being sent.
- * @param persistent  True if the write should remain in the tuplespace indefinitely.
+ * @param persistent  True if the write should remain in the tuplespace
+ * indefinitely.
  */
 impl DebruijnInterpreter {
     pub fn eval<'a>(
@@ -208,7 +209,8 @@ impl DebruijnInterpreter {
                     return;
                 }
                 eprintln!(
-                    "reduce_eval_inner.mem step={} env_level={} terms_len={} errors_len={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "reduce_eval_inner.mem step={} env_level={} terms_len={} errors_len={} \
+                     rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     step,
                     env_level,
                     terms_len.map(|v| v as i64).unwrap_or(-1),
@@ -334,7 +336,8 @@ impl DebruijnInterpreter {
                 });
             if mem_profile_enabled && env_level == 0 {
                 eprintln!(
-                    "reduce_eval_inner.meta step=after_join_all results_len={} results_cap={} ok_count={} err_count={}",
+                    "reduce_eval_inner.meta step=after_join_all results_len={} results_cap={} \
+                     ok_count={} err_count={}",
                     results.len(),
                     results.capacity(),
                     ok_count,
@@ -383,11 +386,13 @@ impl DebruijnInterpreter {
     }
 
     /**
-     * Materialize a send in the store, optionally returning the matched continuation.
+     * Materialize a send in the store, optionally returning the matched
+     * continuation.
      *
      * @param chan  The channel on which data is being sent.
      * @param data  The par objects holding the processes being sent.
-     * @param persistent  True if the write should remain in the tuplespace indefinitely.
+     * @param persistent  True if the write should remain in the tuplespace
+     * indefinitely.
      */
     fn produce<'a>(
         &'a self,
@@ -428,12 +433,9 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=produce_inner step={} persistent={} data_len={} rss_kb={} delta_prev_kb={}",
-                        step,
-                        persistent,
-                        data_len,
-                        curr,
-                        delta
+                        "reduce_op.mem fn=produce_inner step={} persistent={} data_len={} \
+                         rss_kb={} delta_prev_kb={}",
+                        step, persistent, data_len, curr, delta
                     );
                 }
                 op_rss_prev = Some(curr);
@@ -541,14 +543,9 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=consume_inner step={} persistent={} peek={} binds_len={} sources_len={} rss_kb={} delta_prev_kb={}",
-                        step,
-                        persistent,
-                        peek,
-                        binds_len,
-                        sources_len,
-                        curr,
-                        delta
+                        "reduce_op.mem fn=consume_inner step={} persistent={} peek={} \
+                         binds_len={} sources_len={} rss_kb={} delta_prev_kb={}",
+                        step, persistent, peek, binds_len, sources_len, curr, delta
                     );
                 }
                 op_rss_prev = Some(curr);
@@ -587,8 +584,9 @@ impl DebruijnInterpreter {
         drop(space_locked);
         log_op_step("after_space_consume", sources.len());
 
-        // println!("space map in reduce consume: {:?}", self.space.lock().unwrap().to_map());
-        // println!("\nconsume_result in reduce consume: {:?}", consume_result);
+        // println!("space map in reduce consume: {:?}",
+        // self.space.lock().unwrap().to_map()); println!("\nconsume_result in
+        // reduce consume: {:?}", consume_result);
 
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),
@@ -617,7 +615,8 @@ impl DebruijnInterpreter {
     ) -> Result<DispatchType, InterpreterError> {
         // println!("\ncontinue_produce_process");
         // During replay, if the trace shows a failed non-deterministic process,
-        // we cannot replay it - the external service call failed during original execution
+        // we cannot replay it - the external service call failed during original
+        // execution
         if is_replay && trace_failed {
             return Err(InterpreterError::CanNotReplayFailedNonDeterministicProcess);
         }
@@ -890,13 +889,9 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=dispatch_inner step={} is_replay={} data_list_len={} prev_output_len={} rss_kb={} delta_prev_kb={}",
-                        step,
-                        is_replay,
-                        data_list_len,
-                        previous_output_len,
-                        curr,
-                        delta
+                        "reduce_op.mem fn=dispatch_inner step={} is_replay={} data_list_len={} \
+                         prev_output_len={} rss_kb={} delta_prev_kb={}",
+                        step, is_replay, data_list_len, previous_output_len, curr, delta
                     );
                 }
                 op_rss_prev = Some(curr);
@@ -972,8 +967,7 @@ impl DebruijnInterpreter {
             })
             .collect();
 
-        tuple_elms
-            .first() == Some(&self.mergeable_tag_name)
+        tuple_elms.first() == Some(&self.mergeable_tag_name)
     }
 
     fn aggregate_evaluator_errors(
@@ -1049,7 +1043,9 @@ impl DebruijnInterpreter {
                         other
                     ))),
                 },
-                None => Err(InterpreterError::BugFoundError("Undefined term, expr_instance was None".to_string())),
+                None => Err(InterpreterError::BugFoundError(
+                    "Undefined term, expr_instance was None".to_string(),
+                )),
             },
         }
     }
@@ -1057,8 +1053,8 @@ impl DebruijnInterpreter {
     /** Algorithm as follows:
      *
      * 1. Fully evaluate the channel in given environment.
-     * 2. Substitute any variable references in the channel so that it can be
-     *    correctly used as a key in the tuple space.
+     * 2. Substitute any variable references in the channel so that it can
+     *    be correctly used as a key in the tuple space.
      * 3. Evaluate any top level expressions in the data being sent.
      * 4. Call produce
      *
@@ -1087,7 +1083,8 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=eval_send step={} env_level={} send_data_len={} persistent={} rss_kb={} delta_prev_kb={}",
+                        "reduce_op.mem fn=eval_send step={} env_level={} send_data_len={} \
+                         persistent={} rss_kb={} delta_prev_kb={}",
                         step,
                         env.level,
                         send.data.len(),
@@ -1184,7 +1181,9 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=eval_receive step={} env_level={} binds_len={} bind_count={} body_subst_shift={} body_needs_subst={} persistent={} peek={} rss_kb={} delta_prev_kb={}",
+                        "reduce_op.mem fn=eval_receive step={} env_level={} binds_len={} \
+                         bind_count={} body_subst_shift={} body_needs_subst={} persistent={} \
+                         peek={} rss_kb={} delta_prev_kb={}",
                         step,
                         env.level,
                         receive.binds.len(),
@@ -1232,7 +1231,8 @@ impl DebruijnInterpreter {
             .collect::<Result<Vec<_>, InterpreterError>>()?;
         log_op_step("after_build_binds");
 
-        // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
+        // TODO: Allow for the environment to be stored with the body in the Tuplespace
+        // - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(
             receive.body.as_ref().unwrap(),
             0,
@@ -1265,10 +1265,10 @@ impl DebruijnInterpreter {
      * lookup of an unbound variable should be an error.
      *
      * @param valproc The variable to be evaluated
-     * @param env  provides the environment (possibly) containing a binding for the given variable.
-     * @return If the variable has a binding (par), lift the
-     *                  binding into the monadic context, else signal
-     *                  an exception.
+     * @param env  provides the environment (possibly) containing a binding
+     * for the given variable. @return If the variable has a binding
+     * (par), lift the                  binding into the monadic
+     * context, else signal                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
         self.cost.charge(var_eval_cost())?;
@@ -1339,17 +1339,12 @@ impl DebruijnInterpreter {
                                 }
 
                                 Some(free_map) => {
-                                    self
-                                        .eval(
-                                            single_case.source.clone().unwrap(),
-                                            &add_to_env(
-                                                env,
-                                                free_map.clone(),
-                                                single_case.free_count,
-                                            ),
-                                            rand,
-                                        )
-                                        .await?;
+                                    self.eval(
+                                        single_case.source.clone().unwrap(),
+                                        &add_to_env(env, free_map.clone(), single_case.free_count),
+                                        rand,
+                                    )
+                                    .await?;
 
                                     return Ok(());
                                 }
@@ -1372,8 +1367,8 @@ impl DebruijnInterpreter {
     }
 
     /**
-     * Adds neu.bindCount new GPrivate from UUID's to the environment and then
-     * proceeds to evaluate the body.
+     * Adds neu.bindCount new GPrivate from UUID's to the environment and
+     * then proceeds to evaluate the body.
      */
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
@@ -1397,7 +1392,8 @@ impl DebruijnInterpreter {
                 let delta = curr as i64 - prev as i64;
                 if delta != 0 {
                     eprintln!(
-                        "reduce_op.mem fn=eval_new step={} env_level={} bind_count={} uri_len={} rss_kb={} delta_prev_kb={}",
+                        "reduce_op.mem fn=eval_new step={} env_level={} bind_count={} uri_len={} \
+                         rss_kb={} delta_prev_kb={}",
                         step,
                         env.level,
                         new.bind_count,
@@ -1436,9 +1432,10 @@ impl DebruijnInterpreter {
             let add_urn = |new_env: &mut Env<Par>, urn: String| {
                 // println!("\nurn_map: {:?}", self.urn_map);
                 if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
-                    // println!("\nnew_injections: {:?}", new.injections);
+                    // TODO: Injections (from normalizer) are not used currently, see
+                    // [[NormalizerEnv]]. If `urn` can't be found in `urnMap`,
+                    // it must be referencing an injection - OLD println!("\
+                    // nnew_injections: {:?}", new.injections);
                     match new.injections.get(&urn) {
                         Some(p) => {
                             if let Some(gunf) = RhoUnforgeable::unapply(p) {
@@ -1470,7 +1467,8 @@ impl DebruijnInterpreter {
                             }
                         }
                         None => Err(InterpreterError::BugFoundError(format!(
-                            "No value set for {}. This is a bug in the normalizer or on the path from it.",
+                            "No value set for {}. This is a bug in the normalizer or on the path \
+                             from it.",
                             urn
                         ))),
                     }
@@ -1630,7 +1628,8 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                    self.cost.charge(bigint_comparison_cost(b1.len(), b2.len()))?;
+                    self.cost
+                        .charge(bigint_comparison_cost(b1.len(), b2.len()))?;
                     let cmp = compare_twos_complement_bytes(&b1, &b2);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
@@ -1639,8 +1638,10 @@ impl DebruijnInterpreter {
 
                 (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
                     self.cost.charge(bigrat_comparison_cost(
-                        r1.numerator.len(), r1.denominator.len(),
-                        r2.numerator.len(), r2.denominator.len(),
+                        r1.numerator.len(),
+                        r1.denominator.len(),
+                        r2.numerator.len(),
+                        r2.denominator.len(),
                     ))?;
                     let cmp = compare_big_rationals(&r1, &r2);
                     Ok(Expr {
@@ -1649,7 +1650,10 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                    self.cost.charge(bigint_comparison_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
+                    self.cost.charge(bigint_comparison_cost(
+                        fp1.unscaled.len(),
+                        fp2.unscaled.len(),
+                    ))?;
                     let cmp = compare_fixed_points(&fp1, &fp2)?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
@@ -1732,7 +1736,8 @@ impl DebruijnInterpreter {
                             make_bigint_expr(negate_twos_complement(&bytes), "negation")
                         }
                         ExprInstance::GBigRat(rat) => {
-                            self.cost.charge(bigrat_negation_cost(rat.numerator.len()))?;
+                            self.cost
+                                .charge(bigrat_negation_cost(rat.numerator.len()))?;
                             make_bigrat_expr(
                                 models::rhoapi::GBigRational {
                                     numerator: negate_twos_complement(&rat.numerator),
@@ -1782,13 +1787,16 @@ impl DebruijnInterpreter {
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost.charge(bigint_multiplication_cost(b1.len(), b2.len()))?;
+                            self.cost
+                                .charge(bigint_multiplication_cost(b1.len(), b2.len()))?;
                             make_bigint_expr(multiply_twos_complement(&b1, &b2), "multiplication")
                         }
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
                             self.cost.charge(bigrat_multiplication_cost(
-                                r1.numerator.len(), r1.denominator.len(),
-                                r2.numerator.len(), r2.denominator.len(),
+                                r1.numerator.len(),
+                                r1.denominator.len(),
+                                r2.numerator.len(),
+                                r2.denominator.len(),
                             ))?;
                             make_bigrat_expr(multiply_big_rationals(&r1, &r2), "multiplication")
                         }
@@ -1800,8 +1808,14 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_multiplication_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
-                            make_fixedpoint_expr(multiply_fixed_points(&fp1, &fp2), "multiplication")
+                            self.cost.charge(bigint_multiplication_cost(
+                                fp1.unscaled.len(),
+                                fp2.unscaled.len(),
+                            ))?;
+                            make_fixedpoint_expr(
+                                multiply_fixed_points(&fp1, &fp2),
+                                "multiplication",
+                            )
                         }
                         (lhs, rhs) => {
                             let lhs_type = get_type(lhs);
@@ -1861,8 +1875,10 @@ impl DebruijnInterpreter {
                         }
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
                             self.cost.charge(bigrat_division_cost(
-                                r1.numerator.len(), r1.denominator.len(),
-                                r2.numerator.len(), r2.denominator.len(),
+                                r1.numerator.len(),
+                                r1.denominator.len(),
+                                r2.numerator.len(),
+                                r2.denominator.len(),
                             ))?;
                             if is_zero_twos_complement(&r2.numerator) {
                                 return Err(InterpreterError::ReduceError(
@@ -1879,7 +1895,10 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_division_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
+                            self.cost.charge(bigint_division_cost(
+                                fp1.unscaled.len(),
+                                fp2.unscaled.len(),
+                            ))?;
                             if is_zero_twos_complement(&fp2.unscaled) {
                                 return Err(InterpreterError::ReduceError(
                                     "Division by zero".to_string(),
@@ -2030,8 +2049,10 @@ impl DebruijnInterpreter {
 
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
                             self.cost.charge(bigrat_sum_cost(
-                                r1.numerator.len(), r1.denominator.len(),
-                                r2.numerator.len(), r2.denominator.len(),
+                                r1.numerator.len(),
+                                r1.denominator.len(),
+                                r2.numerator.len(),
+                                r2.denominator.len(),
                             ))?;
                             make_bigrat_expr(add_big_rationals(&r1, &r2), "+")
                         }
@@ -2044,7 +2065,8 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_sum_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
+                            self.cost
+                                .charge(bigint_sum_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
                             make_fixedpoint_expr(
                                 models::rhoapi::GFixedPoint {
                                     unscaled: add_twos_complement(&fp1.unscaled, &fp2.unscaled),
@@ -2110,14 +2132,17 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost.charge(bigint_subtraction_cost(b1.len(), b2.len()))?;
+                            self.cost
+                                .charge(bigint_subtraction_cost(b1.len(), b2.len()))?;
                             make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
                         }
 
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
                             self.cost.charge(bigrat_subtraction_cost(
-                                r1.numerator.len(), r1.denominator.len(),
-                                r2.numerator.len(), r2.denominator.len(),
+                                r1.numerator.len(),
+                                r1.denominator.len(),
+                                r2.numerator.len(),
+                                r2.denominator.len(),
                             ))?;
                             make_bigrat_expr(subtract_big_rationals(&r1, &r2), "-")
                         }
@@ -2130,7 +2155,10 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_subtraction_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
+                            self.cost.charge(bigint_subtraction_cost(
+                                fp1.unscaled.len(),
+                                fp2.unscaled.len(),
+                            ))?;
                             make_fixedpoint_expr(
                                 models::rhoapi::GFixedPoint {
                                     unscaled: subtract_twos_complement(
@@ -2194,45 +2222,37 @@ impl DebruijnInterpreter {
                     }
                 }
 
-                ExprInstance::ELtBody(ELt { p1, p2 }) => {
-                    relop(
-                        &p1.clone().unwrap(),
-                        &p2.clone().unwrap(),
-                        |b1: bool, b2: bool| !b1 & b2,
-                        |i1: i64, i2: i64| i1 < i2,
-                        |s1: String, s2: String| s1 < s2,
-                    )
-                }
+                ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
+                    &p1.clone().unwrap(),
+                    &p2.clone().unwrap(),
+                    |b1: bool, b2: bool| !b1 & b2,
+                    |i1: i64, i2: i64| i1 < i2,
+                    |s1: String, s2: String| s1 < s2,
+                ),
 
-                ExprInstance::ELteBody(ELte { p1, p2 }) => {
-                    relop(
-                        &p1.clone().unwrap(),
-                        &p2.clone().unwrap(),
-                        |b1: bool, b2: bool| b1 <= b2,
-                        |i1: i64, i2: i64| i1 <= i2,
-                        |s1: String, s2: String| s1 <= s2,
-                    )
-                }
+                ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
+                    &p1.clone().unwrap(),
+                    &p2.clone().unwrap(),
+                    |b1: bool, b2: bool| b1 <= b2,
+                    |i1: i64, i2: i64| i1 <= i2,
+                    |s1: String, s2: String| s1 <= s2,
+                ),
 
-                ExprInstance::EGtBody(EGt { p1, p2 }) => {
-                    relop(
-                        &p1.clone().unwrap(),
-                        &p2.clone().unwrap(),
-                        |b1: bool, b2: bool| b1 & !b2,
-                        |i1: i64, i2: i64| i1 > i2,
-                        |s1: String, s2: String| s1 > s2,
-                    )
-                }
+                ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
+                    &p1.clone().unwrap(),
+                    &p2.clone().unwrap(),
+                    |b1: bool, b2: bool| b1 & !b2,
+                    |i1: i64, i2: i64| i1 > i2,
+                    |s1: String, s2: String| s1 > s2,
+                ),
 
-                ExprInstance::EGteBody(EGte { p1, p2 }) => {
-                    relop(
-                        &p1.clone().unwrap(),
-                        &p2.clone().unwrap(),
-                        |b1: bool, b2: bool| b1 >= b2,
-                        |i1: i64, i2: i64| i1 >= i2,
-                        |s1: String, s2: String| s1 >= s2,
-                    )
-                }
+                ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
+                    &p1.clone().unwrap(),
+                    &p2.clone().unwrap(),
+                    |b1: bool, b2: bool| b1 >= b2,
+                    |i1: i64, i2: i64| i1 >= i2,
+                    |s1: String, s2: String| s1 >= s2,
+                ),
 
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
                     let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
@@ -2242,9 +2262,7 @@ impl DebruijnInterpreter {
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
-                    let result = if par_contains_nan_double(&sv1)
-                        || par_contains_nan_double(&sv2)
-                    {
+                    let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         false
                     } else {
                         sv1 == sv2
@@ -2261,9 +2279,7 @@ impl DebruijnInterpreter {
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
-                    let result = if par_contains_nan_double(&sv1)
-                        || par_contains_nan_double(&sv2)
-                    {
+                    let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         true
                     } else {
                         sv1 != sv2
@@ -2338,8 +2354,9 @@ impl DebruijnInterpreter {
                                 Ok((key_string, uri))
                             }
 
-                            // TODO: Add cases for other ground terms as well? Maybe it would be better
-                            // to implement cats.Show for all ground terms. - OLD
+                            // TODO: Add cases for other ground terms as well? Maybe it would be
+                            // better to implement cats.Show for all
+                            // ground terms. - OLD
                             (ExprInstance::GString(_), value) => {
                                 Err(InterpreterError::ReduceError(format!(
                                     "Error: interpolation doesn't support {:?}",
@@ -2347,7 +2364,10 @@ impl DebruijnInterpreter {
                                 )))
                             }
 
-                            _ => Err(InterpreterError::ReduceError("Error: interpolation Map should only contain String keys".to_string())),
+                            _ => Err(InterpreterError::ReduceError(
+                                "Error: interpolation Map should only contain String keys"
+                                    .to_string(),
+                            )),
                         }
                     }
 
@@ -3396,8 +3416,9 @@ impl DebruijnInterpreter {
                         }
                         self.outer.cost.charge(union_cost(n))?;
 
-                        // For dropHead, we need to return a new EPathMap with modified path elements
-                        // Instead of using PathMap, directly construct the result elements
+                        // For dropHead, we need to return a new EPathMap with modified path
+                        // elements Instead of using PathMap, directly
+                        // construct the result elements
                         let mut result_elements = Vec::new();
 
                         for par in &base_pathmap.ps {
@@ -3607,7 +3628,8 @@ impl DebruijnInterpreter {
 
                         // Store the COMPLETE ORIGINAL PathMap for correct operations
                         // Display will show absolute paths, but operations will work correctly
-                        // TODO: To show relative paths in display, we'd need to modify serialization/display code
+                        // TODO: To show relative paths in display, we'd need to modify
+                        // serialization/display code
                         let complete_pathmap = pathmap.clone();
 
                         // Create an EZipper with the complete PathMap
@@ -3852,7 +3874,8 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Use the zipper's current_path to look up the value
-                        // Build the key from current_path segments (same encoding as create_pathmap_from_elements)
+                        // Build the key from current_path segments (same encoding as
+                        // create_pathmap_from_elements)
                         let key: Vec<u8> = zipper
                             .current_path
                             .iter()
@@ -3966,7 +3989,8 @@ impl DebruijnInterpreter {
                         }]))
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
-                        // For PathMap without zipper, return entire PathMap (all is subtrie at root)
+                        // For PathMap without zipper, return entire PathMap (all is subtrie at
+                        // root)
                         Ok(Par::default().with_exprs(vec![Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         }]))
@@ -4171,14 +4195,16 @@ impl DebruijnInterpreter {
                                 false
                             };
 
-                            // If no existing entry found, reconstruct Par elements from current_path bytes
+                            // If no existing entry found, reconstruct Par elements from
+                            // current_path bytes
                             if !found_existing {
                                 use models::rust::path_map_encoder::SExpr;
                                 for segment_bytes in &zipper.current_path {
                                     // Decode the S-expr bytes to extract the string
                                     if let Ok(sexpr) = SExpr::decode(segment_bytes) {
                                         if let SExpr::Symbol(mut s) = sexpr {
-                                            // Strip quotes if present (S-expr includes them for string literals)
+                                            // Strip quotes if present (S-expr includes them for
+                                            // string literals)
                                             if s.starts_with('"')
                                                 && s.ends_with('"')
                                                 && s.len() >= 2
@@ -4268,14 +4294,16 @@ impl DebruijnInterpreter {
                                 false
                             };
 
-                            // If no existing entry found, reconstruct Par elements from current_path bytes
+                            // If no existing entry found, reconstruct Par elements from
+                            // current_path bytes
                             if !found_existing {
                                 use models::rust::path_map_encoder::SExpr;
                                 for segment_bytes in &zipper.current_path {
                                     // Decode the S-expr bytes to extract the string
                                     if let Ok(sexpr) = SExpr::decode(segment_bytes) {
                                         if let SExpr::Symbol(mut s) = sexpr {
-                                            // Strip quotes if present (S-expr includes them for string literals)
+                                            // Strip quotes if present (S-expr includes them for
+                                            // string literals)
                                             if s.starts_with('"')
                                                 && s.ends_with('"')
                                                 && s.len() >= 2
@@ -5266,7 +5294,7 @@ impl DebruijnInterpreter {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from("ascend (requires integer argument)"),
                             other_type: "non-integer".to_string(),
-                        })
+                        });
                     }
                 };
 
@@ -5530,7 +5558,7 @@ impl DebruijnInterpreter {
                                 "descendIndexedBranch (requires integer argument)",
                             ),
                             other_type: "non-integer".to_string(),
-                        })
+                        });
                     }
                 };
 
@@ -5957,7 +5985,8 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
-                    //TODO(mateusz.gorski): think whether deletion of an element from the collection should dependent on the collection type/size - OLD
+                    //TODO(mateusz.gorski): think whether deletion of an element from the
+                    // collection should dependent on the collection type/size - OLD
                     self.outer.cost.charge(remove_cost())?;
                     let result = self.delete(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
@@ -7180,7 +7209,8 @@ impl DebruijnInterpreter {
     /**
      * Evaluate any top level expressions in @param Par .
      *
-     * Public here to be used in tests / Scala code has it as private but still able to use in tests?
+     * Public here to be used in tests / Scala code has it as private but
+     * still able to use in tests?
      */
     pub fn eval_expr(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
         let evaled_exprs = par
@@ -7380,9 +7410,7 @@ fn compare_twos_complement_bytes(a: &[u8], b: &[u8]) -> i32 {
     }
 }
 
-fn bytes_to_bigrat(
-    rat: &models::rhoapi::GBigRational,
-) -> num_rational::BigRational {
+fn bytes_to_bigrat(rat: &models::rhoapi::GBigRational) -> num_rational::BigRational {
     num_rational::BigRational::new(
         bytes_to_bigint(&rat.numerator),
         bytes_to_bigint(&rat.denominator),
@@ -7453,7 +7481,10 @@ fn multiply_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(a.scale, b.scale, "multiply_fixed_points called with mismatched scales");
+    debug_assert_eq!(
+        a.scale, b.scale,
+        "multiply_fixed_points called with mismatched scales"
+    );
     // Scale-preserving: (ua * ub) / 10^scale, using floor division
     let ua = bytes_to_bigint(&a.unscaled);
     let ub = bytes_to_bigint(&b.unscaled);
@@ -7478,7 +7509,10 @@ fn divide_fixed_points(
     a: &models::rhoapi::GFixedPoint,
     b: &models::rhoapi::GFixedPoint,
 ) -> models::rhoapi::GFixedPoint {
-    debug_assert_eq!(a.scale, b.scale, "divide_fixed_points called with mismatched scales");
+    debug_assert_eq!(
+        a.scale, b.scale,
+        "divide_fixed_points called with mismatched scales"
+    );
     let ten = num_bigint::BigInt::from(10);
     let factor = num_traits::pow::pow(ten, b.scale as usize);
     let scaled = bytes_to_bigint(&a.unscaled) * factor;

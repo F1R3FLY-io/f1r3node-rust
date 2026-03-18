@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{Match, MatchCase, Par};
+use models::rust::utils::{new_gbool_par, union};
+use rholang_parser::ast::AnnProc;
+
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
-use models::rhoapi::{Match, MatchCase, Par};
-use models::rust::utils::{new_gbool_par, union};
-use std::collections::HashMap;
-
-use rholang_parser::ast::AnnProc;
 
 pub fn normalize_p_if<'ast>(
     condition: &'ast AnnProc<'ast>,
@@ -98,17 +99,17 @@ pub fn normalize_p_if<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use models::{
-        create_bit_vector,
-        rhoapi::{expr::ExprInstance, EEq, Expr, Match, MatchCase, Par, Send},
-        rust::utils::{
-            new_boundvar_par, new_gbool_par, new_gint_expr, new_gint_par, new_new_par, new_send_par,
-        },
+    use models::create_bit_vector;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EEq, Expr, Match, MatchCase, Par, Send};
+    use models::rust::utils::{
+        new_boundvar_par, new_gbool_par, new_gint_expr, new_gint_par, new_new_par, new_send_par,
     };
 
     use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
@@ -116,9 +117,10 @@ mod tests {
     #[test]
     fn p_if_else_should_desugar_to_match_with_true_false_cases() {
         // if (true) { @Nil!(47) }
+        use rholang_parser::ast::SendType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::SendType;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();
@@ -209,10 +211,11 @@ mod tests {
     #[test]
     fn p_if_else_should_handle_a_more_complicated_if_statement_with_an_else_clause() {
         // if (47 == 47) { new x in { x!(47) } } else { new y in { y!(47) } }
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{BinaryExpOp, Id, Name, SendType, Var};
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();

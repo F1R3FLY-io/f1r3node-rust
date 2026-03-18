@@ -6,7 +6,9 @@ use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 use crate::transport::transport_layer_runtime::{
     broadcast_heartbeat, send_heartbeat, TestProtocolDispatcher, TestStreamDispatcher,
@@ -252,10 +254,12 @@ async fn sending_message_to_unavailable_peer_should_fail_with_peer_unavailable()
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection error)
+    // Should fail with some error (could be PeerUnavailable or other connection
+    // error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as different errors
+    // Accept any communication error type since dead peer can manifest as
+    // different errors
 }
 
 #[tokio::test]
@@ -279,10 +283,12 @@ async fn streaming_to_unavailable_peer_should_fail_with_peer_unavailable() {
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection error)
+    // Should fail with some error (could be PeerUnavailable or other connection
+    // error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as different errors
+    // Accept any communication error type since dead peer can manifest as
+    // different errors
 }
 
 // **Edge Cases and Boundary Tests**
@@ -409,7 +415,8 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                         let local = &local;
                         let remote = &remote;
                         async move {
-                            // Use packet with unique content to avoid RecentHashFilter deduplication
+                            // Use packet with unique content to avoid RecentHashFilter
+                            // deduplication
                             let packet = models::routing::Packet {
                                 content: prost::bytes::Bytes::from(format!("concurrent_msg_{}", i)),
                                 type_id: "test".to_string(),

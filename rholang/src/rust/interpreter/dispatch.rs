@@ -1,10 +1,15 @@
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{tagged_continuation::TaggedCont, ListParWithRandom, Par, TaggedContinuation};
-use prost::Message;
 use std::sync::{Arc, OnceLock, Weak};
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
+use prost::Message;
+
+use super::env::Env;
+use super::errors::InterpreterError;
+use super::reduce::DebruijnInterpreter;
 use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
-use super::{env::Env, errors::InterpreterError, reduce::DebruijnInterpreter, unwrap_option_safe};
+use super::unwrap_option_safe;
 
 pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
     let pars: Vec<Par> = data_list.into_iter().flat_map(|list| list.pars).collect();
@@ -85,8 +90,10 @@ impl RholangAndScalaDispatcher {
                                     output,
                                 ),
                                 Err(e) if is_non_deterministic => {
-                                    // Non-deterministic process failed - return FailedNonDeterministicCall
-                                    // so the produce event can be marked as failed for replay safety
+                                    // Non-deterministic process failed - return
+                                    // FailedNonDeterministicCall
+                                    // so the produce event can be marked as failed for replay
+                                    // safety
                                     Ok(DispatchType::FailedNonDeterministicCall(e))
                                 }
                                 Err(e) => Err(e),

@@ -1,8 +1,10 @@
-use super::errors::InterpreterError;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
+
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use super::errors::InterpreterError;
 
 #[derive(Clone, Debug)]
 pub struct OllamaConfig {
@@ -152,9 +154,7 @@ impl OllamaService {
         }
     }
 
-    pub fn new_disabled() -> Self {
-        Self::Disabled
-    }
+    pub fn new_disabled() -> Self { Self::Disabled }
 
     pub fn from_config(config: &OllamaConfig) -> Self {
         if config.enabled {
@@ -373,9 +373,10 @@ pub fn create_disabled_ollama_service() -> SharedOllamaService {
     Arc::new(tokio::sync::Mutex::new(OllamaService::new_disabled()))
 }
 
-/// Create Ollama service with connection validation (matches Scala's validateConnectionOrFail)
-/// This should be used during node startup to ensure Ollama is reachable.
-/// Returns an error if validate_connection is true and Ollama is unreachable.
+/// Create Ollama service with connection validation (matches Scala's
+/// validateConnectionOrFail) This should be used during node startup to ensure
+/// Ollama is reachable. Returns an error if validate_connection is true and
+/// Ollama is unreachable.
 pub async fn create_ollama_service_validated(
     config: &OllamaConfig,
 ) -> Result<SharedOllamaService, InterpreterError> {
@@ -399,7 +400,8 @@ pub async fn create_ollama_service_validated(
             }
             Err(e) => {
                 return Err(InterpreterError::OllamaError(format!(
-                    "Ollama service connection validation failed. Check that Ollama is running on {}: {}",
+                    "Ollama service connection validation failed. Check that Ollama is running on \
+                     {}: {}",
                     config.base_url, e
                 )));
             }

@@ -2,21 +2,21 @@
 
 use std::sync::Arc;
 
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::state::instances::proposer_state::ProposerState;
 use casper::rust::ProposeFunction;
-use tokio::sync::RwLock;
-
-use crate::rust::api::{
-    deploy_grpc_service_v1::DeployGrpcServiceV1Impl, lsp_grpc_service::LspGrpcServiceImpl,
-    propose_grpc_service_v1::ProposeGrpcServiceV1Impl, repl_grpc_service::ReplGrpcServiceImpl,
-};
-use crate::rust::web::block_info_enricher::BlockEnricher;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl;
+use tokio::sync::RwLock;
+
+use crate::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
+use crate::rust::api::lsp_grpc_service::LspGrpcServiceImpl;
+use crate::rust::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
+use crate::rust::api::repl_grpc_service::ReplGrpcServiceImpl;
+use crate::rust::web::block_info_enricher::BlockEnricher;
 
 /// Container for all gRPC API service implementations
 ///

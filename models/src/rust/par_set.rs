@@ -1,9 +1,10 @@
 // See models/src/main/scala/coop/rchain/models/ParSet.scala
 
-use crate::rhoapi::{Par, Var};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{sorted_par_hash_set::SortedParHashSet, utils::union};
+use super::sorted_par_hash_set::SortedParHashSet;
+use super::utils::union;
+use crate::rhoapi::{Par, Var};
 
 #[derive(Clone)]
 pub struct ParSet {
@@ -48,9 +49,7 @@ impl ParSet {
             && self.connective_used == other.connective_used
     }
 
-    fn connective_used(vec: &Vec<Par>) -> bool {
-        vec.iter().any(|p| p.connective_used)
-    }
+    fn connective_used(vec: &Vec<Par>) -> bool { vec.iter().any(|p| p.connective_used) }
 
     fn update_locally_free(ps: &SortedParHashSet) -> Vec<u8> {
         ps.sorted_pars
@@ -63,9 +62,7 @@ impl ParSet {
 // Serde implementation to match Scala JsonEncoder behavior
 impl Serialize for ParSet {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         // Serialize as array of Par (like Scala's encodeParSet)
         use serde::ser::SerializeSeq;
         let seq = &self.ps.sorted_pars;
@@ -79,9 +76,7 @@ impl Serialize for ParSet {
 
 impl<'de> Deserialize<'de> for ParSet {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         // Deserialize from array of Par (like Scala's decodeParSet)
         let vec: Vec<Par> = Vec::deserialize(deserializer)?;
         Ok(ParSet::create_from_vec(vec))

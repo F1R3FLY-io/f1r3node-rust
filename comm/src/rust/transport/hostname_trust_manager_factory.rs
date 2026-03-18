@@ -1,13 +1,14 @@
-// comm/src/main/scala/coop/rchain/comm/transport/HostnameTrustManagerFactory.scala
+// comm/src/main/scala/coop/rchain/comm/transport/HostnameTrustManagerFactory.
+// scala
+
+use std::sync::Arc;
 
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use p256::elliptic_curve::sec1::FromEncodedPoint;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::PrivatePkcs8KeyDer;
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme};
-use std::sync::Arc;
 
 /// Custom error type for certificate validation
 #[derive(Debug, Clone)]
@@ -43,7 +44,8 @@ impl std::fmt::Display for CertificateValidationError {
 
 impl std::error::Error for CertificateValidationError {}
 
-/// HostnameTrustManagerFactory - creates custom certificate verifiers for F1r3fly
+/// HostnameTrustManagerFactory - creates custom certificate verifiers for
+/// F1r3fly
 pub struct HostnameTrustManagerFactory;
 
 impl HostnameTrustManagerFactory {
@@ -68,14 +70,16 @@ impl HostnameTrustManagerFactory {
 
     /// Create a client certificate verifier
     ///
-    /// This creates an F1r3flyClientCertVerifier that uses the same HostnameTrustManager
-    /// logic for client certificate validation on the server side.
+    /// This creates an F1r3flyClientCertVerifier that uses the same
+    /// HostnameTrustManager logic for client certificate validation on the
+    /// server side.
     pub fn create_client_cert_verifier(&self) -> Arc<F1r3flyClientCertVerifier> {
         let trust_manager = self.create_trust_manager();
         Arc::new(F1r3flyClientCertVerifier::with_trust_manager(trust_manager))
     }
 
-    /// Create a rustls ClientConfig with F1r3fly's custom certificate verification
+    /// Create a rustls ClientConfig with F1r3fly's custom certificate
+    /// verification
     ///
     /// # Arguments
     /// * `cert_pem` - Client certificate in PEM format
@@ -119,7 +123,8 @@ impl HostnameTrustManagerFactory {
         Ok(config)
     }
 
-    /// Create a rustls ServerConfig with F1r3fly's custom client certificate verification
+    /// Create a rustls ServerConfig with F1r3fly's custom client certificate
+    /// verification
     ///
     /// # Arguments
     /// * `cert_pem` - Server certificate in PEM format
@@ -171,7 +176,8 @@ impl HostnameTrustManagerFactory {
 
         let mut cursor = std::io::Cursor::new(pem_data.as_bytes());
 
-        // rustls_pemfile::read_all returns an iterator, so we need to collect and handle errors
+        // rustls_pemfile::read_all returns an iterator, so we need to collect and
+        // handle errors
         for item_result in rustls_pemfile::read_all(&mut cursor) {
             let item = item_result.map_err(|e| {
                 CertificateValidationError::ParsingError(format!("Failed to parse PEM: {}", e))
@@ -225,7 +231,7 @@ impl HostnameTrustManagerFactory {
                     return Err(CertificateValidationError::ParsingError(format!(
                         "Unknown key format: {:?}",
                         item
-                    )))
+                    )));
                 }
             }
         }
@@ -236,21 +242,17 @@ impl HostnameTrustManagerFactory {
     }
 }
 
-/// HostnameTrustManager - implements F1r3fly's custom certificate validation logic
-/// Directly implements rustls ServerCertVerifier for seamless integration
+/// HostnameTrustManager - implements F1r3fly's custom certificate validation
+/// logic Directly implements rustls ServerCertVerifier for seamless integration
 #[derive(Debug)]
 pub struct HostnameTrustManager;
 
 impl Default for HostnameTrustManager {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl HostnameTrustManager {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     /// Check client certificate trust
     pub fn check_client_trusted(
@@ -423,7 +425,8 @@ impl ServerCertVerifier for HostnameTrustManager {
             ServerName::IpAddress(ip) => {
                 // Convert IP to string representation
                 let ip_str = format!("{:?}", ip);
-                Some(ip_str.leak() as &str) // Leak string to get 'static lifetime
+                Some(ip_str.leak() as &str) // Leak string to get 'static
+                                            // lifetime
             }
             _ => None,
         };
@@ -466,19 +469,19 @@ impl ServerCertVerifier for HostnameTrustManager {
     }
 }
 
-/// Custom ClientCertVerifier that uses HostnameTrustManager for F1r3fly client certificate validation
+/// Custom ClientCertVerifier that uses HostnameTrustManager for F1r3fly client
+/// certificate validation
 ///
-/// This implements the server-side client certificate verification using the same HostnameTrustManager
-/// logic that's used for server certificate verification on the client side.
+/// This implements the server-side client certificate verification using the
+/// same HostnameTrustManager logic that's used for server certificate
+/// verification on the client side.
 #[derive(Debug)]
 pub struct F1r3flyClientCertVerifier {
     trust_manager: Arc<HostnameTrustManager>,
 }
 
 impl Default for F1r3flyClientCertVerifier {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl F1r3flyClientCertVerifier {
@@ -609,7 +612,8 @@ mod tests {
         ) {
             let expected_hex = hex::encode(&expected_address);
 
-            // Test server certificate validation with F1r3fly address as hostname (should pass)
+            // Test server certificate validation with F1r3fly address as hostname (should
+            // pass)
             let result = manager.check_server_trusted(&cert_der, "RSA", Some(&expected_hex));
             assert!(
                 result.is_ok(),
@@ -623,7 +627,8 @@ mod tests {
                 "Should reject server certificate when hostname doesn't match certificate CN/SAN"
             );
 
-            // Verify the error is ValidationFailed (from hostname verification, not address mismatch)
+            // Verify the error is ValidationFailed (from hostname verification, not address
+            // mismatch)
             if let Err(error) = result {
                 match error {
                     CertificateValidationError::AddressHostnameMismatch => {

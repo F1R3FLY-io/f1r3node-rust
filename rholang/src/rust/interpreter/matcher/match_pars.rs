@@ -5,10 +5,11 @@ use models::rhoapi::{
 /*
  * This file is doing a custom comparison with two 'Pars'
  * It checks all the fields except 'locallyFree'
- * This is NOT handling every check of 'locallyFree' for each message in 'RhoTypes.proto'
- * Only the necessary for the 'Par, Par' trait implementation
- * This may be a problem later on. If so, probably should switch to BitSet like Scala side does
-*/
+ * This is NOT handling every check of 'locallyFree' for each message in
+ * 'RhoTypes.proto' Only the necessary for the 'Par, Par' trait
+ * implementation This may be a problem later on. If so, probably should
+ * switch to BitSet like Scala side does
+ */
 
 pub fn compare_sends_without_locally_free(a: &Send, b: &Send) -> bool {
     a.chan == b.chan

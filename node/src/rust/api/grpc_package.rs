@@ -17,9 +17,11 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!("../../../build/descriptors/reflection_protos.bin");
 
 // Note: Deploy and Propose services are defined in the models crate
-// These would be imported from models::casper::v1::{deploy_service_v1_server, propose_service_v1_server}
+// These would be imported from models::casper::v1::{deploy_service_v1_server,
+// propose_service_v1_server}
 
-/// Create an internal gRPC server with all services (Repl, Propose, Deploy, Lsp)
+/// Create an internal gRPC server with all services (Repl, Propose, Deploy,
+/// Lsp)
 ///
 /// This function creates a gRPC server that includes all available services:
 /// - REPL service for executing Rholang code
@@ -37,10 +39,13 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without data (not directly supported in tonic)
+/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without
+///   data (not directly supported in tonic)
 /// * `max_connection_idle` - Maximum time a connection can be idle
-/// * `max_connection_age` - Maximum age of a connection (not directly supported in tonic)
-/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age (not directly supported in tonic)
+/// * `max_connection_age` - Maximum age of a connection (not directly supported
+///   in tonic)
+/// * `max_connection_age_grace` - Grace period for closing connections after
+///   max_connection_age (not directly supported in tonic)
 pub async fn acquire_internal_server(
     repl_grpc_service: ReplGrpcServiceImpl,
     deploy_grpc_service: DeployGrpcServiceV1Impl,
@@ -97,10 +102,13 @@ pub async fn acquire_internal_server(
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without data (not directly supported in tonic)
+/// * `permit_keep_alive_time` - Duration to wait for keep-alive ping without
+///   data (not directly supported in tonic)
 /// * `max_connection_idle` - Maximum time a connection can be idle
-/// * `max_connection_age` - Maximum age of a connection (not directly supported in tonic)
-/// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age (not directly supported in tonic)
+/// * `max_connection_age` - Maximum age of a connection (not directly supported
+///   in tonic)
+/// * `max_connection_age_grace` - Grace period for closing connections after
+///   max_connection_age (not directly supported in tonic)
 pub fn acquire_external_server(
     deploy_grpc_service: DeployGrpcServiceV1Impl,
     max_message_size: usize,

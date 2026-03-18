@@ -1,5 +1,10 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RholangCLI.scala
 
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use clap::Parser;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -13,18 +18,15 @@ use rholang::rust::interpreter::rho_runtime::{
 use rholang::rust::interpreter::storage::storage_printer;
 use rholang::rust::interpreter::system_processes::Definition;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::get_or_create_rspace_store;
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 
 /// Creates a unique temporary directory path with the given prefix.
 ///
-/// This function handles the case where `std::env::temp_dir()` returns an empty path
-/// by falling back to `/tmp` (standard on macOS/Unix systems).
+/// This function handles the case where `std::env::temp_dir()` returns an empty
+/// path by falling back to `/tmp` (standard on macOS/Unix systems).
 ///
-/// The directory name is made unique using a combination of process ID and nanosecond timestamp.
+/// The directory name is made unique using a combination of process ID and
+/// nanosecond timestamp.
 fn mk_unique_temp_dir(prefix: &str) -> PathBuf {
     // Get system temp directory with fallback to /tmp
     let mut temp_dir = std::env::temp_dir();
@@ -294,11 +296,10 @@ async fn write_binary(file_name: &str, source: &str) -> Result<(), InterpreterEr
     Ok(())
 }
 
-/// Wait for evaluation result with timeout feedback, similar to Scala's waitForSuccess
+/// Wait for evaluation result with timeout feedback, similar to Scala's
+/// waitForSuccess
 async fn wait_for_success<F, T>(mut future: std::pin::Pin<Box<F>>) -> Result<T, InterpreterError>
-where
-    F: std::future::Future<Output = Result<T, InterpreterError>>,
-{
+where F: std::future::Future<Output = Result<T, InterpreterError>> {
     loop {
         match tokio::time::timeout(Duration::from_secs(5), &mut future).await {
             Ok(result) => return result,

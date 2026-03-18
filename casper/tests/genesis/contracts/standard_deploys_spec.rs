@@ -1,4 +1,5 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/StandardDeploysSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
+// StandardDeploysSpec.scala
 
 use casper::rust::genesis::contracts::standard_deploys;
 

@@ -1,9 +1,11 @@
 //! Configuration mapper for merging CLI options to with configuration
 //!
-//! This module provides functionality to map command-line options into a configuration
+//! This module provides functionality to map command-line options into a
+//! configuration
 
 use super::options::Options;
-use crate::rust::configuration::{commandline::options::OptionsSubCommand, NodeConf};
+use crate::rust::configuration::commandline::options::OptionsSubCommand;
+use crate::rust::configuration::NodeConf;
 
 /// Configuration mapper for converting CLI options to configuration
 pub trait ConfigMapper<T> {
@@ -335,99 +337,101 @@ impl ConfigMapper<Options> for NodeConf {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::path::PathBuf;
+    use std::time::Duration;
 
-    use crate::rust::configuration::commandline::options::{OptionsSubCommand, RunOptions};
+    use clap::Parser;
 
     use super::*;
-    use clap::Parser;
+    use crate::rust::configuration::commandline::options::{OptionsSubCommand, RunOptions};
 
     #[test]
     fn test_parse_args() {
         let argv = vec![
-        "rnode",
-        "run",
-        "--standalone",
-        "--dev-mode",
-        "--host=localhost",
-        "--bootstrap=rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404",
-        "--network-id=testnet",
-        "--no-upnp",
-        "--dynamic-ip",
-        "--autogen-shard-size=111111",
-        "--use-random-ports",
-        "--allow-private-addresses",
-        "--network-timeout=111111seconds",
-        "--discovery-port=11111",
-        "--discovery-lookup-interval=111111seconds",
-        "--discovery-cleanup-interval=111111seconds",
-        "--discovery-heartbeat-batch-size=111111",
-        "--discovery-init-wait-loop-interval=111111seconds",
-        "--protocol-port=11111",
-        "--protocol-grpc-max-recv-message-size=111111",
-        "--protocol-grpc-max-recv-stream-message-size=111111",
-        "--protocol-grpc-stream-chunk-size=111111",
-        "--protocol-max-connections=111111",
-        "--protocol-max-message-consumers=111111",
-        "--disable-state-exporter",
-        "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
-        "--tls-key-path=/var/lib/rnode/node.key.pem",
-        "--tls-secure-random-non-blocking",
-        "--api-host=localhost",
-        "--api-port-grpc-external=11111",
-        "--api-port-grpc-internal=11111",
-        "--api-port-http=11111",
-        "--api-port-admin-http=11111",
-        "--api-grpc-max-recv-message-size=111111",
-        "--api-max-blocks-limit=111111",
-        "--api-enable-reporting",
-        "--api-keep-alive-time=111111seconds",
-        "--api-keep-alive-timeout=111111seconds",
-        "--api-permit-keep-alive-time=111111seconds",
-        "--api-max-connection-idle=111111seconds",
-        "--api-max-connection-age=111111seconds",
-        "--api-max-connection-age-grace=111111seconds",
-        "--data-dir=/var/lib/rnode",
-        "--shard-name=root",
-        "--fault-tolerance-threshold=111111",
-        "--validator-public-key=111111",
-        "--validator-private-key=111111",
-        "--validator-private-key-path=/var/lib/rnode/pem.key",
-        "--casper-loop-interval=111111seconds",
-        "--requested-blocks-timeout=111111seconds",
-        "--finalization-rate=111111",
-        "--max-number-of-parents=111111",
-        "--max-parent-depth=111111",
-        "--fork-choice-stale-threshold=111111seconds",
-        "--fork-choice-check-if-stale-interval=111111seconds",
-        "--synchrony-constraint-threshold=111111",
-        "--height-constraint-threshold=111111",
-        "--frrd-max-peer-queue-size=111111",
-        "--frrd-give-up-after-skipped=111111",
-        "--frrd-drop-peer-after-retries=111111",
-        "--bonds-file=/var/lib/rnode/genesis/bonds1.txt",
-        "--wallets-file=/var/lib/rnode/genesis/wallets1.txt",
-        "--bond-minimum=111111",
-        "--bond-maximum=111111",
-        "--epoch-length=111111",
-        "--quarantine-length=111111",
-        "--genesis-block-number=222",
-        "--number-of-active-validators=111111",
-        "--deploy-timestamp=111111",
-        "--required-signatures=111111",
-        "--approve-interval=111111seconds",
-        "--approve-duration=111111seconds",
-        "--genesis-validator",
-        "--disable-lfs",
-        "--prometheus",
-        "--influxdb",
-        "--influxdb-udp",
-        "--zipkin",
-        "--sigar",
-        "--heartbeat-enabled",
-        "--heartbeat-disabled",
-        "--heartbeat-check-interval=111111seconds",
-        "--heartbeat-max-lfb-age=222222seconds"
+            "rnode",
+            "run",
+            "--standalone",
+            "--dev-mode",
+            "--host=localhost",
+            "--bootstrap=rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?\
+             protocol=40400&discovery=40404",
+            "--network-id=testnet",
+            "--no-upnp",
+            "--dynamic-ip",
+            "--autogen-shard-size=111111",
+            "--use-random-ports",
+            "--allow-private-addresses",
+            "--network-timeout=111111seconds",
+            "--discovery-port=11111",
+            "--discovery-lookup-interval=111111seconds",
+            "--discovery-cleanup-interval=111111seconds",
+            "--discovery-heartbeat-batch-size=111111",
+            "--discovery-init-wait-loop-interval=111111seconds",
+            "--protocol-port=11111",
+            "--protocol-grpc-max-recv-message-size=111111",
+            "--protocol-grpc-max-recv-stream-message-size=111111",
+            "--protocol-grpc-stream-chunk-size=111111",
+            "--protocol-max-connections=111111",
+            "--protocol-max-message-consumers=111111",
+            "--disable-state-exporter",
+            "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
+            "--tls-key-path=/var/lib/rnode/node.key.pem",
+            "--tls-secure-random-non-blocking",
+            "--api-host=localhost",
+            "--api-port-grpc-external=11111",
+            "--api-port-grpc-internal=11111",
+            "--api-port-http=11111",
+            "--api-port-admin-http=11111",
+            "--api-grpc-max-recv-message-size=111111",
+            "--api-max-blocks-limit=111111",
+            "--api-enable-reporting",
+            "--api-keep-alive-time=111111seconds",
+            "--api-keep-alive-timeout=111111seconds",
+            "--api-permit-keep-alive-time=111111seconds",
+            "--api-max-connection-idle=111111seconds",
+            "--api-max-connection-age=111111seconds",
+            "--api-max-connection-age-grace=111111seconds",
+            "--data-dir=/var/lib/rnode",
+            "--shard-name=root",
+            "--fault-tolerance-threshold=111111",
+            "--validator-public-key=111111",
+            "--validator-private-key=111111",
+            "--validator-private-key-path=/var/lib/rnode/pem.key",
+            "--casper-loop-interval=111111seconds",
+            "--requested-blocks-timeout=111111seconds",
+            "--finalization-rate=111111",
+            "--max-number-of-parents=111111",
+            "--max-parent-depth=111111",
+            "--fork-choice-stale-threshold=111111seconds",
+            "--fork-choice-check-if-stale-interval=111111seconds",
+            "--synchrony-constraint-threshold=111111",
+            "--height-constraint-threshold=111111",
+            "--frrd-max-peer-queue-size=111111",
+            "--frrd-give-up-after-skipped=111111",
+            "--frrd-drop-peer-after-retries=111111",
+            "--bonds-file=/var/lib/rnode/genesis/bonds1.txt",
+            "--wallets-file=/var/lib/rnode/genesis/wallets1.txt",
+            "--bond-minimum=111111",
+            "--bond-maximum=111111",
+            "--epoch-length=111111",
+            "--quarantine-length=111111",
+            "--genesis-block-number=222",
+            "--number-of-active-validators=111111",
+            "--deploy-timestamp=111111",
+            "--required-signatures=111111",
+            "--approve-interval=111111seconds",
+            "--approve-duration=111111seconds",
+            "--genesis-validator",
+            "--disable-lfs",
+            "--prometheus",
+            "--influxdb",
+            "--influxdb-udp",
+            "--zipkin",
+            "--sigar",
+            "--heartbeat-enabled",
+            "--heartbeat-disabled",
+            "--heartbeat-check-interval=111111seconds",
+            "--heartbeat-max-lfb-age=222222seconds",
         ];
 
         let res = Options::try_parse_from(argv);
@@ -481,7 +485,11 @@ mod tests {
                 config_file: None,
                 thread_pool_size: None,
                 standalone: true,
-                bootstrap: Some("rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404".to_string()),
+                bootstrap: Some(
+                    "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&\
+                     discovery=40404"
+                        .to_string(),
+                ),
                 network_id: Some("testnet".to_string()),
                 autopropose: false,
                 no_upnp: true,
@@ -732,7 +740,12 @@ mod tests {
 
         // Protocol client fields
         assert_eq!(default_config.protocol_client.disable_lfs, true);
-        assert_eq!(default_config.protocol_client.bootstrap, "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404".to_string());
+        assert_eq!(
+            default_config.protocol_client.bootstrap,
+            "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&\
+             discovery=40404"
+                .to_string()
+        );
         assert_eq!(
             default_config.protocol_client.network_timeout,
             Duration::from_secs(111111)
@@ -869,7 +882,8 @@ mod tests {
         assert_eq!(default_config.casper.min_phlo_price, 1);
 
         // Heartbeat configuration
-        // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)
+        // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in
+        // test options)
         assert!(!default_config.casper.heartbeat_conf.enabled);
         assert_eq!(
             default_config.casper.heartbeat_conf.check_interval,

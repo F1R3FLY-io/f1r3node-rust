@@ -18,10 +18,7 @@ impl KeyValueStoreManager for InMemoryStoreManager {
     // This method will return a new instance of the store because of cloning the
     // store
     async fn store(&mut self, name: String) -> Result<Arc<dyn KeyValueStore>, heed::Error> {
-        let kv_store = self
-            .state
-            .entry(name)
-            .or_default();
+        let kv_store = self.state.entry(name).or_default();
 
         Ok(Arc::new(kv_store.value().clone()))
     }
@@ -33,9 +30,7 @@ impl KeyValueStoreManager for InMemoryStoreManager {
 }
 
 impl Default for InMemoryStoreManager {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl InMemoryStoreManager {

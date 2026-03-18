@@ -1,13 +1,14 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{expr, EMethod, Expr, Par};
+use models::rust::utils::union;
+use rholang_parser::ast::{AnnProc, Id};
+
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::util::prepend_expr;
-use models::rhoapi::{expr, EMethod, Expr, Par};
-use models::rust::utils::union;
-use std::collections::HashMap;
-
-use rholang_parser::ast::{AnnProc, Id};
 
 pub fn normalize_p_method<'ast>(
     receiver: &'ast AnnProc<'ast>,
@@ -84,37 +85,39 @@ pub fn normalize_p_method<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use models::{
-        create_bit_vector,
-        rhoapi::{expr::ExprInstance, EMethod, Expr, Par},
-        rust::utils::{new_boundvar_par, new_gint_par},
-    };
+    use models::create_bit_vector;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EMethod, Expr, Par};
+    use models::rust::utils::{new_boundvar_par, new_gint_par};
 
-    use crate::rust::interpreter::{
-        compiler::normalize::VarSort, test_utils::utils::proc_visit_inputs_and_env,
-        util::prepend_expr,
-    };
+    use crate::rust::interpreter::compiler::normalize::VarSort;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
+    use crate::rust::interpreter::util::prepend_expr;
 
     #[test]
     fn p_method_should_produce_proper_method_call() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{Id, Var};
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let methods = vec![String::from("nth"), String::from("toByteArray")];
 
         fn test(method_name: String) {
             let parser = rholang_parser::RholangParser::new();
             let (mut inputs, env) = proc_visit_inputs_and_env();
-            inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-                "x".to_string(),
-                VarSort::ProcSort,
-                SourcePos { line: 0, col: 0 },
-            ));
+            inputs.bound_map_chain =
+                inputs
+                    .bound_map_chain
+                    .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
+                        line: 0,
+                        col: 0,
+                    }));
 
             // Create receiver: x (ProcVar)
             let receiver = ParBuilderUtil::create_ast_proc_var_from_var(

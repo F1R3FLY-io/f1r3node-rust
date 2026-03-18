@@ -1,32 +1,27 @@
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rspace_plus_plus::rspace::{
-    rspace::RSpace,
-    rspace_interface::ISpace,
-    shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    },
-};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use crate::rust::interpreter::{
-    accounting::{cost_accounting::CostAccounting, costs::Cost},
-    external_services::ExternalServices,
-    matcher::r#match::Matcher,
-    reduce::DebruijnInterpreter,
-    rho_runtime::{create_runtime_from_kv_store, RhoISpace, RhoRuntimeImpl},
-    system_processes::test_framework_contracts,
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+use crate::rust::interpreter::accounting::cost_accounting::CostAccounting;
+use crate::rust::interpreter::accounting::costs::Cost;
+use crate::rust::interpreter::external_services::ExternalServices;
+use crate::rust::interpreter::matcher::r#match::Matcher;
+use crate::rust::interpreter::reduce::DebruijnInterpreter;
+use crate::rust::interpreter::rho_runtime::{
+    create_runtime_from_kv_store, RhoISpace, RhoRuntimeImpl,
 };
+use crate::rust::interpreter::system_processes::test_framework_contracts;
 
 pub async fn create_test_space<T>() -> (
     impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     Arc<DebruijnInterpreter>,
 )
-where
-    T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-{
+where T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     let cost = CostAccounting::empty_cost();
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();

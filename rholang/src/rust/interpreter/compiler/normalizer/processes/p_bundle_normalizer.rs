@@ -1,14 +1,15 @@
+use std::collections::HashMap;
+use std::result::Result;
+
+use models::rhoapi::{Bundle, Par};
+use models::rust::bundle_ops::BundleOps;
+use rholang_parser::ast::{AnnProc, BundleType};
+use rholang_parser::{RholangParser, SourceSpan};
+
 use super::exports::*;
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::util::prepend_bundle;
-use models::rhoapi::{Bundle, Par};
-use models::rust::bundle_ops::BundleOps;
-use std::collections::HashMap;
-use std::result::Result;
-
-use rholang_parser::ast::{AnnProc, BundleType};
-use rholang_parser::{RholangParser, SourceSpan};
 
 pub fn normalize_p_bundle<'ast>(
     bundle_type: &BundleType,
@@ -117,10 +118,7 @@ pub fn normalize_p_bundle<'ast>(
         };
 
         Ok(ProcVisitOutputs {
-            par: {
-                
-                prepend_bundle(input.par.clone(), new_bundle)
-            },
+            par: { prepend_bundle(input.par.clone(), new_bundle) },
             free_map: input.free_map.clone(),
         })
     };
@@ -130,22 +128,24 @@ pub fn normalize_p_bundle<'ast>(
 
 #[cfg(test)]
 mod tests {
+    use models::create_bit_vector;
+    use models::rhoapi::{Bundle, Par};
+    use models::rust::utils::new_boundvar_par;
+    use pretty_assertions::assert_eq;
+
     use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
     use crate::rust::interpreter::compiler::normalize::VarSort;
     use crate::rust::interpreter::errors::InterpreterError;
     use crate::rust::interpreter::test_utils::utils::{
         proc_visit_inputs_and_env, proc_visit_inputs_with_updated_bound_map_chain,
     };
-    use models::create_bit_vector;
-    use models::rhoapi::{Bundle, Par};
-    use models::rust::utils::new_boundvar_par;
-    use pretty_assertions::assert_eq;
 
     #[test]
     fn p_bundle_should_normalize_terms_inside() {
+        use rholang_parser::ast::BundleType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::BundleType;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let bound_inputs =
@@ -177,9 +177,10 @@ mod tests {
     #[test]
     fn p_bundle_should_throw_an_error_when_wildcard_or_free_variable_is_found_inside_body_of_bundle(
     ) {
+        use rholang_parser::ast::BundleType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::BundleType;
 
         let (inputs, env) = proc_visit_inputs_and_env();
 
@@ -203,9 +204,10 @@ mod tests {
      */
     #[test]
     fn p_bundle_should_throw_an_error_when_connective_is_used_at_top_level_of_body_of_bundle() {
+        use rholang_parser::ast::{BundleType, SimpleType};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{BundleType, SimpleType};
 
         let (inputs, env) = proc_visit_inputs_and_env();
 
@@ -229,9 +231,10 @@ mod tests {
     #[test]
     fn p_bundle_should_not_throw_an_error_when_connective_is_used_outside_of_top_level_of_body_of_bundle(
     ) {
+        use rholang_parser::ast::{BundleType, SendType, SimpleType};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{BundleType, SendType, SimpleType};
 
         let (inputs, env) = proc_visit_inputs_and_env();
 
@@ -252,9 +255,10 @@ mod tests {
 
     #[test]
     fn p_bundle_should_interpret_bundle_polarization() {
+        use rholang_parser::ast::BundleType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::BundleType;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let bound_inputs =
@@ -300,9 +304,10 @@ mod tests {
 
     #[test]
     fn p_bundle_should_collapse_nested_bundles_merging_their_polarizations() {
+        use rholang_parser::ast::BundleType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::BundleType;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let bound_inputs =

@@ -1,46 +1,42 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/ValidateTest.scala
 
-use crate::helper::{
-    block_dag_storage_fixture::with_storage,
-    block_generator::{build_block, create_block, create_genesis_block, create_validator_block},
-    block_util::generate_validator,
-};
-use crate::util::genesis_builder::GenesisBuilder;
-use casper::rust::{
-    block_status::{InvalidBlock, ValidBlock},
-    casper::CasperSnapshot,
-    util::proto_util,
-    validate::Validate,
-    validator_identity::ValidatorIdentity,
-};
-use crypto::rust::{
-    private_key::PrivateKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
-};
+use std::collections::HashMap;
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::casper::CasperSnapshot;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::rholang::interpreter_util;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::validate::Validate;
+use casper::rust::validator_identity::ValidatorIdentity;
+use casper_message::Justification;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
-use std::collections::HashMap;
-
-use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::block_status::BlockError;
-use casper::rust::genesis::genesis::Genesis;
-use casper::rust::util::construct_deploy;
-use casper::rust::util::rholang::{interpreter_util, runtime_manager::RuntimeManager};
-use casper_message::Justification;
-use models::rust::block_implicits::get_random_block;
-use models::rust::casper::protocol::casper_message;
 use rspace_plus_plus::rspace::history::Either;
+
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{
+    build_block, create_block, create_genesis_block, create_validator_block,
+};
+use crate::helper::block_util::generate_validator;
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
-}
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -235,7 +231,8 @@ fn create_justifications(pairs: Vec<(Bytes, Bytes)>) -> HashMap<Bytes, Bytes> {
 }
 
 // Many tests use checks that must be added later
-// TODO: Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+// TODO: Add log validation mechanism when LogStub mechanism from Scala will be
+// implemented on Rust.
 
 #[tokio::test]
 async fn block_signature_validation_should_return_false_on_unknown_algorithms() {
@@ -255,9 +252,11 @@ async fn block_signature_validation_should_return_false_on_unknown_algorithms() 
         let result1 = Validate::block_signature(&block1);
         assert_eq!(result1, false);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.last.contains(s"signature algorithm $unknownAlgorithm is unsupported") should be(true)
-        // log.warns.last.contains(s"signature algorithm $rsa is unsupported") should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.last.contains(s"signature
+        // algorithm $unknownAlgorithm is unsupported") should be(true)
+        // log.warns.last.contains(s"signature algorithm $rsa is unsupported")
+        // should be(true)
     })
     .await
 }
@@ -315,9 +314,10 @@ async fn block_signature_validation_should_return_false_on_invalid_secp256k1_sig
             assert_eq!(result, false, "Block {} should have invalid signature", i);
         }
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(blocks.length)
-        // log.warns.forall(_.contains("signature is invalid")) should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should
+        // be(blocks.length) log.warns.forall(_.contains("signature is
+        // invalid")) should be(true)
     })
     .await
 }
@@ -338,8 +338,8 @@ async fn block_signature_validation_should_return_true_on_valid_secp256k1_signat
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns should be(Nil)
     })
     .await
 }
@@ -351,8 +351,9 @@ async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
         let block = block_dag_storage.lookup_by_id_unsafe(0);
 
         // modifiedTimestampHeader = block.header.copy(timestamp = 99999999)
-        // Note: In Scala tests LogicalTime starts from 0, but in Rust we use real Unix timestamps
-        // So we need a timestamp that's actually in the future relative to current time
+        // Note: In Scala tests LogicalTime starts from 0, but in Rust we use real Unix
+        // timestamps So we need a timestamp that's actually in the future
+        // relative to current time
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -373,8 +374,8 @@ async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
         let result_valid = Validate::timestamp(&block, &mut block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // _ = log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. _ = log.warns.size should be(1)
         // result = log.warns.head.contains("block timestamp") should be(true)
     })
     .await
@@ -398,8 +399,8 @@ async fn timestamp_validation_should_not_accept_blocks_that_were_published_befor
         let result_valid = Validate::timestamp(&block, &mut block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
         // log.warns.head.contains("block timestamp") should be(true)
     })
     .await
@@ -423,9 +424,10 @@ async fn block_number_validation_should_only_accept_0_as_the_number_for_a_block_
         let result_valid = Validate::block_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
-        // log.warns.head.contains("not zero, but block has no parents") should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
+        // log.warns.head.contains("not zero, but block has no parents") should
+        // be(true)
     })
     .await
 }
@@ -448,9 +450,10 @@ async fn block_number_validation_should_return_false_for_non_sequential_numberin
         let result_valid = Validate::block_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
-        // log.warns.head.contains("is not one more than maximum parent number") should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
+        // log.warns.head.contains("is not one more than maximum parent number")
+        // should be(true)
     })
     .await
 }
@@ -472,8 +475,8 @@ async fn block_number_validation_should_return_true_for_sequential_numbering() {
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns should be(Nil)
     })
     .await
 }
@@ -539,13 +542,11 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
             vec![],
         );
 
-        let b3 = create_block_with_number(
-            &mut block_store,
-            &mut block_dag_storage,
-            8,
-            &genesis,
-            vec![b1.block_hash.clone(), b2.block_hash.clone()],
-        );
+        let b3 =
+            create_block_with_number(&mut block_store, &mut block_dag_storage, 8, &genesis, vec![
+                b1.block_hash.clone(),
+                b2.block_hash.clone(),
+            ]);
 
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
@@ -723,8 +724,8 @@ async fn sequence_number_validation_should_only_accept_0_as_the_number_for_a_blo
         let result_valid = Validate::sequence_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
     })
     .await
 }
@@ -744,8 +745,8 @@ async fn sequence_number_validation_should_return_false_for_non_sequential_numbe
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidSequenceNumber))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
     })
     .await
 }
@@ -772,8 +773,8 @@ async fn sequence_number_validation_should_return_true_for_sequential_numbering(
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns should be(Nil)
     })
     .await
 }
@@ -796,8 +797,8 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
-//Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
-// +
+//Test 18: "Repeat deploy validation" should "not accept blocks with a repeated
+// deploy" +
 #[tokio::test]
 async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deploy() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -850,15 +851,10 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let validator = generate_validator(Some("Validator"));
         let impostor = generate_validator(Some("Impostor"));
 
-        let _genesis = create_chain(
-            &mut block_store,
-            &mut block_dag_storage,
-            3,
-            vec![Bond {
-                validator: validator.clone(),
-                stake: 1,
-            }],
-        );
+        let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 3, vec![Bond {
+            validator: validator.clone(),
+            stake: 1,
+        }]);
 
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
         let valid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);
@@ -1196,7 +1192,8 @@ async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis(
             .as_millis() as i64;
 
         // v0 creates empty block with parent [genesis] - build without inserting
-        // Since v0's previous block is genesis (which has no parents), this should be valid
+        // Since v0's previous block is genesis (which has no parents), this should be
+        // valid
         let b1 = build_block(
             vec![genesis.block_hash.clone()],
             Some(v0.clone()),
@@ -1306,7 +1303,8 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             .unwrap()
             .as_millis() as i64;
 
-        // Create block with 3 parents but maxNumberOfParents = 2 - build without inserting
+        // Create block with 3 parents but maxNumberOfParents = 2 - build without
+        // inserting
         let b4 = build_block(
             vec![
                 b1.block_hash.clone(),
@@ -1392,8 +1390,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockNumber))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size should be(1)
     })
     .await
 }
@@ -1577,9 +1575,10 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size shouldBe 1
-        // log.warns.forall(_.contains("do not match the bonded validators")) shouldBe true
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size shouldBe 1
+        // log.warns.forall(_.contains("do not match the bonded validators"))
+        // shouldBe true
     })
     .await
 }
@@ -1591,7 +1590,8 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
         let v0 = generate_validator(Some("Validator 1"));
         let v1 = generate_validator(Some("Validator 2"));
 
-        // bonds = List(v0, v1).zipWithIndex.map { case (v, i) => Bond(v, 2L * i.toLong + 1L) }
+        // bonds = List(v0, v1).zipWithIndex.map { case (v, i) => Bond(v, 2L * i.toLong
+        // + 1L) }
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
@@ -1718,8 +1718,8 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
             Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
-        // log.warns.size shouldBe 1
+        // Add log validation mechanism when LogStub mechanism from Scala will
+        // be implemented on Rust. log.warns.size shouldBe 1
     })
     .await
 }

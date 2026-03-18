@@ -1,6 +1,31 @@
+// Upstream code uses patterns that trigger these clippy lints extensively.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::module_inception)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::new_ret_no_self)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::redundant_clone)]
+#![allow(clippy::extra_unused_lifetimes)]
+#![allow(clippy::only_used_in_recursion)]
+#![allow(clippy::wrong_self_convention)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::useless_conversion)]
+#![allow(clippy::map_identity)]
+#![allow(clippy::match_single_binding)]
+#![allow(clippy::manual_try_fold)]
+#![allow(clippy::cloned_ref_to_slice_refs)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Tracks total bytes currently allocated and leaked to JNA callers in rholang lib
+// Tracks total bytes currently allocated and leaked to JNA callers in rholang
+// lib
 static RHOLANG_ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
@@ -28,38 +53,32 @@ pub mod rust {
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use crate::rust::interpreter::compiler::compiler::Compiler;
 use crypto::rust::hash::blake2b512_block::Blake2b512Block;
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, public_key::PublicKey};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rholang_scala_rust_types::*;
 use models::rspace_plus_plus_types::*;
-use models::{
-    rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation},
-    rholang_scala_rust_types::*,
-};
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store::{new_dashmap, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
-use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
-use rspace_plus_plus::rspace::{
-    rspace::RSpace,
-    trace::event::{Event, IOEvent},
-};
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+use rust::interpreter::accounting::costs::Cost;
 use rust::interpreter::env::Env;
 use rust::interpreter::external_services::ExternalServices;
 use rust::interpreter::ollama_service::OllamaConfig;
 use rust::interpreter::openai_service::OpenAIConfig;
-use rust::interpreter::system_processes::test_framework_contracts;
-use rust::interpreter::{
-    accounting::costs::Cost,
-    rho_runtime::{
-        bootstrap_registry as bootstrap_registry_internal, create_rho_runtime,
-        RhoRuntime as RhoRuntimeTrait, RhoRuntimeImpl,
-    },
-    system_processes::BlockData,
+use rust::interpreter::rho_runtime::{
+    bootstrap_registry as bootstrap_registry_internal, create_rho_runtime,
+    RhoRuntime as RhoRuntimeTrait, RhoRuntimeImpl,
 };
+use rust::interpreter::system_processes::{test_framework_contracts, BlockData};
+
+use crate::rust::interpreter::compiler::compiler::Compiler;
 
 #[repr(C)]
 struct RhoRuntime {
@@ -171,11 +190,7 @@ extern "C" fn evaluate(
 }
 
 #[no_mangle]
-extern "C" fn inj(
-    runtime_ptr: *mut RhoRuntime,
-    params_ptr: *const u8,
-    params_bytes_len: usize,
-) {
+extern "C" fn inj(runtime_ptr: *mut RhoRuntime, params_ptr: *const u8, params_bytes_len: usize) {
     let params_slice = unsafe { std::slice::from_raw_parts(params_ptr, params_bytes_len) };
     let params = InjParams::decode(params_slice).unwrap();
 
@@ -938,7 +953,8 @@ extern "C" fn get_data(
 
     // let rt = tokio::runtime::Runtime::new().unwrap();
     // let datums =
-    //     rt.block_on(async { unsafe { (*runtime_ptr).runtime.try_lock().unwrap().get_data(channel).await } });
+    //     rt.block_on(async { unsafe {
+    // (*runtime_ptr).runtime.try_lock().unwrap().get_data(channel).await } });
     let datums = unsafe { (*runtime_ptr).runtime.get_data(&channel) };
 
     // println!("\ndatums in rust get_data: {:?}", datums);
@@ -1314,7 +1330,10 @@ extern "C" fn create_runtime(
     let mergeable_tag_name = params.mergeable_tag_name.unwrap();
     let init_registry = params.init_registry;
     if params.rho_spec_system_processes {
-        panic!("ERROR: There are additional system processes being passed to the rust rho_runtime that are not being handled.")
+        panic!(
+            "ERROR: There are additional system processes being passed to the rust rho_runtime \
+             that are not being handled."
+        )
     };
 
     let tokio_runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1388,7 +1407,10 @@ extern "C" fn create_replay_runtime(
     let mergeable_tag_name = params.mergeable_tag_name.unwrap();
     let init_registry = params.init_registry;
     if params.rho_spec_system_processes {
-        panic!("ERROR: There are additional system processes being passed to the rust rho_runtime that are not being handled.")
+        panic!(
+            "ERROR: There are additional system processes being passed to the rust rho_runtime \
+             that are not being handled."
+        )
     };
 
     let tokio_runtime = tokio::runtime::Runtime::new().unwrap();

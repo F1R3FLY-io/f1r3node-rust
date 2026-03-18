@@ -212,7 +212,8 @@ fn test_intersection_empty_with_nonempty() {
 
 #[test]
 fn test_union_overlapping_keys() {
-    // Union with overlapping keys - should keep both (or one, depending on semantics)
+    // Union with overlapping keys - should keep both (or one, depending on
+    // semantics)
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["a", "b"]); // Same path
 
@@ -554,7 +555,8 @@ fn extract_list_from_par(par: &Par) -> Option<Vec<String>> {
 
 #[test]
 fn test_drophead_large_value() {
-    // dropHead(10) on path ["a", "b", "c"] should remove all elements (n > path length)
+    // dropHead(10) on path ["a", "b", "c"] should remove all elements (n > path
+    // length)
     let par = make_list_par(vec!["a", "b", "c"]);
     let elements = vec![par];
 

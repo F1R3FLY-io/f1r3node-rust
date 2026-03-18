@@ -1,30 +1,23 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
 
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-    test::indexed_block_dag_storage::IndexedBlockDagStorage,
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
+use casper::rust::casper::CasperSnapshot;
+use casper::rust::errors::CasperError;
+use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::{construct_deploy, proto_util};
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_implicits;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, Justification, ProcessedDeploy,
 };
-use casper::rust::{
-    casper::CasperSnapshot,
-    errors::CasperError,
-    util::{
-        construct_deploy, proto_util,
-        rholang::{interpreter_util::compute_deploys_checkpoint, runtime_manager::RuntimeManager},
-    },
-};
-use models::rust::{
-    block::state_hash::StateHash,
-    block_hash::BlockHash,
-    block_implicits,
-    casper::protocol::casper_message::{BlockMessage, Bond, Justification, ProcessedDeploy},
-    validator::Validator,
-};
+use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {

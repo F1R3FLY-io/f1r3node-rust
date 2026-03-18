@@ -1,30 +1,24 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
+// BlockDagKeyValueStorage.scala
 
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+
+use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::equivocation_record::{EquivocationRecord, SequenceNumber};
+use models::rust::validator::{self, Validator, ValidatorSerde};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::{
-    collections::{BTreeSet, HashMap, HashSet},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, RwLock,
-    },
-};
-
-use models::rust::{
-    block_hash::{self, BlockHash, BlockHashSerde},
-    block_metadata::BlockMetadata,
-    casper::{pretty_printer::PrettyPrinter, protocol::casper_message::BlockMessage},
-    equivocation_record::{EquivocationRecord, SequenceNumber},
-    validator::{self, Validator, ValidatorSerde},
-};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::{
-    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-    key_value_typed_store_impl::KeyValueTypedStoreImpl,
-};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
-use super::{
-    block_metadata_store::BlockMetadataStore, equivocation_tracker_store::EquivocationTrackerStore,
-};
+use super::block_metadata_store::BlockMetadataStore;
+use super::equivocation_tracker_store::EquivocationTrackerStore;
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -70,16 +64,13 @@ impl KeyValueDagRepresentation {
         self.latest_messages_map.clone()
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> {
-        self.invalid_blocks_set.clone()
-    }
+    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
 
-    pub fn last_finalized_block(&self) -> BlockHash {
-        self.last_finalized_block_hash.clone()
-    }
+    pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
-    // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
+    // Do they need to be part of the DAG current state or they can be moved to DAG
+    // storage directly?
 
     pub fn get_max_height(&self) -> i64 {
         if self.height_map.is_empty() {
@@ -89,9 +80,7 @@ impl KeyValueDagRepresentation {
         }
     }
 
-    pub fn latest_block_number(&self) -> i64 {
-        self.get_max_height()
-    }
+    pub fn latest_block_number(&self) -> i64 { self.get_max_height() }
 
     pub fn block_number(&self, block_hash: &BlockHash) -> Option<i64> {
         self.block_number_map.get(block_hash).copied()
@@ -115,7 +104,8 @@ impl KeyValueDagRepresentation {
             return true;
         }
 
-        // Finalized status is persisted in block metadata; in-memory set is a bounded cache.
+        // Finalized status is persisted in block metadata; in-memory set is a bounded
+        // cache.
         self.block_metadata_index
             .read()
             .ok()
@@ -129,17 +119,21 @@ impl KeyValueDagRepresentation {
             let truncated_bytes = hex::decode(truncated_hash).expect("invalid truncated hash");
             self.dag_set
                 .iter()
-                .find(|hash| hash.starts_with(&truncated_bytes)).cloned()
+                .find(|hash| hash.starts_with(&truncated_bytes))
+                .cloned()
         } else {
-            // if truncatedHash is odd length string we cannot convert it to ByteString with 8 bit resolution
-            // because each symbol has 4 bit resolution. Need to make a string of even length by removing the last symbol,
-            // then find all the matching hashes and choose one that matches the full truncatedHash string
+            // if truncatedHash is odd length string we cannot convert it to ByteString with
+            // 8 bit resolution because each symbol has 4 bit resolution. Need
+            // to make a string of even length by removing the last symbol, then
+            // find all the matching hashes and choose one that matches the full
+            // truncatedHash string
             let truncated_bytes = hex::decode(&truncated_hash[..truncated_hash.len() - 1])
                 .expect("invalid truncated hash");
             self.dag_set
                 .iter()
                 .filter(|hash| hash.starts_with(&truncated_bytes))
-                .find(|hash| hex::encode(&**hash).starts_with(truncated_hash)).cloned()
+                .find(|hash| hex::encode(&**hash).starts_with(truncated_hash))
+                .cloned()
         }
     }
 
@@ -178,7 +172,8 @@ impl KeyValueDagRepresentation {
             .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
     }
 
-    // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
+    // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
+    // BlockDagRepresentationSyntax.scala
 
     // Get block metadata, "unsafe" because method expects block already in the DAG.
     pub fn lookup_unsafe(&self, block_hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
@@ -195,7 +190,8 @@ impl KeyValueDagRepresentation {
         &self,
         hashes: Vec<BlockHash>,
     ) -> Result<Vec<BlockMetadata>, KvStoreError> {
-        // Small batches are common on propose/snapshot paths; avoid Rayon scheduling overhead there.
+        // Small batches are common on propose/snapshot paths; avoid Rayon scheduling
+        // overhead there.
         const PARALLEL_LOOKUP_THRESHOLD: usize = 64;
 
         if hashes.len() < PARALLEL_LOOKUP_THRESHOLD {
@@ -460,16 +456,17 @@ impl KeyValueDagRepresentation {
 
 #[derive(Clone)]
 pub struct BlockDagKeyValueStorage {
-    /// Global lock to ensure atomic snapshots, similar to Scala's lock.withPermit.
-    /// This prevents race conditions during concurrent DAG modifications.
+    /// Global lock to ensure atomic snapshots, similar to Scala's
+    /// lock.withPermit. This prevents race conditions during concurrent DAG
+    /// modifications.
     pub global_lock: Arc<std::sync::Mutex<()>>,
     pub latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub block_metadata_index: Arc<RwLock<BlockMetadataStore>>,
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     pub equivocation_tracker_index: EquivocationTrackerStore,
-    /// Monotonically increasing counter incremented on every successful block insert.
-    /// Used by caches to detect when the DAG has changed.
+    /// Monotonically increasing counter incremented on every successful block
+    /// insert. Used by caches to detect when the DAG has changed.
     pub dag_generation: Arc<AtomicU64>,
 }
 
@@ -533,10 +530,9 @@ impl BlockDagKeyValueStorage {
     }
 
     /// Current DAG generation — incremented on every block insert.
-    /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
-    pub fn current_generation(&self) -> u64 {
-        self.dag_generation.load(Ordering::Relaxed)
-    }
+    /// Can be used by caches to detect whether the DAG has changed since the
+    /// last snapshot.
+    pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).
@@ -561,7 +557,8 @@ impl BlockDagKeyValueStorage {
         let invalid_blocks: imbl::HashSet<BlockMetadata> = self
             .invalid_blocks_index
             .to_map()
-            .expect("Failed to convert invalid_blocks_index to map").into_values()
+            .expect("Failed to convert invalid_blocks_index to map")
+            .into_values()
             .collect();
 
         let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
@@ -656,7 +653,8 @@ impl BlockDagKeyValueStorage {
 
             let mut result = HashMap::new();
             for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height to lower
+                // This filter is required to enable adding blocks backward from higher height
+                // to lower
                 if let Ok(false) = self
                     .latest_messages_index
                     .contains_key(ValidatorSerde((*validator).clone()))
@@ -670,7 +668,7 @@ impl BlockDagKeyValueStorage {
 
         let block_exists = {
             let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
-            
+
             block_metadata_index_guard.contains(&block.block_hash)
         };
 
@@ -679,7 +677,7 @@ impl BlockDagKeyValueStorage {
             Ok(self.get_representation_internal())
         } else {
             let block_hash = block.block_hash.clone();
-            let block_hash_is_invalid = (block_hash.len() != block_hash::LENGTH);
+            let block_hash_is_invalid = block_hash.len() != block_hash::LENGTH;
 
             if sender_has_invalid_format {
                 return Err(KvStoreError::InvalidArgument(format!(
@@ -688,7 +686,8 @@ impl BlockDagKeyValueStorage {
                 )));
             }
             // TODO: should we have special error type for block hash error also?
-            //  Should this be checked before calling insert? Is DAG storage responsible for that? - OLD
+            //  Should this be checked before calling insert? Is DAG storage responsible for
+            // that? - OLD
             if block_hash_is_invalid {
                 return Err(KvStoreError::InvalidArgument(format!(
                     "Block hash {} is not correct length.",
@@ -726,7 +725,8 @@ impl BlockDagKeyValueStorage {
             }
 
             let new_latest_from_sender = if !sender_is_empty && !invalid {
-                // Add LM either if there is no existing message for the sender, or if sequence number advances
+                // Add LM either if there is no existing message for the sender, or if sequence
+                // number advances
                 // - assumes block sender is not valid hash
                 if match self
                     .latest_messages_index
@@ -777,7 +777,8 @@ impl BlockDagKeyValueStorage {
         f(&self.equivocation_tracker_index)
     }
 
-    /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
+    /** Record that some hash is directly finalized (detected by finalizer
+     * and becomes LFB). */
     pub async fn record_directly_finalized<F, Fut>(
         &self,
         directly_finalized_hash: BlockHash,

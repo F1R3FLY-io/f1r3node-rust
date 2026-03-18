@@ -1,14 +1,14 @@
 // See crypto/src/main/scala/coop/rchain/crypto/signatures/SignaturesAlg.scala
 
-use serde::{
-    de::{self, Visitor},
-    Deserialize, Deserializer, Serialize, Serializer,
-};
 use std::fmt;
 
-use crate::rust::{private_key::PrivateKey, public_key::PublicKey};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{secp256k1::Secp256k1, secp256k1_eth::Secp256k1Eth};
+use super::secp256k1::Secp256k1;
+use super::secp256k1_eth::Secp256k1Eth;
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
 
 pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
     fn verify(&self, data: &[u8], signature: &[u8], pub_key: &[u8]) -> bool;
@@ -37,31 +37,23 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
 }
 
 impl Clone for Box<dyn SignaturesAlg> {
-    fn clone(&self) -> Self {
-        self.box_clone()
-    }
+    fn clone(&self) -> Self { self.box_clone() }
 }
 
 impl PartialEq for Box<dyn SignaturesAlg> {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &Self) -> bool { self.name() == other.name() }
 }
 
 impl Serialize for Box<dyn SignaturesAlg> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         serializer.serialize_str(&self.name())
     }
 }
 
 impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         struct SignaturesAlgVisitor;
 
         impl<'de> Visitor<'de> for SignaturesAlgVisitor {
@@ -72,9 +64,7 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
+            where E: de::Error {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
                     "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),

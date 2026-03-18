@@ -1,15 +1,16 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/BlockDagStorageFixture.scala
-// Moved from casper/tests/helper/block_dag_storage_fixture.rs to casper/src/rust/test_utils/helper/block_dag_storage_fixture.rs
-// All imports fixed for library crate context
+// See casper/src/test/scala/coop/rchain/casper/helper/BlockDagStorageFixture.
+// scala Moved from casper/tests/helper/block_dag_storage_fixture.rs to
+// casper/src/rust/test_utils/helper/block_dag_storage_fixture.rs All imports
+// fixed for library crate context
 
 use std::future::Future;
 
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 
 use crate::rust::test_utils::util::genesis_builder::GenesisContext;
 use crate::rust::test_utils::util::rholang::resources;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub async fn with_genesis<F, Fut, R>(context: GenesisContext, f: F) -> R
 where

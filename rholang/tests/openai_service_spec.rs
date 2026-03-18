@@ -1,5 +1,5 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/OpenAIServiceSpec.scala
-// Ported from Scala PR #123
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/OpenAIServiceSpec.
+// scala Ported from Scala PR #123
 
 //! Tests for OpenAI service configuration and behavior.
 //! Matches Scala's OpenAIServiceSpec test suite.
@@ -15,7 +15,8 @@ fn parse_bool_value(value: &str) -> Option<bool> {
     }
 }
 
-/// Helper to select service based on config (mirrors Scala's selectService logic)
+/// Helper to select service based on config (mirrors Scala's selectService
+/// logic)
 fn select_service(
     config_enabled: Option<bool>,
     env_enabled: Option<bool>,
@@ -33,7 +34,8 @@ fn select_service(
     }
 }
 
-/// Helper to select service with validation (mirrors Scala's selectServiceWithValidation logic)
+/// Helper to select service with validation (mirrors Scala's
+/// selectServiceWithValidation logic)
 fn select_service_with_validation(
     enabled: bool,
     has_api_key: bool,

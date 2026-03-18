@@ -1,3 +1,9 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{Par, Send};
+use models::rust::utils::union;
+use rholang_parser::ast::{Name, SendType};
+
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
@@ -5,11 +11,6 @@ use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
-use models::rhoapi::{Par, Send};
-use models::rust::utils::union;
-use std::collections::HashMap;
-
-use rholang_parser::ast::{Name, SendType};
 
 pub fn normalize_p_send<'ast>(
     channel: &'ast Name<'ast>,
@@ -83,28 +84,28 @@ pub fn normalize_p_send<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use models::{
-        create_bit_vector,
-        rhoapi::Par,
-        rust::utils::{new_boundvar_par, new_gint_par, new_send},
-    };
+    use models::create_bit_vector;
+    use models::rhoapi::Par;
+    use models::rust::utils::{new_boundvar_par, new_gint_par, new_send};
 
-    use crate::rust::interpreter::{
-        compiler::{compiler::Compiler, exports::ProcVisitInputs, normalize::VarSort},
-        errors::InterpreterError,
-        test_utils::utils::proc_visit_inputs_and_env,
-    };
+    use crate::rust::interpreter::compiler::compiler::Compiler;
+    use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+    use crate::rust::interpreter::compiler::normalize::VarSort;
+    use crate::rust::interpreter::errors::InterpreterError;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn p_send_should_handle_a_basic_send() {
+        use rholang_parser::ast::SendType;
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::SendType;
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();
@@ -145,17 +146,20 @@ mod tests {
 
     #[test]
     fn p_send_should_handle_a_name_var() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::SendType;
         use rholang_parser::SourcePos;
 
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
         let parser = rholang_parser::RholangParser::new();
 
         // Create channel: x (NameVar)
@@ -193,10 +197,11 @@ mod tests {
 
     #[test]
     fn p_send_should_propagate_known_free() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{Id, SendType, Var};
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let parser = rholang_parser::RholangParser::new();
 

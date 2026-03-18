@@ -1,25 +1,23 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/DeployerIdTest.scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/DeployerIdTest.
+// scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::{genesis_builder::GenesisBuilder, rholang::resources::with_runtime_manager};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
-use crypto::rust::{
-    private_key::PrivateKey, signatures::secp256k1::Secp256k1,
-    signatures::signatures_alg::SignaturesAlg,
-};
-use models::rhoapi::{
-    expr::ExprInstance, g_unforgeable::UnfInstance, Expr, GDeployerId, GUnforgeable, Par,
-};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{Expr, GDeployerId, GUnforgeable, Par};
 use prost::bytes::Bytes;
 
-fn default_sec() -> PrivateKey {
-    construct_deploy::DEFAULT_SEC.clone()
-}
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::with_runtime_manager;
 
-fn default_sec2() -> PrivateKey {
-    construct_deploy::DEFAULT_SEC2.clone()
-}
+fn default_sec() -> PrivateKey { construct_deploy::DEFAULT_SEC.clone() }
+
+fn default_sec2() -> PrivateKey { construct_deploy::DEFAULT_SEC2.clone() }
 
 #[tokio::test]
 async fn deployer_id_should_be_equal_to_the_deployers_public_key() {

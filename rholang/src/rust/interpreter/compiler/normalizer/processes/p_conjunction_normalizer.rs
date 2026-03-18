@@ -1,13 +1,14 @@
+use std::collections::HashMap;
+
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::{Connective, ConnectiveBody, Par};
+use rholang_parser::ast::AnnProc;
+use rholang_parser::SourceSpan;
+
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
-use models::rhoapi::connective::ConnectiveInstance;
-use models::rhoapi::{Connective, ConnectiveBody, Par};
-use std::collections::HashMap;
-
-use rholang_parser::ast::AnnProc;
-use rholang_parser::SourceSpan;
 
 pub fn normalize_p_conjunction<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -78,21 +79,24 @@ pub fn normalize_p_conjunction<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::compiler::normalize::VarSort::ProcSort;
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use models::rhoapi::connective::ConnectiveInstance;
     use models::rhoapi::{Connective, ConnectiveBody};
     use models::rust::utils::new_freevar_par;
     use pretty_assertions::assert_eq;
 
+    use crate::rust::interpreter::compiler::normalize::VarSort::ProcSort;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
+
     #[test]
     fn p_conjunction_should_delegate_and_count_any_free_variables_inside() {
+        use rholang_parser::SourcePos;
+
         use super::normalize_p_conjunction;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::SourcePos;
 
         let (inputs, env) = proc_visit_inputs_and_env();
 

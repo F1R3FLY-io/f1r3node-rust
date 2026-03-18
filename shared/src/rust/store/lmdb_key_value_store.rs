@@ -1,11 +1,11 @@
-use heed::types::SerdeBincode;
-use heed::{Database, Env};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::rust::ByteBuffer;
+use heed::types::SerdeBincode;
+use heed::{Database, Env};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
+use crate::rust::ByteBuffer;
 
 pub struct LmdbKeyValueStore {
     pub env: Arc<Env>,
@@ -80,9 +80,7 @@ impl KeyValueStore for LmdbKeyValueStore {
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn KeyValueStore> {
-        Box::new(self.clone())
-    }
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
         let db = self.db.lock().map_err(|_| {
@@ -103,9 +101,7 @@ impl KeyValueStore for LmdbKeyValueStore {
     }
 
     // This is only needed for testing purposes
-    fn size_bytes(&self) -> usize {
-        todo!()
-    }
+    fn size_bytes(&self) -> usize { todo!() }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
         let kv_store_map = self.to_map()?;

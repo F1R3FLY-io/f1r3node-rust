@@ -1,32 +1,30 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportServer.scala
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use models::routing::Protocol;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use models::routing::Protocol;
-
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{
-        DISPATCHED_MESSAGES_METRIC, DISPATCHED_PACKETS_METRIC, TRANSPORT_METRICS_SOURCE,
-    },
-    peer_node::PeerNode,
-    rp::rp_conf::RPConf,
-    transport::{
-        communication_response::CommunicationResponse,
-        grpc_transport_receiver::{GrpcTransportReceiver, MessageHandlers, PeerBufferSlot},
-        packet_ops::StreamCache,
-        stream_handler::StreamHandler,
-        transport_layer::Blob,
-    },
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    DISPATCHED_MESSAGES_METRIC, DISPATCHED_PACKETS_METRIC, TRANSPORT_METRICS_SOURCE,
 };
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::rp_conf::RPConf;
+use crate::rust::transport::communication_response::CommunicationResponse;
+use crate::rust::transport::grpc_transport_receiver::{
+    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot,
+};
+use crate::rust::transport::packet_ops::StreamCache;
+use crate::rust::transport::stream_handler::StreamHandler;
+use crate::rust::transport::transport_layer::Blob;
 
 /// Cancelable resource that can be cancelled/stopped
 pub type Cancelable = JoinHandle<()>;
@@ -50,8 +48,8 @@ pub type HandleStreamedFn =
 pub trait TransportLayerServer {
     /// Set up message handlers and start receiving connections
     ///
-    /// This method configures the server with handlers for different types of messages
-    /// and starts listening for incoming gRPC connections.
+    /// This method configures the server with handlers for different types of
+    /// messages and starts listening for incoming gRPC connections.
     async fn handle_receive(
         &self,
         dispatch: DispatchFn,
@@ -59,7 +57,8 @@ pub trait TransportLayerServer {
     ) -> Result<Cancelable, CommError>;
 }
 
-/// GrpcTransportServer - gRPC server implementation for handling transport layer messages
+/// GrpcTransportServer - gRPC server implementation for handling transport
+/// layer messages
 #[derive(Debug, Clone)]
 pub struct GrpcTransportServer {
     /// Local peer node
@@ -166,8 +165,9 @@ impl TransportServer {
 
     /// Start the server with the given message handlers
     ///
-    /// This method is idempotent - if the server is already running, it returns immediately.
-    /// If a previous server instance exists, it will be stopped before starting the new one.
+    /// This method is idempotent - if the server is already running, it returns
+    /// immediately. If a previous server instance exists, it will be
+    /// stopped before starting the new one.
     pub async fn start(
         &self,
         dispatch: DispatchFn,
@@ -206,7 +206,8 @@ impl TransportServer {
 
     /// Stop the server
     ///
-    /// This method is idempotent - if the server is not running, it returns immediately.
+    /// This method is idempotent - if the server is not running, it returns
+    /// immediately.
     pub async fn stop(&self) -> Result<(), CommError> {
         // Check if not running
         if !self.is_running.load(Ordering::Acquire) {
@@ -233,15 +234,14 @@ impl TransportServer {
     }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Acquire)
-    }
+    pub fn is_running(&self) -> bool { self.is_running.load(Ordering::Acquire) }
 
     /// Get a JoinHandle for monitoring the server's lifecycle
     ///
     /// Returns a new JoinHandle that will complete when the server stops.
     /// This allows external code to monitor the server without taking ownership
-    /// of the internal handle, preserving the server's ability to manage itself.
+    /// of the internal handle, preserving the server's ability to manage
+    /// itself.
     ///
     /// Returns None if the server is not currently running.
     pub async fn get_monitor_handle(&self) -> Option<JoinHandle<()>> {
@@ -266,8 +266,8 @@ impl TransportServer {
 impl TransportLayerServer for GrpcTransportServer {
     /// Set up message handlers and start receiving connections
     ///
-    /// This method configures the server with handlers for different types of messages
-    /// and starts listening for incoming gRPC connections.
+    /// This method configures the server with handlers for different types of
+    /// messages and starts listening for incoming gRPC connections.
     async fn handle_receive(
         &self,
         dispatch: DispatchFn,
@@ -326,7 +326,8 @@ impl TransportLayerServer for GrpcTransportServer {
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    "Could not restore data from file while handling stream for key {}: {}",
+                                    "Could not restore data from file while handling stream for \
+                                     key {}: {}",
                                     stream_msg.key,
                                     e
                                 );

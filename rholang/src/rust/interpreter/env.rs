@@ -9,9 +9,7 @@ pub struct Env<A: Clone> {
 }
 
 impl<A: Clone> Default for Env<A> {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl<A: Clone> Env<A> {

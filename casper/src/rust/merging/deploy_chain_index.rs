@@ -1,15 +1,15 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DeployChainIndex.scala
 
-use prost::bytes::Bytes;
-use shared::rust::hashable_set::HashableSet;
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
+use std::sync::Arc;
 
-use rspace_plus_plus::rspace::{
-    errors::HistoryError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    history::history_repository::HistoryRepository,
-    merger::{event_log_index::EventLogIndex, state_change::StateChange},
-};
+use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
+use shared::rust::hashable_set::HashableSet;
 
 use super::deploy_index::DeployIndex;
 
@@ -19,7 +19,8 @@ pub struct DeployIdWithCost {
     pub cost: u64,
 }
 
-/** index of deploys depending on each other inside a single block (state transition) */
+/** index of deploys depending on each other inside a single block (state
+ * transition) */
 #[derive(Debug, Clone, Hash)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
@@ -89,23 +90,19 @@ impl DeployChainIndex {
 }
 
 impl PartialEq for DeployChainIndex {
-    fn eq(&self, other: &Self) -> bool {
-        self.deploys_with_cost == other.deploys_with_cost
-    }
+    fn eq(&self, other: &Self) -> bool { self.deploys_with_cost == other.deploys_with_cost }
 }
 
 impl Eq for DeployChainIndex {}
 
 impl PartialOrd for DeployChainIndex {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for DeployChainIndex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // 1. PRIMARY: Highest total cost first (economic incentive)
-        //    Higher-paying transactions get priority in conflict resolution
+        // 1. PRIMARY: Highest total cost first (economic incentive) Higher-paying
+        //    transactions get priority in conflict resolution
         let self_total_cost: u64 = self.deploys_with_cost.0.iter().map(|d| d.cost).sum();
         let other_total_cost: u64 = other.deploys_with_cost.0.iter().map(|d| d.cost).sum();
 
@@ -114,7 +111,8 @@ impl Ord for DeployChainIndex {
             return cost_cmp;
         }
 
-        // 2. SECONDARY: Highest single deploy cost (prioritize high-value individual transactions)
+        // 2. SECONDARY: Highest single deploy cost (prioritize high-value individual
+        //    transactions)
         let self_max_cost = self
             .deploys_with_cost
             .0
@@ -135,8 +133,8 @@ impl Ord for DeployChainIndex {
             return max_cost_cmp;
         }
 
-        // 3. TERTIARY: Lexicographically smallest deploy signature (deterministic)
-        //    This ensures consistent ordering across all nodes when costs are equal
+        // 3. TERTIARY: Lexicographically smallest deploy signature (deterministic) This
+        //    ensures consistent ordering across all nodes when costs are equal
         let self_min_deploy = self
             .deploys_with_cost
             .0
@@ -161,17 +159,19 @@ impl Ord for DeployChainIndex {
             return signature_cmp;
         }
 
-        // 4. QUATERNARY: Post-state hash as final fallback
-        //    Ensures total ordering even for identical deploys (should be rare)
+        // 4. QUATERNARY: Post-state hash as final fallback Ensures total ordering even
+        //    for identical deploys (should be rare)
         self.post_state_hash.cmp(&other.post_state_hash)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use std::collections::HashSet;
+
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    use super::*;
 
     fn mk_index(deploys: &[(u8, u64)], post_state_seed: u8) -> DeployChainIndex {
         let deploys_with_cost: HashSet<DeployIdWithCost> = deploys

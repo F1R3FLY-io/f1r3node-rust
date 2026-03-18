@@ -1,3 +1,7 @@
+// FFI boundary functions dereference raw pointers by design.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::unnecessary_unwrap)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Tracks total bytes currently allocated and leaked to JNA callers
@@ -8,7 +12,7 @@ pub extern "C" fn get_allocated_bytes() -> usize { ALLOCATED_BYTES.load(Ordering
 
 #[no_mangle]
 pub extern "C" fn reset_allocated_bytes() { ALLOCATED_BYTES.store(0, Ordering::SeqCst) }
-use std::ffi::{CStr, c_char};
+use std::ffi::{c_char, CStr};
 use std::sync::{Arc, Mutex};
 
 use models::rhoapi::*;
@@ -58,8 +62,7 @@ pub extern "C" fn space_new(path: *const c_char) -> *mut Space {
             // let mut kvm = mk_rspace_store_manager(lmdb_path.into(), 1 * GB);
             // let store = kvm.r_space_stores().await.unwrap();
 
-            let mut kvm =
-                mk_rspace_store_manager((&format!("{}/rspace++/", data_dir)).into(), GB);
+            let mut kvm = mk_rspace_store_manager((&format!("{}/rspace++/", data_dir)).into(), GB);
             let store = kvm.r_space_stores().await.unwrap();
 
             // println!("\nhistory store: {:?}",
@@ -1595,7 +1598,10 @@ pub extern "C" fn validate_state_items(
         .history_items
         .into_iter()
         .map(|history_item_proto| {
-            (Blake2b256Hash::from_bytes(history_item_proto.key_hash), history_item_proto.value)
+            (
+                Blake2b256Hash::from_bytes(history_item_proto.key_hash),
+                history_item_proto.value,
+            )
         })
         .collect();
 
@@ -1603,7 +1609,10 @@ pub extern "C" fn validate_state_items(
         .data_items
         .into_iter()
         .map(|data_item_proto| {
-            (Blake2b256Hash::from_bytes(data_item_proto.key_hash), data_item_proto.value)
+            (
+                Blake2b256Hash::from_bytes(data_item_proto.key_hash),
+                data_item_proto.value,
+            )
         })
         .collect();
 
@@ -1694,11 +1703,7 @@ pub extern "C" fn set_data_items(
 }
 
 #[no_mangle]
-pub extern "C" fn set_root(
-    rspace: *mut Space,
-    root_pointer: *const u8,
-    root_bytes_len: usize,
-) {
+pub extern "C" fn set_root(rspace: *mut Space, root_pointer: *const u8, root_bytes_len: usize) {
     let root_slice = unsafe { std::slice::from_raw_parts(root_pointer, root_bytes_len) };
     let root = Blake2b256Hash::from_bytes(root_slice.to_vec());
 

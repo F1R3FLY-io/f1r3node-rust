@@ -1,4 +1,10 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.scala
+// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.
+// scala
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -12,10 +18,6 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -144,7 +146,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                         as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
                 });
 
-                // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
+                // Direct-to-running path: emit init metrics that are otherwise produced in
+                // Initializing.
                 record_direct_to_running_init_metrics();
 
                 transition_to_running(
@@ -210,9 +213,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremonyMaster<T> {
-    async fn init(&self) -> Result<(), CasperError> {
-        self.approve_protocol.run().await
-    }
+    async fn init(&self) -> Result<(), CasperError> { self.approve_protocol.run().await }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
         match msg {
@@ -236,8 +237,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremo
         }
     }
 
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-        None
-    }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
 use dashmap::DashSet;

@@ -1,11 +1,11 @@
 //! Deploy gRPC Service V1 implementation
 //!
 //! This module provides a gRPC service for deploy functionality,
-//! allowing clients to deploy contracts, query blocks, and perform various blockchain operations.
+//! allowing clients to deploy contracts, query blocks, and perform various
+//! blockchain operations.
 
 use std::sync::{Arc, OnceLock};
 
-use crate::rust::web::version_info::get_version_info_str;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::block_report_api::BlockReportAPI;
@@ -32,6 +32,8 @@ use models::casper::{
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
+
+use crate::rust::web::version_info::get_version_info_str;
 
 trait IntoServiceError {
     fn into_service_error(self) -> ServiceError;
@@ -334,7 +336,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<MachineVerifyQuery>,
     ) -> Result<tonic::Response<MachineVerifyResponse>, tonic::Status> {
-        let _request = request.into_inner(); // maybe this parameter is should be removed in future, left for compatibility with Scala version
+        let _request = request.into_inner(); // maybe this parameter is should be removed in future, left for compatibility
+                                             // with Scala version
         match BlockAPI::machine_verifiable_dag(
             &self.engine_cell,
             self.api_max_blocks_limit,
@@ -557,7 +560,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                 block_info,
                             ),
                         ),
-                    }))
+                    }));
                 }
                 Err(e) => {
                     let not_found = e

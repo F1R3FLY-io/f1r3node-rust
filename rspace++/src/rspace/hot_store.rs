@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 use tracing::warn;
 
 use crate::rspace::history::history_reader::HistoryReaderBase;
@@ -912,18 +912,18 @@ where
         let data_items: usize = cache.datums.iter().map(|entry| entry.value().len()).sum();
         let joins_items: usize = cache.joins.iter().map(|entry| entry.value().len()).sum();
 
-        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
         {
             cache.continuations.clear();
         }
-        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
         {
             cache.datums.clear();
         }
-        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
         {
             cache.joins.clear();
         }
@@ -1011,7 +1011,7 @@ impl HotStoreInstances {
         K: Default + Clone + Debug + Send + Sync + 'static,
     {
         let cache = Arc::new(Mutex::new(cache));
-        
+
         (HotStoreInstances::create_from_mhs_and_hr(cache, history_reader)) as _
     }
 

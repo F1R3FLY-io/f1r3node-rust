@@ -1,30 +1,27 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportClient.scala
 
-use async_trait::async_trait;
-use hex;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use hex;
+use models::routing::transport_layer_client::TransportLayerClient;
+use models::routing::Protocol;
 use tokio::sync::{Mutex, OnceCell};
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 
-use crate::rust::{
-    errors::CommError,
-    peer_node::PeerNode,
-    transport::{
-        f1r3fly_connector::F1r3flyConnector,
-        grpc_transport::GrpcTransport,
-        packet_ops::PacketOps,
-        ssl_session_client_interceptor::SslSessionClientInterceptor,
-        stream_observable::StreamObservable,
-        transport_layer::{Blob, TransportLayer},
-    },
-    utils::resolve_hostname_to_ip,
-};
-
-use models::routing::{transport_layer_client::TransportLayerClient, Protocol};
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
+use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
+use crate::rust::transport::grpc_transport::GrpcTransport;
+use crate::rust::transport::packet_ops::PacketOps;
+use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
+use crate::rust::transport::stream_observable::StreamObservable;
+use crate::rust::transport::transport_layer::{Blob, TransportLayer};
+use crate::rust::utils::resolve_hostname_to_ip;
 
 type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
 
@@ -137,10 +134,12 @@ impl GrpcTransportClient {
         tracing::info!("Creating new F1r3fly channel to peer {}", peer.to_address());
 
         // **F1r3fly Custom TLS Integration Architecture**
-        // This method creates tonic gRPC channels using F1r3flyConnector with connect_with_connector()
-        // providing direct integration of F1r3fly TLS verification with tonic's gRPC layer
+        // This method creates tonic gRPC channels using F1r3flyConnector with
+        // connect_with_connector() providing direct integration of F1r3fly TLS
+        // verification with tonic's gRPC layer
 
-        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname verification
+        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname
+        // verification
         let f1r3fly_id_hex = hex::encode(&peer.id.key);
         tracing::debug!(
             "Creating F1r3flyConnector with F1r3fly address for TLS hostname: {}",
@@ -181,7 +180,8 @@ impl GrpcTransportClient {
         })?;
 
         // Step 3: Use F1r3flyConnector with tonic's connect_with_connector API
-        // The F1r3flyConnector will handle TLS hostname verification against the F1r3fly address
+        // The F1r3flyConnector will handle TLS hostname verification against the
+        // F1r3fly address
         let grpc_channel = endpoint
             .connect_with_connector(f1r3fly_connector)
             .await
@@ -425,8 +425,8 @@ impl GrpcTransportClient {
 
     /// Stream a blob file from cache to a peer using pre-created client
     ///
-    /// This method uses a pre-created transport client, eliminating the need for
-    /// complex connection management in spawned tasks.
+    /// This method uses a pre-created transport client, eliminating the need
+    /// for complex connection management in spawned tasks.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,

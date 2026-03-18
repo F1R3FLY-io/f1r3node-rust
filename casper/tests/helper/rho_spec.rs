@@ -1,12 +1,9 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
 
-use crate::genesis::contracts::test_util::TestUtil;
-use crate::helper::{
-    block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
-    secp256k1_sign_contract, sys_auth_token_contract,
-};
-use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::helper::test_result_collector::{
     RhoTestAssertion, TestResult, TestResultCollector,
@@ -25,9 +22,14 @@ use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
 use rspace_plus_plus::rspace::r#match::Match;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::genesis::contracts::test_util::TestUtil;
+use crate::helper::{
+    block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
+    secp256k1_sign_contract, sys_auth_token_contract,
+};
+use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
+use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
 const SHARD_ID: &str = "root-shard";
 const RHO_SPEC_PRIVATE_KEY: &str =
@@ -69,9 +71,7 @@ impl RhoSpec {
         }
     }
 
-    fn printer() -> PrettyPrinter {
-        PrettyPrinter::new()
-    }
+    fn printer() -> PrettyPrinter { PrettyPrinter::new() }
 
     pub fn mk_test(&self, _test_name: &str, test_attempts: &HashMap<i64, Vec<RhoTestAssertion>>) {
         assert!(
@@ -131,8 +131,9 @@ impl RhoSpec {
         }
     }
 
-    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of `!_.isSuccess`.
-    // This was fixed in Rust to correctly return true when there are failures (not successes).
+    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of
+    // `!_.isSuccess`. This was fixed in Rust to correctly return true when
+    // there are failures (not successes).
     pub fn has_failures(assertions: &[RhoTestAssertion]) -> bool {
         assertions.iter().any(|a| !a.is_success())
     }
@@ -313,9 +314,10 @@ pub async fn get_results(
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
     })?;
 
-    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
-    // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
-    // In pure Rust code (without JNA), we must create the Matcher explicitly here,
+    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where
+    // Matcher is created automatically (see
+    // rspace++/libs/rspace_rhotypes/src/lib.rs). In pure Rust code (without
+    // JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
     let matcher =
         Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
@@ -339,7 +341,8 @@ pub async fn get_results(
     let rand = Blake2b512Random::create_from_length(128).split_short(1);
 
     // Note: tokio::time::timeout similar to Scala's `monix.eval.Task.timeout()`.
-    // If test execution takes longer than `execution_timeout`, it returns a timeout error.
+    // If test execution takes longer than `execution_timeout`, it returns a timeout
+    // error.
     match tokio::time::timeout(
         execution_timeout,
         TestUtil::eval_source(test_object, &runtime, rand),
@@ -351,7 +354,7 @@ pub async fn get_results(
             return Err(InterpreterError::BugFoundError(format!(
                 "Timeout of {:?} expired while executing test from {}",
                 execution_timeout, test_object.path
-            )))
+            )));
         }
     }
 

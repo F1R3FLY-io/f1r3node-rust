@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::internal::{ConsumeCandidate, WaitingContinuation};
-use super::trace::event::{COMM, Consume, Produce};
+use super::trace::event::{Consume, Produce, COMM};
 
 /// Core logging operations that can be overridden by different RSpace loggers
 pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
@@ -44,9 +44,7 @@ pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
 pub struct BasicLogger;
 
 impl Default for BasicLogger {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl BasicLogger {

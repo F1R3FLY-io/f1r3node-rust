@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use bincode;
 use serde::Serialize;
@@ -167,7 +167,11 @@ pub fn hash_from_vec<C: Serialize>(channels: &Vec<C>) -> Blake2b256Hash {
             None
         };
         let result = hash(channels.first().unwrap());
-        log_step_delta("hash_from_vec", "after_single_channel_fast_path", before_fast_path);
+        log_step_delta(
+            "hash_from_vec",
+            "after_single_channel_fast_path",
+            before_fast_path,
+        );
         return result;
     }
 
@@ -184,7 +188,11 @@ pub fn hash_from_vec<C: Serialize>(channels: &Vec<C>) -> Blake2b256Hash {
         None
     };
     let result = hash_from_hashes(&hashes);
-    log_step_delta("hash_from_vec", "after_hash_from_hashes", before_hash_from_hashes);
+    log_step_delta(
+        "hash_from_vec",
+        "after_hash_from_hashes",
+        before_hash_from_hashes,
+    );
     result
 }
 
@@ -196,7 +204,11 @@ pub fn hash_from_hashes(channels_hashes: &Vec<Blake2b256Hash>) -> Blake2b256Hash
         None
     };
     let mut ord_refs: Vec<&Blake2b256Hash> = channels_hashes.iter().collect();
-    log_step_delta("hash_from_hashes", "after_collect_refs", before_collect_refs);
+    log_step_delta(
+        "hash_from_hashes",
+        "after_collect_refs",
+        before_collect_refs,
+    );
     let before_sort_refs = if mem_profile_enabled() {
         read_rss_kb()
     } else {

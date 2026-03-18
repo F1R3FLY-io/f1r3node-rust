@@ -1,37 +1,36 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportReceiver.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportReceiver.
+// scala
 
-use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, OnceCell};
-use tokio::task::JoinHandle;
-use tonic::{Request, Response, Status};
 
-use crate::rust::rp::protocol_helper;
-use crate::rust::rp::rp_conf::RPConf;
-use crate::rust::transport::limited_buffer::LimitedBuffer;
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{
-        PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC, PACKETS_RECEIVED_METRIC,
-        STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC, STREAM_CHUNKS_RECEIVED_METRIC,
-        TRANSPORT_METRICS_SOURCE,
-    },
-    peer_node::PeerNode,
-};
+use futures::stream::StreamExt;
 use models::routing::transport_layer_server::{TransportLayer, TransportLayerServer};
 use models::routing::{Chunk, TlRequest, TlResponse};
 use prost::Message;
+use shared::rust::shared::recent_hash_filter::RecentHashFilter;
+use tokio::sync::{Mutex, OnceCell};
+use tokio::task::JoinHandle;
+use tonic::{Request, Response, Status};
 
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
 use super::ssl_session_server_interceptor::SslSessionServerInterceptor;
 use super::stream_handler::{Circuit, StreamError, StreamHandler, Streamed};
-use shared::rust::shared::recent_hash_filter::RecentHashFilter;
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC, PACKETS_RECEIVED_METRIC,
+    STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC, STREAM_CHUNKS_RECEIVED_METRIC,
+    TRANSPORT_METRICS_SOURCE,
+};
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::protocol_helper;
+use crate::rust::rp::rp_conf::RPConf;
+use crate::rust::transport::limited_buffer::LimitedBuffer;
 
 /// Calculate a deterministic hash of bytes for gossip deduplication.
 fn calculate_hash(bytes: &[u8]) -> u64 {
@@ -160,13 +159,10 @@ impl TransportLayerService {
             } else {
                 // Peer doesn't exist
                 let new_once_cell = Arc::new(OnceCell::new());
-                buffers_map.insert(
-                    peer.clone(),
-                    PeerBufferSlot {
-                        once_cell: new_once_cell.clone(),
-                        last_seen_ms: now_ms,
-                    },
-                );
+                buffers_map.insert(peer.clone(), PeerBufferSlot {
+                    once_cell: new_once_cell.clone(),
+                    last_seen_ms: now_ms,
+                });
                 (new_once_cell, true)
             }
         };
@@ -190,7 +186,8 @@ impl TransportLayerService {
         }
 
         // Get the buffers
-        // This will wait if another thread is creating them, or return immediately if they exist
+        // This will wait if another thread is creating them, or return immediately if
+        // they exist
         let buffers = once_cell
             .get_or_try_init(|| async {
                 let (tell_buffer, blob_buffer, tell_task_handle, blob_task_handle) =
@@ -382,7 +379,8 @@ impl TransportLayerService {
         }
     }
 
-    /// Handle stream using the public StreamHandler API with thread-local parameters
+    /// Handle stream using the public StreamHandler API with thread-local
+    /// parameters
     async fn handle_stream_with_params<S>(
         &self,
         stream: S,
@@ -443,7 +441,8 @@ impl TransportLayer for TransportLayerService {
 
         // Determine if this is a gossip message (not a request/response)
         // Only filter pure gossip announcements: BlockHashMessage and HasBlock
-        // Other messages (approvals, requests, handshakes, heartbeats) must pass through
+        // Other messages (approvals, requests, handshakes, heartbeats) must pass
+        // through
         let is_gossip = match &protocol.message {
             Some(models::routing::protocol::Message::Packet(packet)) => {
                 packet.type_id == "BlockHashMessage" || packet.type_id == "HasBlock"
@@ -476,8 +475,9 @@ impl TransportLayer for TransportLayerService {
             .map_err(|e| Status::internal(format!("Failed to get tell buffer: {}", e)))?;
 
         // Push message to buffer and handle result
-        // TODO(perf): protocol.clone() copies entire message which may contain block data.
-        // Consider using Arc<Protocol> or passing ownership if buffer can take it.
+        // TODO(perf): protocol.clone() copies entire message which may contain block
+        // data. Consider using Arc<Protocol> or passing ownership if buffer can
+        // take it.
         let send_msg = CommSend::new(protocol.clone());
 
         let response = if tell_buffer.push_next(send_msg) {
@@ -537,7 +537,8 @@ impl TransportLayer for TransportLayerService {
             Ok(stream_msg) => {
                 metrics::counter!(STREAM_CHUNKS_RECEIVED_METRIC, "source" => TRANSPORT_METRICS_SOURCE).increment(1);
                 let msg_enqueued = format!(
-                    "Stream chunk pushed to message buffer. Sender {}, message {}, size {}, file {}.",
+                    "Stream chunk pushed to message buffer. Sender {}, message {}, size {}, file \
+                     {}.",
                     stream_msg.sender.endpoint.host,
                     stream_msg.type_id,
                     stream_msg.content_length,
@@ -595,6 +596,7 @@ impl GrpcTransportReceiver {
         cache: StreamCache,
     ) -> Result<JoinHandle<()>, CommError> {
         use std::net::SocketAddr;
+
         use tonic::transport::Server;
 
         // Import our custom F1r3fly server

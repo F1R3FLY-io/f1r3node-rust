@@ -1,4 +1,5 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/CloseBlockDeploy.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/
+// CloseBlockDeploy.scala
 
 use std::collections::HashMap;
 
@@ -7,12 +8,9 @@ use models::rhoapi::Par;
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::rust::{
-    errors::CasperError,
-    util::rholang::{
-        system_deploy::SystemDeployTrait, system_deploy_user_error::SystemDeployUserError,
-    },
-};
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 
 // Currently we use parentHash as initial random seed
 #[derive(Clone)]
@@ -46,13 +44,9 @@ impl SystemDeployTrait for CloseBlockDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.initial_rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

@@ -5,13 +5,15 @@ use shared::rust::ByteString;
 /**
  * Sorts the insides of the Par and ESet/EMap of the rholangADT
  *
- * A score tree is recursively built for each term and is used to sort the insides of Par/ESet/EMap.
- * For most terms, the current term type's absolute value based on the Score object is added as a Leaf
- * to the left most branch and the score tree built for the inside terms are added to the right.
- * The Score object is a container of constants that arbitrarily assigns absolute values to term types.
- * The sort order is total as every term type is assigned an unique value in the Score object.
- * For ground types, the appropriate integer representation is used as the base score tree.
- * For var types, the Debruijn level from the normalization is used.
+ * A score tree is recursively built for each term and is used to sort the
+ * insides of Par/ESet/EMap. For most terms, the current term type's
+ * absolute value based on the Score object is added as a Leaf to the left
+ * most branch and the score tree built for the inside terms are added to
+ * the right. The Score object is a container of constants that arbitrarily
+ * assigns absolute values to term types. The sort order is total as every
+ * term type is assigned an unique value in the Score object. For ground
+ * types, the appropriate integer representation is used as the base score
+ * tree. For var types, the Debruijn level from the normalization is used.
  *
  * In order to sort an term, call [Type]SortMatcher.sortMatch(term)
  * and extract the .term  of the returned ScoredTerm.
@@ -182,10 +184,11 @@ impl<T: Clone> ScoredTerm<T> {
 }
 
 /**
-* Total order of all terms
-*
-* The general order is ground, vars, arithmetic, comparisons, logical, and then others
-*/
+ * Total order of all terms
+ *
+ * The general order is ground, vars, arithmetic, comparisons, logical, and
+ * then others
+ */
 pub struct Score;
 
 impl Score {

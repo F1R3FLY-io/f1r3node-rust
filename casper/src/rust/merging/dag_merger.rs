@@ -1,25 +1,22 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use prost::bytes::Bytes;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
-use rholang::rust::interpreter::{
-    merging::rholang_merging_logic::RholangMergingLogic, rho_runtime::RhoHistoryRepository,
-};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    merger::{
-        merging_logic::{self, NumberChannelsDiff},
-        state_change_merger,
-    },
-};
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
+use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
-use super::{conflict_set_merger, deploy_chain_index::DeployChainIndex};
-use crate::rust::{errors::CasperError, system_deploy::is_system_deploy_id};
+use super::conflict_set_merger;
+use super::deploy_chain_index::DeployChainIndex;
+use crate::rust::errors::CasperError;
+use crate::rust::system_deploy::is_system_deploy_id;
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
@@ -42,16 +39,18 @@ pub fn merge(
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
 ) -> Result<(Blake2b256Hash, Vec<Bytes>), CasperError> {
-    // Get ancestors of LFB (blocks whose state is already included in LFB's post-state)
-    // Use with_ancestors to include LFB itself in the set
+    // Get ancestors of LFB (blocks whose state is already included in LFB's
+    // post-state) Use with_ancestors to include LFB itself in the set
     let lfb_ancestors = dag.with_ancestors(lfb.clone(), |_| true)?;
 
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
-    // This includes:
+    // Blocks to merge are all blocks in scope that are NOT the LFB or its
+    // ancestors. This includes:
     // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
-    // Previously we only included descendants, which missed deploy effects from sibling branches.
-    // Note: lfb_ancestors includes the LFB itself (via with_ancestors)
+    // 2. Siblings of LFB (blocks at same height but different branch) that are
+    //    ancestors of the tips
+    // Previously we only included descendants, which missed deploy effects from
+    // sibling branches. Note: lfb_ancestors includes the LFB itself (via
+    // with_ancestors)
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
             // Include all scope blocks except LFB and its ancestors
@@ -63,11 +62,13 @@ pub fn merge(
         }
     };
 
-    // Late blocks: With the new actualBlocks definition that includes sibling branches,
-    // there are no "late" blocks when scope is provided - all non-ancestor blocks are in actualBlocks.
-    // Late block filtering is now only relevant for legacy code paths without scope.
+    // Late blocks: With the new actualBlocks definition that includes sibling
+    // branches, there are no "late" blocks when scope is provided - all
+    // non-ancestor blocks are in actualBlocks. Late block filtering is now only
+    // relevant for legacy code paths without scope.
     let late_blocks: HashSet<BlockHash> = if disable_late_block_filtering || scope.is_some() {
-        // No late blocks when scope is provided (all relevant blocks are in actualBlocks)
+        // No late blocks when scope is provided (all relevant blocks are in
+        // actualBlocks)
         HashSet::new()
     } else {
         // Legacy: query nonFinalizedBlocks (non-deterministic, but no scope means
@@ -81,15 +82,19 @@ pub fn merge(
 
     // Log the block sets for debugging
     tracing::info!(
-        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lfbAncestors={}, lateBlocks={}",
+        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lfbAncestors={}, \
+         lateBlocks={}",
         hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
-        scope.as_ref().map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
+        scope
+            .as_ref()
+            .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
         actual_blocks.len(),
         lfb_ancestors.len(),
         late_blocks.len()
     );
 
-    // Get indices for actual and late blocks, converting to sorted vectors for determinism
+    // Get indices for actual and late blocks, converting to sorted vectors for
+    // determinism
     let mut actual_set_vec = Vec::new();
     let mut late_set_vec = Vec::new();
 
@@ -113,7 +118,8 @@ pub fn merge(
     actual_set_vec.sort();
     late_set_vec.sort();
 
-    // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted Vecs)
+    // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted
+    // Vecs)
     let actual_seq = actual_set_vec;
     let late_seq = late_set_vec;
 
@@ -266,7 +272,8 @@ pub fn merge(
         },
         |actions| {
             history_repository
-                .reset(lfb_post_state).map(|reset_repo| reset_repo.do_checkpoint(actions))
+                .reset(lfb_post_state)
+                .map(|reset_repo| reset_repo.do_checkpoint(actions))
                 .map(|checkpoint| checkpoint.root())
         },
         |hash| history_reader.get_data(&hash),

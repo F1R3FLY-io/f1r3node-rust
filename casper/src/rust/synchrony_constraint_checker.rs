@@ -1,26 +1,22 @@
 // See casper/src/main/scala/coop/rchain/casper/SynchronyConstraintChecker.scala
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use lazy_static::lazy_static;
-
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-};
-use models::rust::{block_metadata::BlockMetadata, validator::Validator};
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::validator::Validator;
 use shared::rust::env;
 
+use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
+use super::casper::CasperSnapshot;
+use super::errors::CasperError;
+use super::util::rholang::runtime_manager::RuntimeManager;
+use super::validator_identity::ValidatorIdentity;
 use crate::rust::util::proto_util;
-
-use super::{
-    blocks::proposer::propose_result::CheckProposeConstraintsResult, casper::CasperSnapshot,
-    errors::CasperError, util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-};
 
 const SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS_ENV: &str =
     "F1R3_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS";
@@ -43,13 +39,9 @@ static SYNCHRONY_CONSTRAINT_THRESHOLD_OVERRIDE: OnceLock<Option<f64>> = OnceLock
 static SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE: OnceLock<i64> = OnceLock::new();
 static SYNCHRONY_FINALIZED_BASELINE_ENABLED: OnceLock<bool> = OnceLock::new();
 
-fn read_bool_from_env(name: &str, default: bool) -> bool {
-    env::var_bool(name, default)
-}
+fn read_bool_from_env(name: &str, default: bool) -> bool { env::var_bool(name, default) }
 
-fn read_i64_from_env(name: &str, default: i64) -> i64 {
-    env::var_or(name, default)
-}
+fn read_i64_from_env(name: &str, default: i64) -> i64 { env::var_or(name, default) }
 
 fn read_non_negative_u64_from_env(name: &str, default: u64) -> u64 {
     let value = read_i64_from_env(name, default as i64);
@@ -95,14 +87,13 @@ fn synchrony_recovery_max_bypasses() -> u32 {
 
 fn synchrony_constraint_threshold_override() -> Option<f64> {
     *SYNCHRONY_CONSTRAINT_THRESHOLD_OVERRIDE.get_or_init(|| {
-        env::var_parsed::<f64>(SYNCHRONY_CONSTRAINT_THRESHOLD_ENV)
-            .and_then(|value| {
-                if value.is_finite() {
-                    Some(value.clamp(0.0, 1.0))
-                } else {
-                    None
-                }
-            })
+        env::var_parsed::<f64>(SYNCHRONY_CONSTRAINT_THRESHOLD_ENV).and_then(|value| {
+            if value.is_finite() {
+                Some(value.clamp(0.0, 1.0))
+            } else {
+                None
+            }
+        })
     })
 }
 
@@ -394,16 +385,13 @@ fn should_bypass_synchrony_constraint(
             false
         }
         None => {
-            states.insert(
-                validator.clone(),
-                SynchronyRecoveryState {
-                    last_known_hash: last_proposed_block_hash.to_vec(),
-                    first_failure_at: Some(now),
-                    consecutive_failures: 1,
-                    bypass_count: 0,
-                    last_bypass_at: None,
-                },
-            );
+            states.insert(validator.clone(), SynchronyRecoveryState {
+                last_known_hash: last_proposed_block_hash.to_vec(),
+                first_failure_at: Some(now),
+                consecutive_failures: 1,
+                bypass_count: 0,
+                last_bypass_at: None,
+            });
             false
         }
     }
@@ -429,7 +417,8 @@ pub async fn check(
         Some(last_proposed_block_hash) => {
             let last_proposed_block_meta = snapshot.dag.lookup_unsafe(&last_proposed_block_hash)?;
 
-            // If validator's latest block is genesis, it's not proposed any block yet and hence allowed to propose once.
+            // If validator's latest block is genesis, it's not proposed any block yet and
+            // hence allowed to propose once.
             let latest_block_is_genesis = last_proposed_block_meta.block_number == 0;
             if latest_block_is_genesis {
                 update_recovery_state_on_success(&validator);
@@ -451,7 +440,8 @@ pub async fn check(
                 let main_parent_state_hash = proto_util::post_state_hash(&main_parent_block);
 
                 // Get bonds map from PoS
-                // NOTE: It would be useful to have active validators cached in the block in the same way as bonds.
+                // NOTE: It would be useful to have active validators cached in the block in the
+                // same way as bonds.
                 let active_validators = runtime_manager
                     .get_active_validators(&main_parent_state_hash)
                     .await?;
@@ -499,9 +489,10 @@ pub async fn check(
                     Ok(CheckProposeConstraintsResult::success())
                 } else {
                     // Keep the same synchrony threshold, but evaluate it against finalized baseline
-                    // before any explicit bypass logic when proposer is still near finalized height.
-                    // This avoids circular waits where all validators block on each other's latest
-                    // block while preventing over-permissive proposing far ahead of finalization.
+                    // before any explicit bypass logic when proposer is still near finalized
+                    // height. This avoids circular waits where all validators
+                    // block on each other's latest block while preventing
+                    // over-permissive proposing far ahead of finalization.
                     let last_finalized_block_hash = snapshot.dag.last_finalized_block();
                     let last_finalized_block_meta =
                         snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
@@ -528,7 +519,8 @@ pub async fn check(
                             );
 
                         tracing::warn!(
-                            "Finalized-baseline synchrony: seen {} senders with weight {} out of total {} ({:.2} out of {:.2} needed)",
+                            "Finalized-baseline synchrony: seen {} senders with weight {} out of \
+                             total {} ({:.2} out of {:.2} needed)",
                             finalized_seen_senders.len(),
                             finalized_seen_senders_weight,
                             other_validators_weight,
@@ -538,7 +530,8 @@ pub async fn check(
 
                         if finalized_synchrony_constraint_value >= synchrony_constraint_threshold {
                             tracing::warn!(
-                                "Synchrony constraint satisfied via finalized-block baseline (primary {:.2} < {:.2}, finalized {:.2} >= {:.2})",
+                                "Synchrony constraint satisfied via finalized-block baseline \
+                                 (primary {:.2} < {:.2}, finalized {:.2} >= {:.2})",
                                 synchrony_constraint_value,
                                 threshold_f64,
                                 finalized_synchrony_constraint_value,
@@ -554,7 +547,8 @@ pub async fn check(
                         );
                     } else {
                         tracing::warn!(
-                            "Skipping finalized-baseline synchrony fallback: validator is too far ahead of finalized (proposed #{}, finalized #{})",
+                            "Skipping finalized-baseline synchrony fallback: validator is too far \
+                             ahead of finalized (proposed #{}, finalized #{})",
                             last_proposed_block_meta.block_number,
                             last_finalized_block_meta.block_number
                         );
@@ -567,7 +561,8 @@ pub async fn check(
 
                     if bypass {
                         tracing::warn!(
-                            "Synchrony constraint bypassed after sustained stall (validator {}, seen {} senders with ratio {:.2} < {:.2})",
+                            "Synchrony constraint bypassed after sustained stall (validator {}, \
+                             seen {} senders with ratio {:.2} < {:.2})",
                             hex::encode(&validator[..8]),
                             seen_senders.len(),
                             synchrony_constraint_value,

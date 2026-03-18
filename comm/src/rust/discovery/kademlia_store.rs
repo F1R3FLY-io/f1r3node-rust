@@ -4,13 +4,11 @@ use std::sync::Arc;
 
 use prost::bytes::Bytes;
 
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{DISCOVERY_METRICS_SOURCE, PEERS_METRIC},
-    peer_node::{NodeIdentifier, PeerNode},
-};
-
-use super::{kademlia_rpc::KademliaRPC, peer_table::PeerTable};
+use super::kademlia_rpc::KademliaRPC;
+use super::peer_table::PeerTable;
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{DISCOVERY_METRICS_SOURCE, PEERS_METRIC};
+use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 
 pub struct KademliaStore<T: KademliaRPC> {
     table: PeerTable<T>,
@@ -29,17 +27,11 @@ impl<T: KademliaRPC> KademliaStore<T> {
         Ok(peers)
     }
 
-    pub fn sparseness(&self) -> Result<Vec<usize>, CommError> {
-        self.table.sparseness()
-    }
+    pub fn sparseness(&self) -> Result<Vec<usize>, CommError> { self.table.sparseness() }
 
-    pub fn lookup(&self, key: &Bytes) -> Result<Vec<PeerNode>, CommError> {
-        self.table.lookup(key)
-    }
+    pub fn lookup(&self, key: &Bytes) -> Result<Vec<PeerNode>, CommError> { self.table.lookup(key) }
 
-    pub fn find(&self, key: &Bytes) -> Result<Option<PeerNode>, CommError> {
-        self.table.find(key)
-    }
+    pub fn find(&self, key: &Bytes) -> Result<Option<PeerNode>, CommError> { self.table.find(key) }
 
     pub fn remove(&self, key: &Bytes) -> Result<(), CommError> {
         self.table.remove(key)?;

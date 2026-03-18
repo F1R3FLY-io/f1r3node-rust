@@ -59,6 +59,49 @@ sudo dnf install -y \
   gcc
 ```
 
+## Git Hooks
+
+Install hooks after cloning:
+
+```bash
+./scripts/setup-hooks.sh
+```
+
+This sets `core.hooksPath` to `.githooks/`, which provides:
+
+| Hook | Runs | Checks |
+|------|------|--------|
+| `pre-commit` | On every commit | `cargo fmt --check`, `cargo clippy -D warnings` |
+| `pre-push` | On every push | `cargo clippy`, `cargo test --release` |
+
+Both hooks skip automatically in CI environments.
+
+### Hook Options
+
+```bash
+# Commit with skips
+SKIP_FMT=1 git commit -m "wip"
+SKIP_CLIPPY=1 git commit -m "wip"
+
+# Push with skips
+QUICK=1 git push                           # Debug-mode tests (faster compile)
+SKIP_TESTS=1 git push                      # Skip tests entirely
+TEST_CRATES="casper rholang" git push      # Test specific crates only
+TEST_TIMEOUT=300 git push                  # Adjust timeout
+
+# Bypass entirely (not recommended)
+git commit --no-verify
+git push --no-verify
+```
+
+### Hook Management
+
+```bash
+./scripts/setup-hooks.sh --status   # Show current configuration
+./scripts/setup-hooks.sh --copy     # Alternative: copy to .git/hooks/
+./scripts/setup-hooks.sh --remove   # Remove hooks
+```
+
 ## Toolchain
 
 The workspace is pinned in [rust-toolchain.toml](rust-toolchain.toml):
@@ -146,7 +189,9 @@ docker compose -f docker/shard.yml up
 f1r3node-rust/
 ├── Cargo.toml
 ├── rust-toolchain.toml
+├── rustfmt.toml
 ├── .cargo/config.toml
+├── .githooks/          # pre-commit (fmt+clippy), pre-push (tests)
 ├── Justfile
 ├── node/
 ├── casper/

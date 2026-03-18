@@ -1,23 +1,22 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/DeployDataSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/DeployDataSpec.
+// scala
+
+use std::sync::Arc;
 
 use crypto::rust::public_key::PublicKey;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    expr::ExprInstance, g_unforgeable::UnfInstance, BindPattern, Expr, GDeployId, GDeployerId,
-    GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, Expr, GDeployId, GDeployerId, GUnforgeable, ListParWithRandom, Par,
+    TaggedContinuation,
 };
-use rholang::rust::interpreter::{
-    external_services::ExternalServices,
-    matcher::r#match::Matcher,
-    rho_runtime::{create_rho_runtime, RhoRuntime},
-    system_processes::DeployData,
-};
-use rspace_plus_plus::rspace::{
-    rspace::RSpace,
-    shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    },
-};
-use std::sync::Arc;
+use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime};
+use rholang::rust::interpreter::system_processes::DeployData;
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 #[tokio::test]
 async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_deploy_id() {

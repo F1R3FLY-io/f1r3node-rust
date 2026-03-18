@@ -1,5 +1,16 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use casper::rust::casper_conf::{
+        CasperConf, GenesisBlockData, GenesisCeremony, HeartbeatConf, RoundRobinDispatcher,
+    };
+    use serial_test::serial;
+
     use crate::rust::configuration::kamon::{KamonConf, MetricConfig};
     use crate::rust::configuration::model::{
         ApiServer, DevConf, Metrics, NodeConf, PeersDiscovery, ProtocolClient, ProtocolServer,
@@ -8,15 +19,6 @@ mod tests {
     use crate::rust::diagnostics::initialize_diagnostics;
     use crate::rust::diagnostics::new_prometheus_reporter::NewPrometheusReporter;
     use crate::rust::diagnostics::prometheus_config::PrometheusConfiguration;
-    use casper::rust::casper_conf::{
-        CasperConf, GenesisBlockData, GenesisCeremony, HeartbeatConf, RoundRobinDispatcher,
-    };
-    use serial_test::serial;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
 
     fn create_minimal_casper_conf() -> CasperConf {
         CasperConf {
@@ -163,9 +165,7 @@ mod tests {
         conf
     }
 
-    fn create_test_node_conf_all_disabled() -> NodeConf {
-        create_test_node_conf()
-    }
+    fn create_test_node_conf_all_disabled() -> NodeConf { create_test_node_conf() }
 
     fn create_test_kamon_conf() -> KamonConf {
         KamonConf {
@@ -380,10 +380,9 @@ mod tests {
 
         assert_eq!(config.default_buckets.len(), 3);
         assert_eq!(config.custom_buckets.len(), 1);
-        assert_eq!(
-            config.custom_buckets.get("my_metric").unwrap(),
-            &vec![1.0, 2.0, 3.0]
-        );
+        assert_eq!(config.custom_buckets.get("my_metric").unwrap(), &vec![
+            1.0, 2.0, 3.0
+        ]);
     }
 
     #[test]

@@ -1,22 +1,22 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogic.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/
+// RholangMergingLogic.scala
 
-use indexmap::IndexSet;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use indexmap::IndexSet;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rspace_plus_plus::rspace::hot_store_trie_action::TrieInsertAction;
-use rspace_plus_plus::rspace::hot_store_trie_action::TrieInsertBinaryProduce;
-use rspace_plus_plus::rspace::{
-    hashing::{blake2b256_hash::Blake2b256Hash, stable_hash_provider},
-    hot_store_trie_action::HotStoreTrieAction,
-    internal::Datum,
-    merger::channel_change::ChannelChange,
-    serializers::serializers,
-    trace::event::Produce,
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::hot_store_trie_action::{
+    HotStoreTrieAction, TrieInsertAction, TrieInsertBinaryProduce,
 };
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+use rspace_plus_plus::rspace::serializers::serializers;
+use rspace_plus_plus::rspace::trace::event::Produce;
 
 use crate::rust::interpreter::rho_type::RhoNumber;
 
@@ -26,7 +26,8 @@ impl RholangMergingLogic {
     /**
      * Transforms absolute values with the difference from initial values.
      *
-     * Example for 3 state changes (A, B, C are channels, PSH is initial value/pre-state hash):
+     * Example for 3 state changes (A, B, C are channels, PSH is initial
+     * value/pre-state hash):
      *
      * Initial state (PSH):
      *   A = 10, B = 2, C = 20
@@ -136,7 +137,7 @@ impl RholangMergingLogic {
 
     fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
         let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
-        
+
         Blake2b512Random::from_bytes(&datum.a.random_state)
     }
 
@@ -191,12 +192,11 @@ impl RholangMergingLogic {
     }
 
     /**
-     * Converts function to get all data on a channel to function to get single number value.
+     * Converts function to get all data on a channel to function to get
+     * single number value.
      */
     pub fn convert_to_read_number<F>(get_data_func: F) -> impl Fn(&Blake2b256Hash) -> Option<i64>
-    where
-        F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
-    {
+    where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
         move |hash: &Blake2b256Hash| {
             let data = get_data_func(hash)
                 .unwrap_or_else(|error| panic!("Error getting data: {:?}", error));
@@ -223,11 +223,13 @@ pub struct NumberChannel {
     pub diff: i64,
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogicSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/
+// RholangMergingLogicSpec.scala
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn test_calculate_num_channel_diff() {
@@ -236,9 +238,9 @@ mod tests {
          *  ---------------       ----------
          *  PSH  10      20
          *
-         *   0.  20               10
-         *   1.       3      ==>       3
-         *   2.  15      10       -5     -10
+         *   0. 20               10
+         *   1. 3      ==>       3
+         *   2. 15      10       -5     -10
          */
 
         // Create string hashes for readability

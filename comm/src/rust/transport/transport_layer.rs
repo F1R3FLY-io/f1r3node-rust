@@ -2,28 +2,26 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/TransportLayerSyntax.scala
 // See casper/src/main/scala/coop/rchain/casper/util/comm/CommUtil.scala
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
+use models::casper::{
+    ApprovedBlockRequestProto, BlockHashMessageProto, BlockRequestProto, ForkChoiceTipRequestProto,
+    HasBlockRequestProto,
+};
+use models::routing::{Packet, Protocol};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
-use std::{sync::Arc, time::Duration};
 use tracing::{info, warn};
 
-use models::{
-    casper::{
-        ApprovedBlockRequestProto, BlockHashMessageProto, BlockRequestProto,
-        ForkChoiceTipRequestProto, HasBlockRequestProto,
-    },
-    routing::{Packet, Protocol},
-    rust::{
-        block_hash::BlockHash,
-        casper::{pretty_printer::PrettyPrinter, protocol::packet_type_tag::ToPacket},
-    },
-};
-
-use crate::rust::{
-    errors::CommError,
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, protocol_helper, rp_conf::RPConf},
-};
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::connect::ConnectionsCell;
+use crate::rust::rp::protocol_helper;
+use crate::rust::rp::rp_conf::RPConf;
 
 #[derive(Clone)]
 pub struct Blob {

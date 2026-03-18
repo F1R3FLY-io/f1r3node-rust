@@ -1,66 +1,50 @@
-// See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.scala
+// See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.
+// scala
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    future::Future,
-    time::Instant,
-};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
+use std::time::Instant;
 
-use models::{
-    rhoapi::Par,
-    rust::{
-        block::state_hash::StateHash,
-        block_hash::BlockHash,
-        casper::protocol::casper_message::{
-            Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
-        },
-        validator::Validator,
-    },
+use models::rhoapi::Par;
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{
+    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use rholang::rust::interpreter::{
-    interpreter::EvaluateResult,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    system_processes::{BlockData, DeployData as SystemProcessDeployData},
+use models::rust::validator::Validator;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::system_processes::{
+    BlockData, DeployData as SystemProcessDeployData,
 };
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, history::Either,
-    merger::merging_logic::NumberChannelsEndVal,
-};
-
-use crate::rust::{
-    errors::CasperError,
-    metrics_constants::{
-        BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_TIME_METRIC,
-        BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
-        BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC,
-        BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC,
-        BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, CASPER_METRICS_SOURCE,
-    },
-    util::{
-        event_converter,
-        rholang::{
-            costacc::{
-                close_block_deploy::CloseBlockDeploy, pre_charge_deploy::PreChargeDeploy,
-                refund_deploy::RefundDeploy, slash_deploy::SlashDeploy,
-            },
-            interpreter_util,
-            replay_failure::ReplayFailure,
-            system_deploy::SystemDeployTrait,
-            system_deploy_util,
-        },
-    },
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
 use super::runtime::{RuntimeOps, SysEvalResult};
+use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, CASPER_METRICS_SOURCE,
+};
+use crate::rust::util::event_converter;
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::replay_failure::ReplayFailure;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
 }
 
 impl ReplayRuntimeOps {
-    pub fn new(runtime_ops: RuntimeOps) -> Self {
-        Self { runtime_ops }
-    }
+    pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
 
     pub fn new_from_runtime(runtime: RhoRuntimeImpl) -> Self {
         Self {
@@ -68,10 +52,12 @@ impl ReplayRuntimeOps {
         }
     }
 
-    /* REPLAY Compute state with deploys (genesis block) and System deploys (regular block) */
+    /* REPLAY Compute state with deploys (genesis block) and System deploys
+     * (regular block) */
 
     /**
-     * Evaluates (and validates) deploys and System deploys with checkpoint to valiate final state hash
+     * Evaluates (and validates) deploys and System deploys with checkpoint
+     * to valiate final state hash
      */
     #[tracing::instrument(
         name = "replay-compute-state",
@@ -85,7 +71,8 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+        is_genesis: bool, /* FIXME have a better way of knowing this. Pass the replayDeploy
+                           * function maybe? - OLD */
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
 
@@ -105,7 +92,8 @@ impl ReplayRuntimeOps {
     /* REPLAY Deploy evaluators */
 
     /**
-     * Evaluates (and validates) deploys on root hash with checkpoint to validate final state hash
+     * Evaluates (and validates) deploys on root hash with checkpoint to
+     * validate final state hash
      */
     pub async fn replay_deploys(
         &mut self,
@@ -168,9 +156,9 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Option<CasperError> {
-        self
-            .replay_deploy_e(with_cost_accounting, processed_deploy)
-            .await.err()
+        self.replay_deploy_e(with_cost_accounting, processed_deploy)
+            .await
+            .err()
     }
 
     #[tracing::instrument(
@@ -197,7 +185,8 @@ impl ReplayRuntimeOps {
 
         self.check_replay_data_with_fix(eval_successful)?;
 
-        // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)
+        // Time checkpoint-mergeable operation (matches Scala
+        // RuntimeReplaySyntax.scala:L322)
         let checkpoint_mergeable_start = Instant::now();
         let channels_data = self
             .runtime_ops
@@ -278,7 +267,8 @@ impl ReplayRuntimeOps {
 
             successful
         } else {
-            // If there was an expected failure in the system deploy, skip user deploy execution
+            // If there was an expected failure in the system deploy, skip user deploy
+            // execution
             true
         };
 

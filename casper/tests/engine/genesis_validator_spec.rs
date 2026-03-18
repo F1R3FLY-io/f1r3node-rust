@@ -1,7 +1,7 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/GenesisValidatorSpec.scala
-use shared::rust::shared::f1r3fly_events::{EventPublisher, EventPublisherFactory};
+// See casper/src/test/scala/coop/rchain/casper/engine/GenesisValidatorSpec.
+// scala
+use std::sync::Arc;
 
-use crate::engine::setup::TestFixture;
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::genesis_validator::GenesisValidator;
 use comm::rust::rp::protocol_helper::packet_with_content;
@@ -9,17 +9,18 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, ApprovedBlockRequest, BlockMessage, BlockRequest, CasperMessage,
     NoApprovedBlockAvailable, UnapprovedBlock,
 };
-use std::sync::Arc;
+use shared::rust::shared::f1r3fly_events::{EventPublisher, EventPublisherFactory};
 use tokio::time::{sleep, Duration};
+
+use crate::engine::setup::TestFixture;
 
 struct GenesisValidatorSpec;
 
 impl GenesisValidatorSpec {
-    fn event_bus() -> Box<dyn EventPublisher> {
-        EventPublisherFactory::noop()
-    }
+    fn event_bus() -> Box<dyn EventPublisher> { EventPublisherFactory::noop() }
 
-    // TODO should be moved to Rust BlockApproverProtocolTest.createUnapproved, when BlockApproverProtocolTest will be created
+    // TODO should be moved to Rust BlockApproverProtocolTest.createUnapproved, when
+    // BlockApproverProtocolTest will be created
     fn create_unapproved(required_sigs: i32, block: &BlockMessage) -> UnapprovedBlock {
         UnapprovedBlock {
             candidate: ApprovedBlockCandidate {
@@ -36,9 +37,10 @@ impl GenesisValidatorSpec {
 
         let fixture = TestFixture::new().await;
 
-        // Scala: implicit val engineCell: EngineCell[Task] = Cell.unsafe[Task, Engine[Task]](Engine.noop)
-        // Rust: Use engine_cell from fixture instead of creating a new one
-        // TestFixture already creates engine_cell with unsafe_init() (equivalent to Cell.unsafe with Engine.noop)
+        // Scala: implicit val engineCell: EngineCell[Task] = Cell.unsafe[Task,
+        // Engine[Task]](Engine.noop) Rust: Use engine_cell from fixture instead
+        // of creating a new one TestFixture already creates engine_cell with
+        // unsafe_init() (equivalent to Cell.unsafe with Engine.noop)
 
         let expected_candidate = ApprovedBlockCandidate {
             block: fixture.genesis.clone(),
@@ -83,13 +85,15 @@ impl GenesisValidatorSpec {
                 .await
                 .expect("Failed to handle unapproved block");
 
-            // Scala: blockApproval = BlockApproverProtocol.getBlockApproval(expectedCandidate, validatorId)
+            // Scala: blockApproval =
+            // BlockApproverProtocol.getBlockApproval(expectedCandidate, validatorId)
             let block_approval = BlockApproverProtocol::get_block_approval(
                 &fixture.bap.clone(),
                 &expected_candidate,
             );
 
-            // Scala: expectedPacket = ProtocolHelper.packet(local, networkId, blockApproval.toProto)
+            // Scala: expectedPacket = ProtocolHelper.packet(local, networkId,
+            // blockApproval.toProto)
             let expected_packet = packet_with_content(
                 &fixture.local,
                 &fixture.network_id,
@@ -215,7 +219,8 @@ impl GenesisValidatorSpec {
                 .await
                 .expect("Failed to handle block request");
 
-            // Verify transport layer has no requests (GenesisValidator doesn't respond to BlockRequest)
+            // Verify transport layer has no requests (GenesisValidator doesn't respond to
+            // BlockRequest)
             assert!(
                 fixture.transport_layer.get_all_requests().is_empty(),
                 "GenesisValidator should not respond to BlockRequest"

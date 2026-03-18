@@ -1,9 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/RholangBuildTest.scala
 
 use casper::rust::genesis::contracts::vault::Vault;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::util::rspace_util;
+use casper::rust::util::{construct_deploy, rspace_util};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 
@@ -103,6 +102,7 @@ async fn our_build_system_should_execute_the_genesis_block() {
     let _node = TestNode::standalone(genesis.clone()).await.unwrap();
 
     // Scala: (logEff.warns should be(Nil)).pure[Effect]
-    // Note: In Rust we don't have direct access to log warnings in tests like in Scala
-    // If we got here without panicking, the genesis was successfully created
+    // Note: In Rust we don't have direct access to log warnings in tests like
+    // in Scala If we got here without panicking, the genesis was
+    // successfully created
 }

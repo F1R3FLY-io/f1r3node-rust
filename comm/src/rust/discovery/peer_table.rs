@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use prost::bytes::Bytes;
 
-use crate::rust::{errors::CommError, peer_node::PeerNode};
-
 use super::kademlia_rpc::KademliaRPC;
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
 
 // Lookup table for log 2 (highest bit set) of an 8-bit unsigned
 // integer. Entry 0 is unused.
@@ -55,7 +55,8 @@ pub struct PeerTable<T: KademliaRPC> {
     /// Concurrency factor: system allows up to alpha outstanding network
     /// requests at a time. Currently unused in basic PeerTable operations,
     /// but would be used in full Kademlia iterative lookup algorithms
-    /// for controlling parallel network requests to avoid overwhelming the network.
+    /// for controlling parallel network requests to avoid overwhelming the
+    /// network.
     alpha: u32,
     kademlia_rpc: Arc<T>,
     width: usize,
@@ -79,9 +80,7 @@ impl<T: KademliaRPC> PeerTable<T> {
     }
 
     /// Get the concurrency factor (alpha) for network operations
-    pub fn alpha(&self) -> u32 {
-        self.alpha
-    }
+    pub fn alpha(&self) -> u32 { self.alpha }
 
     /** Computes Kademlia XOR distance.
      *
@@ -300,7 +299,8 @@ impl<T: KademliaRPC> PeerTable<T> {
                 entries.sort_by(|a, b| {
                     let dist_a = self.distance(key, a.key()).unwrap_or(0);
                     let dist_b = self.distance(key, b.key()).unwrap_or(0);
-                    dist_b.cmp(&dist_a) // Descending order (closer nodes have higher distance)
+                    dist_b.cmp(&dist_a) // Descending order (closer nodes have
+                                        // higher distance)
                 });
 
                 // Take at most k entries

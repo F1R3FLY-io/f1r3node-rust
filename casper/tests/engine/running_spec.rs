@@ -1,14 +1,13 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/RunningSpec.scala
 
+use std::collections::HashSet;
+
 use casper::rust::engine::engine::Engine;
-use models::rust::{
-    block_implicits::get_random_block,
-    casper::protocol::casper_message::{
-        BlockRequest, CasperMessage, ForkChoiceTipRequest, HasBlock,
-    },
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message::{
+    BlockRequest, CasperMessage, ForkChoiceTipRequest, HasBlock,
 };
 use prost::bytes::Bytes;
-use std::collections::HashSet;
 
 use crate::engine::setup::{to_casper_message, TestFixture};
 
@@ -35,7 +34,8 @@ mod tests {
             .unwrap();
 
         // Verify the block was enqueued for processing (following Scala test behavior)
-        // This matches the Scala test pattern: getRandomBlock() -> signBlock() -> handle() -> check queue
+        // This matches the Scala test pattern: getRandomBlock() -> signBlock() ->
+        // handle() -> check queue
         assert!(
             fixture
                 .is_block_in_processing_queue(&signed_block.block_hash)
@@ -183,7 +183,8 @@ mod tests {
             assert_eq!(request.peer, fixture.local);
         }
 
-        // Step 9: Assert all responses are HasBlock messages with at least one tip hash.
+        // Step 9: Assert all responses are HasBlock messages with at least one tip
+        // hash.
         let mut received_tips: HashSet<Bytes> = HashSet::new();
         let mut has_block_count = 0usize;
         for request in &requests {

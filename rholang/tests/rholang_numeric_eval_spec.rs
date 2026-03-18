@@ -1,11 +1,11 @@
-use models::rhoapi::{expr::ExprInstance, Expr, Par};
-use rholang::rust::interpreter::{
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    test_utils::resources::with_runtime,
-};
 use std::collections::HashSet;
+
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, Par};
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 async fn execute(
     runtime: &mut RhoRuntimeImpl,
@@ -47,9 +47,7 @@ fn channel_data(runtime: &RhoRuntimeImpl, channel_expr: ExprInstance) -> HashSet
         .unwrap_or_default()
 }
 
-fn int_channel(n: i64) -> ExprInstance {
-    ExprInstance::GInt(n)
-}
+fn int_channel(n: i64) -> ExprInstance { ExprInstance::GInt(n) }
 
 fn has_par_with_bool(data: &HashSet<Par>, expected: bool) -> bool {
     data.iter().any(|p| {
@@ -171,8 +169,14 @@ async fn float_nan_equality_follows_ieee754() {
         )
         .await;
 
-        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(0)), false));
-        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(1)), true));
+        assert!(has_par_with_bool(
+            &channel_data(&runtime, int_channel(0)),
+            false
+        ));
+        assert!(has_par_with_bool(
+            &channel_data(&runtime, int_channel(1)),
+            true
+        ));
     })
     .await
 }
@@ -194,8 +198,14 @@ async fn float_nan_nested_in_list_follows_ieee754() {
         )
         .await;
 
-        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(0)), false));
-        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(1)), true));
+        assert!(has_par_with_bool(
+            &channel_data(&runtime, int_channel(0)),
+            false
+        ));
+        assert!(has_par_with_bool(
+            &channel_data(&runtime, int_channel(1)),
+            true
+        ));
     })
     .await
 }

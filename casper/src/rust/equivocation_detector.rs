@@ -1,23 +1,21 @@
 use std::collections::HashMap;
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation},
-    key_value_block_store::KeyValueBlockStore,
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
-use models::rust::{
-    block_hash::BlockHash,
-    casper::{pretty_printer::PrettyPrinter, protocol::casper_message::BlockMessage},
-    equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord},
-    validator::Validator,
-};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord};
+use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::{dag::dag_ops, store::key_value_store::KvStoreError};
+use shared::rust::dag::dag_ops;
+use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::{
-    block_status::{BlockError, InvalidBlock, ValidBlock},
-    util::proto_util,
-    ValidBlockProcessing,
-};
+use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::util::proto_util;
+use crate::rust::ValidBlockProcessing;
 
 /// Equivocation detection logic for blockchain consensus
 pub struct EquivocationDetector;
@@ -51,7 +49,8 @@ impl EquivocationDetector {
             );
 
             tracing::warn!(
-                "Ignorable equivocation: sender is {}, creator justification is {}, latest message of creator is {}",
+                "Ignorable equivocation: sender is {}, creator justification is {}, latest \
+                 message of creator is {}",
                 sender,
                 creator_justification_hash,
                 latest_message_of_creator
@@ -184,9 +183,11 @@ impl EquivocationDetector {
             ),
             None => {
                 /*
-                 * Since block has dropped equivocatingValidator from the bonds, it has acknowledged the equivocation.
-                 * The combination of Validate.transactions and Validate.bondsCache ensure that you can only drop
-                 * validators through transactions to the proof of stake contract.
+                 * Since block has dropped equivocatingValidator from the bonds, it has
+                 * acknowledged the equivocation. The combination of
+                 * Validate.transactions and Validate.bondsCache ensure that you can only
+                 * drop validators through transactions to the proof of stake
+                 * contract.
                  */
                 Ok(EquivocationDiscoveryStatus::EquivocationDetected)
             }
@@ -217,7 +218,8 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            // TODO: This case is not necessary if assert(stake > 0) in the PoS contract - OLD
+            // TODO: This case is not necessary if assert(stake > 0) in the PoS contract -
+            // OLD
             Ok(EquivocationDiscoveryStatus::EquivocationDetected)
         }
     }
@@ -383,11 +385,12 @@ impl EquivocationDetector {
                         Ok(equivocation_children.clone())
                     }
                 }
-                None => {
-                    Err(KvStoreError::KeyNotFound(
-                        "justificationBlock is missing justification pointers to equivocatingValidator even though justificationBlock isn't a part of equivocationDetectedBlockHashes for this equivocation record.".to_string()
-                    ))
-                }
+                None => Err(KvStoreError::KeyNotFound(
+                    "justificationBlock is missing justification pointers to \
+                     equivocatingValidator even though justificationBlock isn't a part of \
+                     equivocationDetectedBlockHashes for this equivocation record."
+                        .to_string(),
+                )),
             }
         }
     }
@@ -412,11 +415,11 @@ impl EquivocationDetector {
                 updated_children.push(equivocation_child);
                 Ok(updated_children)
             }
-            None => {
-                Err(KvStoreError::KeyNotFound(
-                    "creator justification ancestor with lower sequence number hasn't been added to the blockDAG yet.".to_string()
-                ))
-            }
+            None => Err(KvStoreError::KeyNotFound(
+                "creator justification ancestor with lower sequence number hasn't been added to \
+                 the blockDAG yet."
+                    .to_string(),
+            )),
         }
     }
 

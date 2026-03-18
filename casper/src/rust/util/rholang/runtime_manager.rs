@@ -1,14 +1,14 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManager.scala
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManagerSyntax.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManager.
+// scala See casper/src/main/scala/coop/rchain/casper/util/rholang/
+// RuntimeManagerSyntax.scala
 
-use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
+use dashmap::DashMap;
 use hex::ToHex;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
@@ -69,7 +69,8 @@ pub struct RuntimeManager {
     // TODO: make proper storage for block indices - OLD
     pub block_index_cache: Arc<DashMap<BlockHash, BlockIndex>>,
     pub active_validators_cache: Arc<DashMap<StateHash, Vec<Validator>>>,
-    /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
+    /// Cache for merged parent post-state computation keyed by parent-set
+    /// snapshot context.
     pub parents_post_state_cache: Arc<DashMap<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
@@ -143,7 +144,8 @@ impl RuntimeManager {
         sys_processed: &[ProcessedSystemDeploy],
         is_genesis: bool,
     ) -> Vec<u8> {
-        // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
+        // Fingerprint replay-relevant payload so cache keys stay safe under adversarial
+        // input.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
         for pd in usr_processed {
@@ -232,8 +234,7 @@ impl RuntimeManager {
                 normalized == "1" || normalized == "true" || normalized == "yes"
             })
             .unwrap_or(true);
-        if !enabled {
-        }
+        if !enabled {}
 
         #[cfg(target_os = "linux")]
         unsafe {
@@ -244,14 +245,10 @@ impl RuntimeManager {
         }
     }
 
-    pub fn trim_allocator() {
-        Self::maybe_trim_allocator();
-    }
+    pub fn trim_allocator() { Self::maybe_trim_allocator(); }
 
     fn evict_one_dashmap_entry<K, V>(map: &DashMap<K, V>)
-    where
-        K: Eq + Hash + Clone,
-    {
+    where K: Eq + Hash + Clone {
         let evict_key = map.iter().next().map(|entry| entry.key().clone());
         if let Some(key) = evict_key {
             map.remove(&key);
@@ -330,7 +327,8 @@ impl RuntimeManager {
             .chain(sys_mergeable.into_iter())
             .collect();
 
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
+        // Convert from final to diff values and persist mergeable (number) channels for
+        // post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
 
@@ -422,7 +420,8 @@ impl RuntimeManager {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "compute_state_with_bonds.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    "compute_state_with_bonds.mem step={} rss_kb={} delta_prev_kb={} \
+                     delta_total_kb={}",
                     step,
                     curr,
                     curr as i64 - prev as i64,
@@ -470,7 +469,8 @@ impl RuntimeManager {
             .chain(sys_mergeable.into_iter())
             .collect();
 
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
+        // Convert from final to diff values and persist mergeable (number) channels for
+        // post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
 
@@ -519,7 +519,8 @@ impl RuntimeManager {
         }
         log_mem_step("after_cache_updates");
 
-        // Reuse the same spawned runtime for bonds query to avoid a second runtime init.
+        // Reuse the same spawned runtime for bonds query to avoid a second runtime
+        // init.
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
         log_mem_step("after_compute_bonds");
         drop(runtime_ops);
@@ -542,7 +543,8 @@ impl RuntimeManager {
             .await?;
         let (processed_deploys, mergeable_chs) = processed.into_iter().unzip();
 
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
+        // Convert from final to diff values and persist mergeable (number) channels for
+        // post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(&pre_state);
         let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
 
@@ -565,7 +567,8 @@ impl RuntimeManager {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+        is_genesis: bool, /* FIXME have a better way of knowing this. Pass the replayDeploy
+                           * function maybe? - OLD */
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
@@ -574,14 +577,16 @@ impl RuntimeManager {
         // Step 1: Check state-hash cache.
         //
         // IMPORTANT:
-        // `StateHashCache` is keyed only by pre-state, while mergeable channels are keyed by
-        // (post-state, creator, seq-num). Returning early here can skip writing mergeable data
-        // for a distinct block that shares the same pre-state, which later breaks
-        // parent-post-state/index reconstruction with "Missing mergeable entry ...".
+        // `StateHashCache` is keyed only by pre-state, while mergeable channels are
+        // keyed by (post-state, creator, seq-num). Returning early here can
+        // skip writing mergeable data for a distinct block that shares the same
+        // pre-state, which later breaks parent-post-state/index reconstruction
+        // with "Missing mergeable entry ...".
         //
-        // We only fast-return on cache hit if mergeable entry already exists for this block key.
-        // For empty blocks we can safely synthesize and persist an empty mergeable entry.
-        // Otherwise, fall through to full replay to materialize mergeable data.
+        // We only fast-return on cache hit if mergeable entry already exists for this
+        // block key. For empty blocks we can safely synthesize and persist an
+        // empty mergeable entry. Otherwise, fall through to full replay to
+        // materialize mergeable data.
         if let Some(ref cache) = self.state_hash_cache {
             if let Some(cached_post) = cache.get(start_hash) {
                 let mergeable_key = MergeableKey {
@@ -616,14 +621,16 @@ impl RuntimeManager {
                         &pre_state_hash,
                     )?;
                     tracing::warn!(
-                        "[CACHE] StateHashCache hit without mergeable entry for empty block (seq={}); synthesized empty mergeable metadata",
+                        "[CACHE] StateHashCache hit without mergeable entry for empty block \
+                         (seq={}); synthesized empty mergeable metadata",
                         seq_num
                     );
                     return Ok(cached_post);
                 }
 
                 tracing::warn!(
-                    "[CACHE] StateHashCache hit without mergeable entry for seq={}; falling back to full replay",
+                    "[CACHE] StateHashCache hit without mergeable entry for seq={}; falling back \
+                     to full replay",
                     seq_num
                 );
             }
@@ -670,7 +677,8 @@ impl RuntimeManager {
             )
             .await?;
 
-        // Convert from final to diff values and persist mergeable (number) channels for post-state hash
+        // Convert from final to diff values and persist mergeable (number) channels for
+        // post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
 
@@ -767,9 +775,7 @@ impl RuntimeManager {
         Ok(computed)
     }
 
-    pub fn get_history_repo(&self) -> RhoHistoryRepository {
-        self.history_repo.clone()
-    }
+    pub fn get_history_repo(&self) -> RhoHistoryRepository { self.history_repo.clone() }
 
     /// Get or compute BlockIndex with caching
     pub fn get_or_compute_block_index(
@@ -894,8 +900,8 @@ impl RuntimeManager {
         }
     }
 
-    /// Delete mergeable channels entry keyed by (post-state-hash, creator, seq-num).
-    /// Returns `true` if the entry existed prior to deletion.
+    /// Delete mergeable channels entry keyed by (post-state-hash, creator,
+    /// seq-num). Returns `true` if the entry existed prior to deletion.
     pub fn delete_mergeable_channels(
         &self,
         state_hash_bs: &StateHash,
@@ -917,10 +923,11 @@ impl RuntimeManager {
     }
 
     /**
-     * Converts final mergeable (number) channel values and save to mergeable store.
+     * Converts final mergeable (number) channel values and save to
+     * mergeable store.
      *
-     * Tuple (postStateHash, creator, seqNum) is used as a key, preStateHash is used to
-     * read initial value to get the difference.
+     * Tuple (postStateHash, creator, seqNum) is used as a key, preStateHash
+     * is used to read initial value to get the difference.
      */
     fn save_mergeable_channels(
         &mut self,
@@ -965,7 +972,8 @@ impl RuntimeManager {
     }
 
     /**
-     * Converts number channels final values to difference values. Excludes channels without an initial value.
+     * Converts number channels final values to difference values. Excludes
+     * channels without an initial value.
      *
      * @param channelsData Final values
      * @param preStateHash Inital state
@@ -982,7 +990,8 @@ impl RuntimeManager {
             .get_history_reader(pre_state_hash)
             .unwrap_or_else(|e| panic!("Failed to get history reader for pre-state hash: {:?}", e));
 
-        // Build a one-shot base-value map to avoid repeatedly creating history readers per key.
+        // Build a one-shot base-value map to avoid repeatedly creating history readers
+        // per key.
         let unique_channels = channels_data
             .iter()
             .flat_map(|m| m.keys().cloned())
@@ -1011,10 +1020,11 @@ impl RuntimeManager {
     }
 
     /**
-     * This is a hard-coded value for `emptyStateHash` which is calculated by
-     * [[coop.rchain.casper.rholang.RuntimeOps.emptyStateHash]].
+     * This is a hard-coded value for `emptyStateHash` which is calculated
+     * by [[coop.rchain.casper.rholang.RuntimeOps.emptyStateHash]].
      * Because of the value is actually the same all
-     * the time. For some situations, we can just use the value directly for better performance.
+     * the time. For some situations, we can just use the value directly for
+     * better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
         hex::decode("8baa451071791021dcc8461478b960cffc78372e0d1479988daa852fa3685083")
@@ -1092,8 +1102,8 @@ impl RuntimeManager {
     /**
      * Creates connection to [[MergeableStore]] database.
      *
-     * Mergeable (number) channels store is used in [[RuntimeManager]] implementation.
-     * This function provides default instantiation.
+     * Mergeable (number) channels store is used in [[RuntimeManager]]
+     * implementation. This function provides default instantiation.
      */
     pub async fn mergeable_store(
         kvm: &mut dyn KeyValueStoreManager,

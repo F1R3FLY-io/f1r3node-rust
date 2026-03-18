@@ -1,25 +1,25 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/casperbuffer/CasperBufferKeyValueStorage.scala
-// See block-storage/src/test/scala/coop/rchain/blockstorage/casperbuffer/CasperBufferStorageTest.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/casperbuffer/
+// CasperBufferKeyValueStorage.scala See block-storage/src/test/scala/coop/
+// rchain/blockstorage/casperbuffer/CasperBufferStorageTest.scala
 
-use dashmap::DashSet;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::{
-    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-    key_value_typed_store_impl::KeyValueTypedStoreImpl,
-};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::rust::util::doubly_linked_dag_operations::BlockDependencyDag;
 
 /**
  * @param parentsStore - persistent map {hash -> parents set}
- * @param blockDependencyDag - in-memory dependency DAG, recreated from parentsStore on node startup
+ * @param blockDependencyDag - in-memory dependency DAG, recreated from
+ * parentsStore on node startup
  */
 #[derive(Clone)]
 pub struct CasperBufferKeyValueStorage {
@@ -162,7 +162,8 @@ impl CasperBufferKeyValueStorage {
         self.block_dependency_dag.dependency_free.clone()
     }
 
-    // Block is considered to be in CasperBuffer when there is a records about its parents
+    // Block is considered to be in CasperBuffer when there is a records about its
+    // parents
     pub fn contains(&self, block_hash: &BlockHashSerde) -> bool {
         let _guard = self.read_guard();
         self.block_dependency_dag
@@ -302,10 +303,11 @@ impl CasperBufferKeyValueStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rust::block_hash::BlockHashSerde;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
 
     fn create_block_hash(data: &[u8]) -> BlockHashSerde {
         BlockHashSerde(Bytes::copy_from_slice(data))
@@ -350,7 +352,8 @@ mod tests {
         casper_buffer.add_relation(a.clone(), b.clone())?;
         assert!(casper_buffer.is_pendant(&a));
 
-        // When removed hash A is the last parent for hash B, key B should be removed from parents store
+        // When removed hash A is the last parent for hash B, key B should be removed
+        // from parents store
         let h1 = casper_buffer.parents_store.get_one(&b)?;
         assert!(h1.is_some());
         assert!(h1.unwrap().contains(&a));

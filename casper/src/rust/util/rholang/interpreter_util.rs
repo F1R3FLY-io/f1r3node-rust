@@ -1,43 +1,37 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.
+// scala
 
-use prost::bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use models::{
-    rhoapi::Par,
-    rust::{
-        block::state_hash::StateHash,
-        block_hash::BlockHash,
-        casper::{
-            pretty_printer::PrettyPrinter,
-            protocol::casper_message::{
-                BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
-            },
-        },
-        validator::Validator,
-    },
+use models::rhoapi::Par;
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
-use rholang::rust::interpreter::{
-    compiler::compiler::Compiler, errors::InterpreterError, system_processes::BlockData,
-};
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+use models::rust::validator::Validator;
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 
-use crate::rust::{
-    block_status::BlockStatus,
-    casper::CasperSnapshot,
-    errors::CasperError,
-    merging::{block_index::BlockIndex, dag_merger, deploy_chain_index::DeployChainIndex},
-    metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE},
-    util::proto_util,
-    BlockProcessing,
-};
-
-use super::{replay_failure::ReplayFailure, runtime_manager::RuntimeManager};
+use super::replay_failure::ReplayFailure;
+use super::runtime_manager::RuntimeManager;
+use crate::rust::block_status::BlockStatus;
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::merging::block_index::BlockIndex;
+use crate::rust::merging::dag_merger;
+use crate::rust::merging::deploy_chain_index::DeployChainIndex;
+use crate::rust::metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE};
+use crate::rust::util::proto_util;
+use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
@@ -74,7 +68,8 @@ pub async fn validate_block_checkpoint(
                 .collect();
 
             if incoming_pre_state_hash != computed_pre_state_hash {
-                // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
+                // TODO: at this point we may just as well terminate the replay, there's no way
+                // it will succeed.
                 tracing::warn!(
                     "Computed pre-state hash {} does not equal block's pre-state hash {}.",
                     PrettyPrinter::build_string_bytes(&computed_pre_state_hash),
@@ -180,21 +175,14 @@ pub async fn validate_block_checkpoint(
                     .join(", ");
 
                 tracing::error!(
-                    "\n=== InvalidRejectedDeploy Analysis ===\n\
-                    Block #{} ({})\n\
-                    Sender: {}\n\
-                    Parents: {}\n\n\
-                    Rejected deploy mismatch:\n\
-                    \x20 Validator computed: {} rejected deploys\n\
-                    \x20 Block contains:     {} rejected deploys\n\n\
-                    Extra in computed (validator wants to reject, but block creator didn't):\n\
-                    \x20 Count: {}\n{}\n\n\
-                    Missing in computed (block creator rejected, but validator doesn't think should be):\n\
-                    \x20 Count: {}\n{}\n\n\
-                    Duplicates found in block: {}\n{}\n\n\
-                    All deploys in block: {}\n\
-                    All rejected in block: {}\n\
-                    ========================================",
+                    "\n=== InvalidRejectedDeploy Analysis ===\nBlock #{} ({})\nSender: \
+                     {}\nParents: {}\n\nRejected deploy mismatch:\n\x20 Validator computed: {} \
+                     rejected deploys\n\x20 Block contains:     {} rejected deploys\n\nExtra in \
+                     computed (validator wants to reject, but block creator didn't):\n\x20 Count: \
+                     {}\n{}\n\nMissing in computed (block creator rejected, but validator doesn't \
+                     think should be):\n\x20 Count: {}\n{}\n\nDuplicates found in block: \
+                     {}\n{}\n\nAll deploys in block: {}\nAll rejected in block: \
+                     {}\n========================================",
                     block.body.state.block_number,
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     PrettyPrinter::build_string_bytes(&block.sender),
@@ -227,9 +215,7 @@ pub async fn validate_block_checkpoint(
                 handle_errors(proto_util::post_state_hash(block), replay_result)
             }
         }
-        Err(ex) => {
-            Ok(Either::Left(BlockStatus::exception(ex)))
-        }
+        Err(ex) => Ok(Either::Left(BlockStatus::exception(ex))),
     }
 }
 
@@ -273,12 +259,9 @@ async fn replay_block(
             .join("\n");
 
         tracing::warn!(
-            "\n=== Duplicate Deploys Detected in Block ===\n\
-            Block #{} ({})\n\
-            Found {} duplicate deploy signatures:\n{}\n\
-            Total deploys: {}\n\
-            Total rejected: {}\n\
-            ============================================",
+            "\n=== Duplicate Deploys Detected in Block ===\nBlock #{} ({})\nFound {} duplicate \
+             deploy signatures:\n{}\nTotal deploys: {}\nTotal rejected: \
+             {}\n============================================",
             block.body.state.block_number,
             PrettyPrinter::build_string_bytes(&block.block_hash),
             deploy_duplicates.len(),
@@ -304,7 +287,8 @@ async fn replay_block(
     // Filter out invalid blocks that are unseen
     let seen_invalid_blocks_set: Vec<_> = invalid_blocks_set
         .iter()
-        .filter(|invalid_block| !unseen_blocks_set.contains(&invalid_block.block_hash)).cloned()
+        .filter(|invalid_block| !unseen_blocks_set.contains(&invalid_block.block_hash))
+        .cloned()
         .collect();
     // TODO: Write test in which switching this to .filter makes it fail
 
@@ -344,7 +328,8 @@ async fn replay_block(
                 } else if attempts >= MAX_RETRIES {
                     // Give up after max retries
                     tracing::error!(
-                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: giving up after {} retries",
+                        "Replay block {} with {} got tuple space mismatch error with error hash \
+                         {}, retries details: giving up after {} retries",
                         PrettyPrinter::build_string_no_limit(&block.block_hash),
                         PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
                         PrettyPrinter::build_string_no_limit(&computed_state_hash),
@@ -354,7 +339,8 @@ async fn replay_block(
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
-                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: will retry, attempt {}",
+                        "Replay block {} with {} got tuple space mismatch error with error hash \
+                         {}, retries details: will retry, attempt {}",
                         PrettyPrinter::build_string_no_limit(&block.block_hash),
                         PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
                         PrettyPrinter::build_string_no_limit(&computed_state_hash),
@@ -367,7 +353,8 @@ async fn replay_block(
                 if attempts >= MAX_RETRIES {
                     // Give up after max retries
                     tracing::error!(
-                        "Replay block {} got error {:?}, retries details: giving up after {} retries",
+                        "Replay block {} got error {:?}, retries details: giving up after {} \
+                         retries",
                         PrettyPrinter::build_string_no_limit(&block.block_hash),
                         replay_error,
                         attempts
@@ -448,9 +435,11 @@ fn handle_errors(
                 replay_error,
             } => {
                 tracing::warn!(
-                        "Found system deploy error mismatch: initial deploy error message = {}, replay deploy error message = {}",
-                        play_error, replay_error
-                    );
+                    "Found system deploy error mismatch: initial deploy error message = {}, \
+                     replay deploy error message = {}",
+                    play_error,
+                    replay_error
+                );
                 Ok(Either::Right(None))
             }
         },
@@ -565,8 +554,8 @@ pub async fn compute_deploys_checkpoint(
 
 /// Compute the merged post-state from multiple parent blocks.
 ///
-/// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
-/// always disable late block filtering (see full merged state).
+/// For exploratory deploy, pass `disable_late_block_filtering_override =
+/// Some(true)` to always disable late block filtering (see full merged state).
 /// For normal block creation, pass `None` to use the shard config value.
 pub fn compute_parents_post_state(
     block_store: &KeyValueBlockStore,
@@ -790,7 +779,8 @@ pub fn compute_parents_post_state(
                 };
 
             // Get all ancestors of all parents (including the parents themselves)
-            // Use bounded traversal that stops at finalized blocks to prevent O(chain_length) growth
+            // Use bounded traversal that stops at finalized blocks to prevent
+            // O(chain_length) growth
             let collect_ancestors_started = std::time::Instant::now();
             let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
             let mut lca_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
@@ -821,7 +811,8 @@ pub fn compute_parents_post_state(
 
             // Find the lowest common ancestor of all parents.
             // This is the highest block that is an ancestor of ALL parents.
-            // This is deterministic because it depends only on DAG structure, not finalization state.
+            // This is deterministic because it depends only on DAG structure, not
+            // finalization state.
             let lca_started = std::time::Instant::now();
             let mut common_ancestors: HashSet<BlockHash> =
                 if lca_ancestor_sets_with_parents.is_empty() {
@@ -902,7 +893,8 @@ pub fn compute_parents_post_state(
                 );
 
                 tracing::debug!(
-                    "computeParentsPostState: parents=[{}], commonAncestors={}, LCA={} (block {}), LCA state={}..., visibleBlocks={}, snapshotLFB={}",
+                    "computeParentsPostState: parents=[{}], commonAncestors={}, LCA={} (block \
+                     {}), LCA state={}..., visibleBlocks={}, snapshotLFB={}",
                     parent_hash_str.join(", "),
                     common_ancestors.len(),
                     lca_str,

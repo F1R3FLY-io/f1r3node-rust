@@ -1,15 +1,15 @@
-// See casper/src/test/scala/coop/rchain/casper/util/comm/FairRoundRobinDispatcherSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/util/comm/
+// FairRoundRobinDispatcherSpec.scala
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use shared::rust::metrics_semaphore::MetricsSemaphore;
-
 use casper::rust::util::comm::fair_round_robin_dispatcher::{
     Dispatch, DispatcherConfig, FairRoundRobinDispatcher,
 };
+use shared::rust::metrics_semaphore::MetricsSemaphore;
 
 /// Helper macro to create VecDeque from array
 macro_rules! queue {
@@ -94,14 +94,10 @@ impl TestFixture {
     }
 
     /// Get the dispatcher reference.
-    fn dispatcher(&self) -> &FairRoundRobinDispatcher<String, i32> {
-        &self.dispatcher
-    }
+    fn dispatcher(&self) -> &FairRoundRobinDispatcher<String, i32> { &self.dispatcher }
 
     /// Get the list of handled messages.
-    fn get_handled(&self) -> Vec<(String, i32)> {
-        self.handled.lock().unwrap().clone()
-    }
+    fn get_handled(&self) -> Vec<(String, i32)> { self.handled.lock().unwrap().clone() }
 
     /// Get the internal state for validation.
     fn get_state(

@@ -1,12 +1,9 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use costs::Cost;
-use shared::rust::{
-    metrics_constants::COST_ACCOUNTING_METRICS_SOURCE, metrics_semaphore::MetricsSemaphore,
-};
+use shared::rust::metrics_constants::COST_ACCOUNTING_METRICS_SOURCE;
+use shared::rust::metrics_semaphore::MetricsSemaphore;
 
 use super::errors::InterpreterError;
 
@@ -14,7 +11,8 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod has_cost;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/
+// package.scala
 #[allow(non_camel_case_types)]
 pub type _cost = CostManager;
 
@@ -117,11 +115,7 @@ impl CostManager {
         *current_cost = new_value;
     }
 
-    pub fn get_log(&self) -> Vec<Cost> {
-        self.log.lock().unwrap().iter().cloned().collect()
-    }
+    pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
 
-    pub fn clear_log(&self) {
-        self.log.lock().unwrap().clear();
-    }
+    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
 }

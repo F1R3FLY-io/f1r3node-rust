@@ -286,7 +286,7 @@ impl Blake2b512Block {
         let rotr64 = |x: i64, rot: u32| {
             // println!("\nx: {:?}", x);
             // println!("rot: {:?}", rot);
-            
+
             // println!("result: {:?}", result);
             x.rotate_right(rot)
         };

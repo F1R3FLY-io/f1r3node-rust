@@ -1,54 +1,38 @@
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
-use tracing::{debug, info, trace, warn};
-
 // Imports needed for function signature and return type
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{ApprovedBlock, BlockMessage},
-};
-
+use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
+use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::engine::block_retriever::BlockRetriever;
+use casper::rust::engine::casper_launch::CasperLaunch;
+use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
-use casper::rust::{
-    blocks::{
-        block_processor::BlockProcessor,
-        proposer::proposer::{ProductionProposer, ProposerResult},
-    },
-    casper::{Casper, MultiParentCasper},
-    engine::{block_retriever::BlockRetriever, casper_launch::CasperLaunch},
-    errors::CasperError,
-    state::instances::ProposerState,
-    ProposeFunction,
-};
-
-use comm::rust::{
-    discovery::node_discovery::NodeDiscovery, p2p::packet_handler::PacketHandler,
-    rp::connect::ConnectionsCell, transport::transport_layer::TransportLayer,
-};
-
+use casper::rust::state::instances::ProposerState;
+use casper::rust::ProposeFunction;
+use comm::rust::discovery::node_discovery::NodeDiscovery;
+use comm::rust::p2p::packet_handler::PacketHandler;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use shared::rust::env;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tracing::{debug, info, trace, warn};
 
-use crate::rust::{
-    api::{admin_web_api::AdminWebApi, web_api::WebApi},
-    configuration::NodeConf,
-    runtime::{
-        api_servers::APIServers,
-        node_runtime::{CasperLoop, EngineInit},
-    },
-    web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes},
-};
+use crate::rust::api::admin_web_api::AdminWebApi;
+use crate::rust::api::web_api::WebApi;
+use crate::rust::configuration::NodeConf;
+use crate::rust::runtime::api_servers::APIServers;
+use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
+use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 
 const PROPOSER_QUEUE_MAX_PENDING_DEFAULT: usize = 1024;
 const PROPOSER_QUEUE_MAX_PENDING_ENV: &str = "F1R3_PROPOSER_QUEUE_MAX_PENDING";
@@ -229,7 +213,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Runtime for `rnode eval`
     let eval_runtime = {
         use models::rhoapi::Par;
-        use rholang::rust::interpreter::{matcher::r#match::Matcher, rho_runtime};
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime;
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let eval_stores = rnode_store_manager
@@ -294,7 +279,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     };
 
     // RSpace state manager (for CasperLaunch)
-    // Note: rnodeStateManager is created in Scala but never used, so we only create rspaceStateManager
+    // Note: rnodeStateManager is created in Scala but never used, so we only create
+    // rspaceStateManager
     let rspace_state_manager = {
         use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
@@ -310,8 +296,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         EngineCell::init()
     };
 
-    // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
-    // to consumer (BlockProcessorInstance)
+    // Block processor queue - mpsc channel connecting producers (CasperLaunch,
+    // Running) to consumer (BlockProcessorInstance)
     let block_processor_queue_max_pending = block_processor_queue_max_pending();
     let (block_processor_queue_tx, block_processor_queue_rx) =
         mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
@@ -383,7 +369,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         None => info!("Running without proposer"),
     }
 
-    // Propose request is a tuple - Casper, async flag and deferred proposer result that will be resolved by proposer
+    // Propose request is a tuple - Casper, async flag and deferred proposer result
+    // that will be resolved by proposer
     let proposer_queue_pending = Arc::new(AtomicUsize::new(0));
     let proposer_queue_max_pending = proposer_queue_max_pending();
     metrics::gauge!(
@@ -395,7 +382,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let (proposer_queue_tx, proposer_queue_rx) =
         mpsc::channel::<ProposerQueueEntry>(proposer_queue_max_pending);
 
-    // Trigger propose function - wraps proposerQueue to provide propose functionality
+    // Trigger propose function - wraps proposerQueue to provide propose
+    // functionality
     let trigger_propose_f_opt: Option<Arc<ProposeFunction>> = if proposer.is_some() {
         let queue_tx = proposer_queue_tx.clone();
         let queue_pending = proposer_queue_pending.clone();
@@ -404,7 +392,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
                 let queue_tx = queue_tx.clone();
                 let queue_pending = queue_pending.clone();
-                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
+                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper
+                // extends Casper)
                 let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
 
                 Box::pin(async move {
@@ -472,8 +461,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .map(|_| Arc::new(RwLock::new(ProposerState::default())));
 
     // CasperLaunch - orchestrates the launch of the Casper consensus
-    // Create heartbeat signal reference - starts empty, will be set when heartbeat starts
-    // Created outside the block so it can be returned for use by HeartbeatProposer
+    // Create heartbeat signal reference - starts empty, will be set when heartbeat
+    // starts Created outside the block so it can be returned for use by
+    // HeartbeatProposer
     let heartbeat_signal_ref = casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
 
     let casper_launch = {
@@ -521,8 +511,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     info!("CasperLaunch initialized");
 
     // Packet handler - handles incoming Casper protocol messages
-    // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277) that uses
-    // round-robin dispatching with queue management. Currently using simple handler.
+    // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277)
+    // that uses round-robin dispatching with queue management. Currently using
+    // simple handler.
     let packet_handler = casper::rust::util::comm::casper_packet_handler::CasperPacketHandler::new(
         engine_cell.clone(),
     );
@@ -621,12 +612,14 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         });
     }
 
-    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value
+    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it
+    // later for web_api, admin_web_api, and return value
     let trigger_propose_f_opt_for_web_api = trigger_propose_f_opt.clone();
     let trigger_propose_f_opt_for_admin_web_api = trigger_propose_f_opt.clone();
     let trigger_propose_f_opt_for_return = trigger_propose_f_opt.clone();
 
-    // Clone proposer_state_ref_opt before passing to api_servers since we'll use it later for admin_web_api and return value
+    // Clone proposer_state_ref_opt before passing to api_servers since we'll use it
+    // later for admin_web_api and return value
     let proposer_state_ref_opt_for_admin_web_api = proposer_state_ref_opt.clone();
     let proposer_state_ref_opt_for_return = proposer_state_ref_opt.clone();
 
@@ -767,8 +760,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     //   1. async shutdown() methods for graceful cleanup
     //   2. Drop implementations for fallback cleanup
     // - shutdown() should be called explicitly for proper async cleanup
-    // - This should be implemented in the main runtime's signal handler
-    //   (SIGTERM, SIGINT, etc.) before program exit
+    // - This should be implemented in the main runtime's signal handler (SIGTERM,
+    //   SIGINT, etc.) before program exit
     // - For now, Drop implementations will handle cleanup on program exit
     //
     // When implementing, add shutdown call like:
@@ -781,7 +774,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let is_node_read_only = conf.casper.validator_private_key.is_none();
 
         // Conditional propose function for autopropose.
-        // Expose deploy-triggered propose from REST API whenever autopropose is enabled.
+        // Expose deploy-triggered propose from REST API whenever autopropose is
+        // enabled.
         let trigger_propose_f = if conf.autopropose {
             trigger_propose_f_opt_for_web_api
         } else {
@@ -816,8 +810,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         )
     };
 
-    // Mergeable Channels GC Loop - background garbage collection for mergeable channel data
-    // Only created when GC is enabled in config (required for multi-parent mode)
+    // Mergeable Channels GC Loop - background garbage collection for mergeable
+    // channel data Only created when GC is enabled in config (required for
+    // multi-parent mode)
     let mergeable_channels_gc_loop: Option<CasperLoop> = if conf.casper.enable_mergeable_channel_gc
     {
         use casper::rust::casper::CasperShardConf;

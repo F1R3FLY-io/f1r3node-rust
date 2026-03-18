@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use casper::rust::api::block_report_api::BlockReportAPI;
 use dashmap::DashMap;
 use eyre::Result;
@@ -8,8 +11,6 @@ use models::rhoapi::Par;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use utoipa::ToSchema;
 
@@ -59,12 +60,14 @@ pub trait TransactionAPI {
     async fn get_transaction(&self, block_hash: Blake2b256Hash) -> Result<Vec<TransactionInfo>>;
 }
 
-/// This API is totally based on how SystemVault.rho is written. If the `SystemVault.rho` is re-written or changed,
-/// this API might end up with useless.
+/// This API is totally based on how SystemVault.rho is written. If the
+/// `SystemVault.rho` is re-written or changed, this API might end up with
+/// useless.
 pub struct TransactionAPIImpl {
     block_report_api: BlockReportAPI,
-    transfer_unforgeable: Par, // The transferUnforgeable can be retrieved based on the deployer and the timestamp of SystemVault.rho
-                               // in the genesis ceremony.
+    transfer_unforgeable: Par, /* The transferUnforgeable can be retrieved based on the deployer
+                                * and the timestamp of SystemVault.rho
+                                * in the genesis ceremony. */
 }
 
 impl TransactionAPIImpl {
@@ -145,9 +148,9 @@ impl TransactionAPIImpl {
             });
         }
 
-        // Subsequent batches may contain either user-transfer events, refund events, or both.
-        // Classify by sender address: transactions sent by deployer are user deploy effects;
-        // others are refund/system side-effects.
+        // Subsequent batches may contain either user-transfer events, refund events, or
+        // both. Classify by sender address: transactions sent by deployer are
+        // user deploy effects; others are refund/system side-effects.
         for report in deploy.report.iter().skip(1) {
             let found_transactions = self.find_transactions(report);
             for transaction in found_transactions {
@@ -215,7 +218,8 @@ impl TransactionAPIImpl {
         Ok(transactions)
     }
 
-    /// Find transactions in a single report (equivalent to Scala's findTransactions method)
+    /// Find transactions in a single report (equivalent to Scala's
+    /// findTransactions method)
     fn find_transactions(&self, report: &SingleReport) -> Vec<Transaction> {
         let mut transactions = Vec::new();
 
@@ -366,24 +370,28 @@ where
 }
 
 // TODO: Port the next part to Rust
-// Original Scala file: node/src/main/scala/coop/rchain/node/web/Transaction.scala.
+// Original Scala file:
+// node/src/main/scala/coop/rchain/node/web/Transaction.scala.
 // object Transaction {
-//     type TransactionStore[F[_]] = KeyValueTypedStore[F, String, TransactionResponse]
+//     type TransactionStore[F[_]] = KeyValueTypedStore[F, String,
+// TransactionResponse]
 
 //     object Encode {
 //       import io.circe._, io.circe.generic.semiauto._
 //       import coop.rchain.node.encode.JsonEncoder.{decodePar, encodePar}
-//       implicit val encodeTransaction: Encoder[Transaction]         = deriveEncoder[Transaction]
-//       implicit val encodeTransactionType: Encoder[TransactionType] = deriveEncoder[TransactionType]
-//       implicit val encodeTransactionInfo: Encoder[TransactionInfo] = deriveEncoder[TransactionInfo]
-//       implicit val encodeTransactionResponse: Encoder[TransactionResponse] =
-//         deriveEncoder[TransactionResponse]
+//       implicit val encodeTransaction: Encoder[Transaction]         =
+// deriveEncoder[Transaction]       implicit val encodeTransactionType:
+// Encoder[TransactionType] = deriveEncoder[TransactionType]       implicit val
+// encodeTransactionInfo: Encoder[TransactionInfo] =
+// deriveEncoder[TransactionInfo]       implicit val encodeTransactionResponse:
+// Encoder[TransactionResponse] =         deriveEncoder[TransactionResponse]
 
-//       implicit val decodeTransaction: Decoder[Transaction]         = deriveDecoder[Transaction]
-//       implicit val decodeTransactionType: Decoder[TransactionType] = deriveDecoder[TransactionType]
-//       implicit val decodeTransactionInfo: Decoder[TransactionInfo] = deriveDecoder[TransactionInfo]
-//       implicit val decodeTransactionResponse: Decoder[TransactionResponse] =
-//         deriveDecoder[TransactionResponse]
+//       implicit val decodeTransaction: Decoder[Transaction]         =
+// deriveDecoder[Transaction]       implicit val decodeTransactionType:
+// Decoder[TransactionType] = deriveDecoder[TransactionType]       implicit val
+// decodeTransactionInfo: Decoder[TransactionInfo] =
+// deriveDecoder[TransactionInfo]       implicit val decodeTransactionResponse:
+// Decoder[TransactionResponse] =         deriveDecoder[TransactionResponse]
 //     }
 
 //     object SCodec {
@@ -393,8 +401,8 @@ where
 //       import coop.rchain.rholang.interpreter.storage._
 
 //       val transactionCodec: Codec[Transaction] =
-//         (utf8_32 :: utf8_32 :: vlong :: serializePar.toSizeHeadCodec :: optional[String](
-//           bool,
+//         (utf8_32 :: utf8_32 :: vlong :: serializePar.toSizeHeadCodec ::
+// optional[String](           bool,
 //           utf8_32
 //         )).as[Transaction]
 //       val precharge: Codec[PreCharge]   = utf8_32.as[PreCharge]
@@ -402,8 +410,8 @@ where
 //       val user: Codec[UserDeploy]       = utf8_32.as[UserDeploy]
 //       val closeBlock: Codec[CloseBlock] = utf8_32.as[CloseBlock]
 //       val slash: Codec[SlashingDeploy]  = utf8_32.as[SlashingDeploy]
-//       val transactionType: Codec[TransactionType] = discriminated[TransactionType]
-//         .by(uint8)
+//       val transactionType: Codec[TransactionType] =
+// discriminated[TransactionType]         .by(uint8)
 //         .subcaseP(0) {
 //           case e: PreCharge => e
 //         }(precharge)
@@ -422,27 +430,31 @@ where
 
 //       val transactionInfo: Codec[TransactionInfo] =
 //         (transactionCodec :: transactionType).as[TransactionInfo]
-//       val transactionResponseCodec: Codec[TransactionResponse] = listOfN(int32, transactionInfo)
-//         .as[TransactionResponse]
+//       val transactionResponseCodec: Codec[TransactionResponse] =
+// listOfN(int32, transactionInfo)         .as[TransactionResponse]
 //     }
 
 /// (Historical ref: was RevVault.rho in upstream rchain/rchain)
 /// https://github.com/rchain/rchain/blob/43257ddb7b2b53cffb59a5fe1d4c8296c18b8292/casper/src/main/resources/RevVault.rho#L25
-/// This hard-coded value is only useful with current(above link version) `SystemVault.rho` implementation but it is
-/// useful for all the networks(testnet, custom network and mainnet) starting with this `SystemVault.rho`.
+/// This hard-coded value is only useful with current(above link version)
+/// `SystemVault.rho` implementation but it is useful for all the
+/// networks(testnet, custom network and mainnet) starting with this
+/// `SystemVault.rho`.
 ///
 /// This hard-coded value needs to be changed when:
 /// 1. `SystemVault.rho` is changed
 /// 2. `StandardDeploys.system_vault` is changed
 /// 3. The random seed algorithm for unforgeable name of the deploy is changed
 ///
-/// This is not needed when onChain transfer history is implemented and deployed to new network in the future.
+/// This is not needed when onChain transfer history is implemented and deployed
+/// to new network in the future.
 pub fn transfer_unforgeable() -> Par {
     use casper::rust::genesis::contracts::standard_deploys::{
         to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
     };
     use casper::rust::util::rholang::tools::Tools;
-    use models::rhoapi::{g_unforgeable::UnfInstance, GPrivate, GUnforgeable};
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{GPrivate, GUnforgeable};
 
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);
     let mut seed_for_system_vault =
@@ -464,7 +476,8 @@ pub fn transfer_unforgeable() -> Par {
     }
 }
 
-/// Create a CacheTransactionAPI with a key-value store for caching transaction responses
+/// Create a CacheTransactionAPI with a key-value store for caching transaction
+/// responses
 pub async fn cache_transaction_api(
     transaction_api: TransactionAPIImpl,
     rnode_store_manager: &mut impl rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager,
@@ -492,8 +505,9 @@ pub async fn cache_transaction_api(
 }
 
 mod helpers {
-    use crate::rust::web::transaction::Transaction;
     use models::rust::par_ext::ParExt;
+
+    use crate::rust::web::transaction::Transaction;
 
     /// Parse a transaction from a produce event
     pub fn parse_transaction_from_produce(

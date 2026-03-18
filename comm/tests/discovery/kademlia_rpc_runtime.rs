@@ -1,24 +1,20 @@
 // See comm/src/test/scala/coop/rchain/comm/discovery/KademliaRPCRuntime.scala
 // See comm/src/test/scala/coop/rchain/comm/discovery/GrpcKademliaRPCSpec.scala
 
-use prost::bytes::Bytes;
-use rand::RngCore;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::TcpListener;
 
-use comm::rust::{
-    discovery::{
-        grpc_kademlia_rpc::GrpcKademliaRPC,
-        grpc_kademlia_rpc_server::{LookupHandler, PingHandler},
-        utils::acquire_kademlia_rpc_server,
-    },
-    errors::CommError,
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-};
+use comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC;
+use comm::rust::discovery::grpc_kademlia_rpc_server::{LookupHandler, PingHandler};
+use comm::rust::discovery::utils::acquire_kademlia_rpc_server;
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use prost::bytes::Bytes;
+use rand::RngCore;
 use shared::rust::grpc::grpc_server::GrpcServer;
+use tokio::net::TcpListener;
 
 pub struct GrpcEnvironment {
     pub host: String,
@@ -31,9 +27,7 @@ pub struct TestRuntime {
 }
 
 impl TestRuntime {
-    pub fn new(network_id: String) -> Self {
-        Self { network_id }
-    }
+    pub fn new(network_id: String) -> Self { Self { network_id } }
 
     /// Create environment with random peer ID and given port
     pub fn create_environment(&self, port: u16) -> GrpcEnvironment {
@@ -124,9 +118,7 @@ impl TestPingHandler {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> {
-        self.received.lock().unwrap().clone()
-    }
+    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> { self.received.lock().unwrap().clone() }
 }
 
 /// Test lookup handler
@@ -272,7 +264,8 @@ where
     Ok((test_result, ping_handler, lookup_handler))
 }
 
-/// Two nodes test execution without starting remote server (simulates dead remote peer)
+/// Two nodes test execution without starting remote server (simulates dead
+/// remote peer)
 pub async fn run_two_nodes_test_remote_dead<T, F, Fut>(
     runtime: &TestRuntime,
     execute_fn: F,

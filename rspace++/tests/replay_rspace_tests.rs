@@ -13,8 +13,8 @@ use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
     HotStoreAction, InsertAction, InsertContinuations,
 };
-use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::metrics_constants::{PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE};
+use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{ContResult, ISpace, RSpaceResult};
@@ -194,12 +194,14 @@ async fn creating_a_comm_event_should_replay_correctly() {
         patterns: patterns.clone(),
         peek: false,
     });
-    assert_eq!(result_produce.clone().unwrap().unwrap().1, vec![RSpaceResult {
-        channel: channels[0].clone(),
-        matched_datum: datum.clone(),
-        removed_datum: datum.clone(),
-        persistent: false
-    }]);
+    assert_eq!(result_produce.clone().unwrap().unwrap().1, vec![
+        RSpaceResult {
+            channel: channels[0].clone(),
+            matched_datum: datum.clone(),
+            removed_datum: datum.clone(),
+            persistent: false
+        }
+    ]);
 
     let _ = replay_space.rig_and_reset(empty_point.root, rig_point.log);
     let replay_result_consume = replay_space.consume(
@@ -218,7 +220,10 @@ async fn creating_a_comm_event_should_replay_correctly() {
         replay_result_produce.clone().unwrap().unwrap().0,
         result_produce.clone().unwrap().unwrap().0
     );
-    assert_eq!(replay_result_produce.unwrap().unwrap().1, result_produce.unwrap().unwrap().1);
+    assert_eq!(
+        replay_result_produce.unwrap().unwrap().1,
+        result_produce.unwrap().unwrap().1
+    );
     assert_eq!(final_point.root, rig_point.root);
     assert!(replay_space.replay_data.is_empty());
 }
@@ -252,12 +257,14 @@ async fn creating_a_comm_event_with_peek_consume_first_should_replay_correctly()
         patterns: patterns.clone(),
         peek: true,
     });
-    assert_eq!(result_produce.clone().unwrap().unwrap().1, vec![RSpaceResult {
-        channel: channels[0].clone(),
-        matched_datum: datum.clone(),
-        removed_datum: datum.clone(),
-        persistent: false
-    }]);
+    assert_eq!(result_produce.clone().unwrap().unwrap().1, vec![
+        RSpaceResult {
+            channel: channels[0].clone(),
+            matched_datum: datum.clone(),
+            removed_datum: datum.clone(),
+            persistent: false
+        }
+    ]);
 
     let _ = replay_space.rig_and_reset(empty_point.root, rig_point.log);
     let replay_result_consume = replay_space.consume(
@@ -601,7 +608,12 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
-    ) -> Vec<Option<(ContResult<String, Pattern, String>, Vec<RSpaceResult<String, String>>)>>
+    ) -> Vec<
+        Option<(
+            ContResult<String, Pattern, String>,
+            Vec<RSpaceResult<String, String>>,
+        )>,
+    >
     where
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
@@ -632,7 +644,11 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         datum_creator: A,
         persist: bool,
     ) -> Vec<
-        Option<(ContResult<String, Pattern, String>, Vec<RSpaceResult<String, String>>, Produce)>,
+        Option<(
+            ContResult<String, Pattern, String>,
+            Vec<RSpaceResult<String, String>>,
+            Produce,
+        )>,
     >
     where
         F: Fn(i32) -> String,
@@ -659,7 +675,12 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
-    ) -> Vec<Option<(ContResult<String, Pattern, String>, Vec<RSpaceResult<String, String>>)>>
+    ) -> Vec<
+        Option<(
+            ContResult<String, Pattern, String>,
+            Vec<RSpaceResult<String, String>>,
+        )>,
+    >
     where
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
@@ -690,7 +711,11 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         datum_creator: A,
         persist: bool,
     ) -> Vec<
-        Option<(ContResult<String, Pattern, String>, Vec<RSpaceResult<String, String>>, Produce)>,
+        Option<(
+            ContResult<String, Pattern, String>,
+            Vec<RSpaceResult<String, String>>,
+            Produce,
+        )>,
     >
     where
         F: Fn(i32) -> String,
@@ -718,7 +743,13 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
     fn continuation_creator(i: i32) -> String { format!("continuation{}", i) }
 
     let empty_point = space.create_checkpoint().unwrap();
-    let _ = produce_many(&mut space, range.clone(), kp("ch1".to_string()), datum_creator, true);
+    let _ = produce_many(
+        &mut space,
+        range.clone(),
+        kp("ch1".to_string()),
+        datum_creator,
+        true,
+    );
     let results = consume_many(
         &mut space,
         range.clone(),
@@ -782,7 +813,11 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
         peeks: &BTreeSet<i32>,
         produces: &Vec<String>,
     ) -> Vec<
-        Option<(ContResult<String, Pattern, String>, Vec<RSpaceResult<String, String>>, Produce)>,
+        Option<(
+            ContResult<String, Pattern, String>,
+            Vec<RSpaceResult<String, String>>,
+            Produce,
+        )>,
     > {
         let mut results = vec![];
         let _ = space.consume(
@@ -801,8 +836,14 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
     }
 
     let empty_point = space.create_checkpoint().unwrap();
-    let rs =
-        consume_and_produce(&mut space, &channels, &patterns, &continuation, &peeks, &produces);
+    let rs = consume_and_produce(
+        &mut space,
+        &channels,
+        &patterns,
+        &continuation,
+        &peeks,
+        &produces,
+    );
     assert_eq!(rs.iter().flatten().count(), 1);
 
     for i in 0..amount_of_channels {
@@ -982,8 +1023,8 @@ async fn picking_n_continuations_from_m_persistent_waiting_continuations_should_
 }
 
 #[tokio::test]
-async fn pick_n_continuations_from_m_waiting_continuations_stored_at_two_channels_should_replay_correctly()
- {
+async fn pick_n_continuations_from_m_waiting_continuations_stored_at_two_channels_should_replay_correctly(
+) {
     let (mut space, mut replay_space) = fixture().await;
 
     let empty_point = space.create_checkpoint().unwrap();
@@ -1041,8 +1082,8 @@ async fn pick_n_continuations_from_m_waiting_continuations_stored_at_two_channel
 }
 
 #[tokio::test]
-async fn picking_n_datums_from_m_waiting_datums_while_doing_a_bunch_of_other_junk_should_replay_correctly()
- {
+async fn picking_n_datums_from_m_waiting_datums_while_doing_a_bunch_of_other_junk_should_replay_correctly(
+) {
     let (mut space, mut replay_space) = fixture().await;
 
     let empty_point = space.create_checkpoint().unwrap();
@@ -1120,8 +1161,8 @@ async fn picking_n_datums_from_m_waiting_datums_while_doing_a_bunch_of_other_jun
 }
 
 #[tokio::test]
-async fn picking_n_continuations_from_m_persistent_waiting_continuations_while_doing_a_bunch_of_other_junk_should_replay_correctly()
- {
+async fn picking_n_continuations_from_m_persistent_waiting_continuations_while_doing_a_bunch_of_other_junk_should_replay_correctly(
+) {
     let (mut space, mut replay_space) = fixture().await;
 
     let empty_point = space.create_checkpoint().unwrap();
@@ -1303,8 +1344,8 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .map
             .get(&IOEvent::Consume(cr_1.clone()))
             .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
-            .unwrap_or(0) +
-            replay_space
+            .unwrap_or(0)
+            + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2.clone()))
@@ -1336,8 +1377,8 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .map
             .get(&IOEvent::Consume(cr_1.clone()))
             .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
-            .unwrap_or(0) +
-            replay_space
+            .unwrap_or(0)
+            + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2.clone()))
@@ -1354,8 +1395,8 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .map
             .get(&IOEvent::Consume(cr_1))
             .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
-            .unwrap_or(0) +
-            replay_space
+            .unwrap_or(0)
+            + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2))
@@ -1408,8 +1449,8 @@ async fn an_install_should_be_available_after_resetting_to_a_checkpoint() {
 }
 
 #[tokio::test]
-async fn reset_should_empty_the_replay_store_and_reset_the_replay_trie_updates_log_and_reset_the_replay_data()
- {
+async fn reset_should_empty_the_replay_store_and_reset_the_replay_trie_updates_log_and_reset_the_replay_data(
+) {
     let (mut space, mut replay_space) = fixture().await;
 
     let channels = vec!["ch1".to_string()];
@@ -1466,8 +1507,8 @@ async fn reset_should_empty_the_replay_store_and_reset_the_replay_trie_updates_l
 }
 
 #[tokio::test]
-async fn clear_should_empty_the_replay_store_reset_the_replay_event_log_reset_the_replay_trie_updates_log_and_reset_the_replay_data()
- {
+async fn clear_should_empty_the_replay_store_reset_the_replay_event_log_reset_the_replay_trie_updates_log_and_reset_the_replay_data(
+) {
     let (mut space, mut replay_space) = fixture().await;
 
     let channels = vec!["ch1".to_string()];
@@ -1542,94 +1583,93 @@ async fn replay_should_not_allow_for_ambiguous_executions() {
     let data3 = "datum2".to_string();
 
     let empty_point = space.create_checkpoint().unwrap();
-    assert_eq!(space.produce(channel1.clone(), data3.clone(), false), Ok(None));
-    assert_eq!(space.produce(channel1.clone(), data3.clone(), false), Ok(None));
-    assert_eq!(space.produce(channel2.clone(), data1.clone(), false), Ok(None));
-
-    assert!(
-        space
-            .consume(key1.clone(), patterns.clone(), continuation1.clone(), false, BTreeSet::new(),)
-            .unwrap()
-            .is_some()
+    assert_eq!(
+        space.produce(channel1.clone(), data3.clone(), false),
+        Ok(None)
     );
+    assert_eq!(
+        space.produce(channel1.clone(), data3.clone(), false),
+        Ok(None)
+    );
+    assert_eq!(
+        space.produce(channel2.clone(), data1.clone(), false),
+        Ok(None)
+    );
+
+    assert!(space
+        .consume(
+            key1.clone(),
+            patterns.clone(),
+            continuation1.clone(),
+            false,
+            BTreeSet::new(),
+        )
+        .unwrap()
+        .is_some());
 
     //continuation1 produces data1 on ch2
-    assert!(
-        space
-            .produce(channel2.clone(), data1.clone(), false)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        space
-            .consume(
-                key1.clone(),
-                patterns.clone(),
-                continuation2.clone(),
-                false,
-                BTreeSet::default()
-            )
-            .unwrap()
-            .is_some()
-    );
+    assert!(space
+        .produce(channel2.clone(), data1.clone(), false)
+        .unwrap()
+        .is_none());
+    assert!(space
+        .consume(
+            key1.clone(),
+            patterns.clone(),
+            continuation2.clone(),
+            false,
+            BTreeSet::default()
+        )
+        .unwrap()
+        .is_some());
     //continuation2 produces data2 on ch2
-    assert!(
-        space
-            .produce(channel2.clone(), data2.clone(), false)
-            .unwrap()
-            .is_none()
-    );
+    assert!(space
+        .produce(channel2.clone(), data2.clone(), false)
+        .unwrap()
+        .is_none());
     let after_play = space.create_checkpoint().unwrap();
 
     //rig
     let _ = replay_space.rig_and_reset(empty_point.root, after_play.log);
 
-    assert!(
-        replay_space
-            .produce(channel1.clone(), data3.clone(), false)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        replay_space
-            .produce(channel1, data3, false)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        replay_space
-            .produce(channel2.clone(), data1.clone(), false)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        replay_space
-            .consume(key1.clone(), patterns.clone(), continuation2, false, BTreeSet::default())
-            .unwrap()
-            .is_none()
-    );
+    assert!(replay_space
+        .produce(channel1.clone(), data3.clone(), false)
+        .unwrap()
+        .is_none());
+    assert!(replay_space
+        .produce(channel1, data3, false)
+        .unwrap()
+        .is_none());
+    assert!(replay_space
+        .produce(channel2.clone(), data1.clone(), false)
+        .unwrap()
+        .is_none());
+    assert!(replay_space
+        .consume(
+            key1.clone(),
+            patterns.clone(),
+            continuation2,
+            false,
+            BTreeSet::default()
+        )
+        .unwrap()
+        .is_none());
 
-    assert!(
-        replay_space
-            .consume(key1, patterns, continuation1, false, BTreeSet::default())
-            .unwrap()
-            .is_some()
-    );
+    assert!(replay_space
+        .consume(key1, patterns, continuation1, false, BTreeSet::default())
+        .unwrap()
+        .is_some());
 
     //continuation1 produces data1 on ch2
-    assert!(
-        replay_space
-            .produce(channel2.clone(), data1, false)
-            .unwrap()
-            .is_some()
-    );
+    assert!(replay_space
+        .produce(channel2.clone(), data1, false)
+        .unwrap()
+        .is_some());
     //continuation2 produces data2 on ch2
-    assert!(
-        replay_space
-            .produce(channel2, data2, false)
-            .unwrap()
-            .is_none()
-    );
+    assert!(replay_space
+        .produce(channel2, data2, false)
+        .unwrap()
+        .is_none());
 
     assert!(replay_space.replay_data.is_empty());
 }
@@ -1649,7 +1689,13 @@ async fn check_replay_data_should_throw_error_if_replay_data_contains_elements()
     let continuation = "continuation".to_string();
     let datum = "datum1".to_string();
 
-    let _ = space.consume(channels.clone(), patterns, continuation, false, BTreeSet::new());
+    let _ = space.consume(
+        channels.clone(),
+        patterns,
+        continuation,
+        false,
+        BTreeSet::new(),
+    );
     let _ = space.produce(channels[0].clone(), datum, false);
     let c = space.create_checkpoint().unwrap();
     let _ = replay_space.rig_and_reset(c.root, c.log);
@@ -1657,8 +1703,10 @@ async fn check_replay_data_should_throw_error_if_replay_data_contains_elements()
     assert!(res.is_err());
 }
 
-type StateSetup =
-    (RSpace<String, Pattern, String, String>, ReplayRSpace<String, Pattern, String, String>);
+type StateSetup = (
+    RSpace<String, Pattern, String, String>,
+    ReplayRSpace<String, Pattern, String, String>,
+);
 
 async fn fixture() -> StateSetup {
     let mut kvm = InMemoryStoreManager::new();
@@ -1683,7 +1731,11 @@ async fn fixture() -> StateSetup {
         HotStoreInstances::create_from_hs_and_hr(cache, hr)
     };
 
-    let rspace = RSpace::apply(history_repo.clone(), hot_store, Arc::new(Box::new(StringMatch)));
+    let rspace = RSpace::apply(
+        history_repo.clone(),
+        hot_store,
+        Arc::new(Box::new(StringMatch)),
+    );
 
     let history_cache: HotStoreState<String, Pattern, String, String> = HotStoreState::default();
     let replay_store = {
@@ -1691,8 +1743,11 @@ async fn fixture() -> StateSetup {
         HotStoreInstances::create_from_hs_and_hr(history_cache, hr)
     };
 
-    let replay_rspace: ReplayRSpace<String, Pattern, String, String> =
-        ReplayRSpace::apply(history_repo, Arc::new(replay_store), Arc::new(Box::new(StringMatch)));
+    let replay_rspace: ReplayRSpace<String, Pattern, String, String> = ReplayRSpace::apply(
+        history_repo,
+        Arc::new(replay_store),
+        Arc::new(Box::new(StringMatch)),
+    );
 
     (rspace, replay_rspace)
 }

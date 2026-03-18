@@ -1,12 +1,15 @@
 // See shared/src/main/scala/coop/rchain/shared/RecentHashFilter.scala
 
-use indexmap::IndexSet;
 use std::sync::Mutex;
 
-/// Simple synchronized LRU filter to suppress redundant gossip messages by hash.
+use indexmap::IndexSet;
+
+/// Simple synchronized LRU filter to suppress redundant gossip messages by
+/// hash.
 ///
-/// This filter tracks recently seen hashes and allows callers to check if a hash
-/// has been seen before. It uses an LRU eviction policy to bound memory usage.
+/// This filter tracks recently seen hashes and allows callers to check if a
+/// hash has been seen before. It uses an LRU eviction policy to bound memory
+/// usage.
 pub struct RecentHashFilter {
     set: Mutex<IndexSet<String>>,
     max_entries: usize,

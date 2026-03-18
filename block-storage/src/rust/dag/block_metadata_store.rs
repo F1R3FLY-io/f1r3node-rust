@@ -1,9 +1,8 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockMetadataStore.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
+// BlockMetadataStore.scala
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -36,7 +35,8 @@ pub(crate) struct DagState {
     pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
 }
 
-// Keep the in-memory finalized set bounded; finalized truth is persisted in block metadata.
+// Keep the in-memory finalized set bounded; finalized truth is persisted in
+// block metadata.
 const FINALIZED_BLOCK_CACHE_MAX: usize = 50_000;
 const FINALIZED_BLOCK_CACHE_RETAIN: usize = 25_000;
 
@@ -148,8 +148,8 @@ impl BlockMetadataStore {
         Ok(())
     }
 
-    /** Record new last finalized lock. Directly finalized is the output of finalizer,
-     * indirectly finalized are new LFB ancestors. */
+    /** Record new last finalized lock. Directly finalized is the output of
+     * finalizer, indirectly finalized are new LFB ancestors. */
     pub fn record_finalized(
         &mut self,
         directly: BlockHash,
@@ -217,9 +217,7 @@ impl BlockMetadataStore {
 
     // DAG state operations — all return O(1) clones via imbl structural sharing
 
-    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> {
-        &self.dag_state
-    }
+    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
 
     pub fn dag_set(&self) -> imbl::HashSet<BlockHash> {
         self.dag_state.read().unwrap().dag_set.clone()
@@ -259,7 +257,10 @@ impl BlockMetadataStore {
             .unwrap()
             .last_finalized_block
             .as_ref()
-            .expect("DagState does not contain lastFinalizedBlock. Are you calling this on empty BlockDagStorage? Otherwise there is a bug.")
+            .expect(
+                "DagState does not contain lastFinalizedBlock. Are you calling this on empty \
+                 BlockDagStorage? Otherwise there is a bug.",
+            )
             .0
             .clone()
     }

@@ -1,13 +1,14 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/buffer/LimitedBuffer.scala
-// See comm/src/main/scala/coop/rchain/comm/transport/buffer/LimitedBufferObservable.scala
-// See comm/src/main/scala/coop/rchain/comm/transport/buffer/ConcurrentQueue.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/buffer/
+// LimitedBufferObservable.scala See comm/src/main/scala/coop/rchain/comm/
+// transport/buffer/ConcurrentQueue.scala
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures::Stream;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_stream::wrappers::BroadcastStream;
 
 /// LimitedBuffer trait providing bounded buffering with overflow policy
 pub trait LimitedBuffer<T> {
@@ -111,14 +112,10 @@ impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
     }
 
     /// Get the buffer size
-    pub fn buffer_size(&self) -> usize {
-        self.buffer_size
-    }
+    pub fn buffer_size(&self) -> usize { self.buffer_size }
 
     /// Check if the sender is still active (not closed)
-    pub fn is_active(&self) -> bool {
-        !self.sender.is_disconnected()
-    }
+    pub fn is_active(&self) -> bool { !self.sender.is_disconnected() }
 }
 
 impl<T: Clone + Send + 'static> LimitedBuffer<T> for FlumeLimitedBuffer<T> {
@@ -145,9 +142,7 @@ impl<T: Clone + Send + 'static> LimitedBuffer<T> for FlumeLimitedBuffer<T> {
         // The pump task will notice completion and stop
     }
 
-    fn is_complete(&self) -> bool {
-        self.complete.load(Ordering::Acquire)
-    }
+    fn is_complete(&self) -> bool { self.complete.load(Ordering::Acquire) }
 }
 
 /// Subscription handle for FlumeLimitedBuffer using broadcast receiver
@@ -196,7 +191,8 @@ impl<T: Clone + Send + 'static> Stream for FlumeLimitedBufferSubscription<T> {
             std::task::Poll::Pending => {
                 // No message available yet
                 // If we're complete, check if we should end the stream
-                // We need to be careful not to end too early - only if we're sure no more items are coming
+                // We need to be careful not to end too early - only if we're sure no more items
+                // are coming
                 if self.complete.load(Ordering::Acquire) {
                     // We're complete and no items available - the stream should end
                     // Wake the waker to check again, but return None to signal end
@@ -216,7 +212,8 @@ impl<T: Clone + Send + 'static> LimitedBufferObservable<T> for FlumeLimitedBuffe
     type Subscription = FlumeLimitedBufferSubscription<T>;
 
     fn subscribe(&mut self) -> Option<Self::Subscription> {
-        // Create a new broadcast receiver - each subscription gets its own independent stream
+        // Create a new broadcast receiver - each subscription gets its own independent
+        // stream
         let receiver = self.broadcast_tx.subscribe();
         let stream = BroadcastStream::new(receiver);
 
@@ -230,15 +227,14 @@ impl<T: Clone + Send + 'static> LimitedBufferObservable<T> for FlumeLimitedBuffe
 /// Convenience constructor functions
 impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
     /// Create a new drop-new limited buffer observable
-    pub fn drop_new_observable(buffer_size: usize) -> Self {
-        Self::drop_new(buffer_size)
-    }
+    pub fn drop_new_observable(buffer_size: usize) -> Self { Self::drop_new(buffer_size) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use futures::stream::StreamExt;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_limited_buffer_push_next() {

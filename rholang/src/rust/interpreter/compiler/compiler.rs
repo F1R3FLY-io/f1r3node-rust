@@ -1,12 +1,16 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/Compiler.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/Compiler.
+// scala
+
+use std::collections::HashMap;
+
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::Par;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 
 use super::normalize::normalize_ann_proc;
-use crate::rust::interpreter::{compiler::exports::ProcVisitInputs, errors::InterpreterError};
-use models::{
-    rhoapi::{connective::ConnectiveInstance, Par},
-    rust::rholang::sorter::{par_sort_matcher::ParSortMatcher, sortable::Sortable},
-};
-use std::collections::HashMap;
+use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+use crate::rust::interpreter::errors::InterpreterError;
 
 pub struct Compiler;
 

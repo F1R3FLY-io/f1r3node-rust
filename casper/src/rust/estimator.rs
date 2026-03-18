@@ -1,15 +1,16 @@
 // See casper/src/main/scala/coop/rchain/casper/Estimator.scala
 
+use std::collections::{HashMap, HashSet};
+
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use models::rust::{
-    block_hash::BlockHash, block_metadata::BlockMetadata,
-    casper::protocol::casper_message::BlockMessage, validator::Validator,
-};
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 use shared::rust::dag::dag_ops;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
-use std::collections::{HashMap, HashSet};
 
 use crate::rust::util::dag_operations::DagOperations;
 use crate::rust::util::proto_util;
@@ -54,7 +55,8 @@ impl Estimator {
             .await
     }
 
-    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
+    /// When the BlockDag has an empty latestMessages, tips will return
+    /// IndexedSeq(genesis.blockHash)
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
     pub async fn tips_with_latest_messages(
         &self,
@@ -203,7 +205,8 @@ impl Estimator {
             Ok(result)
         }
 
-        // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel
+        // TODO: Scala message - Since map scores are additive it should be possible to
+        // do this in parallel
         let mut scores_map: HashMap<BlockHash, i64> = HashMap::new();
         for (validator, latest_block_hash) in latest_messages_hashes.iter() {
             scores_map = add_validator_weight_down_supporting_chain(
@@ -286,7 +289,5 @@ impl Estimator {
         }
     }
 
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool {
-        new_blocks == blocks
-    }
+    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
 }

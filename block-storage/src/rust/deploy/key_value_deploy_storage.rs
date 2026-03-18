@@ -1,17 +1,15 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/
+// KeyValueDeployStorage.scala
 
 use std::collections::HashSet;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::{
-    store::{
-        key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-        key_value_typed_store_impl::KeyValueTypedStoreImpl,
-    },
-    ByteString,
-};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+use shared::rust::ByteString;
 
 #[derive(Clone)]
 pub struct KeyValueDeployStorage {
@@ -43,13 +41,9 @@ impl KeyValueDeployStorage {
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store
-            .to_map()
-            .map(|map| map.into_values().collect())
+        self.store.to_map().map(|map| map.into_values().collect())
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
-    pub fn non_empty(&self) -> Result<bool, KvStoreError> {
-        self.store.non_empty()
-    }
+    pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }

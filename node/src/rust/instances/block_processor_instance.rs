@@ -1,21 +1,19 @@
-// See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
+// See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.
+// scala
 
-use dashmap::DashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
-use tokio::sync::mpsc;
-
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use std::sync::{Arc, OnceLock};
 
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::{ProposeFunction, ValidBlockProcessing};
-
 use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use tokio::sync::mpsc;
 
 const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
 const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
@@ -68,8 +66,7 @@ fn maybe_trim_allocator_after_block() {
     }
 
     let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !count.is_multiple_of(interval) {
-    }
+    if !count.is_multiple_of(interval) {}
 
     #[cfg(target_os = "linux")]
     unsafe {
@@ -77,7 +74,8 @@ fn maybe_trim_allocator_after_block() {
     }
 }
 
-/// Ensures the in-flight marker is always cleared, even on early-return or panic.
+/// Ensures the in-flight marker is always cleared, even on early-return or
+/// panic.
 struct InFlightBlockGuard {
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     hash: BlockHash,
@@ -93,9 +91,7 @@ impl InFlightBlockGuard {
 }
 
 impl Drop for InFlightBlockGuard {
-    fn drop(&mut self) {
-        self.blocks_in_processing.remove(&self.hash);
-    }
+    fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
 }
 
 /// Configuration for BlockProcessorInstance
@@ -142,7 +138,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     ///
     /// # Arguments
     ///
-    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for re-enqueuing buffer pendants)
+    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
+    ///   re-enqueuing buffer pendants)
     pub fn create(
         self,
     ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
@@ -178,7 +175,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         blocks_in_processing.insert(block.block_hash.clone());
                         let max_in_flight = max_blocks_in_processing();
                         if blocks_in_processing.len() > max_in_flight {
-                            // Ensure in-flight marker is always cleared, even when ack cleanup fails.
+                            // Ensure in-flight marker is always cleared, even when ack cleanup
+                            // fails.
                             blocks_in_processing.remove(&block.block_hash);
                             if let Err(err) = block_processor.ack_processed(&block).await {
                                 tracing::warn!(
@@ -240,7 +238,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
-                    // In Scala, if this fails, the stream short-circuits and triggerProposeF won't be called
+                    // In Scala, if this fails, the stream short-circuits and triggerProposeF won't
+                    // be called
                     match casper.get_dependency_free_from_buffer() {
                         Ok(buffer_pendants) => {
                             if !buffer_pendants.is_empty() {
@@ -264,7 +263,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     if blocks_in_processing.len() > max_in_flight {
                                         blocks_in_processing.remove(&pendant_hash);
                                         tracing::warn!(
-                                            "Skipping dependency-free pendant {} enqueue because in-flight block cap {} is reached",
+                                            "Skipping dependency-free pendant {} enqueue because \
+                                             in-flight block cap {} is reached",
                                             PrettyPrinter::build_string_bytes(&pendant.block_hash),
                                             max_in_flight
                                         );
@@ -277,7 +277,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     {
                                         blocks_in_processing.remove(&pendant_hash);
                                         tracing::warn!(
-                                            "Dropping dependency-free pendant {} because block queue is closed",
+                                            "Dropping dependency-free pendant {} because block \
+                                             queue is closed",
                                             PrettyPrinter::build_string_bytes(&pendant.block_hash)
                                         );
                                     } else {
@@ -288,38 +289,41 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     }
                                 } else {
                                     tracing::info!(
-                                        "Skipping dependency-free pendant {} enqueue because it is already marked in-flight",
+                                        "Skipping dependency-free pendant {} enqueue because it \
+                                         is already marked in-flight",
                                         PrettyPrinter::build_string_bytes(&pendant.block_hash)
                                     );
                                 }
                             }
 
-                            // Only call trigger_propose if get_dependency_free_from_buffer succeeded
-                            // and this path is explicitly enabled. Heartbeat proposer is the
+                            // Only call trigger_propose if get_dependency_free_from_buffer
+                            // succeeded and this path is explicitly
+                            // enabled. Heartbeat proposer is the
                             // default liveness path to avoid propose storms under heavy replay.
                             if trigger_propose_after_block_processing_enabled() {
                                 if let Some(trigger_propose) = trigger_propose_f {
                                     // Skip trigger if local validator is not currently bonded.
-                                    // This avoids repeated ReadOnlyMode propose attempts on non-bonded nodes.
-                                    let is_bonded_validator = if let Some(validator) =
-                                        casper.get_validator()
-                                    {
-                                        match casper.get_snapshot().await {
-                                            Ok(snapshot) => snapshot
-                                                .on_chain_state
-                                                .active_validators
-                                                .contains(&validator.public_key.bytes),
-                                            Err(err) => {
-                                                tracing::warn!(
-                                                "Failed to get Casper snapshot for trigger-propose bond check: {}",
-                                                err
-                                            );
-                                                false
+                                    // This avoids repeated ReadOnlyMode propose attempts on
+                                    // non-bonded nodes.
+                                    let is_bonded_validator =
+                                        if let Some(validator) = casper.get_validator() {
+                                            match casper.get_snapshot().await {
+                                                Ok(snapshot) => snapshot
+                                                    .on_chain_state
+                                                    .active_validators
+                                                    .contains(&validator.public_key.bytes),
+                                                Err(err) => {
+                                                    tracing::warn!(
+                                                        "Failed to get Casper snapshot for \
+                                                         trigger-propose bond check: {}",
+                                                        err
+                                                    );
+                                                    false
+                                                }
                                             }
-                                        }
-                                    } else {
-                                        false
-                                    };
+                                        } else {
+                                            false
+                                        };
 
                                     if is_bonded_validator {
                                         // Clone the Arc and cast to trait object
@@ -337,7 +341,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                         }
                                     } else {
                                         tracing::debug!(
-                                            "Skipping trigger propose after block processing: validator is not bonded"
+                                            "Skipping trigger propose after block processing: \
+                                             validator is not bonded"
                                         );
                                     }
                                 }
@@ -345,10 +350,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                         Err(err) => {
                             tracing::error!(
-                                "Failed to get dependency-free blocks from buffer: {}. Skipping trigger propose.",
+                                "Failed to get dependency-free blocks from buffer: {}. Skipping \
+                                 trigger propose.",
                                 err
                             );
-                            // Don't call trigger_propose if get_dependency_free_from_buffer failed
+                            // Don't call trigger_propose if
+                            // get_dependency_free_from_buffer failed
                         }
                     }
 
@@ -485,7 +492,8 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     {
         Ok(validation_result) => validation_result,
         Err(err) => {
-            // ensure this block is no longer tracked in the retriever even when validation fails
+            // ensure this block is no longer tracked in the retriever even when validation
+            // fails
             block_processor
                 .ack_processed(&block)
                 .await

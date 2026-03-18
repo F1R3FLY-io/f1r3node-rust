@@ -1,7 +1,9 @@
-use super::signatures_alg::SignaturesAlg;
-use crate::rust::{private_key::PrivateKey, public_key::PublicKey};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
+
+use super::signatures_alg::SignaturesAlg;
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
 
 // See crypto/src/main/scala/coop/rchain/crypto/signatures/Ed25519.scala
 #[derive(Clone, Debug, PartialEq)]
@@ -53,21 +55,13 @@ impl SignaturesAlg for Ed25519 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String {
-        "ed25519".to_string()
-    }
+    fn name(&self) -> String { "ed25519".to_string() }
 
-    fn sig_length(&self) -> usize {
-        64
-    }
+    fn sig_length(&self) -> usize { 64 }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
-        Box::new(self.clone())
-    }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
 }
 
 fn parse_public_key(pub_key: &[u8]) -> Result<VerifyingKey, &'static str> {
@@ -94,11 +88,12 @@ fn parse_signing_key(secret: &[u8]) -> Result<SigningKey, &'static str> {
 // crypto/src/test/scala/coop/rchain/crypto/signatures/Ed25519Test.scala
 #[cfg(test)]
 mod tests {
+    use hex::{decode, encode};
+
     use super::Ed25519;
     use crate::rust::hash::keccak256::Keccak256;
     use crate::rust::private_key::PrivateKey;
     use crate::rust::signatures::signatures_alg::SignaturesAlg;
-    use hex::{decode, encode};
 
     #[test]
     fn computes_public_key_from_secret_key() {

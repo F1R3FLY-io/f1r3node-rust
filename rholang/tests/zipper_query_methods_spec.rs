@@ -1,6 +1,7 @@
 // Unit tests for PathMap zipper query methods: hasVal, atPath, pathExists
 
-use models::rhoapi::{expr::ExprInstance, EList, EPathMap, EZipper, Expr, Par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::par_to_path;
 
@@ -9,7 +10,8 @@ mod zipper_query_tests {
     use super::*;
 
     fn create_test_pathmap() -> EPathMap {
-        // Create PathMap with entries: ["a", "value1"], ["a", "b", "value2"], ["c", "value3"]
+        // Create PathMap with entries: ["a", "value1"], ["a", "b", "value2"], ["c",
+        // "value3"]
         let entries = vec![
             create_path_par(vec!["a".to_string()], "value1"),
             create_path_par(vec!["a".to_string(), "b".to_string()], "value2"),
@@ -26,17 +28,20 @@ mod zipper_query_tests {
 
     fn create_path_par(path: Vec<String>, _value: &str) -> Par {
         // In Rholang pathmaps, each Par in EPathMap.ps represents a path.
-        // The path is extracted using par_to_path, and the entire Par is stored as the value.
-        // The test expects to find a value at path ["a"] when we create an entry.
-        // However, par_to_path treats ALL list elements as path segments.
+        // The path is extracted using par_to_path, and the entire Par is stored as the
+        // value. The test expects to find a value at path ["a"] when we create
+        // an entry. However, par_to_path treats ALL list elements as path
+        // segments.
         //
-        // The test creates entries like ["a", "value1"] and expects to find a value at path ["a"].
-        // But if we create EListBody(["a", "value1"]), par_to_path extracts ["a", "value1"] as the path,
-        // not ["a"]. So the test structure is incorrect.
+        // The test creates entries like ["a", "value1"] and expects to find a value at
+        // path ["a"]. But if we create EListBody(["a", "value1"]), par_to_path
+        // extracts ["a", "value1"] as the path, not ["a"]. So the test
+        // structure is incorrect.
         //
-        // The fix: create a Par that represents only the path segments. So for path ["a"],
-        // we create EListBody(["a"]), and the value stored will be that Par. The test checks
-        // if there's a value at path ["a"], which will be true.
+        // The fix: create a Par that represents only the path segments. So for path
+        // ["a"], we create EListBody(["a"]), and the value stored will be that
+        // Par. The test checks if there's a value at path ["a"], which will be
+        // true.
         let path_elements = path
             .iter()
             .map(|s| {

@@ -107,20 +107,17 @@ impl ParToSExpr {
                 ExprInstance::GByteArray(ba) => format!("0x{}", hex::encode(ba)),
 
                 ExprInstance::EListBody(list) => {
-                    let elements: Vec<String> =
-                        list.ps.iter().map(Self::par_to_sexpr).collect();
+                    let elements: Vec<String> = list.ps.iter().map(Self::par_to_sexpr).collect();
                     format!("[{}]", elements.join(" "))
                 }
 
                 ExprInstance::ETupleBody(tuple) => {
-                    let elements: Vec<String> =
-                        tuple.ps.iter().map(Self::par_to_sexpr).collect();
+                    let elements: Vec<String> = tuple.ps.iter().map(Self::par_to_sexpr).collect();
                     format!("(tuple {})", elements.join(" "))
                 }
 
                 ExprInstance::ESetBody(set) => {
-                    let elements: Vec<String> =
-                        set.ps.iter().map(Self::par_to_sexpr).collect();
+                    let elements: Vec<String> = set.ps.iter().map(Self::par_to_sexpr).collect();
                     format!("(set {})", elements.join(" "))
                 }
 
@@ -201,11 +198,8 @@ impl ParToSExpr {
                 ExprInstance::EMethodBody(method) => {
                     let target =
                         Self::par_to_sexpr(method.target.as_ref().unwrap_or(&Par::default()));
-                    let args: Vec<String> = method
-                        .arguments
-                        .iter()
-                        .map(Self::par_to_sexpr)
-                        .collect();
+                    let args: Vec<String> =
+                        method.arguments.iter().map(Self::par_to_sexpr).collect();
                     format!("({}.{} {})", target, method.method_name, args.join(" "))
                 }
 

@@ -2,7 +2,8 @@
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::*;
-use models::rust::{par_map::ParMap, par_set::ParSet};
+use models::rust::par_map::ParMap;
+use models::rust::par_set::ParSet;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
@@ -26,14 +27,10 @@ impl JsonEncoder {
     }
 
     /// Serialize Par to JSON (matches Scala encodePar)
-    pub fn encode_par(par: &Par) -> Result<String, serde_json::Error> {
-        Self::to_json(par)
-    }
+    pub fn encode_par(par: &Par) -> Result<String, serde_json::Error> { Self::to_json(par) }
 
     /// Deserialize Par from JSON (matches Scala decodePar)
-    pub fn decode_par(json: &str) -> Result<Par, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par(json: &str) -> Result<Par, serde_json::Error> { Self::from_json(json) }
 
     /// Serialize ParSet to JSON as array (matches Scala encodeParSet)
     pub fn encode_par_set(par_set: &ParSet) -> Result<String, serde_json::Error> {
@@ -41,9 +38,7 @@ impl JsonEncoder {
     }
 
     /// Deserialize ParSet from JSON array (matches Scala decodeParSet)
-    pub fn decode_par_set(json: &str) -> Result<ParSet, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par_set(json: &str) -> Result<ParSet, serde_json::Error> { Self::from_json(json) }
 
     /// Serialize ParMap to JSON as array of pairs (matches Scala encodeParMap)
     pub fn encode_par_map(par_map: &ParMap) -> Result<String, serde_json::Error> {
@@ -51,18 +46,18 @@ impl JsonEncoder {
     }
 
     /// Deserialize ParMap from JSON array of pairs (matches Scala decodeParMap)
-    pub fn decode_par_map(json: &str) -> Result<ParMap, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par_map(json: &str) -> Result<ParMap, serde_json::Error> { Self::from_json(json) }
 
-    /// Serialize Blake2b512Random to JSON as null (matches Scala encodeBlake2b512Random)
+    /// Serialize Blake2b512Random to JSON as null (matches Scala
+    /// encodeBlake2b512Random)
     pub fn encode_blake2b512_random(
         _random: &Blake2b512Random,
     ) -> Result<String, serde_json::Error> {
         Self::to_json(&())
     }
 
-    /// Deserialize Blake2b512Random from JSON null (matches Scala decodeDummyBlake2b512Random)
+    /// Deserialize Blake2b512Random from JSON null (matches Scala
+    /// decodeDummyBlake2b512Random)
     pub fn decode_blake2b512_random(json: &str) -> Result<Blake2b512Random, serde_json::Error> {
         let _: () = Self::from_json(json)?;
         Ok(Blake2b512Random::create_from_bytes(&[1]))
@@ -71,8 +66,9 @@ impl JsonEncoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rust::utils::*;
+
+    use super::*;
 
     #[test]
     fn test_par_set_roundtrip() {

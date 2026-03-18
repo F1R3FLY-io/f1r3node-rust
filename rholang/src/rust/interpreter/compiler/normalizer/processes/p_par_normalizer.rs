@@ -1,10 +1,11 @@
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::errors::InterpreterError;
-use models::rhoapi::Par;
 use std::collections::HashMap;
 
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use models::rhoapi::Par;
 use rholang_parser::ast::{AnnProc, Proc};
+
+use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::errors::InterpreterError;
 
 fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
     let mut result = Vec::new();
@@ -59,27 +60,23 @@ pub fn normalize_p_par<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use models::{
-        create_bit_vector,
-        rhoapi::Par,
-        rust::utils::{new_boundvar_expr, new_freevar_expr, new_gint_expr},
-    };
-
-    use crate::rust::interpreter::{
-        compiler::{exports::ProcVisitInputs, normalize::VarSort},
-        errors::InterpreterError,
-        test_utils::utils::proc_visit_inputs_and_env,
-    };
-
-    use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+    use models::create_bit_vector;
+    use models::rhoapi::Par;
+    use models::rust::utils::{new_boundvar_expr, new_freevar_expr, new_gint_expr};
     use rholang_parser::ast::{Id, Var};
     use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+    use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+    use crate::rust::interpreter::errors::InterpreterError;
+    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn p_par_should_compile_both_branches_into_a_par_object() {
@@ -121,11 +118,13 @@ mod tests {
         let par_proc = ParBuilderUtil::create_ast_par(left_proc, right_proc, &parser);
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::ProcSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let result = normalize_ann_proc(&par_proc, inputs, &env, &parser);
 
@@ -205,16 +204,14 @@ mod tests {
         assert_eq!(
             result.unwrap().free_map,
             ProcVisitInputs::new().free_map.put_all_pos(vec![
-                (
-                    "x".to_owned(),
-                    VarSort::ProcSort,
-                    SourcePos { line: 0, col: 0 }
-                ),
-                (
-                    "y".to_owned(),
-                    VarSort::ProcSort,
-                    SourcePos { line: 0, col: 0 }
-                )
+                ("x".to_owned(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0
+                }),
+                ("y".to_owned(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0
+                })
             ])
         )
     }

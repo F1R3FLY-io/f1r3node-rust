@@ -1,14 +1,15 @@
 // See casper/src/test/scala/coop/rchain/casper/util/RSpaceUtil.scala
 
-use crate::rust::util::{proto_util, rholang::runtime_manager::RuntimeManager};
-use models::{
-    rhoapi::{expr::ExprInstance, g_unforgeable::UnfInstance, Expr, GPrivate, GUnforgeable, Par},
-    rust::{
-        block::state_hash::StateHash, casper::protocol::casper_message::BlockMessage,
-        string_ops::StringOps,
-    },
-};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{Expr, GPrivate, GUnforgeable, Par};
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::string_ops::StringOps;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub async fn get_data_at_public_channel(
     hash: &StateHash,

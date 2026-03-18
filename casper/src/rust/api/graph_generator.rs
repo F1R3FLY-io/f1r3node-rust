@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use graphz::rust::graphz::{
     apply, subgraph, GraphArrowType, GraphRankDir, GraphSerializer, GraphShape, GraphStyle,
@@ -6,8 +9,6 @@ use graphz::rust::graphz::{
 use itertools::Itertools;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ValidatorBlock {
@@ -21,7 +22,6 @@ pub struct ValidatorBlock {
 pub struct GraphConfig {
     pub show_justification_lines: bool,
 }
-
 
 pub type ValidatorsBlocks = HashMap<i64, Vec<ValidatorBlock>>;
 
@@ -90,7 +90,8 @@ impl GraphzGenerator {
             g.node(ancestor, GraphShape::Box, style, None, None).await?;
         }
 
-        // create invisible edges from ancestors to first node in each cluster for proper alignment
+        // create invisible edges from ancestors to first node in each cluster for
+        // proper alignment
         let mut invisible_edge_pairs = Vec::new();
         for (id, blocks) in &validators_list {
             let nodes = Self::nodes_for_ts(id, first_ts, blocks, &last_finalized_block_hash);
@@ -172,14 +173,11 @@ impl GraphzGenerator {
                     .collect();
 
                 let mut validator_blocks = HashMap::new();
-                validator_blocks.insert(
-                    time_entry,
-                    vec![ValidatorBlock {
-                        block_hash,
-                        parents,
-                        justifications,
-                    }],
-                );
+                validator_blocks.insert(time_entry, vec![ValidatorBlock {
+                    block_hash,
+                    parents,
+                    justifications,
+                }]);
 
                 let mut block_map = HashMap::new();
                 block_map.insert(block_sender_hash, validator_blocks);
@@ -191,15 +189,9 @@ impl GraphzGenerator {
 
         // Equivalent to acc.validators |+| Foldable[List].fold(validators)
         for (block_sender_hash, blocks_map) in validators.into_iter().flat_map(|m| m.into_iter()) {
-            let acc_validator = acc
-                .validators
-                .entry(block_sender_hash)
-                .or_default();
+            let acc_validator = acc.validators.entry(block_sender_hash).or_default();
             for (ts, blocks) in blocks_map {
-                acc_validator
-                    .entry(ts)
-                    .or_default()
-                    .extend(blocks);
+                acc_validator.entry(ts).or_default().extend(blocks);
             }
         }
 
@@ -246,7 +238,8 @@ impl GraphzGenerator {
             .flatten()
             .collect();
 
-        // Equivalent to case ValidatorBlock(blockHash, parentsHashes, _) => parentsHashes.traverse(...)
+        // Equivalent to case ValidatorBlock(blockHash, parentsHashes, _) =>
+        // parentsHashes.traverse(...)
         let edge_pairs: Vec<(&String, &String)> = all_validator_blocks
             .iter()
             .flat_map(|validator_block| {
@@ -277,7 +270,8 @@ impl GraphzGenerator {
             .flatten()
             .collect();
 
-        // Equivalent to case ValidatorBlock(blockHash, _, justifications) => justifications.traverse(...)
+        // Equivalent to case ValidatorBlock(blockHash, _, justifications) =>
+        // justifications.traverse(...)
         let edge_pairs: Vec<(&String, &String)> = all_validator_blocks
             .iter()
             .flat_map(|validator_block| {
@@ -347,13 +341,15 @@ impl GraphzGenerator {
         )
         .await?;
 
-        // Equivalent to nodes = timeseries.map(ts => nodesForTs(id, ts, blocks, lastFinalizedBlockHash))
+        // Equivalent to nodes = timeseries.map(ts => nodesForTs(id, ts, blocks,
+        // lastFinalizedBlockHash))
         let nodes: Vec<HashMap<String, Option<GraphStyle>>> = timeseries
             .iter()
             .map(|&ts| Self::nodes_for_ts(id, ts, blocks, last_finalized_block_hash))
             .collect();
 
-        // Equivalent to nodes.traverse(ns => ns.toList.traverse { case (name, style) => g.node(...) })
+        // Equivalent to nodes.traverse(ns => ns.toList.traverse { case (name, style) =>
+        // g.node(...) })
         for node_map in &nodes {
             for (name, style) in node_map {
                 g.node(name, GraphShape::Box, *style, None, None).await?;
@@ -414,9 +410,7 @@ impl std::fmt::Display for GraphGeneratorError {
 impl std::error::Error for GraphGeneratorError {}
 
 impl From<GraphzError> for GraphGeneratorError {
-    fn from(err: GraphzError) -> Self {
-        GraphGeneratorError::GraphzError(err)
-    }
+    fn from(err: GraphzError) -> Self { GraphGeneratorError::GraphzError(err) }
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, KeyValueBlockStore>>>

@@ -1,32 +1,27 @@
-// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala - ScoredTermSpec
+// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala -
+// ScoredTermSpec
 
-use models::rhoapi::{EList, EMethod, New, Par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{EList, EMethod, Expr, New, Par, Var};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set::ParSet;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use models::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
+use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
+use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::send_sort_matcher::SendSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::rholang::sorter::var_sort_matcher::VarSortMatcher;
+use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::test_utils::test_utils::{
     generate_bundle, generate_connective, generate_expr, generate_match, generate_new,
     generate_par, generate_receive, generate_send, generate_var,
-};
-use models::{
-    rhoapi::{expr::ExprInstance, Expr, Var},
-    rust::{
-        par_set::ParSet,
-        par_set_type_mapper::ParSetTypeMapper,
-        rholang::sorter::{
-            expr_sort_matcher::ExprSortMatcher,
-            score_tree::{ScoreAtom, ScoredTerm, Tree},
-            sortable::Sortable,
-        },
-        sorted_par_hash_set::SortedParHashSet,
-    },
 };
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
@@ -384,15 +379,12 @@ fn scored_term_should_sort_so_that_unequal_new_have_unequal_scores() {
         bind_count: 1,
         injections: {
             let mut injections = std::collections::BTreeMap::new();
-            injections.insert(
-                "key".to_string(),
-                Par {
-                    bundles: vec![],
-                    sends: vec![],
-                    receives: vec![],
-                    ..Default::default()
-                },
-            );
+            injections.insert("key".to_string(), Par {
+                bundles: vec![],
+                sends: vec![],
+                receives: vec![],
+                ..Default::default()
+            });
             injections
         },
         ..Default::default()

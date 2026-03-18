@@ -1,4 +1,7 @@
-use casper::rust::{genesis::contracts::standard_deploys, util::rholang::tools::Tools};
+use std::collections::HashMap;
+
+use casper::rust::genesis::contracts::standard_deploys;
+use casper::rust::util::rholang::tools::Tools;
 use crypto::rust::hash::keccak256::Keccak256;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -8,7 +11,6 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use prost::Message;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use std::collections::HashMap;
 
 pub type ReadParams = (Vec<Vec<i32>>, i32, Par, Vec<ParMap>);
 
@@ -17,8 +19,8 @@ pub type ReadParams = (Vec<Vec<i32>>, i32, Par, Vec<ParMap>);
 /// This is a 1:1 port of the Scala RhoTrieTraverser from:
 /// https://github.com/rchain/rchain/blob/19880674b9c50aa29efe91d77f70b06b861ca7a8/casper/src/main/resources/Registry.rho
 ///
-/// According to the trie implementation in Rholang, the methods below are hacks to traverse the trie
-/// structure used in the Registry implementation.
+/// According to the trie implementation in Rholang, the methods below are hacks
+/// to traverse the trie structure used in the Registry implementation.
 ///
 /// # Example
 ///
@@ -116,9 +118,7 @@ impl RhoTrieTraverser {
     }
 
     /// Serialize a Par to byte array using protobuf encoding
-    fn par_to_byte_array(p: &Par) -> Vec<u8> {
-        p.encode_to_vec()
-    }
+    fn par_to_byte_array(p: &Par) -> Vec<u8> { p.encode_to_vec() }
 
     /// Create a Keccak256 hash of a string wrapped as a Par
     ///
@@ -208,7 +208,6 @@ impl RhoTrieTraverser {
     }
 
     /// Create the store token unforgeable name
-    ///
     fn store_token_unforgeable() -> Par {
         let mut rand = Tools::unforgeable_name_rng(
             &standard_deploys::REGISTRY_PUB_KEY,
@@ -249,7 +248,8 @@ impl RhoTrieTraverser {
     /// * `runtime` - RhoRuntime instance for data access
     ///
     /// # Returns
-    /// Result containing either an integer value (left) or a ParMap (right) if found, None otherwise
+    /// Result containing either an integer value (left) or a ParMap (right) if
+    /// found, None otherwise
     fn tree_hash_map_getter<R: RhoRuntime>(
         map_par: &Par,
         nyb_list: &[i32],
@@ -276,7 +276,8 @@ impl RhoTrieTraverser {
         Ok(None)
     }
 
-    /// Convert a vector of ParMaps to a HashMap using provided key/value extractors
+    /// Convert a vector of ParMaps to a HashMap using provided key/value
+    /// extractors
     ///
     /// # Arguments
     /// * `values` - Vector of ParMaps to convert
@@ -314,7 +315,8 @@ impl RhoTrieTraverser {
     /// * `runtime` - RhoRuntime instance for data access
     ///
     /// # Returns
-    /// Result containing vector of all ParMaps found during traversal, or an error
+    /// Result containing vector of all ParMaps found during traversal, or an
+    /// error
     pub fn traverse_trie<R: RhoRuntime>(
         depth: i32,
         map_par: &Par,
@@ -343,8 +345,9 @@ impl RhoTrieTraverser {
     /// and implements the same logic as the Scala tailrec version.
     ///
     /// # Returns
-    /// Result containing Either continuation parameters (Left) or final result (Right)
-    /// In practice, this iterative version always returns Right with the final result
+    /// Result containing Either continuation parameters (Left) or final result
+    /// (Right) In practice, this iterative version always returns Right
+    /// with the final result
     fn traverse_trie_rec<R: RhoRuntime>(
         read_params: ReadParams,
         runtime: &R,

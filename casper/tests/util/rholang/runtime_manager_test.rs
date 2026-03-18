@@ -1,48 +1,41 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/RuntimeManagerTest.scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/RuntimeManagerTest.
+// scala
 
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use casper::rust::{
-    errors::CasperError,
-    rholang::{replay_runtime::ReplayRuntimeOps, runtime::RuntimeOps},
-    util::{
-        construct_deploy,
-        rholang::{
-            costacc::{
-                check_balance::CheckBalance, close_block_deploy::CloseBlockDeploy,
-                pre_charge_deploy::PreChargeDeploy, refund_deploy::RefundDeploy,
-            },
-            replay_failure::ReplayFailure,
-            runtime_manager::RuntimeManager,
-            system_deploy::SystemDeployTrait,
-            system_deploy_result::SystemDeployResult,
-            system_deploy_user_error::SystemDeployUserError,
-            system_deploy_util,
-        },
-    },
+use casper::rust::errors::CasperError;
+use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
+use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use casper::rust::util::rholang::replay_failure::ReplayFailure;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
+use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
+use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+use casper::rust::util::rholang::system_deploy_util;
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::signatures::signed::Signed;
+use models::rhoapi::PCost;
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::{
+    DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, signatures::signed::Signed};
-use models::{
-    rhoapi::PCost,
-    rust::{
-        block::state_hash::StateHash,
-        casper::protocol::casper_message::{DeployData, ProcessedDeploy, ProcessedSystemDeploy},
-    },
-};
-use rholang::rust::interpreter::{
-    accounting::costs::{self, Cost},
-    compiler::compiler::Compiler,
-    env::Env,
-    rho_runtime::RhoRuntime,
-    system_processes::BlockData,
-    test_utils::par_builder_util::ParBuilderUtil,
-};
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+use rholang::rust::interpreter::accounting::costs::{self, Cost};
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 
-use crate::util::{genesis_builder::GenesisContext, rholang::resources::with_runtime_manager};
+use crate::util::genesis_builder::GenesisContext;
+use crate::util::rholang::resources::with_runtime_manager;
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -469,7 +462,8 @@ async fn compute_state_should_capture_rholang_errors() {
 }
 
 // TODO: Remove ignore once we have a fix for this test
-// This test is producing non-deterministic results - it's not clear why - sometimes it passes, sometimes it doesn't
+// This test is producing non-deterministic results - it's not clear why -
+// sometimes it passes, sometimes it doesn't
 #[tokio::test]
 #[ignore]
 async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
@@ -950,9 +944,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
-            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 {
-                p.iter().map(|d| d.cost.cost).sum()
-            }
+            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
 
             let deploy0 = construct_deploy::source_deploy(
                 r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),

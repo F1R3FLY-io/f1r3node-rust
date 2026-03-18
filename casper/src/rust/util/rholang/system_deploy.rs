@@ -1,17 +1,16 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeploy.scala
 
+use std::collections::HashMap;
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::GPrivate;
-use models::rhoapi::{GDeployerId, GSysAuthToken, GUnforgeable, Par};
+use models::rhoapi::{GDeployerId, GPrivate, GSysAuthToken, GUnforgeable, Par};
 use rholang::rust::interpreter::rho_type::Extractor;
 use rspace_plus_plus::rspace::history::Either;
-use std::collections::HashMap;
-
-use crate::rust::errors::CasperError;
 
 use super::system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError};
+use crate::rust::errors::CasperError;
 
 pub trait SystemDeployTrait: Send + Sync {
     type Output: Extractor<Self::Output>;

@@ -1,9 +1,12 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/BlockDataContractSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
+// BlockDataContractSpec.scala
 
-use crate::helper::rho_spec::RhoSpec;
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use std::collections::HashMap;
 use std::time::Duration;
+
+use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+
+use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn block_data_contract_spec() {

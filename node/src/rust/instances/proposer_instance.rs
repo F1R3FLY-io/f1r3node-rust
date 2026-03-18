@@ -1,17 +1,14 @@
 // See node/src/main/scala/coop/rchain/node/instances/ProposerInstance.scala
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, Semaphore};
 
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-
-use casper::rust::blocks::proposer::{
-    propose_result::{ProposeFailure, ProposeResult, ProposeStatus},
-    proposer::{ProductionProposer, ProposeReturnType, ProposerResult},
+use casper::rust::blocks::proposer::propose_result::{
+    ProposeFailure, ProposeResult, ProposeStatus,
+};
+use casper::rust::blocks::proposer::proposer::{
+    ProductionProposer, ProposeReturnType, ProposerResult,
 };
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
@@ -19,6 +16,9 @@ use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
 const PROPOSER_RESULT_QUEUE_CAPACITY: usize = 64;
 const PROPOSER_MAX_IMMEDIATE_RETRIES: u8 = 2;
@@ -58,7 +58,8 @@ pub struct ProposerInstance<T: TransportLayer + Send + Sync + 'static> {
     /// Sender for propose requests (needed for retry mechanism)
     pub propose_requests_queue_tx: mpsc::Sender<ProposeQueueEntry>,
     pub proposer: Arc<tokio::sync::Mutex<ProductionProposer<T>>>,
-    /// Shared state for API observability (tracks current/latest propose results)
+    /// Shared state for API observability (tracks current/latest propose
+    /// results)
     pub state: Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
     pub propose_queue_pending: Arc<AtomicUsize>,
     pub propose_queue_max_pending: usize,
@@ -66,8 +67,9 @@ pub struct ProposerInstance<T: TransportLayer + Send + Sync + 'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
+
+    use super::*;
 
     #[test]
     fn should_not_retry_internal_deploy_error_immediately() {
@@ -94,13 +96,15 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     /// Create a new ProposerInstance
     ///
     /// # Arguments
-    /// * `propose_requests_queue` - Tuple of (receiver, sender) for propose requests (needed for retry mechanism)
+    /// * `propose_requests_queue` - Tuple of (receiver, sender) for propose
+    ///   requests (needed for retry mechanism)
     /// * `proposer` - The proposer logic for creating blocks
-    /// * `state` - Shared state for API observability (tracks current/latest propose results)
+    /// * `state` - Shared state for API observability (tracks current/latest
+    ///   propose results)
     ///
     /// # Note
-    /// This does NOT take a Casper instance as a parameter. Each propose request
-    /// in the queue carries its own Casper instance.
+    /// This does NOT take a Casper instance as a parameter. Each propose
+    /// request in the queue carries its own Casper instance.
     pub fn new(
         propose_requests_queue: (
             mpsc::Receiver<ProposeQueueEntry>,
@@ -128,13 +132,14 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     /// a receiver for the results.
     ///
     /// # Returns
-    /// A receiver that will receive `(ProposeResult, Option<BlockMessage>)` for each
-    /// successful propose operation.
+    /// A receiver that will receive `(ProposeResult, Option<BlockMessage>)` for
+    /// each successful propose operation.
     ///
     /// # Implementation Note
     /// Uses a sophisticated non-blocking locking mechanism:
     /// - Uses try_lock (non-blocking) instead of lock (blocking)
-    /// - If lock is held: returns ProposerEmpty immediately, cocks trigger for retry
+    /// - If lock is held: returns ProposerEmpty immediately, cocks trigger for
+    ///   retry
     /// - If lock acquired: executes propose, then checks trigger for ONE retry
     /// - Prevents propose request pile-up during slow proposals
     pub fn create(
@@ -154,7 +159,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
             // Propose lock and trigger mechanism
             // - propose_lock: Semaphore(1) for non-blocking propose execution
-            // - trigger: Semaphore(0) for retry signaling (tryAcquire = cock, tryRelease = check & reset)
+            // - trigger: Semaphore(0) for retry signaling (tryAcquire = cock, tryRelease =
+            //   check & reset)
             let propose_lock = Arc::new(Semaphore::new(1));
             let trigger = Arc::new(Semaphore::new(0)); // Start with 0 permits = uncocked
             let mut last_propose_started_at: Option<Instant> = None;
@@ -235,7 +241,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                 state_guard.latest_propose_result = Some(result_copy.clone());
                                 state_guard.curr_propose_result = None;
                             }
-                            // Also complete the deferred result for any API waiting on current propose
+                            // Also complete the deferred result for any API waiting on current
+                            // propose
                             let _ = curr_result_tx.send(result_copy.clone());
 
                             match block_message_opt {
@@ -303,7 +310,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
                             // Send to both channels
                             let _ = curr_result_tx.send(error_result);
-                            // result_tx_clone might be less critical since caller has propose_id_sender
+                            // result_tx_clone might be less critical since caller has
+                            // propose_id_sender
 
                             // Clear current propose state
                             let mut state_guard = state_clone.write().await;
@@ -325,17 +333,19 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
                     if should_retry {
                         tracing::info!(
-                                "Enqueueing retry after propose (result_retry:{}, has_retry_budget:{}, had_trigger:{})",
-                                should_retry_on_trigger,
-                                should_enqueue_retry,
-                                trigger_cocked
-                            );
+                            "Enqueueing retry after propose (result_retry:{}, \
+                             has_retry_budget:{}, had_trigger:{})",
+                            should_retry_on_trigger,
+                            should_enqueue_retry,
+                            trigger_cocked
+                        );
 
                         if should_enqueue_retry {
                             // Enqueue retry request with bounded retry budget.
                             let (retry_sender, _retry_receiver) = oneshot::channel();
-                            // Note: We drop _retry_receiver - retry results go through normal channels
-                            // This is acceptable because retries are fire-and-forget optimization
+                            // Note: We drop _retry_receiver - retry results go through normal
+                            // channels This is acceptable because
+                            // retries are fire-and-forget optimization
                             let retry_reserved = propose_queue_pending
                                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
                                     (curr < propose_queue_max_pending).then_some(curr + 1)
@@ -405,7 +415,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                     // Return ProposerEmpty immediately
                     if let Err(_) = propose_id_sender.send(ProposerResult::empty()) {
                         tracing::warn!("Failed to send ProposerEmpty result (receiver dropped)");
-                        // Receiver dropped - client gave up waiting, this is fine
+                        // Receiver dropped - client gave up waiting, this is
+                        // fine
                     }
                 }
             }

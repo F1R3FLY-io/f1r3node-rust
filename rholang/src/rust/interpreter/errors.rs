@@ -92,13 +92,15 @@ pub enum InterpreterError {
     OllamaError(String),
     IllegalArgumentError(String),
     IoError(String),
-    /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
-    /// Contains the underlying cause and the empty output that would have been produced.
+    /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails
+    /// during execution. Contains the underlying cause and the empty output
+    /// that would have been produced.
     NonDeterministicProcessFailure {
         cause: Box<InterpreterError>,
         output_not_produced: Vec<Vec<u8>>,
     },
-    /// Raised during replay when we encounter a failed non-deterministic produce that we cannot replay.
+    /// Raised during replay when we encounter a failed non-deterministic
+    /// produce that we cannot replay.
     CanNotReplayFailedNonDeterministicProcess,
 }
 
@@ -157,11 +159,13 @@ impl fmt::Display for InterpreterError {
                 write!(f, "Top level free variables are not allowed: {}", free_vars)
             }
 
-            InterpreterError::TopLevelLogicalConnectivesNotAllowedError(connectives) => write!(
-                f,
-                "Top level logical connectives are not allowed: {}",
-                connectives
-            ),
+            InterpreterError::TopLevelLogicalConnectivesNotAllowedError(connectives) => {
+                write!(
+                    f,
+                    "Top level logical connectives are not allowed: {}",
+                    connectives
+                )
+            }
 
             InterpreterError::SubstituteError(msg) => write!(f, "Substitute error: {}", msg),
 
@@ -181,11 +185,13 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::ReduceError(msg) => write!(f, "Reduce error: {}", msg),
 
-            InterpreterError::MethodNotDefined { method, other_type } => write!(
-                f,
-                "Error: Method `{}` is not defined on {}.",
-                method, other_type
-            ),
+            InterpreterError::MethodNotDefined { method, other_type } => {
+                write!(
+                    f,
+                    "Error: Method `{}` is not defined on {}.",
+                    method, other_type
+                )
+            }
 
             InterpreterError::MethodArgumentNumberMismatch {
                 method,
@@ -199,11 +205,13 @@ impl fmt::Display for InterpreterError {
                 )
             }
 
-            InterpreterError::OperatorNotDefined { op, other_type } => write!(
-                f,
-                "Error: Operator `{}` is not defined on {}.",
-                op, other_type
-            ),
+            InterpreterError::OperatorNotDefined { op, other_type } => {
+                write!(
+                    f,
+                    "Error: Operator `{}` is not defined on {}.",
+                    op, other_type
+                )
+            }
 
             InterpreterError::OperatorExpectedError {
                 op,
@@ -323,15 +331,11 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError {
-        InterpreterError::RSpaceError(err)
-    }
+    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
 }
 
 impl From<InterpreterError> for RSpaceError {
-    fn from(error: InterpreterError) -> Self {
-        RSpaceError::InterpreterError(error.to_string())
-    }
+    fn from(error: InterpreterError) -> Self { RSpaceError::InterpreterError(error.to_string()) }
 }
 
 impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
@@ -341,7 +345,5 @@ impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
 }
 
 impl From<std::io::Error> for InterpreterError {
-    fn from(error: std::io::Error) -> Self {
-        InterpreterError::IoError(error.to_string())
-    }
+    fn from(error: std::io::Error) -> Self { InterpreterError::IoError(error.to_string()) }
 }

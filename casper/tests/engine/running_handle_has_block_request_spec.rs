@@ -1,16 +1,16 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/RunningHandleHasBlockRequestSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/
+// RunningHandleHasBlockRequestSpec.scala
+
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use models::casper::HasBlockProto;
+use models::routing::protocol::Message::Packet;
+use models::routing::Protocol;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{HasBlock, HasBlockRequest};
+use prost::bytes::Bytes;
+use prost::Message;
 
 use crate::engine::setup::TestFixture;
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use models::{
-    casper::HasBlockProto,
-    routing::{protocol::Message::Packet, Protocol},
-    rust::{
-        block_hash::BlockHash,
-        casper::protocol::casper_message::{HasBlock, HasBlockRequest},
-    },
-};
-use prost::{bytes::Bytes, Message};
 
 const HASH_BYTES: &[u8] = b"hash";
 
@@ -58,8 +58,9 @@ impl TestContext {
         panic!("Could not convert protocol to HasBlock");
     }
 
-    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] = kp(kp(Right(())))
-    // Note: Not ported because TransportLayerTestImpl doesn't require setting success responses.
+    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] =
+    // kp(kp(Right(()))) Note: Not ported because TransportLayerTestImpl doesn't
+    // require setting success responses.
 
     // Scala: override def beforeEach(): Unit
     // Note: Not ported because in Rust we create a fresh TestContext for each test,

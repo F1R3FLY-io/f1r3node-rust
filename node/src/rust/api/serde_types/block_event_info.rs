@@ -1,12 +1,11 @@
-use super::base64_bytes;
 use models::casper::BlockEventInfo;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::{
-    deploy_info::DeployInfoWithEventDataSerde, light_block_info::LightBlockInfoSerde,
-    system_deploy_info::SystemDeployInfoWithEventSerde,
-};
+use super::base64_bytes;
+use crate::rust::api::serde_types::deploy_info::DeployInfoWithEventDataSerde;
+use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::api::serde_types::system_deploy_info::SystemDeployInfoWithEventSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlockEventInfoSerde {

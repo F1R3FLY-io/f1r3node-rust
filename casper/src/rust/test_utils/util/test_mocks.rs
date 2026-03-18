@@ -1,13 +1,16 @@
 // Shared test mock implementations to avoid duplication across test files
-// Moved from casper/tests/util/test_mocks.rs to casper/src/rust/test_utils/util/test_mocks.rs
-// All imports fixed for library crate context
+// Moved from casper/tests/util/test_mocks.rs to
+// casper/src/rust/test_utils/util/test_mocks.rs All imports fixed for library
+// crate context
 
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-/// A mock KeyValueStore implementation for testing that uses in-memory HashMap storage.
-/// This implementation is thread-safe and supports cloning for use in multi-threaded tests.
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
+
+/// A mock KeyValueStore implementation for testing that uses in-memory HashMap
+/// storage. This implementation is thread-safe and supports cloning for use in
+/// multi-threaded tests.
 #[derive(Clone, Default)]
 pub struct MockKeyValueStore {
     data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -28,26 +31,21 @@ impl MockKeyValueStore {
         }
     }
 
-    /// Create a new MockKeyValueStore that shares the same underlying data as another store
-    /// This is useful for creating stores that share state between clones
+    /// Create a new MockKeyValueStore that shares the same underlying data as
+    /// another store This is useful for creating stores that share state
+    /// between clones
     pub fn with_shared_data(shared_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>) -> Self {
         Self { data: shared_data }
     }
 
     /// Get the current size of the store (number of key-value pairs)
-    pub fn len(&self) -> usize {
-        self.data.lock().unwrap().len()
-    }
+    pub fn len(&self) -> usize { self.data.lock().unwrap().len() }
 
     /// Check if the store is empty
-    pub fn is_empty(&self) -> bool {
-        self.data.lock().unwrap().is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.data.lock().unwrap().is_empty() }
 
     /// Clear all data from the store
-    pub fn clear(&self) {
-        self.data.lock().unwrap().clear();
-    }
+    pub fn clear(&self) { self.data.lock().unwrap().clear(); }
 }
 
 impl KeyValueStore for MockKeyValueStore {
@@ -95,9 +93,7 @@ impl KeyValueStore for MockKeyValueStore {
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn KeyValueStore> {
-        Box::new(self.clone())
-    }
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
         let data = self.data.lock().unwrap();
@@ -117,13 +113,12 @@ impl KeyValueStore for MockKeyValueStore {
             + data.len() * 8
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> {
-        Ok(!self.data.lock().unwrap().is_empty())
-    }
+    fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.data.lock().unwrap().is_empty()) }
 }
 
-/// A simple empty KeyValueStore implementation that always returns empty results.
-/// Useful for cases where you need a KeyValueStore but don't need it to store anything.
+/// A simple empty KeyValueStore implementation that always returns empty
+/// results. Useful for cases where you need a KeyValueStore but don't need it
+/// to store anything.
 #[derive(Clone, Default)]
 pub struct EmptyKeyValueStore;
 
@@ -144,17 +139,13 @@ impl KeyValueStore for EmptyKeyValueStore {
         Ok(vec![false; keys.len()])
     }
 
-    fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
-        Ok(BTreeMap::new())
-    }
+    fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> { Ok(BTreeMap::new()) }
 
     fn iterate(&self, _f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> {
         Ok(()) // Nothing to iterate over
     }
 
-    fn clone_box(&self) -> Box<dyn KeyValueStore> {
-        Box::new(self.clone())
-    }
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
         println!("EmptyKeyValueStore (always empty)");
@@ -165,9 +156,7 @@ impl KeyValueStore for EmptyKeyValueStore {
         0 // Always empty
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> {
-        Ok(false)
-    }
+    fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(false) }
 }
 
 #[cfg(test)]

@@ -1,30 +1,27 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/
+// ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::rust::interpreter::{
-    accounting::{
-        _cost,
-        costs::{
-            comm_event_storage_cost, event_storage_cost, storage_cost_consume,
-            storage_cost_produce, Cost,
-        },
-    },
-    errors::InterpreterError,
-};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{
-    tagged_continuation::TaggedCont, BindPattern, ListParWithRandom, Par, TaggedContinuation,
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::rspace_interface::{
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
 };
-use rspace_plus_plus::rspace::{
-    checkpoint::{Checkpoint, SoftCheckpoint},
-    errors::RSpaceError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    internal::{Datum, Row, WaitingContinuation},
-    rspace_interface::{ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult},
-    trace::{event::Produce, Log},
-    util::unpack_option,
+use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::Log;
+use rspace_plus_plus::rspace::util::unpack_option;
+
+use crate::rust::interpreter::accounting::_cost;
+use crate::rust::interpreter::accounting::costs::{
+    comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
+use crate::rust::interpreter::errors::InterpreterError;
 
 pub struct ChargingRSpace;
 
@@ -43,7 +40,8 @@ pub enum TriggeredBy {
 }
 
 fn consume_id(continuation: TaggedContinuation) -> Result<Blake2b512Random, InterpreterError> {
-    //TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
+    //TODO: Make ScalaBodyRef-s have their own random state and merge it during its
+    // COMMs - OLD
     match continuation.tagged_cont.unwrap() {
         TaggedCont::ParBody(par_with_random) => Ok(Blake2b512Random::create_from_bytes(
             &par_with_random.random_state,
@@ -161,17 +159,11 @@ impl ChargingRSpace {
                 self.space.get_waiting_continuations(channels)
             }
 
-            fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
-                self.space.get_joins(channel)
-            }
+            fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> { self.space.get_joins(channel) }
 
-            fn clear(&mut self) -> Result<(), RSpaceError> {
-                self.space.clear()
-            }
+            fn clear(&mut self) -> Result<(), RSpaceError> { self.space.clear() }
 
-            fn get_root(&self) -> Blake2b256Hash {
-                self.space.get_root()
-            }
+            fn get_root(&self) -> Blake2b256Hash { self.space.get_root() }
 
             fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
                 self.space.reset(root)
@@ -207,9 +199,7 @@ impl ChargingRSpace {
                 self.space.create_soft_checkpoint()
             }
 
-            fn take_event_log(&mut self) -> Log {
-                self.space.take_event_log()
-            }
+            fn take_event_log(&mut self) -> Log { self.space.take_event_log() }
 
             fn revert_to_soft_checkpoint(
                 &mut self,
@@ -226,21 +216,15 @@ impl ChargingRSpace {
                 self.space.rig_and_reset(start_root, log)
             }
 
-            fn rig(&self, log: Log) -> Result<(), RSpaceError> {
-                self.space.rig(log)
-            }
+            fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log) }
 
             fn check_replay_data(&self) -> Result<(), RSpaceError> {
                 self.space.check_replay_data()
             }
 
-            fn is_replay(&self) -> bool {
-                self.space.is_replay()
-            }
+            fn is_replay(&self) -> bool { self.space.is_replay() }
 
-            fn update_produce(&mut self, produce: Produce) {
-                self.space.update_produce(produce)
-            }
+            fn update_produce(&mut self, produce: Produce) { self.space.update_produce(produce) }
         }
 
         ChargingRSpace { space, cost }
@@ -270,8 +254,9 @@ fn handle_result(
         Some((cont, data_list)) => {
             let consume_id = consume_id(cont.continuation.clone())?;
 
-            // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
-            // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
+            // We refund for non-persistent continuations, and for the persistent
+            // continuation triggering the comm. That persistent continuation is
+            // going to be charged for (without refund) once it has no matches in TS.
             let consume_id_bytes = consume_id.to_bytes();
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {

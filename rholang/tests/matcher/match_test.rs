@@ -1,27 +1,31 @@
 /*
- * See rholang/src/test/scala/coop/rchain/rholang/interpreter/matcher/MatchTest.scala
+ * See rholang/src/test/scala/coop/rchain/rholang/interpreter/matcher/
+ * MatchTest.scala
  *
- * It's important to note that in the Scala tests there are differences in the way they name their tests.
- * For example: 'should "work"', 'should "better be quick"', 'should "succeed"', etc...
+ * It's important to note that in the Scala tests there are differences in
+ * the way they name their tests. For example: 'should "work"', 'should
+ * "better be quick"', 'should "succeed"', etc...
  *
- * On the Scala side, there are multiple functions that create RhoTypes and implicitly pass them
- * to 'assertSpatialMatch' even though 'assertSpatialMatch' takes type 'Par'
- * For example: passing an 'Expr', 'Expr' to function that takes type 'Par', 'Par'
+ * On the Scala side, there are multiple functions that create RhoTypes and
+ * implicitly pass them to 'assertSpatialMatch' even though
+ * 'assertSpatialMatch' takes type 'Par' For example: passing an 'Expr',
+ * 'Expr' to function that takes type 'Par', 'Par'
  *
  *
  * Might be able to use '::default()' at certain points
-*/
+ */
 use std::collections::BTreeMap;
 
 use connective::ConnectiveInstance::*;
 use expr::ExprInstance::*;
 use g_unforgeable::UnfInstance::GPrivateBody;
+use models::rhoapi::*;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
-use models::{rhoapi::*, rust::rholang::implicits::vector_par};
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 

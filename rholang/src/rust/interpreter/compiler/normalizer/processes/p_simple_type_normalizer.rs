@@ -1,10 +1,10 @@
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::Connective;
+use rholang_parser::ast::SimpleType;
+
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
-use models::rhoapi::connective::ConnectiveInstance;
-use models::rhoapi::Connective;
-
-use rholang_parser::ast::SimpleType;
 
 pub fn normalize_simple_type<'ast>(
     simple_type: &SimpleType,
@@ -36,16 +36,18 @@ pub fn normalize_simple_type<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
-    use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
     use models::rhoapi::connective::ConnectiveInstance::{
         ConnBool, ConnByteArray, ConnInt, ConnString, ConnUri,
     };
     use pretty_assertions::assert_eq;
     use rholang_parser::ast::SimpleType;
+
+    use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
+    use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
 
     #[test]
     fn simple_type_should_result_in_correct_connectives() {

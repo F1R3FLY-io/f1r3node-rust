@@ -1,11 +1,11 @@
-use crate::rust::interpreter::errors::InterpreterError;
 use models::rhoapi::Expr;
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
     new_gint_expr, new_gstring_expr, new_guri_expr,
 };
-
 use rholang_parser::ast::Proc as NewProc;
+
+use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterError> {
     match proc {
@@ -67,9 +67,7 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_gfixedpoint_expr(unscaled_bytes, *scale))
         }
 
-        NewProc::StringLiteral(value) => {
-            Ok(new_gstring_expr(value.to_string()))
-        }
+        NewProc::StringLiteral(value) => Ok(new_gstring_expr(value.to_string())),
 
         NewProc::UriLiteral(uri) => {
             let uri_value = uri.to_string();
@@ -81,7 +79,9 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_guri_expr(stripped_value))
         }
 
-        _ => Err(InterpreterError::BugFoundError("Expected a ground type in new AST, found unsupported variant".to_string())),
+        _ => Err(InterpreterError::BugFoundError(
+            "Expected a ground type in new AST, found unsupported variant".to_string(),
+        )),
     }
 }
 
@@ -229,11 +229,11 @@ fn decimal_str_to_unscaled(s: &str, scale: u32) -> Result<Vec<u8>, InterpreterEr
 */
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::{
-        compiler::normalizer::ground_normalize_matcher::normalize_ground, errors::InterpreterError,
-    };
     use models::rhoapi::expr::ExprInstance;
     use rholang_parser::ast::Proc;
+
+    use crate::rust::interpreter::compiler::normalizer::ground_normalize_matcher::normalize_ground;
+    use crate::rust::interpreter::errors::InterpreterError;
 
     #[test]
     fn bool_true_should_compile_as_gbool_true() {
@@ -274,8 +274,9 @@ mod tests {
         );
     }
 
-    // TODO: URI tests omitted because Uri struct has private fields and can't be constructed in tests
-    // The URI normalization logic is tested through integration tests with actual parsing
+    // TODO: URI tests omitted because Uri struct has private fields and can't be
+    // constructed in tests The URI normalization logic is tested through
+    // integration tests with actual parsing
 
     #[test]
     fn unsupported_type_should_return_error() {

@@ -1,28 +1,27 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/NonDeterministicProcessesSpec.scala
-// Ported from Scala PR #140
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/
+// NonDeterministicProcessesSpec.scala Ported from Scala PR #140
 //
-// Tests for replay consistency of non-deterministic processes (OpenAI, gRPC, Ollama)
-// Ensures that replays produce consistent costs and error handling for non-deterministic operations.
-
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    external_services::ExternalServices,
-    grpc_client_service::{GrpcClientMockConfig, GrpcClientService},
-    interpreter::EvaluateResult,
-    openai_service::{create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig},
-    rho_runtime::RhoRuntime,
-};
-use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+// Tests for replay consistency of non-deterministic processes (OpenAI, gRPC,
+// Ollama) Ensures that replays produce consistent costs and error handling for
+// non-deterministic operations.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::openai_service::{
+    create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
+};
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
+use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 /// Helper to create external services with mock OpenAI and optional mock gRPC
 fn create_test_external_services(

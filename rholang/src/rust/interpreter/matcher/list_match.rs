@@ -1,5 +1,7 @@
-use models::{rhoapi::Par, rust::utils::FreeMap};
 use std::collections::HashSet;
+
+use models::rhoapi::Par;
+use models::rust::utils::FreeMap;
 
 #[derive(Clone, Debug)]
 pub enum Pattern<T: Clone> {
@@ -8,10 +10,12 @@ pub enum Pattern<T: Clone> {
 }
 
 pub trait ListMatch<T: Clone> {
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+    // SpatialMatcher.scala - listMatchSingle
     fn list_match_single(&mut self, tlist: Vec<T>, plist: Vec<T>) -> Option<()>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatchSingle_
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+    // SpatialMatcher.scala - listMatchSingle_
     fn list_match_single_(
         &mut self,
         tlist: Vec<T>,
@@ -21,7 +25,8 @@ pub trait ListMatch<T: Clone> {
         wildcard: bool,
     ) -> Option<()>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - listMatch
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+    // SpatialMatcher.scala - listMatch
     fn list_match(
         &mut self,
         targets: Vec<T>,
@@ -31,7 +36,8 @@ pub trait ListMatch<T: Clone> {
         wildcard: bool,
     ) -> Option<()>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - handleRemainder
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+    // SpatialMatcher.scala - handleRemainder
     fn handle_remainder(
         &mut self,
         remainder_targets: Vec<T>,

@@ -1,30 +1,32 @@
 //! Web API implementation for F1r3fly node
 
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
-use crate::rust::web::block_info_enricher::BlockEnricher;
-use crate::rust::web::transaction::{CacheTransactionAPI, TransactionAPI, TransactionResponse};
-use crate::rust::web::version_info::get_version_info_str;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
-use crypto::rust::{
-    public_key::PublicKey, signatures::signatures_alg::SignaturesAlg, signatures::signed::Signed,
-};
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
 use eyre::{eyre, Result};
 use hex;
 use models::casper::{DataWithBlockInfo, LightBlockInfo};
 use models::rust::casper::protocol::casper_message::DeployData;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
+
+use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::web::block_info_enricher::BlockEnricher;
+use crate::rust::web::transaction::{CacheTransactionAPI, TransactionAPI, TransactionResponse};
+use crate::rust::web::version_info::get_version_info_str;
 
 const FIND_DEPLOY_RETRY_INTERVAL_MS_ENV: &str = "F1R3_FIND_DEPLOY_RETRY_INTERVAL_MS";
 const FIND_DEPLOY_MAX_ATTEMPTS_ENV: &str = "F1R3_FIND_DEPLOY_MAX_ATTEMPTS";
@@ -319,10 +321,7 @@ where
         let blocks =
             BlockAPI::get_blocks(&self.engine_cell, depth, self.api_max_blocks_limit).await?;
 
-        Ok(blocks
-            .into_iter()
-            .map(LightBlockInfoSerde::from)
-            .collect())
+        Ok(blocks.into_iter().map(LightBlockInfoSerde::from).collect())
     }
 
     async fn find_deploy(&self, deploy_id: String) -> Result<LightBlockInfoSerde> {
@@ -393,10 +392,7 @@ where
         )
         .await?;
 
-        Ok(blocks
-            .into_iter()
-            .map(LightBlockInfoSerde::from)
-            .collect())
+        Ok(blocks.into_iter().map(LightBlockInfoSerde::from).collect())
     }
 
     async fn is_finalized(&self, hash: String) -> Result<bool> {
@@ -479,7 +475,8 @@ pub struct ExploreDeployRequest {
 }
 
 /// Simple explore deploy request with only the term field.
-/// Used by the /explore-deploy endpoint which doesn't require block hash or pre-state hash.
+/// Used by the /explore-deploy endpoint which doesn't require block hash or
+/// pre-state hash.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SimpleExploreDeployRequest {
     pub term: String,
@@ -671,8 +668,7 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate};
-use models::rhoapi::{GUnforgeable, Par};
+use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
 
 /// Convert RhoUnforg to protobuf GUnforgeable
 fn unforg_to_unforg_proto(unforg: RhoUnforg) -> UnfInstance {
@@ -778,7 +774,8 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
     }
 }
 
-/// Convert GUnforgeable to RhoExpr - equivalent to Scala's unforgFromProto function
+/// Convert GUnforgeable to RhoExpr - equivalent to Scala's unforgFromProto
+/// function
 fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
     use models::rhoapi::g_unforgeable::UnfInstance;
 
@@ -802,7 +799,8 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
     }
 }
 
-/// Convert Bundle to RhoExpr - equivalent to Scala's exprFromBundleProto function
+/// Convert Bundle to RhoExpr - equivalent to Scala's exprFromBundleProto
+/// function
 fn expr_from_bundle_proto(bundle: Bundle) -> Option<RhoExpr> {
     if let Some(body) = bundle.body {
         expr_from_par_proto(body)
@@ -811,7 +809,8 @@ fn expr_from_bundle_proto(bundle: Bundle) -> Option<RhoExpr> {
     }
 }
 
-/// Extract a string key from a RhoExpr for map keys - equivalent to Scala's key extraction logic
+/// Extract a string key from a RhoExpr for map keys - equivalent to Scala's key
+/// extraction logic
 fn extract_key_from_expr(expr: &RhoExpr) -> Option<String> {
     match expr {
         RhoExpr::ExprString { data } => Some(data.clone()),
@@ -885,12 +884,13 @@ fn to_rho_data_response(data: (Vec<Par>, LightBlockInfo)) -> RhoDataResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
         Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
     };
+
+    use super::*;
 
     #[test]
     fn test_deploy_lookup_response_from_light_block_info() {
@@ -1059,13 +1059,15 @@ mod tests {
 
     #[test]
     fn test_deploy_lookup_response_correct_regardless_of_bonds_list_size() {
-        let large_bonds: Vec<super::super::serde_types::light_block_info::BondInfoJson> =
-            (1..=1000)
-                .map(|i| super::super::serde_types::light_block_info::BondInfoJson {
+        let large_bonds: Vec<super::super::serde_types::light_block_info::BondInfoJson> = (1
+            ..=1000)
+            .map(
+                |i| super::super::serde_types::light_block_info::BondInfoJson {
                     validator: format!("validator{}", i),
                     stake: i,
-                })
-                .collect();
+                },
+            )
+            .collect();
 
         let light_block = LightBlockInfoSerde {
             block_hash: "7bf8abc123".to_string(),

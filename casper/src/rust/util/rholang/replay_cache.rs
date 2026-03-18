@@ -1,13 +1,14 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/ReplayCache.scala
 
+use std::sync::{Arc, Mutex};
+
 use indexmap::IndexMap;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::Event;
-use std::sync::{Arc, Mutex};
 
-/// Cache key: parent state + block identity (sender, seqNum) + replay payload fingerprint.
-/// Including a payload fingerprint prevents unsafe cache hits for mutated deploy content
-/// that happens to share (parent, sender, seqNum).
+/// Cache key: parent state + block identity (sender, seqNum) + replay payload
+/// fingerprint. Including a payload fingerprint prevents unsafe cache hits for
+/// mutated deploy content that happens to share (parent, sender, seqNum).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReplayCacheKey {
     pub parent_state: StateHash,
@@ -70,9 +71,7 @@ impl InMemoryReplayCache {
     }
 
     /// Create with default capacity (1024 entries).
-    pub fn default_capacity() -> Self {
-        Self::new(1024)
-    }
+    pub fn default_capacity() -> Self { Self::new(1024) }
 }
 
 impl ReplayCache for InMemoryReplayCache {

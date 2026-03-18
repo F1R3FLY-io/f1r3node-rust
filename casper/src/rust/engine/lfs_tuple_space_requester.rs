@@ -1,19 +1,19 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
+// See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.
+// scala
 
-use async_stream;
-use async_trait::async_trait;
-use futures::Stream;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
+use async_stream;
+use async_trait::async_trait;
+use futures::Stream;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use tokio::sync::mpsc;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -36,9 +36,9 @@ pub enum ReqStatus {
 
 /// Definition of RSpace state path (history tree).
 ///
-/// **Scala equivalent**: `type StatePartPath = Seq[(Blake2b256Hash, Option[Byte])]`
-/// Elements in the sequence represents nested levels, with 'byte' as index
-/// in pointers if node is PointerBlock.
+/// **Scala equivalent**: `type StatePartPath = Seq[(Blake2b256Hash,
+/// Option[Byte])]` Elements in the sequence represents nested levels, with
+/// 'byte' as index in pointers if node is PointerBlock.
 pub type StatePartPath = Vec<(Blake2b256Hash, Option<u8>)>;
 
 /// Number of nodes in LFS sync data transfer
@@ -46,15 +46,18 @@ pub type StatePartPath = Vec<(Blake2b256Hash, Option<u8>)>;
 /// **Scala equivalent**: `val pageSize = 750`
 pub const PAGE_SIZE: i32 = 750;
 
-/// Trait that abstracts the network operations needed by the LFS tuple space requester
+/// Trait that abstracts the network operations needed by the LFS tuple space
+/// requester
 ///
-/// **Scala equivalent**: Function parameter `requestForStoreItem: (StatePartPath, Int) => F[Unit]`
-/// in the stream method - we extract this into a trait for better Rust patterns
+/// **Scala equivalent**: Function parameter `requestForStoreItem:
+/// (StatePartPath, Int) => F[Unit]` in the stream method - we extract this into
+/// a trait for better Rust patterns
 #[async_trait]
 pub trait TupleSpaceRequesterOps {
     /// Send request for state chunk
     ///
-    /// **Scala equivalent**: `requestForStoreItem(id, pageSize)` call in broadcastStreams
+    /// **Scala equivalent**: `requestForStoreItem(id, pageSize)` call in
+    /// broadcastStreams
     async fn request_for_store_item(
         &self,
         path: &StatePartPath,
@@ -74,8 +77,9 @@ pub trait TupleSpaceRequesterOps {
 
 /// State to control processing of requests
 ///
-/// **Scala equivalent**: `final case class ST[Key](private val d: Map[Key, ReqStatus])`
-/// Note: Scala version is much simpler than block requester - no latest, lowerBound, etc.
+/// **Scala equivalent**: `final case class ST[Key](private val d: Map[Key,
+/// ReqStatus])` Note: Scala version is much simpler than block requester - no
+/// latest, lowerBound, etc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ST<Key: Hash + Eq + Clone> {
     d: HashMap<Key, ReqStatus>, // Scala: private val d: Map[Key, ReqStatus]
@@ -84,7 +88,8 @@ pub struct ST<Key: Hash + Eq + Clone> {
 impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Create requests state with initial keys.
     ///
-    /// **Scala equivalent**: `ST.apply[Key](initial: Seq[Key]): ST[Key]` in companion object
+    /// **Scala equivalent**: `ST.apply[Key](initial: Seq[Key]): ST[Key]` in
+    /// companion object
     pub fn new(initial: Vec<Key>) -> Self {
         let d = initial
             .into_iter()
@@ -94,7 +99,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         Self { d }
     }
 
-    /// Adds new keys to Init state, ready for processing. Existing keys are skipped.
+    /// Adds new keys to Init state, ready for processing. Existing keys are
+    /// skipped.
     ///
     /// **Scala equivalent**: `def add(keys: Set[Key]): ST[Key]`
     pub fn add(&self, keys: std::collections::HashSet<Key>) -> Self {
@@ -110,9 +116,11 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         Self { d: new_d }
     }
 
-    /// Get next keys not already requested or in case of resend together with Requested.
+    /// Get next keys not already requested or in case of resend together with
+    /// Requested.
     ///
-    /// **Scala equivalent**: `def getNext(resend: Boolean): (ST[Key], Seq[Key])`
+    /// **Scala equivalent**: `def getNext(resend: Boolean): (ST[Key],
+    /// Seq[Key])`
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
         let mut new_d = self.d.clone();
         let mut requested_keys = Vec::new();
@@ -140,7 +148,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         // Accept both Requested and Init states to handle fast test scenarios
         // where responses arrive before the request processing loop runs.
         // In production (slow network), paths are Requested before responses arrive.
-        // In tests (fast in-memory channels), paths might be Init when responses arrive.
+        // In tests (fast in-memory channels), paths might be Init when responses
+        // arrive.
         let current_status = self.d.get(&k);
         let is_valid = current_status == Some(&ReqStatus::Requested)
             || current_status == Some(&ReqStatus::Init);
@@ -174,17 +183,16 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Returns flag if all keys are marked as finished (Done).
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
-    pub fn is_finished(&self) -> bool {
-        !self.d.values().any(|status| *status != ReqStatus::Done)
-    }
+    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
 }
 
 /// Stream processor for tuple space requester operations
 ///
-/// **Scala equivalent**: This corresponds to the collection of nested functions inside
-/// `createStream(st, requestQueue, responseHashQueue)` in the Scala implementation:
+/// **Scala equivalent**: This corresponds to the collection of nested functions
+/// inside `createStream(st, requestQueue, responseHashQueue)` in the Scala
+/// implementation:
 /// - processBlock(block)
-/// - validateReceivedBlock(block)  
+/// - validateReceivedBlock(block)
 /// - saveBlock(block)
 /// - requestNext(resend)
 /// We group these into a processor struct for better Rust organization
@@ -213,13 +221,15 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Process incoming store items message from the network
     ///
-    /// **Scala equivalent**: The main logic inside `responseStream` for handling `StoreItemsMessage`
-    /// This combines the message destructuring and the validation/import workflow
+    /// **Scala equivalent**: The main logic inside `responseStream` for
+    /// handling `StoreItemsMessage` This combines the message destructuring
+    /// and the validation/import workflow
     async fn process_store_items_message(
         &mut self,
         message: StoreItemsMessage,
     ) -> Result<(), CasperError> {
-        // Extract message fields (Scala: StoreItemsMessage(startPath, lastPath, historyItems, dataItems) = msg)
+        // Extract message fields (Scala: StoreItemsMessage(startPath, lastPath,
+        // historyItems, dataItems) = msg)
         let StoreItemsMessage {
             start_path,
             last_path,
@@ -238,20 +248,24 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             .map(|(hash, bytes)| (hash, bytes.to_vec()))
             .collect();
 
-        // Mark chunk as received (Scala: isReceived <- Stream.eval(st.modify(_.received(startPath))))
+        // Mark chunk as received (Scala: isReceived <-
+        // Stream.eval(st.modify(_.received(startPath))))
         let is_received = self.mark_chunk_received(start_path.clone()).await?;
 
         if is_received {
             // Add next paths for requesting (Scala: st.update(_.add(Set(lastPath))))
-            // Scala adds all lastPath values without checking if empty - match that behavior
+            // Scala adds all lastPath values without checking if empty - match that
+            // behavior
             let mut next_paths = std::collections::HashSet::new();
             next_paths.insert(last_path);
             self.add_next_paths(next_paths).await?;
 
-            // Trigger request processing after adding next paths (Scala: requestQueue.enqueue1(false))
-            // Use non-blocking send to avoid deadlock. The biased select with response-first
-            // ordering ensures fair scheduling between request and response processing.
-            // If the channel is full (capacity 2), requests are already queued for processing.
+            // Trigger request processing after adding next paths (Scala:
+            // requestQueue.enqueue1(false)) Use non-blocking send to avoid
+            // deadlock. The biased select with response-first ordering ensures
+            // fair scheduling between request and response processing.
+            // If the channel is full (capacity 2), requests are already queued for
+            // processing.
             if self.request_tx.try_send(false).is_err() {
                 tracing::debug!("Request queue full - requests already pending");
             }
@@ -263,8 +277,9 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             // Mark chunk as done (Scala: st.update(_.done(startPath)))
             self.mark_chunk_done(start_path).await?;
 
-            // Trigger request processing again after marking chunk as done (Scala: requestQueue.enqueue1(false))
-            // Use non-blocking send to avoid deadlock when producer and consumer are in the same task
+            // Trigger request processing again after marking chunk as done (Scala:
+            // requestQueue.enqueue1(false)) Use non-blocking send to avoid
+            // deadlock when producer and consumer are in the same task
             if self.request_tx.try_send(false).is_err() {
                 tracing::debug!(
                     "Failed to trigger request processing - channel may be closed or full"
@@ -277,13 +292,14 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Validate received chunk and import to RSpace in parallel
     ///
-    /// **Scala equivalent**: The complex validation and import logic inside the responseStream:
-    /// ```scala
+    /// **Scala equivalent**: The complex validation and import logic inside the
+    /// responseStream: ```scala
     /// val validationProcess = Stream.eval { validateTupleSpaceItems(...) }
-    /// val historySaveProcess = Stream.eval { stateImporter.setHistoryItems(...) }  
-    /// val dataSaveProcess = Stream.eval { stateImporter.setDataItems(...) }
-    /// Stream(validationProcess, historySaveProcess, dataSaveProcess).parJoinUnbounded.compile.drain
-    /// ```
+    /// val historySaveProcess = Stream.eval {
+    /// stateImporter.setHistoryItems(...) } val dataSaveProcess =
+    /// Stream.eval { stateImporter.setDataItems(...) }
+    /// Stream(validationProcess, historySaveProcess,
+    /// dataSaveProcess).parJoinUnbounded.compile.drain ```
     async fn validate_and_import_chunk(
         &mut self,
         start_path: StatePartPath,
@@ -293,14 +309,16 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         let total_validation_start = std::time::Instant::now();
 
         tracing::info!(
-            "Validating and importing chunk for path (length: {}) - {} history items, {} data items",
+            "Validating and importing chunk for path (length: {}) - {} history items, {} data \
+             items",
             start_path.len(),
             history_items.len(),
             data_items.len()
         );
 
         // TODO: The three tasks below are not executed in parallel.
-        // We should use tokio::try_join! to execute them in parallel if performance is an issue.
+        // We should use tokio::try_join! to execute them in parallel if performance is
+        // an issue.
 
         // Create validation task (Scala: validateTupleSpaceItems(...))
         let validation_start = std::time::Instant::now();
@@ -330,7 +348,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         // Execute all in parallel (Scala: parJoinUnbounded.compile.drain)
         // let (_validation_result, _history_result, _data_result) =
         //     tokio::try_join!(validation_task, history_task, data_task)
-        //         .map_err(|e| CasperError::StreamError(format!("Task join error: {}", e)))?;
+        //         .map_err(|e| CasperError::StreamError(format!("Task join error: {}",
+        // e)))?;
 
         let total_duration = total_validation_start.elapsed();
         tracing::info!(
@@ -343,8 +362,9 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Read current state for next state chunks and send the requests
     ///
-    /// **Scala equivalent**: The `requestNext(resend: Boolean)` nested function inside createStream
-    /// which calls `broadcastStreams(ids).parJoinUnbounded.compile.drain`
+    /// **Scala equivalent**: The `requestNext(resend: Boolean)` nested function
+    /// inside createStream which calls
+    /// `broadcastStreams(ids).parJoinUnbounded.compile.drain`
     async fn request_next(&self, resend: bool) -> Result<(), CasperError> {
         // Check if stream is finished (no more requests)
         let (is_end, active_count) = {
@@ -413,7 +433,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Mark chunk as received if it was requested
     ///
-    /// **Scala equivalent**: `st.modify(_.received(startPath))` call in responseStream
+    /// **Scala equivalent**: `st.modify(_.received(startPath))` call in
+    /// responseStream
     async fn mark_chunk_received(&self, start_path: StatePartPath) -> Result<bool, CasperError> {
         let was_init = {
             let state = self.st.lock().map_err(|_| {
@@ -428,7 +449,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         // If path was in Init state (response arrived before request was sent),
         // send the network request now to maintain proper request/response accounting.
         // This handles fast test scenarios where in-memory responses arrive before
-        // the request processing loop runs, but we still need to account for the request.
+        // the request processing loop runs, but we still need to account for the
+        // request.
         if was_init {
             self.request_ops
                 .request_for_store_item(&start_path, PAGE_SIZE)
@@ -455,7 +477,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Mark chunk as done after successful import
     ///
-    /// **Scala equivalent**: `st.update(_.done(startPath))` call in responseStream
+    /// **Scala equivalent**: `st.update(_.done(startPath))` call in
+    /// responseStream
     async fn mark_chunk_done(&self, start_path: StatePartPath) -> Result<(), CasperError> {
         let mut state = self.st.lock().map_err(|_| {
             CasperError::StreamError("Failed to acquire state lock for mark_chunk_done".to_string())
@@ -474,7 +497,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
     /// Add new state paths for requesting (from lastPath in messages)
     ///
-    /// **Scala equivalent**: `st.update(_.add(Set(lastPath)))` call in responseStream
+    /// **Scala equivalent**: `st.update(_.add(Set(lastPath)))` call in
+    /// responseStream
     async fn add_next_paths(
         &self,
         paths: std::collections::HashSet<StatePartPath>,
@@ -498,11 +522,12 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
 /// Create a stream to receive tuple space needed for Last Finalized State.
 ///
-/// **Scala equivalent**: The main `stream` method that creates the fs2.Stream[F, ST[StatePartPath]]
+/// **Scala equivalent**: The main `stream` method that creates the
+/// fs2.Stream[F, ST[StatePartPath]]
 ///
 /// The Scala implementation structure:
 /// 1. Extract stateHash from approvedBlock
-/// 2. Create initial startRequest  
+/// 2. Create initial startRequest
 /// 3. Set root in stateImporter
 /// 4. Create st: Ref[F, ST[StatePartPath]]
 /// 5. Create requestQueue and responseHashQueue
@@ -513,14 +538,20 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 ///    - final result with concurrency and termination
 ///
 /// # Arguments
-/// * `approved_block` - Last finalized block (Scala: approvedBlock: ApprovedBlock)
-/// * `tuple_space_message_receiver` - Handler of tuple space messages (Scala: tupleSpaceMessageQueue)
-/// * `request_timeout` - Time after request will be resent if not received (Scala: requestTimeout)
-/// * `request_ops` - Network operations for requesting state chunks (Scala: requestForStoreItem function)
-/// * `state_importer` - RSpace importer (Scala: stateImporter: RSpaceImporter[F])
+/// * `approved_block` - Last finalized block (Scala: approvedBlock:
+///   ApprovedBlock)
+/// * `tuple_space_message_receiver` - Handler of tuple space messages (Scala:
+///   tupleSpaceMessageQueue)
+/// * `request_timeout` - Time after request will be resent if not received
+///   (Scala: requestTimeout)
+/// * `request_ops` - Network operations for requesting state chunks (Scala:
+///   requestForStoreItem function)
+/// * `state_importer` - RSpace importer (Scala: stateImporter:
+///   RSpaceImporter[F])
 ///
 /// # Returns
-/// fs2.Stream processing all tuple space state (Scala: F[Stream[F, ST[StatePartPath]]])
+/// fs2.Stream processing all tuple space state (Scala: F[Stream[F,
+/// ST[StatePartPath]]])
 pub async fn stream<T: TupleSpaceRequesterOps>(
     approved_block: &ApprovedBlock,
     mut tuple_space_message_receiver: mpsc::Receiver<StoreItemsMessage>,
@@ -531,20 +562,25 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
 ) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
     use crate::rust::util::proto_util;
 
-    // 1. Extract state hash (Scala: Blake2b256Hash.fromByteString(ProtoUtil.postStateHash(approvedBlock.candidate.block)))
+    // 1. Extract state hash (Scala:
+    //    Blake2b256Hash.fromByteString(ProtoUtil.postStateHash(approvedBlock.
+    //    candidate.block)))
     let state_hash_bytes = proto_util::post_state_hash(&approved_block.candidate.block);
     let state_hash = Blake2b256Hash::from_bytes(state_hash_bytes.to_vec());
 
-    // 2. Create start request (Scala: val startRequest: StatePartPath = Seq((stateHash, None)))
+    // 2. Create start request (Scala: val startRequest: StatePartPath =
+    //    Seq((stateHash, None)))
     let start_request: StatePartPath = vec![(state_hash.clone(), None)];
 
     // 3. Set root (Scala: stateImporter.setRoot(stateHash))
     state_importer.set_root(&state_hash);
 
-    // 4. Create ST state (Scala: st <- Ref.of[F, ST[StatePartPath]](ST(Seq(startRequest))))
+    // 4. Create ST state (Scala: st <- Ref.of[F,
+    //    ST[StatePartPath]](ST(Seq(startRequest))))
     let st = Arc::new(Mutex::new(ST::new(vec![start_request.clone()])));
 
-    // 5. Create request queue (Scala: requestQueue <- Queue.bounded[F, Boolean](maxSize = 2))
+    // 5. Create request queue (Scala: requestQueue <- Queue.bounded[F,
+    //    Boolean](maxSize = 2))
     let (request_tx, mut request_rx) = mpsc::channel::<bool>(2);
 
     // 6. Enqueue initial request (Scala: requestQueue.enqueue1(false))

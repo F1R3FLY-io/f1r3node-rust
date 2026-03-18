@@ -1,21 +1,20 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/LfsBlockRequesterEffectsSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/
+// LfsBlockRequesterEffectsSpec.scala
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use casper::rust::engine::lfs_block_requester::BlockRequesterOps;
+use casper::rust::errors::CasperError;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, Justification,
+};
 use prost::bytes::Bytes;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{atomic::AtomicUsize, Arc, Mutex},
-};
 use tokio::sync::mpsc;
-
-use casper::rust::{engine::lfs_block_requester::BlockRequesterOps, errors::CasperError};
-use models::rust::{
-    block_hash::BlockHash,
-    block_implicits::get_random_block,
-    casper::protocol::casper_message::{
-        ApprovedBlock, ApprovedBlockCandidate, BlockMessage, Justification,
-    },
-};
 
 use crate::init_logger;
 
@@ -35,9 +34,7 @@ fn as_map(blocks: &[BlockMessage]) -> HashMap<BlockHash, BlockMessage> {
 }
 
 /// Create a hash from a string
-fn mk_hash(s: &str) -> BlockHash {
-    Bytes::from(s.as_bytes().to_vec())
-}
+fn mk_hash(s: &str) -> BlockHash { Bytes::from(s.as_bytes().to_vec()) }
 
 /// Create a BlockMessage with specified properties
 fn get_block(hash: BlockHash, number: i64, latest_messages: Vec<BlockHash>) -> BlockMessage {
@@ -166,9 +163,7 @@ impl TestST {
         self.blocks.extend(blocks);
     }
 
-    fn set_invalid(&mut self, invalid: HashSet<BlockHash>) {
-        self.invalid = invalid;
-    }
+    fn set_invalid(&mut self, invalid: HashSet<BlockHash>) { self.invalid = invalid; }
 }
 
 /// Test error types for mock operations
@@ -192,7 +187,8 @@ pub struct Mock {
 }
 
 impl Mock {
-    /// Simulates receiving blocks from external source by sending to response queue
+    /// Simulates receiving blocks from external source by sending to response
+    /// queue
     pub async fn receive_block(&self, blocks: &[BlockMessage]) -> Result<(), TestError> {
         for block in blocks {
             self.block_receiver_tx
@@ -214,9 +210,7 @@ impl Mock {
     }
 
     /// Provides access to mutable test state for controlling mock behavior
-    pub fn setup(&self) -> Arc<Mutex<TestST>> {
-        self.test_state.clone()
-    }
+    pub fn setup(&self) -> Arc<Mutex<TestST>> { self.test_state.clone() }
 }
 
 /// Mock implementation of BlockRequesterOps for testing
@@ -358,7 +352,8 @@ where
 mod tests {
     use super::*;
 
-    /// Tests that the LFS requester correctly identifies and requests dependencies from the starting block
+    /// Tests that the LFS requester correctly identifies and requests
+    /// dependencies from the starting block
     #[tokio::test]
     async fn should_send_requests_for_dependencies() {
         init_logger();
@@ -368,7 +363,8 @@ mod tests {
         dag_from_block(
             b8,
             true, // runProcessingStream = true - we need the stream to run to generate requests
-            std::time::Duration::from_secs(10 * 24 * 3600), // Use very long timeout to avoid resend during test
+            std::time::Duration::from_secs(10 * 24 * 3600), /* Use very long timeout to avoid
+                   * resend during test */
             |mut mock| async move {
                 let mut requests = Vec::new();
                 for _ in 0..2 {
@@ -399,7 +395,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -410,7 +407,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that blocks already in storage are not re-requested, verifying correct dependency resolution with pre-existing blocks
+    /// Tests that blocks already in storage are not re-requested, verifying
+    /// correct dependency resolution with pre-existing blocks
     #[tokio::test]
     async fn should_not_request_saved_blocks() {
         init_logger();
@@ -419,7 +417,7 @@ mod tests {
 
         dag_from_block(
             b8,
-            true, // runProcessingStream = true
+            true,                                           // runProcessingStream = true
             std::time::Duration::from_secs(10 * 24 * 3600), // Use very long timeout
             |mut mock| async move {
                 // Receive of parent should create requests for justifications (dependencies)
@@ -452,7 +450,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -464,7 +463,9 @@ mod tests {
                     test_state.add_blocks(b6_map);
                 }
 
-                mock.receive_block(&[b7, b5]).await.expect("Should receive blocks");
+                mock.receive_block(&[b7, b5])
+                    .await
+                    .expect("Should receive blocks");
 
                 let mut new_requests = Vec::new();
                 for _ in 0..2 {
@@ -480,7 +481,8 @@ mod tests {
 
                 assert_eq!(
                     new_requests, expected_new,
-                    "Should request hash4 and hash3 (dependencies of received blocks), but NOT hash6 since b6 is already saved"
+                    "Should request hash4 and hash3 (dependencies of received blocks), but NOT \
+                     hash6 since b6 is already saved"
                 );
 
                 // No other requests should be sent
@@ -495,7 +497,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -506,7 +509,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests the sequential dependency resolution where subsequent dependencies are only requested after all initial dependencies are received
+    /// Tests the sequential dependency resolution where subsequent dependencies
+    /// are only requested after all initial dependencies are received
     #[tokio::test]
     async fn should_first_request_dependencies_only_from_starting_block() {
         init_logger();
@@ -515,7 +519,7 @@ mod tests {
 
         dag_from_block(
             b8,
-            true, // runProcessingStream = true
+            true,                                           // runProcessingStream = true
             std::time::Duration::from_secs(10 * 24 * 3600), // Use very long timeout
             |mut mock| async move {
                 // Requested dependencies from starting blocks
@@ -547,11 +551,15 @@ mod tests {
                 .await
                 {
                     Ok(Some(unexpected_req)) => {
-                        panic!("Unexpected request after receiving only one dependency: {:?}", unexpected_req)
+                        panic!(
+                            "Unexpected request after receiving only one dependency: {:?}",
+                            unexpected_req
+                        )
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no new requests should be sent yet
+                        // Timeout is expected - no new requests should be sent
+                        // yet
                     }
                 }
 
@@ -573,7 +581,8 @@ mod tests {
 
                 assert_eq!(
                     new_requests, expected_new,
-                    "Should request hash6 and hash3 (dependencies of received blocks) only after all initial dependencies are received"
+                    "Should request hash6 and hash3 (dependencies of received blocks) only after \
+                     all initial dependencies are received"
                 );
 
                 Ok(())
@@ -660,7 +669,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -684,7 +694,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Save channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional saves should happen
+                        // Timeout is expected - no additional saves should
+                        // happen
                     }
                 }
 
@@ -695,7 +706,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that unrequested blocks are ignored and do not trigger new requests or saves
+    /// Tests that unrequested blocks are ignored and do not trigger new
+    /// requests or saves
     #[tokio::test]
     async fn should_drop_all_blocks_not_requested() {
         init_logger();
@@ -747,7 +759,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -763,7 +776,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Save channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no saves should happen for unrequested blocks
+                        // Timeout is expected - no saves should happen for
+                        // unrequested blocks
                     }
                 }
 
@@ -774,7 +788,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that invalid blocks are skipped while valid blocks are processed normally
+    /// Tests that invalid blocks are skipped while valid blocks are processed
+    /// normally
     #[tokio::test]
     async fn should_skip_received_invalid_blocks() {
         init_logger();
@@ -782,8 +797,8 @@ mod tests {
         let (b9, b8, b7, _, b5, _, _, _, _) = get_blocks();
 
         dag_from_block(
-            b9, // Starting with b9 this time
-            true, // runProcessingStream = true
+            b9,                                             // Starting with b9 this time
+            true,                                           // runProcessingStream = true
             std::time::Duration::from_secs(10 * 24 * 3600), // Use very long timeout
             |mut mock| async move {
                 // Wait for initial request to be sent
@@ -815,21 +830,22 @@ mod tests {
                 // Only valid block should be saved
                 let first_save = mock.next_save().await.expect("Should save b8");
                 assert_eq!(first_save.0, b8_hash, "Should save b8 with correct hash");
-                assert_eq!(first_save.1.block_hash, b8_hash, "Should save correct b8 block");
+                assert_eq!(
+                    first_save.1.block_hash, b8_hash,
+                    "Should save correct b8 block"
+                );
 
                 // No other blocks should be saved immediately
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    mock.next_save(),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_save())
+                    .await
                 {
                     Ok(Some(unexpected_save)) => {
                         panic!("Unexpected additional save after b8: {:?}", unexpected_save)
                     }
                     Ok(None) => panic!("Save channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional saves should happen yet
+                        // Timeout is expected - no additional saves should
+                        // happen yet
                     }
                 }
 
@@ -844,26 +860,32 @@ mod tests {
                 }
 
                 // Receive dependencies (b7 is valid, b5 is invalid)
-                mock.receive_block(&[b7, b5]).await.expect("Should receive b7 and b5");
+                mock.receive_block(&[b7, b5])
+                    .await
+                    .expect("Should receive b7 and b5");
 
                 // Only valid block should be saved
                 let second_save = mock.next_save().await.expect("Should save b7");
                 assert_eq!(second_save.0, b7_hash, "Should save b7 with correct hash");
-                assert_eq!(second_save.1.block_hash, b7_hash, "Should save correct b7 block");
+                assert_eq!(
+                    second_save.1.block_hash, b7_hash,
+                    "Should save correct b7 block"
+                );
 
                 // No other blocks should be saved (b5 should be skipped due to invalid status)
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    mock.next_save(),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_save())
+                    .await
                 {
                     Ok(Some(unexpected_save)) => {
-                        panic!("Unexpected additional save after b7 (b5 should be skipped): {:?}", unexpected_save)
+                        panic!(
+                            "Unexpected additional save after b7 (b5 should be skipped): {:?}",
+                            unexpected_save
+                        )
                     }
                     Ok(None) => panic!("Save channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - b5 should not be saved due to invalid status
+                        // Timeout is expected - b5 should not be saved due to
+                        // invalid status
                     }
                 }
 
@@ -882,7 +904,8 @@ mod tests {
 
                 assert_eq!(
                     new_requests, expected_new,
-                    "Should request hash7, hash6, hash5 (dependencies from both valid and invalid blocks)"
+                    "Should request hash7, hash6, hash5 (dependencies from both valid and invalid \
+                     blocks)"
                 );
 
                 // No other requests should be sent
@@ -897,7 +920,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -908,7 +932,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests comprehensive end-to-end dependency resolution through multiple rounds of block requests and saves
+    /// Tests comprehensive end-to-end dependency resolution through multiple
+    /// rounds of block requests and saves
     #[tokio::test]
     async fn should_request_and_save_all_blocks() {
         init_logger();
@@ -1128,7 +1153,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional requests should be sent
+                        // Timeout is expected - no additional requests should
+                        // be sent
                     }
                 }
 
@@ -1145,7 +1171,8 @@ mod tests {
                     }
                     Ok(None) => panic!("Save channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected - no additional saves should happen
+                        // Timeout is expected - no additional saves should
+                        // happen
                     }
                 }
 
@@ -1156,7 +1183,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that requests are resent after timeout when no response is received (timing test)
+    /// Tests that requests are resent after timeout when no response is
+    /// received (timing test)
     #[tokio::test]
     async fn should_resend_request_after_timeout() {
         init_logger();
@@ -1175,7 +1203,10 @@ mod tests {
                 };
 
                 let (_, hash8, _, _, _, _, _, _, _) = get_hashes();
-                assert_eq!(initial_request, hash8, "Should initially request hash8 (dependency of b9)");
+                assert_eq!(
+                    initial_request, hash8,
+                    "Should initially request hash8 (dependency of b9)"
+                );
 
                 // Don't send any response - let the timeout trigger
                 // Wait exactly for one timeout period + small buffer
@@ -1191,17 +1222,26 @@ mod tests {
                     Ok(Some(req)) => req,
                     Ok(None) => panic!("Request channel closed unexpectedly during timeout test"),
                     Err(_) => {
-                        panic!("Timeout resend functionality failed - no resend request received within expected timeframe");
+                        panic!(
+                            "Timeout resend functionality failed - no resend request received \
+                             within expected timeframe"
+                        );
                     }
                 };
 
-                assert_eq!(timeout_request, hash8, "Should resend hash8 request after timeout");
+                assert_eq!(
+                    timeout_request, hash8,
+                    "Should resend hash8 request after timeout"
+                );
 
                 // Verify we got exactly 2 requests for the same hash (original + resend)
-                tracing::info!("Successfully received initial request and one timeout resend for hash8");
+                tracing::info!(
+                    "Successfully received initial request and one timeout resend for hash8"
+                );
 
                 // Wait a short period to check if any additional unexpected requests arrive
-                // This should be shorter than the timeout period to avoid triggering another resend
+                // This should be shorter than the timeout period to avoid triggering another
+                // resend
                 match tokio::time::timeout(
                     std::time::Duration::from_millis(100), // Shorter than timeout period (150ms)
                     mock.next_request(),
@@ -1209,16 +1249,27 @@ mod tests {
                 .await
                 {
                     Ok(Some(unexpected_req)) => {
-                        // This is the source of non-determinism - we're getting additional timeout-triggered requests
-                        // This happens because the timeout keeps firing. We should only check for one resend.
-                        tracing::warn!("Additional request received (this may be expected due to continued timeout): {:?}", unexpected_req);
-                        // Don't panic - this is actually expected behavior if the timeout keeps firing
-                        // The test's main purpose is to verify that timeout resending works, which it does
+                        // This is the source of non-determinism - we're getting additional
+                        // timeout-triggered requests This happens because
+                        // the timeout keeps firing. We should only check for one resend.
+                        tracing::warn!(
+                            "Additional request received (this may be expected due to continued \
+                             timeout): {:?}",
+                            unexpected_req
+                        );
+                        // Don't panic - this is actually expected behavior if
+                        // the timeout keeps firing
+                        // The test's main purpose is to verify that timeout
+                        // resending works, which it does
                     }
                     Ok(None) => panic!("Request channel closed unexpectedly"),
                     Err(_) => {
-                        // Timeout is expected and preferred - no additional requests in the immediate period
-                        tracing::info!("No additional requests in short period - timeout behavior is working correctly");
+                        // Timeout is expected and preferred - no additional requests in the
+                        // immediate period
+                        tracing::info!(
+                            "No additional requests in short period - timeout behavior is working \
+                             correctly"
+                        );
                     }
                 }
 

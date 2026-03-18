@@ -1,13 +1,14 @@
+use std::collections::HashMap;
+
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::{Connective, ConnectiveBody, Par};
+use rholang_parser::ast::AnnProc;
+use rholang_parser::SourceSpan;
+
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
-use models::rhoapi::connective::ConnectiveInstance;
-use models::rhoapi::{Connective, ConnectiveBody, Par};
-use std::collections::HashMap;
-
-use rholang_parser::ast::AnnProc;
-use rholang_parser::SourceSpan;
 
 pub fn normalize_p_disjunction<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -64,13 +65,13 @@ pub fn normalize_p_disjunction<'ast>(
         input.bound_map_chain.depth() as i32,
     );
 
-    let updated_free_map = input.free_map.add_connective(
-        result_connective.connective_instance.unwrap(),
-        SourceSpan {
-            start: left.span.start,
-            end: right.span.end,
-        },
-    );
+    let updated_free_map =
+        input
+            .free_map
+            .add_connective(result_connective.connective_instance.unwrap(), SourceSpan {
+                start: left.span.start,
+                end: right.span.end,
+            });
 
     Ok(ProcVisitOutputs {
         par: result_par,
@@ -78,14 +79,16 @@ pub fn normalize_p_disjunction<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use models::rhoapi::connective::ConnectiveInstance;
     use models::rhoapi::{Connective, ConnectiveBody};
     use models::rust::utils::new_freevar_par;
     use pretty_assertions::assert_eq;
+
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn p_disjunction_should_delegate_but_not_count_any_free_variables_inside() {

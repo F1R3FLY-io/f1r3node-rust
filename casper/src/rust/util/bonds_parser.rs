@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crypto::rust::{
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
-};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::string_ops::StringOps;
 use regex::Regex;
 
@@ -31,9 +30,11 @@ pub enum BondsParserError {
 pub struct BondsParser;
 
 impl BondsParser {
-    /// Parser for bonds file used in genesis ceremony to set initial validators.
+    /// Parser for bonds file used in genesis ceremony to set initial
+    /// validators.
     ///
-    /// TODO: Create async file operations. For now it's ok because it's used only once at genesis.
+    /// TODO: Create async file operations. For now it's ok because it's used
+    /// only once at genesis.
     pub fn parse(bonds_path: &Path) -> Result<HashMap<PublicKey, i64>, BondsParserError> {
         tracing::info!("Parsing bonds file {:?}.", bonds_path);
 
@@ -168,9 +169,11 @@ impl BondsParser {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     #[test]
     fn test_parse_valid_bonds_file() {

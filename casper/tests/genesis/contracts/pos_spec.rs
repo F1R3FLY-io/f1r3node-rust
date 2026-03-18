@@ -1,13 +1,15 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/PoSSpec.scala
 
-use crate::helper::rho_spec::RhoSpec;
-use crate::util::genesis_builder::GenesisBuilder;
+use std::collections::HashMap;
+use std::time::Duration;
+
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
-use std::collections::HashMap;
-use std::time::Duration;
+
+use crate::helper::rho_spec::RhoSpec;
+use crate::util::genesis_builder::GenesisBuilder;
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     let (hex_string, balance) = vault_data;
@@ -47,7 +49,8 @@ fn test_vaults() -> Vec<Vault> {
 
 #[test]
 fn pos_spec() {
-    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
+    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent
+    // stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {

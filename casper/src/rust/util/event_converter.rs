@@ -1,16 +1,12 @@
 // See casper/src/main/scala/coop/rchain/casper/util/EventConverter.scala
 
-use models::rust::casper::protocol::casper_message::CommEvent;
-use models::rust::casper::protocol::casper_message::ConsumeEvent;
-use models::rust::casper::protocol::casper_message::Event;
-use models::rust::casper::protocol::casper_message::Peek;
-use models::rust::casper::protocol::casper_message::ProduceEvent;
+use models::rust::casper::protocol::casper_message::{
+    CommEvent, ConsumeEvent, Event, Peek, ProduceEvent,
+};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::trace::event::Consume;
-use rspace_plus_plus::rspace::trace::event::Event as RspaceEvent;
-use rspace_plus_plus::rspace::trace::event::IOEvent;
-use rspace_plus_plus::rspace::trace::event::Produce;
-use rspace_plus_plus::rspace::trace::event::COMM as RspaceComm;
+use rspace_plus_plus::rspace::trace::event::{
+    Consume, Event as RspaceEvent, IOEvent, Produce, COMM as RspaceComm,
+};
 
 pub fn to_casper_event(event: RspaceEvent) -> Event {
     match event {

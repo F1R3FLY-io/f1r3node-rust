@@ -1,6 +1,7 @@
 // See shared/src/main/scala/coop/rchain/grpc/GrpcServer.scala
 
 use std::time::Duration;
+
 use tokio::time::timeout;
 use tonic::transport::Server as TonicServer;
 
@@ -43,7 +44,8 @@ impl GrpcServer {
             return Err("Server is already running".into());
         }
 
-        // Bind to 0.0.0.0 to accept connections from all interfaces (matching Scala NettyServerBuilder.forPort behavior)
+        // Bind to 0.0.0.0 to accept connections from all interfaces (matching Scala
+        // NettyServerBuilder.forPort behavior)
         let addr = ([0, 0, 0, 0], self.port).into();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
@@ -71,7 +73,8 @@ impl GrpcServer {
             return Err("Server is already running".into());
         }
 
-        // Bind to 0.0.0.0 to accept connections from all interfaces (matching Scala NettyServerBuilder.forPort behavior)
+        // Bind to 0.0.0.0 to accept connections from all interfaces (matching Scala
+        // NettyServerBuilder.forPort behavior)
         let addr = ([0, 0, 0, 0], self.port).into();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
@@ -115,14 +118,10 @@ impl GrpcServer {
     }
 
     /// Get the port the server is configured to run on
-    pub fn port(&self) -> u16 {
-        self.port
-    }
+    pub fn port(&self) -> u16 { self.port }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool {
-        self.server_future.is_some()
-    }
+    pub fn is_running(&self) -> bool { self.server_future.is_some() }
 
     /// Take the server future handle for external lifecycle management
     ///

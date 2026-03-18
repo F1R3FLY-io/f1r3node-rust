@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
 
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,8 +62,9 @@ pub struct CasperConf {
     pub heartbeat_conf: HeartbeatConf,
 
     /// Disable late block filtering in DagMerger.
-    /// When true (default), all blocks are included in merged state regardless of when
-    /// they were observed. This prevents deploy loss during network partitions.
+    /// When true (default), all blocks are included in merged state regardless
+    /// of when they were observed. This prevents deploy loss during network
+    /// partitions.
     #[serde(
         rename = "disable-late-block-filtering",
         default = "default_disable_late_block_filtering"
@@ -69,16 +72,17 @@ pub struct CasperConf {
     pub disable_late_block_filtering: bool,
 
     /// Enable background garbage collection for mergeable channels.
-    /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
-    /// When disabled (default), mergeable data is retained.
+    /// When enabled, uses safe reachability-based GC (required for multi-parent
+    /// mode). When disabled (default), mergeable data is retained.
     #[serde(
         rename = "enable-mergeable-channel-gc",
         default = "default_enable_mergeable_channel_gc"
     )]
     pub enable_mergeable_channel_gc: bool,
 
-    /// Interval for garbage collecting mergeable channels (only when GC enabled).
-    /// Background process that safely deletes mergeable data when provably unreachable.
+    /// Interval for garbage collecting mergeable channels (only when GC
+    /// enabled). Background process that safely deletes mergeable data when
+    /// provably unreachable.
     #[serde(
         rename = "mergeable-channels-gc-interval",
         deserialize_with = "de_duration",
@@ -86,8 +90,9 @@ pub struct CasperConf {
     )]
     pub mergeable_channels_gc_interval: Duration,
 
-    /// Depth buffer for mergeable channels garbage collection (only when GC enabled).
-    /// Additional safety margin beyond max-parent-depth before deleting data.
+    /// Depth buffer for mergeable channels garbage collection (only when GC
+    /// enabled). Additional safety margin beyond max-parent-depth before
+    /// deleting data.
     #[serde(
         rename = "mergeable-channels-gc-depth-buffer",
         default = "default_mergeable_channels_gc_depth_buffer"
@@ -95,21 +100,15 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
-fn default_disable_late_block_filtering() -> bool {
-    true
-}
+fn default_disable_late_block_filtering() -> bool { true }
 
-fn default_enable_mergeable_channel_gc() -> bool {
-    false
-}
+fn default_enable_mergeable_channel_gc() -> bool { false }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
 }
 
-fn default_mergeable_channels_gc_depth_buffer() -> i32 {
-    10
-}
+fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,9 +189,7 @@ pub struct HeartbeatConf {
 }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
+where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
     use serde::Deserialize;
     #[derive(Deserialize)]

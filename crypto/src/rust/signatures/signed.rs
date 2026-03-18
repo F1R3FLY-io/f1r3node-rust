@@ -1,12 +1,11 @@
 use prost::Message;
 
-use crate::rust::{
-    hash::{blake2b256::Blake2b256, keccak256::Keccak256},
-    private_key::PrivateKey,
-    public_key::PublicKey,
-};
-
-use super::{secp256k1_eth::Secp256k1Eth, signatures_alg::SignaturesAlg};
+use super::secp256k1_eth::Secp256k1Eth;
+use super::signatures_alg::SignaturesAlg;
+use crate::rust::hash::blake2b256::Blake2b256;
+use crate::rust::hash::keccak256::Keccak256;
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
 
 pub trait ToMessage {
     type Type: Message;

@@ -1,14 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/ValidatorIdentity.scala
 
-use crypto::rust::{
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{
-        secp256k1::Secp256k1,
-        signatures_alg::{SignaturesAlg, SignaturesAlgFactory},
-    },
-};
-use models::{casper::Signature, rust::casper::protocol::casper_message::BlockMessage};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::{SignaturesAlg, SignaturesAlgFactory};
+use models::casper::Signature;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use super::util::proto_util;
 

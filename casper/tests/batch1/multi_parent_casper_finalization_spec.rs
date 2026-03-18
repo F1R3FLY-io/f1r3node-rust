@@ -1,15 +1,18 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperFinalizationSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/
+// MultiParentCasperFinalizationSpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
+use std::collections::HashMap;
+
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use std::collections::HashMap;
 
-// TODO: Round-robin finalization concept no longer applies with multi-parent merging.
-// Scala deleted this test in PR #288.
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
+
+// TODO: Round-robin finalization concept no longer applies with multi-parent
+// merging. Scala deleted this test in PR #288.
 #[tokio::test]
 #[ignore = "Round-robin finalization concept no longer applies with multi-parent blocks"]
 async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriate_in_round_robin() {
@@ -102,9 +105,10 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
     assert_finalized_block(&nodes[0], &block4);
 }
 
-/// This test verifies that finalization advances monotonically (block number never
-/// decreases) during round-robin block production with multi-parent merging, and
-/// that all validators agree on the last finalized block at the end.
+/// This test verifies that finalization advances monotonically (block number
+/// never decreases) during round-robin block production with multi-parent
+/// merging, and that all validators agree on the last finalized block at the
+/// end.
 #[tokio::test]
 async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_robin() {
     fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
@@ -206,11 +210,9 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
         }
         let producer_idx = ((step + 2) % 3) as usize;
         let deploy_idx = 8 + step as usize;
-        let _ = TestNode::propagate_block_at_index(
-            &mut nodes,
-            producer_idx,
-            &[deploy_datas[deploy_idx].clone()],
-        )
+        let _ = TestNode::propagate_block_at_index(&mut nodes, producer_idx, &[deploy_datas
+            [deploy_idx]
+            .clone()])
         .await
         .unwrap();
         let next_lfb = nodes[0].casper.last_finalized_block().await.unwrap();

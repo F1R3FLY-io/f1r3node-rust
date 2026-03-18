@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use rholang::rust::interpreter::{
-    accounting::costs::Cost, rho_runtime::RhoRuntime, test_utils::resources::create_runtimes,
-};
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -24,13 +23,9 @@ fn vm_rss_kb() -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn kb_to_mib(kb: usize) -> f64 {
-    kb as f64 / 1024.0
-}
+fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
 
-fn delta_kb_to_mib(delta_kb: isize) -> f64 {
-    delta_kb as f64 / 1024.0
-}
+fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
 #[tokio::test]
 #[ignore = "manual memory profiling; run with --ignored --nocapture"]
@@ -106,7 +101,8 @@ async fn profile_debruijn_interpreter_replay_memory_usage() {
                     .map(|prev| rss as isize - prev as isize)
                     .unwrap_or(0);
                 println!(
-                    "replay #{:>3}: sampled      rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} MiB) delta_total={:+}KB ({:+.2} MiB)",
+                    "replay #{:>3}: sampled      rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} \
+                     MiB) delta_total={:+}KB ({:+.2} MiB)",
                     i,
                     rss,
                     kb_to_mib(rss),
@@ -133,7 +129,8 @@ async fn profile_debruijn_interpreter_replay_memory_usage() {
                 .map(|prev| rss as isize - prev as isize)
                 .unwrap_or(0);
             println!(
-                "replay #{:>3}: final        rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} MiB) delta_total={:+}KB ({:+.2} MiB)",
+                "replay #{:>3}: final        rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} MiB) \
+                 delta_total={:+}KB ({:+.2} MiB)",
                 iterations,
                 rss,
                 kb_to_mib(rss),

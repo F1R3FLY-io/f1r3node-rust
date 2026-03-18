@@ -1,8 +1,10 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/StateHashCache.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/StateHashCache.
+// scala
+
+use std::sync::Mutex;
 
 use indexmap::IndexMap;
 use models::rust::block::state_hash::StateHash;
-use std::sync::Mutex;
 
 /// Simple LRU cache mapping pre-state hash to post-state hash.
 /// Used to skip full replay when the mapping is already known.
@@ -20,9 +22,7 @@ impl StateHashCache {
     }
 
     /// Create with default capacity (128 entries).
-    pub fn default_capacity() -> Self {
-        Self::new(128)
-    }
+    pub fn default_capacity() -> Self { Self::new(128) }
 
     /// Get the cached post-state hash for a given pre-state hash.
     pub fn get(&self, pre: &StateHash) -> Option<StateHash> {
@@ -58,9 +58,7 @@ impl StateHashCache {
 mod tests {
     use super::*;
 
-    fn make_hash(s: &str) -> StateHash {
-        s.as_bytes().to_vec().into()
-    }
+    fn make_hash(s: &str) -> StateHash { s.as_bytes().to_vec().into() }
 
     #[test]
     fn test_cache_and_retrieve() {

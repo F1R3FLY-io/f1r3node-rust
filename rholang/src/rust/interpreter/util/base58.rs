@@ -1,4 +1,5 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/codec/Base58.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/codec/Base58.
+// scala
 
 const ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 

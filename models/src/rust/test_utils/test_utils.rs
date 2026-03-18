@@ -1,16 +1,14 @@
-use crate::rhoapi::{
-    connective, expr, var, Bundle, Connective, ENot, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send,
-};
-use crate::rhoapi::{Expr, Var};
-use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use crate::rust::rholang::sorter::sortable::Sortable;
 use proptest::prelude::*;
 
+use crate::rhoapi::{
+    connective, expr, var, Bundle, Connective, ENot, Expr, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, Var,
+};
+use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use crate::rust::rholang::sorter::sortable::Sortable;
+
 // models/src/test/scala/coop/rchain/models/testUtils/TestUtils.scala
-pub fn sort(par: &Par) -> Par {
-    ParSortMatcher::sort_match(par).term
-}
+pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term }
 
 pub fn for_all_similar_a<A: Clone + std::fmt::Debug>(
     generator: BoxedStrategy<A>,

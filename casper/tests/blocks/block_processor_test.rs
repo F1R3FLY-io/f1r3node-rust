@@ -1,31 +1,22 @@
-use crate::engine::setup;
-use crate::helper::{
-    block_dag_storage_fixture::with_storage, block_generator::create_genesis_block,
-    block_util::generate_validator,
-};
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-};
-use casper::rust::{
-    blocks::block_processor::BlockProcessorDependencies, engine::block_retriever::BlockRetriever,
-};
-use comm::rust::{
-    rp::connect::{Connections, ConnectionsCell},
-    test_instances::{create_rp_conf_ask, TransportLayerStub},
-};
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{BlockMessage, Bond, Header},
-};
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use casper::rust::blocks::block_processor::BlockProcessorDependencies;
+use casper::rust::engine::block_retriever::BlockRetriever;
+use comm::rust::rp::connect::{Connections, ConnectionsCell};
+use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Header};
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-};
+
+use crate::engine::setup;
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::create_genesis_block;
+use crate::helper::block_util::generate_validator;
 
 struct TestFixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
@@ -72,7 +63,8 @@ impl TestFixture {
         // Get underlying BlockDagKeyValueStorage for CasperDependencyAnalyzer
         let block_dag_storage = {
             // We need to extract underlying storage for the dependency analyzer
-            // For now, create a separate one since IndexedBlockDagStorage doesn't expose underlying
+            // For now, create a separate one since IndexedBlockDagStorage doesn't expose
+            // underlying
             let mut dag_kvm = InMemoryStoreManager::new();
             BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap()
         };
@@ -131,9 +123,7 @@ impl TestFixture {
         }
     }
 
-    fn reset_transport(&self) {
-        self.dependencies.transport().reset();
-    }
+    fn reset_transport(&self) { self.dependencies.transport().reset(); }
 }
 
 #[tokio::test]

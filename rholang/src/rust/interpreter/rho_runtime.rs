@@ -1,10 +1,12 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::expr::ExprInstance::EMapBody;
+use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::Bundle;
-use models::rhoapi::Var;
-use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -17,15 +19,27 @@ use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
-use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace::RSpaceStore;
+use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Instant;
 
+use super::accounting::_cost;
+use super::accounting::cost_accounting::CostAccounting;
+use super::accounting::costs::Cost;
+use super::accounting::has_cost::HasCost;
+use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
+use super::env::Env;
+use super::errors::InterpreterError;
+use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::reduce::DebruijnInterpreter;
+use super::registry::registry_bootstrap::ast;
+use super::storage::charging_rspace::ChargingRSpace;
+use super::substitute::Substitute;
+use super::system_processes::{
+    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
+    Remainder, RhoDispatchMap,
+};
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
 use crate::rust::interpreter::metrics_constants::{
@@ -39,40 +53,23 @@ use crate::rust::interpreter::ollama_service::SharedOllamaService;
 use crate::rust::interpreter::openai_service::SharedOpenAIService;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
 
-use super::accounting::_cost;
-use super::accounting::cost_accounting::CostAccounting;
-use super::accounting::costs::Cost;
-use super::accounting::has_cost::HasCost;
-use super::dispatch::RhoDispatch;
-use super::dispatch::RholangAndScalaDispatcher;
-use super::env::Env;
-use super::errors::InterpreterError;
-use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
-use super::reduce::DebruijnInterpreter;
-use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
-use super::substitute::Substitute;
-use super::system_processes::{
-    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
-};
-use models::rhoapi::expr::ExprInstance::GByteArray;
-
 /*
  * This trait has been combined with the 'ReplayRhoRuntime' trait
-*/
+ */
 #[allow(async_fn_in_trait)]
 pub trait RhoRuntime: HasCost {
     /**
-     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it with provided initial phlo.
+     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it
+     * with provided initial phlo.
      *
      * This function would change the state in the runtime.
      * @param term The rholang contract which would run on the runtime
-     * @param initialPhlo initial cost for the this evaluation. If the phlo is not enough,
-     *                    [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]] would return.
-     * @param normalizerEnv additional env for Par when parsing term into Par
-     * @param rand random seed for rholang execution
-     * @return
+     * @param initialPhlo initial cost for the this evaluation. If the phlo
+     * is not enough,                    
+     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]
+     * would return. @param normalizerEnv additional env for Par when
+     * parsing term into Par @param rand random seed for rholang
+     * execution @return
      */
     async fn evaluate(
         &self,
@@ -82,7 +79,8 @@ pub trait RhoRuntime: HasCost {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.scala
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.
+    // scala
     async fn evaluate_with_env(
         &mut self,
         term: &str,
@@ -134,17 +132,18 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * The function would execute the par regardless setting cost which would possibly cause
-     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
-     * function in some situation which is not cost sensitive.
+     * The function would execute the par regardless setting cost which
+     * would possibly cause [[coop.rchain.rholang.interpreter.errors.
+     * OutOfPhlogistonsError]]. Because of that, use this function in
+     * some situation which is not cost sensitive.
      *
      * This function would change the state in the runtime.
      *
-     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
-     * @param par [[coop.rchain.models.Par]] for the execution
-     * @param env additional env for execution
-     * @param rand random seed for rholang execution
-     * @return
+     * Ideally, this function should be removed or hack the runtime without
+     * cost accounting in the future . @param par
+     * [[coop.rchain.models.Par]] for the execution @param env
+     * additional env for execution @param rand random seed for rholang
+     * execution @return
      */
     async fn inj(
         &self,
@@ -154,8 +153,9 @@ pub trait RhoRuntime: HasCost {
     ) -> Result<(), InterpreterError>;
 
     /**
-     * After some executions([[evaluate]]) on the runtime, you can create a soft checkpoint which is the changes
-     * for the current state of the runtime. You can revert the changes by [[revertToSoftCheckpoint]]
+     * After some executions([[evaluate]]) on the runtime, you can create a
+     * soft checkpoint which is the changes for the current state of the
+     * runtime. You can revert the changes by [[revertToSoftCheckpoint]]
      * @return
      */
     fn create_soft_checkpoint(
@@ -174,16 +174,16 @@ pub trait RhoRuntime: HasCost {
     ) -> ();
 
     /**
-     * Create a checkpoint for the runtime. All the changes which happened in the runtime would persistent in the disk
-     * and result in a new stateHash for the new state.
-     * @return
+     * Create a checkpoint for the runtime. All the changes which happened
+     * in the runtime would persistent in the disk and result in a new
+     * stateHash for the new state. @return
      */
     fn create_checkpoint(&mut self) -> Checkpoint;
 
     /**
-     * Reset the runtime to the specific state. Then you can operate some execution on the state.
-     * @param root the target state hash to reset
-     * @return
+     * Reset the runtime to the specific state. Then you can operate some
+     * execution on the state. @param root the target state hash to
+     * reset @return
      */
     fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
 
@@ -252,7 +252,7 @@ pub trait RhoRuntime: HasCost {
 
 /*
  * We use this struct for both normal and replay RhoRuntime instances
-*/
+ */
 #[derive(Clone)]
 pub struct RhoRuntimeImpl {
     pub reducer: Arc<DebruijnInterpreter>,
@@ -282,13 +282,9 @@ impl RhoRuntimeImpl {
         }
     }
 
-    pub fn get_cost_log(&self) -> Vec<Cost> {
-        self.cost.get_log()
-    }
+    pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
-    pub fn clear_cost_log(&self) {
-        self.cost.clear_log()
-    }
+    pub fn clear_cost_log(&self) { self.cost.clear_log() }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -368,9 +364,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         log
     }
 
-    fn get_root(&self) -> Blake2b256Hash {
-        self.reducer.space.try_lock().unwrap().get_root()
-    }
+    fn get_root(&self) -> Blake2b256Hash { self.reducer.space.try_lock().unwrap().get_root() }
 
     fn revert_to_soft_checkpoint(
         &mut self,
@@ -499,9 +493,7 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &_cost {
-        &self.cost
-    }
+    fn cost(&self) -> &_cost { &self.cost }
 }
 
 pub type RhoTuplespace = Arc<
@@ -1162,9 +1154,11 @@ where
 // This is from Nassim Taleb's "Skin in the Game"
 fn bootstrap_rand() -> Blake2b512Random {
     // println!("\nhit bootstrap_rand");
-    Blake2b512Random::create_from_bytes("Decentralization is based on the simple notion that it is easier to macrobull***t than microbull***t. \
-         Decentralization reduces large structural asymmetries."
-         .as_bytes())
+    Blake2b512Random::create_from_bytes(
+        "Decentralization is based on the simple notion that it is easier to macrobull***t than \
+         microbull***t. Decentralization reduces large structural asymmetries."
+            .as_bytes(),
+    )
 }
 
 pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
@@ -1244,14 +1238,15 @@ where
 /// # Parameters
 ///
 /// - `rspace`: The rspace which the runtime would operate on
-/// - `extra_system_processes`: Extra system rholang processes exposed to the runtime
-///   which you can execute functions on
-/// - `init_registry`: For a newly created rspace, you might need to bootstrap registry
-///   in the runtime to use rholang registry normally. This is not the only thing you need
-///   for rholang registry - after the bootstrap registry, you still need to insert registry
-///   contract on the rspace. For an existing rspace which bootstrapped registry before, you
-///   can skip this. For some test cases, you don't need the registry, then you can skip this
-///   init process which can be faster.
+/// - `extra_system_processes`: Extra system rholang processes exposed to the
+///   runtime which you can execute functions on
+/// - `init_registry`: For a newly created rspace, you might need to bootstrap
+///   registry in the runtime to use rholang registry normally. This is not the
+///   only thing you need for rholang registry - after the bootstrap registry,
+///   you still need to insert registry contract on the rspace. For an existing
+///   rspace which bootstrapped registry before, you can skip this. For some
+///   test cases, you don't need the registry, then you can skip this init
+///   process which can be faster.
 /// - `mergeable_tag_name`: Tag name for mergeable channels
 /// - `external_services`: External services configuration (OpenAI, gRPC)
 ///
@@ -1287,7 +1282,8 @@ where
     .await
 }
 
-/// Creates a replay runtime for executing Rholang code with replay capabilities.
+/// Creates a replay runtime for executing Rholang code with replay
+/// capabilities.
 ///
 /// # Parameters
 ///

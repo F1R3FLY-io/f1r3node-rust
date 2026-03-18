@@ -13,8 +13,8 @@ use shared::rust::{Byte, ByteVector};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::Either;
 use crate::rspace::history::history_action::HistoryActionTrait;
+use crate::rspace::history::Either;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub enum Item {
@@ -678,12 +678,22 @@ pub fn sequential_export(
 
             match item {
                 Item::EmptyItem => Ok(StepData::new(new_path, p.skip, p.take, p.exp_data)),
-                Item::Leaf { prefix, value } => {
-                    Ok(add_leaf(p, prefix, value, item_index, curr_node_prefix, new_path))
-                }
-                Item::NodePtr { prefix, ptr } => {
-                    Ok(add_node_ptr(p, prefix, ptr, item_index, curr_node_prefix, new_path)?)
-                }
+                Item::Leaf { prefix, value } => Ok(add_leaf(
+                    p,
+                    prefix,
+                    value,
+                    item_index,
+                    curr_node_prefix,
+                    new_path,
+                )),
+                Item::NodePtr { prefix, ptr } => Ok(add_node_ptr(
+                    p,
+                    prefix,
+                    ptr,
+                    item_index,
+                    curr_node_prefix,
+                    new_path,
+                )?),
             }
         },
     );
@@ -1029,7 +1039,7 @@ impl RadixTreeImpl {
 
         let kv_collision: Vec<(ByteVector, ByteVector)> = kvv_exist
             .into_iter()
-            .filter(|kvv| kvv.0.1 != kvv.1)
+            .filter(|kvv| kvv.0 .1 != kvv.1)
             .map(|(kv, _)| kv)
             .collect();
 
@@ -1043,9 +1053,7 @@ impl RadixTreeImpl {
             .map(|(kv, _)| kv)
             .collect();
 
-        let serialized_kv_absent = kv_absent
-            .into_iter()
-            .collect();
+        let serialized_kv_absent = kv_absent.into_iter().collect();
 
         self.store.put(serialized_kv_absent)?;
         Ok(())
@@ -1268,29 +1276,31 @@ impl RadixTreeImpl {
     ) -> Result<Option<Item>, RadixTreeError> {
         let insert_new_node_to_child: Box<
             dyn Fn(ByteVector, ByteVector, ByteVector) -> Result<Option<Item>, RadixTreeError>,
-        > = Box::new(|child_ptr: ByteVector, child_prefix: ByteVector, ins_prefix: ByteVector| {
-            let child_node = self.load_node_arc(child_ptr, None)?;
-            let (ins_prefix_head, ins_prefix_tail) = ins_prefix.split_first().unwrap();
-            let (child_item_idx, child_ins_prefix) =
-                (byte_to_int(*ins_prefix_head), ins_prefix_tail);
+        > = Box::new(
+            |child_ptr: ByteVector, child_prefix: ByteVector, ins_prefix: ByteVector| {
+                let child_node = self.load_node_arc(child_ptr, None)?;
+                let (ins_prefix_head, ins_prefix_tail) = ins_prefix.split_first().unwrap();
+                let (child_item_idx, child_ins_prefix) =
+                    (byte_to_int(*ins_prefix_head), ins_prefix_tail);
 
-            let child_item_opt = self.update(
-                child_node.as_ref().get(child_item_idx).unwrap().clone(),
-                child_ins_prefix.to_vec(),
-                ins_value.clone(),
-            )?; // Deeper
+                let child_item_opt = self.update(
+                    child_node.as_ref().get(child_item_idx).unwrap().clone(),
+                    child_ins_prefix.to_vec(),
+                    ins_value.clone(),
+                )?; // Deeper
 
-            match child_item_opt {
-                Some(child_item) => {
-                    let mut updated_child_node = child_node.as_ref().clone();
-                    updated_child_node[child_item_idx] = child_item;
-                    let returned_item =
-                        self.save_node_and_create_item(updated_child_node, child_prefix, false);
-                    Ok(Some(returned_item))
+                match child_item_opt {
+                    Some(child_item) => {
+                        let mut updated_child_node = child_node.as_ref().clone();
+                        updated_child_node[child_item_idx] = child_item;
+                        let returned_item =
+                            self.save_node_and_create_item(updated_child_node, child_prefix, false);
+                        Ok(Some(returned_item))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            }
-        });
+            },
+        );
 
         match curr_item {
             Item::EmptyItem => Ok(Some(Item::Leaf {
@@ -1338,7 +1348,11 @@ impl RadixTreeImpl {
                         value: ins_value.clone(),
                     };
 
-                    Ok(Some(self.save_node_and_create_item(new_node, comm_prefix, false)))
+                    Ok(Some(self.save_node_and_create_item(
+                        new_node,
+                        comm_prefix,
+                        false,
+                    )))
                 }
             }
             Item::NodePtr {
@@ -1374,7 +1388,11 @@ impl RadixTreeImpl {
                         value: ins_value.clone(),
                     };
 
-                    Ok(Some(self.save_node_and_create_item(new_node, comm_prefix, false)))
+                    Ok(Some(self.save_node_and_create_item(
+                        new_node,
+                        comm_prefix,
+                        false,
+                    )))
                 }
             }
         }
@@ -1394,25 +1412,32 @@ impl RadixTreeImpl {
     ) -> Result<Option<Item>, RadixTreeError> {
         let delete_from_child_node: Box<
             dyn Fn(ByteVector, ByteVector, ByteVector) -> Result<Option<Item>, RadixTreeError>,
-        > = Box::new(|child_ptr: ByteVector, child_prefix: ByteVector, del_prefix: ByteVector| {
-            let child_node = self.load_node_arc(child_ptr, None)?;
-            let (del_prefix_head, del_prefix_tail) = del_prefix.split_first().unwrap();
-            let (del_item_idx, del_item_prefix) = (byte_to_int(*del_prefix_head), del_prefix_tail);
-            let child_item_opt = self.delete(
-                child_node.as_ref().get(del_item_idx).unwrap().clone(),
-                del_item_prefix.to_vec(),
-            )?;
+        > = Box::new(
+            |child_ptr: ByteVector, child_prefix: ByteVector, del_prefix: ByteVector| {
+                let child_node = self.load_node_arc(child_ptr, None)?;
+                let (del_prefix_head, del_prefix_tail) = del_prefix.split_first().unwrap();
+                let (del_item_idx, del_item_prefix) =
+                    (byte_to_int(*del_prefix_head), del_prefix_tail);
+                let child_item_opt = self.delete(
+                    child_node.as_ref().get(del_item_idx).unwrap().clone(),
+                    del_item_prefix.to_vec(),
+                )?;
 
-            match child_item_opt {
-                Some(child_item) => {
-                    let mut child_node_updated = child_node.as_ref().clone();
-                    // child_node_updated.insert(del_item_idx, child_item);
-                    child_node_updated[del_item_idx] = child_item;
-                    Ok(Some(self.save_node_and_create_item(child_node_updated, child_prefix, true)))
+                match child_item_opt {
+                    Some(child_item) => {
+                        let mut child_node_updated = child_node.as_ref().clone();
+                        // child_node_updated.insert(del_item_idx, child_item);
+                        child_node_updated[del_item_idx] = child_item;
+                        Ok(Some(self.save_node_and_create_item(
+                            child_node_updated,
+                            child_prefix,
+                            true,
+                        )))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            }
-        });
+            },
+        );
 
         match curr_item {
             Item::EmptyItem => Ok(None), // Not found
@@ -1572,7 +1597,8 @@ impl RadixTreeImpl {
             //     new_node_opt.clone().unwrap().len()
             // );
 
-            let new_item = new_node_opt.map(|new_node| self.save_node_and_create_item(new_node, Vec::new(), true));
+            let new_item = new_node_opt
+                .map(|new_node| self.save_node_and_create_item(new_node, Vec::new(), true));
 
             // println!("\nnew_item: {:?}", new_item);
 
@@ -1599,31 +1625,33 @@ impl RadixTreeImpl {
                 Vec<(Byte, Vec<HistoryAction>)>,
                 &Node,
             ) -> Vec<Result<(i32, Option<Item>), RadixTreeError>>,
-        > = Box::new(|grouped_actions: Vec<(Byte, Vec<HistoryAction>)>, curr_node: &Node| {
-            grouped_actions
-                .par_iter()
-                .map(|grouped_action| match grouped_action {
-                    (group_idx, actions_in_group) => {
-                        let item_idx = byte_to_int(*group_idx);
-                        // println!("item_idx: {:?}", item_idx);
-                        let item = curr_node[item_idx].clone();
-                        if actions_in_group.len() == 1 {
-                            process_one_action(
-                                actions_in_group.first().unwrap().clone(),
-                                item,
-                                item_idx as i32,
-                            )
-                        } else {
-                            process_several_actions(
-                                actions_in_group.to_vec(),
-                                item,
-                                item_idx as i32,
-                            )
+        > = Box::new(
+            |grouped_actions: Vec<(Byte, Vec<HistoryAction>)>, curr_node: &Node| {
+                grouped_actions
+                    .par_iter()
+                    .map(|grouped_action| match grouped_action {
+                        (group_idx, actions_in_group) => {
+                            let item_idx = byte_to_int(*group_idx);
+                            // println!("item_idx: {:?}", item_idx);
+                            let item = curr_node[item_idx].clone();
+                            if actions_in_group.len() == 1 {
+                                process_one_action(
+                                    actions_in_group.first().unwrap().clone(),
+                                    item,
+                                    item_idx as i32,
+                                )
+                            } else {
+                                process_several_actions(
+                                    actions_in_group.to_vec(),
+                                    item,
+                                    item_idx as i32,
+                                )
+                            }
                         }
-                    }
-                })
-                .collect()
-        });
+                    })
+                    .collect()
+            },
+        );
 
         // Group the actions by the first byte of the prefix.
         fn grouping(
@@ -1640,10 +1668,7 @@ impl RadixTreeImpl {
                         ));
                     }
                 };
-                groups
-                    .entry(first_byte)
-                    .or_default()
-                    .push(action);
+                groups.entry(first_byte).or_default().push(action);
             }
             Ok(groups.into_iter().collect())
         }
@@ -1710,7 +1735,10 @@ impl RadixTreeImpl {
                     let full_prefix = [prefix.clone(), leaf_prefix.clone()].concat();
                     let prefix_str = format!("{:02X?}", full_prefix);
                     let value_str = format!("{:02X?}", value);
-                    output.push_str(&format!("Leaf at prefix:{}: data: {}", prefix_str, value_str));
+                    output.push_str(&format!(
+                        "Leaf at prefix:{}: data: {}",
+                        prefix_str, value_str
+                    ));
                 }
                 Item::NodePtr {
                     prefix: node_prefix,

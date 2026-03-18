@@ -1,4 +1,5 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedMemoryStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/
+// LastFinalizedMemoryStorage.scala
 
 use std::sync::{Arc, Mutex};
 
@@ -23,9 +24,7 @@ impl LastFinalizedMemoryStorage {
 }
 
 impl Default for LastFinalizedMemoryStorage {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl LastFinalizedStorage for LastFinalizedMemoryStorage {

@@ -1,26 +1,20 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{
-        Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
-    },
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{
+    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    merger::{event_log_index::EventLogIndex, merging_logic::NumberChannelsDiff},
-    trace::event::Produce,
-};
-
-use crate::rust::{
-    errors::CasperError,
-    merging::{deploy_chain_index::DeployChainIndex, deploy_index::DeployIndex},
-    util::event_converter,
-};
-
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
+use rspace_plus_plus::rspace::trace::event::Produce;
+
+use crate::rust::errors::CasperError;
+use crate::rust::merging::deploy_chain_index::DeployChainIndex;
+use crate::rust::merging::deploy_index::DeployIndex;
+use crate::rust::util::event_converter;
 
 #[derive(Clone)]
 pub struct BlockIndex {
@@ -170,9 +164,10 @@ pub fn new(
     let mut all_deploy_indices = usr_deploy_indices;
     all_deploy_indices.extend(sys_deploy_indices);
 
-    // Here deploys from a single block are examined. Atm deploys in block are executed sequentially,
-    // so all conflicts are resolved according to order of sequential execution.
-    // Therefore there won't be any conflicts between event logs. But there can be dependencies.
+    // Here deploys from a single block are examined. Atm deploys in block are
+    // executed sequentially, so all conflicts are resolved according to order
+    // of sequential execution. Therefore there won't be any conflicts between
+    // event logs. But there can be dependencies.
     let deploy_chains = merging_logic::compute_related_sets(
         &all_deploy_indices.into_iter().collect(),
         |l: &DeployIndex, r: &DeployIndex| {

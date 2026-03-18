@@ -1,11 +1,13 @@
 //! Zipper wrapper types for integrating PathMap zippers with Rholang Par types.
 //!
-//! This module provides wrapper types that bridge PathMap's zipper API with Rholang's process-oriented
-//! data model. Operations work on Par values as the unit of operation rather than raw bytes.
+//! This module provides wrapper types that bridge PathMap's zipper API with
+//! Rholang's process-oriented data model. Operations work on Par values as the
+//! unit of operation rather than raw bytes.
+
+use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, ZipperHead};
 
 use super::pathmap_integration::{par_to_path, RholangPathMap};
 use crate::rhoapi::{EPathMap, Par};
-use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, ZipperHead};
 
 /// Wrapper for PathMap ReadZipper that maintains Rholang context
 pub struct RholangReadZipper<'a, 'path> {

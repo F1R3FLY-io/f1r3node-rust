@@ -1,36 +1,29 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
-// Moved from casper/tests/helper/block_generator.rs to casper/src/rust/test_utils/helper/block_generator.rs
-// All imports fixed for library crate context
+// Moved from casper/tests/helper/block_generator.rs to
+// casper/src/rust/test_utils/helper/block_generator.rs All imports fixed for
+// library crate context
 
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::rust::{
-    casper::CasperSnapshot,
-    errors::CasperError,
-    util::{
-        construct_deploy, proto_util,
-        rholang::{
-            interpreter_util::compute_deploys_checkpoint, runtime_manager::RuntimeManager,
-            system_deploy_enum::SystemDeployEnum,
-        },
-    },
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_implicits;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, Justification, ProcessedDeploy,
 };
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-    test::indexed_block_dag_storage::IndexedBlockDagStorage,
-};
-use models::rust::{
-    block::state_hash::StateHash,
-    block_hash::BlockHash,
-    block_implicits,
-    casper::protocol::casper_message::{BlockMessage, Bond, Justification, ProcessedDeploy},
-    validator::Validator,
-};
+use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
+
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use crate::rust::util::{construct_deploy, proto_util};
 
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot::new(dag)

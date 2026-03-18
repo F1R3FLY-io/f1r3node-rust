@@ -3,10 +3,11 @@
 //! This module provides custom JSON serialization for protobuf-generated types
 //! that don't have serde derives by default.
 
-use super::base64_bytes;
 use models::casper::{BondInfo, JustificationInfo, LightBlockInfo, RejectedDeployInfo};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
+
+use super::base64_bytes;
 
 /// Serializable representation of LightBlockInfo
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -178,9 +179,7 @@ where
 
 /// Custom deserializer for LightBlockInfo
 pub fn deserialize_light_block_info<'de, D>(deserializer: D) -> Result<LightBlockInfo, D::Error>
-where
-    D: Deserializer<'de>,
-{
+where D: Deserializer<'de> {
     let json_block = LightBlockInfoSerde::deserialize(deserializer)?;
     json_block.try_into().map_err(serde::de::Error::custom)
 }
@@ -215,8 +214,9 @@ impl Default for LightBlockInfoSerde {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::bytes::Bytes;
+
+    use super::*;
 
     /// Helper function to serialize LightBlockInfo to JSON string
     fn light_block_info_to_json(block: LightBlockInfo) -> Result<String, serde_json::Error> {

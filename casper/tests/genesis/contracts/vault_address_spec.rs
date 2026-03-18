@@ -1,10 +1,12 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/VaultAddressSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
+// VaultAddressSpec.scala
 
-use crate::genesis::contracts::GENESIS_TEST_TIMEOUT;
-use crate::helper::rho_spec::RhoSpec;
 use casper::rust::util::construct_deploy::DEFAULT_PUB;
 use models::rust::normalizer_env::with_deployer_id;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+
+use crate::genesis::contracts::GENESIS_TEST_TIMEOUT;
+use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn vault_address_spec() {

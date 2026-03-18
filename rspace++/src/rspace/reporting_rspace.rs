@@ -16,8 +16,8 @@ use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
 use super::r#match::Match;
 use super::replay_rspace::ReplayRSpace;
 use super::rspace::RSpace;
+use super::trace::event::{Consume, Produce, COMM};
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
@@ -150,8 +150,11 @@ where
             RSpaceError::InterpreterError(format!("Failed to create history repo: {:?}", e))
         })?;
         let (history_repository, replay_store) = history;
-        let reporting_rspace =
-            Self::apply(Arc::new(history_repository), Arc::new(replay_store), matcher);
+        let reporting_rspace = Self::apply(
+            Arc::new(history_repository),
+            Arc::new(replay_store),
+            matcher,
+        );
         Ok(reporting_rspace)
     }
 
@@ -328,9 +331,7 @@ where
 
     fn is_replay(&self) -> bool { self.replay_rspace.is_replay() }
 
-    fn update_produce(&mut self, produce: Produce) {
-        self.replay_rspace.update_produce(produce)
-    }
+    fn update_produce(&mut self, produce: Produce) { self.replay_rspace.update_produce(produce) }
 }
 
 /// Logger used to collect reporting events from underlying replay space

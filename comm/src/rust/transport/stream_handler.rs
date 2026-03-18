@@ -1,23 +1,21 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/StreamHandler.scala
 
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{
-        STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
-    },
-    peer_node::PeerNode,
-    rp::protocol_helper,
-    transport::{
-        messages::StreamMessage,
-        packet_ops::{PacketOps, StreamCache},
-        transport_layer::Blob,
-    },
-};
 use futures::StreamExt;
-use models::routing::{chunk::Content, Chunk, ChunkData, ChunkHeader};
+use models::routing::chunk::Content;
+use models::routing::{Chunk, ChunkData, ChunkHeader};
 use shared::rust::shared::compression::Compression;
 use tokio_stream::Stream;
 use tracing;
+
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
+};
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::protocol_helper;
+use crate::rust::transport::messages::StreamMessage;
+use crate::rust::transport::packet_ops::{PacketOps, StreamCache};
+use crate::rust::transport::transport_layer::Blob;
 
 /// Type alias for circuit breaker function
 /// Takes a Streamed state and returns a Circuit decision
@@ -68,19 +66,13 @@ pub enum Circuit {
 
 impl Circuit {
     /// Check if the circuit is broken
-    pub fn broken(&self) -> bool {
-        matches!(self, Circuit::Opened { .. })
-    }
+    pub fn broken(&self) -> bool { matches!(self, Circuit::Opened { .. }) }
 
     /// Create an opened circuit with an error
-    pub fn opened(error: StreamError) -> Self {
-        Circuit::Opened { error }
-    }
+    pub fn opened(error: StreamError) -> Self { Circuit::Opened { error } }
 
     /// Create a closed circuit
-    pub fn closed() -> Self {
-        Circuit::Closed
-    }
+    pub fn closed() -> Self { Circuit::Closed }
 }
 
 /// Stream error types
@@ -117,24 +109,16 @@ impl StreamError {
     }
 
     /// Create a WrongNetworkId error
-    pub fn wrong_network_id() -> Self {
-        StreamError::WrongNetworkId
-    }
+    pub fn wrong_network_id() -> Self { StreamError::WrongNetworkId }
 
     /// Create a MaxSizeReached error (circuit opened)
-    pub fn circuit_opened() -> Self {
-        StreamError::MaxSizeReached
-    }
+    pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
 
     /// Create a NotFullMessage error
-    pub fn not_full_message(streamed: String) -> Self {
-        StreamError::NotFullMessage { streamed }
-    }
+    pub fn not_full_message(streamed: String) -> Self { StreamError::NotFullMessage { streamed } }
 
     /// Create an Unexpected error
-    pub fn unexpected(error: String) -> Self {
-        StreamError::Unexpected { error }
-    }
+    pub fn unexpected(error: String) -> Self { StreamError::Unexpected { error } }
 }
 
 /// State of an ongoing streaming operation
@@ -207,7 +191,8 @@ impl StreamHandler {
     }
 
     /// Initialize a new streaming operation
-    /// Creates a cache entry with "packet_send/" prefix and returns a new Streamed instance.
+    /// Creates a cache entry with "packet_send/" prefix and returns a new
+    /// Streamed instance.
     pub fn init(cache: &StreamCache) -> Result<Streamed, CommError> {
         let key = PacketOps::create_cache_entry("packet_send", cache)?;
         Ok(Streamed::new(key))
@@ -215,8 +200,9 @@ impl StreamHandler {
 
     /// Handle a stream of chunks with proper resource management
     ///
-    /// This method processes a stream of chunks using the circuit breaker pattern
-    /// and provides proper cleanup in all scenarios (success, failure, errors).
+    /// This method processes a stream of chunks using the circuit breaker
+    /// pattern and provides proper cleanup in all scenarios (success,
+    /// failure, errors).
     pub async fn handle_stream<S>(
         stream: S,
         circuit_breaker: CircuitBreaker,
@@ -388,8 +374,8 @@ impl StreamHandler {
 
     /// Restore a blob from cache using a StreamMessage
     ///
-    /// Retrieves the cached data, decompresses if necessary, and creates a Blob.
-    /// Cleans up the cache entry after processing.
+    /// Retrieves the cached data, decompresses if necessary, and creates a
+    /// Blob. Cleans up the cache entry after processing.
     pub async fn restore(msg: &StreamMessage, cache: &StreamCache) -> Result<Blob, CommError> {
         // Read data from cache
         let content = match cache.get(&msg.key) {
@@ -512,11 +498,13 @@ impl StreamHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use std::sync::Arc;
+
     use dashmap::DashMap;
     use prost::bytes::Bytes;
-    use std::sync::Arc;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
     fn create_test_peer() -> PeerNode {
         PeerNode {

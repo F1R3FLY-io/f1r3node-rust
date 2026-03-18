@@ -1,26 +1,26 @@
-use super::signatures_alg::SignaturesAlg;
-use crate::rust::{private_key::PrivateKey, public_key::PublicKey};
+use std::path::Path;
+
 use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
-use k256::ecdsa::VerifyingKey;
-use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
-
-use openssl::pkey::PKey;
-
 use eyre::{Context, Result};
-use k256::elliptic_curve::{sec1::ToEncodedPoint, SecretKey};
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::SecretKey;
+use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
 use rand::rngs::OsRng;
-use std::path::Path;
+
+use super::signatures_alg::SignaturesAlg;
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
 
 // See crypto/src/main/scala/coop/rchain/crypto/signatures/Secp256k1.scala
 #[derive(Clone, Debug, PartialEq)]
 pub struct Secp256k1;
 
 impl Secp256k1 {
-    pub fn name() -> String {
-        "secp256k1".to_string()
-    }
+    pub fn name() -> String { "secp256k1".to_string() }
 
     /// Parse an encrypted PEM file and extract the private key
     /// Equivalent to Scala's parsePemFile method
@@ -38,13 +38,15 @@ impl Secp256k1 {
 
         // Heuristics to detect encrypted PEM:
         // - labels like "ENCRYPTED PRIVATE KEY" or "ENCRYPTED" in label
-        // - headers such as "DEK-Info" or "Proc-Type" are commonly present on legacy PEM encryption
+        // - headers such as "DEK-Info" or "Proc-Type" are commonly present on legacy
+        //   PEM encryption
         let looks_encrypted = {
             let label_up = pem.tag().to_uppercase();
             label_up.contains("ENCRYPTED")
                 || pem.headers().iter().any(|(k, _v)| {
                     let ku = k.to_ascii_uppercase();
-                    ku == "DEK-INFO" || ku == "PROC-TYPE" // typical legacy PEM headers
+                    ku == "DEK-INFO" || ku == "PROC-TYPE" // typical legacy PEM
+                                                          // headers
                 })
         };
 
@@ -56,8 +58,9 @@ impl Secp256k1 {
                     .map_err(|e| eyre::eyre!("Could not decrypt PEM file: {}", e))?;
 
             // Try to export the private key into a reasonable canonical representation
-            // Prefer DER (PKCS#8) — this gives us a binary representation similar to ASN.1 DER.
-            // If the DER export isn't available, fall back to PEM PKCS8 export (textual).
+            // Prefer DER (PKCS#8) — this gives us a binary representation similar to ASN.1
+            // DER. If the DER export isn't available, fall back to PEM PKCS8
+            // export (textual).
             let key_der_result = pkey.private_key_to_der();
             let private_key_bytes = match key_der_result {
                 Ok(vec) => {
@@ -87,7 +90,8 @@ impl Secp256k1 {
                     }
                 }
                 Err(_) => {
-                    // fallback to PEM PKCS#8 (textual bytes); keep it as bytes so caller can decide.
+                    // fallback to PEM PKCS#8 (textual bytes); keep it as bytes so caller can
+                    // decide.
                     let pem_bytes = pkey.private_key_to_pem_pkcs8().map_err(|e| {
                         eyre::eyre!("Could not parse private key from PEM file: {}", e)
                     })?;
@@ -119,7 +123,8 @@ impl Secp256k1 {
 impl SignaturesAlg for Secp256k1 {
     fn verify(&self, data: &[u8], signature: &[u8], pub_key: &[u8]) -> bool {
         // Scala implementation always expects 32-byte hashes (Blake2b256 or SHA256)
-        // This matches the Scala comment: "@param data The data which was signed, must be exactly 32 bytes"
+        // This matches the Scala comment: "@param data The data which was signed, must
+        // be exactly 32 bytes"
         if data.len() != 32 {
             tracing::warn!(
                 "secp256k1.verify: expected 32 bytes (hash), got {} bytes. Data: {}",
@@ -175,33 +180,25 @@ impl SignaturesAlg for Secp256k1 {
 
         let private_key = PrivateKey::from_bytes(&secret_key.to_bytes());
 
-        let public_key =
-            PublicKey::from_bytes(raw_public_key.to_encoded_point(false).as_bytes());
+        let public_key = PublicKey::from_bytes(raw_public_key.to_encoded_point(false).as_bytes());
 
         (private_key, public_key)
     }
 
-    fn name(&self) -> String {
-        "secp256k1".to_string()
-    }
+    fn name(&self) -> String { "secp256k1".to_string() }
 
-    fn sig_length(&self) -> usize {
-        32
-    }
+    fn sig_length(&self) -> usize { 32 }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
-        Box::new(self.clone())
-    }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sha2::{Digest, Sha256};
+
+    use super::*;
 
     fn sec_key_verify(seckey: &[u8]) -> bool {
         seckey.len() == 32 && SigningKey::from_slice(seckey).is_ok()
@@ -262,7 +259,8 @@ mod tests {
             hex::decode("54d4e576251b6c7b95af0349a5a31e583e982edeb9856a59bde14f6be5a302b3")
                 .expect("Failed to decode private key");
 
-        // Generate the signature with our implementation - don't hardcode expected value
+        // Generate the signature with our implementation - don't hardcode expected
+        // value
         let generated_signature = secp256k1.sign(&data, &private_key);
 
         // Verify that our generated signature is valid
@@ -427,7 +425,8 @@ mod tests {
         let data = Sha256::digest(b"testing");
         let signature = secp256k1.sign(&data, &private_key.bytes);
 
-        // Test with different 32-byte hash - should work with proper signature for that hash
+        // Test with different 32-byte hash - should work with proper signature for that
+        // hash
         let different_data = Sha256::digest(b"different data");
         let different_signature = secp256k1.sign(&different_data, &private_key.bytes);
         assert!(secp256k1.verify(&different_data, &different_signature, &public_key.bytes));
@@ -443,7 +442,8 @@ mod tests {
     fn verify_scala_generated_signature() {
         let secp256k1 = Secp256k1;
 
-        // Create a realistic Blake2b256 hash from known data (simulating blessed contracts)
+        // Create a realistic Blake2b256 hash from known data (simulating blessed
+        // contracts)
         use crate::rust::hash::blake2b256::Blake2b256;
         let test_data = b"test data for blessed contract signature";
         let blake2b_hash = Blake2b256::hash(test_data.to_vec());
@@ -464,9 +464,10 @@ mod tests {
 
     #[test]
     fn parse_encrypted_pem_file_test() {
+        use std::io::Write;
+
         use openssl::pkey::PKey;
         use pkcs8::EncodePrivateKey;
-        use std::io::Write;
         use tempfile::NamedTempFile;
 
         let secp256k1 = Secp256k1;

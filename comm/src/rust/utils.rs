@@ -8,9 +8,7 @@ use crate::rust::errors::CommError;
 
 /// Validates an IP address using a predicate function
 pub async fn validate_inet_address<P>(host: &str, predicate: P) -> Result<bool, CommError>
-where
-    P: Fn(&IpAddr) -> bool,
-{
+where P: Fn(&IpAddr) -> bool {
     match host.parse::<IpAddr>() {
         Ok(addr) => Ok(predicate(&addr)),
         Err(_) => {
@@ -49,8 +47,9 @@ pub async fn is_valid_public_inet_address(host: &str) -> Result<bool, CommError>
 
 /// Resolve a hostname to a SocketAddr
 ///
-/// This function first tries to parse the hostname as an IP address (fast path).
-/// If that fails, it performs async DNS resolution using the provided port.
+/// This function first tries to parse the hostname as an IP address (fast
+/// path). If that fails, it performs async DNS resolution using the provided
+/// port.
 ///
 /// # Arguments
 /// * `host` - Hostname or IP address string
@@ -154,8 +153,9 @@ mod tests {
         assert!(!is_valid_inet_address("0.0.0.0").await.unwrap());
         assert!(!is_valid_inet_address("::").await.unwrap());
 
-        // Invalid format (will try DNS resolution, may fail or succeed depending on network)
-        // For invalid format strings that can't be parsed as IP, DNS resolution will be attempted
+        // Invalid format (will try DNS resolution, may fail or succeed depending on
+        // network) For invalid format strings that can't be parsed as IP, DNS
+        // resolution will be attempted
         let result = is_valid_inet_address("invalid").await;
         // Result may be Ok(false) if DNS fails, or Ok(true) if somehow resolved
         // We just check it doesn't panic

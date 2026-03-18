@@ -2,11 +2,10 @@
 
 use std::collections::HashMap;
 
+use super::rholang::sorter::ordering::Ordering;
+use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::Par;
-
-use super::rholang::sorter::{
-    ordering::Ordering, par_sort_matcher::ParSortMatcher, sortable::Sortable,
-};
 
 #[derive(Clone, Debug)]
 pub struct SortedParMap {
@@ -33,14 +32,10 @@ impl SortedParMap {
         SortedParMap::create_from_map(map)
     }
 
-    pub fn create_from_empty() -> Self {
-        SortedParMap::create_from_map(HashMap::new())
-    }
+    pub fn create_from_empty() -> Self { SortedParMap::create_from_map(HashMap::new()) }
 
     pub fn map_iter<'a, F, T>(&'a self, f: F) -> impl Iterator<Item = T> + 'a
-    where
-        F: Fn((&Par, &Par)) -> T + 'a,
-    {
+    where F: Fn((&Par, &Par)) -> T + 'a {
         self.sorted_list.iter().map(move |(k, v)| f((k, v)))
     }
 
@@ -72,9 +67,7 @@ impl SortedParMap {
         Self::create_from_map(self.sorted_map.clone())
     }
 
-    pub fn apply(&self, key: Par) -> Option<Par> {
-        self.sorted_map.get(&Self::sort(&key)).cloned()
-    }
+    pub fn apply(&self, key: Par) -> Option<Par> { self.sorted_map.get(&Self::sort(&key)).cloned() }
 
     pub fn contains(&self, par: Par) -> bool {
         self.sorted_map.contains_key(&SortedParMap::sort(&par))
@@ -109,34 +102,24 @@ impl SortedParMap {
             .collect()
     }
 
-    pub fn equals(&self, that: SortedParMap) -> bool {
-        self.sorted_list == that.sorted_list
-    }
+    pub fn equals(&self, that: SortedParMap) -> bool { self.sorted_list == that.sorted_list }
 
-    pub fn length(&self) -> usize {
-        self.sorted_list.len()
-    }
+    pub fn length(&self) -> usize { self.sorted_list.len() }
 
     pub fn is_empty(&self) -> bool {
         self.ps.is_empty() && self.sorted_list.is_empty() && self.sorted_map.is_empty()
     }
 
-    fn sort(par: &Par) -> Par {
-        ParSortMatcher::sort_match(par).term.clone()
-    }
+    fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
 }
 
 impl IntoIterator for SortedParMap {
     type Item = (Par, Par);
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.sorted_list.into_iter()
-    }
+    fn into_iter(self) -> Self::IntoIter { self.sorted_list.into_iter() }
 }
 
 impl PartialEq for SortedParMap {
-    fn eq(&self, other: &Self) -> bool {
-        self.sorted_list == other.sorted_list
-    }
+    fn eq(&self, other: &Self) -> bool { self.sorted_list == other.sorted_list }
 }

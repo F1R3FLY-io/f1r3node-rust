@@ -1,16 +1,16 @@
+use std::sync::Arc;
+
 use models::rhoapi::Par;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::GrpcClientService;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::ollama_service::OllamaService;
-use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::rho_runtime::{self, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::{self, RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::storage::storage_printer;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
-use std::sync::Arc;
 use tempfile::Builder;
 use tokio::sync::Mutex;
 
@@ -53,9 +53,7 @@ where
     f(runtime).await;
 }
 
-fn storage_contents(runtime: &RhoRuntimeImpl) -> String {
-    storage_printer::pretty_print(runtime)
-}
+fn storage_contents(runtime: &RhoRuntimeImpl) -> String { storage_printer::pretty_print(runtime) }
 
 async fn execute(runtime: &mut RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
     let result = runtime.evaluate_with_term(term).await?;

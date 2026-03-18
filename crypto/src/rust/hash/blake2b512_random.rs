@@ -1,6 +1,7 @@
-use super::blake2b512_block::Blake2b512Block;
 use byteorder::{ByteOrder, LittleEndian};
 use rand::Rng;
+
+use super::blake2b512_block::Blake2b512Block;
 
 /** Blake2b512 based splittable and mergeable random number generator
  * specialized for generating 256-bit unforgeable names.
@@ -91,9 +92,7 @@ impl Blake2b512Random {
         Self::create(&bytes, 0, length as usize)
     }
 
-    pub fn create_from_bytes(init: &[u8]) -> Blake2b512Random {
-        Self::create(init, 0, init.len())
-    }
+    pub fn create_from_bytes(init: &[u8]) -> Blake2b512Random { Self::create(init, 0, init.len()) }
 
     pub fn split_byte(&self, index: i8) -> Blake2b512Random {
         let mut split = self.copy();
@@ -131,7 +130,8 @@ impl Blake2b512Random {
     fn copy(&self) -> Blake2b512Random {
         let mut clone_block = vec![0; 128];
         clone_block.copy_from_slice(&self.last_block);
-        // In Rust, there's no need to rewind a Vec, as it doesn't have a position like a ByteBuffer.
+        // In Rust, there's no need to rewind a Vec, as it doesn't have a position like
+        // a ByteBuffer.
         let mut result = Self::new(
             Blake2b512Block::new_from_src(self.digest.clone()),
             clone_block,
@@ -156,8 +156,10 @@ impl Blake2b512Random {
             self.last_block[1] = high as i8 + 1;
         } else {
             self.count_view[0] = low + 1;
-            self.last_block[112] = low as i8 + 1; // TODO: review this hardcoded index
-                                                  // println!("\ncount_view: {:?}", self.count_view);
+            self.last_block[112] = low as i8 + 1; // TODO: review this hardcoded
+                                                  // index
+                                                  // println!("\ncount_view:
+                                                  // {:?}", self.count_view);
         }
     }
 
@@ -187,10 +189,11 @@ impl Blake2b512Random {
             let chunks = children.chunks_mut(255).collect::<Vec<_>>();
 
             for slice in chunks {
-                let mut result = Self::new(
-                    Blake2b512Block::new_from_fanout(slice.len() as u8),
-                    vec![0; 128],
-                );
+                let mut result =
+                    Self::new(Blake2b512Block::new_from_fanout(slice.len() as u8), vec![
+                        0;
+                        128
+                    ]);
                 for quad in slice.chunks_mut(4) {
                     for (i, child) in quad.iter_mut().enumerate() {
                         child.digest.finalize_internal(
@@ -204,8 +207,7 @@ impl Blake2b512Random {
                         let blank_length = (4 - quad.len()) * 32;
                         if blank_length > 0 {
                             let mut blank = Blake2b512Random::BLANK_BLOCK;
-                            let chain_block_i8: Vec<i8> =
-                                chain_block.iter().map(|&b| b).collect();
+                            let chain_block_i8: Vec<i8> = chain_block.to_vec();
                             let chain_block_u8: Vec<u8> =
                                 chain_block_i8.iter().map(|&b| b as u8).collect();
                             blank
@@ -214,7 +216,7 @@ impl Blake2b512Random {
                                 .copy_from_slice(&chain_block_u8[quad.len() * 32..]);
                         }
                     }
-                    let chain_block_i8: Vec<i8> = chain_block.iter().map(|&b| b).collect();
+                    let chain_block_i8: Vec<i8> = chain_block.to_vec();
                     result.digest.update(&chain_block_i8, 0);
                 }
                 squashed_builder.push(result.clone());
@@ -396,19 +398,16 @@ mod tests {
     #[test]
     fn blake2b512_random_should_correctly_create_from_string() {
         let rand = Blake2b512Random::create_from_bytes("testing".as_bytes());
-        assert_eq!(
-            rand.digest.chain_value,
-            [
-                -8360952207520771867,
-                7767624583803025097,
-                -5596376288506801394,
-                -2188126373757815809,
-                -4217540961114877052,
-                6292414413621190116,
-                1078587327606774112,
-                3428071545592311926
-            ]
-        )
+        assert_eq!(rand.digest.chain_value, [
+            -8360952207520771867,
+            7767624583803025097,
+            -5596376288506801394,
+            -2188126373757815809,
+            -4217540961114877052,
+            6292414413621190116,
+            1078587327606774112,
+            3428071545592311926
+        ])
     }
 
     #[test]
@@ -422,20 +421,14 @@ mod tests {
         // println!("\nres1: {:?}", res1);
         // println!("\nres2: {:?}", res2);
 
-        assert_eq!(
-            res1,
-            [
-                116, 92, -32, -11, -102, -89, -21, -83, -61, 28, 9, 113, 38, -84, -123, -121, 12,
-                51, 100, -75, 97, -47, -40, 25, 53, -21, 1, -17, 89, 104, -44, -77
-            ]
-        );
-        assert_eq!(
-            res2,
-            [
-                45, 123, -46, 25, -28, -50, 30, 24, -29, -116, 6, -18, -51, -15, 112, -104, -19,
-                73, -42, 104, -112, 8, 109, 25, 84, 58, -124, -2, -120, -40, 13, 103
-            ]
-        );
+        assert_eq!(res1, [
+            116, 92, -32, -11, -102, -89, -21, -83, -61, 28, 9, 113, 38, -84, -123, -121, 12, 51,
+            100, -75, 97, -47, -40, 25, 53, -21, 1, -17, 89, 104, -44, -77
+        ]);
+        assert_eq!(res2, [
+            45, 123, -46, 25, -28, -50, 30, 24, -29, -116, 6, -18, -51, -15, 112, -104, -19, 73,
+            -42, 104, -112, 8, 109, 25, 84, 58, -124, -2, -120, -40, 13, 103
+        ]);
     }
 
     #[test]
@@ -453,20 +446,14 @@ mod tests {
         // println!("\nres1: {:?}", res1);
         // println!("\nres2: {:?}", res2);
 
-        assert_eq!(
-            res1,
-            [
-                -50, 25, 15, 66, -125, -44, -79, 22, 83, -53, 120, -18, -113, -68, 104, -91, -72,
-                -53, 98, 81, 26, 31, 46, -45, -24, 54, 64, 14, 98, 20, 79, -87
-            ]
-        );
-        assert_eq!(
-            res2,
-            [
-                70, 14, -111, 63, -74, -14, 37, 15, -79, -82, 44, -42, -50, -21, 85, 1, -80, -40,
-                59, 41, -85, -43, 56, -45, 80, -114, -58, -124, 89, 4, 52, 45
-            ]
-        );
+        assert_eq!(res1, [
+            -50, 25, 15, 66, -125, -44, -79, 22, 83, -53, 120, -18, -113, -68, 104, -91, -72, -53,
+            98, 81, 26, 31, 46, -45, -24, 54, 64, 14, 98, 20, 79, -87
+        ]);
+        assert_eq!(res2, [
+            70, 14, -111, 63, -74, -14, 37, 15, -79, -82, 44, -42, -50, -21, 85, 1, -80, -40, 59,
+            41, -85, -43, 56, -45, 80, -114, -58, -124, 89, 4, 52, 45
+        ]);
     }
 
     #[test]
@@ -475,44 +462,32 @@ mod tests {
         let res1 = rand.next();
         // println!("\nres1: {:?}", res1);
         // rand.debug_str();
-        assert_eq!(
-            res1,
-            [
-                82, -120, 78, -100, -6, -9, 56, 112, -99, 39, 30, -100, 2, 104, -16, 89, 100, 57,
-                86, 120, -39, -52, -42, 27, 24, 125, 103, 34, 74, 70, 66, 48
-            ]
-        );
+        assert_eq!(res1, [
+            82, -120, 78, -100, -6, -9, 56, 112, -99, 39, 30, -100, 2, 104, -16, 89, 100, 57, 86,
+            120, -39, -52, -42, 27, 24, 125, 103, 34, 74, 70, 66, 48
+        ]);
 
         let res2 = rand.next();
         // println!("\nres2: {:?}", res2);
         // rand.debug_str();
-        assert_eq!(
-            res2,
-            [
-                -49, -94, -21, -71, 17, -123, -23, 118, 74, 90, -17, 108, 127, 90, 103, 86, -49,
-                -32, -12, -118, 51, -59, -65, -85, -1, -38, -54, -59, 93, 50, -14, 74
-            ]
-        );
+        assert_eq!(res2, [
+            -49, -94, -21, -71, 17, -123, -23, 118, 74, 90, -17, 108, 127, 90, 103, 86, -49, -32,
+            -12, -118, 51, -59, -65, -85, -1, -38, -54, -59, 93, 50, -14, 74
+        ]);
 
         let res3 = rand.next();
         // println!("\nres3: {:?}", res3);
-        assert_eq!(
-            res3,
-            [
-                -92, 36, -34, 33, 10, 100, -106, 105, -1, -111, -105, 111, -35, -127, -27, 89, -77,
-                -75, -64, -38, 118, -116, -68, -68, 48, -46, 94, -24, 110, 62, 7, -77
-            ]
-        );
+        assert_eq!(res3, [
+            -92, 36, -34, 33, 10, 100, -106, 105, -1, -111, -105, 111, -35, -127, -27, 89, -77,
+            -75, -64, -38, 118, -116, -68, -68, 48, -46, 94, -24, 110, 62, 7, -77
+        ]);
 
         let res4 = rand.next();
         // println!("\nres4: {:?}", res4);
-        assert_eq!(
-            res4,
-            [
-                12, 5, -2, -6, 45, 30, -53, -102, -12, 120, -73, 79, 94, -103, 112, 60, 66, -64,
-                124, -75, 89, -90, -96, -114, 24, -2, 77, -7, -120, -24, -108, 96
-            ]
-        );
+        assert_eq!(res4, [
+            12, 5, -2, -6, 45, 30, -53, -102, -12, 120, -73, 79, 94, -103, 112, 60, 66, -64, 124,
+            -75, 89, -90, -96, -114, 24, -2, 77, -7, -120, -24, -108, 96
+        ]);
     }
 
     #[test]
@@ -537,9 +512,7 @@ mod tests {
 // Blake2b512Random is encoded/decoded as unit (like Scala's FIXME comment)
 impl serde::Serialize for Blake2b512Random {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    where S: serde::Serializer {
         // Serialize as unit (like Scala's encodeBlake2b512Random)
         serializer.serialize_unit()
     }
@@ -547,10 +520,9 @@ impl serde::Serialize for Blake2b512Random {
 
 impl<'de> serde::Deserialize<'de> for Blake2b512Random {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Deserialize unit and return default Blake2b512Random (like Scala's decodeDummyBlake2b512Random)
+    where D: serde::Deserializer<'de> {
+        // Deserialize unit and return default Blake2b512Random (like Scala's
+        // decodeDummyBlake2b512Random)
         let _: () = <()>::deserialize(deserializer)?;
         Ok(Blake2b512Random::create_from_bytes(&[1]))
     }

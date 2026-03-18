@@ -5,7 +5,8 @@ use models::casper::{BlockInfo, TransferInfo};
 
 use super::transaction::{TransactionResponse, TransactionType};
 
-/// Maps transaction response data into per-deploy transfer info, keyed by deploy signature.
+/// Maps transaction response data into per-deploy transfer info, keyed by
+/// deploy signature.
 pub fn map_transactions_to_transfers(
     response: &TransactionResponse,
 ) -> HashMap<String, Vec<TransferInfo>> {
@@ -34,12 +35,9 @@ pub fn map_transactions_to_transfers(
     transfers_by_deploy
 }
 
-/// Enriches a `BlockInfo` by populating the `transfers` field on each `DeployInfo`
-/// using data from the transaction response.
-pub fn enrich_block_info(
-    mut block_info: BlockInfo,
-    response: &TransactionResponse,
-) -> BlockInfo {
+/// Enriches a `BlockInfo` by populating the `transfers` field on each
+/// `DeployInfo` using data from the transaction response.
+pub fn enrich_block_info(mut block_info: BlockInfo, response: &TransactionResponse) -> BlockInfo {
     let transfers_by_deploy = map_transactions_to_transfers(response);
 
     for deploy_info in &mut block_info.deploys {
@@ -127,11 +125,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::transaction::{Transaction, TransactionInfo, TransactionResponse, TransactionType};
     use models::casper::{DeployInfo, LightBlockInfo};
 
-    fn make_transaction(from: &str, to: &str, amount: i64, fail_reason: Option<String>) -> Transaction {
+    use super::super::transaction::{
+        Transaction, TransactionInfo, TransactionResponse, TransactionType,
+    };
+    use super::*;
+
+    fn make_transaction(
+        from: &str,
+        to: &str,
+        amount: i64,
+        fail_reason: Option<String>,
+    ) -> Transaction {
         Transaction {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
@@ -254,5 +260,4 @@ mod tests {
             "deploys with no UserDeploy transactions should have empty transfers"
         );
     }
-
 }

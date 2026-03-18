@@ -2,12 +2,9 @@
 
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::{ListParWithRandom, Par};
-use rholang::rust::interpreter::{
-    errors::illegal_argument_error,
-    errors::InterpreterError,
-    rho_type::{RhoByteArray, RhoNumber, RhoString},
-    system_processes::ProcessContext,
-};
+use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
+use rholang::rust::interpreter::rho_type::{RhoByteArray, RhoNumber, RhoString};
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 use crate::helper::process_context_ext::ProcessContextExt;
 

@@ -1,15 +1,12 @@
-use super::exports::InterpreterError;
-use crate::rust::interpreter::{
-    compiler::{
-        exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs},
-        normalize::normalize_ann_proc,
-    },
-    util::prepend_expr,
-};
-use models::rhoapi::{expr, EMatches, Expr, Par};
 use std::collections::HashMap;
 
+use models::rhoapi::{expr, EMatches, Expr, Par};
 use rholang_parser::ast::AnnProc;
+
+use super::exports::InterpreterError;
+use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::util::prepend_expr;
 
 pub fn normalize_p_matches<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -55,23 +52,25 @@ pub fn normalize_p_matches<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use models::rhoapi::connective::ConnectiveInstance::ConnNotBody;
-
-    use crate::rust::interpreter::util::prepend_expr;
     use models::rhoapi::{expr, Connective, EMatches, Expr, Par};
     use models::rust::utils::{new_gint_par, new_wildcard_par};
     use pretty_assertions::assert_eq;
 
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
+    use crate::rust::interpreter::util::prepend_expr;
+
     #[test]
     fn p_matches_should_normalize_one_matches_wildcard() {
         // Test: 1 matches _
+        use rholang_parser::ast::Var;
+
         use super::normalize_p_matches;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::Var;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();
@@ -130,9 +129,10 @@ mod tests {
     #[test]
     fn p_matches_should_normalize_one_matches_tilda_with_connective_used_false() {
         // Test: 1 matches ~1
+        use rholang_parser::ast::UnaryExpOp;
+
         use super::normalize_p_matches;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::UnaryExpOp;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();
@@ -172,9 +172,10 @@ mod tests {
     #[test]
     fn p_matches_should_normalize_tilda_one_matches_one_with_connective_used_true() {
         // Test: ~1 matches 1
+        use rholang_parser::ast::UnaryExpOp;
+
         use super::normalize_p_matches;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::UnaryExpOp;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();

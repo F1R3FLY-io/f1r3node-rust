@@ -85,9 +85,7 @@ impl RPConfCell {
 
     /// Modify the entire RPConf using a transformation function
     pub fn modify<F>(&self, f: F) -> Result<RPConf, CommError>
-    where
-        F: FnOnce(RPConf) -> Result<RPConf, CommError>,
-    {
+    where F: FnOnce(RPConf) -> Result<RPConf, CommError> {
         let mut conf = self.conf.lock().map_err(|_| {
             CommError::InternalCommunicationError("RPConfCell lock poisoned".to_string())
         })?;

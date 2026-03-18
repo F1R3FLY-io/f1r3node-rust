@@ -5,20 +5,17 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::helper::{
-    block_dag_storage_fixture::with_storage,
-    block_generator::{create_block, create_genesis_block},
-    block_util::generate_validator,
-};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::finality::finalizer::Finalizer;
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{BlockMessage, Bond},
-    validator::Validator,
-};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
+
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_util::generate_validator;
 
 fn create_block_creator<'a>(
     bonds: &'a [Bond],
@@ -62,10 +59,10 @@ fn create_block_creator<'a>(
     }
 }
 
-//   *  *            b8 b9
-//   *               b7         <- should not be LFB
-//   *  *  *  *  *   b2 b3 b4 b5 b6
-//   *               b1         <- should be LFB
+//   * *            b8 b9
+//   * b7         <- should not be LFB
+//   * *  *  *  *   b2 b3 b4 b5 b6
+//   * b1         <- should be LFB
 //   v1 v2 v3 v4 v5
 #[tokio::test]
 async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_invoke_all_effects() {

@@ -2,13 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::helper::{
-    block_dag_storage_fixture::with_storage,
-    block_generator::{create_block, create_genesis_block},
-    block_util::generate_validator,
-};
 use casper::rust::estimator::Estimator;
 use models::rust::casper::protocol::casper_message::Bond;
+
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_util::generate_validator;
 
 // Macro to create justifications HashMap without excessive cloning
 macro_rules! justifications {
@@ -280,7 +279,8 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
     .await
 }
 
-// See [[/docs/casper/images/no_finalizable_block_mistake_with_no_disagreement_check.png]]
+// See [[/docs/casper/images/
+// no_finalizable_block_mistake_with_no_disagreement_check.png]]
 #[tokio::test]
 async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_score_map_and_forkchoice(
 ) {

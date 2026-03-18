@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{Level, debug};
+use tracing::{debug, Level};
 
 use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
@@ -114,7 +114,12 @@ where
                 HotStoreAction::Insert(InsertData(i)) => {
                     let key = hash(&i.channel).bytes();
                     let data = encode_datums(&i.data);
-                    format!("{};insert-data;{};{}", hex::encode(key), data.len(), i.data.len())
+                    format!(
+                        "{};insert-data;{};{}",
+                        hex::encode(key),
+                        data.len(),
+                        i.data.len()
+                    )
                 }
                 HotStoreAction::Insert(InsertContinuations(i)) => {
                     let key = hash_from_vec(&i.channels).bytes();
@@ -797,7 +802,10 @@ where
             .lock()
             .expect("History Repository Impl: Unable to acquire history lock");
         let history_repo = history_lock.reset(state_hash)?;
-        Ok(Box::new(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone())))
+        Ok(Box::new(RSpaceHistoryReaderImpl::new(
+            history_repo,
+            self.leaf_store.clone(),
+        )))
     }
 
     fn get_history_reader_struct(
@@ -809,7 +817,10 @@ where
             .lock()
             .expect("History Repository Impl: Unable to acquire history lock");
         let history_repo = history_lock.reset(state_hash)?;
-        Ok(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone()))
+        Ok(RSpaceHistoryReaderImpl::new(
+            history_repo,
+            self.leaf_store.clone(),
+        ))
     }
 
     fn root(&self) -> Blake2b256Hash {

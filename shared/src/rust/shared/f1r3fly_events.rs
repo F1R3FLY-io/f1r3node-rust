@@ -1,10 +1,11 @@
 // See node/src/main/scala/coop/rchain/node/effects/RchainEvents.scala
 
-use futures::stream::Stream;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+
+use futures::stream::Stream;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -19,9 +20,7 @@ pub trait EventPublisher: Send + Sync {
 pub struct EventPublisherFactory;
 
 impl EventPublisherFactory {
-    pub fn noop() -> Box<dyn EventPublisher> {
-        Box::new(NoopEventPublisher)
-    }
+    pub fn noop() -> Box<dyn EventPublisher> { Box::new(NoopEventPublisher) }
 }
 
 /// No-op implementation of EventPublisher for testing
@@ -37,7 +36,8 @@ impl EventPublisher for NoopEventPublisher {
 /// Structure to publish and consume F1r3flyEvents
 #[derive(Clone)]
 pub struct F1r3flyEvents {
-    queue: Arc<Mutex<VecDeque<F1r3flyEvent>>>, // TODO: this queue is not used by the consumer, so maybe it should be removed.
+    queue: Arc<Mutex<VecDeque<F1r3flyEvent>>>, /* TODO: this queue is not used by the consumer,
+                                                * so maybe it should be removed. */
     capacity: usize,
     sender: broadcast::Sender<F1r3flyEvent>,
 }
@@ -57,9 +57,7 @@ impl F1r3flyEvents {
     }
 
     /// Create a new F1r3flyEvents with default capacity of 1
-    pub fn default() -> Self {
-        Self::new(None)
-    }
+    pub fn default() -> Self { Self::new(None) }
 
     /// Publish an event
     pub fn publish(&self, event: F1r3flyEvent) -> Result<(), String> {
@@ -82,9 +80,7 @@ impl F1r3flyEvents {
     }
 
     /// Publish a noop event
-    pub fn noop(&self) -> Result<(), String> {
-        Ok(())
-    }
+    pub fn noop(&self) -> Result<(), String> { Ok(()) }
 
     /// Get a stream to consume events
     pub fn consume(&self) -> EventStream {
@@ -104,7 +100,8 @@ impl F1r3flyEvents {
 /// Stream implementation for consuming events.
 /// Uses BroadcastStream internally which properly handles async wakeups.
 pub struct EventStream {
-    sender: broadcast::Sender<F1r3flyEvent>, // required in order to create a new EventStream from current instance
+    sender: broadcast::Sender<F1r3flyEvent>, /* required in order to create a new EventStream
+                                              * from current instance */
     inner: BroadcastStream<F1r3flyEvent>,
 }
 
@@ -142,9 +139,10 @@ impl Stream for EventStream {
 mod tests {
     use std::time::Duration;
 
+    use futures::StreamExt;
+
     use super::super::f1r3fly_event::{BlockAdded, BlockCreated, BlockFinalised, DeployEvent};
     use super::*;
-    use futures::StreamExt;
 
     fn create_test_deploy_event(id: &str) -> DeployEvent {
         DeployEvent::new(id.to_string(), 100, "deployer1".to_string(), false)
@@ -188,9 +186,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_and_consume() {
-        // Test that stream properly wakes up when event is published AFTER subscription.
-        // This tests the async wakeup path - the stream must wake immediately when
-        // an event is published, not wait for a timeout or other external trigger.
+        // Test that stream properly wakes up when event is published AFTER
+        // subscription. This tests the async wakeup path - the stream must wake
+        // immediately when an event is published, not wait for a timeout or
+        // other external trigger.
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(Duration::from_secs(2), async {

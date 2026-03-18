@@ -1,1 +1,20 @@
+// Upstream casper code triggers many clippy lints due to complex consensus logic.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::module_inception)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::empty_line_after_doc_comments)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::derived_hash_with_manual_eq)]
+#![allow(clippy::arc_with_non_send_sync)]
+#![allow(clippy::manual_try_fold)]
+#![allow(clippy::map_identity)]
+#![allow(clippy::nonminimal_bool)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::redundant_pattern_matching)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::cloned_ref_to_slice_refs)]
+
 pub mod rust;

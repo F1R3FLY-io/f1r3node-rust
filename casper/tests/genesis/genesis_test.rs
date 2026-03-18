@@ -1,18 +1,21 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/GenesisTest.scala
 //
 // Note: Tests are simplified compared to Scala original.
-// In Scala, LogStub (from comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala)
-// implements Log[F] trait and is passed as implicit parameter to functions like BondsParser.
-// When these functions call log.info("..."), messages go directly to LogStub.
-// Tests then assert on log.warns.count and log.infos.count.
+// In Scala, LogStub (from
+// comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala) implements
+// Log[F] trait and is passed as implicit parameter to functions like
+// BondsParser. When these functions call log.info("..."), messages go directly
+// to LogStub. Tests then assert on log.warns.count and log.infos.count.
 //
 // In Rust, BondsParser uses `tracing` crate (tracing::info!, tracing::warn!).
-// These logs are not captured because we don't set up a tracing subscriber in tests.
-// There are two ways to capture tracing logs:
-// 1. Use `tracing-test` crate with #[traced_test] attribute and logs_contain() macro
+// These logs are not captured because we don't set up a tracing subscriber in
+// tests. There are two ways to capture tracing logs:
+// 1. Use `tracing-test` crate with #[traced_test] attribute and logs_contain()
+//    macro
 // 2. Implement custom tracing_subscriber::Layer that captures logs into a Vec
 // However, this adds complexity and dependencies for marginal benefit.
-// For now, tests verify the end result (e.g., bonds.len()) instead of log message counts.
+// For now, tests verify the end result (e.g., bonds.len()) instead of log
+// message counts.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -22,26 +25,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use casper::rust::{
-    casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-    genesis::{
-        contracts::{proof_of_stake::ProofOfStake, validator::Validator},
-        genesis::Genesis,
-    },
-    util::{
-        bonds_parser::BondsParser,
-        proto_util,
-        rholang::{interpreter_util, runtime_manager::RuntimeManager},
-        vault_parser::VaultParser,
-    },
-};
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use casper::rust::genesis::contracts::validator::Validator;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::bonds_parser::BondsParser;
+use casper::rust::util::proto_util;
+use casper::rust::util::rholang::interpreter_util;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::vault_parser::VaultParser;
+use comm::rust::test_instances::{LogStub, LogicalTime};
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
-
-use comm::rust::test_instances::{LogStub, LogicalTime};
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::util::genesis_builder::DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS;
@@ -65,9 +63,10 @@ where
     let scope_id = generate_scope_id();
     let gp = genesis_path();
 
-    // Scala uses MetricsNOP, and this class in turn is empty, if it is used it means that the test does not log metrics.
-    // implicit val noopMetrics: Metrics[F] = new metrics.Metrics.MetricsNOP[F]
-    // implicit val span: Span[F]           = NoopSpan[F]()
+    // Scala uses MetricsNOP, and this class in turn is empty, if it is used it
+    // means that the test does not log metrics. implicit val noopMetrics:
+    // Metrics[F] = new metrics.Metrics.MetricsNOP[F] implicit val span: Span[F]
+    // = NoopSpan[F]()
 
     let time = LogicalTime::new();
     let log = LogStub::new();
@@ -93,7 +92,8 @@ where
     let result = body(runtime_manager, gp.clone(), log, time).await;
 
     // Note: Scala uses PathOps.recursivelyDelete() with FileVisitor pattern.
-    // Rust fs::remove_dir_all does the same - recursively removes directory with all contents.
+    // Rust fs::remove_dir_all does the same - recursively removes directory with
+    // all contents.
     let _ = fs::remove_dir_all(&scope_id);
     let _ = fs::remove_dir_all(&gp);
 
@@ -280,20 +280,19 @@ async fn genesis_from_input_files_should_generate_random_validators_when_no_bond
 async fn genesis_from_input_files_should_tell_when_bonds_file_does_not_exist() {
     with_gen_resources(
         |mut runtime_manager, genesis_path, _log, _time| async move {
-            // Path that does not exist - using a fake path, no need to create a real directory
+            // Path that does not exist - using a fake path, no need to create a real
+            // directory
             let non_existing_path = "/tmp/non_existing_test_path/not/a/real/file".to_string();
 
-            let result = from_input_files(
-                &mut runtime_manager,
-                &genesis_path,
-                FromInputFilesParams {
+            let result =
+                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
                     maybe_bonds_path: Some(&non_existing_path),
                     ..FromInputFilesParams::new()
-                },
-            )
-            .await;
+                })
+                .await;
 
-            // BondsParser::parse_with_autogen logs warn "BONDS FILE NOT FOUND" and creates random bonds
+            // BondsParser::parse_with_autogen logs warn "BONDS FILE NOT FOUND" and creates
+            // random bonds
             assert!(
                 result.is_ok(),
                 "Genesis creation should succeed with auto-generated bonds"
@@ -313,15 +312,12 @@ async fn genesis_from_input_files_should_fail_with_error_when_bonds_file_cannot_
             writeln!(file, "xzy 1\nabc 123 7").expect("Failed to write bad bonds content");
 
             let bad_bonds_path = bad_bonds_file.to_str().unwrap().to_string();
-            let result = from_input_files(
-                &mut runtime_manager,
-                &genesis_path,
-                FromInputFilesParams {
+            let result =
+                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
                     maybe_bonds_path: Some(&bad_bonds_path),
                     ..FromInputFilesParams::new()
-                },
-            )
-            .await;
+                })
+                .await;
 
             assert!(result.is_err(), "Genesis creation should fail");
 
@@ -345,15 +341,12 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
             print_bonds(&bonds_file);
 
             let bonds_path = bonds_file.to_str().unwrap().to_string();
-            let result = from_input_files(
-                &mut runtime_manager,
-                &genesis_path,
-                FromInputFilesParams {
+            let result =
+                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
                     maybe_bonds_path: Some(&bonds_path),
                     ..FromInputFilesParams::new()
-                },
-            )
-            .await;
+                })
+                .await;
 
             assert!(result.is_ok(), "Genesis creation should succeed");
 
@@ -419,11 +412,13 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
 
                 match maybe_post_genesis_state_hash {
                     Either::Right(Some(_)) => {
-                        // Success - full checkpoint replay produced a post-state hash.
+                        // Success - full checkpoint replay produced a post-state
+                        // hash.
                     }
                     Either::Right(None) => {
-                        // Also acceptable: genesis checkpoint may be treated as already validated
-                        // and return no additional post-state hash.
+                        // Also acceptable: genesis checkpoint may be treated as
+                        // already validated and return no
+                        // additional post-state hash.
                     }
                     Either::Left(block_error) => {
                         panic!("Expected Right(Some(_)), got Left({:?})", block_error);

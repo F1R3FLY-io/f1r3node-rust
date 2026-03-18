@@ -1,50 +1,48 @@
-// See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
+// See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.
+// scala
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
+
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
-use prost::bytes::Bytes;
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
-use std::{collections::HashSet, time::SystemTime};
-use tracing;
-
-use block_storage::rust::{
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use crypto::rust::{private_key::PrivateKey, signatures::signed::Signed};
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
-
+use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
+use tracing;
 
-use crate::rust::util::construct_deploy;
-use crate::rust::util::rholang::{
-    costacc::{close_block_deploy::CloseBlockDeploy, slash_deploy::SlashDeploy},
-    interpreter_util,
-    system_deploy_enum::SystemDeployEnum,
-    system_deploy_user_error::SystemDeployPlatformFailure,
-    system_deploy_util,
-};
-use crate::rust::{
-    blocks::proposer::propose_result::BlockCreatorResult,
-    casper::CasperSnapshot,
-    errors::CasperError,
-    util::{proto_util, rholang::runtime_manager::RuntimeManager},
-    validator_identity::ValidatorIdentity,
-};
+use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use crate::rust::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
+use crate::rust::util::{construct_deploy, proto_util};
+use crate::rust::validator_identity::ValidatorIdentity;
 
 /*
  * Overview of createBlock
  *
- *  1. Rank each of the block cs's latest messages (blocks) via the LMD GHOST estimator.
- *  2. Let each latest message have a score of 2^(-i) where i is the index of that latest message in the ranking.
- *     Take a subset S of the latest messages such that the sum of scores is the greatest and
- *     none of the blocks in S conflicts with each other. S will become the parents of the
- *     about-to-be-created block.
- *  3. Extract all valid deploys that aren't already in all ancestors of S (the parents).
+ *  1. Rank each of the block cs's latest messages (blocks) via the LMD GHOST
+ *     estimator.
+ *  2. Let each latest message have a score of 2^(-i) where i is the index of
+ *     that latest message in the ranking. Take a subset S of the latest
+ *     messages such that the sum of scores is the greatest and none of the
+ *     blocks in S conflicts with each other. S will become the parents of
+ *     the about-to-be-created block.
+ *  3. Extract all valid deploys that aren't already in all ancestors of S
+ *     (the parents).
  *  4. Create a new block that contains the deploys from the previous step.
  */
 struct PreparedUserDeploys {
@@ -96,7 +94,8 @@ async fn prepare_user_deploys(
         .filter(|d| d.data.is_expired_at(current_time_millis))
         .collect();
 
-    // Filter valid deploys (not expired by block, not expired by time, and not future)
+    // Filter valid deploys (not expired by block, not expired by time, and not
+    // future)
     let valid: DashSet<Signed<DeployData>> = unfinalized
         .iter()
         .filter(|deploy| {
@@ -126,8 +125,8 @@ async fn prepare_user_deploys(
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
         tracing::info!(
             "Deploy selection for block #{}: pool={}, future={} (validAfterBlockNumber >= {}), \
-             blockExpired={} (validAfterBlockNumber <= {}), timeExpired={} (expirationTimestamp <= {}), \
-             valid={}, alreadyInScope={}, selected={}",
+             blockExpired={} (validAfterBlockNumber <= {}), timeExpired={} (expirationTimestamp \
+             <= {}), valid={}, alreadyInScope={}, selected={}",
             block_number,
             unfinalized.len(),
             future_deploys.len(),
@@ -142,7 +141,8 @@ async fn prepare_user_deploys(
         );
     }
 
-    // Log details for filtered-out deploys (to help debug why deploys aren't included)
+    // Log details for filtered-out deploys (to help debug why deploys aren't
+    // included)
     for d in &future_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (future): validAfterBlockNumber={} >= currentBlock={}",
@@ -169,13 +169,15 @@ async fn prepare_user_deploys(
     }
     for d in &already_in_scope {
         tracing::warn!(
-            "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
+            "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within \
+             lifespan window",
             hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())])
         );
     }
 
-    // Remove all expired deploys from storage to prevent them from triggering future proposals
-    // Combine block-expired and time-expired, avoiding duplicates
+    // Remove all expired deploys from storage to prevent them from triggering
+    // future proposals Combine block-expired and time-expired, avoiding
+    // duplicates
     let all_expired: HashSet<&Signed<DeployData>> = block_expired_deploys
         .iter()
         .chain(time_expired_deploys.iter())
@@ -212,7 +214,8 @@ async fn prepare_user_deploys(
         });
     }
 
-    // Deterministically order deploys by age so selection remains stable across validators.
+    // Deterministically order deploys by age so selection remains stable across
+    // validators.
     let mut ordered: Vec<Signed<DeployData>> = valid_unique.into_iter().collect();
     ordered.sort_by(|a, b| {
         a.data
@@ -271,7 +274,8 @@ async fn prepare_user_deploys(
 }
 
 fn max_user_deploys_per_block() -> usize {
-    // Keep default permissive for compatibility; cap is still tunable for stress scenarios.
+    // Keep default permissive for compatibility; cap is still tunable for stress
+    // scenarios.
     const MAX_USER_DEPLOYS_DEFAULT: usize = 32;
     const MAX_USER_DEPLOYS_ENV: &str = "F1R3_MAX_USER_DEPLOYS_PER_BLOCK";
     static VALUE: OnceLock<usize> = OnceLock::new();
@@ -524,7 +528,8 @@ fn next_adaptive_cap(
     }
 
     if ema_ms > target_ms {
-        // Reduce cap proportionally when observed block creation time exceeds the target.
+        // Reduce cap proportionally when observed block creation time exceeds the
+        // target.
         let ratio = (target_ms / ema_ms).clamp(0.1, 0.99);
         let scaled = ((current_cap as f64) * ratio).floor() as usize;
         let max_step_down = current_cap.saturating_sub(1).max(min_cap);
@@ -586,7 +591,8 @@ fn update_adaptive_user_deploy_cap(
     if next_cap != prev_cap {
         guard.current_cap = next_cap;
         tracing::info!(
-            "Adaptive deploy cap update: prev_cap={}, next_cap={}, sample_create_block_ms={}, ema_create_block_ms={:.2}, target_ms={}, selected_user_deploys={}, cap_hit={}",
+            "Adaptive deploy cap update: prev_cap={}, next_cap={}, sample_create_block_ms={}, \
+             ema_create_block_ms={:.2}, target_ms={}, selected_user_deploys={}, cap_hit={}",
             prev_cap,
             next_cap,
             observed_create_block_ms,
@@ -744,8 +750,9 @@ pub async fn create(
     allow_empty_blocks: bool,
 ) -> Result<BlockCreatorResult, CasperError> {
     let create_started = std::time::Instant::now();
-    // Capture current time once to ensure consistency between deploy filtering and block timestamp.
-    // This prevents race condition where a deploy could pass filtering but expire before block creation.
+    // Capture current time once to ensure consistency between deploy filtering and
+    // block timestamp. This prevents race condition where a deploy could pass
+    // filtering but expire before block creation.
     let now_u128 = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|e| CasperError::RuntimeError(format!("Failed to get current time: {}", e)))?
@@ -768,7 +775,8 @@ pub async fn create(
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {
         if now_millis < max_parent_ts {
             tracing::debug!(
-                "Adjusting block timestamp from {} to parent timestamp {} to avoid clock-skew regressions",
+                "Adjusting block timestamp from {} to parent timestamp {} to avoid clock-skew \
+                 regressions",
                 now_millis,
                 max_parent_ts
             );
@@ -853,16 +861,16 @@ pub async fn create(
     all_deploys.extend(dummy_deploys);
 
     // Check if we have any new work to process.
-    // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
-    // If empty blocks are enabled (heartbeat/liveness mode), continue and emit closeBlock.
+    // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op
+    // checkpoint cost. If empty blocks are enabled (heartbeat/liveness mode),
+    // continue and emit closeBlock.
     let has_slashing_deploys = !slashing_deploys.is_empty();
-    if all_deploys.is_empty() && !has_slashing_deploys
-        && !allow_empty_blocks {
-            tracing::info!(
-                "Skipping empty block creation: no new user deploys and no slashing deploys"
-            );
-            return Ok(BlockCreatorResult::NoNewDeploys);
-        }
+    if all_deploys.is_empty() && !has_slashing_deploys && !allow_empty_blocks {
+        tracing::info!(
+            "Skipping empty block creation: no new user deploys and no slashing deploys"
+        );
+        return Ok(BlockCreatorResult::NoNewDeploys);
+    }
 
     // Make sure closeBlock is the last system Deploy
     let mut system_deploys_converted: Vec<SystemDeployEnum> = Vec::new();
@@ -880,9 +888,10 @@ pub async fn create(
         ),
     }));
 
-    // Use the adjusted `now_millis` captured at the start of create for block timestamp.
-    // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
-    // This ensures the same time is used for deploy filtering and block creation.
+    // Use the adjusted `now_millis` captured at the start of create for block
+    // timestamp. The value is clamped to the max parent timestamp to avoid
+    // InvalidTimestamp from clock skew. This ensures the same time is used for
+    // deploy filtering and block creation.
     let invalid_blocks = casper_snapshot.invalid_blocks.clone();
     let block_data = BlockData {
         time_stamp: now_millis,

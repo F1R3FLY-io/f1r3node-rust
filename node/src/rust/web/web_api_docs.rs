@@ -52,7 +52,8 @@ pub struct PublicApi;
     info(
         title = "F1r3fly Node API (admin)",
         version = "1.0",
-        description = "Admin API for F1r3fly Node - includes all public endpoints plus administrative functions"
+        description = "Admin API for F1r3fly Node - includes all public endpoints plus \
+                       administrative functions"
     )
 )]
 pub struct AdminApi;

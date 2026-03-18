@@ -42,9 +42,7 @@ impl ListOps {
     /// )
     /// ```
     pub fn sort_by_with_decreasing_order<A>(list: Vec<A>, map: &HashMap<A, i64>) -> Vec<A>
-    where
-        A: Clone + Hash + Eq + Ord,
-    {
+    where A: Clone + Hash + Eq + Ord {
         let mut scored_items: Vec<(i64, A)> = list
             .into_iter()
             .map(|e| {
@@ -55,7 +53,8 @@ impl ListOps {
 
         // Sort with custom ordering: score descending, then item ascending
         scored_items.sort_by(|(score_a, item_a), (score_b, item_b)| {
-            // First by score descending (higher score first) - matches Ordering[Long].reverse
+            // First by score descending (higher score first) - matches
+            // Ordering[Long].reverse
             match score_b.cmp(score_a) {
                 std::cmp::Ordering::Equal => {
                     // Then by item ascending - matches Ordering.by(hash bytes)

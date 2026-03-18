@@ -1,8 +1,24 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/CasperLaunch.scala
 
-use dashmap::DashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
+use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
 use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
@@ -23,22 +39,6 @@ use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
 use crate::rust::validator_identity::ValidatorIdentity;
-use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use std::future::Future;
-use std::pin::Pin;
-use std::time::SystemTime;
 
 #[async_trait]
 pub trait CasperLaunch {
@@ -71,7 +71,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     conf: CasperConf,
     trim_state: bool,
     disable_state_exporter: bool,
-    /// Shared reference to heartbeat signal for triggering immediate wake on deploy
+    /// Shared reference to heartbeat signal for triggering immediate wake on
+    /// deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
@@ -91,7 +92,8 @@ fn max_blocks_in_processing() -> usize {
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
-    /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
+    /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId,
+    /// casperShardConf, ab)
     fn create_casper(
         &self,
         validator_id: Option<ValidatorIdentity>,
@@ -271,8 +273,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Log error if block unexpectedly exists in DAG (database inconsistency)
                     if dag_contains {
                         tracing::warn!(
-                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
-                            PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to \
+                             prevent requeue loops.",
+                            PrettyPrinter::build_string(
+                                CasperMessage::BlockMessage(block.clone()),
+                                true
+                            )
                         );
                         let hash_serde = BlockHashSerde(hash.clone());
                         if let Err(err) = casper_buffer_storage.remove(hash_serde) {
@@ -296,7 +302,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     let block_hash = block.block_hash.clone();
                     if !blocks_in_processing.insert(block_hash.clone()) {
                         tracing::debug!(
-                            "Skipping pendant {} enqueue because it is already queued/in-processing",
+                            "Skipping pendant {} enqueue because it is already \
+                             queued/in-processing",
                             PrettyPrinter::build_string_bytes(&block_hash)
                         );
                         continue;
@@ -336,7 +343,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let casper = self.create_casper(validator_id.clone(), ab)?;
         let casper_arc = Arc::new(casper);
 
-        // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
+        // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <-
+        // sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
         // Create lazy async init computation (matches Scala F[Unit])
 
         // Note: Double cloning is necessary because:
@@ -390,7 +398,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
-        // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
+        // Direct-to-running path: emit init metrics that are otherwise produced in
+        // Initializing.
         record_direct_to_running_init_metrics();
 
         // Scala equivalent: Engine.transitionToRunning[F](...)
@@ -563,7 +572,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         )
         .await?;
 
-        // Scala equivalent: Concurrent[F].start(GenesisCeremonyMaster.waitingForApprovedBlockLoop[F](...))
+        // Scala equivalent:
+        // Concurrent[F].start(GenesisCeremonyMaster.waitingForApprovedBlockLoop[F](...
+        // ))
         tokio::spawn({
             let block_processing_queue_tx = self.block_processing_queue_tx.clone();
             let blocks_in_processing = self.blocks_in_processing.clone();
@@ -630,7 +641,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.validator_private_key.as_deref(),
         );
 
-        // Scala: CommUtil[F].requestApprovedBlock(trimState) - passed as init to transitionToInitializing
+        // Scala: CommUtil[F].requestApprovedBlock(trimState) - passed as init to
+        // transitionToInitializing
         let transport_layer_for_init = self.transport_layer.clone();
         let rp_conf_ask_for_init = self.rp_conf_ask.clone();
 

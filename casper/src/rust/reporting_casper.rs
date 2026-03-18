@@ -1,29 +1,21 @@
 // See casper/src/main/scala/coop/rchain/casper/ReportingCasper.scala
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-    key_value_block_store::KeyValueBlockStore,
+use async_trait::async_trait;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::{
-    rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation},
-    rust::casper::protocol::casper_message::{
-        BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
-    },
-};
-use rholang::rust::interpreter::{
-    rho_runtime::RhoRuntime,
-    system_processes::{BlockData, Definition},
-};
-use rspace_plus_plus::rspace::{
-    errors::RSpaceError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    reporting_rspace::{ReportingEvent, ReportingRspace},
-    rspace::RSpaceStore,
-};
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::system_processes::{BlockData, Definition};
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
+use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use shared::rust::ByteString;
 
 /// Deploy details + reporting events
@@ -247,9 +239,7 @@ impl RhoReporterCasper {
 }
 
 /// Factory function to create noop reporting casper
-pub fn noop() -> Arc<dyn ReportingCasper> {
-    Arc::new(NoopReportingCasper)
-}
+pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
@@ -266,7 +256,8 @@ pub fn rho_reporter(
     })
 }
 
-/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
+/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event
+/// collection
 pub struct ReportingRuntime {
     runtime: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
     space: RhoReportingRspace,
@@ -371,7 +362,8 @@ impl ReportingRuntime {
     ///
     /// Bootstraps registry without checkpoint
     /// `createCheckpoint` is called at the end of `replayDeploys`, not here.
-    /// The reporting space is ephemeral and reset to `preStateHash` before replay.
+    /// The reporting space is ephemeral and reset to `preStateHash` before
+    /// replay.
     pub async fn create_reporting_runtime(
         reporting_space: RhoReportingRspace,
         mergeable_tag_name: Par,

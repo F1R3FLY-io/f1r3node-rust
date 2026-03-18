@@ -3,13 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use crate::rust::safety_oracle::MIN_FAULT_TOLERANCE;
-use crate::rust::util::clique::Clique;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, validator::Validator};
-
+use models::rust::block_hash::BlockHash;
+use models::rust::validator::Validator;
 use shared::rust::env;
 use shared::rust::store::key_value_store::KvStoreError;
+
+use crate::rust::safety_oracle::MIN_FAULT_TOLERANCE;
+use crate::rust::util::clique::Clique;
 
 pub struct CliqueOracle;
 
@@ -59,9 +60,11 @@ impl CliqueOracle {
 
     /// weight map of main parent (fallbacks to message itself if no parents)
     /// TODO - why not use local weight map but seek for parent?
-    /// P.S. This is related to the fact that we create latest message for newly bonded validator
-    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
-    /// put behind this message. So here is one more place where this logic makes things more complex.
+    /// P.S. This is related to the fact that we create latest message for newly
+    /// bonded validator equal to message where bonding deploy has been
+    /// submitted. So stake from validator that did not create anything is
+    /// put behind this message. So here is one more place where this logic
+    /// makes things more complex.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
@@ -77,7 +80,8 @@ impl CliqueOracle {
 
     /// If two validators will never have disagreement on target message
     ///
-    /// Prerequisite for this is that latest messages from a and b both are in main chain with target message
+    /// Prerequisite for this is that latest messages from a and b both are in
+    /// main chain with target message
     ///
     /// ```text
     ///     a    b
@@ -90,8 +94,8 @@ impl CliqueOracle {
     /// ```
     ///
     /// 1. get justification of validator b as per latest message of a (lmAjB)
-    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB are NOT in main chain
-    ///    with target message.
+    /// 2. check if any self justifications between latest message of b (lmB)
+    ///    and lmAjB are NOT in main chain with target message.
     ///
     ///    If one found - this is a source of disagreement.
     async fn never_eventually_see_disagreement(
@@ -116,7 +120,8 @@ impl CliqueOracle {
             yield_timeslice: Duration,
         ) -> Result<bool, KvStoreError> {
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
-            // TODO not completely clear why try to use self justification and not just message itself
+            // TODO not completely clear why try to use self justification and not just
+            // message itself
             let stopper = if let Some(cached) = self_justification_cache.get(lm_a_j_b) {
                 cached.clone().unwrap_or_else(|| lm_a_j_b.clone())
             } else {
@@ -139,7 +144,9 @@ impl CliqueOracle {
                 if hash == stopper {
                     break;
                 }
-                if idx.is_multiple_of(yield_check_interval) && last_yield.elapsed() >= yield_timeslice {
+                if idx.is_multiple_of(yield_check_interval)
+                    && last_yield.elapsed() >= yield_timeslice
+                {
                     tokio::task::yield_now().await;
                     last_yield = Instant::now();
                 }
@@ -188,9 +195,11 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
     ) -> Result<i64, KvStoreError> {
-        // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
+        // Using tracing events for async - Span[F].traceI("compute-max-clique-weight")
+        // from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique-oracle", "compute-max-clique-weight-started");
-        /// across combination of validators compute pairs that do not have disagreement
+        /// across combination of validators compute pairs that do not have
+        /// disagreement
         async fn compute_agreeing_validator_pairs(
             target_msg: &M,
             agreeing_weight_map: &WeightMap,
@@ -378,7 +387,8 @@ impl CliqueOracle {
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<f32, KvStoreError> {
-        // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
+        // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance")
+        // from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique-oracle", "normalized-fault-tolerance-started");
         /// weight map containing only validators that agree on the message
         async fn agreeing_weight_map_f(
@@ -421,7 +431,10 @@ impl CliqueOracle {
 
             Ok(result)
         } else {
-            tracing::warn!(?target_msg, "Fault tolerance for non existing message requested.");
+            tracing::warn!(
+                ?target_msg,
+                "Fault tolerance for non existing message requested."
+            );
             Ok(MIN_FAULT_TOLERANCE)
         }
     }

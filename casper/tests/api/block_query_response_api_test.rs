@@ -1,10 +1,9 @@
-// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.scala
+// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.
+// scala
 
-use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::util::rholang::resources::{
-    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
-};
-use crate::util::test_mocks::MockKeyValueStore;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::api::block_api::BlockAPI;
@@ -21,8 +20,12 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use prost::Message;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::util::rholang::resources::{
+    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+};
+use crate::util::test_mocks::MockKeyValueStore;
 
 const TOO_SHORT_QUERY: &str = "12345";
 const BAD_TEST_HASH_QUERY: &str = "1234acd";

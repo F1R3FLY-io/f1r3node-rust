@@ -51,6 +51,14 @@ cargo install just
 
 The workspace is pinned to `nightly-2026-02-09` in `rust-toolchain.toml`.
 
+### Install Git Hooks
+
+```bash
+./scripts/setup-hooks.sh
+```
+
+This enables pre-commit linting (`cargo fmt --check` + `cargo clippy`) and pre-push testing (`cargo test --release`). See [DEVELOPER.md](DEVELOPER.md#git-hooks) for options and bypass flags.
+
 ### Build
 
 ```bash

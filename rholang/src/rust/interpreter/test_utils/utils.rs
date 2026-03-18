@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+
+use models::rhoapi::Par;
+use rholang_parser::SourcePos;
+
 use crate::rust::interpreter::compiler::exports::{
     BoundMapChain, FreeMap, IdContextPos, NameVisitInputs, ProcVisitInputs,
 };
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize::VarSort::{NameSort, ProcSort};
-use models::rhoapi::Par;
-use std::collections::HashMap;
-
-use rholang_parser::SourcePos;
 
 pub fn name_visit_inputs_and_env() -> (NameVisitInputs, HashMap<String, Par>) {
     let input: NameVisitInputs = NameVisitInputs {
@@ -38,7 +39,8 @@ pub fn collection_proc_visit_inputs_and_env() -> (ProcVisitInputs, HashMap<Strin
                 (
                     "P".to_string(),
                     ProcSort,
-                    SourcePos { line: 1, col: 1 }, // Use 1-based indexing consistent with rholang-rs
+                    SourcePos { line: 1, col: 1 }, /* Use 1-based indexing consistent with
+                                                    * rholang-rs */
                 ),
                 ("x".to_string(), NameSort, SourcePos { line: 1, col: 1 }),
             ])
@@ -57,7 +59,6 @@ pub fn proc_visit_inputs_with_updated_bound_map_chain(
 ) -> ProcVisitInputs {
     ProcVisitInputs {
         bound_map_chain: {
-            
             input.bound_map_chain.put_pos((
                 name.to_string(),
                 vs_type,
@@ -79,7 +80,6 @@ pub fn proc_visit_inputs_with_updated_vec_bound_map_chain(
 
     ProcVisitInputs {
         bound_map_chain: {
-            
             input
                 .bound_map_chain
                 .put_all_pos(bindings_with_default_positions)

@@ -1,5 +1,6 @@
 // Metrics constants for the shared package
-// Matching Scala: shared/src/main/scala/coop/rchain/metrics/MetricsSemaphore.scala
+// Matching Scala:
+// shared/src/main/scala/coop/rchain/metrics/MetricsSemaphore.scala
 
 pub const SHARED_METRICS_SOURCE: &str = "f1r3fly.shared";
 

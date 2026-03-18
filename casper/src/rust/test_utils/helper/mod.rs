@@ -1,6 +1,7 @@
 // Module for test helper utilities
 // Files moved from casper/tests/helper/ to casper/src/rust/test_utils/helper/
-// Imports may need to be fixed incrementally: use casper::rust::... → use crate::rust::...
+// Imports may need to be fixed incrementally: use casper::rust::... → use
+// crate::rust::...
 
 pub mod block_dag_storage_fixture;
 pub mod block_generator;

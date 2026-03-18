@@ -2,7 +2,8 @@ use models::rust::utils::no_frees;
 
 use super::exports::*;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.
+// scala
 #[derive(Clone, Debug)]
 pub struct ParCount {
     pub sends: usize,

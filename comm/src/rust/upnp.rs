@@ -1,7 +1,8 @@
 // See comm/src/main/scala/coop/rchain/comm/UPnP.scala
 //
-// NOTE: This implementation needs to be refined based on the actual igd 0.12.1 API.
-// The methods used here may need adjustment once the exact API is confirmed.
+// NOTE: This implementation needs to be refined based on the actual igd 0.12.1
+// API. The methods used here may need adjustment once the exact API is
+// confirmed.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -68,7 +69,9 @@ fn find_local_ip() -> Option<std::net::Ipv4Addr> {
 pub fn get_local_address() -> Result<std::net::Ipv4Addr, CommError> {
     find_local_ip().ok_or_else(|| {
         CommError::UnknownCommError(
-            "Failed to determine local IP address. Cannot determine which network interface to use for gateway communication.".to_string(),
+            "Failed to determine local IP address. Cannot determine which network interface to \
+             use for gateway communication."
+                .to_string(),
         )
     })
 }
@@ -116,7 +119,8 @@ impl UPnPDevices {
 /// accessing the gateway's internal state or parsing the UPnP response.
 async fn show_device(ip: &IpAddr, gateway: &Gateway<Tokio>) -> Result<String, CommError> {
     // Get external IP (may fail, so we handle it)
-    // Note: get_external_ip() returns a Future, so we need to handle it in async context
+    // Note: get_external_ip() returns a Future, so we need to handle it in async
+    // context
     let external_ip = gateway
         .get_external_ip()
         .await
@@ -124,14 +128,12 @@ async fn show_device(ip: &IpAddr, gateway: &Gateway<Tokio>) -> Result<String, Co
         .map_err(|e| CommError::UnknownCommError(format!("Failed to get external IP: {}", e)))?;
 
     // The igd-next crate has limited device info compared to Java GatewayDevice
-    // In the Java version, we had: Interface, Name, Model, Manufacturer, Description,
-    // Type, Search type, Service type, Location, External IP, Connected status
-    // Here we only show what's readily available from the igd API
+    // In the Java version, we had: Interface, Name, Model, Manufacturer,
+    // Description, Type, Search type, Service type, Location, External IP,
+    // Connected status Here we only show what's readily available from the igd
+    // API
     Ok(format!(
-        "\n\
-        |Interface:    {}\n\
-        |External IP:  {}\n\
-        |",
+        "\n|Interface:    {}\n|External IP:  {}\n|",
         ip, external_ip
     ))
 }
@@ -227,7 +229,8 @@ async fn get_port_mappings(device: &Gateway<Tokio>) -> Vec<PortMappingEntry> {
     mappings
 }
 
-// TODO: Allow different external and internal ports. Left this comment for reference as same as in the Scala implementation
+// TODO: Allow different external and internal ports. Left this comment for
+// reference as same as in the Scala implementation
 async fn add_port(
     device: &Gateway<Tokio>,
     port: u16,
@@ -297,15 +300,24 @@ async fn try_open_ports(ports: &[u16], devices: &UPnPDevices) -> Result<Option<S
         Ok(ip) => {
             let ip = ip.to_string();
             match is_private_ip_address(&ip) {
-                Some(true) => tracing::warn!("Gateway's external IP address {} is from a private address block. This machine is behind more than one NAT.", ip),
-                Some(_) => tracing::info!("Gateway's external IP address is from a public address block."),
-                None => tracing::warn!("Can't parse gateway's external IP address. It's maybe IPv6."),
+                Some(true) => tracing::warn!(
+                    "Gateway's external IP address {} is from a private address block. This \
+                     machine is behind more than one NAT.",
+                    ip
+                ),
+                Some(_) => {
+                    tracing::info!("Gateway's external IP address is from a public address block.")
+                }
+                None => {
+                    tracing::warn!("Can't parse gateway's external IP address. It's maybe IPv6.")
+                }
             }
             Some(ip)
         }
         Err(e) => {
             tracing::warn!(
-                "Failed to get external IP from gateway ({}); continuing without UPnP external address.",
+                "Failed to get external IP from gateway ({}); continuing without UPnP external \
+                 address.",
                 e
             );
             None
@@ -363,38 +375,44 @@ pub async fn assure_port_forwarding(ports: &[u16]) -> Result<Option<String>, Com
 ///
 /// The Java `org.bitlet.weupnp.GatewayDiscover` class works as follows:
 /// 1. Sends a single UPnP SSDP M-SEARCH broadcast request
-/// 2. Listens for ALL responses during a timeout period (typically several seconds)
+/// 2. Listens for ALL responses during a timeout period (typically several
+///    seconds)
 /// 3. Collects all unique gateway devices that respond (can be multiple)
 /// 4. Provides methods to access:
-///    - `discover()`: Returns a Map<InetAddress, GatewayDevice> of all discovered devices
+///    - `discover()`: Returns a Map<InetAddress, GatewayDevice> of all
+///      discovered devices
 ///    - `getAllGateways()`: Returns all gateway devices as a collection
 ///    - `getValidGateway()`: Returns the first/primary gateway device
 ///
-/// However, the Rust `igd-next` crate's `search_gateway()` function works differently:
+/// However, the Rust `igd-next` crate's `search_gateway()` function works
+/// differently:
 /// - It sends a UPnP broadcast and listens for responses
 /// - BUT it returns the FIRST valid gateway found and then immediately exits
-/// - The internal implementation has a loop that collects responses, but it's designed
-///   to return early upon finding the first valid gateway
-/// - The discovery logic is not exposed as a public API for collecting multiple gateways
+/// - The internal implementation has a loop that collects responses, but it's
+///   designed to return early upon finding the first valid gateway
+/// - The discovery logic is not exposed as a public API for collecting multiple
+///   gateways
 ///
 /// # Current Implementation Approach
 ///
-/// Since `igd-next` doesn't expose the ability to collect multiple gateways from a
-/// single broadcast (its internal loop exits after finding the first valid gateway),
-/// we work around this limitation by:
+/// Since `igd-next` doesn't expose the ability to collect multiple gateways
+/// from a single broadcast (its internal loop exits after finding the first
+/// valid gateway), we work around this limitation by:
 ///
 /// 1. Performing multiple sequential searches (up to 3 attempts)
 /// 2. Each search may discover the same or different gateways
-/// 3. We deduplicate by IP address to avoid adding the same gateway multiple times
+/// 3. We deduplicate by IP address to avoid adding the same gateway multiple
+///    times
 /// 4. The first gateway found becomes the "valid gateway"
 ///
 /// # Why This Works (But Not Perfectly)
 ///
-/// - In most home networks, there's only ONE gateway/router, so multiple searches
-///   will find the same device
-/// - In complex networks with multiple gateways, this approach might still only find
-///   the first one if they respond quickly
-/// - The timing of UPnP responses is not deterministic, so we may miss some gateways
+/// - In most home networks, there's only ONE gateway/router, so multiple
+///   searches will find the same device
+/// - In complex networks with multiple gateways, this approach might still only
+///   find the first one if they respond quickly
+/// - The timing of UPnP responses is not deterministic, so we may miss some
+///   gateways
 ///
 /// # Alternative: Full Reimplementation (Not Implemented)
 ///
@@ -405,11 +423,13 @@ pub async fn assure_port_forwarding(ports: &[u16]) -> Result<Option<String>, Com
 /// 4. Build Gateway objects from the responses
 /// 5. Continue listening for the full timeout period
 ///
-/// This would require reimplementing significant parts of the UPnP discovery protocol
-/// that `igd-next` already handles, but doesn't expose in the way we need.
+/// This would require reimplementing significant parts of the UPnP discovery
+/// protocol that `igd-next` already handles, but doesn't expose in the way we
+/// need.
 ///
 /// For now, the sequential search approach is a pragmatic compromise that works
-/// for the common case (single gateway) while being compatible with the `igd-next` API.
+/// for the common case (single gateway) while being compatible with the
+/// `igd-next` API.
 async fn discover() -> Result<UPnPDevices, CommError> {
     use igd_next::SearchOptions;
 
@@ -419,8 +439,9 @@ async fn discover() -> Result<UPnPDevices, CommError> {
 
     let timeout = Duration::from_secs(3);
 
-    // Workaround: Perform multiple sequential searches since igd-next's search_gateway
-    // returns after finding the first gateway, not all gateways like Java's GatewayDiscover
+    // Workaround: Perform multiple sequential searches since igd-next's
+    // search_gateway returns after finding the first gateway, not all gateways
+    // like Java's GatewayDiscover
     for attempt in 0..3 {
         let options = SearchOptions {
             timeout: Some(timeout),

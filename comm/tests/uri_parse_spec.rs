@@ -1,9 +1,7 @@
 // See comm/src/test/scala/coop/rchain/p2p/URIParseSpec.scala
 
-use comm::rust::{
-    errors::CommError,
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-};
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 
 fn bad_address_error(s: &str) -> Result<PeerNode, CommError> {
     Err(CommError::ParseError(format!("bad address: {}", s)))
@@ -11,8 +9,9 @@ fn bad_address_error(s: &str) -> Result<PeerNode, CommError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::bytes::Bytes;
+
+    use super::*;
 
     #[test]
     fn well_formed_rnode_uri_should_parse_into_peer_node() {

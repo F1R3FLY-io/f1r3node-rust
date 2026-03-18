@@ -1,42 +1,32 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/CryptoChannelsSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/
+// CryptoChannelsSpec.scala
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use crypto::rust::{
-        hash::{
-            blake2b256::Blake2b256, blake2b512_random::Blake2b512Random, keccak256::Keccak256,
-            sha_256::Sha256Hasher,
-        },
-        signatures::{ed25519::Ed25519, secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
-    };
-    use models::{
-        rhoapi::{
-            expr::ExprInstance, BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation,
-        },
-        rust::utils::{new_gbool_par, new_gint_par, new_gstring_par, new_send_par},
-    };
-    use rholang::rust::interpreter::{
-        accounting::costs::Cost,
-        env::Env,
-        external_services::ExternalServices,
-        matcher::r#match::Matcher,
-        rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl},
-        rho_type::RhoByteArray,
-        system_processes::FixedChannels,
-    };
-    use rspace_plus_plus::rspace::{
-        rspace::RSpace,
-        shared::{
-            in_mem_store_manager::InMemoryStoreManager,
-            key_value_store_manager::KeyValueStoreManager,
-        },
-    };
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+    use crypto::rust::hash::keccak256::Keccak256;
+    use crypto::rust::hash::sha_256::Sha256Hasher;
+    use crypto::rust::signatures::ed25519::Ed25519;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
+    use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par, new_send_par};
+    use rholang::rust::interpreter::accounting::costs::Cost;
+    use rholang::rust::interpreter::env::Env;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::matcher::r#match::Matcher;
+    use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl};
+    use rholang::rust::interpreter::rho_type::RhoByteArray;
+    use rholang::rust::interpreter::system_processes::FixedChannels;
+    use rspace_plus_plus::rspace::rspace::RSpace;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-    fn rand() -> Blake2b512Random {
-        Blake2b512Random::create_from_bytes(&[1, 2, 45, 65])
-    }
+    fn rand() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&[1, 2, 45, 65]) }
 
     fn hash_channel(channel_name: &str) -> Par {
         match channel_name {
@@ -47,13 +37,9 @@ mod tests {
         }
     }
 
-    fn ack_channel() -> Par {
-        new_gstring_par("x".to_string(), Vec::new(), false)
-    }
+    fn ack_channel() -> Par { new_gstring_par("x".to_string(), Vec::new(), false) }
 
-    fn empty_env() -> Env<Par> {
-        Env::new()
-    }
+    fn empty_env() -> Env<Par> { Env::new() }
 
     fn assert_store_contains(runtime: RhoRuntimeImpl, ack_channel: Par, data: ListParWithRandom) {
         let space_map = runtime.get_hot_changes();
@@ -110,14 +96,10 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(
-            runtime,
-            ack_channel(),
-            ListParWithRandom {
-                pars: vec![expected],
-                random_state: rand().to_bytes(),
-            },
-        );
+        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
+            pars: vec![expected],
+            random_state: rand().to_bytes(),
+        });
     }
 
     #[tokio::test]
@@ -144,14 +126,10 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(
-            runtime,
-            ack_channel(),
-            ListParWithRandom {
-                pars: vec![expected],
-                random_state: rand().to_bytes(),
-            },
-        );
+        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
+            pars: vec![expected],
+            random_state: rand().to_bytes(),
+        });
     }
 
     #[tokio::test]
@@ -178,14 +156,10 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(
-            runtime,
-            ack_channel(),
-            ListParWithRandom {
-                pars: vec![expected],
-                random_state: rand().to_bytes(),
-            },
-        );
+        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
+            pars: vec![expected],
+            random_state: rand().to_bytes(),
+        });
     }
 
     #[tokio::test]
@@ -234,14 +208,10 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(
-            runtime,
-            ack_channel(),
-            ListParWithRandom {
-                pars: vec![new_gbool_par(true, Vec::new(), false)],
-                random_state: rand().to_bytes(),
-            },
-        );
+        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
+            pars: vec![new_gbool_par(true, Vec::new(), false)],
+            random_state: rand().to_bytes(),
+        });
     }
 
     #[tokio::test]
@@ -284,13 +254,9 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(
-            runtime,
-            ack_channel(),
-            ListParWithRandom {
-                pars: vec![new_gbool_par(true, Vec::new(), false)],
-                random_state: rand().to_bytes(),
-            },
-        );
+        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
+            pars: vec![new_gbool_par(true, Vec::new(), false)],
+            random_state: rand().to_bytes(),
+        });
     }
 }

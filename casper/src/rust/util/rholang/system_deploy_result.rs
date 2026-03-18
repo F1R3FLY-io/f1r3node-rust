@@ -1,8 +1,9 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployResult.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployResult.
+// scala
 
-use models::rust::{
-    block::state_hash::StateHash,
-    casper::protocol::casper_message::{Event, ProcessedSystemDeploy, SystemDeployData},
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::{
+    Event, ProcessedSystemDeploy, SystemDeployData,
 };
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 

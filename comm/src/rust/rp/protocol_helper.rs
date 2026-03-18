@@ -1,23 +1,17 @@
 // See comm/src/main/scala/coop/rchain/comm/rp/ProtocolHelper.scala
 
-use models::{
-    routing::{
-        Disconnect, Header, Heartbeat, Node, Packet, Protocol, ProtocolHandshake,
-        ProtocolHandshakeResponse,
-    },
-    rust::casper::protocol::packet_type_tag::ToPacket,
+use models::routing::{
+    Disconnect, Header, Heartbeat, Node, Packet, Protocol, ProtocolHandshake,
+    ProtocolHandshakeResponse,
 };
+use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
 
-use crate::rust::{
-    errors::{unknown_protocol, CommError},
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    transport::transport_layer::Blob,
-};
+use crate::rust::errors::{unknown_protocol, CommError};
+use crate::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use crate::rust::transport::transport_layer::Blob;
 
-pub fn to_protocol_bytes(x: &str) -> Vec<u8> {
-    x.as_bytes().to_vec()
-}
+pub fn to_protocol_bytes(x: &str) -> Vec<u8> { x.as_bytes().to_vec() }
 
 pub fn header(src: &PeerNode, network_id: &str) -> Header {
     Header {
@@ -96,9 +90,7 @@ pub fn packet(src: &PeerNode, network_id: &str, packet: Packet) -> Protocol {
 }
 
 pub fn packet_with_content<A>(src: &PeerNode, network_id: &str, content: A) -> Protocol
-where
-    A: ToPacket,
-{
+where A: ToPacket {
     packet(src, network_id, content.mk_packet())
 }
 

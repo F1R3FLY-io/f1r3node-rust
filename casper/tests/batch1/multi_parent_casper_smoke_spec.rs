@@ -1,8 +1,10 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperSmokeSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/
+// MultiParentCasperSmokeSpec.scala
+
+use casper::rust::util::construct_deploy;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
-use casper::rust::util::construct_deploy;
 
 #[tokio::test]
 async fn multi_parent_casper_should_perform_the_most_basic_deploy_successfully() {

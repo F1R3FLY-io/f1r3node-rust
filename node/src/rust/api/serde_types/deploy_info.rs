@@ -1,7 +1,7 @@
 //! JSON serialization/deserialization for DeployInfo
 //!
-//! This module provides custom JSON serialization for the DeployInfo protobuf type
-//! that doesn't have serde derives by default.
+//! This module provides custom JSON serialization for the DeployInfo protobuf
+//! type that doesn't have serde derives by default.
 
 use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
 use serde::{Deserialize, Serialize};
@@ -81,7 +81,11 @@ impl From<DeployInfo> for DeployInfoSerde {
             cost: deploy.cost,
             errored: deploy.errored,
             system_deploy_error: deploy.system_deploy_error,
-            transfers: deploy.transfers.into_iter().map(TransferInfoSerde::from).collect(),
+            transfers: deploy
+                .transfers
+                .into_iter()
+                .map(TransferInfoSerde::from)
+                .collect(),
         }
     }
 }
@@ -104,7 +108,6 @@ impl From<DeployInfoSerde> for DeployInfo {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployInfoWithEventDataSerde {

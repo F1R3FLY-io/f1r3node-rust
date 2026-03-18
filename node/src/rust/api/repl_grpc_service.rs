@@ -1,7 +1,8 @@
 //! REPL gRPC Service implementation
 //!
-//! This module provides a gRPC service for the REPL (Read-Eval-Print Loop) functionality,
-//! allowing clients to execute Rholang code and receive formatted output.
+//! This module provides a gRPC service for the REPL (Read-Eval-Print Loop)
+//! functionality, allowing clients to execute Rholang code and receive
+//! formatted output.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,13 +17,11 @@ pub mod repl {
 use itertools::Itertools;
 use models::rhoapi::Par;
 use repl::{CmdRequest, EvalRequest, ReplResponse};
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    compiler::compiler::Compiler,
-    interpreter::EvaluateResult,
-    pretty_printer::PrettyPrinter,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 
 use crate::rust::api::repl_grpc_service::repl::repl_server::Repl;
 
@@ -43,16 +42,19 @@ impl ReplGrpcServiceImpl {
         source: &str,
         print_unmatched_sends_only: bool,
     ) -> eyre::Result<ReplResponse> {
-        // TODO: maybe we should move this call to tokio::task::spawn_blocking if the execution will block the task for a long time
+        // TODO: maybe we should move this call to tokio::task::spawn_blocking if the
+        // execution will block the task for a long time
         use rholang::rust::interpreter::storage::storage_printer;
 
-        // Match Scala behavior: catch compilation errors and return them as successful responses
-        // with "Error: {error}" format, rather than propagating as gRPC errors
+        // Match Scala behavior: catch compilation errors and return them as successful
+        // responses with "Error: {error}" format, rather than propagating as
+        // gRPC errors
         let par = match Compiler::source_to_adt_with_normalizer_env(source, HashMap::new()) {
             Ok(p) => p,
             Err(e) => {
-                // Return error as successful response, matching Scala's ReplGrpcService behavior
-                // Scala: case _: InterpreterError => Sync[F].delay(s"Error: ${er.toString}")
+                // Return error as successful response, matching Scala's ReplGrpcService
+                // behavior Scala: case _: InterpreterError =>
+                // Sync[F].delay(s"Error: ${er.toString}")
                 let error_msg = format!("Error: {}", e);
                 return Ok(ReplResponse { output: error_msg });
             }
@@ -134,16 +136,17 @@ impl Repl for ReplGrpcServiceImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use models::rhoapi::Par;
-    use rholang::rust::interpreter::{
-        external_services::ExternalServices, matcher::r#match::Matcher,
-        rho_runtime::create_runtime_from_kv_store, system_processes::test_framework_contracts,
-    };
-    use rspace_plus_plus::rspace::shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    };
     use std::sync::Arc;
+
+    use models::rhoapi::Par;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::matcher::r#match::Matcher;
+    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+    use rholang::rust::interpreter::system_processes::test_framework_contracts;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
 
     async fn create_test_runtime_with_stdout() -> RhoRuntimeImpl {
         let mut kvm = InMemoryStoreManager::new();

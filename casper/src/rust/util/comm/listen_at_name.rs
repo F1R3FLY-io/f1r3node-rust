@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::rust::util::comm::ServiceResult;
-use crate::rust::util::rholang::interpreter_util;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use serde::Deserialize;
 use tokio::time::sleep;
+
+use crate::rust::util::comm::ServiceResult;
+use crate::rust::util::rholang::interpreter_util;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum Name {
@@ -25,9 +26,7 @@ pub trait BuildPar<T> {
 
 /// Implementation for single Name
 impl BuildPar<Name> for Name {
-    fn build(&self, _input: Name) -> ServiceResult<Par> {
-        build_par_id(self.clone())
-    }
+    fn build(&self, _input: Name) -> ServiceResult<Par> { build_par_id(self.clone()) }
 }
 
 /// Build Par from a single Name
@@ -71,8 +70,8 @@ where
 
 /// Listen at name until changes occur
 ///
-/// This function monitors a name and waits until the number of results increases,
-/// indicating that new data has been added.
+/// This function monitors a name and waits until the number of results
+/// increases, indicating that new data has been added.
 /// Note: this
 pub async fn listen_at_name_until_changes<F, Fut, T>(name: Name, mut request: F) -> Fut::Output
 where
@@ -144,10 +143,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     use super::*;
 

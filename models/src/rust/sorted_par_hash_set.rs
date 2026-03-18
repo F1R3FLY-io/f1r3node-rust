@@ -2,11 +2,10 @@
 
 use std::collections::HashSet;
 
+use super::rholang::sorter::ordering::Ordering;
+use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::Par;
-
-use super::rholang::sorter::{
-    ordering::Ordering, par_sort_matcher::ParSortMatcher, sortable::Sortable,
-};
 
 // Enforce ordering and uniqueness.
 // - uniqueness is handled by using HashSet.
@@ -38,14 +37,10 @@ impl SortedParHashSet {
         SortedParHashSet::create_from_vec(vec)
     }
 
-    pub fn create_from_empty() -> Self {
-        SortedParHashSet::create_from_set(HashSet::new())
-    }
+    pub fn create_from_empty() -> Self { SortedParHashSet::create_from_set(HashSet::new()) }
 
     pub fn map_iter<'a, F, T>(&'a self, f: F) -> impl Iterator<Item = T> + 'a
-    where
-        F: Fn(&Par) -> T + 'a,
-    {
+    where F: Fn(&Par) -> T + 'a {
         self.sorted_pars.iter().map(f)
     }
 
@@ -61,9 +56,7 @@ impl SortedParHashSet {
         Self::create_from_set(self.ps.clone())
     }
 
-    pub fn contains(&self, elem: Par) -> bool {
-        self.sorted_ps.contains(&Self::sort(&elem))
-    }
+    pub fn contains(&self, elem: Par) -> bool { self.sorted_ps.contains(&Self::sort(&elem)) }
 
     pub fn union(&self, that: HashSet<Par>) -> SortedParHashSet {
         SortedParHashSet::create_from_set(
@@ -74,23 +67,15 @@ impl SortedParHashSet {
         )
     }
 
-    pub fn equals(&self, that: SortedParHashSet) -> bool {
-        self.sorted_pars == that.sorted_pars
-    }
+    pub fn equals(&self, that: SortedParHashSet) -> bool { self.sorted_pars == that.sorted_pars }
 
-    pub fn length(&self) -> usize {
-        self.sorted_ps.len()
-    }
+    pub fn length(&self) -> usize { self.sorted_ps.len() }
 
-    pub fn sort(par: &Par) -> Par {
-        ParSortMatcher::sort_match(par).term.clone()
-    }
+    pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
 }
 
 impl PartialEq for SortedParHashSet {
-    fn eq(&self, other: &Self) -> bool {
-        self.sorted_pars == other.sorted_pars
-    }
+    fn eq(&self, other: &Self) -> bool { self.sorted_pars == other.sorted_pars }
 }
 
 use std::fmt;

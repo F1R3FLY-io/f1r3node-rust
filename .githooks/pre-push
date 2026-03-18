@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+#
+# pre-push hook - Run tests before pushing
+#
+# Runs the full cargo test suite to prevent pushing code with regressions.
+# To bypass (use sparingly): git push --no-verify
+#
+# Installation (run from repo root):
+#   ./scripts/setup-hooks.sh           # Recommended: uses git core.hooksPath
+#   ./scripts/setup-hooks.sh --copy    # Alternative: copies to .git/hooks/
+#
+# Environment variables:
+#   SKIP_TESTS=1         - Skip all cargo tests
+#   SKIP_CLIPPY=1        - Skip clippy (already runs on commit, but double-checked here)
+#   QUICK=1              - Run only fast tests (skip --release tests)
+#   VERBOSE=1            - Show all test output (not just failures)
+#   TEST_TIMEOUT=600     - Overall test timeout in seconds (default: 600)
+#   TEST_CRATES="casper rholang" - Run tests for specific crates only
+#
+# CI environment detection:
+#   Automatically skips in CI environments (CI, GITLAB_CI, GITHUB_ACTIONS)
+#   since tests run separately in the pipeline.
+#
+
+set -euo pipefail
+
+# Diagnostic: trace hook exit to stderr
+_hook_t0=$(date +%s)
+trap 'rc=$?; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Configuration from environment
+SKIP_TESTS="${SKIP_TESTS:-0}"
+SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
+VERBOSE="${VERBOSE:-0}"
+QUICK="${QUICK:-0}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
+TEST_CRATES="${TEST_CRATES:-}"
+
+# Skip in CI environments (tests run separately in pipeline)
+if [ -n "${CI:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "Skipping pre-push hooks in CI environment"
+    exit 0
+fi
+
+# Check if there are actually new commits to push
+has_new_commits=0
+push_info=""
+while IFS=' ' read -r local_ref local_oid remote_ref remote_oid; do
+    push_info+="$local_ref $local_oid $remote_ref $remote_oid"$'\n'
+    zero="0000000000000000000000000000000000000000"
+    if [ "$local_oid" != "$remote_oid" ] && [ "$local_oid" != "$zero" ]; then
+        has_new_commits=1
+    fi
+done
+if [ -z "$push_info" ] || [ "$has_new_commits" -eq 0 ]; then
+    echo -e "${CYAN}No new commits to push. Skipping tests.${NC}"
+    exit 0
+fi
+
+# Double-check against the actual remote to catch racing pushes
+local_head=$(git rev-parse HEAD)
+remote_head=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}') || remote_head=""
+if [ -n "$remote_head" ] && [ "$local_head" = "$remote_head" ]; then
+    git fetch origin 2>/dev/null || true
+    echo -e "${CYAN}Already up to date with remote. Nothing to push.${NC}"
+    exit 1
+fi
+
+# Unset git environment variables that leak from hook context
+unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
+
+cd "$REPO_ROOT"
+
+# Temp directory for test results
+RESULTS_DIR="$(mktemp -d)"
+trap 'rc=$?; rm -rf "$RESULTS_DIR"; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT
+
+# Save original stdout as fd 3 for progress from background jobs
+exec 3>&1
+
+echo ""
+echo -e "${CYAN}Running pre-push checks...${NC}"
+echo "================================"
+
+# --- Clippy (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    if [[ "$SKIP_CLIPPY" == "1" ]]; then
+        echo -e "  ${CYAN}[clippy]${NC}  ${YELLOW}SKIP${NC} (SKIP_CLIPPY=1)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/clippy.counts"
+        exit 0
+    fi
+    total=1
+    clippy_out="$RESULTS_DIR/clippy.out"
+    if timeout "$TEST_TIMEOUT" cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1; then
+        echo -e "  ${CYAN}[clippy]${NC}  ${GREEN}PASS${NC}" >&3
+        passed=1
+    else
+        rc=$?
+        if [[ $rc -eq 124 ]]; then
+            echo -e "  ${CYAN}[clippy]${NC}  ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+        else
+            echo -e "  ${CYAN}[clippy]${NC}  ${RED}FAIL${NC}" >&3
+        fi
+        failed=1
+        has_failure=1
+        {
+            echo ""
+            echo -e "${RED}FAIL${NC}: clippy"
+            echo "--- Output ---"
+            tail -50 "$clippy_out"
+            echo "--------------"
+        } >> "$RESULTS_DIR/clippy-failures.out"
+    fi
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/clippy.counts"
+) &
+pid_clippy=$!
+
+# --- Cargo test (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    if [[ "$SKIP_TESTS" == "1" ]]; then
+        echo -e "  ${CYAN}[test]${NC}    ${YELLOW}SKIP${NC} (SKIP_TESTS=1)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+        exit 0
+    fi
+
+    # Build the test command
+    test_cmd="cargo test"
+
+    if [[ -n "$TEST_CRATES" ]]; then
+        # Run tests for specific crates
+        for crate in $TEST_CRATES; do
+            total=$((total + 1))
+            test_out="$RESULTS_DIR/test-${crate}.out"
+            echo -e "  ${CYAN}[test]${NC}    ${crate}..." >&3
+            if timeout "$TEST_TIMEOUT" cargo test -p "$crate" > "$test_out" 2>&1; then
+                echo -e "  ${CYAN}[test]${NC}    ${crate} ${GREEN}PASS${NC}" >&3
+                passed=$((passed + 1))
+            else
+                rc=$?
+                if [[ $rc -eq 124 ]]; then
+                    echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+                else
+                    echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}FAIL${NC}" >&3
+                fi
+                failed=$((failed + 1))
+                has_failure=1
+                {
+                    echo ""
+                    echo -e "${RED}FAIL${NC}: cargo test -p ${crate}"
+                    echo "--- Output ---"
+                    tail -80 "$test_out"
+                    echo "--------------"
+                } >> "$RESULTS_DIR/test-failures.out"
+            fi
+            rm -f "$test_out"
+        done
+    else
+        # Run full workspace tests
+        total=1
+        test_out="$RESULTS_DIR/test-workspace.out"
+
+        if [[ "$QUICK" == "1" ]]; then
+            echo -e "  ${CYAN}[test]${NC}    workspace (debug)..." >&3
+        else
+            test_cmd="cargo test --release"
+            echo -e "  ${CYAN}[test]${NC}    workspace (release)..." >&3
+        fi
+
+        if timeout "$TEST_TIMEOUT" $test_cmd > "$test_out" 2>&1; then
+            echo -e "  ${CYAN}[test]${NC}    workspace ${GREEN}PASS${NC}" >&3
+            passed=1
+        else
+            rc=$?
+            if [[ $rc -eq 124 ]]; then
+                echo -e "  ${CYAN}[test]${NC}    workspace ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+            else
+                echo -e "  ${CYAN}[test]${NC}    workspace ${RED}FAIL${NC}" >&3
+            fi
+            failed=1
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: $test_cmd"
+                echo "--- Output (last 80 lines) ---"
+                tail -80 "$test_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/test-failures.out"
+        fi
+        rm -f "$test_out"
+    fi
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+) &
+pid_test=$!
+
+# Wait for both suites
+wait "$pid_clippy" "$pid_test" 2>/dev/null || true
+
+# Close saved fd
+exec 3>&-
+
+# Show failure details and aggregate results
+TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0
+for suite in clippy test; do
+    if [[ -f "$RESULTS_DIR/${suite}-failures.out" ]]; then
+        echo ""
+        echo -e "${CYAN}${suite^} Failure Details:${NC}"
+        cat "$RESULTS_DIR/${suite}-failures.out"
+    fi
+    if [[ -f "$RESULTS_DIR/$suite.counts" ]]; then
+        read -r t p f s fail < "$RESULTS_DIR/$suite.counts"
+        TESTS_TOTAL=$((TESTS_TOTAL + t))
+        TESTS_PASSED=$((TESTS_PASSED + p))
+        TESTS_FAILED=$((TESTS_FAILED + f))
+        TESTS_SKIPPED=$((TESTS_SKIPPED + s))
+        if [[ "$fail" == "1" ]]; then FAILED=1; fi
+    fi
+done
+
+# Summary
+echo ""
+echo "================================"
+echo -e "${CYAN}Pre-Push Summary${NC}"
+echo "================================"
+echo "Total:   $TESTS_TOTAL"
+echo -e "Passed:  ${GREEN}$TESTS_PASSED${NC}"
+if [[ $TESTS_FAILED -gt 0 ]]; then
+    echo -e "Failed:  ${RED}$TESTS_FAILED${NC}"
+else
+    echo "Failed:  $TESTS_FAILED"
+fi
+if [[ $TESTS_SKIPPED -gt 0 ]]; then
+    echo -e "Skipped: ${YELLOW}$TESTS_SKIPPED${NC}"
+fi
+echo ""
+
+if [[ $FAILED -eq 0 ]]; then
+    # Re-check remote after tests for race condition
+    post_remote=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}') || post_remote=""
+    if [ -n "$post_remote" ] && [ "$local_head" = "$post_remote" ]; then
+        git fetch origin 2>/dev/null || true
+        echo -e "${GREEN}All checks passed!${NC}"
+        echo -e "${CYAN}Remote already up to date (pushed by prior attempt). Nothing to push.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}All checks passed! Proceeding with push.${NC}"
+    exit 0
+else
+    echo -e "${RED}Pre-push checks failed! Push aborted.${NC}"
+    echo ""
+    echo "Fix the failing tests and try again."
+    echo "To bypass (not recommended): git push --no-verify"
+    echo ""
+    echo "Options:"
+    echo "  QUICK=1 git push             - Debug-mode tests (faster compile)"
+    echo "  SKIP_TESTS=1 git push        - Skip test suite"
+    echo "  SKIP_CLIPPY=1 git push       - Skip clippy"
+    echo "  VERBOSE=1 git push           - Show detailed output"
+    echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
+    echo "  TEST_TIMEOUT=300 git push    - Adjust timeout (default: 600s)"
+    exit 1
+fi

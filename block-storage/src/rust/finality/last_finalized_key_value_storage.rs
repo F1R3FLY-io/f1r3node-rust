@@ -1,10 +1,11 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedKeyValueStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/
+// LastFinalizedKeyValueStorage.scala
 
-use prost::bytes::Bytes;
 use std::collections::HashMap;
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
+use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -96,12 +97,9 @@ impl LastFinalizedKeyValueStorage {
         // Build blocks info map for DAG traversal
         let blocks_info_map: HashMap<BlockHash, BlockInfo> = block_metadata_db
             .collect(|(hash_serde, metadata)| {
-                Some((
-                    hash_serde.0.clone(),
-                    BlockInfo {
-                        parents: metadata.parents.clone(),
-                    },
-                ))
+                Some((hash_serde.0.clone(), BlockInfo {
+                    parents: metadata.parents.clone(),
+                }))
             })?
             .into_iter()
             .collect();
@@ -168,7 +166,8 @@ impl LastFinalizedKeyValueStorage {
         let cur_vs = block_metadata_db.get_batch(&chunk_serde)?;
 
         // Update finalization flags
-        // WARNING: migration should be done before block merge, as it assumes all blocks are directly finalized.
+        // WARNING: migration should be done before block merge, as it assumes all
+        // blocks are directly finalized.
         let new_values: Vec<(BlockHashSerde, BlockMetadata)> = cur_vs
             .into_iter()
             .map(|mut v| {

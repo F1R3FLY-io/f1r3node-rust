@@ -21,34 +21,22 @@ pub struct NodeDiscoveryStub {
 }
 
 impl Default for NodeDiscoveryStub {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl NodeDiscoveryStub {
-    pub fn new() -> Self {
-        Self { nodes: vec![] }
-    }
+    pub fn new() -> Self { Self { nodes: vec![] } }
 
-    pub fn reset(&mut self) {
-        self.nodes = vec![];
-    }
+    pub fn reset(&mut self) { self.nodes = vec![]; }
 
-    pub fn peers(&self) -> Vec<PeerNode> {
-        self.nodes.clone()
-    }
+    pub fn peers(&self) -> Vec<PeerNode> { self.nodes.clone() }
 }
 
 #[async_trait::async_trait]
 impl NodeDiscovery for NodeDiscoveryStub {
-    async fn discover(&self) -> Result<(), CommError> {
-        todo!()
-    }
+    async fn discover(&self) -> Result<(), CommError> { todo!() }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        Ok(self.nodes.clone())
-    }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(self.nodes.clone()) }
 
     fn remove_peer(&self, _peer: &PeerNode) -> Result<(), CommError> {
         // Stub implementation - do nothing
@@ -86,9 +74,7 @@ pub struct TransportLayerStub {
 }
 
 impl Default for TransportLayerStub {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl TransportLayerStub {
@@ -100,9 +86,7 @@ impl TransportLayerStub {
     }
 
     pub fn set_responses<F>(&self, responses: F)
-    where
-        F: Fn(&PeerNode, &Protocol) -> Result<(), CommError> + Send + Sync + 'static,
-    {
+    where F: Fn(&PeerNode, &Protocol) -> Result<(), CommError> + Send + Sync + 'static {
         let mut reqresp = self.reqresp.lock().unwrap();
         *reqresp = Some(Arc::new(Box::new(responses)));
     }
@@ -206,23 +190,15 @@ impl LogicalTime {
         }
     }
 
-    pub fn current_millis(&self) -> i64 {
-        self.clock.fetch_add(1, Ordering::SeqCst) + 1
-    }
+    pub fn current_millis(&self) -> i64 { self.clock.fetch_add(1, Ordering::SeqCst) + 1 }
 
-    pub fn nano_time(&self) -> i64 {
-        self.clock.fetch_add(1, Ordering::SeqCst) + 1
-    }
+    pub fn nano_time(&self) -> i64 { self.clock.fetch_add(1, Ordering::SeqCst) + 1 }
 
-    pub fn reset(&self) {
-        self.clock.store(0, Ordering::SeqCst);
-    }
+    pub fn reset(&self) { self.clock.store(0, Ordering::SeqCst); }
 }
 
 impl Default for LogicalTime {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[derive(Clone)]
@@ -250,41 +226,23 @@ impl LogStub {
         self.errors.lock().unwrap().clear();
     }
 
-    pub fn debug(&self, msg: &str) {
-        self.debugs.lock().unwrap().push(msg.to_string());
-    }
+    pub fn debug(&self, msg: &str) { self.debugs.lock().unwrap().push(msg.to_string()); }
 
-    pub fn info(&self, msg: &str) {
-        self.infos.lock().unwrap().push(msg.to_string());
-    }
+    pub fn info(&self, msg: &str) { self.infos.lock().unwrap().push(msg.to_string()); }
 
-    pub fn warn(&self, msg: &str) {
-        self.warns.lock().unwrap().push(msg.to_string());
-    }
+    pub fn warn(&self, msg: &str) { self.warns.lock().unwrap().push(msg.to_string()); }
 
-    pub fn error(&self, msg: &str) {
-        self.errors.lock().unwrap().push(msg.to_string());
-    }
+    pub fn error(&self, msg: &str) { self.errors.lock().unwrap().push(msg.to_string()); }
 
-    pub fn get_debugs(&self) -> Vec<String> {
-        self.debugs.lock().unwrap().clone()
-    }
+    pub fn get_debugs(&self) -> Vec<String> { self.debugs.lock().unwrap().clone() }
 
-    pub fn get_infos(&self) -> Vec<String> {
-        self.infos.lock().unwrap().clone()
-    }
+    pub fn get_infos(&self) -> Vec<String> { self.infos.lock().unwrap().clone() }
 
-    pub fn get_warns(&self) -> Vec<String> {
-        self.warns.lock().unwrap().clone()
-    }
+    pub fn get_warns(&self) -> Vec<String> { self.warns.lock().unwrap().clone() }
 
-    pub fn get_errors(&self) -> Vec<String> {
-        self.errors.lock().unwrap().clone()
-    }
+    pub fn get_errors(&self) -> Vec<String> { self.errors.lock().unwrap().clone() }
 }
 
 impl Default for LogStub {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

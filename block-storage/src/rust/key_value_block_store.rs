@@ -1,14 +1,15 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/KeyValueBlockStore.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/KeyValueBlockStore.
+// scala
 
-use prost::Message;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use models::casper::{ApprovedBlockProto, BlockMessageProto};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
-use models::rust::{block_hash::BlockHash, casper::pretty_printer::PrettyPrinter};
+use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
@@ -76,9 +77,11 @@ impl KeyValueBlockStore {
     }
 
     /**
-     * See block-storage/src/main/scala/coop/rchain/blockstorage/BlockStoreSyntax.scala
+     * See block-storage/src/main/scala/coop/rchain/blockstorage/
+     * BlockStoreSyntax.scala
      *
-     * Get block, "unsafe" because method expects block already in the block store.
+     * Get block, "unsafe" because method expects block already in the block
+     * store.
      */
     pub fn get_unsafe(&self, block_hash: &BlockHash) -> BlockMessage {
         let err_msg = format!(
@@ -88,7 +91,8 @@ impl KeyValueBlockStore {
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
 
-    /// Fast path used by repeat-deploy checks to avoid full BlockMessage conversion.
+    /// Fast path used by repeat-deploy checks to avoid full BlockMessage
+    /// conversion.
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
@@ -127,8 +131,9 @@ impl KeyValueBlockStore {
         Ok(has_any)
     }
 
-    /// Fetch deploy signatures for a block without decoding a full BlockMessage.
-    /// Uses the same bounded thread-local cache as `has_any_deploy_sig`.
+    /// Fetch deploy signatures for a block without decoding a full
+    /// BlockMessage. Uses the same bounded thread-local cache as
+    /// `has_any_deploy_sig`.
     pub fn deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -221,8 +226,9 @@ impl KeyValueBlockStore {
     }
 
     fn bytes_to_block_proto(bytes: &[u8]) -> Result<BlockMessageProto, KvStoreError> {
-        use prost::encoding::decode_varint;
         use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
 
         let mut cursor = Cursor::new(bytes);
         let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
@@ -258,8 +264,9 @@ impl KeyValueBlockStore {
     }
 
     fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
-        use prost::encoding::decode_varint;
         use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
 
         let mut cursor = Cursor::new(bytes);
         let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
@@ -364,7 +371,8 @@ impl KeyValueBlockStore {
         BLOCK_PROTO_DECOMPRESS_BUFFER.with(|buffer| buffer.borrow().capacity())
     }
 
-    /// Compress bytes with varint length prefix (compatible with Java LZ4CompressorWithLength)
+    /// Compress bytes with varint length prefix (compatible with Java
+    /// LZ4CompressorWithLength)
     fn compress_bytes(bytes: &[u8]) -> Vec<u8> {
         use prost::encoding::encode_varint;
 
@@ -408,20 +416,18 @@ struct BlockDeploySigsDeploy {
     sig: Vec<u8>,
 }
 
-// See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/
+// KeyValueBlockStoreSpec.scala
 
 #[cfg(test)]
 mod tests {
-    use models::rust::block_implicits::processed_deploy_gen;
+    use std::sync::{Arc, Mutex};
+
+    use models::rust::block_implicits::{block_element_gen, processed_deploy_gen};
+    use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
-    use std::sync::{Arc, Mutex};
-
-    use models::rust::{
-        block_implicits::block_element_gen,
-        casper::protocol::casper_message::ApprovedBlockCandidate,
-    };
     use shared::rust::{ByteBuffer, ByteString};
 
     use super::*;
@@ -478,9 +484,7 @@ mod tests {
             todo!()
         }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> {
-            todo!()
-        }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
         fn to_map(
             &self,
@@ -491,17 +495,11 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> {
-            Ok(())
-        }
+        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
 
-        fn size_bytes(&self) -> usize {
-            todo!()
-        }
+        fn size_bytes(&self) -> usize { todo!() }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> {
-            todo!()
-        }
+        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }
 
     pub struct NotImplementedKV;
@@ -515,17 +513,11 @@ mod tests {
             todo!()
         }
 
-        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
-            todo!()
-        }
+        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }
 
-        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
-            todo!()
-        }
+        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { todo!() }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> {
-            todo!()
-        }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
         fn to_map(
             &self,
@@ -533,17 +525,11 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> {
-            todo!()
-        }
+        fn print_store(&self) -> Result<(), KvStoreError> { todo!() }
 
-        fn size_bytes(&self) -> usize {
-            todo!()
-        }
+        fn size_bytes(&self) -> usize { todo!() }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> {
-            todo!()
-        }
+        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }
 
     fn to_approved_block(block: BlockMessage) -> ApprovedBlock {
@@ -566,17 +552,11 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
     }
 
-    fn kb_to_mib(kb: usize) -> f64 {
-        kb as f64 / 1024.0
-    }
+    fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
 
-    fn delta_kb_to_mib(delta_kb: isize) -> f64 {
-        delta_kb as f64 / 1024.0
-    }
+    fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
-    fn bytes_to_mib(bytes: usize) -> f64 {
-        bytes as f64 / (1024.0 * 1024.0)
-    }
+    fn bytes_to_mib(bytes: usize) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
 
     proptest! {
         #![proptest_config(ProptestConfig {
@@ -739,7 +719,8 @@ mod tests {
         let baseline_cap = KeyValueBlockStore::block_proto_decode_buffer_capacity_for_test();
 
         println!(
-            "decode baseline: cap={}B ({:.2} MiB), retain_limit={}B ({:.2} MiB), rss={}KB ({:.2} MiB)",
+            "decode baseline: cap={}B ({:.2} MiB), retain_limit={}B ({:.2} MiB), rss={}KB ({:.2} \
+             MiB)",
             baseline_cap,
             bytes_to_mib(baseline_cap),
             retain_limit,
@@ -771,7 +752,9 @@ mod tests {
                     };
 
                 println!(
-                    "decode iter #{:>2}: cap={}B ({:.2} MiB) delta_base={:+}B delta_limit={:+}B rss={}KB ({:.2} MiB) rss_delta_iter={:+}KB ({:+.2} MiB) rss_delta_total={:+}KB ({:+.2} MiB)",
+                    "decode iter #{:>2}: cap={}B ({:.2} MiB) delta_base={:+}B delta_limit={:+}B \
+                     rss={}KB ({:.2} MiB) rss_delta_iter={:+}KB ({:+.2} MiB) \
+                     rss_delta_total={:+}KB ({:+.2} MiB)",
                     i + 1,
                     cap,
                     bytes_to_mib(cap),

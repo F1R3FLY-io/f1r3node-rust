@@ -8,16 +8,18 @@ pub mod zipkin_reporter;
 #[cfg(test)]
 mod tests;
 
-use crate::rust::configuration::{KamonConf, NodeConf};
-use eyre::Result;
 use std::sync::Arc;
 use std::time::Duration;
+
+use eyre::Result;
 use tracing::{info, warn};
+
+use crate::rust::configuration::{KamonConf, NodeConf};
 
 pub const SYSTEM_METRICS_SOURCE: &str = "f1r3fly.system";
 
-// Default metrics collection interval from Kamon's tick-interval setting (10 seconds)
-// Reference: kamon.metric.tick-interval
+// Default metrics collection interval from Kamon's tick-interval setting (10
+// seconds) Reference: kamon.metric.tick-interval
 pub(crate) const DEFAULT_METRICS_INTERVAL_SECS: u64 = 10;
 
 pub fn initialize_diagnostics(

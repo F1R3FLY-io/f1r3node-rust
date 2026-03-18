@@ -1,4 +1,5 @@
-// See comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPCServer.scala
+// See comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPCServer.
+// scala
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,14 +7,13 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use tonic::{Request, Response, Status};
 
-use crate::{
-    comm::{kademlia_rpc_service_server::KademliaRpcService, Lookup, LookupResponse, Ping, Pong},
-    rust::{
-        discovery::utils::{to_node, to_peer_node},
-        metrics_constants::{DISCOVERY_METRICS_SOURCE, HANDLE_LOOKUP_METRIC, HANDLE_PING_METRIC},
-        peer_node::PeerNode,
-    },
+use crate::comm::kademlia_rpc_service_server::KademliaRpcService;
+use crate::comm::{Lookup, LookupResponse, Ping, Pong};
+use crate::rust::discovery::utils::{to_node, to_peer_node};
+use crate::rust::metrics_constants::{
+    DISCOVERY_METRICS_SOURCE, HANDLE_LOOKUP_METRIC, HANDLE_PING_METRIC,
 };
+use crate::rust::peer_node::PeerNode;
 
 /// Type alias for ping handler function
 pub type PingHandler =
@@ -119,12 +119,11 @@ impl KademliaRpcService for GrpcKademliaRPCServer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        comm::Node,
-        rust::peer_node::{Endpoint, NodeIdentifier},
-    };
     use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::comm::Node;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
     fn test_peer() -> PeerNode {
         PeerNode {
@@ -135,9 +134,7 @@ mod tests {
         }
     }
 
-    fn test_node() -> Node {
-        to_node(&test_peer())
-    }
+    fn test_node() -> Node { to_node(&test_peer()) }
 
     #[tokio::test]
     async fn test_ping_with_matching_network_id() {
@@ -172,7 +169,8 @@ mod tests {
 
         // Verify response
         assert_eq!(pong.network_id, network_id);
-        assert!(*ping_called.lock().unwrap()); // Handler should have been called
+        assert!(*ping_called.lock().unwrap()); // Handler should have been
+                                               // called
     }
 
     #[tokio::test]
@@ -208,7 +206,8 @@ mod tests {
 
         // Verify response - should return our network ID, not the request's
         assert_eq!(pong.network_id, network_id);
-        assert!(!*ping_called.lock().unwrap()); // Handler should NOT have been called
+        assert!(!*ping_called.lock().unwrap()); // Handler should NOT have been
+                                                // called
     }
 
     #[tokio::test]
@@ -246,7 +245,8 @@ mod tests {
         // Verify response
         assert_eq!(lookup_response.network_id, network_id);
         assert_eq!(lookup_response.nodes.len(), 1); // Should return one peer
-        assert!(*lookup_called.lock().unwrap()); // Handler should have been called
+        assert!(*lookup_called.lock().unwrap()); // Handler should have been
+                                                 // called
     }
 
     #[tokio::test]
@@ -284,7 +284,8 @@ mod tests {
         // Verify response
         assert_eq!(lookup_response.network_id, network_id); // Should return our network ID
         assert_eq!(lookup_response.nodes.len(), 0); // Should return empty list
-        assert!(!*lookup_called.lock().unwrap()); // Handler should NOT have been called
+        assert!(!*lookup_called.lock().unwrap()); // Handler should NOT have
+                                                  // been called
     }
 
     #[tokio::test]

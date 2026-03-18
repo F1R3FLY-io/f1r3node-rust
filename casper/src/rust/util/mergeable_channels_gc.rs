@@ -1,8 +1,8 @@
 //! Mergeable Channels Garbage Collection
 //!
-//! Garbage collects mergeable channel data for blocks that are provably unreachable.
-//! This is required for multi-parent mode where immediate deletion during finalization
-//! can cause data races.
+//! Garbage collects mergeable channel data for blocks that are provably
+//! unreachable. This is required for multi-parent mode where immediate deletion
+//! during finalization can cause data races.
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -12,7 +12,8 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
-/// Garbage collects mergeable channel data for blocks that are provably unreachable.
+/// Garbage collects mergeable channel data for blocks that are provably
+/// unreachable.
 ///
 /// A block's mergeable data is safe to delete when:
 /// 1. The block is finalized
@@ -102,7 +103,8 @@ fn is_safe_to_delete(
 
     let latest_message_hashes = dag.latest_message_hashes();
 
-    // For each validator's latest message, check if it's a descendant of any child (via main chain)
+    // For each validator's latest message, check if it's a descendant of any child
+    // (via main chain)
     for (_, latest_msg_hash) in latest_message_hashes.iter() {
         if latest_msg_hash == block_hash {
             // Validator's latest is still this block

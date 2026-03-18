@@ -1,14 +1,18 @@
-// See comm/src/main/scala/coop/rchain/comm/discovery/KademliaNodeDiscovery.scala
+// See comm/src/main/scala/coop/rchain/comm/discovery/KademliaNodeDiscovery.
+// scala
 
-use crate::rust::{
-    discovery::node_discovery::NodeDiscovery,
-    errors::CommError,
-    peer_node::{NodeIdentifier, PeerNode},
-};
-use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
+use std::sync::Arc;
 
-use super::{kademlia_rpc::KademliaRPC, kademlia_store::KademliaStore};
+use rand::rngs::SmallRng;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+
+use super::kademlia_rpc::KademliaRPC;
+use super::kademlia_store::KademliaStore;
+use crate::rust::discovery::node_discovery::NodeDiscovery;
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 
 #[derive(Clone)]
 pub struct KademliaNodeDiscovery<T: KademliaRPC> {
@@ -19,13 +23,9 @@ pub struct KademliaNodeDiscovery<T: KademliaRPC> {
 
 #[async_trait::async_trait]
 impl<T: KademliaRPC + Send + Sync + 'static> NodeDiscovery for KademliaNodeDiscovery<T> {
-    async fn discover(&self) -> Result<(), CommError> {
-        self.discover_raw(&self.node_id).await
-    }
+    async fn discover(&self) -> Result<(), CommError> { self.discover_raw(&self.node_id).await }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        self.store.peers()
-    }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
 
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.store.remove(&peer.id.key)
@@ -44,12 +44,13 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
     /**
      * Return up to `limit` candidate peers.
      *
-     * Currently, this function determines the distances in the table that are
-     * least populated and searches for more peers to fill those. It asks one
-     * node for peers at one distance, then moves on to the next node and
-     * distance. The queried nodes are not in any particular order. For now, this
-     * function should be called with a relatively small `limit` parameter like
-     * 10 to avoid making too many unproductive network calls.
+     * Currently, this function determines the distances in the table that
+     * are least populated and searches for more peers to fill those. It
+     * asks one node for peers at one distance, then moves on to the
+     * next node and distance. The queried nodes are not in any
+     * particular order. For now, this function should be called with a
+     * relatively small `limit` parameter like 10 to avoid making too
+     * many unproductive network calls.
      */
     async fn discover_raw(&self, id: &NodeIdentifier) -> Result<(), CommError> {
         let peers = self.store.peers()?;
@@ -72,9 +73,7 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         Ok(())
     }
 
-    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        self.store.peers()
-    }
+    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
 
     async fn find(
         &self,

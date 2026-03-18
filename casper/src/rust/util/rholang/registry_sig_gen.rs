@@ -1,15 +1,17 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/RegistrySigGen.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/RegistrySigGen.
+// scala
 
 use std::fmt;
 
-use crypto::rust::{
-    hash::blake2b256::Blake2b256, private_key::PrivateKey, public_key::PublicKey,
-    signatures::secp256k1::Secp256k1, signatures::signatures_alg::SignaturesAlg,
-};
-use models::rhoapi::{expr::ExprInstance, Expr, Par};
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, Par};
 use models::rust::utils::{new_etuple_par, new_gint_par};
 use prost::Message;
-
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::registry::registry::Registry;
 
@@ -18,9 +20,7 @@ use rholang::rust::interpreter::registry::registry::Registry;
 pub struct Hex(pub Vec<u8>);
 
 impl Hex {
-    pub fn from_slice(slice: &[u8]) -> Self {
-        Self(slice.to_vec())
-    }
+    pub fn from_slice(slice: &[u8]) -> Self { Self(slice.to_vec()) }
 }
 
 impl fmt::Display for Hex {

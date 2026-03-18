@@ -1,4 +1,8 @@
 // console_io.rs
+use std::collections::HashSet;
+use std::io::IsTerminal;
+use std::path::PathBuf;
+
 use colored::{ColoredString, Colorize};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -9,9 +13,6 @@ use rustyline::hint::Hinter;
 use rustyline::history::MemHistory;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
-use std::collections::HashSet;
-use std::io::IsTerminal;
-use std::path::PathBuf;
 
 pub fn keywords() -> Vec<&'static str> {
     vec!["stdout", "stdoutack", "stderr", "stderrack", "for", "!!"]
@@ -37,35 +38,19 @@ pub trait ConsolePrintExt {
     fn printlnc(&mut self, s: &ColoredString) -> Result<()>;
 }
 impl<T: ConsoleIO + ?Sized> ConsolePrintExt for T {
-    fn println(&mut self, s: &str) -> Result<()> {
-        self.println_str(s)
-    }
-    fn printlnc(&mut self, s: &ColoredString) -> Result<()> {
-        self.println_colored(s)
-    }
+    fn println(&mut self, s: &str) -> Result<()> { self.println_str(s) }
+    fn printlnc(&mut self, s: &ColoredString) -> Result<()> { self.println_colored(s) }
 }
 
 /// ===== 2) NOP implementation (Scala: NOPConsoleIO[F]) =====
 pub struct NopConsoleIO;
 impl ConsoleIO for NopConsoleIO {
-    fn read_line(&mut self) -> Result<String> {
-        Ok(String::new())
-    }
-    fn read_password(&mut self, _prompt: &str) -> Result<String> {
-        Ok(String::new())
-    }
-    fn println_str(&mut self, _s: &str) -> Result<()> {
-        Ok(())
-    }
-    fn println_colored(&mut self, _s: &ColoredString) -> Result<()> {
-        Ok(())
-    }
-    fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> {
-        Ok(())
-    }
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
+    fn read_line(&mut self) -> Result<String> { Ok(String::new()) }
+    fn read_password(&mut self, _prompt: &str) -> Result<String> { Ok(String::new()) }
+    fn println_str(&mut self, _s: &str) -> Result<()> { Ok(()) }
+    fn println_colored(&mut self, _s: &ColoredString) -> Result<()> { Ok(()) }
+    fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> { Ok(()) }
+    fn close(&mut self) -> Result<()> { Ok(()) }
 }
 
 /// ===== 3) JLine-equivalent using rustyline =====xs
@@ -75,12 +60,8 @@ struct StringsHelper {
     keywords: Vec<String>,
 }
 impl StringsHelper {
-    fn new(keywords: Vec<String>) -> Self {
-        Self { keywords }
-    }
-    fn set_keywords(&mut self, words: Vec<String>) {
-        self.keywords = words;
-    }
+    fn new(keywords: Vec<String>) -> Self { Self { keywords } }
+    fn set_keywords(&mut self, words: Vec<String>) { self.keywords = words; }
 }
 impl Helper for StringsHelper {}
 impl Highlighter for StringsHelper {}
@@ -145,15 +126,14 @@ impl RustConsoleIO {
     }
 
     #[inline]
-    fn helper_mut(&mut self) -> &mut StringsHelper {
-        self.rl.helper_mut().expect("helper is set")
-    }
+    fn helper_mut(&mut self) -> &mut StringsHelper { self.rl.helper_mut().expect("helper is set") }
 }
 
 impl ConsoleIO for RustConsoleIO {
     fn read_line(&mut self) -> Result<String> {
         // Only print prompt in interactive mode (when stdin is a terminal)
-        // This matches Scala behavior where prompt is only set when TerminalMode.readMode is true
+        // This matches Scala behavior where prompt is only set when
+        // TerminalMode.readMode is true
         let p = if std::io::stdin().is_terminal() {
             self.prompt.green().to_string()
         } else {
@@ -187,7 +167,8 @@ impl ConsoleIO for RustConsoleIO {
 
     fn update_completion(&mut self, history: &HashSet<String>) -> Result<()> {
         // Replace completer contents like:
-        //   console.getCompleters.foreach(remove); addCompleter(StringsCompleter(history))
+        //   console.getCompleters.foreach(remove);
+        // addCompleter(StringsCompleter(history))
         let mut words: Vec<String> = history.iter().cloned().collect();
         words.sort();
         self.helper_mut().set_keywords(words);
@@ -228,7 +209,8 @@ pub fn get_validator_password(console: &mut impl ConsoleIO) -> eyre::Result<Stri
 
 pub fn request_for_password(console: &mut impl ConsoleIO) -> eyre::Result<String> {
     let prompt = format!(
-        "Environment variable {F1R3NODE_VALIDATOR_PASSWORD_ENV_VAR} is not set, please enter password for keyfile.\n
+        "Environment variable {F1R3NODE_VALIDATOR_PASSWORD_ENV_VAR} is not set, please enter \
+         password for keyfile.\n
         Password for keyfile: "
     );
     console.read_password(&prompt)

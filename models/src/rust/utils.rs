@@ -1,19 +1,20 @@
+use std::collections::BTreeMap;
+
 use expr::ExprInstance;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 use super::par_map::ParMap;
 use super::par_map_type_mapper::ParMapTypeMapper;
 use super::par_set::ParSet;
 use super::par_set_type_mapper::ParSetTypeMapper;
 use super::rholang::implicits::vector_par;
+use crate::create_bit_vector;
 use crate::rhoapi::g_unforgeable::UnfInstance;
+use crate::rhoapi::*;
 use crate::rust::utils::connective::ConnectiveInstance::*;
-use crate::rust::utils::expr::ExprInstance::EVarBody;
-use crate::rust::utils::expr::ExprInstance::*;
+use crate::rust::utils::expr::ExprInstance::{EVarBody, *};
 use crate::rust::utils::var::VarInstance::{BoundVar, FreeVar, Wildcard};
 use crate::rust::utils::var::WildcardMsg;
-use crate::{create_bit_vector, rhoapi::*};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OptionResult<A, K> {
@@ -93,7 +94,8 @@ impl Par {
         }
     }
 
-    // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
+    // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala -
+    // prepend
     pub fn prepend_send(&mut self, s: Send) -> Par {
         let mut new_sends = vec![s.clone()];
         new_sends.append(&mut self.sends);
@@ -199,25 +201,21 @@ impl Par {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - FreeMap
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
+// scala - FreeMap
 pub type FreeMap = BTreeMap<i32, Par>;
-pub fn new_free_map() -> FreeMap {
-    BTreeMap::new()
-}
+pub fn new_free_map() -> FreeMap { BTreeMap::new() }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - runFirst
-// STUBBED OUT
-pub fn run_first<A>() -> Option<(FreeMap, A)> {
-    None
-}
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
+// scala - runFirst STUBBED OUT
+pub fn run_first<A>() -> Option<(FreeMap, A)> { None }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - attemptOpt
-// NOT FULLY IMPLEMENTED
-pub fn attempt_opt(operation: Option<()>) -> Option<()> {
-    operation.map(|_| ())
-}
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
+// scala - attemptOpt NOT FULLY IMPLEMENTED
+pub fn attempt_opt(operation: Option<()>) -> Option<()> { operation.map(|_| ()) }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - toSeq
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.
+// scala - toSeq
 pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
     (0..max)
         .map(|i| match fm.get(&i) {
@@ -240,12 +238,12 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
     result
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
-pub fn no_frees(par: Par) -> Par {
-    par.with_exprs(no_frees_exprs(par.exprs.clone()))
-}
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+// ParSpatialMatcherUtils.scala - noFrees[Par]
+pub fn no_frees(par: Par) -> Par { par.with_exprs(no_frees_exprs(par.exprs.clone())) }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
+// ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
 pub fn no_frees_exprs(exprs: Vec<Expr>) -> Vec<Expr> {
     exprs
         .iter()
@@ -575,11 +573,8 @@ pub fn new_wildcard_var() -> Var {
 }
 
 pub fn new_boundvar_par(value: i32, _locally_free_par: Vec<u8>, _connective_used_par: bool) -> Par {
-    vector_par(
-        create_bit_vector(&[value as usize]),
-        _connective_used_par,
-    )
-    .with_exprs(vec![new_boundvar_expr(value)])
+    vector_par(create_bit_vector(&[value as usize]), _connective_used_par)
+        .with_exprs(vec![new_boundvar_expr(value)])
 }
 
 pub fn new_boundvar_expr(value: i32) -> Expr {

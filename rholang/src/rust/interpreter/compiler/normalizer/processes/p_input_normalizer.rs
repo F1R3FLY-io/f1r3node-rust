@@ -1,34 +1,28 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PInputNormalizer.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/processes/PInputNormalizer.scala
 
-use crate::rust::interpreter::{
-    compiler::{
-        exports::{FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs},
-        normalize::{normalize_ann_proc, VarSort},
-        normalizer::{
-            name_normalize_matcher::normalize_name, processes::utils::fail_on_invalid_connective,
-            remainder_normalizer_matcher::normalize_match_name,
-        },
-        receive_binds_sort_matcher::pre_sort_binds,
-        span_utils::SpanContext,
-    },
-    errors::InterpreterError,
-    matcher::has_locally_free::HasLocallyFree,
-    unwrap_option_safe,
-    util::filter_and_adjust_bitset,
-};
-use models::{
-    rhoapi::{Par, Receive, ReceiveBind},
-    rust::utils::union,
-};
-use shared::rust::BitSet;
 use std::collections::{HashMap, HashSet};
+
+use models::rhoapi::{Par, Receive, ReceiveBind};
+use models::rust::utils::union;
+use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Source};
+use rholang_parser::{SourcePos, SourceSpan};
+use shared::rust::BitSet;
 use uuid::Uuid;
 
-use rholang_parser::SourceSpan;
-use rholang_parser::{
-    ast::{AnnProc, Bind, Name, Proc, Source},
-    SourcePos,
+use crate::rust::interpreter::compiler::exports::{
+    FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
 };
+use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
+use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
+use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
+use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
+use crate::rust::interpreter::compiler::span_utils::SpanContext;
+use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
+use crate::rust::interpreter::unwrap_option_safe;
+use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_input<'ast>(
     receipts: &'ast smallvec::SmallVec<[smallvec::SmallVec<[Bind<'ast>; 1]>; 1]>,
@@ -97,7 +91,8 @@ pub fn normalize_p_input<'ast>(
                                 }
 
                                 Source::ReceiveSend { name, .. } => {
-                                    // ReceiveSend desugaring: x <- name?() becomes x, temp <- name & temp!()
+                                    // ReceiveSend desugaring: x <- name?() becomes x, temp <- name
+                                    // & temp!()
                                     let mut new_names = lhs.names.clone();
                                     new_names.push(temp_var);
 
@@ -131,7 +126,8 @@ pub fn normalize_p_input<'ast>(
                                 }
 
                                 Source::SendReceive { name, inputs, .. } => {
-                                    // SendReceive desugaring: x <- name!(args) becomes new temp in { name!(temp, args) | x <- temp }
+                                    // SendReceive desugaring: x <- name!(args) becomes new temp in
+                                    // { name!(temp, args) | x <- temp }
                                     list_name_decl.push(rholang_parser::ast::NameDecl {
                                         id: rholang_parser::ast::Id {
                                             name: parser.ast_builder().alloc_str(&identifier),
@@ -142,9 +138,7 @@ pub fn normalize_p_input<'ast>(
 
                                     list_linear_bind.push(Bind::Linear {
                                         lhs: lhs.clone(),
-                                        rhs: Source::Simple {
-                                            name: temp_var,
-                                        },
+                                        rhs: Source::Simple { name: temp_var },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -217,7 +211,8 @@ pub fn normalize_p_input<'ast>(
         // Simple source handling - similar to original's else branch
 
         // Convert receipts to the format expected by processing functions
-        // Note: We flatten the nested SmallVec structure since input normalizer expects a flat list
+        // Note: We flatten the nested SmallVec structure since input normalizer expects
+        // a flat list
         let flat_receipts: Vec<&Bind<'ast>> = receipts
             .iter()
             .flat_map(|receipt_group| receipt_group.iter())
@@ -236,7 +231,7 @@ pub fn normalize_p_input<'ast>(
                             return Err(InterpreterError::ParserError(
                                 "Only simple sources supported in current implementation"
                                     .to_string(),
-                            ))
+                            ));
                         }
                     };
 
@@ -348,13 +343,10 @@ pub fn normalize_p_input<'ast>(
                             parser,
                         )?;
 
-                        fail_on_invalid_connective(
-                            &input,
-                            &NameVisitOutputs {
-                                par: par.clone(),
-                                free_map: updated_known_free.clone(),
-                            },
-                        )?;
+                        fail_on_invalid_connective(&input, &NameVisitOutputs {
+                            par: par.clone(),
+                            free_map: updated_known_free.clone(),
+                        })?;
 
                         vector_par.push(par.clone());
                         current_known_free = updated_known_free;
@@ -475,21 +467,20 @@ pub fn normalize_p_input<'ast>(
     }
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
+// normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use models::{
-        create_bit_vector,
-        rhoapi::Receive,
-        rust::utils::{
-            new_boundvar_par, new_elist_par, new_freevar_par, new_freevar_var, new_gint_par,
-            new_send, new_send_par,
-        },
+    use models::create_bit_vector;
+    use models::rhoapi::Receive;
+    use models::rust::utils::{
+        new_boundvar_par, new_elist_par, new_freevar_par, new_freevar_var, new_gint_par, new_send,
+        new_send_par,
     };
 
-    use crate::rust::interpreter::compiler::{compiler::Compiler, exports::BoundMapChain};
-
     use super::*;
+    use crate::rust::interpreter::compiler::compiler::Compiler;
+    use crate::rust::interpreter::compiler::exports::BoundMapChain;
 
     fn inputs_span() -> ProcVisitInputs {
         ProcVisitInputs {
@@ -502,9 +493,10 @@ mod tests {
     #[test]
     fn p_input_should_handle_a_simple_receive() {
         // for ( x, y <- @Nil ) { x!(*y) }
+        use rholang_parser::ast::{Bind, Names, SendType, Source};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{Bind, Names, SendType, Source};
 
         let (mut inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
@@ -595,10 +587,11 @@ mod tests {
     #[test]
     fn p_input_should_bind_whole_list_to_the_list_remainder() {
         // for (@[...a] <- @0) { Nil }
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::{Bind, Id, Names, Source, Var};
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (mut inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
@@ -663,9 +656,10 @@ mod tests {
     #[test]
     fn p_input_should_handle_a_more_complicated_receive() {
         // for ( (x1, @y1) <- @Nil  & (x2, @y2) <- @1) { x1!(y2) | x2!(y1) }
+        use rholang_parser::ast::{Bind, Names, SendType, Source};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{Bind, Names, SendType, Source};
 
         let (mut inputs_data, env) = (inputs_span(), HashMap::new());
         let parser = rholang_parser::RholangParser::new();
@@ -794,9 +788,10 @@ mod tests {
     #[test]
     fn p_input_should_fail_if_a_free_variable_is_used_in_two_different_receives() {
         // for ( (x1, @y1) <- @Nil  & (x2, @y1) <- @1) { Nil }
+        use rholang_parser::ast::{Bind, Names, Source};
+
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::ast::{Bind, Names, Source};
 
         let parser = rholang_parser::RholangParser::new();
 

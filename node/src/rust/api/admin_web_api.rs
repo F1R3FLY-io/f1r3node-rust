@@ -1,12 +1,13 @@
 //! Admin Web API implementation for F1r3fly node
 //! Ported from node/src/main/scala/coop/rchain/node/api/AdminWebApi.scala
 
+use std::sync::Arc;
+
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::state::instances::proposer_state::ProposerState;
 use casper::rust::ProposeFunction;
 use eyre::Result;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Admin Web API trait defining the interface for admin HTTP endpoints

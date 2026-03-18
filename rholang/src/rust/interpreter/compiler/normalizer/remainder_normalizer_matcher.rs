@@ -1,12 +1,12 @@
+use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
+use models::rhoapi::var::WildcardMsg;
+use models::rhoapi::Var as ModelsVar;
+use rholang_parser::ast::{Id, Var};
+
 use crate::rust::interpreter::compiler::exports::{FreeContext, FreeMap};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
-use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
-use models::rhoapi::var::WildcardMsg;
-use models::rhoapi::Var as ModelsVar;
-
-use rholang_parser::ast::{Id, Var};
 
 fn handle_var<'ast>(
     var: &Var<'ast>,
@@ -17,7 +17,8 @@ fn handle_var<'ast>(
             let wildcard_var = ModelsVar {
                 var_instance: Some(Wildcard(WildcardMsg {})),
             };
-            // Current approach: Use synthetic span since rholang-rs Wildcard lacks position data
+            // Current approach: Use synthetic span since rholang-rs Wildcard lacks position
+            // data
             //
             // IDEAL: If rholang-rs enhanced Wildcard with SourcePos:
             //   let wildcard_span = SpanContext::pos_to_span(wildcard.pos);

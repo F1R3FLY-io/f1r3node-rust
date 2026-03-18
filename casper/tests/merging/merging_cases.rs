@@ -2,22 +2,21 @@
 
 use std::collections::HashMap;
 
-use casper::rust::{
-    merging::block_index,
-    util::{
-        construct_deploy,
-        rholang::{costacc::close_block_deploy::CloseBlockDeploy, system_deploy_util},
-    },
-};
+use casper::rust::merging::block_index;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::system_deploy_util;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, merger::merging_logic};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic;
 
 use crate::util::rholang::resources::with_runtime_manager;
 
 /**
- * Two deploys inside single state transition are using the same PVV for precharge and refund.
- * So this should be dependent over produce that puts new value into PVV balance in the first deploy.
- * TODO adjust this once/if there is a solution to make deploys touching the same PVV non dependent
+ * Two deploys inside single state transition are using the same PVV for
+ * precharge and refund. So this should be dependent over produce that puts
+ * new value into PVV balance in the first deploy. TODO adjust this once/if
+ * there is a solution to make deploys touching the same PVV non dependent
  */
 #[tokio::test]
 async fn two_deploys_executed_inside_single_state_transition_should_be_dependent() {
@@ -118,11 +117,13 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             merging_logic::depends,
         );
 
-        // deploys inside one state transition never conflict, as executed in a sequence (for now)
+        // deploys inside one state transition never conflict, as executed in a sequence
+        // (for now)
         assert!(!conflicts);
         // first deploy does not depend on the second
         assert!(!first_depends);
-        // second deploy depends on the first, as it consumes produce put by first one when updating per validator vault balance
+        // second deploy depends on the first, as it consumes produce put by first one
+        // when updating per validator vault balance
         assert!(!second_depends);
         // deploys should be be put in separate deploy chains
         assert_eq!(deploy_chains.0.len(), 2);

@@ -1,11 +1,10 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.
+// scala
 
-use crate::rhoapi::{var::VarInstance, Var};
-
-use super::{
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
+use crate::rhoapi::var::VarInstance;
+use crate::rhoapi::Var;
 
 pub struct VarSortMatcher;
 

@@ -46,7 +46,10 @@ impl RootRepository {
                     "[RootRepository] validateAndSetCurrentRoot FAILED: {} not in roots store",
                     root
                 );
-                Err(RootError::UnknownRootError(format!("unknown root: {}", root)))
+                Err(RootError::UnknownRootError(format!(
+                    "unknown root: {}",
+                    root
+                )))
             }
         }
     }

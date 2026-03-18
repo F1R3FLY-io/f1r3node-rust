@@ -15,9 +15,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 
-use crate::rust::transport::{
-    f1r3fly_tls_connector::F1r3flyTlsAcceptor,
-    f1r3fly_tls_transport::{F1r3flyServerTlsTransport, F1r3flyTlsTransportError},
+use crate::rust::transport::f1r3fly_tls_connector::F1r3flyTlsAcceptor;
+use crate::rust::transport::f1r3fly_tls_transport::{
+    F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
 
 /// F1r3fly Server Builder for creating tonic servers with custom TLS
@@ -112,9 +112,9 @@ impl F1r3flyServer {
 
     /// Create the custom incoming stream for tonic server
     ///
-    /// This creates a stream of TLS-authenticated connections that tonic can use
-    /// to serve gRPC requests. Each connection is pre-authenticated using F1r3fly's
-    /// custom certificate verification.
+    /// This creates a stream of TLS-authenticated connections that tonic can
+    /// use to serve gRPC requests. Each connection is pre-authenticated
+    /// using F1r3fly's custom certificate verification.
     pub async fn incoming(self) -> Result<F1r3flyIncoming, F1r3flyServerError> {
         // Bind TCP listener
         let listener = TcpListener::bind(&self.bind_addr).await.map_err(|e| {
@@ -145,7 +145,10 @@ impl F1r3flyServer {
                         }
 
                         if tcp_keepalive.is_some() {
-                            tracing::debug!("TCP keepalive configuration requested but not implemented in tokio TcpStream");
+                            tracing::debug!(
+                                "TCP keepalive configuration requested but not implemented in \
+                                 tokio TcpStream"
+                            );
                         }
 
                         // Get peer address
@@ -310,8 +313,9 @@ impl Connected for F1r3flyServerConnection {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
+
+    use super::*;
 
     #[test]
     fn test_f1r3fly_server_builder_creation() {

@@ -1,11 +1,9 @@
 // Test for setSubtrie() method
 
-use rholang::rust::interpreter::{
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    test_utils::resources::with_runtime,
-};
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 async fn success(runtime: &mut RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
     execute(runtime, term).await.map(|res| {

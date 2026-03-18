@@ -1,4 +1,7 @@
-// See casper/src/test/scala/coop/rchain/casper/batch2/LmdbKeyValueStoreSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch2/LmdbKeyValueStoreSpec.
+// scala
+
+use std::collections::HashMap;
 
 use lazy_static::lazy_static;
 use proptest::collection::hash_map;
@@ -7,14 +10,14 @@ use proptest::test_runner::Config as ProptestConfig;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig,
 };
-use std::collections::HashMap;
 
 use crate::util::in_memory_key_value_store_spec::KeyValueStoreSut;
 use crate::util::rholang::resources::{generate_scope_id, get_shared_lmdb_path};
 
-// Optimization: proptest! macro generates sync functions but our tests are async.
-// Creating a new Runtime for each test case is expensive (proptest runs 256 cases by default).
-// Using a shared lazy_static Runtime is much more efficient.
+// Optimization: proptest! macro generates sync functions but our tests are
+// async. Creating a new Runtime for each test case is expensive (proptest runs
+// 256 cases by default). Using a shared lazy_static Runtime is much more
+// efficient.
 lazy_static! {
     static ref RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
 }
@@ -46,10 +49,11 @@ fn gen_data() -> impl Strategy<Value = HashMap<i64, String>> {
     hash_map(any::<i64>(), any::<String>(), 0..2000)
 }
 
-// Note: LMDB is file-based storage with system resource limits (file descriptors, max environments).
-// Proptest runs 256 test cases by default, which exhausts these resources causing:
-// "Resource temporarily unavailable" (EAGAIN) errors.
-// We limit test cases to 20 to stay within system limits while still getting property-based testing benefits.
+// Note: LMDB is file-based storage with system resource limits (file
+// descriptors, max environments). Proptest runs 256 test cases by default,
+// which exhausts these resources causing: "Resource temporarily unavailable"
+// (EAGAIN) errors. We limit test cases to 20 to stay within system limits while
+// still getting property-based testing benefits.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
 

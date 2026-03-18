@@ -1,55 +1,49 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use futures::future;
-use prost::bytes::Bytes;
-use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crypto::rust::{public_key::PublicKey, signatures::signed::Signed};
+use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use futures::future;
 use models::casper::{
     BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, LightBlockInfo, RejectedDeployInfo,
     WaitingContinuationInfo,
 };
 use models::rhoapi::Par;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::rholang::sorter::{par_sort_matcher::ParSortMatcher, sortable::Sortable};
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata};
-use rspace_plus_plus::rspace::{
-    hashing::stable_hash_provider,
-    trace::event::{Event as RspaceEvent, IOEvent},
-};
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
+use prost::bytes::Bytes;
+use prost::Message;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
+use shared::rust::ByteString;
 
+use crate::rust::blocks::proposer::propose_result::{
+    CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
+};
+use crate::rust::blocks::proposer::proposer::ProposerResult;
 use crate::rust::casper::MultiParentCasper;
-
-use crate::rust::{
-    blocks::proposer::{
-        propose_result::{
-            CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
-        },
-        proposer::ProposerResult,
-    },
-    engine::engine_cell::EngineCell,
-    errors::CasperError,
-    genesis::contracts::standard_deploys,
-    reporting_proto_transformer::ReportingProtoTransformer,
-    state::instances::proposer_state::ProposerState,
-    util::rholang::runtime_manager::RuntimeManager,
-    util::{event_converter, proto_util, rholang::tools::Tools},
-};
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-
-use crate::rust::ProposeFunction;
-
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::errors::CasperError;
+use crate::rust::genesis::contracts::standard_deploys;
+use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::{
     CliqueOracleImpl, SafetyOracle, MAX_FAULT_TOLERANCE, MIN_FAULT_TOLERANCE,
 };
-use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
-use rspace_plus_plus::rspace::history::Either;
-use shared::rust::ByteString;
+use crate::rust::state::instances::proposer_state::ProposerState;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::tools::Tools;
+use crate::rust::util::{event_converter, proto_util};
+use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
 pub type ApiErr<T> = eyre::Result<T>;
@@ -71,11 +65,10 @@ fn pad_hex_string(hash: &str) -> String {
 }
 
 // Automatic error conversions for common error types used in this API
-// We can only implement From for our own types, so we implement for CasperError -> String
+// We can only implement From for our own types, so we implement for CasperError
+// -> String
 impl From<CasperError> for String {
-    fn from(err: CasperError) -> String {
-        err.to_string()
-    }
+    fn from(err: CasperError) -> String { err.to_string() }
 }
 
 fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String> {
@@ -183,7 +176,8 @@ lazy_static::lazy_static! {
     static ref REPORT_TRANSFORMER: ReportingProtoTransformer = ReportingProtoTransformer::new();
 }
 
-// TODO: Scala we should refactor BlockApi with applicative errors for better classification of errors and to overcome nesting when validating data.
+// TODO: Scala we should refactor BlockApi with applicative errors for better
+// classification of errors and to overcome nesting when validating data.
 #[derive(Debug)]
 pub struct BlockRetrievalError {
     pub message: String,
@@ -324,9 +318,10 @@ impl BlockAPI {
                 )),
             };
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
-            // Deploy success should not block on proposal completion; finalization is checked via
-            // propose/finalization APIs separately in integration flows.
+            // Trigger propose asynchronously for deploy path to keep do_deploy latency
+            // bounded. Deploy success should not block on proposal completion;
+            // finalization is checked via propose/finalization APIs separately
+            // in integration flows.
             if let Some(tp) = trigger_propose {
                 let tp = Arc::clone(tp);
                 let casper_for_propose = casper.clone();
@@ -342,7 +337,8 @@ impl BlockAPI {
                                         && attempt < max_attempts
                                     {
                                         tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
+                                            "Deploy-triggered propose transient failure (attempt \
+                                             {}/{}, seqNum {}): {}; retrying in {:?}",
                                             attempt,
                                             max_attempts,
                                             seq_number,
@@ -354,10 +350,15 @@ impl BlockAPI {
                                         continue;
                                     }
 
-                                    if let Some(msg) = recoverable_propose_failure_message(&status) {
+                                    if let Some(msg) = recoverable_propose_failure_message(&status)
+                                    {
                                         tracing::info!("{} (seqNum {})", msg, seq_number);
                                     } else {
-                                        tracing::error!("Failure: {} (seqNum {})", status, seq_number);
+                                        tracing::error!(
+                                            "Failure: {} (seqNum {})",
+                                            status,
+                                            seq_number
+                                        );
                                     }
                                 }
                                 ProposerResult::Empty => {
@@ -378,7 +379,8 @@ impl BlockAPI {
                             Err(err) => {
                                 if attempt < max_attempts {
                                     tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
+                                        "Deploy-triggered propose call failed (attempt {}/{}): \
+                                         {}; retrying in {:?}",
                                         attempt,
                                         max_attempts,
                                         err,
@@ -388,7 +390,10 @@ impl BlockAPI {
                                     tokio::time::sleep(retry_delay).await;
                                     continue;
                                 }
-                                tracing::error!("Failed to trigger propose from deploy path: {}", err);
+                                tracing::error!(
+                                    "Failed to trigger propose from deploy path: {}",
+                                    err
+                                );
                             }
                         }
                         break;
@@ -525,9 +530,9 @@ impl BlockAPI {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
                 ProposerResult::Success(_, block) => {
-                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when checking response result
-                    //  Fix to use structured result with transport errors/codes.
-                    // https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
+                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when
+                    // checking response result  Fix to use structured result
+                    // with transport errors/codes. https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
                     let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
                     log_success(&format!(
                         "Success! Block {} created and added.",
@@ -870,8 +875,6 @@ impl BlockAPI {
             let latest_block_number = dag.latest_block_number();
 
             let topo_sort = dag.topo_sort(latest_block_number - depth as i64, None)?;
-
-            
 
             do_it((casper, topo_sort))
         }
@@ -1230,7 +1233,8 @@ impl BlockAPI {
         constructor: fn(&BlockMessage, f32) -> A,
     ) -> ApiErr<A> {
         let dag = casper.block_dag().await?;
-        // TODO: Scala this is temporary solution to not calculate fault tolerance all the blocks
+        // TODO: Scala this is temporary solution to not calculate fault tolerance all
+        // the blocks
         let old_block =
             Some(dag.latest_block_number() - block.body.state.block_number).map(|diff| diff > 100);
         let block_in_dag = dag.contains(&block.block_hash);
@@ -1425,12 +1429,15 @@ impl BlockAPI {
         }
     }
 
-    /// Explore the data or continuation in the tuple space for specific blockHash
+    /// Explore the data or continuation in the tuple space for specific
+    /// blockHash
     ///
-    /// - `term`: the term you want to explore in the request. Be sure the first `new` should be `return`
+    /// - `term`: the term you want to explore in the request. Be sure the first
+    ///   `new` should be `return`
     /// - `block_hash`: the block hash you want to explore
-    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash. If `use_pre_state_hash` is true, the explore
-    ///   would try to execute on preState.
+    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash.
+    ///   If `use_pre_state_hash` is true, the explore would try to execute on
+    ///   preState.
     pub async fn exploratory_deploy(
         engine_cell: &EngineCell,
         term: String,
@@ -1550,8 +1557,7 @@ impl BlockAPI {
                 eyre::eyre!("{}", LatestBlockMessageError::ValidatorReadOnlyError)
             })?;
             let dag = casper.block_dag().await?;
-            let latest_message_opt =
-                dag.latest_message(&validator.public_key.bytes.clone())?;
+            let latest_message_opt = dag.latest_message(&validator.public_key.bytes.clone())?;
             let latest_message = latest_message_opt
                 .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)

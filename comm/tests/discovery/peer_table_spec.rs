@@ -1,14 +1,12 @@
 // See comm/src/test/scala/coop/rchain/comm/discovery/PeerTableSpec.scala
 
 use async_trait::async_trait;
+use comm::rust::discovery::kademlia_rpc::KademliaRPC;
+use comm::rust::discovery::peer_table::PeerTable;
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use prost::bytes::Bytes;
 use rand::RngCore;
-
-use comm::rust::{
-    discovery::{kademlia_rpc::KademliaRPC, peer_table::PeerTable},
-    errors::CommError,
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-};
 
 /// Helper function to generate random bytes
 fn rand_bytes(nbytes: usize) -> Vec<u8> {
@@ -18,9 +16,7 @@ fn rand_bytes(nbytes: usize) -> Vec<u8> {
 }
 
 /// Helper function to create an endpoint for testing
-fn endpoint() -> Endpoint {
-    Endpoint::new("".to_string(), 0, 0)
-}
+fn endpoint() -> Endpoint { Endpoint::new("".to_string(), 0, 0) }
 
 /// Test implementation of KademliaRPC that always succeeds
 struct KademliaRPCStub;
@@ -277,7 +273,8 @@ mod tests {
         let sparseness = table.sparseness().unwrap();
 
         // then - distances with fewer peers should come first
-        // Most buckets are empty (0 peers), then distance 1 (1 peer), then distance 0 (2 peers)
+        // Most buckets are empty (0 peers), then distance 1 (1 peer), then distance 0
+        // (2 peers)
         assert!(sparseness.len() > 0);
         assert!(sparseness.contains(&0)); // distance 0 bucket
         assert!(sparseness.contains(&1)); // distance 1 bucket
@@ -349,7 +346,8 @@ mod tests {
         assert_eq!(table.distance_other_peer(&all_zeros), Some(0));
         // Same key -> width * 8
         assert_eq!(table.distance_other_peer(&all_ones), Some(8));
-        // XOR: 11111111 ^ 10101010 = 01010101 -> first bit (MSB) is 0, second bit is 1 -> distance 1
+        // XOR: 11111111 ^ 10101010 = 01010101 -> first bit (MSB) is 0, second bit is 1
+        // -> distance 1
         assert_eq!(table.distance_other_peer(&alternating), Some(1));
     }
 
@@ -374,7 +372,8 @@ mod tests {
         let peers = table.peers().unwrap();
         assert_eq!(peers.len(), 3);
 
-        // Verify all peers are present (order in peers() may vary due to bucket iteration)
+        // Verify all peers are present (order in peers() may vary due to bucket
+        // iteration)
         assert!(peers.contains(&peer1));
         assert!(peers.contains(&peer2));
         assert!(peers.contains(&peer3));

@@ -1,4 +1,5 @@
-// See casper/src/test/scala/coop/rchain/casper/sync/BlockRetrieverRequesAllSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/sync/
+// BlockRetrieverRequesAllSpec.scala
 
 #[cfg(test)]
 mod tests {
@@ -6,15 +7,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use casper::rust::{
-        engine::block_retriever::{AdmitHashReason, BlockRetriever},
-        protocol::{extract_packet_from_protocol, verify_block_request, verify_has_block_request},
+    use casper::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+    use casper::rust::protocol::{
+        extract_packet_from_protocol, verify_block_request, verify_has_block_request,
     };
-    use comm::rust::{
-        peer_node::PeerNode,
-        rp::connect::{Connections, ConnectionsCell},
-        test_instances::{create_rp_conf_ask, TransportLayerStub},
-    };
+    use comm::rust::peer_node::PeerNode;
+    use comm::rust::rp::connect::{Connections, ConnectionsCell};
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use models::rust::block_hash::BlockHash;
 
     use crate::engine::setup;
@@ -26,9 +25,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
     impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason {
-            AdmitHashReason::HasBlockMessageReceived
-        }
+        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
@@ -65,14 +62,10 @@ mod tests {
             }
         }
 
-        fn reset(&self) {
-            self.transport_layer.reset();
-        }
+        fn reset(&self) { self.transport_layer.reset(); }
 
         // Helper function to create a peer node for testing
-        fn peer_node(name: &str, port: u32) -> PeerNode {
-            setup::peer_node(name, port)
-        }
+        fn peer_node(name: &str, port: u32) -> PeerNode { setup::peer_node(name, port) }
 
         // Helper function to create a timed out timestamp
         fn create_timed_out_timestamp(&self) -> u64 {
@@ -131,8 +124,9 @@ mod tests {
         }
 
         mod if_block_was_not_delivered_within_given_timeout {
-            use super::*;
             use std::collections::HashSet;
+
+            use super::*;
 
             mod if_waiting_list_is_not_empty {
                 use super::*;
@@ -287,7 +281,8 @@ mod tests {
                             .as_millis() as u64
                     };
 
-                    // Then - verify the timestamp was reset to the current time (matches Scala: requestedAfter.timestamp shouldBe time.clock)
+                    // Then - verify the timestamp was reset to the current time (matches Scala:
+                    // requestedAfter.timestamp shouldBe time.clock)
                     let request_state_after = fixture
                         .block_retriever
                         .get_request_state_for_test(&fixture.hash)
@@ -296,7 +291,8 @@ mod tests {
                         .expect("Request state should exist");
 
                     // The timestamp should be between the current time before and after the call
-                    // This matches the Scala semantics where requestedAfter.timestamp shouldBe time.clock
+                    // This matches the Scala semantics where requestedAfter.timestamp shouldBe
+                    // time.clock
                     assert!(
                         request_state_after.timestamp >= current_time_before,
                         "Timestamp should be at least the current time before the call"
@@ -411,7 +407,8 @@ mod tests {
                     let fixture = TestFixture::new();
                     fixture.reset();
 
-                    // Given - setup a timed out request that's in casper buffer with empty waiting list
+                    // Given - setup a timed out request that's in casper buffer with empty waiting
+                    // list
                     let peer = TestFixture::peer_node("peer", 40403);
                     let peers = HashSet::from([peer]);
                     let timed_out_timestamp = fixture.create_timed_out_timestamp();
@@ -436,7 +433,8 @@ mod tests {
                     let result = fixture.block_retriever.request_all(fixture.timeout).await;
                     assert!(result.is_ok());
 
-                    // Then - unresolved entries remain tracked until retry budget/quarantine logic decides cleanup
+                    // Then - unresolved entries remain tracked until retry budget/quarantine logic
+                    // decides cleanup
                     let final_count = fixture
                         .block_retriever
                         .get_requested_blocks_count()

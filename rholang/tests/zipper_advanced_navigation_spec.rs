@@ -1,7 +1,9 @@
 // Unit tests for PathMap zipper advanced navigation methods:
-// ascend_one, ascend, to_next_sibling, to_prev_sibling, descend_first, descend_indexed_branch, child_count
+// ascend_one, ascend, to_next_sibling, to_prev_sibling, descend_first,
+// descend_indexed_branch, child_count
 
-use models::rhoapi::{expr::ExprInstance, EList, EPathMap, EZipper, Expr, Par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 
 #[cfg(test)]

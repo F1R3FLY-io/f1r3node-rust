@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{connective, Connective, Par};
+use rholang_parser::ast::{AnnProc, Proc};
+
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
-use models::rhoapi::{connective, Connective, Par};
-use std::collections::HashMap;
-
-use rholang_parser::ast::{AnnProc, Proc};
 
 pub fn normalize_p_negation<'ast>(
     arg: &'ast Proc<'ast>,
@@ -14,7 +15,8 @@ pub fn normalize_p_negation<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    // Use the actual span of the entire UnaryExp (~<expr>) for accurate source location
+    // Use the actual span of the entire UnaryExp (~<expr>) for accurate source
+    // location
     let ann_proc = AnnProc {
         proc: arg,
         span: unary_expr_span,
@@ -53,21 +55,23 @@ pub fn normalize_p_negation<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
+// ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use models::rhoapi::connective::ConnectiveInstance;
     use models::rhoapi::Connective;
     use models::rust::utils::new_freevar_par;
     use pretty_assertions::assert_eq;
 
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
+
     #[test]
     fn p_negation_should_delegate_but_not_count_any_free_variables_inside() {
-        use super::normalize_p_negation;
         use rholang_parser::ast::{Id, Proc, Var};
-        use rholang_parser::SourcePos;
-        use rholang_parser::SourceSpan;
+        use rholang_parser::{SourcePos, SourceSpan};
+
+        use super::normalize_p_negation;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();

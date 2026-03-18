@@ -8,8 +8,8 @@ use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
-use super::trace::Log;
 use super::trace::event::Produce;
+use super::trace::Log;
 use crate::rspace::checkpoint::SoftCheckpoint;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]

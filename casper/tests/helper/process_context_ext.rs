@@ -1,6 +1,7 @@
 // Extension trait for ProcessContext to simplify contract call creation
 
-use rholang::rust::interpreter::{contract_call::ContractCall, system_processes::ProcessContext};
+use rholang::rust::interpreter::contract_call::ContractCall;
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 pub trait ProcessContextExt {
     fn contract_call(&self) -> ContractCall;

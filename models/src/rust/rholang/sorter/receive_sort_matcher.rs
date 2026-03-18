@@ -1,13 +1,11 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/ReceiveSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/
+// ReceiveSortMatcher.scala
 
+use super::par_sort_matcher::ParSortMatcher;
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
+use super::var_sort_matcher::VarSortMatcher;
 use crate::rhoapi::{Par, Receive, ReceiveBind};
-
-use super::{
-    par_sort_matcher::ParSortMatcher,
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-    var_sort_matcher::VarSortMatcher,
-};
 
 pub struct ReceiveSortMatcher;
 

@@ -24,7 +24,7 @@ impl CRC14 {
         for _ in 0..8 {
             let shift_rem = rem << 1;
             if (shift_rem & 0x4000) != 0 {
-                rem = shift_rem ^ 0x4805 ;
+                rem = shift_rem ^ 0x4805;
             } else {
                 rem = shift_rem;
             }

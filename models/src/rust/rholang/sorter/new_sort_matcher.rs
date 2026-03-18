@@ -1,15 +1,11 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/NewSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/NewSortMatcher.
+// scala
 
-use crate::{
-    rhoapi::{New, Par},
-    rust::rholang::sorter::score_tree::Score,
-};
-
-use super::{
-    par_sort_matcher::ParSortMatcher,
-    score_tree::{ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
+use super::par_sort_matcher::ParSortMatcher;
+use super::score_tree::{ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
+use crate::rhoapi::{New, Par};
+use crate::rust::rholang::sorter::score_tree::Score;
 
 pub struct NewSortMatcher;
 

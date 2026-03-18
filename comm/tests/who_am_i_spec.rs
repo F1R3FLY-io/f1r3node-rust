@@ -3,7 +3,8 @@
 use comm::rust::peer_node::NodeIdentifier;
 use comm::rust::who_am_i::fetch_local_peer_node;
 
-/// Test fetching a peer node with default values from node/src/main/resources/defaults.conf
+/// Test fetching a peer node with default values from
+/// node/src/main/resources/defaults.conf
 #[tokio::test]
 async fn test_fetch_local_peer_node_with_defaults() {
     // Default values from defaults.conf
@@ -61,7 +62,8 @@ async fn test_fetch_local_peer_node_with_defaults() {
             // If UPnP fails or network is unavailable, that's acceptable for a test
             // But we should log it for debugging
             println!(
-                "Failed to fetch peer node (this may be expected if UPnP is unavailable or network is down): {}",
+                "Failed to fetch peer node (this may be expected if UPnP is unavailable or \
+                 network is down): {}",
                 e
             );
             panic!("Failed to fetch peer node: {}", e);
@@ -160,7 +162,8 @@ async fn test_fetch_local_peer_node_no_upnp() {
         }
         Err(e) => {
             println!(
-                "Failed to fetch peer node without UPnP (may be expected if external IP services are down): {}",
+                "Failed to fetch peer node without UPnP (may be expected if external IP services \
+                 are down): {}",
                 e
             );
             panic!("Failed to fetch peer node  without UPnP : {}", e);

@@ -1,11 +1,12 @@
-use models::rust::{
-    rholang::implicits::vector_par,
-    utils::{new_elist_expr, to_vec},
-};
-use rspace_plus_plus::rspace::r#match::Match;
 use std::marker::{Send, Sync};
 
-use super::{exports::*, fold_match::FoldMatch, spatial_matcher::SpatialMatcherContext};
+use models::rust::rholang::implicits::vector_par;
+use models::rust::utils::{new_elist_expr, to_vec};
+use rspace_plus_plus::rspace::r#match::Match;
+
+use super::exports::*;
+use super::fold_match::FoldMatch;
+use super::spatial_matcher::SpatialMatcherContext;
 
 #[derive(Clone, Default)]
 pub struct Matcher;
@@ -14,7 +15,8 @@ pub struct Matcher;
 unsafe impl Send for Matcher {}
 unsafe impl Sync for Matcher {}
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.
+// scala - matchListPar
 impl Match<BindPattern, ListParWithRandom> for Matcher {
     fn get(&self, pattern: BindPattern, data: ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
@@ -30,8 +32,6 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
         };
 
         // println!("\nmatch_result: {:?}", match_result);
-
-        
 
         // println!("\nresult: {:?}", result);
         match match_result {

@@ -1,17 +1,9 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagStorageTest.scala
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
+// BlockDagStorageTest.scala See block-storage/src/test/scala/coop/rchain/
+// blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
-use models::rust::equivocation_record::EquivocationRecord;
-use once_cell::sync::Lazy;
-use proptest::prelude::ProptestConfig;
-use proptest::proptest;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Once;
-use tokio::runtime::Runtime;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rust::block_hash::BlockHash;
@@ -21,8 +13,17 @@ use models::rust::block_implicits::{
 };
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
+use once_cell::sync::Lazy;
+use proptest::prelude::ProptestConfig;
+use proptest::proptest;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use tokio::runtime::Runtime;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 static INIT: Once = Once::new();
 

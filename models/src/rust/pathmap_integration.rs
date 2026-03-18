@@ -1,7 +1,8 @@
 //! Integration layer between Rholang Par types and the PathMap crate.
 
-use crate::rhoapi::{Par, Var};
 use pathmap::PathMap;
+
+use crate::rhoapi::{Par, Var};
 
 /// Type alias for our standard use case: PathMap from bytes to Rholang Par.
 pub type RholangPathMap = PathMap<Par>;
@@ -42,7 +43,8 @@ fn extract_list_path(par: &Par) -> Option<Vec<Vec<u8>>> {
     None
 }
 
-// Basic SExpr parser for structure encoding (copy your existing logic if complex)
+// Basic SExpr parser for structure encoding (copy your existing logic if
+// complex)
 fn parse_sexpr(s: &str) -> SExpr {
     let s = s.trim();
     if !s.starts_with('(') {
@@ -95,15 +97,17 @@ fn split_sexpr(s: &str) -> Vec<String> {
     parts
 }
 
-/// Convenience return type—including the constructed map and related Rholang metadata.
+/// Convenience return type—including the constructed map and related Rholang
+/// metadata.
 pub struct PathMapCreationResult {
     pub map: RholangPathMap,
     pub connective_used: bool,
     pub locally_free: Vec<u8>,
 }
 
-/// Construct a RholangPathMap from a list of Par elements and an optional remainder.
-/// This mirrors what the normalizer does when producing EPathMap from parsed elements.
+/// Construct a RholangPathMap from a list of Par elements and an optional
+/// remainder. This mirrors what the normalizer does when producing EPathMap
+/// from parsed elements.
 pub fn create_pathmap_from_elements(
     elements: &[Par],
     remainder: Option<Var>,
@@ -121,7 +125,8 @@ pub fn create_pathmap_from_elements(
 
         // Convert Par to path (Vec<Vec<u8>>)
         let segments = par_to_path(par);
-        // To store in PathMap, flatten path segments into bytes (using a separator byte that can't appear in encoded input, e.g., 0xFF)
+        // To store in PathMap, flatten path segments into bytes (using a separator byte
+        // that can't appear in encoded input, e.g., 0xFF)
         let key: Vec<u8> = segments
             .into_iter()
             .flat_map(|mut seg| {

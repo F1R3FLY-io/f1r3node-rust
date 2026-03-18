@@ -3,20 +3,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::{genesis::genesis::Genesis, rholang::runtime::RuntimeOps};
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::{
-    matcher::r#match::Matcher, rho_runtime::create_runtime_from_kv_store,
-};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    },
-};
+use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 #[tokio::test]
 async fn empty_state_hash_should_be_the_same_as_hard_coded_cached_value() {

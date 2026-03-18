@@ -1,4 +1,5 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/BlockApproverProtocol.scala
+// See casper/src/main/scala/coop/rchain/casper/engine/BlockApproverProtocol.
+// scala
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,9 +17,9 @@ use prost::Message;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
-use crate::rust::genesis::contracts::{
-    proof_of_stake::ProofOfStake, validator::Validator, vault::Vault,
-};
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use crate::rust::genesis::contracts::validator::Validator;
+use crate::rust::genesis::contracts::vault::Vault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -46,7 +47,8 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
-    /// Corresponds to Scala `BlockApproverProtocol.of` – constructor with basic validation.
+    /// Corresponds to Scala `BlockApproverProtocol.of` – constructor with basic
+    /// validation.
     pub fn new(
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
@@ -99,8 +101,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         })
     }
 
-    /// Corresponds to Scala `BlockApproverProtocol.getBlockApproval` / `getApproval` –
-    /// signs candidate ApprovedBlockCandidate and creates `BlockApproval`.
+    /// Corresponds to Scala `BlockApproverProtocol.getBlockApproval` /
+    /// `getApproval` – signs candidate ApprovedBlockCandidate and creates
+    /// `BlockApproval`.
     pub fn get_block_approval(&self, candidate: &ApprovedBlockCandidate) -> BlockApproval {
         let sig_data = Blake2b256::hash(candidate.clone().to_proto().encode_to_vec());
         let sig = self.validator_id.signature(&sig_data);
@@ -112,21 +115,23 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
     /// NOTE: Why is this a public static method instead of an instance method?
     ///
-    /// This design matches the Scala implementation where `validateCandidate` is a static
-    /// method in the companion object
+    /// This design matches the Scala implementation where `validateCandidate`
+    /// is a static method in the companion object
     ///
     /// Reasons for static method:
-    /// 1. **Testing flexibility**: Tests need to validate candidates with intentionally
-    ///    wrong parameters (wrong bonds, wrong vaults, wrong genesis params) to verify
-    ///    rejection logic. With an instance method, we'd need to create new protocol
-    ///    instances for each test case, which is cumbersome and verbose.
+    /// 1. **Testing flexibility**: Tests need to validate candidates with
+    ///    intentionally wrong parameters (wrong bonds, wrong vaults, wrong
+    ///    genesis params) to verify rejection logic. With an instance method,
+    ///    we'd need to create new protocol instances for each test case, which
+    ///    is cumbersome and verbose.
     ///
-    /// 2. **Separation of concerns**: Validation is a pure function that doesn't require
-    ///    the protocol's network/transport infrastructure. It only needs validation
-    ///    parameters and a RuntimeManager.
+    /// 2. **Separation of concerns**: Validation is a pure function that
+    ///    doesn't require the protocol's network/transport infrastructure. It
+    ///    only needs validation parameters and a RuntimeManager.
     ///
-    /// 3. **1:1 Scala port compliance**: Keeping the same API structure as Scala ensures
-    ///    behavioral equivalence and makes cross-referencing easier during porting.
+    /// 3. **1:1 Scala port compliance**: Keeping the same API structure as
+    ///    Scala ensures behavioral equivalence and makes cross-referencing
+    ///    easier during porting.
     ///
     /// Corresponds to Scala `BlockApproverProtocol.validateCandidate` –
     /// performs full validation of the candidate genesis block.
@@ -214,7 +219,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
         if block_deploys.len() != genesis_blessed_contracts.len() {
             return Err(
-                "Mismatch between number of candidate deploys and expected number of deploys."
+                "Mismatch between number of candidate deploys and expected number of \
+                        deploys."
                     .to_string(),
             );
         }
@@ -235,7 +241,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
         if !wrong_deploys.is_empty() {
             return Err(format!(
-                "Genesis candidate deploys do not match expected blessed contracts.\nBad contracts (5 first):\n{}",
+                "Genesis candidate deploys do not match expected blessed contracts.\nBad \
+                 contracts (5 first):\n{}",
                 wrong_deploys.join("\n")
             ));
         }
@@ -276,9 +283,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         Ok(())
     }
 
-    /// Internal instance method that delegates to the static validate_candidate.
-    /// This provides a convenient API for unapproved_block_packet_handler which
-    /// already has all parameters in self.
+    /// Internal instance method that delegates to the static
+    /// validate_candidate. This provides a convenient API for
+    /// unapproved_block_packet_handler which already has all parameters in
+    /// self.
     async fn validate_candidate_internal(
         &self,
         runtime_manager: &mut RuntimeManager,
@@ -304,7 +312,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         .await
     }
 
-    /// Corresponds to Scala `BlockApproverProtocol.unapprovedBlockPacketHandler` –
+    /// Corresponds to Scala
+    /// `BlockApproverProtocol.unapprovedBlockPacketHandler` –
     /// verifies candidate message from peer and streams approval if valid.
     pub async fn unapproved_block_packet_handler(
         &self,

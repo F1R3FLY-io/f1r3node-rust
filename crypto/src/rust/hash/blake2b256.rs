@@ -1,4 +1,5 @@
-use blake2::{digest::consts::U32, Blake2b, Digest};
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 
 // See crypto/src/main/scala/coop/rchain/crypto/hash/Blake2b256.scala
 pub const HASH_LENGTH: usize = 32;

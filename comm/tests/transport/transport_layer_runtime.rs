@@ -1,30 +1,29 @@
-// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.scala
-// See comm/src/test/scala/coop/rchain/comm/transport/TcpTransportLayerSpec.scala
+// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.
+// scala See comm/src/test/scala/coop/rchain/comm/transport/
+// TcpTransportLayerSpec.scala
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio::sync::OnceCell;
 
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::protocol_helper;
 use comm::rust::test_instances::create_rp_conf_ask;
-use comm::rust::{
-    errors::CommError,
-    peer_node::PeerNode,
-    rp::protocol_helper,
-    transport::{
-        communication_response::CommunicationResponse,
-        grpc_transport_client::{BufferedGrpcStreamChannel, GrpcTransportClient},
-        grpc_transport_server::{
-            DispatchFn, GrpcTransportServer, HandleStreamedFn, TransportServer,
-        },
-        transport_layer::{Blob, TransportLayer},
-    },
+use comm::rust::transport::communication_response::CommunicationResponse;
+use comm::rust::transport::grpc_transport_client::{
+    BufferedGrpcStreamChannel, GrpcTransportClient,
 };
+use comm::rust::transport::grpc_transport_server::{
+    DispatchFn, GrpcTransportServer, HandleStreamedFn, TransportServer,
+};
+use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use models::routing::Protocol;
+use tokio::net::TcpListener;
+use tokio::sync::OnceCell;
 
 /// TLS Environment for transport layer testing
 pub struct TlsEnvironment {
@@ -378,7 +377,8 @@ impl TestProtocolDispatcher {
         }
     }
 
-    /// Convert to the required DispatchFn type for TransportLayerServer::handle_receive
+    /// Convert to the required DispatchFn type for
+    /// TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,
@@ -425,9 +425,7 @@ impl TestProtocolDispatcher {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, Protocol)> {
-        self.received.lock().unwrap().clone()
-    }
+    pub fn received(&self) -> Vec<(PeerNode, Protocol)> { self.received.lock().unwrap().clone() }
 }
 
 /// Test stream dispatcher that records received Blob messages
@@ -453,7 +451,8 @@ impl TestStreamDispatcher {
         }
     }
 
-    /// Convert to the required HandleStreamedFn type for TransportLayerServer::handle_receive
+    /// Convert to the required HandleStreamedFn type for
+    /// TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,

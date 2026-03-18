@@ -1,7 +1,8 @@
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::sync::Arc;
+
+use async_trait::async_trait;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -22,15 +23,11 @@ impl StringSerializer {
         }
     }
 
-    pub async fn get_content(&self) -> String {
-        self.buffer.lock().await.clone()
-    }
+    pub async fn get_content(&self) -> String { self.buffer.lock().await.clone() }
 }
 
 impl Default for StringSerializer {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[async_trait]
@@ -106,7 +103,8 @@ impl GraphSerializer for FileSerializer {
     }
 }
 
-// Sealed traits equivalent - all enum definitions first (like Scala sealed traits)
+// Sealed traits equivalent - all enum definitions first (like Scala sealed
+// traits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphType {
     Graph,
@@ -157,7 +155,8 @@ pub enum GraphArrowType {
     NoneArrow,
 }
 
-// Display implementations (equivalent to Scala's Show instances in object Graphz)
+// Display implementations (equivalent to Scala's Show instances in object
+// Graphz)
 
 // Note: We don't use a small_to_string function like Scala's smallToString[A]
 // because:
@@ -208,9 +207,7 @@ impl Display for GraphRank {
 }
 
 impl Display for GraphRankDir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{:?}", self) }
 }
 
 impl Display for GraphArrowType {
@@ -227,10 +224,9 @@ impl Display for GraphArrowType {
 // Public functions corresponding to Scala's object Graphz
 const TAB: &str = "  ";
 
-pub fn default_shape() -> GraphShape {
-    GraphShape::Circle
-}
+pub fn default_shape() -> GraphShape { GraphShape::Circle }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     name: String,
     gtype: GraphType,
@@ -290,6 +286,7 @@ pub async fn apply(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn subgraph(
     name: String,
     gtype: GraphType,

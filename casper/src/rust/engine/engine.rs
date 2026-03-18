@@ -1,5 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/Engine.scala
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -15,15 +19,12 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::rust::casper::CasperShardConf;
-use crate::rust::casper::MultiParentCasper;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::running::Running;
@@ -36,11 +37,11 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
 /// Object-safe Engine trait that matches Scala Engine[F] behavior.
-/// Note: we expose `with_casper() -> Option<&MultiParentCasper>` as an accessor,
-/// and provide Scala-like `with_casper(f, default)` via `EngineDynExt`.
+/// Note: we expose `with_casper() -> Option<&MultiParentCasper>` as an
+/// accessor, and provide Scala-like `with_casper(f, default)` via
+/// `EngineDynExt`.
 #[async_trait]
 pub trait Engine: Send + Sync {
     async fn init(&self) -> Result<(), CasperError>;
@@ -48,8 +49,9 @@ pub trait Engine: Send + Sync {
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
 
     /// Returns the casper instance as an Arc if this engine wraps one.
-    /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
-    /// The Arc allows ownership transfer and use across async boundaries.
+    /// Returns None for engines that don't have casper (NoopEngine,
+    /// Initializing, etc.) The Arc allows ownership transfer and use across
+    /// async boundaries.
     fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>>;
 }
 
@@ -97,17 +99,13 @@ pub fn noop() -> impl Engine {
 
     #[async_trait]
     impl Engine for NoopEngine {
-        async fn init(&self) -> Result<(), CasperError> {
-            Ok(())
-        }
+        async fn init(&self) -> Result<(), CasperError> { Ok(()) }
 
         async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
             Ok(())
         }
 
-        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-            None
-        }
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
     }
 
     NoopEngine
@@ -121,7 +119,8 @@ pub fn log_no_approved_block_available(identifier: &str) {
 }
 
 /// Record initialization metrics for the direct-to-running startup path.
-/// This path legitimately bypasses Initializing, so we emit equivalent counters/timers here.
+/// This path legitimately bypasses Initializing, so we emit equivalent
+/// counters/timers here.
 pub fn record_direct_to_running_init_metrics() {
     metrics::counter!(
         CASPER_INIT_ATTEMPTS_METRIC,
@@ -173,7 +172,8 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
     peer: PeerNode,
 ) -> Result<(), CasperError> {
     let local = rp_conf_ask.local.clone();
-    // TODO: remove NoApprovedBlockAvailable.nodeIdentifier, use `sender` provided by TransportLayer
+    // TODO: remove NoApprovedBlockAvailable.nodeIdentifier, use `sender` provided
+    // by TransportLayer
     let no_approved_block_available = NoApprovedBlockAvailable {
         node_identifier: local.to_string(),
         identifier: identifier.to_string(),
@@ -189,8 +189,8 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
     Ok(())
 }
 
-// NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
-// based on discussion with Steven for TestFixture compatibility
+// NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic
+// T based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
     block_processing_queue_tx: mpsc::Sender<(
         Arc<dyn MultiParentCasper + Send + Sync>,
@@ -252,19 +252,22 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
 }
 
 // NOTE about Scala parity:
-// In Scala `Engine.transitionToInitializing`, fs2 queues are created internally via
-// `Queue.bounded[F, BlockMessage](50)` and `Queue.bounded[F, StoreItemsMessage](50)` and
-// passed to `Initializing`. In Rust we return the senders of newly created channels to the
-// caller and keep the receivers inside `Initializing`.
-// Rationale:
-// - Ownership/visibility: without a shared effect environment (like F[_]) external producers
-//   (transport/tests) would have no handles to feed messages into the engine, causing hangs.
-//   Returning senders ensures producers can enqueue LFS responses, mirroring Scala tests that
-//   enqueue directly into queues.
-// - Behavior equivalence: `Initializing` still consumes from these channels; Scala used bounded(50),
-//   while Rust now uses bounded channels with runtime-configurable defaults.
-// NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
-// based on discussion with Steven for TestFixture compatibility
+// In Scala `Engine.transitionToInitializing`, fs2 queues are created internally
+// via `Queue.bounded[F, BlockMessage](50)` and `Queue.bounded[F,
+// StoreItemsMessage](50)` and passed to `Initializing`. In Rust we return the
+// senders of newly created channels to the caller and keep the receivers inside
+// `Initializing`. Rationale:
+// - Ownership/visibility: without a shared effect environment (like F[_])
+//   external producers (transport/tests) would have no handles to feed messages
+//   into the engine, causing hangs. Returning senders ensures producers can
+//   enqueue LFS responses, mirroring Scala tests that enqueue directly into
+//   queues.
+// - Behavior equivalence: `Initializing` still consumes from these channels;
+//   Scala used bounded(50), while Rust now uses bounded channels with
+//   runtime-configurable defaults.
+// NOTE: Parameter types adapted to match GenesisValidator changes (Arc
+// wrappers, trait objects) based on discussion with Steven for TestFixture
+// compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
     block_processing_queue_tx: &mpsc::Sender<(
         Arc<dyn MultiParentCasper + Send + Sync>,
@@ -294,12 +297,13 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<(), CasperError> {
-    // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
-    // Scala uses size-50 bounded queues in both cases.
+    // Create bounded channels and return senders so caller can feed LFS responses
+    // (Scala: expose queues). Scala uses size-50 bounded queues in both cases.
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
 
-    // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead of taking
+    // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead
+    // of taking
     let runtime_manager = runtime_manager_arc.clone();
 
     let initializing = Arc::new(crate::rust::engine::initializing::Initializing::new(

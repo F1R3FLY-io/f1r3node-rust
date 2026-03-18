@@ -1,51 +1,49 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/Initializing.scala
 
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use futures::stream::StreamExt;
-use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
-    future::Future,
-    pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage, StoreItemsMessageRequest,
 };
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use comm::rust::{
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
-use models::rust::casper::protocol::casper_message::StoreItemsMessageRequest;
-use models::rust::{
-    block_hash::BlockHash,
-    casper::{
-        pretty_printer::PrettyPrinter,
-        protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage},
-    },
-};
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporterInstance;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
-};
-use shared::rust::{
-    shared::{f1r3fly_event::F1r3flyEvent, f1r3fly_events::F1r3flyEvents},
-    ByteString,
-};
-
 use crate::rust::block_status::ValidBlock;
-use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::engine::{
+    log_no_approved_block_available, send_no_approved_block_available, transition_to_running,
+    Engine,
+};
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
+use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
+use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
     CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC, CASPER_INIT_ATTEMPTS_METRIC,
@@ -53,28 +51,15 @@ use crate::rust::metrics_constants::{
     CASPER_INIT_TIME_TO_RUNNING_METRIC, CASPER_METRICS_SOURCE,
     INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC, INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC,
 };
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
-use crate::rust::{
-    casper::{CasperShardConf, MultiParentCasper},
-    engine::{
-        block_retriever::BlockRetriever,
-        engine::{
-            log_no_approved_block_available, send_no_approved_block_available,
-            transition_to_running, Engine,
-        },
-        engine_cell::EngineCell,
-        lfs_block_requester::{self, BlockRequesterOps},
-        lfs_tuple_space_requester::{self, TupleSpaceRequesterOps},
-    },
-    errors::CasperError,
-    util::proto_util,
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-};
+use crate::rust::validator_identity::ValidatorIdentity;
 
 /// Scala equivalent: `class Initializing[F[_]](...) extends Engine[F]`
 ///
-/// Initializing engine makes sure node receives Approved State and transitions to Running after
+/// Initializing engine makes sure node receives Approved State and transitions
+/// to Running after
 pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     transport_layer: T,
     rp_conf_ask: RPConf,
@@ -86,8 +71,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
 
-    // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
-    // Using trait object to support different MultiParentCasper implementations
+    // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F],
+    // BlockMessage)] Using trait object to support different MultiParentCasper implementations
     block_processing_queue_tx:
         mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
     blocks_in_processing: Arc<DashSet<BlockHash>>,
@@ -106,7 +91,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     trim_state: bool,
     disable_state_exporter: bool,
 
-    // TEMP: flag for single call for process approved block (Scala: `val startRequester = Ref.unsafe(true)`)
+    // TEMP: flag for single call for process approved block (Scala: `val startRequester =
+    // Ref.unsafe(true)`)
     start_requester: Arc<Mutex<bool>>,
     init_started_at: Arc<Mutex<Option<Instant>>>,
     no_approved_block_retries: Arc<Mutex<u64>>,
@@ -117,7 +103,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     engine_cell: Arc<EngineCell>,
     runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
     estimator: Arc<Mutex<Option<Estimator>>>,
-    /// Shared reference to heartbeat signal for triggering immediate wake on deploy
+    /// Shared reference to heartbeat signal for triggering immediate wake on
+    /// deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
@@ -237,9 +224,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
         }
         (self.the_init)().await?;
         // Proactively request ApprovedBlock on init to handle the race condition where
-        // the ApprovedBlock was broadcast while this node was still in GenesisValidator state
-        // (verifying the UnapprovedBlock). Without this, the node could get stuck forever
-        // waiting for an ApprovedBlock that was already sent and dropped.
+        // the ApprovedBlock was broadcast while this node was still in GenesisValidator
+        // state (verifying the UnapprovedBlock). Without this, the node could
+        // get stuck forever waiting for an ApprovedBlock that was already sent
+        // and dropped.
         self.transport_layer
             .request_approved_block(&self.rp_conf_ask, Some(self.trim_state))
             .await
@@ -307,14 +295,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                         }
                         Err(e) => {
                             tracing::warn!(
-                                "Failed to enqueue StoreItemsMessage into tuple_space channel: {:?}",
+                                "Failed to enqueue StoreItemsMessage into tuple_space channel: \
+                                 {:?}",
                                 e
                             );
                         }
                     }
                 } else {
                     tracing::warn!(
-                        "tuple_space_tx sender is None; tuple space channel not available (message not enqueued)"
+                        "tuple_space_tx sender is None; tuple space channel not available \
+                         (message not enqueued)"
                     );
                 }
                 Ok(())
@@ -346,7 +336,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     }
                 } else {
                     tracing::warn!(
-                        "block_message_tx sender is None; block message channel not available (message not enqueued)"
+                        "block_message_tx sender is None; block message channel not available \
+                         (message not enqueued)"
                     );
                 }
                 Ok(())
@@ -358,11 +349,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
         }
     }
 
-    /// Scala equivalent: Engine trait - Initializing doesn't have casper yet, so withCasper returns default
-    /// In Scala: `def withCasper[A](f: MultiParentCasper[F] => F[A], default: F[A]): F[A] = default`
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-        None
-    }
+    /// Scala equivalent: Engine trait - Initializing doesn't have casper yet,
+    /// so withCasper returns default In Scala: `def withCasper[A](f:
+    /// MultiParentCasper[F] => F[A], default: F[A]): F[A] = default`
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -420,8 +410,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Ok(())
         }
 
-        // TODO: Scala resolve validation of approved block - we should be sure that bootstrap is not lying
-        // Might be Validate.approvedBlock is enough but have to check
+        // TODO: Scala resolve validation of approved block - we should be sure that
+        // bootstrap is not lying Might be Validate.approvedBlock is enough but
+        // have to check
         let validate_ok = Validate::approved_block(&approved_block);
         let is_valid = sender_is_bootstrap && shard_name_is_valid && validate_ok;
 
@@ -434,7 +425,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         if !shard_name_is_valid {
             tracing::info!(
                 "Connected to the wrong shard. Approved block received from bootstrap is in shard \
-                '{}' but expected is '{}'. Check configuration option shard-name.",
+                 '{}' but expected is '{}'. Check configuration option shard-name.",
                 received_shard,
                 expected_shard
             );
@@ -489,30 +480,37 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    /// **Scala equivalent**: `def requestApprovedState(approvedBlock: ApprovedBlock): F[Unit]`
+    /// **Scala equivalent**: `def requestApprovedState(approvedBlock:
+    /// ApprovedBlock): F[Unit]`
     ///
-    /// This function is functionally equivalent to the Scala version, though the implementation differs
-    /// due to fundamental differences between Scala fs2 streams and Rust tokio channels:
+    /// This function is functionally equivalent to the Scala version, though
+    /// the implementation differs due to fundamental differences between
+    /// Scala fs2 streams and Rust tokio channels:
     ///
     /// Scala approach:
     /// - Uses fs2 Queue (async) for both blockMessageQueue and tupleSpaceQueue
-    /// - Passes queues directly to LfsBlockRequester.stream and LfsTupleSpaceRequester.stream
+    /// - Passes queues directly to LfsBlockRequester.stream and
+    ///   LfsTupleSpaceRequester.stream
     /// - fs2 handles async message passing internally
     ///
     /// Rust approach (this implementation):
-    /// - block_message_queue is Arc<Mutex<VecDeque>> (sync) for thread-safe access
+    /// - block_message_queue is Arc<Mutex<VecDeque>> (sync) for thread-safe
+    ///   access
     /// - tuple_space_queue is mpsc::Sender (async channel sender)
-    /// - For block messages: drains existing sync queue into new async channel, then uses that channel
+    /// - For block messages: drains existing sync queue into new async channel,
+    ///   then uses that channel
     /// - For tuple space: uses existing sender directly
     ///
-    /// The functional result is identical: both block and tuple space streams are processed
-    /// concurrently, DAG is populated with final state, and system transitions to Running.
-    /// The difference is in the underlying queue/channel implementation details.
+    /// The functional result is identical: both block and tuple space streams
+    /// are processed concurrently, DAG is populated with final state, and
+    /// system transitions to Running. The difference is in the underlying
+    /// queue/channel implementation details.
     async fn request_approved_state(
         &self,
         approved_block: &ApprovedBlock,
     ) -> Result<(), CasperError> {
-        // Starting minimum block height. When latest blocks are downloaded new minimum will be calculated.
+        // Starting minimum block height. When latest blocks are downloaded new minimum
+        // will be calculated.
         let block = &approved_block.candidate.block;
         let start_block_number = proto_util::block_number(block);
         let min_block_number_for_deploy_lifespan = std::cmp::max(
@@ -526,7 +524,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             min_block_number_for_deploy_lifespan
         );
 
-        // Use external block message receiver provided by test (equivalent to Scala blockMessageQueue)
+        // Use external block message receiver provided by test (equivalent to Scala
+        // blockMessageQueue)
         let response_message_rx =
             self.block_message_rx
                 .lock()
@@ -545,25 +544,28 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Box::new(|block| self.validate_block(block)),
         );
 
-        // Create empty queue for block requester (must be created outside tokio::join! for lifetime reasons)
+        // Create empty queue for block requester (must be created outside tokio::join!
+        // for lifetime reasons)
         let empty_queue = VecDeque::new(); // Empty queue since we drained it above
 
-        // Use external tuple space message receiver provided by test (equivalent to Scala tupleSpaceQueue)
+        // Use external tuple space message receiver provided by test (equivalent to
+        // Scala tupleSpaceQueue)
         let tuple_space_rx = self.tuple_space_rx.lock().unwrap().take().ok_or_else(|| {
             CasperError::RuntimeError("Tuple space receiver not available".to_string())
         })?;
         let tuple_space_requester =
             TupleSpaceRequester::new(&self.transport_layer, &self.rp_conf_ask);
 
-        // Keep LFS retry cadence configurable instead of hard-coding a long startup delay.
-        // Falls back to 5s when env var is absent or invalid.
+        // Keep LFS retry cadence configurable instead of hard-coding a long startup
+        // delay. Falls back to 5s when env var is absent or invalid.
         let lfs_request_timeout = std::env::var("F1R3_LFS_REQUEST_TIMEOUT_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .map(Duration::from_millis)
             .unwrap_or_else(|| Duration::from_secs(5));
 
-        // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
+        // **Scala equivalent**: Create both streams (blockRequestStream and
+        // tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
             lfs_block_requester::stream(
                 approved_block,
@@ -587,8 +589,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_request_stream = block_request_stream_result?;
         let tuple_space_stream = tuple_space_stream_result?;
 
-        // **Scala equivalent**: `blockRequestAddDagStream = blockRequestStream.last.unNoneTerminate.evalMap { st => populateDag(...) }`
-        // Process block request stream and return the final state for later DAG population
+        // **Scala equivalent**: `blockRequestAddDagStream =
+        // blockRequestStream.last.unNoneTerminate.evalMap { st => populateDag(...) }`
+        // Process block request stream and return the final state for later DAG
+        // population
         let block_request_future = async move {
             // Process the stream to completion and get the last state
             let mut stream = Box::pin(block_request_stream);
@@ -599,18 +603,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Ok::<Option<lfs_block_requester::ST<BlockHash>>, CasperError>(last_st)
         };
 
-        // **Scala equivalent**: `tupleSpaceLogStream = tupleSpaceStream ++ fs2.Stream.eval(Log[F].info(...)).drain`
-        // Process tuple space stream and log completion message
+        // **Scala equivalent**: `tupleSpaceLogStream = tupleSpaceStream ++
+        // fs2.Stream.eval(Log[F].info(...)).drain` Process tuple space stream
+        // and log completion message
         let tuple_space_future = async move {
-            // Stream items are processed by the stream itself, we just consume them to completion
+            // Stream items are processed by the stream itself, we just consume them to
+            // completion
             let mut stream = Box::pin(tuple_space_stream);
             while stream.next().await.is_some() {}
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
 
-        // **Scala equivalent**: `fs2.Stream(blockRequestAddDagStream, tupleSpaceLogStream).parJoinUnbounded.compile.drain`
-        // Run both futures to completion; avoid canceling one branch if the other errors first.
+        // **Scala equivalent**: `fs2.Stream(blockRequestAddDagStream,
+        // tupleSpaceLogStream).parJoinUnbounded.compile.drain` Run both futures
+        // to completion; avoid canceling one branch if the other errors first.
         let (final_state_result, tuple_space_result) =
             tokio::join!(block_request_future, tuple_space_future);
         let final_state_result = final_state_result?;
@@ -712,10 +719,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .into_iter()
             .rev()
         {
-            // NOTE: This is not in original Scala code. Added because we changed block_store
-            // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
+            // NOTE: This is not in original Scala code. Added because we changed
+            // block_store to Option<KeyValueBlockStore> to support moving it in
+            // create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
-            // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
+            // If sender has stake 0 in approved block, this means that sender has been
+            // slashed and block is invalid
             let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
             // Filter older not necessary blocks
             let block_height = proto_util::block_number(&block);
@@ -731,12 +740,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    /// Replay blocks in topological order to populate the mergeable channel cache.
-    /// This is necessary for multi-parent block validation, which requires mergeable
-    /// channel data from parent blocks to compute merged state.
+    /// Replay blocks in topological order to populate the mergeable channel
+    /// cache. This is necessary for multi-parent block validation, which
+    /// requires mergeable channel data from parent blocks to compute merged
+    /// state.
     ///
-    /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// so we must regenerate it by replaying blocks.
+    /// The LFS sync transfers the RSpace trie but not the mergeable channel
+    /// store, so we must regenerate it by replaying blocks.
     async fn replay_blocks_for_mergeable_channels(
         &self,
         _approved_block: &ApprovedBlock,
@@ -748,7 +758,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let dag = self.block_dag_storage.get_representation();
 
         // Get all blocks in the DAG that need replay (from minBlockNumber to LFB)
-        // We process in topological order (by block number, then by hash for determinism)
+        // We process in topological order (by block number, then by hash for
+        // determinism)
         let all_blocks = dag.topo_sort(min_block_number, None)?;
         let blocks_to_replay: Vec<BlockHash> = all_blocks.into_iter().flatten().collect();
 
@@ -835,7 +846,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // For single-parent blocks, use parent's post-state
         // For multi-parent blocks, we need the pre-state from the block itself
-        // (by the time we reach a multi-parent block, all its parents have been replayed)
+        // (by the time we reach a multi-parent block, all its parents have been
+        // replayed)
         let pre_state_hash = if parents.len() == 1 {
             let parent_block = self.block_store.get_unsafe(&parents[0]);
             parent_block.body.state.post_state_hash.clone()
@@ -897,7 +909,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    /// **Scala equivalent**: `private def createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock): F[Unit]`
+    /// **Scala equivalent**: `private def
+    /// createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock):
+    /// F[Unit]`
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
@@ -1012,9 +1026,7 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         Ok(self.block_store.put(block_hash, block)?)
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        (self.validate_block_fn)(block)
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
 }
 
 /// Wrapper struct for block request operations

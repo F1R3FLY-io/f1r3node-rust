@@ -9,23 +9,15 @@ pub struct PrivateKey {
 }
 
 impl PrivateKey {
-    pub fn new(bytes: prost::bytes::Bytes) -> Self {
-        PrivateKey { bytes }
-    }
+    pub fn new(bytes: prost::bytes::Bytes) -> Self { PrivateKey { bytes } }
 
-    pub fn from_bytes(bs: &[u8]) -> Self {
-        PrivateKey::new(bs.to_vec().into())
-    }
+    pub fn from_bytes(bs: &[u8]) -> Self { PrivateKey::new(bs.to_vec().into()) }
 }
 
 impl PartialEq for PrivateKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.bytes == other.bytes
-    }
+    fn eq(&self, other: &Self) -> bool { self.bytes == other.bytes }
 }
 
 impl Hash for PrivateKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bytes.hash(state);
-    }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.bytes.hash(state); }
 }

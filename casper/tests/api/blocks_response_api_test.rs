@@ -1,14 +1,10 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BlocksResponseAPITest.scala
-// See [[/docs/casper/images/no_finalizable_block_mistake_with_no_disagreement_check.png]]
+// See [[/docs/casper/images/
+// no_finalizable_block_mistake_with_no_disagreement_check.png]]
 
-use crate::helper::block_generator;
-use crate::helper::block_util;
-use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
-use crate::util::rholang::resources::{
-    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
-};
-use crate::util::test_mocks::MockKeyValueStore;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::api::block_api::BlockAPI;
@@ -17,8 +13,14 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
+use crate::helper::{block_generator, block_util};
+use crate::util::rholang::resources::{
+    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+};
+use crate::util::test_mocks::MockKeyValueStore;
 
 fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond, Bond, Vec<Bond>) {
     let v1 = block_util::generate_validator(Some("Validator One"));
@@ -43,7 +45,8 @@ fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond
     (v1, v2, v3, v1_bond, v2_bond, v3_bond, bonds)
 }
 
-// Helper function to create storage components (similar to Scala's BlockDagStorageFixture)
+// Helper function to create storage components (similar to Scala's
+// BlockDagStorageFixture)
 async fn create_storage(_prefix: &str) -> IndexedBlockDagStorage {
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);

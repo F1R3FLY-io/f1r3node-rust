@@ -10,9 +10,7 @@ use super::protocol::casper_message::{
 pub struct PrettyPrinter;
 
 impl PrettyPrinter {
-    pub fn build_string_no_limit(b: &[u8]) -> String {
-        hex::encode(b)
-    }
+    pub fn build_string_no_limit(b: &[u8]) -> String { hex::encode(b) }
 
     pub fn build_string(t: CasperMessage, short: bool) -> String {
         match t {
@@ -39,14 +37,15 @@ impl PrettyPrinter {
                     )
                 } else {
                     format!(
-                      "Block #{} ({}) -- Sender ID {} -- M Parent Hash {} -- Contents {} -- Shard ID {}",
-                      b.body.state.block_number,
-                      Self::build_string_bytes(&b.block_hash),
-                      Self::build_string_bytes(&b.sender),
-                      Self::build_string_bytes(main_parent),
-                      Self::build_string_f1r3fly_state(&b.body.state),
-                      Self::limit(&b.shard_id, 10)
-                  )
+                        "Block #{} ({}) -- Sender ID {} -- M Parent Hash {} -- Contents {} -- \
+                         Shard ID {}",
+                        b.body.state.block_number,
+                        Self::build_string_bytes(&b.block_hash),
+                        Self::build_string_bytes(&b.sender),
+                        Self::build_string_bytes(main_parent),
+                        Self::build_string_f1r3fly_state(&b.body.state),
+                        Self::limit(&b.shard_id, 10)
+                    )
                 }
             }
         }
@@ -73,9 +72,7 @@ impl PrettyPrinter {
         )
     }
 
-    pub fn build_string_bytes(bytes: &[u8]) -> String {
-        Self::limit(&hex::encode(bytes), 10)
-    }
+    pub fn build_string_bytes(bytes: &[u8]) -> String { Self::limit(&hex::encode(bytes), 10) }
 
     pub fn build_string_sig(bytes: &[u8]) -> String {
         let str1 = hex::encode(&bytes[0..10.min(bytes.len())]);

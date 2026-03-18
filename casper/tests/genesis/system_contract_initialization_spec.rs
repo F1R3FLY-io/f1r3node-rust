@@ -1,4 +1,5 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/SystemContractInitializationSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/
+// SystemContractInitializationSpec.scala
 //
 // Tests to verify system contracts (PoS, SystemVault) are properly
 // initialized at genesis and accessible in subsequent blocks.
@@ -8,15 +9,14 @@
 // - Block processing (state properly restored after blocks)
 // - Invalid block handling (invalidBlocks map populated correctly)
 
-use casper::rust::{
-    block_status::{BlockError, InvalidBlock},
-    casper::MultiParentCasper,
-    util::construct_deploy,
-};
+use casper::rust::block_status::{BlockError, InvalidBlock};
+use casper::rust::casper::MultiParentCasper;
+use casper::rust::util::construct_deploy;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::{helper::test_node::TestNode, util::genesis_builder::GenesisBuilder};
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 /// PoS contract should return correct bonds at genesis
 #[tokio::test]
@@ -232,7 +232,8 @@ async fn validator_vaults_should_have_zero_balance_at_genesis() {
         .await
         .expect("Failed to execute exploratory deploy");
 
-    // Verify we got a result (validator vaults are initialized to 0 token per GenesisBuilder)
+    // Verify we got a result (validator vaults are initialized to 0 token per
+    // GenesisBuilder)
     assert!(
         !result.is_empty(),
         "Validator vault balance query should return a non-empty result"

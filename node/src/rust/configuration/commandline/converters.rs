@@ -1,4 +1,5 @@
-// TODO: double check whether this converters will be needed in future because it seems like that configs values where they are used are not in use
+// TODO: double check whether this converters will be needed in future because
+// it seems like that configs values where they are used are not in use
 
 //! Value converters for command-line arguments
 //!
@@ -21,9 +22,7 @@ impl Base16Converter {
     }
 
     /// Convert a byte array to a hex string
-    pub fn to_hex(bytes: &[u8]) -> String {
-        hex::encode(bytes)
-    }
+    pub fn to_hex(bytes: &[u8]) -> String { hex::encode(bytes) }
 
     /// Validate that a hex string has the expected length when decoded
     pub fn validate_length(hex_str: &str, expected_length: usize) -> eyre::Result<Vec<u8>> {
@@ -45,14 +44,10 @@ pub struct NameConverter;
 
 impl NameConverter {
     /// Convert string to public name
-    pub fn to_pub_name(name: &str) -> Name {
-        Name::PubName(name.to_string())
-    }
+    pub fn to_pub_name(name: &str) -> Name { Name::PubName(name.to_string()) }
 
     /// Convert string to private name
-    pub fn to_priv_name(name: &str) -> Name {
-        Name::PrivName(name.to_string())
-    }
+    pub fn to_priv_name(name: &str) -> Name { Name::PrivName(name.to_string()) }
 
     /// Parse name with type specification
     pub fn parse_with_type(name_type: &str, content: &str) -> eyre::Result<Name> {

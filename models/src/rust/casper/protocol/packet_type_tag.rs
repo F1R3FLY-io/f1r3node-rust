@@ -2,15 +2,13 @@
 
 use prost::Message;
 
-use crate::{
-    casper::{
-        ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-        BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-        HasBlockRequestProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
-        StoreItemsMessageRequestProto, UnapprovedBlockProto,
-    },
-    routing::Packet,
+use crate::casper::{
+    ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
+    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
+    HasBlockRequestProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
+use crate::routing::Packet;
 
 // Trait for converting to packets
 pub trait ToPacket {
@@ -24,9 +22,7 @@ pub trait ToPacket {
 macro_rules! impl_packet {
     ($type:ty, $tag:expr) => {
         impl ToPacket for $type {
-            fn content(&self) -> prost::bytes::Bytes {
-                self.encode_to_vec().into()
-            }
+            fn content(&self) -> prost::bytes::Bytes { self.encode_to_vec().into() }
 
             fn mk_packet(&self) -> Packet {
                 Packet {

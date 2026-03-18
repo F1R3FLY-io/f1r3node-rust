@@ -1,14 +1,11 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.
+// scala
 
-use crate::{
-    rhoapi::{Match, MatchCase},
-    rust::rholang::sorter::{
-        par_sort_matcher::ParSortMatcher,
-        score_tree::{Score, ScoreAtom, Tree},
-    },
-};
-
-use super::{score_tree::ScoredTerm, sortable::Sortable};
+use super::score_tree::ScoredTerm;
+use super::sortable::Sortable;
+use crate::rhoapi::{Match, MatchCase};
+use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
 
 pub struct MatchSortMatcher;
 
@@ -49,8 +46,7 @@ impl Sortable<Match> for MatchSortMatcher {
                 .as_ref()
                 .expect("target field on Match was None, should be Some"),
         );
-        let scored_cases: Vec<ScoredTerm<MatchCase>> =
-            m.cases.iter().map(sort_case).collect();
+        let scored_cases: Vec<ScoredTerm<MatchCase>> = m.cases.iter().map(sort_case).collect();
         let connective_used_score = if m.connective_used { 1 } else { 0 };
 
         ScoredTerm {

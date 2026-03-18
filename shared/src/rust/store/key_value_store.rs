@@ -25,10 +25,7 @@ pub trait KeyValueStore: Send + Sync {
     fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
         let results = self.get(keys)?;
 
-        Ok(results
-            .into_iter()
-            .map(|result| result.is_some())
-            .collect())
+        Ok(results.into_iter().map(|result| result.is_some()).collect())
     }
 
     // See shared/src/main/scala/coop/rchain/store/KeyValueStoreSyntax.scala
@@ -64,9 +61,7 @@ pub trait KeyValueStore: Send + Sync {
 }
 
 impl Clone for Box<dyn KeyValueStore> {
-    fn clone(&self) -> Box<dyn KeyValueStore> {
-        self.clone_box()
-    }
+    fn clone(&self) -> Box<dyn KeyValueStore> { self.clone_box() }
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -91,9 +86,7 @@ impl std::fmt::Display for KvStoreError {
 }
 
 impl From<heed::Error> for KvStoreError {
-    fn from(error: heed::Error) -> Self {
-        KvStoreError::IoError(error.to_string())
-    }
+    fn from(error: heed::Error) -> Self { KvStoreError::IoError(error.to_string()) }
 }
 
 impl From<Box<bincode::ErrorKind>> for KvStoreError {

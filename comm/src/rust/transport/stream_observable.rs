@@ -1,19 +1,19 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/StreamObservable.scala
 
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{
-        STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
-    },
-    peer_node::PeerNode,
-    transport::{
-        limited_buffer::{FlumeLimitedBuffer, LimitedBuffer, LimitedBufferObservable},
-        packet_ops::{PacketExt, StreamCache},
-        transport_layer::Blob,
-    },
-};
-use chrono::{NaiveDateTime, Utc};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use chrono::{NaiveDateTime, Utc};
+
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    STREAM_CACHE_BYTES_METRIC, STREAM_CACHE_ENTRIES_METRIC, TRANSPORT_METRICS_SOURCE,
+};
+use crate::rust::peer_node::PeerNode;
+use crate::rust::transport::limited_buffer::{
+    FlumeLimitedBuffer, LimitedBuffer, LimitedBufferObservable,
+};
+use crate::rust::transport::packet_ops::{PacketExt, StreamCache};
+use crate::rust::transport::transport_layer::Blob;
 
 const STREAM_CACHE_STALE_TTL_SECS: i64 = 120;
 const STREAM_CACHE_CLEANUP_EVERY_ENQUEUES: usize = 256;
@@ -27,7 +27,8 @@ pub struct Stream {
     pub sender: PeerNode,
 }
 
-/// StreamObservable provides bounded buffering for streaming messages with overflow handling
+/// StreamObservable provides bounded buffering for streaming messages with
+/// overflow handling
 #[derive(Debug)]
 pub struct StreamObservable {
     peer: PeerNode,
@@ -121,7 +122,8 @@ impl StreamObservable {
         Some(parsed.and_utc().timestamp())
     }
 
-    /// Create a new StreamObservable with the given peer, buffer size, and cache
+    /// Create a new StreamObservable with the given peer, buffer size, and
+    /// cache
     pub fn new(peer: PeerNode, buffer_size: usize, cache: StreamCache) -> Self {
         let subject = FlumeLimitedBuffer::drop_new_observable(buffer_size);
 
@@ -192,9 +194,7 @@ impl StreamObservable {
     }
 
     /// Check if the stream is complete
-    pub fn is_complete(&self) -> bool {
-        self.subject.is_complete()
-    }
+    pub fn is_complete(&self) -> bool { self.subject.is_complete() }
 
     /// Get a stream subscription
     pub fn subscribe(&mut self) -> Option<impl tokio_stream::Stream<Item = Stream> + Unpin> {
@@ -202,30 +202,26 @@ impl StreamObservable {
     }
 
     /// Get the peer this observable is associated with
-    pub fn peer(&self) -> &PeerNode {
-        &self.peer
-    }
+    pub fn peer(&self) -> &PeerNode { &self.peer }
 
     /// Get the buffer size
-    pub fn buffer_size(&self) -> usize {
-        self.subject.buffer_size()
-    }
+    pub fn buffer_size(&self) -> usize { self.subject.buffer_size() }
 
     /// Check if the stream is still active (not closed)
-    pub fn is_active(&self) -> bool {
-        self.subject.is_active()
-    }
+    pub fn is_active(&self) -> bool { self.subject.is_active() }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use std::sync::Arc;
+
     use dashmap::DashMap;
     use models::routing::Packet;
     use prost::bytes::Bytes;
-    use std::sync::Arc;
     use tokio_stream::StreamExt;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
     fn create_test_peer() -> PeerNode {
         PeerNode {
@@ -236,9 +232,7 @@ mod tests {
         }
     }
 
-    fn create_test_cache() -> StreamCache {
-        Arc::new(DashMap::new())
-    }
+    fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
 
     fn create_test_blob(sender: PeerNode, content: Vec<u8>) -> Blob {
         Blob {

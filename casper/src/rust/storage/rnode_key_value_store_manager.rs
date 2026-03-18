@@ -1,10 +1,11 @@
-// See casper/src/main/scala/coop/rchain/casper/storage/RNodeKeyValueStoreManager.scala
+// See casper/src/main/scala/coop/rchain/casper/storage/
+// RNodeKeyValueStoreManager.scala
 
 use std::path::PathBuf;
 
-use rspace_plus_plus::rspace::shared::{
-    key_value_store_manager::KeyValueStoreManager,
-    lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB},
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+    Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB,
 };
 
 pub fn new_key_value_store_manager(
@@ -24,18 +25,12 @@ fn rspace_history_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("rspace/history".to_string(), TB)
 }
 
-fn rspace_cold_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("rspace/cold".to_string(), TB)
-}
+fn rspace_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("rspace/cold".to_string(), TB) }
 
 // RSpace evaluator
-fn eval_history_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("eval/history".to_string(), TB)
-}
+fn eval_history_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/history".to_string(), TB) }
 
-fn eval_cold_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("eval/cold".to_string(), TB)
-}
+fn eval_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/cold".to_string(), TB) }
 
 // Blocks
 fn block_storage_env_config() -> LmdbEnvConfig {
@@ -55,13 +50,9 @@ fn casper_buffer_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("casperbuffer".to_string(), GB)
 }
 
-fn reporting_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("reporting".to_string(), 10 * TB)
-}
+fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_string(), 10 * TB) }
 
-fn transaction_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("transaction".to_string(), GB)
-}
+fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
 
 // Legacy RSpace paths
 fn legacy_env_config(dir: &str) -> LmdbEnvConfig {

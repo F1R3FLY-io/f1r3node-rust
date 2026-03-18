@@ -1,5 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BondedStatusAPITest.scala
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
@@ -9,8 +12,6 @@ use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
@@ -28,14 +29,16 @@ impl TestContext {
         // )
         // This means:
         // - First 3 validators: random keys from defaultValidatorKeyPairs (bonded)
-        // - 4th validator (n4): ConstructDeploy.defaultKeyPair = (DEFAULT_SEC, DEFAULT_PUB)
-        //   This matches genesisVaults[0] which has 9,000,000 REV, allowing n4 to pay for bonding
+        // - 4th validator (n4): ConstructDeploy.defaultKeyPair = (DEFAULT_SEC,
+        //   DEFAULT_PUB) This matches genesisVaults[0] which has 9,000,000 REV,
+        //   allowing n4 to pay for bonding
 
         let validator_key_pairs = vec![
             DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
             DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
             DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
-            (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()), // n4 uses DEFAULT keypair to match genesisVaults[0]
+            (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()), /* n4 uses DEFAULT keypair to match
+                                                         * genesisVaults[0] */
         ];
 
         // Extract public keys for bonds
@@ -62,10 +65,11 @@ impl TestContext {
     }
 }
 
-/// Creates an EngineCell with EngineWithCasper from a TestNode's casper instance
-/// Scala equivalent:
+/// Creates an EngineCell with EngineWithCasper from a TestNode's casper
+/// instance Scala equivalent:
 ///   val engine = new EngineWithCasper[Task](node.casperEff)
-///   Cell.mvarCell[Task, Engine[Task]](engine).flatMap { implicit engineCell => ... }
+///   Cell.mvarCell[Task, Engine[Task]](engine).flatMap { implicit engineCell =>
+/// ... }
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     // Create engine and engine_cell (Scala lines 40-41)
     let casper_for_engine = Arc::new(MultiParentCasperImpl {

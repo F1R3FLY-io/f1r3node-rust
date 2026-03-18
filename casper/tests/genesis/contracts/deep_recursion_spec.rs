@@ -1,5 +1,7 @@
-use crate::genesis::contracts::test_util::TestUtil;
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::genesis::genesis::Genesis;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom};
@@ -7,9 +9,9 @@ use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
 use rspace_plus_plus::rspace::r#match::Match;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::genesis::contracts::test_util::TestUtil;
+use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
 async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> {
     let scope_id = generate_scope_id();

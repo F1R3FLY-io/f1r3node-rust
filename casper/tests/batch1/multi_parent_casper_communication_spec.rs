@@ -1,11 +1,13 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperCommunicationSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/
+// MultiParentCasperCommunicationSpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
@@ -48,9 +50,10 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
     // When node(2) tries to add signedBlock2, it should request signedBlock1
     let _ = nodes[2].add_block(signed_block2.clone()).await;
 
-    // Scala: r <- nodes(2).requestedBlocks.get.map(v => v.get(signedBlock1.blockHash)).map { ... }
-    // Check if signedBlock1 is in requestedBlocks of node(2)
-    // TestNode.requested_blocks should be shared with BlockRetriever.requested_blocks
+    // Scala: r <- nodes(2).requestedBlocks.get.map(v =>
+    // v.get(signedBlock1.blockHash)).map { ... } Check if signedBlock1 is in
+    // requestedBlocks of node(2) TestNode.requested_blocks should be shared
+    // with BlockRetriever.requested_blocks
     let is_requested = {
         let state = nodes[2].requested_blocks.lock().unwrap();
         state.contains_key(&signed_block1.block_hash)
@@ -86,8 +89,9 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
  *          genesis
  *
  * f2 has in its justifications list c2. This should be handled properly.
- * TODO: investigate why this test is so brittle - in presence of hashes it starts to pass
- * only when hashes are synchronized precisely as in the test - otherwise it will see 2 parents of h1
+ * TODO: investigate why this test is so brittle - in presence of hashes it
+ * starts to pass only when hashes are synchronized precisely as in the test
+ * - otherwise it will see 2 parents of h1
  *
  */
 // TODO reenable when merging of REV balances is done
@@ -186,16 +190,19 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_t
     step_split(&mut nodes, &shard_id).await; // blocks f1 f2
     step_split(&mut nodes, &shard_id).await; // blocks g1 g2
 
-    // This block will be propagated to all nodes and force nodes(2) to ask for missing blocks
+    // This block will be propagated to all nodes and force nodes(2) to ask for
+    // missing blocks
     let deploy_h1 = make_deploy(0, &shard_id);
     let block_h1 = nodes[0].add_block_from_deploys(&[deploy_h1]).await.unwrap(); // block h1
 
     {
         let mut node_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
-        TestNode::propagate(&mut node_refs).await.unwrap(); // force the network to communicate
+        TestNode::propagate(&mut node_refs).await.unwrap(); // force the network
+                                                            // to communicate
     }
 
-    // Casper in node2 should contain block and its parents, requested as dependencies
+    // Casper in node2 should contain block and its parents, requested as
+    // dependencies
     let contains_h1 = nodes[2].contains(&block_h1.block_hash);
     assert!(
         contains_h1,
@@ -213,8 +220,8 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_t
 }
 
 // Scala comments:
-// TODO: investigate this test - it doesn't make much sense in the presence of hashes (see RCHAIN-3819)
-// and why on earth does it test logs?
+// TODO: investigate this test - it doesn't make much sense in the presence of
+// hashes (see RCHAIN-3819) and why on earth does it test logs?
 #[tokio::test]
 #[ignore = "Scala ignore"]
 async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_appropriately() {
@@ -250,7 +257,8 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
         .await
         .unwrap();
 
-    // Cycle of requesting and passing blocks until block #3 from nodes(0) to nodes(1)
+    // Cycle of requesting and passing blocks until block #3 from nodes(0) to
+    // nodes(1)
     for _i in 0..=8 {
         nodes[1].handle_receive().await.unwrap();
         nodes[0].handle_receive().await.unwrap();
@@ -260,7 +268,8 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
         nodes[0].handle_receive().await.unwrap();
     }
 
-    // We simulate a network failure here by not allowing block #2 to get passed to nodes(1)
+    // We simulate a network failure here by not allowing block #2 to get passed to
+    // nodes(1)
 
     // And then we assume fetchDependencies eventually gets called
     {
@@ -271,8 +280,9 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
     nodes[0].handle_receive().await.unwrap();
     nodes[0].handle_receive().await.unwrap();
 
-    // Scala: nodes(1).logEff.infos.count(_ startsWith "Requested missing block") should be(10)
-    // Scala: nodes(0).logEff.infos.count(s => (s startsWith "Received request for block") && (s endsWith "Response sent.")) should be(10)
+    // Scala: nodes(1).logEff.infos.count(_ startsWith "Requested missing block")
+    // should be(10) Scala: nodes(0).logEff.infos.count(s => (s startsWith
+    // "Received request for block") && (s endsWith "Response sent.")) should be(10)
 
     // TODO: In Rust we don't have LogStub, so we can't check log counts
     // This test would need to be rewritten to check actual behavior instead of logs

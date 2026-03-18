@@ -1,13 +1,14 @@
+use std::collections::HashMap;
+
+use models::rhoapi::Par;
+use rholang_parser::ast::Collection;
+
 use crate::rust::interpreter::compiler::exports::{
     CollectVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::normalize_collection;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_expr;
-use models::rhoapi::Par;
-use std::collections::HashMap;
-
-use rholang_parser::ast::Collection;
 
 pub fn normalize_p_collect<'ast>(
     proc: &'ast Collection<'ast>,

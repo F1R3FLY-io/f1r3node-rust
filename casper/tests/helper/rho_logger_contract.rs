@@ -1,10 +1,10 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoLoggerContract.scala
 
 use models::rhoapi::{ListParWithRandom, Par};
-use rholang::rust::interpreter::{
-    errors::illegal_argument_error, errors::InterpreterError, pretty_printer::PrettyPrinter,
-    rho_type::RhoString, system_processes::ProcessContext,
-};
+use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+use rholang::rust::interpreter::rho_type::RhoString;
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 use crate::helper::process_context_ext::ProcessContextExt;
 

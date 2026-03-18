@@ -1,12 +1,10 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/BundleSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/
+// BundleSortMatcher.scala
 
+use super::par_sort_matcher::ParSortMatcher;
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
 use crate::rhoapi::Bundle;
-
-use super::{
-    par_sort_matcher::ParSortMatcher,
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
 
 pub struct BundleSortMatcher;
 

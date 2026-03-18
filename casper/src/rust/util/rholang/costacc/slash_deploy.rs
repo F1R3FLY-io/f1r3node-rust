@@ -1,21 +1,19 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/
+// SlashDeploy.scala
 
 use std::collections::HashMap;
 
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, public_key::PublicKey};
-use models::{
-    rhoapi::Par,
-    rust::{block_hash::BlockHash, utils::new_gstring_par},
-};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use models::rhoapi::Par;
+use models::rust::block_hash::BlockHash;
+use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::rust::{
-    errors::CasperError,
-    util::rholang::{
-        system_deploy::SystemDeployTrait, system_deploy_user_error::SystemDeployUserError,
-    },
-};
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 
 #[derive(Clone)]
 pub struct SlashDeploy {
@@ -56,13 +54,9 @@ impl SystemDeployTrait for SlashDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.initial_rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

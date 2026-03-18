@@ -1,16 +1,14 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/EquivocationTrackerStore.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
+// EquivocationTrackerStore.scala
 
 use std::collections::{BTreeSet, HashSet};
 
-use models::rust::{
-    block_hash::BlockHashSerde,
-    equivocation_record::{EquivocationRecord, SequenceNumber},
-    validator::ValidatorSerde,
-};
-use shared::rust::store::{
-    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-    key_value_typed_store_impl::KeyValueTypedStoreImpl,
-};
+use models::rust::block_hash::BlockHashSerde;
+use models::rust::equivocation_record::{EquivocationRecord, SequenceNumber};
+use models::rust::validator::ValidatorSerde;
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 #[derive(Clone)]
 pub struct EquivocationTrackerStore {

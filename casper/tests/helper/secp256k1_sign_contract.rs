@@ -1,14 +1,13 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.scala
+// See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.
+// scala
 
-use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
-use models::{
-    rhoapi::{ListParWithRandom, Par},
-    rust::utils::new_gbytearray_par,
-};
-use rholang::rust::interpreter::{
-    errors::illegal_argument_error, errors::InterpreterError, rho_type::RhoByteArray,
-    system_processes::ProcessContext,
-};
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey};
+use models::rhoapi::{ListParWithRandom, Par};
+use models::rust::utils::new_gbytearray_par;
+use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
+use rholang::rust::interpreter::rho_type::RhoByteArray;
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 use crate::helper::process_context_ext::ProcessContextExt;
 

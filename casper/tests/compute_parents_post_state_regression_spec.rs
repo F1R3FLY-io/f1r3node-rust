@@ -1,40 +1,34 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation},
-    key_value_block_store::KeyValueBlockStore,
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
-use casper::rust::{
-    casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-    errors::CasperError,
-    genesis::contracts::{proof_of_stake::ProofOfStake, validator::Validator as GenesisValidator},
-    genesis::genesis::Genesis,
-    util::{
-        proto_util,
-        rholang::{
-            interpreter_util::{compute_deploys_checkpoint, compute_parents_post_state},
-            runtime_manager::RuntimeManager,
-            system_deploy_enum::SystemDeployEnum,
-        },
-    },
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::errors::CasperError;
+use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::proto_util;
+use casper::rust::util::rholang::interpreter_util::{
+    compute_deploys_checkpoint, compute_parents_post_state,
 };
-use crypto::rust::signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg};
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use dashmap::{DashMap, DashSet};
-use models::rust::{
-    block::state_hash::StateHash,
-    block_hash::BlockHash,
-    block_implicits,
-    casper::protocol::casper_message::{BlockMessage, Bond},
-    validator::Validator,
-};
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_implicits;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
-use rholang::rust::interpreter::{
-    external_services::ExternalServices, system_processes::BlockData,
-};
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -536,6 +530,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
 
     assert!(
         matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; \
+         got {result:?}"
     );
 }

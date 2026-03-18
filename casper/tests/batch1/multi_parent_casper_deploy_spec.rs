@@ -1,12 +1,14 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperDeploySpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/
+// MultiParentCasperDeploySpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
+
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
@@ -173,7 +175,8 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     )
     .unwrap();
 
-    // Scala: BlockAPI.deploy[Effect](deployData, None, minPhloPrice = minPhloPrice, isNodeReadOnly, shardId = SHARD_ID)
+    // Scala: BlockAPI.deploy[Effect](deployData, None, minPhloPrice = minPhloPrice,
+    // isNodeReadOnly, shardId = SHARD_ID)
     let result = BlockAPI::deploy(
         &node.engine_cell,
         deploy_data,
@@ -191,7 +194,8 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     );
 
     // Scala: ex shouldBe a[RuntimeException]
-    // Scala: ex.getMessage shouldBe s"Phlo price $phloPrice is less than minimum price $minPhloPrice."
+    // Scala: ex.getMessage shouldBe s"Phlo price $phloPrice is less than minimum
+    // price $minPhloPrice."
     let error = result.unwrap_err();
     let error_message = format!("{:?}", error);
     let expected_message = format!(

@@ -23,8 +23,8 @@ fn preview_private_names_should_work_in_one_case() {
     // Scala comments:
     // When we deploy `new x ...` code from a javascript gRPC client,
     // we get this private name id in the log:
-    // 16:41:08.995 [node-runner-15] INFO  c.r.casper.MultiParentCasperImpl - Received Deploy #1542308065454 -- new x0, x1 in {
-    //   @{x1}!(...
+    // 16:41:08.995 [node-runner-15] INFO  c.r.casper.MultiParentCasperImpl -
+    // Received Deploy #1542308065454 -- new x0, x1 in {   @{x1}!(...
     // [Unforgeable(0xb5630d1bfb836635126ee7f2770873937933679e38146b1ddfbfcc14d7d8a787), bundle+ {   Unforgeable(0x00) }]
     // 2018-11-15T18:54:25.454Z
     assert_eq!(

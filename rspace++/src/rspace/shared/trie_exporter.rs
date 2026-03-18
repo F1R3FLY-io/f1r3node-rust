@@ -1,7 +1,7 @@
 // See shared/src/main/scala/coop/rchain/state/TrieExporter.scala
 
-use shared::rust::Byte;
 use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::Byte;
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 

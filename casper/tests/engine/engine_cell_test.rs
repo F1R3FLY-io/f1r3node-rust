@@ -1,8 +1,6 @@
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Barrier;
-use tokio::time::sleep;
 
 use async_trait::async_trait;
 use casper::rust::engine::engine::Engine;
@@ -10,6 +8,8 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::PeerNode;
 use models::rust::casper::protocol::casper_message::CasperMessage;
+use tokio::sync::Barrier;
+use tokio::time::sleep;
 
 /// Test engine that tracks method calls for verification
 #[derive(Clone)]
@@ -26,9 +26,7 @@ impl TestEngine {
         }
     }
 
-    fn get_init_count(&self) -> usize {
-        self.init_count.load(Ordering::SeqCst)
-    }
+    fn get_init_count(&self) -> usize { self.init_count.load(Ordering::SeqCst) }
 }
 
 #[async_trait]
@@ -201,9 +199,10 @@ async fn test_concurrent_reads_are_safe() {
     // Verify all tasks completed
     assert_eq!(results.len(), NUM_READERS);
 
-    // Note: We can't verify engine calls in spawned tasks due to non-Send futures limitation
-    // The test verifies that concurrent reads are safe (no panics or deadlocks)
-    // The engine call verification is commented out in the spawned tasks above
+    // Note: We can't verify engine calls in spawned tasks due to non-Send
+    // futures limitation The test verifies that concurrent reads are safe
+    // (no panics or deadlocks) The engine call verification is commented
+    // out in the spawned tasks above
 }
 
 #[tokio::test]
@@ -473,6 +472,7 @@ async fn test_engine_with_casper_behavior() {
         "TestEngine should return None from with_casper (simulates NoopEngine)"
     );
 
-    // Note: In real implementation, engines like Running or EngineWithCasper would return Some(casper)
-    // but for test engines, we keep it simple and return None to match NoopEngine behavior
+    // Note: In real implementation, engines like Running or EngineWithCasper
+    // would return Some(casper) but for test engines, we keep it simple and
+    // return None to match NoopEngine behavior
 }

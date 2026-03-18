@@ -1,24 +1,26 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployUtil.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployUtil.
+// scala
 
 use byteorder::{LittleEndian, WriteBytesExt};
-use crypto::rust::{
-    hash::blake2b512_random::Blake2b512Random, public_key::PublicKey, signatures::signed::Signed,
-};
-use models::rust::{casper::protocol::casper_message::DeployData, validator::Validator};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::validator::Validator;
 
 use super::tools::Tools;
 
 // Currently we have 4 system deploys -> refund, preCharge, closeBlock, Slashing
-// In every user deploy, the rnode would do the preCharge first, then execute the
-// user deploy and do the refund at last.
+// In every user deploy, the rnode would do the preCharge first, then execute
+// the user deploy and do the refund at last.
 //
 // The refund and preCharge system deploy
-// would use user deploy signature to generate the system deploy. The random seed of
-// the refund and preCharge has to be exactly the same to make sure replay the user
-// deploy would come out the exact same result.
+// would use user deploy signature to generate the system deploy. The random
+// seed of the refund and preCharge has to be exactly the same to make sure
+// replay the user deploy would come out the exact same result.
 //
-// As for closeBlock and slashing, the rnode would execute closeBlock system deploy in every block.
-// So for a block seed it would be enough to have:
+// As for closeBlock and slashing, the rnode would execute closeBlock system
+// deploy in every block. So for a block seed it would be enough to have:
 // PREFIX ++ PublicKey ++ seqNum serialized with protobuf.
 // This way we can be completely sure that collision cannot happen.
 // (Quote: https://github.com/rchain/rchain/pull/2879#discussion_r378948921)

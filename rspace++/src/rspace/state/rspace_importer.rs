@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 
-use rayon::ThreadPoolBuilder;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::ThreadPoolBuilder;
 use shared::rust::ByteVector;
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;

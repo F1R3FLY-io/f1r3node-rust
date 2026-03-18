@@ -84,9 +84,10 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
             let mut state = self.managers_state.lock().await;
 
             let (db, cfg) = db_instance_mapping.get(&db_name).ok_or({
-                heed::Error::Io(std::io::Error::other(
-                    format!("LMDB_Dir_Store_Manager: Key {} was not found", db_name),
-                ))
+                heed::Error::Io(std::io::Error::other(format!(
+                    "LMDB_Dir_Store_Manager: Key {} was not found",
+                    db_name
+                )))
             })?;
 
             let man_name = cfg.name.to_string();
@@ -113,9 +114,10 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
             })?
         };
         let mut manager = receiver.await.map_err(|e| {
-            heed::Error::Io(std::io::Error::other(
-                format!("LMDB_Dir_Store_Manager: Failed to receive manager, {}", e),
-            ))
+            heed::Error::Io(std::io::Error::other(format!(
+                "LMDB_Dir_Store_Manager: Failed to receive manager, {}",
+                e
+            )))
         })?;
 
         let database_name = db.name_override.clone().unwrap_or(db.id.clone());
@@ -169,9 +171,10 @@ impl LmdbDirStoreManager {
             config.max_dbs,
         );
         sender.send(manager).map_err(|_| {
-            heed::Error::Io(std::io::Error::other(
-                format!("Failed to send LMDB manager for {}", config.name),
-            ))
+            heed::Error::Io(std::io::Error::other(format!(
+                "Failed to send LMDB manager for {}",
+                config.name
+            )))
         })?;
 
         Ok(())

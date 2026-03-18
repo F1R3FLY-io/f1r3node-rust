@@ -1,47 +1,46 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/Resources.scala
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use dashmap::{DashMap, DashSet};
 use lazy_static::lazy_static;
+use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
+};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use std::collections::HashMap;
-use std::future::Future;
-use std::path::PathBuf;
-use std::sync::{atomic::AtomicU64, Arc, Mutex, OnceLock, RwLock};
 use tempfile::{Builder, TempDir};
 use uuid::Uuid;
 
-use casper::rust::{
-    genesis::genesis::Genesis, storage::rnode_key_value_store_manager::rnode_db_mapping,
-    util::rholang::runtime_manager::RuntimeManager,
-};
-use models::rhoapi::Par;
-use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
-use rspace_plus_plus::rspace::shared::{
-    key_value_store_manager::KeyValueStoreManager,
-    lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig, MB},
-};
-
 use crate::init_logger;
-use crate::util::genesis_builder::GenesisBuilder;
-use crate::util::genesis_builder::GenesisContext;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
 
 // Shared LMDB environment for all tests.
 //
-// This single environment is shared across all tests to avoid exhausting OS resources.
-// Test isolation is achieved through scoped database names (UUID prefixes) rather than
-// separate environments. This allows hundreds of tests to run efficiently without
-// hitting file descriptor or LMDB environment limits.
+// This single environment is shared across all tests to avoid exhausting OS
+// resources. Test isolation is achieved through scoped database names (UUID
+// prefixes) rather than separate environments. This allows hundreds of tests to
+// run efficiently without hitting file descriptor or LMDB environment limits.
 //
 // Resource Management:
 // - Single LMDB environment instead of 300+ separate environments
@@ -109,8 +108,8 @@ where
     let genesis_context = genesis_context().await?;
     let genesis_block = genesis_context.genesis_block.clone();
 
-    // Use the same scope_id as genesis to access all genesis data including RSpace history
-    // This ensures tests can reset to the genesis state root hash
+    // Use the same scope_id as genesis to access all genesis data including RSpace
+    // history This ensures tests can reset to the genesis state root hash
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
     // Use create_with_history to ensure tests can reset to genesis state root hash
     let (runtime_manager, _history_repo) = mk_runtime_manager_with_history_at(&mut *kvm).await;
@@ -154,18 +153,22 @@ pub fn mk_test_rnode_store_manager_with_scope(
 /// Creates a test store manager using a shared LMDB environment.
 ///
 /// This is the recommended approach for tests to avoid exhausting OS resources
-/// (file descriptors, LMDB environments). All tests share a single LMDB environment,
-/// with test isolation achieved through scoped database names (UUID prefixes).
+/// (file descriptors, LMDB environments). All tests share a single LMDB
+/// environment, with test isolation achieved through scoped database names
+/// (UUID prefixes).
 ///
 /// # Best Practices
-/// - Always use this function instead of `mk_test_rnode_store_manager()` for tests
+/// - Always use this function instead of `mk_test_rnode_store_manager()` for
+///   tests
 /// - Each test gets a unique scope_id via `generate_scope_id()`
 /// - The shared environment is automatically cleaned up when tests complete
-/// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
+/// - Works efficiently with parallel test execution (test-threads=4-8
+///   recommended)
 pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueStoreManager> {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Create the manager with scoped database names in the mapping
-    // This ensures isolation at the LMDB level while keeping lookup by original name
+    // This ensures isolation at the LMDB level while keeping lookup by original
+    // name
     Box::new(mk_test_rnode_store_manager_with_scope(
         shared_path.clone(),
         Some(scope_id),
@@ -176,9 +179,7 @@ pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueS
 ///
 /// Each test should use a unique scope ID to ensure database isolation
 /// within the shared LMDB environment.
-pub fn generate_scope_id() -> String {
-    Uuid::new_v4().to_string()
-}
+pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
 
 /// Returns the path to the shared LMDB environment.
 ///
@@ -192,11 +193,13 @@ pub fn get_shared_lmdb_path() -> PathBuf {
 /// Creates a test store manager with dual scoping for RSpace and other stores.
 ///
 /// This function creates a manager where:
-/// - RSpace stores (rspace-history, rspace-roots, rspace-cold) use `rspace_scope`
+/// - RSpace stores (rspace-history, rspace-roots, rspace-cold) use
+///   `rspace_scope`
 /// - All other stores (blocks, DAG, deploys, etc.) use `node_scope`
 ///
-/// This allows multiple nodes within a test to share RSpace state (see each other's
-/// committed roots) while maintaining isolation for block and DAG stores.
+/// This allows multiple nodes within a test to share RSpace state (see each
+/// other's committed roots) while maintaining isolation for block and DAG
+/// stores.
 pub fn mk_test_rnode_store_manager_with_dual_scope(
     node_scope: String,
     rspace_scope: String,
@@ -271,7 +274,8 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
 /// Creates a test store manager using the genesis rspace_scope_id directly.
 ///
 /// This function reuses the same RSpace scope where genesis was created,
-/// giving direct access to the genesis RSpace history and roots without copying.
+/// giving direct access to the genesis RSpace history and roots without
+/// copying.
 ///
 /// CRITICAL: Uses rspace_scope_id, not scope_id! Genesis RSpace data is stored
 /// in the rspace_scope_id, which ensures tests can access the genesis state and
@@ -313,6 +317,9 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, RwLock};
+
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
@@ -321,8 +328,6 @@ pub async fn block_dag_storage_from_dyn(
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use std::collections::BTreeSet;
-    use std::sync::{Arc, RwLock};
 
     let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
         shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -424,10 +429,11 @@ pub async fn casper_buffer_storage_from_dyn(
     block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
+    use std::collections::HashSet;
+
     use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
     use models::rust::block_hash::BlockHashSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use std::collections::HashSet;
 
     let parents_store_kv = kvm.store("parents-map".to_string()).await.map_err(|e| {
         shared::rust::store::key_value_store::KvStoreError::IoError(format!(

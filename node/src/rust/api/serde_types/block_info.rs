@@ -7,9 +7,8 @@ use models::casper::{BlockInfo, DeployInfo};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::{
-    deploy_info::DeployInfoSerde, light_block_info::LightBlockInfoSerde,
-};
+use crate::rust::api::serde_types::deploy_info::DeployInfoSerde;
+use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[derive(Default)]
@@ -36,28 +35,19 @@ impl From<BlockInfoSerde> for BlockInfo {
     fn from(json: BlockInfoSerde) -> Self {
         BlockInfo {
             block_info: Some(json.block_info.into()),
-            deploys: json
-                .deploys
-                .into_iter()
-                .map(DeployInfo::from)
-                .collect(),
+            deploys: json.deploys.into_iter().map(DeployInfo::from).collect(),
         }
     }
 }
 
 pub fn serialize_block_info<S>(block: BlockInfo, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
+where S: Serializer {
     let json_block = BlockInfoSerde::from(block);
     json_block.serialize(serializer)
 }
 
 pub fn deserialize_block_info<'de, D>(deserializer: D) -> Result<BlockInfo, D::Error>
-where
-    D: Deserializer<'de>,
-{
+where D: Deserializer<'de> {
     let json_block = BlockInfoSerde::deserialize(deserializer)?;
     Ok(json_block.into())
 }
-

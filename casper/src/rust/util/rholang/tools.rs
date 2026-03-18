@@ -1,6 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/Tools.scala
 
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, public_key::PublicKey};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
 use models::casper::DeployDataProto;
 use prost::Message;
 

@@ -1,18 +1,17 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/ConflictSetMerger.scala
 
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
 use models::rhoapi::ListParWithRandom;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
-use rspace_plus_plus::rspace::{
-    errors::HistoryError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    hot_store_trie_action::HotStoreTrieAction,
-    internal::Datum,
-    merger::{merging_logic::NumberChannelsDiff, state_change::StateChange},
-};
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 type Branch<R> = HashableSet<R>;
@@ -103,7 +102,8 @@ pub fn merge<
         (rejected, to_merge)
     };
 
-    // Compute related sets to split merging set into branches without cross dependencies
+    // Compute related sets to split merging set into branches without cross
+    // dependencies
     use rspace_plus_plus::rspace::merger::merging_logic::compute_related_sets;
     let (branches, branches_time) =
         measure_time(|| compute_related_sets(&merge_set, |a, b| depends(a, b)));
@@ -114,7 +114,8 @@ pub fn merge<
     let (conflict_map, conflicts_map_time) =
         measure_time(|| compute_relation_map(&branches_set, |a, b| conflicts(a, b)));
 
-    // Compute rejection options that leave only non-conflicting branches with timing
+    // Compute rejection options that leave only non-conflicting branches with
+    // timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
     let (rejection_options, rejection_options_time) =
         measure_time(|| compute_rejection_options(&conflict_map));
@@ -204,8 +205,8 @@ pub fn merge<
     // Detailed INFO logging for rejection breakdown (always visible)
     info!(
         "ConflictSetMerger rejection breakdown: lateSet={}, rejectedAsDependents={}, \
-        optimalRejection={}, total rejected={}, branches={}, toMerge={}, \
-        conflictMap entries with conflicts={}, rejectionOptions={}, rejectionOptionsWithOverflow={}",
+         optimalRejection={}, total rejected={}, branches={}, toMerge={}, conflictMap entries \
+         with conflicts={}, rejectionOptions={}, rejectionOptionsWithOverflow={}",
         late_set.len(),
         rejected_as_dependents.0.len(),
         optimal_rejection_flattened.0.len(),
@@ -214,7 +215,7 @@ pub fn merge<
         to_merge.len(),
         conflict_map.iter().filter(|(_, v)| !v.0.is_empty()).count(),
         rejection_options.0.len(),
-        1  // rejectionOptionsWithOverflow.size - approximation
+        1 // rejectionOptionsWithOverflow.size - approximation
     );
 
     // Sort toMerge for deterministic processing order
@@ -259,9 +260,9 @@ pub fn merge<
     // Prepare log message
     let log_str = format!(
         "Merging done: late set size {}; actual set size {}; computed branches ({}) in {:?}; \
-        conflicts map in {:?}; rejection options ({}) in {:?}; optimal rejection set size {}; \
-        rejected as late dependency {}; changes combined in {:?}; trie actions ({}) in {:?}; \
-        actions applied in {:?}",
+         conflicts map in {:?}; rejection options ({}) in {:?}; optimal rejection set size {}; \
+         rejected as late dependency {}; changes combined in {:?}; trie actions ({}) in {:?}; \
+         actions applied in {:?}",
         late_set.len(),
         actual_set.len(),
         branches_set.0.len(),
@@ -305,7 +306,8 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             .collect::<Vec<_>>()
             .len()
             == options.0.len(),
-        "Same rejection unit is found in two rejection options. Please report this to code maintainer."
+        "Same rejection unit is found in two rejection options. Please report this to code \
+         maintainer."
     );
 
     // Convert to sorted list for deterministic processing
@@ -327,8 +329,9 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first branch
-        // Use sorted branches and min element for deterministic tie-breaking
+        // Third criterion: For tie-breaking, compare the first element of the first
+        // branch Use sorted branches and min element for deterministic
+        // tie-breaking
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
@@ -359,16 +362,18 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> Option<HashMap<Blake2b256Hash, i64>> {
     // Combine all channel diffs from the branch
-    let diff = branch.0.iter().map(mergeable_channels).fold(
-        NumberChannelsDiff::new(),
-        |mut acc, x| {
-            // Manually combine maps by adding values for each key
-            for (k, v) in x {
-                *acc.entry(k).or_insert(0) += v;
-            }
-            acc
-        },
-    );
+    let diff =
+        branch
+            .0
+            .iter()
+            .map(mergeable_channels)
+            .fold(NumberChannelsDiff::new(), |mut acc, x| {
+                // Manually combine maps by adding values for each key
+                for (k, v) in x {
+                    *acc.entry(k).or_insert(0) += v;
+                }
+                acc
+            });
 
     // Start with Some(origin_result) and fold over the diffs
     diff.iter()
@@ -398,7 +403,8 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
     sorted_branches.sort_by(|a, b| compare_branches(a, b));
 
-    // Fold branches to find which ones would result in negative or overflow balances
+    // Fold branches to find which ones would result in negative or overflow
+    // balances
     let (_, rejected) = sorted_branches.iter().fold(
         (base_balance, HashableSet(HashSet::new())),
         |(balances, mut rejected), branch| {
@@ -474,8 +480,9 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::{BTreeMap, HashSet};
+
+    use super::*;
 
     fn branch(items: &[i32]) -> Branch<i32> {
         HashableSet(items.iter().copied().collect::<HashSet<i32>>())

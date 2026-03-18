@@ -1,10 +1,12 @@
-use crate::rust::{
-    private_key::PrivateKey, public_key::PublicKey, signatures::signatures_alg::SignaturesAlg,
-};
+use std::path::Path;
+
 use eyre::{Context, Result};
 use hex;
 use openssl::pkey::PKey;
-use std::path::Path;
+
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
+use crate::rust::signatures::signatures_alg::SignaturesAlg;
 /// Key generation and file writing utilities
 /// Equivalent to Scala's KeyUtil.writeKeys functionality
 pub struct KeyUtil;
@@ -15,7 +17,8 @@ impl KeyUtil {
     pub fn write_keys<P: AsRef<Path>>(
         private_key: &PrivateKey,
         public_key: &PublicKey,
-        sig_algorithm: Box<dyn SignaturesAlg>, // Added for compatibility with Scala, while it is not used anywhere in the code
+        sig_algorithm: Box<dyn SignaturesAlg>, /* Added for compatibility with Scala, while it
+                                                * is not used anywhere in the code */
         password: &str,
         private_key_pem_path: P,
         public_key_pem_path: P,
@@ -71,7 +74,8 @@ impl KeyUtil {
     ) -> Result<()> {
         let path = path.as_ref();
 
-        // Export as encrypted PEM using AES-256-CBC (matching Scala's JcePEMEncryptorBuilder)
+        // Export as encrypted PEM using AES-256-CBC (matching Scala's
+        // JcePEMEncryptorBuilder)
         let encrypted_pem = pkey
             .private_key_to_pem_pkcs8_passphrase(
                 openssl::symm::Cipher::aes_256_cbc(),
@@ -128,10 +132,11 @@ impl KeyUtil {
 
 #[cfg(test)]
 mod tests {
-    use crate::rust::signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg};
+    use tempfile::NamedTempFile;
 
     use super::*;
-    use tempfile::NamedTempFile;
+    use crate::rust::signatures::secp256k1::Secp256k1;
+    use crate::rust::signatures::signatures_alg::SignaturesAlg;
 
     fn generate_and_write_keys<P: AsRef<Path>>(
         password: &str,

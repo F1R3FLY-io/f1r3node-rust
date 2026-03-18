@@ -1,17 +1,15 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockRetriever.scala
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use comm::rust::{
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
-use models::rust::{block_hash::BlockHash, casper::pretty_printer::PrettyPrinter};
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use shared::rust::env;
 use tracing::{debug, info};
 
@@ -59,7 +57,8 @@ pub struct RequestState {
 }
 
 // Scala: type RequestedBlocks[F[_]] = Ref[F, Map[BlockHash, RequestState]]
-// In Rust, we use Arc<Mutex<...>> as shared mutable state (passed as implicit in Scala)
+// In Rust, we use Arc<Mutex<...>> as shared mutable state (passed as implicit
+// in Scala)
 pub type RequestedBlocks = Arc<Mutex<HashMap<BlockHash, RequestState>>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,13 +68,13 @@ enum AckReceiveResult {
 }
 
 /**
-* BlockRetriever makes sure block is received once Casper request it.
-* Block is in scope of BlockRetriever until it is added to CasperBuffer.
-*
-* Scala: BlockRetriever.of[F[_]: Monad: RequestedBlocks: ...]
-* In Scala, RequestedBlocks is passed as an implicit parameter (type class constraint).
-* In Rust, we explicitly pass it as a constructor parameter.
-*/
+ * BlockRetriever makes sure block is received once Casper request it.
+ * Block is in scope of BlockRetriever until it is added to CasperBuffer.
+ *
+ * Scala: BlockRetriever.of[F[_]: Monad: RequestedBlocks: ...]
+ * In Scala, RequestedBlocks is passed as an implicit parameter (type class
+ * constraint). In Rust, we explicitly pass it as a constructor parameter.
+ */
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
@@ -274,7 +273,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             .set(dep_size as f64);
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
             .set(broadcast_size as f64);
-        // Reuse broadcast-tracking gauge as a proxy to include the requery cooldown map pressure.
+        // Reuse broadcast-tracking gauge as a proxy to include the requery cooldown map
+        // pressure.
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "kind" => "peer_requery")
             .set(peer_requery_size as f64);
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "kind" => "retry_attempts")
@@ -492,7 +492,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Creates a new BlockRetriever with shared requested_blocks state.
     ///
     /// # Arguments
-    /// * `requested_blocks` - Shared state for tracking block requests (equivalent to Scala implicit RequestedBlocks[F])
+    /// * `requested_blocks` - Shared state for tracking block requests
+    ///   (equivalent to Scala implicit RequestedBlocks[F])
     /// * `transport` - Transport layer for network communication
     /// * `connections_cell` - Peer connections
     /// * `conf` - RP configuration
@@ -548,7 +549,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         &self,
         hash: &BlockHash,
     ) -> Result<u64, CasperError> {
-        // Back off progressively for hashes that keep failing to resolve, to reduce retry storms.
+        // Back off progressively for hashes that keep failing to resolve, to reduce
+        // retry storms.
         let attempts = self.retry_attempt_count(hash)?;
         let base = Self::peer_requery_retry_cooldown_ms();
         if attempts <= 8 {
@@ -564,7 +566,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         hash: &BlockHash,
         base_interval_ms: u64,
     ) -> Result<u64, CasperError> {
-        // Apply adaptive backoff so repeatedly unresolved hashes are retried less aggressively.
+        // Apply adaptive backoff so repeatedly unresolved hashes are retried less
+        // aggressively.
         let attempts = self.retry_attempt_count(hash)?;
         if attempts <= 4 {
             return Ok(base_interval_ms);
@@ -619,9 +622,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     /// Get access to the requested_blocks for testing purposes
-    pub fn requested_blocks(&self) -> &RequestedBlocks {
-        &self.requested_blocks
-    }
+    pub fn requested_blocks(&self) -> &RequestedBlocks { &self.requested_blocks }
 
     /// Helper method to add a source peer to an existing request
     fn add_source_peer_to_request(
@@ -661,14 +662,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
         if let std::collections::hash_map::Entry::Vacant(e) = init_state.entry(hash) {
             e.insert(RequestState {
-                    timestamp: now,
-                    initial_timestamp: now,
-                    peers: HashSet::new(),
-                    received: mark_as_received,
-                    in_casper_buffer: false,
-                    waiting_list: normalized_waiting_list,
-                    peer_requery_cursor: 0,
-                });
+                timestamp: now,
+                initial_timestamp: now,
+                peers: HashSet::new(),
+                received: mark_as_received,
+                in_casper_buffer: false,
+                waiting_list: normalized_waiting_list,
+                peer_requery_cursor: 0,
+            });
             true
         } else {
             false // Request already exists
@@ -992,7 +993,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
                     if !received {
                         debug!(
-                            "Casper loop: checking if should re-request {}. Received: {}. rerequest_interval_ms={}.",
+                            "Casper loop: checking if should re-request {}. Received: {}. \
+                             rerequest_interval_ms={}.",
                             PrettyPrinter::build_string_bytes(&hash),
                             received,
                             rerequest_interval_ms
@@ -1027,7 +1029,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         self.cleanup_aux_tracking_for_hash(&hash)?;
                         metrics::counter!(BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => "retry_budget").increment(1);
                         debug!(
-                            "Evicting unresolved block request {} after reaching retry budget {}. Quarantine for {}ms.",
+                            "Evicting unresolved block request {} after reaching retry budget {}. \
+                             Quarantine for {}ms.",
                             PrettyPrinter::build_string_bytes(&hash),
                             Self::max_retries_per_hash(),
                             Self::retry_budget_quarantine_ms()
@@ -1077,8 +1080,9 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
-    /// This is used when the processor detects buffered dependency deadlocks.
+    /// Force dependency recovery by reopening request state and rebroadcasting
+    /// HasBlockRequest. This is used when the processor detects buffered
+    /// dependency deadlocks.
     pub async fn recover_dependency(&self, hash: BlockHash) -> Result<(), CasperError> {
         let now = Self::current_millis();
 
@@ -1106,7 +1110,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 )
                 .increment(1);
                 debug!(
-                    "Evicting dependency {} during recovery after retry budget exhaustion. Quarantine for {}ms.",
+                    "Evicting dependency {} during recovery after retry budget exhaustion. \
+                     Quarantine for {}ms.",
                     PrettyPrinter::build_string_bytes(&hash),
                     Self::retry_budget_quarantine_ms()
                 );
@@ -1176,7 +1181,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Helper method to try re-requesting a block from the next peer in waiting list
+    /// Helper method to try re-requesting a block from the next peer in waiting
+    /// list
     async fn try_rerequest(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         enum RerequestAction {
             RequestPeer(PeerNode, Vec<PeerNode>),
@@ -1188,7 +1194,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         let peer_requery_attempts = self.peer_requery_attempt_count(hash)?;
         let known_peer_requery_soft_limit = Self::known_peer_requery_soft_limit();
 
-        // Determine retry action and update request timestamp only when a network request is attempted.
+        // Determine retry action and update request timestamp only when a network
+        // request is attempted.
         let action = {
             let now = Self::current_millis();
             let mut state = self.requested_blocks.lock().map_err(|_| {
@@ -1212,7 +1219,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         std::cmp::min(known_peer_requery_soft_limit, known_peer_count),
                     );
                     // Budget based on known-peer requery attempts only.
-                    // Using total retries here incorrectly consumes budget with waiting-list peer requests.
+                    // Using total retries here incorrectly consumes budget with waiting-list peer
+                    // requests.
                     if peer_requery_attempts < peer_requery_budget {
                         RerequestAction::RequestKnownPeer(known_peer, now)
                     } else {
@@ -1248,7 +1256,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     .request_for_block(&self.conf, &next_peer, hash.clone())
                     .await?;
 
-                // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
+                // If this was the last peer in the waiting list, also broadcast
+                // HasBlockRequest.
                 if remaining_waiting.is_empty() {
                     debug!(
                         "Last peer in waiting list for block {}. Broadcasting HasBlockRequest.",
@@ -1364,7 +1373,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
 
             match state.get(&hash) {
-                // There might be blocks that are not maintained by RequestedBlocks, e.g. fork-choice tips
+                // There might be blocks that are not maintained by RequestedBlocks, e.g.
+                // fork-choice tips
                 None => {
                     Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new());
                     (AckReceiveResult::AddedAsReceived, None)
@@ -1380,7 +1390,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
         };
 
-        // Record block download end-to-end time if we have the original request timestamp
+        // Record block download end-to-end time if we have the original request
+        // timestamp
         if let Some(timestamp) = request_timestamp {
             let download_time_ms = now.saturating_sub(timestamp);
             let download_time_seconds = download_time_ms as f64 / 1000.0;
@@ -1425,7 +1436,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Explicitly stop tracking a hash when it is no longer required by CasperBuffer dependency graph.
+    /// Explicitly stop tracking a hash when it is no longer required by
+    /// CasperBuffer dependency graph.
     pub fn forget_hash_tracking(&self, hash: &BlockHash) -> Result<(), CasperError> {
         self.cleanup_hash_tracking(hash)
     }
@@ -1498,11 +1510,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use prost::bytes::Bytes;
+
+    use super::*;
 
     fn peer_node(name: &str, port: u16) -> PeerNode {
         PeerNode {
@@ -1539,18 +1552,15 @@ mod tests {
         let stale_initial = now.saturating_sub(120_000);
 
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale_initial,
-                    initial_timestamp: stale_initial,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale_initial,
+                initial_timestamp: stale_initial,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1629,18 +1639,15 @@ mod tests {
         let hash: BlockHash = Bytes::from_static(b"orphan-dependency-hash");
         let now = BlockRetriever::<TransportLayerStub>::current_millis();
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: now,
-                    initial_timestamp: now,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: now,
+                initial_timestamp: now,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1683,18 +1690,15 @@ mod tests {
         let mut peers = HashSet::new();
         peers.insert(remote);
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale,
-                    initial_timestamp: stale,
-                    peers,
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale,
+                initial_timestamp: stale,
+                peers,
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1755,18 +1759,15 @@ mod tests {
             Duration::from_secs(2),
         );
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale,
-                    initial_timestamp: stale,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: vec![waiting_peer.clone()],
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale,
+                initial_timestamp: stale,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: vec![waiting_peer.clone()],
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1777,7 +1778,8 @@ mod tests {
         let first_count = transport.request_count();
         assert_eq!(
             first_count, 1,
-            "first retry should request from waiting peer (broadcast may be a no-op when no connections)"
+            "first retry should request from waiting peer (broadcast may be a no-op when no \
+             connections)"
         );
 
         let mut state = block_retriever

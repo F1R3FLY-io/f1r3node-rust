@@ -1,23 +1,20 @@
-use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
-    response::Response,
-    routing::get,
-    Router,
-};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::Response;
+use axum::routing::get;
+use axum::Router;
 use futures::StreamExt;
 use serde_json::{json, Value};
-
-use shared::rust::shared::{f1r3fly_event::F1r3flyEvent, f1r3fly_events::EventStream};
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::EventStream;
 use tracing::error;
 
 use crate::rust::web::shared_handlers::AppState;
 
 // TODO: This implementation differs from the Scala code in the main branch.
 // The main trade-off is that we are transforming events in every tokio task.
-// Instead it would be great if we could transform events in a single tokio task and then broadcast them to all websocket handlers.
+// Instead it would be great if we could transform events in a single tokio task
+// and then broadcast them to all websocket handlers.
 pub struct EventsInfo;
 
 impl EventsInfo {
@@ -61,8 +58,8 @@ impl EventsInfo {
         Ok(())
     }
 
-    // Transforms an F1r3flyEvent into a JSON structure matching the Scala implementation
-    // This converts the discriminated union to a structure with:
+    // Transforms an F1r3flyEvent into a JSON structure matching the Scala
+    // implementation This converts the discriminated union to a structure with:
     // - "event": the event type
     // - "schema-version": 1
     // - "payload": the rest of the fields
@@ -110,9 +107,10 @@ pub async fn events_info_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
     use shared::rust::shared::f1r3fly_event::DeployEvent;
+
+    use super::*;
 
     fn create_test_deploy(id: &str) -> DeployEvent {
         DeployEvent::new(id.to_string(), 100, "deployer1".to_string(), false)

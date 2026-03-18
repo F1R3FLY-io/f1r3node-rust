@@ -1,53 +1,48 @@
 // See models/src/test/scala/coop/rchain/models/blockImplicits.scala
 
-use proptest::{prelude::*, strategy::ValueTree, test_runner::TestRunner};
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use proptest::prelude::*;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::TestRunner;
 use rand::prelude::*;
 
-use crypto::rust::signatures::{
-    secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed,
+use super::block::state_hash::{self, StateHash};
+use super::block_hash::{self, BlockHash};
+use super::casper::protocol::casper_message::{
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy,
 };
-
+use super::validator::{self, Validator};
 use crate::rhoapi::PCost;
 
-use super::{
-    block::state_hash::{self, StateHash},
-    block_hash::{self, BlockHash},
-    casper::protocol::casper_message::{
-        BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-        ProcessedSystemDeploy,
-    },
-    validator::{self, Validator},
-};
-
 pub fn block_hash_gen() -> impl Strategy<Value = BlockHash> {
-    prop::collection::vec(any::<u8>(), block_hash::LENGTH)
-        .prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), block_hash::LENGTH).prop_map(prost::bytes::Bytes::from)
 }
 
 pub fn state_hash_gen() -> impl Strategy<Value = StateHash> {
-    prop::collection::vec(any::<u8>(), state_hash::LENGTH)
-        .prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), state_hash::LENGTH).prop_map(prost::bytes::Bytes::from)
 }
 
 pub fn validator_gen() -> impl Strategy<Value = Validator> {
-    prop::collection::vec(any::<u8>(), validator::LENGTH)
-        .prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from)
 }
 
 pub fn bond_gen() -> impl Strategy<Value = Bond> {
-    let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
-        .prop_map(prost::bytes::Bytes::from);
+    let validator_gen =
+        prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from);
     let stake_gen = 1i64..=1024i64;
     (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond { validator, stake })
 }
 
 pub fn justification_gen() -> impl Strategy<Value = Justification> {
-    let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
-        .prop_map(prost::bytes::Bytes::from);
+    let validator_gen =
+        prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from);
     let block_hash_gen = block_hash_gen();
     (validator_gen, block_hash_gen).prop_map(|(validator, latest_block_hash)| Justification {
-        validator: validator,
-        latest_block_hash: latest_block_hash,
+        validator,
+        latest_block_hash,
     })
 }
 
@@ -228,7 +223,7 @@ pub fn block_element_gen(
                 };
 
                 BlockMessage {
-                    block_hash: block_hash,
+                    block_hash,
                     ..block
                 }
             },

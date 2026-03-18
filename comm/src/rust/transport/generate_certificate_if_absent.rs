@@ -1,20 +1,21 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/GenerateCertificateIfAbsent.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/
+// GenerateCertificateIfAbsent.scala
 
 use crypto::rust::util::certificate_helper::{
     CertificateError, CertificateHelper, CertificatePrinter,
 };
 use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
 use tokio::fs;
+use tracing::info;
 
 use crate::rust::transport::tls_conf::TlsConf;
-
-use tracing::info;
 
 /// Generate certificate if absent
 ///
 /// This function checks if a certificate exists at the configured path.
-/// If not, and customCertificateLocation is false, it generates a new certificate.
-/// If a key already exists, it uses that; otherwise, it generates a new key pair.
+/// If not, and customCertificateLocation is false, it generates a new
+/// certificate. If a key already exists, it uses that; otherwise, it generates
+/// a new key pair.
 pub async fn create(tls: &TlsConf) -> Result<(), CertificateError> {
     // Generate certificate if not provided as option or in the data dir
     if !tls.custom_certificate_location && !tls.certificate_path.exists() {
@@ -74,18 +75,20 @@ async fn write_cert(
 
     if let Some(parent) = tls.certificate_path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
-            CertificateError::Io(std::io::Error::other(
-                format!("Failed to create certificate directory: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to create certificate directory: {}",
+                e
+            )))
         })?;
     }
 
     fs::write(&tls.certificate_path, cert_pem)
         .await
         .map_err(|e| {
-            CertificateError::Io(std::io::Error::other(
-                format!("Failed to write certificate: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to write certificate: {}",
+                e
+            )))
         })?;
 
     Ok(())
@@ -96,16 +99,15 @@ async fn write_key(tls: &TlsConf, secret_key: &P256SecretKey) -> Result<(), Cert
 
     if let Some(parent) = tls.key_path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
-            CertificateError::Io(std::io::Error::other(
-                format!("Failed to create key directory: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to create key directory: {}",
+                e
+            )))
         })?;
     }
 
     fs::write(&tls.key_path, key_pem).await.map_err(|e| {
-        CertificateError::Io(std::io::Error::other(
-            format!("Failed to write key: {}", e),
-        ))
+        CertificateError::Io(std::io::Error::other(format!("Failed to write key: {}", e)))
     })?;
 
     Ok(())

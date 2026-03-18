@@ -1,42 +1,34 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
 use std::sync::{Arc, Mutex};
-use tracing;
 
-use block_storage::rust::{
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use comm::rust::{
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-
-use crate::rust::{
-    block_status::{BlockError, InvalidBlock},
-    blocks::proposer::{
-        block_creator,
-        propose_result::{
-            BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
-            ProposeFailure, ProposeResult,
-        },
-    },
-    casper::{Casper, CasperSnapshot},
-    engine::block_retriever::BlockRetriever,
-    errors::CasperError,
-    last_finalized_height_constraint_checker,
-    multi_parent_casper_impl::{self},
-    synchrony_constraint_checker,
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-    ValidBlockProcessing,
-};
+use tracing;
 
 use super::propose_result::ProposeStatus;
+use crate::rust::block_status::{BlockError, InvalidBlock};
+use crate::rust::blocks::proposer::block_creator;
+use crate::rust::blocks::proposer::propose_result::{
+    BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
+    ProposeFailure, ProposeResult,
+};
+use crate::rust::casper::{Casper, CasperSnapshot};
+use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::errors::CasperError;
+use crate::rust::multi_parent_casper_impl::{self};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::validator_identity::ValidatorIdentity;
+use crate::rust::{
+    last_finalized_height_constraint_checker, synchrony_constraint_checker, ValidBlockProcessing,
+};
 
 pub struct ProposeReturnType {
     pub propose_result: ProposeResult,
@@ -106,7 +98,8 @@ pub trait ProposeEffectHandler {
         block: &BlockMessage,
     ) -> Result<(), CasperError>;
 
-    /// Publish BlockCreated event immediately after block creation (before validation).
+    /// Publish BlockCreated event immediately after block creation (before
+    /// validation).
     fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError>;
 }
 
@@ -118,9 +111,7 @@ pub enum ProposerResult {
 }
 
 impl ProposerResult {
-    pub fn empty() -> Self {
-        Self::Empty
-    }
+    pub fn empty() -> Self { Self::Empty }
 
     pub fn success(status: ProposeStatus, block: BlockMessage) -> Self {
         Self::Success(status, block)
@@ -130,9 +121,7 @@ impl ProposerResult {
         Self::Failure(status, seq_number)
     }
 
-    pub fn started(seq_number: i32) -> Self {
-        Self::Started(seq_number)
-    }
+    pub fn started(seq_number: i32) -> Self { Self::Started(seq_number) }
 }
 
 pub struct Proposer<C, A, S, H, BC, BV, E>
@@ -154,8 +143,9 @@ where
     pub block_creator: BC,
     pub block_validator: BV,
     pub propose_effect_handler: E,
-    /// When true, allows creating blocks with only system deploys (no user deploys).
-    /// This is required for heartbeat to create empty blocks for liveness.
+    /// When true, allows creating blocks with only system deploys (no user
+    /// deploys). This is required for heartbeat to create empty blocks for
+    /// liveness.
     pub allow_empty_blocks: bool,
 }
 
@@ -226,7 +216,8 @@ where
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
-                        // Publish BlockCreated event immediately after block is created (before validation)
+                        // Publish BlockCreated event immediately after block is created (before
+                        // validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
 
                         let validation_result = casper
@@ -246,8 +237,9 @@ where
                                 Ok((ProposeResult::success(valid_status), Some(block)))
                             }
                             ValidBlockProcessing::Left(invalid_reason) => {
-                                // Some self-validation failures are recoverable races in fast, multi-parent
-                                // proposing: parent selection can become stale, and safety checks can reject
+                                // Some self-validation failures are recoverable races in fast,
+                                // multi-parent proposing: parent
+                                // selection can become stale, and safety checks can reject
                                 // the candidate by the time validation runs.
                                 if matches!(
                                     invalid_reason,
@@ -288,8 +280,8 @@ where
                                     )
                                     .increment(1);
                                     tracing::info!(
-                                        "Block validation failed with {:?} - \
-                                         proposal conditions no longer met, skipping propose",
+                                        "Block validation failed with {:?} - proposal conditions \
+                                         no longer met, skipping propose",
                                         invalid_reason
                                     );
                                     return Ok((
@@ -300,7 +292,8 @@ where
 
                                 // Other validation failures are unexpected and should error
                                 Err(CasperError::RuntimeError(format!(
-                                    "Validation of self created block failed with reason: {:?}, cancelling propose.",
+                                    "Validation of self created block failed with reason: {:?}, \
+                                     cancelling propose.",
                                     invalid_reason
                                 )))
                             }
@@ -409,7 +402,8 @@ where
         let allow_empty_for_recovery = finality_lag > 20;
         if allow_empty_for_recovery && !is_async {
             tracing::info!(
-                "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
+                "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, \
+                 block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
                 finality_lag,
                 block_lag,
                 seq_lag,
@@ -624,9 +618,7 @@ pub struct ProductionHeightChecker {
 }
 
 impl ProductionHeightChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
-        Self { validator }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl HeightChecker for ProductionHeightChecker {
@@ -739,8 +731,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
             .ack_in_casper(block.block_hash.clone())
             .await?;
 
-        // Broadcast hash to peers on a best-effort basis, but do not let network fan-out tail
-        // block local propose completion latency.
+        // Broadcast hash to peers on a best-effort basis, but do not let network
+        // fan-out tail block local propose completion latency.
         let transport = Arc::clone(&self.transport);
         let connections_cell = self.connections_cell.clone();
         let conf = self.conf.clone();

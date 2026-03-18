@@ -1,5 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TestUtil.scala
-// This is the ORIGINAL SCALA MAIN CODE implementation (not the modified version currently in main)
+// This is the ORIGINAL SCALA MAIN CODE implementation (not the modified version
+// currently in main)
+
+use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
@@ -9,7 +12,6 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use std::collections::HashMap;
 
 pub struct TestUtil;
 

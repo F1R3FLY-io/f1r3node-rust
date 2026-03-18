@@ -9,23 +9,15 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn new(bytes: prost::bytes::Bytes) -> Self {
-        PublicKey { bytes }
-    }
+    pub fn new(bytes: prost::bytes::Bytes) -> Self { PublicKey { bytes } }
 
-    pub fn from_bytes(bs: &[u8]) -> Self {
-        PublicKey::new(bs.to_vec().into())
-    }
+    pub fn from_bytes(bs: &[u8]) -> Self { PublicKey::new(bs.to_vec().into()) }
 }
 
 impl PartialEq for PublicKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.bytes == other.bytes
-    }
+    fn eq(&self, other: &Self) -> bool { self.bytes == other.bytes }
 }
 
 impl Hash for PublicKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bytes.hash(state);
-    }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.bytes.hash(state); }
 }

@@ -1,23 +1,17 @@
 // See comm/src/test/scala/coop/rchain/comm/rp/ClearConnectionsSpec.scala
 
-use prost::bytes::Bytes;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use comm::rust::errors::{timeout, CommError};
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::rp::connect::{clear_connections, Connections, ConnectionsCell};
+use comm::rust::rp::rp_conf::{ClearConnectionsConf, RPConf};
 use comm::rust::test_instances::{NodeDiscoveryStub, TransportLayerStub, NETWORK_ID};
-use comm::rust::{
-    errors::{timeout, CommError},
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    rp::{
-        connect::{clear_connections, Connections, ConnectionsCell},
-        rp_conf::{ClearConnectionsConf, RPConf},
-    },
-};
+use prost::bytes::Bytes;
 
 /// Helper function to create a peer with given name and default host/port
-fn peer(name: &str) -> PeerNode {
-    peer_with_host(name, "host")
-}
+fn peer(name: &str) -> PeerNode { peer_with_host(name, "host") }
 
 /// Helper function to create a peer with given name and host
 fn peer_with_host(name: &str, host: &str) -> PeerNode {
@@ -77,20 +71,14 @@ impl TrackingNodeDiscovery {
         }
     }
 
-    fn get_removed_keys(&self) -> Vec<Bytes> {
-        self.removed_keys.lock().unwrap().clone()
-    }
+    fn get_removed_keys(&self) -> Vec<Bytes> { self.removed_keys.lock().unwrap().clone() }
 }
 
 #[async_trait::async_trait]
 impl comm::rust::discovery::node_discovery::NodeDiscovery for TrackingNodeDiscovery {
-    async fn discover(&self) -> Result<(), CommError> {
-        Ok(())
-    }
+    async fn discover(&self) -> Result<(), CommError> { Ok(()) }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        Ok(Vec::new())
-    }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(Vec::new()) }
 
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.removed_keys.lock().unwrap().push(peer.id.key.clone());
@@ -236,7 +224,8 @@ mod tests {
         let final_connections = connections.read().unwrap();
         assert_eq!(final_connections.len(), 3);
 
-        // The order should be: D (not pinged), B, C (pinged and successful, moved to end)
+        // The order should be: D (not pinged), B, C (pinged and successful, moved to
+        // end)
         let connection_vec = final_connections.as_slice();
         assert_eq!(connection_vec[0], peer("D"));
         assert_eq!(connection_vec[1], peer("B"));

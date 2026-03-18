@@ -1,7 +1,9 @@
-// F1r3fly custom TLS connector for establishing connections with custom certificate verification
+// F1r3fly custom TLS connector for establishing connections with custom
+// certificate verification
 //
-// This module provides connection builders that integrate F1r3fly's HostnameTrustManager
-// with tokio-rustls to establish TLS connections compatible with tonic transport.
+// This module provides connection builders that integrate F1r3fly's
+// HostnameTrustManager with tokio-rustls to establish TLS connections
+// compatible with tonic transport.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -10,17 +12,16 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::rust::transport::{
-    f1r3fly_tls_transport::{
-        F1r3flyClientTlsTransport, F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
-    },
-    hostname_trust_manager_factory::HostnameTrustManagerFactory,
+use crate::rust::transport::f1r3fly_tls_transport::{
+    F1r3flyClientTlsTransport, F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
+use crate::rust::transport::hostname_trust_manager_factory::HostnameTrustManagerFactory;
 
 /// F1r3fly TLS connector for client connections
 ///
 /// Provides methods to establish TLS client connections using F1r3fly's custom
-/// certificate verification while maintaining compatibility with tonic's transport layer.
+/// certificate verification while maintaining compatibility with tonic's
+/// transport layer.
 #[derive(Clone)]
 pub struct F1r3flyTlsConnector {
     connector: TlsConnector,
@@ -85,7 +86,8 @@ impl F1r3flyTlsConnector {
     ) -> Result<F1r3flyClientTlsTransport<TcpStream>, F1r3flyTlsTransportError> {
         let remote_addr = tcp_stream.peer_addr().ok();
 
-        // Convert server name to rustls ServerName using String to avoid lifetime issues
+        // Convert server name to rustls ServerName using String to avoid lifetime
+        // issues
         let server_name = rustls::pki_types::ServerName::try_from(server_name.to_string())
             .map_err(|e| {
                 F1r3flyTlsTransportError::ConfigError(format!("Invalid server name: {}", e))
@@ -134,15 +136,14 @@ impl F1r3flyTlsConnector {
     }
 
     /// Get the network ID for this connector
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 /// F1r3fly TLS acceptor for server connections
 ///
 /// Provides methods to accept TLS server connections using F1r3fly's custom
-/// client certificate verification while maintaining compatibility with tonic's server.
+/// client certificate verification while maintaining compatibility with tonic's
+/// server.
 #[derive(Clone)]
 pub struct F1r3flyTlsAcceptor {
     acceptor: TlsAcceptor,
@@ -223,15 +224,13 @@ impl F1r3flyTlsAcceptor {
     }
 
     /// Get the network ID for this acceptor
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 /// Builder for F1r3fly TLS configurations
 ///
-/// Provides a convenient builder pattern for creating TLS connectors and acceptors
-/// with F1r3fly's custom certificate verification.
+/// Provides a convenient builder pattern for creating TLS connectors and
+/// acceptors with F1r3fly's custom certificate verification.
 #[derive(Debug)]
 pub struct F1r3flyTlsBuilder {
     network_id: String,
@@ -265,9 +264,7 @@ impl F1r3flyTlsBuilder {
     }
 
     /// Get the network ID
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 #[cfg(test)]

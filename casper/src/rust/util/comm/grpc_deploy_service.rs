@@ -48,7 +48,8 @@ pub struct GrpcDeployService {
     client: DeployServiceClient<Channel>,
 }
 
-// ---- implement the trait for the struct by delegating to existing methods ----
+// ---- implement the trait for the struct by delegating to existing methods
+// ----
 #[async_trait::async_trait]
 impl DeployService for GrpcDeployService {
     async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
@@ -108,9 +109,7 @@ impl DeployService for GrpcDeployService {
         self.bond_status_impl(q).await
     }
 
-    async fn status(&mut self) -> ServiceResult<String> {
-        self.status_impl().await
-    }
+    async fn status(&mut self) -> ServiceResult<String> { self.status_impl().await }
 }
 
 impl GrpcDeployService {
@@ -217,7 +216,8 @@ impl GrpcDeployService {
                     use std::fmt::Write as _;
                     let _ = writeln!(
                         out,
-                        "\n------------- block {} ---------------\n{}\n-----------------------------------------------------\n",
+                        "\n------------- block {} ---------------\n{}\\
+                         n-----------------------------------------------------\n",
                         bi.block_number,
                         proto_string(&bi)
                     );
@@ -347,6 +347,4 @@ impl GrpcDeployService {
 /// Substitute with any pretty/proto-string you prefer.
 /// If your generated types implement `Debug`, this default works.
 /// This is a simplified analogue of Scala-like `toProtoString`.
-fn proto_string<T: std::fmt::Debug>(t: &T) -> String {
-    format!("{t:#?}")
-}
+fn proto_string<T: std::fmt::Debug>(t: &T) -> String { format!("{t:#?}") }

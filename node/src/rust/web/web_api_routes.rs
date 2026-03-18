@@ -1,24 +1,17 @@
-use axum::{
-    extract::{Path, Query, State},
-    response::{IntoResponse, Json, Response},
-    routing::{get, post},
-    Router,
-};
+use axum::extract::{Path, Query, State};
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::{get, post};
+use axum::Router;
 use serde::Deserialize;
 
-use crate::rust::{
-    api::{
-        serde_types::{block_info::BlockInfoSerde, light_block_info::LightBlockInfoSerde},
-        web_api::{
-            DataAtNameByBlockHashRequest, DeployLookupResponse, PrepareRequest, PrepareResponse,
-            RhoDataResponse,
-        },
-    },
-    web::{
-        shared_handlers::{self, AppError, AppState},
-        transaction::TransactionResponse,
-    },
+use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::api::web_api::{
+    DataAtNameByBlockHashRequest, DeployLookupResponse, PrepareRequest, PrepareResponse,
+    RhoDataResponse,
 };
+use crate::rust::web::shared_handlers::{self, AppError, AppState};
+use crate::rust::web::transaction::TransactionResponse;
 
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
@@ -253,20 +246,19 @@ pub async fn get_transaction_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::StatusCode;
-    use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::rust::api::{
-        serde_types::light_block_info::{
-            BondInfoJson, JustificationInfoJson, LightBlockInfoSerde,
-        },
-        web_api::{
-            ApiStatus, DataAtNameByBlockHashRequest, DataAtNameRequest, DataAtNameResponse,
-            DeployLookupResponse, DeployRequest, RhoDataResponse, WebApi,
-        },
+    use super::*;
+    use crate::rust::api::serde_types::light_block_info::{
+        BondInfoJson, JustificationInfoJson, LightBlockInfoSerde,
+    };
+    use crate::rust::api::web_api::{
+        ApiStatus, DataAtNameByBlockHashRequest, DataAtNameRequest, DataAtNameResponse,
+        DeployLookupResponse, DeployRequest, RhoDataResponse, WebApi,
     };
     use crate::rust::web::transaction::TransactionResponse;
 
@@ -314,18 +306,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WebApi for StubWebApi {
-        async fn status(&self) -> eyre::Result<ApiStatus> {
-            unimplemented!()
-        }
+        async fn status(&self) -> eyre::Result<ApiStatus> { unimplemented!() }
         async fn prepare_deploy(
             &self,
             _: Option<crate::rust::api::web_api::PrepareRequest>,
         ) -> eyre::Result<crate::rust::api::web_api::PrepareResponse> {
             unimplemented!()
         }
-        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> {
-            unimplemented!()
-        }
+        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> { unimplemented!() }
         async fn listen_for_data_at_name(
             &self,
             _: DataAtNameRequest,
@@ -373,18 +361,16 @@ mod tests {
         ) -> eyre::Result<Vec<LightBlockInfoSerde>> {
             unimplemented!()
         }
-        async fn is_finalized(&self, _: String) -> eyre::Result<bool> {
-            unimplemented!()
-        }
+        async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
         async fn get_transaction(&self, _: String) -> eyre::Result<TransactionResponse> {
             unimplemented!()
         }
     }
 
-    /// Test-only handler that mirrors find_deploy_handler but uses Arc<dyn WebApi> as state
-    /// instead of AppState (which requires BlockReportAPI, RPConfCell, etc.).
-    /// This is equivalent to the Scala approach where WebApiRoutes.service(stubWebApi)
-    /// takes only a WebApi instance.
+    /// Test-only handler that mirrors find_deploy_handler but uses Arc<dyn
+    /// WebApi> as state instead of AppState (which requires BlockReportAPI,
+    /// RPConfCell, etc.). This is equivalent to the Scala approach where
+    /// WebApiRoutes.service(stubWebApi) takes only a WebApi instance.
     async fn test_find_deploy_handler(
         State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
         Path(deploy_id): Path<String>,

@@ -1,34 +1,29 @@
 // See casper/src/test/scala/coop/rchain/casper/util/GenesisBuilder.scala
 
-use dashmap::DashMap;
-use lazy_static::lazy_static;
-use std::{collections::HashMap, path::PathBuf};
-use tempfile::TempDir;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-
-use casper::rust::{
-    errors::CasperError,
-    genesis::{
-        contracts::{proof_of_stake::ProofOfStake, validator::Validator, vault::Vault},
-        genesis::Genesis,
-    },
-    util::{
-        construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC, DEFAULT_SEC2},
-        rholang::runtime_manager::RuntimeManager,
-    },
-};
-use crypto::rust::{
-    hash::blake2b256::Blake2b256,
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
-};
+use casper::rust::errors::CasperError;
+use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use casper::rust::genesis::contracts::validator::Validator;
+use casper::rust::genesis::contracts::vault::Vault;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC, DEFAULT_SEC2};
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use dashmap::DashMap;
+use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header,
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use tempfile::TempDir;
 
 use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
@@ -86,9 +81,7 @@ pub struct GenesisBuilder {
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self {
-        Self { vaults: None }
-    }
+    pub fn new() -> Self { Self { vaults: None } }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
@@ -143,7 +136,7 @@ impl GenesisBuilder {
         };
 
         BlockMessage {
-            block_hash: bytes::Bytes::from(Blake2b256::hash(b"test_genesis".to_vec())), // Create a deterministic hash
+            block_hash: bytes::Bytes::from(Blake2b256::hash(b"test_genesis".to_vec())), /* Create a deterministic hash */
             header,
             body,
             justifications: vec![],
@@ -217,37 +210,33 @@ impl GenesisBuilder {
             }))
             .collect();
 
-        (
-            validator_key_pairs,
-            genesis_vaults,
-            Genesis {
-                shard_id: "root".to_string(),
-                timestamp: 0,
-                proof_of_stake: ProofOfStake {
-                    minimum_bond: 1,
-                    maximum_bond: i64::MAX,
-                    // Epoch length is set to large number to prevent trigger of epoch change
-                    // in PoS close block method, which causes block merge conflicts
-                    // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
-                    epoch_length: 1000,
-                    quarantine_length: 50000,
-                    number_of_active_validators: 100,
-                    validators: bonds
-                        .into_iter()
-                        .map(|(pk, stake)| Validator {
-                            pk: pk.clone(),
-                            stake: *stake,
-                        })
-                        .collect(),
-                    pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
-                    pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
-                },
-                vaults,
-                supply: i64::MAX,
-                block_number: 0,
-                version: 1,
+        (validator_key_pairs, genesis_vaults, Genesis {
+            shard_id: "root".to_string(),
+            timestamp: 0,
+            proof_of_stake: ProofOfStake {
+                minimum_bond: 1,
+                maximum_bond: i64::MAX,
+                // Epoch length is set to large number to prevent trigger of epoch change
+                // in PoS close block method, which causes block merge conflicts
+                // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
+                epoch_length: 1000,
+                quarantine_length: 50000,
+                number_of_active_validators: 100,
+                validators: bonds
+                    .into_iter()
+                    .map(|(pk, stake)| Validator {
+                        pk: pk.clone(),
+                        stake: *stake,
+                    })
+                    .collect(),
+                pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
+                pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
             },
-        )
+            vaults,
+            supply: i64::MAX,
+            block_number: 0,
+            version: 1,
+        })
     }
 
     fn predefined_vault(pubkey: &PublicKey) -> Vault {
@@ -282,7 +271,8 @@ impl GenesisBuilder {
         let cache_misses = CACHE_MISSES.fetch_add(1, Ordering::SeqCst) + 1;
         let cache_accesses = CACHE_ACCESSES.load(Ordering::SeqCst);
         println!(
-            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses.",
+            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) \
+             cache accesses.",
             cache_misses,
             cache_accesses,
             (cache_misses as f64 / cache_accesses as f64) * 100.0
@@ -296,8 +286,9 @@ impl GenesisBuilder {
         }
 
         // With shared LMDB, we don't need to create a separate directory for storage.
-        // Use the shared LMDB path instead. The directory is kept for backward compatibility
-        // and logging purposes, but actual LMDB storage is in the shared environment.
+        // Use the shared LMDB path instead. The directory is kept for backward
+        // compatibility and logging purposes, but actual LMDB storage is in the
+        // shared environment.
         let storage_directory_path = crate::util::rholang::resources::get_shared_lmdb_path();
         // No TempDir guard needed since we're using the shared environment
 
@@ -306,7 +297,8 @@ impl GenesisBuilder {
 
         // Build genesis in a scoped block to ensure LMDB handles are closed
         let genesis = {
-            // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
+            // Create genesis with rspace_scope_id so TestNodes can share the same RSpace
+            // stores
             let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
             let r_store = (&mut *kvs_manager)
                 .r_space_stores()
@@ -357,7 +349,8 @@ pub struct GenesisContext {
     pub genesis_vaults: Vec<(PrivateKey, PublicKey)>,
     pub storage_directory: PathBuf,
     /// The shared RSpace scope_id for all nodes in the same test.
-    /// All TestNodes in this test share the same RSpace stores to see each other's state.
+    /// All TestNodes in this test share the same RSpace stores to see each
+    /// other's state.
     pub rspace_scope_id: String,
     // Keep TempDir guard alive to prevent auto-cleanup while context is in use
     // Only the original context holds Some(tempdir), clones have None
@@ -365,7 +358,8 @@ pub struct GenesisContext {
 }
 
 // Manual Clone implementation: clones don't get the TempDir guard
-// This is intentional - only the original context (stored in cache) keeps the directory alive
+// This is intentional - only the original context (stored in cache) keeps the
+// directory alive
 impl Clone for GenesisContext {
     fn clone(&self) -> Self {
         Self {
