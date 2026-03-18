@@ -74,28 +74,29 @@ cargo test --release
 ./scripts/run_rust_tests.sh
 ```
 
-### Run A Local Standalone Node
+### Run A Local Standalone Node (without Docker)
+
+[`just`](https://github.com/casey/just) is a command runner included in the prerequisites above.
 
 ```bash
-just run-standalone
+just run-standalone           # build + run standalone node
+just run-standalone-debug     # debug build (faster compile)
+just clean-standalone         # reset to genesis
 ```
 
-Manual startup:
-
-```bash
-cargo run --release -p node -- run -s \
-  --config-file=run-local/conf/standalone.conf \
-  --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
-  --host=localhost \
-  --no-upnp
-```
+The node listens on `localhost` ports 40400-40405. See [`run-local/README.md`](run-local/README.md) for configuration details and manual startup without `just`.
 
 ### Run With Docker
 
 ```bash
+# Standalone (single node, instant finalization)
 docker compose -f docker/standalone.yml up
+
+# Multi-validator shard (bootstrap + 3 validators + observer + Prometheus + Grafana)
 docker compose -f docker/shard.yml up
 ```
+
+See [`docker/README.md`](docker/README.md) for building local images, port map, validator setup, and monitoring.
 
 To build a local image:
 

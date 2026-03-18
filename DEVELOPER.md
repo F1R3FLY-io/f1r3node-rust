@@ -59,6 +59,8 @@ sudo dnf install -y \
   openssl-devel \
   lmdb-devel \
   gcc
+
+cargo install just
 ```
 
 ## Git Hooks
@@ -159,17 +161,27 @@ cargo test -p rholang
 ./scripts/run_rust_tests.sh
 ```
 
-### Run A Standalone Node
+### Run A Standalone Node (without Docker)
+
+Requires [`just`](https://github.com/casey/just) — a command runner installed with the tooling above.
 
 ```bash
-just run-standalone
-just run-standalone-debug
-just clean-standalone
+just run-standalone           # Build release binary + run standalone node
+just run-standalone-debug     # Debug build (faster compile, slower runtime)
+just clean-standalone         # Reset node data to genesis
+just help                     # Show node CLI help
+just run-help                 # Show `run` subcommand options
 ```
 
-Manual equivalent:
+The node listens on ports 40400-40405 (protocol, gRPC external/internal, HTTP API, discovery, admin). Configuration and genesis data live in [`run-local/`](run-local/README.md).
+
+Without `just`:
 
 ```bash
+mkdir -p run-local/data/standalone/genesis
+cp run-local/genesis/standalone/bonds.txt run-local/data/standalone/genesis/
+cp run-local/genesis/standalone/wallets.txt run-local/data/standalone/genesis/
+
 cargo run --release -p node -- run -s \
   --config-file=run-local/conf/standalone.conf \
   --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
@@ -180,10 +192,23 @@ cargo run --release -p node -- run -s \
 ### Build And Run Docker Images
 
 ```bash
+# Build a local image
 ./node/docker-commands.sh build-local
+
+# Standalone (single node, instant finalization)
 docker compose -f docker/standalone.yml up
+
+# Multi-validator shard (bootstrap + 3 validators + observer + monitoring)
 docker compose -f docker/shard.yml up
+
+# Use a locally built image instead of the published one
+F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f docker/standalone.yml up
+
+# Reset to genesis
+docker compose -f docker/standalone.yml down -v
 ```
+
+See [`docker/README.md`](docker/README.md) for the full port map, validator setup, and monitoring.
 
 ## Workspace Layout
 
