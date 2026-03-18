@@ -365,7 +365,8 @@ impl TestNode {
     /// nodes array.
     ///
     /// This method works around Rust's borrow checker limitation where we
-    /// cannot do: ```ignore
+    /// cannot do:
+    /// ```ignore
     /// nodes[0].propagate_block(&deploys, &mut nodes)
     /// ```
     /// because it would require borrowing `nodes` mutably twice:
@@ -402,7 +403,8 @@ impl TestNode {
     /// node.
     ///
     /// This method works around Rust's borrow checker limitation where we
-    /// cannot do: ```ignore
+    /// cannot do:
+    /// ```ignore
     /// nodes[from_index].propagate_block(&deploys, &mut [&mut nodes[to_index]])
     /// ```
     /// because it would require borrowing from `nodes` mutably twice.
