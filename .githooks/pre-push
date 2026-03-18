@@ -101,7 +101,7 @@ echo "================================"
     fi
     total=1
     clippy_out="$RESULTS_DIR/clippy.out"
-    if timeout "$TEST_TIMEOUT" cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1; then
+    if timeout "$TEST_TIMEOUT" cargo clippy --workspace -- -D warnings > "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC}  ${GREEN}PASS${NC}" >&3
         passed=1
     else

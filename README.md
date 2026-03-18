@@ -37,7 +37,7 @@ macOS:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-brew install protobuf openssl pkg-config just grpcurl
+brew install protobuf openssl pkg-config lmdb just grpcurl
 ```
 
 Ubuntu or Debian:
@@ -45,7 +45,7 @@ Ubuntu or Debian:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt-get update
-sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev build-essential gcc
+sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev liblmdb-dev build-essential gcc
 cargo install just
 ```
 

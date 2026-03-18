@@ -12,7 +12,7 @@ This repository is built with Cargo, Docker, and system packages only.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
-brew install protobuf openssl pkg-config just grpcurl
+brew install protobuf openssl pkg-config lmdb just grpcurl
 ```
 
 Optional:
@@ -33,6 +33,7 @@ sudo apt-get install -y \
   libprotobuf-dev \
   pkg-config \
   libssl-dev \
+  liblmdb-dev \
   build-essential \
   gcc
 
@@ -56,6 +57,7 @@ sudo dnf install -y \
   protobuf-devel \
   pkg-config \
   openssl-devel \
+  lmdb-devel \
   gcc
 ```
 
