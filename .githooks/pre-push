@@ -134,71 +134,52 @@ pid_clippy=$!
         exit 0
     fi
 
-    # Build the test command
-    test_cmd="cargo test"
-
+    # Determine which crates to test.
+    # Default: all workspace crates, tested sequentially per-crate to avoid
+    # LMDB file-lock contention that causes flaky failures when the full
+    # workspace is tested in a single `cargo test` invocation.
     if [[ -n "$TEST_CRATES" ]]; then
-        # Run tests for specific crates
-        for crate in $TEST_CRATES; do
-            total=$((total + 1))
-            test_out="$RESULTS_DIR/test-${crate}.out"
-            echo -e "  ${CYAN}[test]${NC}    ${crate}..." >&3
-            if timeout "$TEST_TIMEOUT" cargo test -p "$crate" > "$test_out" 2>&1; then
-                echo -e "  ${CYAN}[test]${NC}    ${crate} ${GREEN}PASS${NC}" >&3
-                passed=$((passed + 1))
-            else
-                rc=$?
-                if [[ $rc -eq 124 ]]; then
-                    echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
-                else
-                    echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}FAIL${NC}" >&3
-                fi
-                failed=$((failed + 1))
-                has_failure=1
-                {
-                    echo ""
-                    echo -e "${RED}FAIL${NC}: cargo test -p ${crate}"
-                    echo "--- Output ---"
-                    tail -80 "$test_out"
-                    echo "--------------"
-                } >> "$RESULTS_DIR/test-failures.out"
-            fi
-            rm -f "$test_out"
-        done
+        crates_to_test=($TEST_CRATES)
     else
-        # Run full workspace tests
-        total=1
-        test_out="$RESULTS_DIR/test-workspace.out"
+        crates_to_test=(
+            crypto shared models graphz block-storage
+            rspace_plus_plus comm rholang casper node
+        )
+    fi
 
-        if [[ "$QUICK" == "1" ]]; then
-            echo -e "  ${CYAN}[test]${NC}    workspace (debug)..." >&3
-        else
-            test_cmd="cargo test --release"
-            echo -e "  ${CYAN}[test]${NC}    workspace (release)..." >&3
-        fi
+    release_flag=""
+    if [[ "$QUICK" != "1" ]]; then
+        release_flag="--release"
+    fi
 
-        if timeout "$TEST_TIMEOUT" $test_cmd > "$test_out" 2>&1; then
-            echo -e "  ${CYAN}[test]${NC}    workspace ${GREEN}PASS${NC}" >&3
-            passed=1
+    for crate in "${crates_to_test[@]}"; do
+        total=$((total + 1))
+        test_out="$RESULTS_DIR/test-${crate}.out"
+        mode_label=""
+        if [[ -n "$release_flag" ]]; then mode_label=" (release)"; fi
+        echo -e "  ${CYAN}[test]${NC}    ${crate}${mode_label}..." >&3
+        if timeout "$TEST_TIMEOUT" cargo test $release_flag -p "$crate" > "$test_out" 2>&1; then
+            echo -e "  ${CYAN}[test]${NC}    ${crate} ${GREEN}PASS${NC}" >&3
+            passed=$((passed + 1))
         else
             rc=$?
             if [[ $rc -eq 124 ]]; then
-                echo -e "  ${CYAN}[test]${NC}    workspace ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
             else
-                echo -e "  ${CYAN}[test]${NC}    workspace ${RED}FAIL${NC}" >&3
+                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}FAIL${NC}" >&3
             fi
-            failed=1
+            failed=$((failed + 1))
             has_failure=1
             {
                 echo ""
-                echo -e "${RED}FAIL${NC}: $test_cmd"
+                echo -e "${RED}FAIL${NC}: cargo test $release_flag -p ${crate}"
                 echo "--- Output (last 80 lines) ---"
                 tail -80 "$test_out"
                 echo "--------------"
             } >> "$RESULTS_DIR/test-failures.out"
         fi
         rm -f "$test_out"
-    fi
+    done
 
     echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
 ) &
