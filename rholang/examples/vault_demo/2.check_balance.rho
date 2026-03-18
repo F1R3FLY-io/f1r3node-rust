@@ -1,0 +1,35 @@
+new
+  rl(`rho:registry:lookup`), SystemVaultCh,
+  vaultCh, balanceCh,
+  stdout(`rho:io:stdout`)
+in {
+
+  rl!(`rho:vault:system`, *SystemVaultCh) |
+  for (@(_, SystemVault) <- SystemVaultCh) {
+
+    stdout!(("2.check_balance.rho")) |
+
+    // REPLACE THE VAULT ADDRESS HERE vvv
+    match "%VAULT_ADDR" {
+      vaultAddress => {
+
+        stdout!(("Accessing vault at VaultAddress", vaultAddress)) |
+
+        // most SystemVault methods return an `Either[String, A] = (false, String) \/ (true, A)`
+        @SystemVault!("findOrCreate", vaultAddress, *vaultCh) |
+        for (@(true, vault) <- vaultCh) {
+
+          stdout!("Obtained vault, checking balance") |
+
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {
+
+            stdout!(("Balance is", balance))
+          }
+        }
+      }
+    }
+
+  }
+
+}

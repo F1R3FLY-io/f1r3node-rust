@@ -1,0 +1,75 @@
+# SETUP
+
+If you've run RNode previously, delete the pre-existing configuration files.
+
+    rm -rf ~/.rnode/
+    
+From the `rchain` directory, build RNode.
+
+    sbt node/universal:stage
+    
+From `node/target/universal/stage`, start RNode.
+
+    ./bin/rnode run -s --wallets-file $HOME/IdeaProjects/rchain/rholang/examples/wallets.txt
+    
+This generates a random Secp256k1 private key corresponding to a validator. Next, terminate RNode and restart as one of 
+the randomly generated validators.
+
+    ./bin/rnode run -s --validator-private-key $(cat ~/.rnode/genesis/*.sk | tail -1) --wallets-file $HOME/IdeaProjects/rchain/rholang/examples/wallets.txt
+
+Open a new terminal and navigate to `rholang/examples`, then add simulated user credentials to bash environment.
+
+    . keys.env
+
+# DEMO START
+
+## Know your VaultAddress
+
+Here's how Alice would check her vault address:
+
+    ./propose.sh $ALICE_PRV vault_demo/1.know_ones_vaultaddress.rho "-e s/%PUB_KEY/$ALICE_PUB/"
+
+## Access your own vault
+
+Here's how Alice would check her vault balance:
+
+    ./propose.sh $ALICE_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
+        
+Notice that anyone can check Alice's vault balance.
+
+    ./propose.sh $BOB_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
+
+## Transfer to a VaultAddress
+
+Suppose Alice wants to on-board Bob and that she knows his vault address. Here's how she would transfer 100 tokens to Bob.
+
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/$BOB_VAULT/"
+    ./propose.sh $ALICE_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
+    
+Notice the transfer hasn't been finished yet. Still, funds have been deducted from Alice's vault.
+
+Now, let's have Bob check his own balance:
+
+    ./propose.sh $BOB_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$BOB_VAULT/"
+
+When Bob checks his balance for the first time, a vault is created at the vault address he provides. Once his vault is 
+created, all previous transfers to his vault complete. In other words, the order in which one creates a vault and transfers
+funds into that vault doesn't matter.
+
+This means that the first access to one's vault needs to be done by a 3rd-party having the funds
+to pay for it. So the exchanges should not only do a `transfer`, but also a `findOrCreate`
+the destination vault. So should the Testnet operators distributing the funds.
+
+Because the "transfer" method takes a VaultAddress (and not a SystemVault), transfers between different "kinds", or security 
+schemes of SystemVaults are possible. For now, we only provide a simple SystemVault that only grants access to its designated 
+user.
+
+## Attempt a transfer despite insufficient funds
+
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/$BOB_VAULT/"
+
+## Attempt a transfer despite invalid VaultAddress
+
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/lala/"
+
+Notice the platform only checks whether the address is syntactically correct. A typo means the funds are lost.

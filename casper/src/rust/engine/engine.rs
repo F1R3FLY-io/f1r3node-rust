@@ -1,0 +1,342 @@
+// See casper/src/main/scala/coop/rchain/casper/engine/Engine.scala
+
+use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::{Blob, TransportLayer};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
+};
+use models::rust::casper::protocol::packet_type_tag::ToPacket;
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+
+use crate::rust::casper::CasperShardConf;
+use crate::rust::casper::MultiParentCasper;
+use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::running::Running;
+use crate::rust::errors::CasperError;
+use crate::rust::estimator::Estimator;
+use crate::rust::metrics_constants::{
+    CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC, CASPER_INIT_ATTEMPTS_METRIC,
+    CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC, CASPER_INIT_TIME_TO_RUNNING_METRIC,
+    CASPER_INIT_TRANSITION_TO_RUNNING_METRIC, CASPER_METRICS_SOURCE,
+};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::validator_identity::ValidatorIdentity;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+
+/// Object-safe Engine trait that matches Scala Engine[F] behavior.
+/// Note: we expose `with_casper() -> Option<&MultiParentCasper>` as an accessor,
+/// and provide Scala-like `with_casper(f, default)` via `EngineDynExt`.
+#[async_trait]
+pub trait Engine: Send + Sync {
+    async fn init(&self) -> Result<(), CasperError>;
+
+    async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
+
+    /// Returns the casper instance as an Arc if this engine wraps one.
+    /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
+    /// The Arc allows ownership transfer and use across async boundaries.
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>>;
+}
+
+/// Trait for engines that provide withCasper functionality
+/// This matches the Scala Engine[F] withCasper method behavior
+#[async_trait]
+pub trait EngineDynExt {
+    async fn with_casper<A, F>(
+        &self,
+        f: F,
+        default: Result<A, CasperError>,
+    ) -> Result<A, CasperError>
+    where
+        for<'a> F: FnOnce(
+                &'a dyn MultiParentCasper,
+            ) -> Pin<Box<dyn Future<Output = Result<A, CasperError>> + 'a + Send>>
+            + Send,
+        A: Sized + Send;
+}
+
+#[async_trait]
+impl<T: Engine + ?Sized> EngineDynExt for T {
+    async fn with_casper<A, F>(
+        &self,
+        f: F,
+        default: Result<A, CasperError>,
+    ) -> Result<A, CasperError>
+    where
+        for<'a> F: FnOnce(
+                &'a dyn MultiParentCasper,
+            ) -> Pin<Box<dyn Future<Output = Result<A, CasperError>> + 'a + Send>>
+            + Send,
+        A: Sized + Send,
+    {
+        match self.with_casper() {
+            Some(casper) => f(&*casper).await,
+            None => default,
+        }
+    }
+}
+
+pub fn noop() -> impl Engine {
+    #[derive(Clone)]
+    struct NoopEngine;
+
+    #[async_trait]
+    impl Engine for NoopEngine {
+        async fn init(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
+
+        async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
+            Ok(())
+        }
+
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+            None
+        }
+    }
+
+    NoopEngine
+}
+
+pub fn log_no_approved_block_available(identifier: &str) {
+    tracing::info!(
+        "No approved block available on node {}. Will request again in 10 seconds.",
+        identifier
+    )
+}
+
+/// Record initialization metrics for the direct-to-running startup path.
+/// This path legitimately bypasses Initializing, so we emit equivalent counters/timers here.
+pub fn record_direct_to_running_init_metrics() {
+    metrics::counter!(
+        CASPER_INIT_ATTEMPTS_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+    metrics::counter!(
+        CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+    metrics::histogram!(
+        CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .record(0.0);
+    metrics::histogram!(
+        CASPER_INIT_TIME_TO_RUNNING_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .record(0.0);
+    metrics::counter!(
+        CASPER_INIT_TRANSITION_TO_RUNNING_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+}
+
+/*
+ * Note the ordering of the insertions is important.
+ * We always want the block dag store to be a subset of the block store.
+ */
+pub fn insert_into_block_and_dag_store(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut BlockDagKeyValueStorage,
+    genesis: &BlockMessage,
+    approved_block: ApprovedBlock,
+) -> Result<(), CasperError> {
+    block_store.put(genesis.block_hash.clone(), genesis)?;
+    block_dag_storage.insert(genesis, false, true)?;
+    block_store.put_approved_block(&approved_block)?;
+    Ok(())
+}
+
+pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 'static>(
+    rp_conf_ask: &RPConf,
+    transport_layer: &T,
+    identifier: &str,
+    peer: PeerNode,
+) -> Result<(), CasperError> {
+    let local = rp_conf_ask.local.clone();
+    // TODO: remove NoApprovedBlockAvailable.nodeIdentifier, use `sender` provided by TransportLayer
+    let no_approved_block_available = NoApprovedBlockAvailable {
+        node_identifier: local.to_string(),
+        identifier: identifier.to_string(),
+    }
+    .to_proto();
+
+    let msg = Blob {
+        sender: local,
+        packet: no_approved_block_available.mk_packet(),
+    };
+
+    transport_layer.stream(&peer, &msg).await?;
+    Ok(())
+}
+
+// NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
+// based on discussion with Steven for TestFixture compatibility
+pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
+    block_processing_queue_tx: mpsc::Sender<(
+        Arc<dyn MultiParentCasper + Send + Sync>,
+        BlockMessage,
+    )>,
+    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    approved_block: ApprovedBlock,
+    the_init: Arc<
+        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+    >,
+    disable_state_exporter: bool,
+    transport: Arc<U>,
+    conf: RPConf,
+    block_retriever: BlockRetriever<U>,
+    engine_cell: &EngineCell,
+    event_log: &F1r3flyEvents,
+) -> Result<(), CasperError> {
+    let approved_block_info =
+        PrettyPrinter::build_string_block_message(&approved_block.candidate.block, true);
+
+    tracing::info!(
+        "Making a transition to Running state. Approved {}",
+        approved_block_info
+    );
+    metrics::counter!(
+        CASPER_INIT_TRANSITION_TO_RUNNING_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+
+    // Publish EnteredRunningState event
+    let block_hash_string =
+        PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
+    event_log
+        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
+        .map_err(|e| {
+            CasperError::Other(format!(
+                "Failed to publish EnteredRunningState event: {}",
+                e
+            ))
+        })?;
+
+    let running = Running::new(
+        block_processing_queue_tx,
+        blocks_in_processing,
+        casper,
+        approved_block,
+        the_init,
+        disable_state_exporter,
+        transport,
+        conf,
+        block_retriever,
+    );
+
+    engine_cell.set(Arc::new(running)).await;
+
+    Ok(())
+}
+
+// NOTE about Scala parity:
+// In Scala `Engine.transitionToInitializing`, fs2 queues are created internally via
+// `Queue.bounded[F, BlockMessage](50)` and `Queue.bounded[F, StoreItemsMessage](50)` and
+// passed to `Initializing`. In Rust we return the senders of newly created channels to the
+// caller and keep the receivers inside `Initializing`.
+// Rationale:
+// - Ownership/visibility: without a shared effect environment (like F[_]) external producers
+//   (transport/tests) would have no handles to feed messages into the engine, causing hangs.
+//   Returning senders ensures producers can enqueue LFS responses, mirroring Scala tests that
+//   enqueue directly into queues.
+// - Behavior equivalence: `Initializing` still consumes from these channels; Scala used bounded(50),
+//   while Rust now uses bounded channels with runtime-configurable defaults.
+// NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
+// based on discussion with Steven for TestFixture compatibility
+pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
+    block_processing_queue_tx: &mpsc::Sender<(
+        Arc<dyn MultiParentCasper + Send + Sync>,
+        BlockMessage,
+    )>,
+    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    casper_shard_conf: &CasperShardConf,
+    validator_id: &Option<ValidatorIdentity>,
+    init: Arc<
+        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+    >,
+    trim_state: bool,
+    disable_state_exporter: bool,
+    transport_layer: &Arc<U>,
+    rp_conf_ask: &RPConf,
+    connections_cell: &ConnectionsCell,
+    last_approved_block: &Arc<Mutex<Option<ApprovedBlock>>>,
+    block_store: &KeyValueBlockStore,
+    block_dag_storage: &BlockDagKeyValueStorage,
+    deploy_storage: &KeyValueDeployStorage,
+    casper_buffer_storage: &CasperBufferKeyValueStorage,
+    rspace_state_manager: &RSpaceStateManager,
+    event_publisher: F1r3flyEvents,
+    block_retriever: BlockRetriever<U>,
+    engine_cell: &Arc<EngineCell>,
+    runtime_manager_arc: &Arc<tokio::sync::Mutex<RuntimeManager>>,
+    estimator: &Estimator,
+    heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
+) -> Result<(), CasperError> {
+    // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
+    // Scala uses size-50 bounded queues in both cases.
+    let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
+    let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
+
+    // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead of taking
+    let runtime_manager = runtime_manager_arc.clone();
+
+    let initializing = Arc::new(crate::rust::engine::initializing::Initializing::new(
+        (**transport_layer).clone(),
+        rp_conf_ask.clone(),
+        connections_cell.clone(),
+        last_approved_block.clone(),
+        block_store.clone(),
+        block_dag_storage.clone(),
+        deploy_storage.clone(),
+        casper_buffer_storage.clone(),
+        rspace_state_manager.clone(),
+        block_processing_queue_tx.clone(),
+        blocks_in_processing.clone(),
+        casper_shard_conf.clone(),
+        validator_id.clone(),
+        init,
+        block_tx.clone(),
+        block_rx,
+        tuple_tx.clone(),
+        tuple_rx,
+        trim_state,
+        disable_state_exporter,
+        event_publisher.clone(),
+        block_retriever.clone(),
+        engine_cell.clone(),
+        runtime_manager,
+        estimator.clone(),
+        heartbeat_signal_ref.clone(),
+    ));
+
+    // Initialize immediately on transition.
+    // Relying on the one-time NodeRuntime engine init can miss this when the node
+    // moves GenesisValidator -> Initializing after startup.
+    engine_cell.set(initializing.clone()).await;
+    initializing.init().await?;
+
+    Ok(())
+}
+use dashmap::DashSet;

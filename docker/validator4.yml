@@ -1,0 +1,48 @@
+# =================================================================
+# F1R3FLY RUST NODE - VALIDATOR 4 (RUNTIME JOIN)
+# =================================================================
+# Joins an existing shard network after genesis. Must be bonded
+# before it can participate in consensus.
+#
+# Usage:
+#   docker compose -f validator4.yml up -d
+#
+# Prerequisites:
+#   - A running shard network (docker compose -f shard.yml up -d)
+#   - Validator 4 must be bonded via the PoS contract
+
+services:
+  validator4:
+    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly
+    container_name: $VALIDATOR4_HOST
+    command:
+      - run
+      - --host=$VALIDATOR4_HOST
+      - --allow-private-addresses
+      - --bootstrap=rnode://$BOOTSTRAP_NODE_ID@$BOOTSTRAP_HOST?protocol=40400&discovery=40404
+      - --validator-public-key=$VALIDATOR4_PUBLIC_KEY
+      - --validator-private-key=$VALIDATOR4_PRIVATE_KEY
+    ports:
+      - "40440:40400"
+      - "40441:40401"
+      - "40442:40402"
+      - "40443:40403"
+      - "40444:40404"
+      - "40445:40405"
+    volumes:
+      - validator4-data:/var/lib/rnode/
+      - ./conf/default.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+
+volumes:
+  validator4-data:
+
+networks:
+  f1r3fly:
+    external: true
+    name: f1r3fly

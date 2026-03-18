@@ -1,0 +1,290 @@
+// See comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala
+
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use models::routing::Protocol;
+
+use crate::rust::discovery::node_discovery::NodeDiscovery;
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::protocol_helper;
+use crate::rust::rp::rp_conf::{ClearConnectionsConf, RPConf};
+use crate::rust::transport::transport_layer::{Blob, TransportLayer};
+
+pub const NETWORK_ID: &str = "test";
+
+pub struct NodeDiscoveryStub {
+    pub nodes: Vec<PeerNode>,
+}
+
+impl Default for NodeDiscoveryStub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeDiscoveryStub {
+    pub fn new() -> Self {
+        Self { nodes: vec![] }
+    }
+
+    pub fn reset(&mut self) {
+        self.nodes = vec![];
+    }
+
+    pub fn peers(&self) -> Vec<PeerNode> {
+        self.nodes.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl NodeDiscovery for NodeDiscoveryStub {
+    async fn discover(&self) -> Result<(), CommError> {
+        todo!()
+    }
+
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
+        Ok(self.nodes.clone())
+    }
+
+    fn remove_peer(&self, _peer: &PeerNode) -> Result<(), CommError> {
+        // Stub implementation - do nothing
+        Ok(())
+    }
+}
+
+pub fn create_rp_conf_ask(
+    local: PeerNode,
+    default_timeout: Option<Duration>,
+    clear_connections: Option<ClearConnectionsConf>,
+) -> RPConf {
+    RPConf {
+        local: local.clone(),
+        network_id: NETWORK_ID.to_string(),
+        bootstrap: Some(local),
+        default_timeout: default_timeout.unwrap_or(Duration::from_millis(1)),
+        max_num_of_connections: 20,
+        clear_connections: clear_connections.unwrap_or(ClearConnectionsConf::new(1)),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub peer: PeerNode,
+    pub msg: Protocol,
+}
+
+pub type Responses = Box<dyn Fn(&PeerNode, &Protocol) -> Result<(), CommError> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct TransportLayerStub {
+    reqresp: Arc<Mutex<Option<Arc<Responses>>>>,
+    requests: Arc<Mutex<Vec<Request>>>,
+}
+
+impl Default for TransportLayerStub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TransportLayerStub {
+    pub fn new() -> Self {
+        Self {
+            reqresp: Arc::new(Mutex::new(None)),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn set_responses<F>(&self, responses: F)
+    where
+        F: Fn(&PeerNode, &Protocol) -> Result<(), CommError> + Send + Sync + 'static,
+    {
+        let mut reqresp = self.reqresp.lock().unwrap();
+        *reqresp = Some(Arc::new(Box::new(responses)));
+    }
+
+    pub fn reset(&self) {
+        let mut reqresp = self.reqresp.lock().unwrap();
+        let mut requests = self.requests.lock().unwrap();
+        *reqresp = None;
+        requests.clear();
+    }
+
+    pub fn get_request(&self, i: usize) -> Option<(PeerNode, Protocol)> {
+        let requests = self.requests.lock().unwrap();
+        requests
+            .get(i)
+            .map(|req| (req.peer.clone(), req.msg.clone()))
+    }
+
+    pub fn request_count(&self) -> usize {
+        let requests = self.requests.lock().unwrap();
+        requests.len()
+    }
+
+    pub fn get_all_requests(&self) -> Vec<Request> {
+        let requests = self.requests.lock().unwrap();
+        requests.clone()
+    }
+
+    pub fn pop_request(&self) -> Option<Request> {
+        let mut requests = self.requests.lock().unwrap();
+        requests.pop()
+    }
+}
+
+#[async_trait]
+impl TransportLayer for TransportLayerStub {
+    async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+        // Add request to the list
+        {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(Request {
+                peer: peer.clone(),
+                msg: msg.clone(),
+            });
+        }
+
+        // Execute response function if available
+        let reqresp = self.reqresp.lock().unwrap();
+        if let Some(ref response_fn) = *reqresp {
+            response_fn(peer, msg)
+        } else {
+            // Default to success if no response function is set
+            Ok(())
+        }
+    }
+
+    async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+        // Add all requests to the list
+        {
+            let mut requests = self.requests.lock().unwrap();
+            for peer in peers {
+                requests.push(Request {
+                    peer: peer.clone(),
+                    msg: msg.clone(),
+                });
+            }
+        }
+
+        // For broadcast, we return success for all peers in the stub
+        Ok(())
+    }
+
+    async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError> {
+        self.stream_mult(&[peer.clone()], blob).await
+    }
+
+    async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError> {
+        let protocol_msg = protocol_helper::packet(&blob.sender, NETWORK_ID, blob.packet.clone());
+        self.broadcast(peers, &protocol_msg).await
+    }
+
+    async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> {
+        // Stub implementation - do nothing
+        Ok(())
+    }
+
+    async fn get_channeled_peers(&self) -> Result<std::collections::HashSet<PeerNode>, CommError> {
+        // Stub implementation - return empty set
+        Ok(std::collections::HashSet::new())
+    }
+}
+
+pub struct LogicalTime {
+    clock: AtomicI64,
+}
+
+impl LogicalTime {
+    pub fn new() -> Self {
+        Self {
+            clock: AtomicI64::new(0),
+        }
+    }
+
+    pub fn current_millis(&self) -> i64 {
+        self.clock.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn nano_time(&self) -> i64 {
+        self.clock.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn reset(&self) {
+        self.clock.store(0, Ordering::SeqCst);
+    }
+}
+
+impl Default for LogicalTime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone)]
+pub struct LogStub {
+    pub debugs: Arc<Mutex<Vec<String>>>,
+    pub infos: Arc<Mutex<Vec<String>>>,
+    pub warns: Arc<Mutex<Vec<String>>>,
+    pub errors: Arc<Mutex<Vec<String>>>,
+}
+
+impl LogStub {
+    pub fn new() -> Self {
+        Self {
+            debugs: Arc::new(Mutex::new(Vec::new())),
+            infos: Arc::new(Mutex::new(Vec::new())),
+            warns: Arc::new(Mutex::new(Vec::new())),
+            errors: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn reset(&self) {
+        self.debugs.lock().unwrap().clear();
+        self.infos.lock().unwrap().clear();
+        self.warns.lock().unwrap().clear();
+        self.errors.lock().unwrap().clear();
+    }
+
+    pub fn debug(&self, msg: &str) {
+        self.debugs.lock().unwrap().push(msg.to_string());
+    }
+
+    pub fn info(&self, msg: &str) {
+        self.infos.lock().unwrap().push(msg.to_string());
+    }
+
+    pub fn warn(&self, msg: &str) {
+        self.warns.lock().unwrap().push(msg.to_string());
+    }
+
+    pub fn error(&self, msg: &str) {
+        self.errors.lock().unwrap().push(msg.to_string());
+    }
+
+    pub fn get_debugs(&self) -> Vec<String> {
+        self.debugs.lock().unwrap().clone()
+    }
+
+    pub fn get_infos(&self) -> Vec<String> {
+        self.infos.lock().unwrap().clone()
+    }
+
+    pub fn get_warns(&self) -> Vec<String> {
+        self.warns.lock().unwrap().clone()
+    }
+
+    pub fn get_errors(&self) -> Vec<String> {
+        self.errors.lock().unwrap().clone()
+    }
+}
+
+impl Default for LogStub {
+    fn default() -> Self {
+        Self::new()
+    }
+}

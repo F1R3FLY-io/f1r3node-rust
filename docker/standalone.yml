@@ -1,0 +1,53 @@
+# =================================================================
+# F1R3FLY RUST NODE - STANDALONE DEVELOPMENT
+# =================================================================
+# Single-node mode for local development and testing.
+# Instant finalization, no network peers required.
+#
+# Usage:
+#   docker compose -f standalone.yml up -d
+#   docker compose -f standalone.yml logs -f
+#   docker compose -f standalone.yml down -v    # wipe and restart fresh
+
+services:
+  standalone:
+    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    container_name: ${STANDALONE_HOST:-rnode.standalone}
+    command:
+      - run
+      - -s
+      - --host=${STANDALONE_HOST:-rnode.standalone}
+      - --validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}
+      - --allow-private-addresses
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      - "40402:40402"
+      - "40403:40403"
+      - "40404:40404"
+      - "40405:40405"
+    volumes:
+      - standalone-data:/var/lib/rnode/
+      - ./conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  standalone-data:
+
+networks:
+  f1r3fly-standalone:
+    driver: bridge

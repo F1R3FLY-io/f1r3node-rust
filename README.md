@@ -1,0 +1,143 @@
+# F1R3node Rust
+
+Pure Rust implementation of the F1R3FLY blockchain node.
+
+This repository tracks the Rust node implementation that lives on `rust/dev` in the upstream `f1r3node` repository and documents it as a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
+
+## Overview
+
+F1R3node Rust provides:
+
+- Concurrent smart contract execution with Rholang and RSpace
+- Proof-of-stake consensus and finalization via the `casper` crate
+- gRPC and HTTP APIs for deploys, proposals, status, and data queries
+- Docker and local standalone workflows for development and testing
+
+## Workspace Crates
+
+| Crate | Purpose |
+| --- | --- |
+| `node` | Main binary, CLI, API servers, REPL, diagnostics |
+| `casper` | Consensus engine, block processing, genesis, finalization |
+| `rholang` | Interpreter and CLI for Rholang contracts |
+| `rspace++` | Tuple space storage and state management |
+| `models` | Protobuf models, generated gRPC types, schema helpers |
+| `crypto` | Keys, signatures, hashes, TLS certificate helpers |
+| `comm` | P2P networking, peer discovery, TLS transport |
+| `block-storage` | Block, deploy, DAG, and finality persistence |
+| `shared` | Common storage traits, event helpers, metrics utilities |
+| `graphz` | Graph and DOT generation helpers |
+| `rspace_plus_plus_rhotypes` | RSpace/Rholang type bridge helper crate |
+
+## Quick Start
+
+### Prerequisites
+
+macOS:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+brew install protobuf openssl pkg-config just grpcurl
+```
+
+Ubuntu or Debian:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev build-essential gcc
+cargo install just
+```
+
+The workspace is pinned to `nightly-2026-02-09` in `rust-toolchain.toml`.
+
+### Build
+
+```bash
+cargo build
+cargo build --release
+```
+
+### Test
+
+```bash
+cargo test
+cargo test --release
+./scripts/run_rust_tests.sh
+```
+
+### Run A Local Standalone Node
+
+```bash
+just run-standalone
+```
+
+Manual startup:
+
+```bash
+cargo run --release -p node -- run -s \
+  --config-file=run-local/conf/standalone.conf \
+  --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+  --host=localhost \
+  --no-upnp
+```
+
+### Run With Docker
+
+```bash
+docker compose -f docker/standalone.yml up
+docker compose -f docker/shard.yml up
+```
+
+To build a local image:
+
+```bash
+./node/docker-commands.sh build-local
+```
+
+## Documentation Map
+
+| Path | Purpose |
+| --- | --- |
+| [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
+| [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
+| [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
+| [node/README.md](node/README.md) | Node binary crate and CLI entry points |
+| [casper/README.md](casper/README.md) | Consensus engine overview |
+| [comm/README.md](comm/README.md) | P2P networking and discovery |
+| [crypto/README.md](crypto/README.md) | Keys, signatures, hashes, TLS helpers |
+| [models/README.md](models/README.md) | Protobuf model generation and schema helpers |
+| [rholang/README.md](rholang/README.md) | Rholang interpreter, CLI, examples |
+| [rspace++/README.md](rspace++/README.md) | Tuple space storage and replay support |
+| [block-storage/README.md](block-storage/README.md) | Block and deploy persistence |
+| [shared/README.md](shared/README.md) | Shared utilities and storage primitives |
+| [graphz/README.md](graphz/README.md) | DOT and graph helpers |
+| [scripts/README.md](scripts/README.md) | Helper scripts used from the repo root |
+| [examples/README.md](examples/README.md) | Top-level examples and how to run them |
+| [docs/rnode-api/README.md](docs/rnode-api/README.md) | API documentation source notes |
+
+## Default Ports
+
+| Port | Service |
+| --- | --- |
+| `40400` | Protocol server |
+| `40401` | External gRPC API |
+| `40402` | Internal gRPC API |
+| `40403` | HTTP API |
+| `40404` | Peer discovery |
+| `40405` | Admin HTTP API |
+
+## Development Notes
+
+- `.cargo/config.toml` sets `RUST_MIN_STACK=8388608` for deep Rholang recursion in tests.
+- `node`, `models`, and `comm` use `build.rs` to generate gRPC and protobuf bindings.
+- `rholang` and `rspace++` depend on the external `rholang-parser` crate fetched from Git.
+
+## Security Notice
+
+This codebase has not completed a production security audit. Do not deploy it for material value without review.
+
+## License
+
+Apache License 2.0. See [LICENSE.TXT](LICENSE.TXT).

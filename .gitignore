@@ -1,0 +1,57 @@
+# Build output
+target/
+/build
+
+# OS generated files
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Icon?
+Thumbs.db
+*.swp
+
+# IDE / Editor
+*.iml
+.idea
+.vscode
+.metals
+.history
+.bsp
+
+# Rust
+*.rs.bk
+
+# BNFC generated
+rholang/bnfc/
+rholang/src/main/java/
+
+# Secp256k1
+crypto/secp256k1/
+
+# direnv
+.direnv
+.envrc
+
+# Environment
+.env
+.python-version
+
+# Docker compose data
+docker/data/
+docker/data.*/
+
+# LMDB files
+rholang/**/*.mdb
+rspace++/tests/*.proptest-regressions
+
+# Rust JNI/JNA libraries (legacy hybrid build)
+rust_libraries/**
+
+# Run-local node data
+run-local/data/
+
+# Logs
+*.log
+
+# Aider
+.aider*

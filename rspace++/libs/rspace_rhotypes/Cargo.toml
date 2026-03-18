@@ -1,0 +1,21 @@
+[package]
+name = "rspace_plus_plus_rhotypes"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rspace_plus_plus = { path = "../../../rspace++" }
+models = { path = "../../../models" }
+rholang = { path = "../../../rholang" }
+shared = { path = "../../../shared" }
+prost = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+chrono = "0.4.38"

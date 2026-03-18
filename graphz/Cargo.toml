@@ -1,0 +1,14 @@
+[package]
+name = "graphz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4" 

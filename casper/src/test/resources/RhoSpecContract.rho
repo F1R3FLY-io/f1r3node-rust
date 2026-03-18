@@ -1,0 +1,163 @@
+/*
+ The table below describes the required computations and their dependencies
+
+ No. | Dependency | Computation method | Result
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ 1.  |            | given              | sk = abaa20c1d578612b568a7c3d9b16e81c68d73b931af92cf79727e02011c558c6
+ 2.  |            | given              | timestamp = 1559158671800
+ 3.  |            | lastNonce          | nonce = 9223372036854775807
+ 4.  | 1,         | secp256k1          | pk = 0401f5d998c9be9b1a753771920c6e968def63fe95b20c71a163a7f7311b6131ac65a49f796b5947fa9d94b0542895e7b7ebe8b91eefcbc5c7604aaf281922ccac
+ 5.  | 2, 4, 3,   | registry           | value = (1559158671800, 0401f5d998c9be9b1a753771920c6e968def63fe95b20c71a163a7f7311b6131ac65a49f796b5947fa9d94b0542895e7b7ebe8b91eefcbc5c7604aaf281922ccac, 9223372036854775807)
+ 6.  | 5,         | protobuf           | toSign = 2a65aa01620a092a0710f0a6cad1e05a0a462a44ca01410401f5d998c9be9b1a753771920c6e968def63fe95b20c71a163a7f7311b6131ac65a49f796b5947fa9d94b0542895e7b7ebe8b91eefcbc5c7604aaf281922ccac0a0d2a0b10feffffffffffffffff01
+ 7.  | 6, 1,      | secp256k1          | sig = 304402206a01410c0195c7dd9980759738e7aed12264f252e91a8908d58ae787b7e0e18e0220526fe68e98b405c6d4ad9388d884da23058b1d6f45a054fea1008252b4ff4e5d
+ 8.  | 4,         | registry           | uri = rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+
+	NOTES: 
+ 	- ackCh is an acknowledgment channel used to signal the completion of a process or to pass results back to the caller.
+ */
+new
+  RhoSpec,
+  rs(`rho:registry:insertSigned:secp256k1`),
+  rl(`rho:registry:lookup`),
+  stdlog(`rho:io:stdlog`),
+  ListOpsCh,
+  assert(`rho:test:assertAck`),
+  testSuiteCompleted(`rho:test:testSuiteCompleted`),
+  uriOut
+in {
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  for(@(_, ListOps) <- ListOpsCh) {
+    contract RhoSpec(@"testSuite", @tests) = {
+      new dummySetup in {
+        contract dummySetup(_, returnCh) = {
+          returnCh!(Nil)
+        } |
+
+        RhoSpec!("testSuite", *dummySetup, tests)
+      }
+    } |
+
+    contract RhoSpec(@"testSuite", setup, @tests) = {
+      new dummyTeardown in {
+        contract dummyTeardown(_, _, ackCh) = {
+          ackCh!(Nil)
+        } |
+
+        RhoSpec!("testSuite", *setup, *dummyTeardown, tests)
+      }
+    } |
+
+    contract RhoSpec(@"testSuite", setup, teardown, @tests) = {
+      stdlog!("info", ("Defining the testSuite:", tests)) |
+      new runTest, runTestOnce, retCh in {
+        contract runTestOnce(@(testName, testBody), @attempt, testAckCh) = {
+          stdlog!("debug", "Running test: " ++ testName ++ " attempt " ++ "${attempt}" %% {"attempt": attempt}) |
+          new rhoSpecImpl, privateAssert in {
+            contract privateAssert(@assertion, @clue, ackCh) = {
+              stdlog!("debug", "asserting: " ++ clue) |
+              match assertion {
+                ("nothing <-", actualCh) => {
+                  for (<- @actualCh) {
+                    assert!(testName, attempt, true, clue, *ackCh)
+                  }
+                }
+                (expected, "== <-", actualCh) => {
+                  for (@actual <- @actualCh) {
+                    stdlog!("info", {"actual": actual, "expected": expected}) |
+                    assert!(testName, attempt, (expected, "==", actual), clue, *ackCh)
+                  }
+                }
+                (unexpected, "!= <-", actualCh) => {
+                  for (@actual <- @actualCh) {
+                    stdlog!("info", {"actual": actual, "unexpected": unexpected}) |
+                    assert!(testName, attempt, (unexpected, "!=", actual), clue, *ackCh)
+                  }
+                }
+                assertion => {
+                  assert!(testName, attempt, assertion, clue, *ackCh)
+                }
+              }
+            } |
+
+            contract rhoSpecImpl(@"assert", @assertion, @clue, ackCh) = {
+              privateAssert!(assertion, clue, *ackCh)
+            } |
+
+            contract rhoSpecImpl(@"assertMany", @assertions, ackCh) = {
+              match assertions {
+                [] => { ackCh!(true) }
+
+                [(assertion, clue) ...tail] => {
+
+                  new privateAck in {
+                    privateAssert!(assertion, clue, *privateAck) |
+
+                    for (@v <- privateAck) {
+                      if (v) {
+                        rhoSpecImpl!("assertMany", tail, *ackCh)
+                      }
+                      else {
+                        ackCh!(false)
+                      }
+                    }
+                  }
+                }
+              }
+            } |
+
+            new setupCh, testBodyAckCh, testTearDownAckCh in {
+              setup!(testName, bundle+{*setupCh}) |
+              for (@setupResult <- setupCh) {
+                stdlog!("debug", ("Setup successful for ", testName, " result: ", setupResult)) |
+                @testBody ! (*rhoSpecImpl, setupResult, *testBodyAckCh) |
+                for (@testBodyResult <- testBodyAckCh) {
+                  stdlog!("info", ("Test ", testName, " finished with result: ", testBodyResult)) |
+                  teardown!(testName, setupResult, *testTearDownAckCh) |
+                  for (_ <- testTearDownAckCh) {
+                    stdlog!("debug", ("Teardown finished for ", testName)) |
+                    testAckCh!(testBodyResult)
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+
+        contract runTest(@(testName, testBody), ackCh) = {
+          runTest!((testName, testBody, 1), *ackCh)
+        } |
+
+        // This contract takes a tuple containing the test name, test body, and the number of attempts, along with an acknowledgment channel ackCh.
+        contract runTest(@(testName, testBody, attempts), ackCh) = {
+          new retCh, runTestImpl in {
+            contract runTestImpl(@attempt, retCh) = {
+              runTestOnce!((testName, testBody), attempt, *retCh)
+            } |
+
+            @ListOps!("range", 1, attempts + 1, *retCh) | // Uses the ListOps contract to generate a range of numbers from 1 to attempts + 1 and sends it to retCh.
+            for(@range <- retCh) {
+              @ListOps!("foreach", range, *runTestImpl, *ackCh) // Uses the ListOps contract to iterate over each number in the range, calling runTestImpl for each attempt and sending the result to ackCh.
+            }
+          }
+        } |
+
+				// How does one know which 'runTest' contract is being called?
+        @ListOps!("foreach", tests, *runTest, *retCh) | // Iterates over all tests, calling runTest for each one.
+
+        for (@v <- retCh) {
+          testSuiteCompleted!(true) // Once all tests are completed, it sends a signal to testSuiteCompleted indicating that the test suite has finished running.
+        }
+      }
+    }
+  } |
+
+// This line registers the RhoSpec contract in the RChain registry with a specific nonce and signature, allowing it to be referenced and used by its URI.
+  rs!(
+    "0401f5d998c9be9b1a753771920c6e968def63fe95b20c71a163a7f7311b6131ac65a49f796b5947fa9d94b0542895e7b7ebe8b91eefcbc5c7604aaf281922ccac".hexToBytes(),
+    (9223372036854775807, bundle+{*RhoSpec}),
+    "304402206a01410c0195c7dd9980759738e7aed12264f252e91a8908d58ae787b7e0e18e0220526fe68e98b405c6d4ad9388d884da23058b1d6f45a054fea1008252b4ff4e5d".hexToBytes(),
+    *uriOut
+  )
+}

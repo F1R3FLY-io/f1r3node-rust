@@ -1,0 +1,207 @@
+// See rspace/src/main/scala/coop/rchain/rspace/internal.scala
+
+use std::collections::BTreeSet;
+use std::hash::Hash;
+
+use counter::Counter;
+use dashmap::DashMap;
+use proptest_derive::Arbitrary;
+use serde::{Deserialize, Serialize};
+
+use super::trace::event::{Consume, Produce};
+
+// The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
+// The 'Default' macro is needed here for hot_store_spec.rs
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, Arbitrary, Default)]
+pub struct Datum<A: Clone> {
+    pub a: A,
+    pub persist: bool,
+    pub source: Produce,
+}
+
+impl<A> Datum<A>
+where A: Clone + Serialize
+{
+    pub fn create<C: Serialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
+        let source = Produce::create(channel, &a, persist);
+        Datum { a, persist, source }
+    }
+}
+
+// The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
+// The 'Default' macro is needed here for hot_store_spec.rs
+#[derive(Clone, Debug, Arbitrary, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct WaitingContinuation<P: Clone, K: Clone> {
+    pub patterns: Vec<P>,
+    pub continuation: K,
+    pub persist: bool,
+    pub peeks: BTreeSet<i32>,
+    pub source: Consume,
+}
+
+impl<P, K> WaitingContinuation<P, K>
+where
+    P: Clone + Serialize,
+    K: Clone + Serialize,
+{
+    pub fn create<C: Clone + Serialize>(
+        channels: &Vec<C>,
+        patterns: &Vec<P>,
+        continuation: &K,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+    ) -> WaitingContinuation<P, K> {
+        let source = Consume::create(channels, patterns, &continuation, persist);
+        WaitingContinuation {
+            patterns: patterns.to_vec(),
+            continuation: continuation.clone(),
+            persist,
+            peeks,
+            source,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConsumeCandidate<C, A: Clone> {
+    pub channel: C,
+    pub datum: Datum<A>,
+    pub removed_datum: A,
+    pub datum_index: i32,
+}
+
+#[derive(Debug)]
+pub struct ProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
+    pub channels: Vec<C>,
+    pub continuation: WaitingContinuation<P, K>,
+    pub continuation_index: i32,
+    pub data_candidates: Vec<ConsumeCandidate<C, A>>,
+}
+
+// Eq and PartialEq is needed here for reduce_spec tests
+#[derive(Debug, Eq, PartialEq)]
+pub struct Row<P: Clone, A: Clone, K: Clone> {
+    pub data: Vec<Datum<A>>,
+    pub wks: Vec<WaitingContinuation<P, K>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Install<P, K> {
+    pub patterns: Vec<P>,
+    pub continuation: K,
+}
+
+#[derive(Clone, Debug)]
+pub struct MultisetMultiMap<K: Hash + Eq, V: Hash + Eq> {
+    pub map: DashMap<K, Counter<V>>,
+}
+
+impl<K, V> MultisetMultiMap<K, V>
+where
+    K: Eq + Hash,
+    V: Eq + Hash,
+{
+    pub fn empty() -> Self {
+        MultisetMultiMap {
+            map: DashMap::new(),
+        }
+    }
+
+    pub fn add_binding(&self, k: K, v: V) {
+        match self.map.get_mut(&k) {
+            Some(mut current) => match current.get_mut(&v) {
+                Some(count) => *count += 1,
+                None => {
+                    current.insert(v, 1);
+                }
+            },
+            None => {
+                let mut ms = Counter::new();
+                ms.insert(v, 1);
+                self.map.insert(k, ms);
+            }
+        }
+    }
+
+    pub fn clear(&self) { self.map.clear(); }
+
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+}
+
+impl<K: Hash + Eq, V: Hash + Eq> MultisetMultiMap<K, V> {
+    // In-place removal to avoid moving the whole map
+    pub fn remove_binding_in_place(&self, k: &K, v: &V) {
+        let mut should_remove_key = false;
+
+        if let Some(mut current) = self.map.get_mut(k) {
+            let mut should_remove_value = false;
+            if let Some(count) = current.get_mut(v) {
+                if *count > 1 {
+                    *count -= 1;
+                } else {
+                    should_remove_value = true;
+                }
+            }
+
+            if should_remove_value {
+                current.remove(v);
+            }
+
+            if current.is_empty() {
+                should_remove_key = true;
+            }
+        }
+
+        if should_remove_key {
+            self.map.remove(k);
+        }
+    }
+}
+
+// This function remains for compatibility but delegates to in-place version and
+// returns the same map
+pub fn remove_binding<K: Hash + Eq, V: Hash + Eq>(
+    ms: MultisetMultiMap<K, V>,
+    k: K,
+    v: V,
+) -> MultisetMultiMap<K, V> {
+    ms.remove_binding_in_place(&k, &v);
+    ms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MultisetMultiMap;
+
+    #[test]
+    fn multiset_multimap_add_binding_increments_existing_count() {
+        let ms = MultisetMultiMap::empty();
+        ms.add_binding("k", "v");
+        ms.add_binding("k", "v");
+
+        let count = ms
+            .map
+            .get(&"k")
+            .and_then(|counter| counter.get(&"v").copied())
+            .unwrap_or(0);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn multiset_multimap_remove_binding_decrements_before_removing() {
+        let ms = MultisetMultiMap::empty();
+        ms.add_binding("k", "v");
+        ms.add_binding("k", "v");
+
+        ms.remove_binding_in_place(&"k", &"v");
+        let count_after_one_remove = ms
+            .map
+            .get(&"k")
+            .and_then(|counter| counter.get(&"v").copied())
+            .unwrap_or(0);
+        assert_eq!(count_after_one_remove, 1);
+
+        ms.remove_binding_in_place(&"k", &"v");
+        assert!(ms.map.get(&"k").is_none());
+    }
+}

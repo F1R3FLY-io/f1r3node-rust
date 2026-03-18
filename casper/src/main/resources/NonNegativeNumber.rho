@@ -1,0 +1,68 @@
+/*
+ The table below describes the required computations and their dependencies
+
+ No. | Dependency | Computation method | Result
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ 1.  |            | given              | sk = e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d
+ 2.  |            | given              | timestamp = 1559156251792
+ 3.  |            | lastNonce          | nonce = 9223372036854775807
+ 4.  | 1,         | secp256k1          | pk = 04e1559d809924e564dce57e34646e155b144d2a504ce7ee519d7a5108fd42f1038d08d745e5ea21cb53d6aa7c7174a768fa373207a83bc947a20c6a02ece7a60e
+ 5.  | 2, 4, 3,   | registry           | value = (1559156251792, 04e1559d809924e564dce57e34646e155b144d2a504ce7ee519d7a5108fd42f1038d08d745e5ea21cb53d6aa7c7174a768fa373207a83bc947a20c6a02ece7a60e, 9223372036854775807)
+ 6.  | 5,         | protobuf           | toSign = 2a65aa01620a092a0710a0f2a2cfe05a0a462a44ca014104e1559d809924e564dce57e34646e155b144d2a504ce7ee519d7a5108fd42f1038d08d745e5ea21cb53d6aa7c7174a768fa373207a83bc947a20c6a02ece7a60e0a0d2a0b10feffffffffffffffff01
+ 7.  | 6, 1,      | secp256k1          | sig = 3044022063a76499f5b658d976c0cc108d7335464f806d43a5a80cf9bf772259810f9d9002202c77c368f2b2338315bad9060bad75d4e59ad55ea8a09fe3fcb06c364bacb1a9
+ 8.  | 4,         | registry           | uri = rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcytx9
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ */
+new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
+  contract NonNegativeNumber(@init, return) = {
+    new this, valueStore in {
+      contract this(@"add", @x, success) = {
+        if (x >= 0) {
+          for(@v <- @(*MergeableTag, *valueStore)){
+            if (v + x >= v) {
+              @(*MergeableTag, *valueStore)!(v + x) | success!(true)
+            } else {
+              //overflow
+              @(*MergeableTag, *valueStore)!(v) | success!(false)
+            }
+          }
+        } else {
+          success!(false)
+        }
+      } |
+      contract this(@"sub", @x, success) = {
+        if (x >= 0) {
+          for(@v <- @(*MergeableTag, *valueStore)) {
+            if (x <= v) {
+              @(*MergeableTag, *valueStore)!(v - x) | success!(true)
+            } else {
+              @(*MergeableTag, *valueStore)!(v) | success!(false)
+            }
+          }
+        } else {
+          success!(false)
+        }
+      } |
+      contract this(@"value", return) = {
+        for(@v <- @(*MergeableTag, *valueStore)) {
+          @(*MergeableTag, *valueStore)!(v) | return!(v)
+        }
+      } |
+      return!(bundle+{*this}) |
+      match init { //Initial balance is zero if given is negative on non-integer
+        Int => {
+          if (init >= 0) { @(*MergeableTag, *valueStore)!(init)  }
+          else           { @(*MergeableTag, *valueStore)!(0) }
+        }
+         _ => { @(*MergeableTag, *valueStore)!(0) }
+      }
+    }
+  } |
+
+  rs!(
+    "04e1559d809924e564dce57e34646e155b144d2a504ce7ee519d7a5108fd42f1038d08d745e5ea21cb53d6aa7c7174a768fa373207a83bc947a20c6a02ece7a60e".hexToBytes(),
+    (9223372036854775807, bundle+{*NonNegativeNumber}),
+    "3044022063a76499f5b658d976c0cc108d7335464f806d43a5a80cf9bf772259810f9d9002202c77c368f2b2338315bad9060bad75d4e59ad55ea8a09fe3fcb06c364bacb1a9".hexToBytes(),
+    *uriOut
+  )
+}

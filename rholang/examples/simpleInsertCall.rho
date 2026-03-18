@@ -1,0 +1,1 @@
+new return, simpleInsertTest(`rho:system:mySimpleInsertTest`), stdout(`rho:io:stdout`) in { stdout!(simpleInsertTest!(*return)) }

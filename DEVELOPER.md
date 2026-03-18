@@ -1,0 +1,212 @@
+# Developer Guide
+
+Native development setup for the Rust workspace.
+
+This repository is built with Cargo, Docker, and system packages only.
+
+## Required Tooling
+
+### macOS
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+brew install protobuf openssl pkg-config just grpcurl
+```
+
+Optional:
+
+```bash
+cargo install cross
+```
+
+### Ubuntu Or Debian
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+sudo apt-get update
+sudo apt-get install -y \
+  protobuf-compiler \
+  libprotobuf-dev \
+  pkg-config \
+  libssl-dev \
+  build-essential \
+  gcc
+
+cargo install just
+```
+
+Optional:
+
+```bash
+cargo install cross
+```
+
+### Fedora Or RHEL
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+sudo dnf install -y \
+  protobuf-compiler \
+  protobuf-devel \
+  pkg-config \
+  openssl-devel \
+  gcc
+```
+
+## Toolchain
+
+The workspace is pinned in [rust-toolchain.toml](rust-toolchain.toml):
+
+```bash
+rustup toolchain install nightly-2026-02-09
+rustup show
+```
+
+## Environment Notes
+
+If the build cannot find `protoc` or OpenSSL:
+
+```bash
+export PROTOC=$(which protoc)
+export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
+export OPENSSL_LIB_DIR=$(brew --prefix openssl)/lib
+```
+
+The workspace already sets:
+
+- `RUST_MIN_STACK=8388608` in `.cargo/config.toml`
+- `-C target-cpu=native` for local builds
+
+If you are cross-compiling, review `.cargo/config.toml` and `Cross.toml` before reusing those defaults.
+
+## Common Workflows
+
+### Build
+
+```bash
+cargo build
+cargo build --release
+cargo build -p node
+just build
+just build-debug
+```
+
+### Format And Lint
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets
+```
+
+### Test
+
+```bash
+cargo test
+cargo test --release
+cargo test -p casper
+cargo test -p rholang
+./scripts/run_rust_tests.sh
+```
+
+### Run A Standalone Node
+
+```bash
+just run-standalone
+just run-standalone-debug
+just clean-standalone
+```
+
+Manual equivalent:
+
+```bash
+cargo run --release -p node -- run -s \
+  --config-file=run-local/conf/standalone.conf \
+  --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+  --host=localhost \
+  --no-upnp
+```
+
+### Build And Run Docker Images
+
+```bash
+./node/docker-commands.sh build-local
+docker compose -f docker/standalone.yml up
+docker compose -f docker/shard.yml up
+```
+
+## Workspace Layout
+
+```text
+f1r3node-rust/
+├── Cargo.toml
+├── rust-toolchain.toml
+├── .cargo/config.toml
+├── Justfile
+├── node/
+├── casper/
+├── comm/
+├── crypto/
+├── models/
+├── rholang/
+├── rspace++/
+├── block-storage/
+├── shared/
+├── graphz/
+├── docker/
+├── run-local/
+├── scripts/
+└── docs/
+```
+
+## Generated Artifacts
+
+- `node/build.rs` generates bindings for `repl.proto` and `lsp.proto`
+- `models/build.rs` generates bindings for the core protocol and API schemas
+- `comm/build.rs` generates the Kademlia RPC bindings
+
+The generated code is rebuilt automatically when the corresponding `.proto` files change.
+
+## Troubleshooting
+
+### `protoc` Not Found
+
+```bash
+which protoc
+export PROTOC=$(which protoc)
+```
+
+### OpenSSL Not Found On macOS
+
+```bash
+export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
+export OPENSSL_LIB_DIR=$(brew --prefix openssl)/lib
+```
+
+### Stack Overflow In Debug Tests
+
+The workspace already raises stack size for test threads. If a specific test still overflows:
+
+```bash
+RUST_MIN_STACK=16777216 cargo test -p rholang
+```
+
+### LMDB Lock Or Leftover Test Data
+
+```bash
+find . -name "*.mdb" -delete
+```
+
+### Slow Full Workspace Rebuilds
+
+Build or test a smaller target first:
+
+```bash
+cargo build -p node
+cargo test -p casper
+```

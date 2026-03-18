@@ -1,0 +1,31 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bincode = "1"
+heed = "0.11.0"
+hex = { workspace = true }
+proptest = "1.6.0"
+prost = { workspace = true }
+serde = { workspace = true }
+serde_bytes = "0.11.17"
+serde_json = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+axum = "0.8"
+tonic = { workspace = true }
+tower = { workspace = true }
+http = "1.0"
+http-body-util = "0.1"
+bytes = "1"
+tracing = { workspace = true }
+lz4_flex = "0.11.3"
+rand = { workspace = true }
+thiserror = { workspace = true }
+indexmap = "2.8.0"
+metrics = { workspace = true }

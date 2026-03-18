@@ -1,0 +1,64 @@
+[package]
+name = "casper"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = { workspace = true }
+comm = { path = "../comm" }
+crypto = { path = "../crypto" }
+graphz = { path = "../graphz" }
+models = { path = "../models" }
+rholang = { path = "../rholang" }
+rspace_plus_plus = { path = "../rspace++" }
+block-storage = { path = "../block-storage" }
+shared = { path = "../shared" }
+tokio = { workspace = true }
+prost = { workspace = true }
+lz4_flex = "0.11.3"
+lazy_static = "1.5.0"
+hex = { workspace = true }
+dashmap = { workspace = true }
+imbl = { workspace = true }
+indexmap = "2.8.0"
+bincode = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+byteorder = "1.5.0"
+env_logger = "0.11.8"
+rand = { workspace = true }
+futures = { workspace = true }
+uuid = "1.16.0"
+itertools = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+# LFS Block Requester dependencies
+num_cpus = "1.0"
+async-stream = "0.3"
+tokio-stream = "0.1"
+humantime = "2.3.0"
+tonic = { workspace = true }
+eyre = { workspace = true }
+metrics = "0.23"
+proptest = "1.6.0"
+tempfile = { version = "3.24.0", optional = true }
+
+[dev-dependencies]
+metrics-util = "0.17"
+k256 = { version = "0.13.4", features = ["ecdsa"] }
+serial_test = "3.1"
+env_logger = "0.11.8"
+tempfile = "3.24.0"
+
+
+
+[features]
+default = []
+# Exposes test utilities (TestNode, mocks, genesis helpers) to other workspace members.
+# Guarded with #[cfg(feature = "test-utils")] so it is never compiled in production.
+test-utils = ["tempfile"]
+
+[build-dependencies]

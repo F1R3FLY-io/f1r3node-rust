@@ -1,0 +1,1009 @@
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
+
+use prost::bytes::Bytes;
+use std::collections::{HashMap, HashSet};
+
+use block_storage::rust::{
+    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    key_value_block_store::KeyValueBlockStore,
+};
+use crypto::rust::signatures::signed::Signed;
+use models::{
+    rhoapi::Par,
+    rust::{
+        block::state_hash::StateHash,
+        block_hash::BlockHash,
+        casper::{
+            pretty_printer::PrettyPrinter,
+            protocol::casper_message::{
+                BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+            },
+        },
+        validator::Validator,
+    },
+};
+use rholang::rust::interpreter::{
+    compiler::compiler::Compiler, errors::InterpreterError, system_processes::BlockData,
+};
+use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+
+use crate::rust::{
+    block_status::BlockStatus,
+    casper::CasperSnapshot,
+    errors::CasperError,
+    merging::{block_index::BlockIndex, dag_merger, deploy_chain_index::DeployChainIndex},
+    metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE},
+    util::proto_util,
+    BlockProcessing,
+};
+
+use super::{replay_failure::ReplayFailure, runtime_manager::RuntimeManager};
+
+pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
+    Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
+}
+
+// Returns (None, checkpoints) if the block's tuplespace hash
+// does not match the computed hash based on the deploys
+pub async fn validate_block_checkpoint(
+    block: &BlockMessage,
+    block_store: &KeyValueBlockStore,
+    s: &mut CasperSnapshot,
+    runtime_manager: &mut RuntimeManager,
+) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
+    tracing::debug!(target: "f1r3fly.casper", "before-unsafe-get-parents");
+    let incoming_pre_state_hash = proto_util::pre_state_hash(block);
+    let parents = proto_util::get_parents(block_store, block);
+    tracing::debug!(target: "f1r3fly.casper", "before-compute-parents-post-state");
+    let computed_parents_info =
+        compute_parents_post_state(block_store, parents.clone(), s, runtime_manager, None);
+
+    tracing::info!(
+        "Computed parents post state for {}.",
+        PrettyPrinter::build_string_block_message(block, false)
+    );
+
+    match computed_parents_info {
+        Ok((computed_pre_state_hash, rejected_deploys)) => {
+            let rejected_deploy_ids: HashSet<_> = rejected_deploys.iter().cloned().collect();
+            let block_rejected_deploy_sigs: HashSet<_> = block
+                .body
+                .rejected_deploys
+                .iter()
+                .map(|d| d.sig.clone())
+                .collect();
+
+            if incoming_pre_state_hash != computed_pre_state_hash {
+                // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
+                tracing::warn!(
+                    "Computed pre-state hash {} does not equal block's pre-state hash {}.",
+                    PrettyPrinter::build_string_bytes(&computed_pre_state_hash),
+                    PrettyPrinter::build_string_bytes(&incoming_pre_state_hash)
+                );
+
+                Ok(Either::Right(None))
+            } else if rejected_deploy_ids != block_rejected_deploy_sigs {
+                // Detailed logging for InvalidRejectedDeploy mismatch
+                let extra_in_computed: Vec<_> = rejected_deploy_ids
+                    .difference(&block_rejected_deploy_sigs)
+                    .cloned()
+                    .collect();
+                let missing_in_computed: Vec<_> = block_rejected_deploy_sigs
+                    .difference(&rejected_deploy_ids)
+                    .cloned()
+                    .collect();
+
+                // Get all deploy signatures in the block for duplicate detection
+                let all_block_deploys: Vec<_> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .map(|pd| pd.deploy.sig.clone())
+                    .collect();
+                let mut all_deploy_sigs: Vec<_> = all_block_deploys.clone();
+                all_deploy_sigs.extend(block.body.rejected_deploys.iter().map(|rd| rd.sig.clone()));
+
+                // Find duplicates
+                let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
+                for sig in &all_deploy_sigs {
+                    *sig_counts.entry(sig.clone()).or_insert(0) += 1;
+                }
+                let duplicates: Vec<_> = sig_counts
+                    .into_iter()
+                    .filter(|(_, count)| *count > 1)
+                    .map(|(sig, _)| sig)
+                    .collect();
+
+                // Build deploy data map for correlation
+                let deploy_data_map: HashMap<Bytes, &Signed<DeployData>> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .map(|pd| (pd.deploy.sig.clone(), &pd.deploy))
+                    .collect();
+
+                // Helper to analyze a deploy signature
+                let analyze_deploy_sig = |sig: &Bytes| -> String {
+                    let sig_str = PrettyPrinter::build_string_bytes(sig);
+                    let is_duplicate = if duplicates.contains(sig) {
+                        " [DUPLICATE]"
+                    } else {
+                        ""
+                    };
+                    let deploy_info = match deploy_data_map.get(sig) {
+                        Some(deploy) => {
+                            let term_preview: String = deploy.data.term.chars().take(50).collect();
+                            format!(
+                                " (term={}..., timestamp={}, phloLimit={})",
+                                term_preview, deploy.data.time_stamp, deploy.data.phlo_limit
+                            )
+                        }
+                        None => " (deploy data not found in block)".to_string(),
+                    };
+                    format!("{}{}{}", sig_str, is_duplicate, deploy_info)
+                };
+
+                let extra_analysis: String = if extra_in_computed.is_empty() {
+                    "  None".to_string()
+                } else {
+                    extra_in_computed
+                        .iter()
+                        .map(|sig| format!("  {}", analyze_deploy_sig(sig)))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                let missing_analysis: String = if missing_in_computed.is_empty() {
+                    "  None".to_string()
+                } else {
+                    missing_in_computed
+                        .iter()
+                        .map(|sig| format!("  {}", analyze_deploy_sig(sig)))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                let duplicates_str: String = if duplicates.is_empty() {
+                    "  None".to_string()
+                } else {
+                    duplicates
+                        .iter()
+                        .map(|sig| format!("  {}", PrettyPrinter::build_string_bytes(sig)))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                let parent_hashes: String = parents
+                    .iter()
+                    .map(|p| PrettyPrinter::build_string_bytes(&p.block_hash))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                tracing::error!(
+                    "\n=== InvalidRejectedDeploy Analysis ===\n\
+                    Block #{} ({})\n\
+                    Sender: {}\n\
+                    Parents: {}\n\n\
+                    Rejected deploy mismatch:\n\
+                    \x20 Validator computed: {} rejected deploys\n\
+                    \x20 Block contains:     {} rejected deploys\n\n\
+                    Extra in computed (validator wants to reject, but block creator didn't):\n\
+                    \x20 Count: {}\n{}\n\n\
+                    Missing in computed (block creator rejected, but validator doesn't think should be):\n\
+                    \x20 Count: {}\n{}\n\n\
+                    Duplicates found in block: {}\n{}\n\n\
+                    All deploys in block: {}\n\
+                    All rejected in block: {}\n\
+                    ========================================",
+                    block.body.state.block_number,
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_bytes(&block.sender),
+                    parent_hashes,
+                    rejected_deploy_ids.len(),
+                    block_rejected_deploy_sigs.len(),
+                    extra_in_computed.len(),
+                    extra_analysis,
+                    missing_in_computed.len(),
+                    missing_analysis,
+                    duplicates.len(),
+                    duplicates_str,
+                    all_block_deploys.len(),
+                    block_rejected_deploy_sigs.len()
+                );
+
+                Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
+            } else {
+                tracing::debug!(target: "f1r3fly.casper.replay-block", "before-process-pre-state-hash");
+                // Using tracing events for async - Span[F] equivalent from Scala
+                tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-started");
+                let replay_start = std::time::Instant::now();
+                let replay_result =
+                    replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
+                        .await?;
+                metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(replay_start.elapsed().as_secs_f64());
+                tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-finished");
+
+                handle_errors(proto_util::post_state_hash(block), replay_result)
+            }
+        }
+        Err(ex) => {
+            Ok(Either::Left(BlockStatus::exception(ex)))
+        }
+    }
+}
+
+async fn replay_block(
+    initial_state_hash: StateHash,
+    block: &BlockMessage,
+    dag: &mut KeyValueDagRepresentation,
+    runtime_manager: &mut RuntimeManager,
+) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
+    // Extract deploys and system deploys from the block
+    let internal_deploys = proto_util::deploys(block);
+    let internal_system_deploys = proto_util::system_deploys(block);
+
+    // Check for duplicate deploys in the block before replay
+    let mut all_deploy_sigs: Vec<Bytes> = internal_deploys
+        .iter()
+        .map(|pd| pd.deploy.sig.clone())
+        .collect();
+    all_deploy_sigs.extend(block.body.rejected_deploys.iter().map(|rd| rd.sig.clone()));
+
+    let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
+    for sig in &all_deploy_sigs {
+        *sig_counts.entry(sig.clone()).or_insert(0) += 1;
+    }
+    let deploy_duplicates: HashMap<Bytes, usize> = sig_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .collect();
+
+    if !deploy_duplicates.is_empty() {
+        let duplicates_str: String = deploy_duplicates
+            .iter()
+            .map(|(sig, count)| {
+                format!(
+                    "  {} (appears {} times)",
+                    PrettyPrinter::build_string_bytes(sig),
+                    count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        tracing::warn!(
+            "\n=== Duplicate Deploys Detected in Block ===\n\
+            Block #{} ({})\n\
+            Found {} duplicate deploy signatures:\n{}\n\
+            Total deploys: {}\n\
+            Total rejected: {}\n\
+            ============================================",
+            block.body.state.block_number,
+            PrettyPrinter::build_string_bytes(&block.block_hash),
+            deploy_duplicates.len(),
+            duplicates_str,
+            internal_deploys.len(),
+            block.body.rejected_deploys.len()
+        );
+    } else {
+        tracing::debug!(
+            "Block #{}: replaying {} deploys, {} rejected",
+            block.body.state.block_number,
+            internal_deploys.len(),
+            block.body.rejected_deploys.len()
+        );
+    }
+
+    // Get invalid blocks set from DAG
+    let invalid_blocks_set = dag.invalid_blocks();
+
+    // Get unseen block hashes
+    let unseen_blocks_set = proto_util::unseen_block_hashes(dag, block)?;
+
+    // Filter out invalid blocks that are unseen
+    let seen_invalid_blocks_set: Vec<_> = invalid_blocks_set
+        .iter()
+        .filter(|invalid_block| !unseen_blocks_set.contains(&invalid_block.block_hash)).cloned()
+        .collect();
+    // TODO: Write test in which switching this to .filter makes it fail
+
+    // Convert to invalid blocks map
+    let invalid_blocks: HashMap<BlockHash, Validator> = seen_invalid_blocks_set
+        .into_iter()
+        .map(|invalid_block| (invalid_block.block_hash, invalid_block.sender))
+        .collect();
+
+    // Create block data and check if genesis
+    let block_data = BlockData::from_block(block);
+    let is_genesis = block.header.parents_hash_list.is_empty();
+
+    // Implement retry logic with limit of 3 retries
+    let mut attempts = 0;
+    const MAX_RETRIES: usize = 3;
+
+    loop {
+        // Call the async replay_compute_state method
+        let replay_result = runtime_manager
+            .replay_compute_state(
+                &initial_state_hash,
+                internal_deploys.clone(),
+                internal_system_deploys.clone(),
+                &block_data,
+                Some(invalid_blocks.clone()),
+                is_genesis,
+            )
+            .await;
+
+        match replay_result {
+            Ok(computed_state_hash) => {
+                // Check if computed hash matches expected hash
+                if computed_state_hash == block.body.state.post_state_hash {
+                    // Success - hashes match
+                    return Ok(Either::Right(computed_state_hash));
+                } else if attempts >= MAX_RETRIES {
+                    // Give up after max retries
+                    tracing::error!(
+                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: giving up after {} retries",
+                        PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+                        PrettyPrinter::build_string_no_limit(&computed_state_hash),
+                        attempts
+                    );
+                    return Ok(Either::Right(computed_state_hash));
+                } else {
+                    // Retry - log error and continue
+                    tracing::error!(
+                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: will retry, attempt {}",
+                        PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+                        PrettyPrinter::build_string_no_limit(&computed_state_hash),
+                        attempts + 1
+                    );
+                    attempts += 1;
+                }
+            }
+            Err(replay_error) => {
+                if attempts >= MAX_RETRIES {
+                    // Give up after max retries
+                    tracing::error!(
+                        "Replay block {} got error {:?}, retries details: giving up after {} retries",
+                        PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        replay_error,
+                        attempts
+                    );
+                    // Convert CasperError to ReplayFailure::InternalError
+                    return Ok(Either::Left(ReplayFailure::internal_error(
+                        replay_error.to_string(),
+                    )));
+                } else {
+                    // Retry - log error and continue
+                    tracing::error!(
+                        "Replay block {} got error {:?}, retries details: will retry, attempt {}",
+                        PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        replay_error,
+                        attempts + 1
+                    );
+                    attempts += 1;
+                }
+            }
+        }
+    }
+}
+
+fn handle_errors(
+    ts_hash: StateHash,
+    result: Either<ReplayFailure, StateHash>,
+) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
+    match result {
+        Either::Left(replay_failure) => match replay_failure {
+            ReplayFailure::InternalError { msg } => {
+                let exception = CasperError::RuntimeError(format!(
+                    "Internal errors encountered while processing deploy: {}",
+                    msg
+                ));
+                Ok(Either::Left(BlockStatus::exception(exception)))
+            }
+
+            ReplayFailure::ReplayStatusMismatch {
+                initial_failed,
+                replay_failed,
+            } => {
+                println!(
+                    "Found replay status mismatch; replay failure is {} and orig failure is {}",
+                    replay_failed, initial_failed
+                );
+                tracing::warn!(
+                    "Found replay status mismatch; replay failure is {} and orig failure is {}",
+                    replay_failed,
+                    initial_failed
+                );
+                Ok(Either::Right(None))
+            }
+
+            ReplayFailure::UnusedCOMMEvent { msg } => {
+                println!("Found replay exception: {}", msg);
+                tracing::warn!("Found replay exception: {}", msg);
+                Ok(Either::Right(None))
+            }
+
+            ReplayFailure::ReplayCostMismatch {
+                initial_cost,
+                replay_cost,
+            } => {
+                println!(
+                    "Found replay cost mismatch: initial deploy cost = {}, replay deploy cost = {}",
+                    initial_cost, replay_cost
+                );
+                tracing::warn!(
+                    "Found replay cost mismatch: initial deploy cost = {}, replay deploy cost = {}",
+                    initial_cost,
+                    replay_cost
+                );
+                Ok(Either::Right(None))
+            }
+
+            ReplayFailure::SystemDeployErrorMismatch {
+                play_error,
+                replay_error,
+            } => {
+                tracing::warn!(
+                        "Found system deploy error mismatch: initial deploy error message = {}, replay deploy error message = {}",
+                        play_error, replay_error
+                    );
+                Ok(Either::Right(None))
+            }
+        },
+
+        Either::Right(computed_state_hash) => {
+            if ts_hash == computed_state_hash {
+                // State hash in block matches computed hash!
+                Ok(Either::Right(Some(computed_state_hash)))
+            } else {
+                // State hash in block does not match computed hash -- invalid!
+                // return no state hash, do not update the state hash set
+                println!(
+                    "Tuplespace hash {} does not match computed hash {}.",
+                    PrettyPrinter::build_string_bytes(&ts_hash),
+                    PrettyPrinter::build_string_bytes(&computed_state_hash)
+                );
+                tracing::warn!(
+                    "Tuplespace hash {} does not match computed hash {}.",
+                    PrettyPrinter::build_string_bytes(&ts_hash),
+                    PrettyPrinter::build_string_bytes(&computed_state_hash)
+                );
+                Ok(Either::Right(None))
+            }
+        }
+    }
+}
+
+pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
+    let deploy_info = PrettyPrinter::build_string_sig(deploy_sig);
+    let error_messages: String = errors
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    println!("Deploy ({}) errors: {}", deploy_info, error_messages);
+
+    tracing::warn!("Deploy ({}) errors: {}", deploy_info, error_messages);
+}
+
+pub async fn compute_deploys_checkpoint(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<Signed<DeployData>>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &mut RuntimeManager,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+) -> Result<
+    (
+        StateHash,
+        StateHash,
+        Vec<ProcessedDeploy>,
+        Vec<prost::bytes::Bytes>,
+        Vec<ProcessedSystemDeploy>,
+        Vec<Bond>,
+    ),
+    CasperError,
+> {
+    let checkpoint_started = std::time::Instant::now();
+    // Using tracing events for async - Span[F] equivalent from Scala
+    tracing::debug!(target: "f1r3fly.casper.compute-deploys-checkpoint", "compute-deploys-checkpoint-started");
+    // Ensure parents are not empty
+    if parents.is_empty() {
+        return Err(CasperError::RuntimeError(
+            "Parents must not be empty".to_string(),
+        ));
+    }
+
+    // Compute parents post state
+    let parents_started = std::time::Instant::now();
+    let computed_parents_info =
+        compute_parents_post_state(block_store, parents, s, runtime_manager, None)?;
+    let parents_ms = parents_started.elapsed().as_millis();
+    let (pre_state_hash, rejected_deploys) = computed_parents_info;
+
+    // Compute state and bonds using one spawned runtime
+    let compute_state_started = std::time::Instant::now();
+    let result = runtime_manager
+        .compute_state_with_bonds(
+            &pre_state_hash,
+            deploys,
+            system_deploys,
+            block_data,
+            Some(invalid_blocks),
+        )
+        .await?;
+    let compute_state_ms = compute_state_started.elapsed().as_millis();
+
+    let (post_state_hash, processed_deploys, processed_system_deploys, bonds) = result;
+    tracing::debug!(
+        target: "f1r3fly.compute_deploys_checkpoint.timing",
+        "compute_deploys_checkpoint timing: parents_post_state_ms={}, compute_state_ms={}, total_ms={}, processed_deploys={}, processed_system_deploys={}, rejected_deploys={}",
+        parents_ms,
+        compute_state_ms,
+        checkpoint_started.elapsed().as_millis(),
+        processed_deploys.len(),
+        processed_system_deploys.len(),
+        rejected_deploys.len()
+    );
+
+    Ok((
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ))
+}
+
+/// Compute the merged post-state from multiple parent blocks.
+///
+/// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
+/// always disable late block filtering (see full merged state).
+/// For normal block creation, pass `None` to use the shard config value.
+pub fn compute_parents_post_state(
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    disable_late_block_filtering_override: Option<bool>,
+) -> Result<(StateHash, Vec<Bytes>), CasperError> {
+    let total_started = std::time::Instant::now();
+    const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
+    const MAX_LCA_DISTANCE_BLOCKS: i64 = 256;
+
+    // Span guard must live until end of scope to maintain tracing context
+    let _span = tracing::debug_span!(target: "f1r3fly.casper.compute-parents-post-state", "compute-parents-post-state").entered();
+    match parents.len() {
+        // For genesis, use empty trie's root hash
+        0 => {
+            let state = RuntimeManager::empty_state_hash_fixed();
+            tracing::debug!(
+                target: "f1r3fly.compute_parents_post_state.timing",
+                "compute_parents_post_state timing: path=genesis, parents=0, total_ms={}",
+                total_started.elapsed().as_millis()
+            );
+            Ok((state, Vec::new()))
+        }
+
+        // For single parent, get its post state hash
+        1 => {
+            let parent = &parents[0];
+            let state = proto_util::post_state_hash(parent);
+            tracing::debug!(
+                target: "f1r3fly.compute_parents_post_state.timing",
+                "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
+                total_started.elapsed().as_millis()
+            );
+            Ok((state, Vec::new()))
+        }
+
+        // Multiple parents - we might want to take some data from the parent with the most stake,
+        // e.g. bonds map, slashing deploys, bonding deploys.
+        // such system deploys are not mergeable, so take them from one of the parents.
+        _ => {
+            let cache_lookup_started = std::time::Instant::now();
+            // Fast path: if one parent is descendant of all others, its post-state already
+            // includes all effects from the remaining parents and we can skip DAG merge.
+            for candidate in &parents {
+                let covers_all = parents
+                    .iter()
+                    .filter(|p| p.block_hash != candidate.block_hash)
+                    .all(|p| {
+                        s.dag
+                            .is_in_main_chain(&p.block_hash, &candidate.block_hash)
+                            .unwrap_or(false)
+                    });
+                if covers_all {
+                    tracing::debug!(
+                        target: "f1r3fly.compute_parents_post_state.fast_path",
+                        "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
+                        PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                        parents.len()
+                    );
+                    let state = proto_util::post_state_hash(candidate);
+                    tracing::debug!(
+                        target: "f1r3fly.compute_parents_post_state.timing",
+                        "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
+                        parents.len(),
+                        cache_lookup_started.elapsed().as_millis(),
+                        total_started.elapsed().as_millis()
+                    );
+                    return Ok((state, Vec::new()));
+                }
+            }
+
+            // Broader fast path: if one parent is an ancestor-descendant cover in DAG
+            // (not only on the main-parent chain), its post-state already subsumes the
+            // remaining parents and merge can be skipped safely.
+            if parents.len() <= 8 {
+                let parent_hashes: HashSet<BlockHash> =
+                    parents.iter().map(|p| p.block_hash.clone()).collect();
+                for candidate in &parents {
+                    let Ok(mut candidate_closure) =
+                        s.dag.with_ancestors(candidate.block_hash.clone(), |_| true)
+                    else {
+                        continue;
+                    };
+                    candidate_closure.insert(candidate.block_hash.clone());
+
+                    let covers_all = parent_hashes
+                        .iter()
+                        .filter(|hash| **hash != candidate.block_hash)
+                        .all(|hash| candidate_closure.contains(hash));
+
+                    if covers_all {
+                        tracing::debug!(
+                            target: "f1r3fly.compute_parents_post_state.fast_path",
+                            "compute_parents_post_state fast path: dag-descendant parent {} covers all {} parents",
+                            PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                            parents.len()
+                        );
+                        let state = proto_util::post_state_hash(candidate);
+                        tracing::debug!(
+                            target: "f1r3fly.compute_parents_post_state.timing",
+                            "compute_parents_post_state timing: path=dag_descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
+                            parents.len(),
+                            cache_lookup_started.elapsed().as_millis(),
+                            total_started.elapsed().as_millis()
+                        );
+                        return Ok((state, Vec::new()));
+                    }
+                }
+            }
+
+            let mut parent_hashes_for_key: Vec<BlockHash> =
+                parents.iter().map(|p| p.block_hash.clone()).collect();
+            parent_hashes_for_key.sort();
+            let disable_late_block_filtering = disable_late_block_filtering_override
+                .unwrap_or(s.on_chain_state.shard_conf.disable_late_block_filtering);
+            let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
+                sorted_parent_hashes: parent_hashes_for_key,
+                disable_late_block_filtering,
+            };
+            if let Some((cached_state, cached_rejected)) =
+                runtime_manager.get_cached_parents_post_state(&cache_key)
+            {
+                tracing::debug!(
+                    target: "f1r3fly.compute_parents_post_state.cache",
+                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}",
+                    cache_key.sorted_parent_hashes.len(),
+                    cached_rejected.len()
+                );
+                tracing::debug!(
+                    target: "f1r3fly.compute_parents_post_state.timing",
+                    "compute_parents_post_state timing: path=cache_hit, parents={}, cache_lookup_ms={}, total_ms={}",
+                    cache_key.sorted_parent_hashes.len(),
+                    cache_lookup_started.elapsed().as_millis(),
+                    total_started.elapsed().as_millis()
+                );
+                return Ok((cached_state, cached_rejected));
+            }
+            let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
+
+            // Function to get or compute BlockIndex for each parent block hash
+            let block_index_f = |v: &BlockHash| -> Result<BlockIndex, CasperError> {
+                // Try cache first
+                if let Some(cached) = runtime_manager.block_index_cache.get(v) {
+                    return Ok((*cached.value()).clone());
+                }
+
+                // Cache miss - compute the BlockIndex
+                let b = block_store.get_unsafe(v);
+                let pre_state = &b.body.state.pre_state_hash;
+                let post_state = &b.body.state.post_state_hash;
+                let sender = b.sender.clone();
+                let seq_num = b.seq_num;
+
+                let mergeable_chs =
+                    runtime_manager.load_mergeable_channels(post_state, sender, seq_num)?;
+
+                let block_index = crate::rust::merging::block_index::new(
+                    &b.block_hash,
+                    &b.body.deploys,
+                    &b.body.system_deploys,
+                    &Blake2b256Hash::from_bytes_prost(pre_state),
+                    &Blake2b256Hash::from_bytes_prost(post_state),
+                    &runtime_manager.history_repo,
+                    &mergeable_chs,
+                )?;
+
+                // Cache the result
+                runtime_manager
+                    .block_index_cache
+                    .insert(v.clone(), block_index.clone());
+
+                Ok(block_index)
+            };
+
+            // Compute scope: all ancestors of parents (blocks visible from these parents)
+            // bounded by max-parent-depth configured for the shard to avoid
+            // expensive ancestry walks through finalized history.
+            let parent_hashes: Vec<BlockHash> =
+                parents.iter().map(|p| p.block_hash.clone()).collect();
+            let max_parent_block_number = parents
+                .iter()
+                .map(|p| p.body.state.block_number)
+                .max()
+                .unwrap_or(0);
+            let max_parent_depth = s.on_chain_state.shard_conf.max_parent_depth;
+            let ancestor_min_block_number = if max_parent_depth <= 0 || max_parent_depth == i32::MAX
+            {
+                i64::MIN
+            } else {
+                max_parent_block_number.saturating_sub(max_parent_depth as i64)
+            };
+            let include_visible_ancestor =
+                |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
+                    // IMPORTANT: do not use local finalized status as a merge-scope filter.
+                    // Different validators can have temporarily different finalized views, and
+                    // filtering by `is_finalized` causes non-deterministic parent post-state
+                    // computation for the same parent set.
+                    if ancestor_min_block_number == i64::MIN {
+                        return true;
+                    }
+
+                    match dag.lookup(hash) {
+                        Ok(Some(meta)) => meta.block_number >= ancestor_min_block_number,
+                        Ok(None) => false,
+                        Err(_) => false,
+                    }
+                };
+            let include_lca_ancestor =
+                |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
+                    if ancestor_min_block_number == i64::MIN {
+                        return true;
+                    }
+
+                    match dag.lookup(hash) {
+                        Ok(Some(meta)) => meta.block_number >= ancestor_min_block_number,
+                        Ok(None) => false,
+                        Err(_) => false,
+                    }
+                };
+
+            // Get all ancestors of all parents (including the parents themselves)
+            // Use bounded traversal that stops at finalized blocks to prevent O(chain_length) growth
+            let collect_ancestors_started = std::time::Instant::now();
+            let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
+            let mut lca_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
+            for parent_hash in &parent_hashes {
+                let visible_ancestors = s.dag.with_ancestors(parent_hash.clone(), |bh| {
+                    include_visible_ancestor(bh, &s.dag)
+                })?;
+                let mut visible_ancestors_with_parent = visible_ancestors;
+                visible_ancestors_with_parent.insert(parent_hash.clone());
+                visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
+
+                let lca_ancestors = s
+                    .dag
+                    .with_ancestors(parent_hash.clone(), |bh| include_lca_ancestor(bh, &s.dag))?;
+                let mut lca_ancestors_with_parent = lca_ancestors;
+                lca_ancestors_with_parent.insert(parent_hash.clone());
+                lca_ancestor_sets_with_parents.push(lca_ancestors_with_parent);
+            }
+            let collect_ancestors_ms = collect_ancestors_started.elapsed().as_millis();
+
+            // Flatten all ancestor sets to get visible blocks
+            let flatten_visible_started = std::time::Instant::now();
+            let visible_blocks: HashSet<BlockHash> = visible_ancestor_sets_with_parents
+                .iter()
+                .flat_map(|s| s.iter().cloned())
+                .collect();
+            let flatten_visible_ms = flatten_visible_started.elapsed().as_millis();
+
+            // Find the lowest common ancestor of all parents.
+            // This is the highest block that is an ancestor of ALL parents.
+            // This is deterministic because it depends only on DAG structure, not finalization state.
+            let lca_started = std::time::Instant::now();
+            let mut common_ancestors: HashSet<BlockHash> =
+                if lca_ancestor_sets_with_parents.is_empty() {
+                    HashSet::new()
+                } else {
+                    let first = lca_ancestor_sets_with_parents[0].clone();
+                    lca_ancestor_sets_with_parents
+                        .iter()
+                        .skip(1)
+                        .fold(first, |acc, set| acc.intersection(set).cloned().collect())
+                };
+
+            // Deterministic fallback: if bounded LCA search misses a common ancestor,
+            // perform a full ancestry intersection that is independent of finalized state.
+            if common_ancestors.is_empty() {
+                let mut full_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
+                for parent_hash in &parent_hashes {
+                    let mut ancestors = s.dag.with_ancestors(parent_hash.clone(), |_| true)?;
+                    ancestors.insert(parent_hash.clone());
+                    full_ancestor_sets_with_parents.push(ancestors);
+                }
+
+                if !full_ancestor_sets_with_parents.is_empty() {
+                    let first = full_ancestor_sets_with_parents[0].clone();
+                    common_ancestors = full_ancestor_sets_with_parents
+                        .iter()
+                        .skip(1)
+                        .fold(first, |acc, set| acc.intersection(set).cloned().collect());
+                }
+            }
+
+            // Get block numbers for common ancestors to find LCA (highest block number)
+            let mut common_ancestors_with_height: Vec<(BlockHash, i64)> = Vec::new();
+            for h in &common_ancestors {
+                if let Some(metadata) = s.dag.lookup(h)? {
+                    common_ancestors_with_height.push((h.clone(), metadata.block_number));
+                }
+            }
+
+            // The LCA is the common ancestor with the highest block number.
+            // Tie-break deterministically by block hash to avoid cross-node
+            // divergence when multiple LCAs share the same block height.
+            // Fall back to genesis/snapshot LFB if no common ancestor found
+            let lca_opt = common_ancestors_with_height
+                .iter()
+                .max_by(|(hash_a, height_a), (hash_b, height_b)| {
+                    height_a
+                        .cmp(height_b)
+                        // Prefer lexicographically smaller hash on equal height
+                        // (reverse compare because we are using max_by).
+                        .then_with(|| hash_b.cmp(hash_a))
+                })
+                .map(|(hash, _)| hash.clone());
+            let lca_ms = lca_started.elapsed().as_millis();
+            let used_snapshot_lfb_fallback = lca_opt.is_none();
+
+            // Use LCA as the LFB for computing descendants, fall back to snapshot LFB
+            let lfb_for_descendants = lca_opt.unwrap_or_else(|| s.last_finalized_block.clone());
+
+            // Get the LFB block to use its post-state as the merge base
+            let lfb_block = block_store.get_unsafe(&lfb_for_descendants);
+            let lfb_state = Blake2b256Hash::from_bytes_prost(&lfb_block.body.state.post_state_hash);
+
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let parent_hash_str: Vec<String> = parent_hashes
+                    .iter()
+                    .map(|h| hex::encode(&h[..std::cmp::min(10, h.len())]))
+                    .collect();
+                let lca_str = hex::encode(
+                    &lfb_for_descendants[..std::cmp::min(10, lfb_for_descendants.len())],
+                );
+                let lca_state_str = hex::encode(
+                    &lfb_block.body.state.post_state_hash
+                        [..std::cmp::min(10, lfb_block.body.state.post_state_hash.len())],
+                );
+                let snapshot_lfb_str = hex::encode(
+                    &s.last_finalized_block[..std::cmp::min(10, s.last_finalized_block.len())],
+                );
+
+                tracing::debug!(
+                    "computeParentsPostState: parents=[{}], commonAncestors={}, LCA={} (block {}), LCA state={}..., visibleBlocks={}, snapshotLFB={}",
+                    parent_hash_str.join(", "),
+                    common_ancestors.len(),
+                    lca_str,
+                    lfb_block.body.state.block_number,
+                    lca_state_str,
+                    visible_blocks.len(),
+                    snapshot_lfb_str
+                );
+            }
+
+            let max_parent_block_number = parents
+                .iter()
+                .map(|p| p.body.state.block_number)
+                .max()
+                .unwrap_or(lfb_block.body.state.block_number);
+            let lca_distance = max_parent_block_number - lfb_block.body.state.block_number;
+            let visible_blocks_len = visible_blocks.len();
+            if visible_blocks.len() > MAX_PARENT_MERGE_SCOPE_BLOCKS
+                || lca_distance > MAX_LCA_DISTANCE_BLOCKS
+            {
+                let fallback_parent = parents
+                    .iter()
+                    .max_by(|a, b| {
+                        a.body
+                            .state
+                            .block_number
+                            .cmp(&b.body.state.block_number)
+                            .then_with(|| a.block_hash.cmp(&b.block_hash))
+                    })
+                    .expect("parents is non-empty in multi-parent branch");
+                tracing::warn!(
+                    target: "f1r3fly.compute_parents_post_state.fallback",
+                    "compute_parents_post_state fallback: visibleBlocks={}, lca_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
+                    visible_blocks.len(),
+                    lca_distance,
+                    PrettyPrinter::build_string_bytes(&fallback_parent.block_hash),
+                    fallback_parent.body.state.block_number
+                );
+                let fallback_state = proto_util::post_state_hash(fallback_parent);
+                runtime_manager
+                    .put_cached_parents_post_state(cache_key, (fallback_state.clone(), Vec::new()));
+                tracing::debug!(
+                    target: "f1r3fly.compute_parents_post_state.timing",
+                    "compute_parents_post_state timing: path=fallback_latest_parent, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, visible_blocks={}, lca_distance={}, total_ms={}",
+                    parents.len(),
+                    cache_lookup_ms,
+                    collect_ancestors_ms,
+                    flatten_visible_ms,
+                    lca_ms,
+                    visible_blocks_len,
+                    lca_distance,
+                    total_started.elapsed().as_millis()
+                );
+                return Ok((fallback_state, Vec::new()));
+            }
+
+            // Use DagMerger to merge parent states with scope
+            let merge_started = std::time::Instant::now();
+            let merger_result = dag_merger::merge(
+                &s.dag,
+                &lfb_for_descendants,
+                &lfb_state,
+                |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
+                    let block_index = block_index_f(hash)?;
+                    Ok(block_index.deploy_chains)
+                },
+                &runtime_manager.history_repo,
+                dag_merger::cost_optimal_rejection_alg(),
+                Some(visible_blocks),
+                disable_late_block_filtering,
+            )?;
+            let merge_ms = merge_started.elapsed().as_millis();
+
+            let (state, rejected) = merger_result;
+
+            let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
+            if used_snapshot_lfb_fallback {
+                tracing::warn!(
+                    target: "f1r3fly.compute_parents_post_state.cache",
+                    "Skipping parents_post_state cache store because merge used snapshot LFB fallback"
+                );
+            } else {
+                runtime_manager.put_cached_parents_post_state(
+                    cache_key,
+                    (computed_state.clone(), rejected.clone()),
+                );
+            }
+            tracing::debug!(
+                target: "f1r3fly.compute_parents_post_state.timing",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, total_ms={}",
+                parents.len(),
+                cache_lookup_ms,
+                collect_ancestors_ms,
+                flatten_visible_ms,
+                lca_ms,
+                merge_ms,
+                visible_blocks_len,
+                rejected.len(),
+                total_started.elapsed().as_millis()
+            );
+            Ok((computed_state, rejected))
+        }
+    }
+}
