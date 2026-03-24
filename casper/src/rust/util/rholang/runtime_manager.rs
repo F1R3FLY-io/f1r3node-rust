@@ -227,21 +227,21 @@ impl RuntimeManager {
     }
 
     fn maybe_trim_allocator() {
-        let enabled = std::env::var("F1R3_RUNTIME_MALLOC_TRIM")
+        let _enabled = std::env::var("F1R3_RUNTIME_MALLOC_TRIM")
             .ok()
             .map(|v| {
                 let normalized = v.trim().to_ascii_lowercase();
                 normalized == "1" || normalized == "true" || normalized == "yes"
             })
             .unwrap_or(true);
-        if !enabled {}
-
         #[cfg(target_os = "linux")]
-        unsafe {
-            unsafe extern "C" {
-                fn malloc_trim(pad: usize) -> i32;
+        if _enabled {
+            unsafe {
+                unsafe extern "C" {
+                    fn malloc_trim(pad: usize) -> i32;
+                }
+                let _ = malloc_trim(0);
             }
-            let _ = malloc_trim(0);
         }
     }
 

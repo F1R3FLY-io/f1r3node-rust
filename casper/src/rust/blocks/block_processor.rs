@@ -130,11 +130,10 @@ fn maybe_trim_allocator_after_block() {
     if interval == 0 {
         return;
     }
-    let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if !n.is_multiple_of(interval) {}
+    let _n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
+    if _n.is_multiple_of(interval) {
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
             let _ = malloc_trim(0);
