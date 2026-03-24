@@ -269,7 +269,7 @@ jobs:
           cd system-integration
           SCALE_FLAG=""
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            SCALE_FLAG="--timeout-scale=1.5"
+            SCALE_FLAG="--timeout-scale=2.0"
           fi
           poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING \
             --startup-timeout=600 --command-timeout=300 --timeout=600 $SCALE_FLAG
