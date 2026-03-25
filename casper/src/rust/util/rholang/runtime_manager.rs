@@ -227,7 +227,8 @@ impl RuntimeManager {
     }
 
     fn maybe_trim_allocator() {
-        let _enabled = std::env::var("F1R3_RUNTIME_MALLOC_TRIM")
+        #[allow(unused_variables)]
+        let enabled = std::env::var("F1R3_RUNTIME_MALLOC_TRIM")
             .ok()
             .map(|v| {
                 let normalized = v.trim().to_ascii_lowercase();
@@ -235,7 +236,7 @@ impl RuntimeManager {
             })
             .unwrap_or(true);
         #[cfg(target_os = "linux")]
-        if _enabled {
+        if enabled {
             unsafe {
                 unsafe extern "C" {
                     fn malloc_trim(pad: usize) -> i32;

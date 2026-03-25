@@ -65,10 +65,11 @@ fn maybe_trim_allocator_after_block() {
         return;
     }
 
-    let _count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
+    #[allow(unused_variables)]
+    let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
 
     #[cfg(target_os = "linux")]
-    if _count.is_multiple_of(interval) {
+    if count.is_multiple_of(interval) {
         unsafe {
             let _ = malloc_trim(0);
         }
