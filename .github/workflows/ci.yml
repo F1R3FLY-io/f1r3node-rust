@@ -302,7 +302,7 @@ jobs:
           sudo rm -rf system-integration/integration-tests/data
 
   # Push Docker image to Docker Hub (multi-arch manifest).
-  # Runs only on push to dev/master or on tags, after all tests pass.
+  # Runs only on push to master or on tags, after all tests pass.
   release_docker_image:
     name: Release Docker Image
     needs:
@@ -312,8 +312,7 @@ jobs:
     if: >-
       github.event_name == 'push' && (
         startsWith(github.ref, 'refs/tags/') ||
-        github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/dev'
+        github.ref == 'refs/heads/master'
       )
     runs-on: ubuntu-latest
     steps:
@@ -352,24 +351,13 @@ jobs:
         shell: bash -exu -o pipefail {0}
         run: |
           VERSION="$(git describe --tags --always)"
-          BRANCH="${GITHUB_REF#refs/heads/}"
 
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
 
-          TAG_PREFIX=""
-          if [[ "$GITHUB_REF" == "refs/heads/dev" ]]; then
-            TAG_PREFIX="dev-"
-          fi
-
-          IMG_VERSION_RAW="${DOCKER_IMAGE_NAME}:${TAG_PREFIX}${VERSION}"
+          IMG_VERSION_RAW="${DOCKER_IMAGE_NAME}:${VERSION}"
           IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
-
-          if [[ -n "$TAG_PREFIX" ]]; then
-            IMG_LATEST="${DOCKER_IMAGE_NAME}:dev"
-          else
-            IMG_LATEST="${DOCKER_IMAGE_NAME}:latest"
-          fi
+          IMG_LATEST="${DOCKER_IMAGE_NAME}:latest"
 
           # Tag and push arch-specific images
           docker tag $SOURCE_AMD64 $IMG_VERSION-amd64
