@@ -138,6 +138,68 @@ tasks:
 
 ---
 
+### EPOCH-003: Auto-Versioning and Nightly Release Pipeline
+
+```yaml
+---
+epoch_id: EPOCH-003
+title: "Auto-Versioning and Nightly Release Pipeline"
+status: pending
+priority: p1
+user_story: US-002
+blocked_by: []
+created_at: 2026-03-25
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-003-1
+    title: "Port and adapt release workflow, cliff.toml, version.sh, release.sh"
+    status: pending
+    acceptance:
+      - "nightly-release.yml triggers on schedule (08:00 UTC / midnight Pacific)"
+      - "cliff.toml generates changelog from conventional commits (no include_path filter)"
+      - "version.sh uses v* tag prefix, discovers current version from tags"
+      - "release.sh provides manual major/minor/patch bump"
+
+  - id: TASK-003-2
+    title: "Create VERSIONING.md documenting lineage from legacy repo"
+    status: pending
+    acceptance:
+      - "Documents that v0.2.0 continues from f1r3node.git rust-v0.2.0"
+      - "Explains tag convention differences between repos"
+
+  - id: TASK-003-3
+    title: "Update docker-commands.sh to auto-detect version from Cargo.toml"
+    status: pending
+    acceptance:
+      - "VERSION defaults to value from node/Cargo.toml if not set"
+
+  - id: TASK-003-4
+    title: "Set baseline version v0.2.0 and verify pipeline"
+    status: pending
+    blocked_by: [TASK-003-1, TASK-003-2, TASK-003-3]
+    acceptance:
+      - "node/Cargo.toml version is 0.2.0"
+      - "Baseline tag v0.2.0 created on master after PR merge"
+      - "Nightly workflow produces v0.3.0 on next change"
+---
+```
+
+**Context:** The legacy `f1r3node.git` repo (PR #455) is adding auto-versioning with `rust-v*` tags and git-cliff changelogs. This repo needs the same capability but adapted for standalone use: `v*` tag prefix, nightly schedule instead of merge-triggered, no path filtering.
+
+**Scope:**
+- Nightly release workflow (midnight Pacific / 08:00 UTC)
+- git-cliff changelog generation
+- Version scripts for automated and manual bumps
+- Lineage documentation from legacy repo
+- Startup banner rename
+
+**Notes:**
+- Legacy repo highest Rust version: `rust-v0.2.0`. This repo starts at `v0.2.0`.
+- Requires `RELEASE_PAT` org secret (PAT with `contents:write`) for tag pushes to trigger CI.
+
+---
+
 ## Task States
 
 | Status | Meaning | Next Action |

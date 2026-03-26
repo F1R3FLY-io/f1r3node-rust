@@ -44,6 +44,25 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+#### US-002: Auto-Versioning and Nightly Releases
+
+> As a **platform operator**, I want **automated semantic versioning with nightly tagged releases and machine-readable changelogs** so that **deployments are traceable, rollbacks target specific versions, and downstream consumers (system-integration, Docker Hub) can pin to known-good releases**.
+
+**Implemented in:** EPOCH-003
+
+**Acceptance Criteria:**
+- [ ] Nightly GitHub Actions workflow checks master for changes since last `v*` tag
+- [ ] If changes exist: bumps minor version, updates `node/Cargo.toml`, generates CHANGELOG.md, commits, tags `vX.Y.Z`
+- [ ] Tag push triggers existing CI (Docker build + integration tests + release to Docker Hub)
+- [ ] `VERSIONING.md` documents lineage from legacy `f1r3node.git` repo (`rust-v0.2.0` → `v0.2.0`)
+- [ ] `scripts/release.sh` provides manual major/patch bump escape hatch
+- [ ] `git-cliff` config generates conventional commit changelog
+- [ ] Startup banner shows "F1r3node" instead of "F1r3fly Node"
+
+**Completed:** Planned
+
+---
+
 ## Relationship to Epochs
 
 User stories capture the **why** (user need and benefit). Epochs capture the **what** (technical implementation tasks).
