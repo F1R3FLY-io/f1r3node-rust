@@ -51,7 +51,7 @@ mr_status:
 ---
 epoch_id: EPOCH-001
 title: "System-Integration Alignment"
-status: in_progress
+status: complete
 priority: p1
 user_story: US-001
 blocked_by: []
@@ -83,8 +83,7 @@ tasks:
 
   - id: TASK-001-4
     title: "Verify shard starts with updated genesis and network config"
-    status: pending
-    blocked_by: []
+    status: complete
     acceptance:
       - "docker compose -f docker/shard.yml up succeeds"
       - "Genesis ceremony completes with 20-wallet wallets.txt"
@@ -111,7 +110,7 @@ tasks:
 ---
 epoch_id: EPOCH-002
 title: "Separate Monitoring from Shard Compose"
-status: pending
+status: complete
 priority: p2
 user_story: US-001
 blocked_by: []
@@ -121,7 +120,7 @@ claimed_at: null
 tasks:
   - id: TASK-002-1
     title: "Extract Prometheus and Grafana into docker/monitoring.yml"
-    status: pending
+    status: complete
     acceptance:
       - "docker/monitoring.yml contains prometheus and grafana services"
       - "monitoring.yml joins f1r3fly-shard as external network"
@@ -144,7 +143,7 @@ tasks:
 ---
 epoch_id: EPOCH-003
 title: "Auto-Versioning and Nightly Release Pipeline"
-status: pending
+status: in_progress
 priority: p1
 user_story: US-002
 blocked_by: []
@@ -154,7 +153,7 @@ claimed_at: null
 tasks:
   - id: TASK-003-1
     title: "Port and adapt release workflow, cliff.toml, version.sh, release.sh"
-    status: pending
+    status: complete
     acceptance:
       - "nightly-release.yml triggers on schedule (08:00 UTC / midnight Pacific)"
       - "cliff.toml generates changelog from conventional commits (no include_path filter)"
@@ -163,14 +162,14 @@ tasks:
 
   - id: TASK-003-2
     title: "Create VERSIONING.md documenting lineage from legacy repo"
-    status: pending
+    status: complete
     acceptance:
       - "Documents that v0.2.0 continues from f1r3node.git rust-v0.2.0"
       - "Explains tag convention differences between repos"
 
   - id: TASK-003-3
     title: "Update docker-commands.sh to auto-detect version from Cargo.toml"
-    status: pending
+    status: complete
     acceptance:
       - "VERSION defaults to value from node/Cargo.toml if not set"
 

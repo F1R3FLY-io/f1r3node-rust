@@ -36,8 +36,8 @@ This document captures user stories that drive feature development. User stories
 - [x] Genesis wallets.txt identical between repos (20 wallets, correct balances)
 - [x] Docker image env var standardized to `F1R3FLY_IMAGE`
 - [x] Shard network name standardized to `f1r3fly-shard`
-- [ ] Monitoring separated into its own compose file (matches system-integration pattern)
-- [ ] Shard verified to start with updated configuration
+- [x] Monitoring separated into its own compose file (matches system-integration pattern)
+- [x] Shard verified to start with updated configuration
 - [ ] system-integration's `services.yml` can point to this repo's `master` branch
 
 **Completed:** Planned

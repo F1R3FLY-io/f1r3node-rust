@@ -15,8 +15,8 @@
 #   Validator2:  40420-40425
 #   Validator3:  40430-40435
 #   Observer:    40450-40455
-#   Prometheus:  9090
-#   Grafana:     3000 (admin/admin)
+#
+# Monitoring (Prometheus, Grafana) is in monitoring.yml.
 
 x-rnode: &default-rnode
   image: ${F1R3FLY_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
@@ -219,44 +219,6 @@ services:
       - ./conf/default.conf:/var/lib/rnode/rnode.conf
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-
-  # =================================================================
-  # PROMETHEUS
-  # =================================================================
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    restart: unless-stopped
-    networks:
-      - f1r3fly-shard
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/prometheus-rules.yml:/etc/prometheus/rules/prometheus-rules.yml:ro
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-
-  # =================================================================
-  # GRAFANA
-  # =================================================================
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    restart: unless-stopped
-    depends_on:
-      - prometheus
-    networks:
-      - f1r3fly-shard
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_USERS_DEFAULT_THEME=light
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
 
 volumes:
   boot-data:
