@@ -46,8 +46,8 @@ docker build -f node/Dockerfile -t f1r3fly-rust-node:local .
 Run compose with the local image:
 
 ```bash
-F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f docker/standalone.yml up
-F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f docker/shard.yml up
+F1R3FLY_IMAGE=f1r3fly-rust-node:local docker compose -f docker/standalone.yml up
+F1R3FLY_IMAGE=f1r3fly-rust-node:local docker compose -f docker/shard.yml up
 ```
 
 ## Compose Files
@@ -55,7 +55,8 @@ F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f docker/shard.yml up
 | File | Purpose |
 | --- | --- |
 | `standalone.yml` | One-node development network with instant finalization |
-| `shard.yml` | Bootstrap node, validators, observer, Prometheus, Grafana |
+| `shard.yml` | Bootstrap node, validators, observer |
+| `monitoring.yml` | Prometheus and Grafana (joins shard network) |
 | `validator4.yml` | Additional validator joining an existing shard |
 | `observer.yml` | Read-only observer joining an existing shard |
 
@@ -84,7 +85,12 @@ F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f docker/shard.yml up
 
 ## Monitoring
 
-`shard.yml` includes Prometheus and Grafana.
+Start monitoring alongside the shard:
+
+```bash
+docker compose -f docker/shard.yml up -d
+docker compose -f docker/monitoring.yml up -d
+```
 
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`

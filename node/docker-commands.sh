@@ -4,11 +4,11 @@
 
 set -e
 
-# Configuration (matching build.sbt)
+# Configuration
 DOCKER_REPOSITORY="f1r3flyindustries"
-IMAGE_NAME="f1r3fly-rust-node"
+IMAGE_NAME="f1r3node-rust"
 FULL_IMAGE_NAME="${DOCKER_REPOSITORY}/${IMAGE_NAME}"
-VERSION="${VERSION:-latest}"
+VERSION="${VERSION:-$(grep '^version' "$(dirname "$0")/Cargo.toml" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "latest")}"
 
 # Build the Docker image
 # Equivalent to: sbt "node/Docker/publishLocal"
