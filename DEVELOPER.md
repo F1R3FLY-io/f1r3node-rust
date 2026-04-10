@@ -202,7 +202,7 @@ docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 
 # Use a locally built image instead of the published one
-F1R3FLY_IMAGE=f1r3fly-rust-node:local docker compose -f docker/standalone.yml up
+F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/standalone.yml up
 
 # Reset to genesis
 docker compose -f docker/standalone.yml down -v

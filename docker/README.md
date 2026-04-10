@@ -40,14 +40,14 @@ Using the helper script:
 Using Docker directly:
 
 ```bash
-docker build -f node/Dockerfile -t f1r3fly-rust-node:local .
+docker build -f node/Dockerfile -t f1r3fly-rust:local .
 ```
 
 Run compose with the local image:
 
 ```bash
-F1R3FLY_IMAGE=f1r3fly-rust-node:local docker compose -f docker/standalone.yml up
-F1R3FLY_IMAGE=f1r3fly-rust-node:local docker compose -f docker/shard.yml up
+F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/standalone.yml up
+F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up
 ```
 
 ## Compose Files

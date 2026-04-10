@@ -24,12 +24,13 @@ env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
-  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3node-rust"
+  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +38,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-09
           components: rustfmt, clippy
 
       - name: Cache dependencies
@@ -60,6 +60,7 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -80,8 +81,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-02-09
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -116,6 +115,7 @@ jobs:
     name: Build Docker Image (${{ matrix.arch }})
     needs: lint
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     # Queue instead of cancel for self-hosted runners (one runner per arch).
     concurrency:
       group: docker-build-${{ matrix.arch }}-${{ github.ref }}
@@ -185,6 +185,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }})
     needs: build_docker_image
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     concurrency:
       group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
@@ -305,6 +306,7 @@ jobs:
   # Runs only on push to master or on tags, after all tests pass.
   release_docker_image:
     name: Release Docker Image
+    timeout-minutes: 15
     needs:
       - test
       - integration_tests
@@ -380,6 +382,7 @@ jobs:
   # GitHub release with artifacts (tags only)
   release_packages:
     name: Release Packages
+    timeout-minutes: 10
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write

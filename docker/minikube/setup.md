@@ -13,19 +13,19 @@ minikube start \
 ```
 
 ## Pull `rnode` into Minikube
-**This step needed if `f1r3flyindustries/f1r3fly-rust-node:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
+**This step needed if `f1r3flyindustries/f1r3fly-rust:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
 
-Load `f1r3flyindustries/f1r3fly-rust-node:latest` Docker image inside Minikube cache
+Load `f1r3flyindustries/f1r3fly-rust:latest` Docker image inside Minikube cache
 ```sh
-minikube image load f1r3flyindustries/f1r3fly-rust-node:latest
+minikube image load f1r3flyindustries/f1r3fly-rust:latest
 ```
-Check the image list. `f1r3flyindustries/f1r3fly-rust-node:latest` should be listed in the table
+Check the image list. `f1r3flyindustries/f1r3fly-rust:latest` should be listed in the table
 ```sh
 minikube image list --format=table
 ```
 If `load` command failed (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use alternative mathod via file: store image into the file and load it from the file
 ```sh
-docker image save f1r3flyindustries/f1r3fly-rust-node:latest -o rnode.tar && \
+docker image save f1r3flyindustries/f1r3fly-rust:latest -o rnode.tar && \
     minikube image load rnode.tar && \
     rm rnode.tar
 ```
