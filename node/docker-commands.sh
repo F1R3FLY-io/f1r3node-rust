@@ -4,9 +4,9 @@
 
 set -e
 
-# Configuration (matching build.sbt)
+# Configuration
 DOCKER_REPOSITORY="f1r3flyindustries"
-IMAGE_NAME="f1r3fly-rust-node"
+IMAGE_NAME="f1r3fly-rust"
 FULL_IMAGE_NAME="${DOCKER_REPOSITORY}/${IMAGE_NAME}"
 VERSION="${VERSION:-latest}"
 

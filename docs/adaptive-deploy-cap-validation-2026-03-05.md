@@ -65,13 +65,13 @@ Result:
 Patched image build:
 
 ```bash
-docker build -t f1r3fly-rust-node:local -f node/Dockerfile .
+docker build -t f1r3fly-rust:local -f node/Dockerfile .
 ```
 
 Cluster:
 
 - Compose file: `docker/shard-with-autopropose.local.yml`
-- Image: `f1r3fly-rust-node:local`
+- Image: `f1r3fly-rust:local`
 
 Benchmark command:
 

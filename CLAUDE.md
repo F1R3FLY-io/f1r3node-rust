@@ -72,7 +72,7 @@ just run-standalone-debug            # Debug mode
 just clean-standalone                # Reset node data
 
 # Docker
-docker build -f node/Dockerfile -t f1r3fly-rust-node:local .
+docker build -f node/Dockerfile -t f1r3fly-rust:local .
 docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 ```

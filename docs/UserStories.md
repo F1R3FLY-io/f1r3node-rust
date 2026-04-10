@@ -18,17 +18,37 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
-## Planned Stories
+## Completed Stories
 
-Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
+<!-- Add completed user stories here -->
 
 ---
 
-#### US-001: Migrate to Standalone Rust Repository
+## Planned Stories
+
+#### US-001: System-Integration Compatibility
+
+> As a **platform operator**, I want **f1r3node-rust's Docker configuration to be directly compatible with the system-integration orchestration tooling** so that **the migration from dual Scala/Rust support to Rust-only can proceed without manual fixups**.
+
+**Implemented in:** EPOCH-001, EPOCH-002
+
+**Acceptance Criteria:**
+- [x] Genesis wallets.txt identical between repos (20 wallets, correct balances)
+- [x] Docker image env var standardized to `F1R3FLY_IMAGE`
+- [x] Shard network name standardized to `f1r3fly-shard`
+- [ ] Monitoring separated into its own compose file (matches system-integration pattern)
+- [ ] Shard verified to start with updated configuration
+- [ ] system-integration's `services.yml` can point to this repo's `master` branch
+
+**Completed:** Planned
+
+---
+
+#### US-002: Migrate to Standalone Rust Repository
 
 > As a **F1R3FLY developer**, I want **the Rust blockchain node to live in a standalone repository (f1r3node-rust) with clean Cargo-only tooling** so that **we can iterate faster without Nix/SBT/Scala build complexity and contributors only need standard Rust tooling**.
 
-**Implemented in:** EPOCH-001 through EPOCH-006
+**Implemented in:** EPOCH-003 through EPOCH-008
 
 **Acceptance Criteria:**
 - [ ] All critical PRs (Reified RSpaces #328-#338) merged in f1r3node before cutover
@@ -41,12 +61,6 @@ Stories below are candidates for future epochs. Move to "Completed Stories" when
 - [ ] Version continuity maintained (v0.4.x series)
 
 **Completed:** Planned
-
----
-
-## Completed Stories
-
-<!-- Add completed user stories here -->
 
 ---
 
