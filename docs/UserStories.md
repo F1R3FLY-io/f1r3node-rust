@@ -1,22 +1,10 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "[DATE]"
+last_updated: 2026-04-09
 ---
 
 # User Stories
-
-<!--
-TEMPLATE USAGE INSTRUCTIONS:
-0. Update frontmatter: set last_updated to current date, increment version for structural changes
-1. Add completed stories under "Completed Stories" section
-2. Add planned stories under "Planned Stories" section
-3. Move completed stories from "Planned" to "Completed" sections
-4. Update epoch links when implementation begins
-5. Check acceptance criteria as features are verified
-6. (Optional) Update reference URLs if using a fork with modified standards
-7. Remove these usage instruction comments before committing
--->
 
 This document captures user stories that drive feature development. User stories are reverse-engineered from completed epochs and updated as new features are planned.
 
@@ -28,43 +16,37 @@ This document captures user stories that drive feature development. User stories
 **Format:** Each story follows the standard template:
 > As a [persona], I want [capability] so that [benefit].
 
-**User Stories Standard Reference** (canonical):
-[user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
-
----
-
-## Completed Stories
-
-<!-- Add completed user stories here -->
-
 ---
 
 ## Planned Stories
 
 Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
 
-<!-- Add planned user stories here -->
+---
+
+#### US-001: Migrate to Standalone Rust Repository
+
+> As a **F1R3FLY developer**, I want **the Rust blockchain node to live in a standalone repository (f1r3node-rust) with clean Cargo-only tooling** so that **we can iterate faster without Nix/SBT/Scala build complexity and contributors only need standard Rust tooling**.
+
+**Implemented in:** EPOCH-001 through EPOCH-006
+
+**Acceptance Criteria:**
+- [ ] All critical PRs (Reified RSpaces #328-#338) merged in f1r3node before cutover
+- [ ] f1r3node-rust at full parity with f1r3node rust/dev HEAD
+- [ ] CI/CD pipeline produces Docker images from f1r3node-rust
+- [ ] All 22 Rust-relevant issues migrated to f1r3node-rust
+- [ ] External repos (system-integration, pyf1r3fly) point at f1r3node-rust
+- [ ] f1r3node archived with deprecation notice
+- [ ] Docker image published as `f1r3fly-rust`
+- [ ] Version continuity maintained (v0.4.x series)
+
+**Completed:** Planned
 
 ---
 
-## Story Template
+## Completed Stories
 
-Use this template when adding new user stories:
-
-```markdown
-#### US-XXX: [Short Title]
-
-> As a **[persona]**, I want **[capability]** so that **[benefit]**.
-
-**Implemented in:** [EPOCH-ID or "Planned"]
-
-**Acceptance Criteria:**
-- [ ] Criterion 1
-- [ ] Criterion 2
-- [ ] Criterion 3
-
-**Completed:** [Date or "Planned"]
-```
+<!-- Add completed user stories here -->
 
 ---
 
@@ -91,4 +73,3 @@ User stories capture the **why** (user need and benefit). Epochs capture the **w
 
 - **Task Tracking:** `docs/ToDos.md`
 - **Completed Work:** `docs/CompletedTasks.md`
-- **User Stories Standard** (canonical): [user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
