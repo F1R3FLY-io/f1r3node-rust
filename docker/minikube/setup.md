@@ -12,11 +12,15 @@ minikube start \
     --memory=6g
 ```
 
-## Pull `rnode` into Minikube
+## Image Source
 
-**Only needed when using a locally built image.** If you want the published image instead, point `minikube-values.yaml` at `sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest` (OCIR, public, no login required) and skip this section.
+`minikube-values.yaml` defaults to the public OCIR image (`sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest`) with `pullPolicy: IfNotPresent`, so minikube will pull on first use. For the default path, skip to [Deploy RNode](#deploy-rnode) — nothing to load.
 
-Load the local Docker image into the Minikube cache:
+### Use a locally built image (optional)
+
+To test a locally built image instead, load it into the Minikube cache and override the image settings when deploying.
+
+Load the local Docker image:
 ```sh
 minikube image load f1r3fly-rust:local
 ```
@@ -31,6 +35,15 @@ docker image save f1r3fly-rust:local -o rnode.tar && \
     rm rnode.tar
 ```
 Check the image list again using the command above.
+
+When deploying, override the image fields so minikube uses the loaded image:
+```sh
+helm upgrade --install f1r3fly ../helm/f1r3fly -n f1r3fly --create-namespace -f ./minikube-values.yaml \
+    --set image.repository=f1r3fly-rust \
+    --set image.tag=local \
+    --set image.pullPolicy=Never
+```
+
 ## Check all system pods
 Get a list of running system pods and check statuses:
 ```sh

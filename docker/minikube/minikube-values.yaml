@@ -8,8 +8,8 @@ shardConfig:
   readOnlyReplicas: 1
 
 image:
-  repository: f1r3flyindustries/f1r3fly-rust:latest
-  pullPolicy: Never # Use `Never` for minikube b/c image is build and loaded into minikube
+  repository: sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust
+  pullPolicy: IfNotPresent # Pull from OCIR on first use; override to `Never` when using a locally loaded image
   # Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
 
