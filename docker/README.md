@@ -29,6 +29,32 @@ Reset the shard:
 docker compose -f docker/shard.yml down -v
 ```
 
+## Pull The Prebuilt Image
+
+CI publishes a multi-arch image (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR) on pushes to `master`, on release tags, and on a nightly schedule. The repository is public — no Oracle Cloud account or `docker login` is required to pull.
+
+```bash
+docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
+```
+
+Tag conventions:
+
+| Tag | Published on |
+| --- | --- |
+| `:latest` | Push to `master` |
+| `:VERSION` (e.g. `:v0.4.12`) | Release tag push |
+| `:nightly`, `:nightly-YYYYMMDD` | Nightly schedule |
+
+Run compose with the pulled image:
+
+```bash
+F1R3FLY_IMAGE=sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest \
+    docker compose -f docker/standalone.yml up
+
+F1R3FLY_IMAGE=sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest \
+    docker compose -f docker/shard.yml up
+```
+
 ## Build A Local Image
 
 Using the helper script:

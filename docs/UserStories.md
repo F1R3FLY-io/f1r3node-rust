@@ -57,7 +57,7 @@ This document captures user stories that drive feature development. User stories
 - [ ] All 22 Rust-relevant issues migrated to f1r3node-rust
 - [ ] External repos (system-integration, pyf1r3fly) point at f1r3node-rust
 - [ ] f1r3node archived with deprecation notice
-- [ ] Docker image published as `f1r3fly-rust`
+- [ ] Docker image published as `f1r3fly-rust` to Oracle Container Registry (`sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust`, public)
 - [ ] Version continuity maintained (v0.4.x series)
 
 **Completed:** Planned
