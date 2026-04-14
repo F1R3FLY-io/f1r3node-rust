@@ -88,7 +88,7 @@ shard-down:
 # =================================================================
 # DISTRIBUTED OCI TESTBED (EPOCH-009)
 # =================================================================
-# See docs/oracle-cloud-setup.md for prerequisites and full walkthrough.
+# See docs/vps-cloud-testing.md for prerequisites and full walkthrough.
 # Scripts default to dry-run when invoked directly; these Justfile
 # recipes always pass --apply because that's the point of using them.
 

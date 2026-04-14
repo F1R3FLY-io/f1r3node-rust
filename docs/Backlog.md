@@ -51,7 +51,7 @@ related_epoch: EPOCH-009
 1. Define a provider interface (bash functions or a minimal YAML contract) — create_vcn, create_subnet, launch_instance, terminate_instance, destroy_vcn — with inputs/outputs matching the existing state-file schema
 2. Rename `oci-*.sh` to `provision/oci.sh` and add peers `provision/aws.sh` (via `aws ec2 ...`) and `provision/gcp.sh` (via `gcloud compute ...`)
 3. Front-end dispatcher (`scripts/remote/provision.sh`) picks a provider from `$TESTBED_PROVIDER` env (default `oci`)
-4. Update `docs/oracle-cloud-setup.md` to be `docs/cloud-setup.md` covering all three providers
+4. Update `docs/vps-cloud-testing.md` Part C to one section per provider (OCI/AWS/GCP)
 5. Justfile recipes (`vps-up`, `vps-down`) stay untouched — they call `provision.sh` which delegates
 
 **When Unblocked:** After a second concrete deployment target is requested (e.g. user explicitly wants AWS for a production benchmark). Premature to abstract against one known provider only.
