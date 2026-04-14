@@ -133,6 +133,7 @@ To build a local image:
 | --- | --- |
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
+| [docs/oracle-cloud-setup.md](docs/oracle-cloud-setup.md) | OCI setup for the distributed latency testbed (EPOCH-009) |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
 | [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
 | [node/README.md](node/README.md) | Node binary crate and CLI entry points |

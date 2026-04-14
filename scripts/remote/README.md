@@ -33,6 +33,28 @@ Both VPSes run Oracle Linux 9, have Docker CE installed via cloud-init, and live
 
 State is persisted to `scripts/remote/testbed-state.json` (gitignored). SSH keypair is generated to `scripts/remote/testbed.pem` (+ `.pub`, also gitignored).
 
+### Transfer a Docker image
+
+After provisioning, ship the node image from your local Docker daemon to both VPSes:
+
+```bash
+# Dry run (default) — shows planned docker save / scp / docker load commands
+./scripts/remote/image-transfer.sh
+
+# Actually transfer (parallel, to both VPSes)
+./scripts/remote/image-transfer.sh --apply
+
+# Transfer a non-default image (e.g. a locally built tag)
+./scripts/remote/image-transfer.sh --apply f1r3fly-rust:local
+```
+
+Default image is `sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest` — matches the compose-file defaults so distributed deploys work without env overrides.
+
+**Migration note:** Once CI starts publishing to OCIR on `master` pushes (pending the `/ci.yml` update queued earlier), replace `image-transfer.sh` with `docker pull <OCIR-URL>` run over SSH on each VPS. Keep `image-transfer.sh` as a fallback for:
+- Air-gapped testbeds
+- Local-build smoke tests before a CI publish
+- Hotfix images not yet tagged
+
 ### Teardown
 
 ```bash
