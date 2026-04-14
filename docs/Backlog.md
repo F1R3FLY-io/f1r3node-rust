@@ -32,6 +32,34 @@ Items are organized by category and rough priority within each category.
 
 <!-- Future features that have been identified but aren't yet prioritized -->
 
+#### BACKLOG-FI-002: Genericize testbed scripts for AWS / GCP
+
+```yaml
+---
+backlog_id: BACKLOG-FI-002
+title: "Abstract provisioning layer so testbed can run on AWS or GCP, not just OCI"
+category: feature_idea
+priority: p3
+added_at: 2026-04-13
+related_epoch: EPOCH-009
+---
+```
+
+**Description:** Today `scripts/remote/oci-*.sh` directly call the `oci` CLI for VCN / subnet / security list / instance creation. The cloud-agnostic scripts (`deploy.sh`, `status.sh`, `teardown.sh`, `image-transfer.sh`) already work over generic SSH once a state file with public IPs exists, so only the provisioning/teardown layer needs abstraction. The `vps-*` Justfile prefix is deliberately neutral to keep the user-facing interface stable across providers.
+
+**Probable approach:**
+1. Define a provider interface (bash functions or a minimal YAML contract) — create_vcn, create_subnet, launch_instance, terminate_instance, destroy_vcn — with inputs/outputs matching the existing state-file schema
+2. Rename `oci-*.sh` to `provision/oci.sh` and add peers `provision/aws.sh` (via `aws ec2 ...`) and `provision/gcp.sh` (via `gcloud compute ...`)
+3. Front-end dispatcher (`scripts/remote/provision.sh`) picks a provider from `$TESTBED_PROVIDER` env (default `oci`)
+4. Update `docs/oracle-cloud-setup.md` to be `docs/cloud-setup.md` covering all three providers
+5. Justfile recipes (`vps-up`, `vps-down`) stay untouched — they call `provision.sh` which delegates
+
+**When Unblocked:** After a second concrete deployment target is requested (e.g. user explicitly wants AWS for a production benchmark). Premature to abstract against one known provider only.
+
+**Related work:** EPOCH-009 establishes the OCI implementation that this would generalize. `vps-*` Justfile prefix is already chosen to outlive OCI-only.
+
+---
+
 #### BACKLOG-FI-001: Inter-Shard Consensus (Option B)
 
 ```yaml

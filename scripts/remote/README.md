@@ -2,6 +2,8 @@
 
 Provisioning and teardown scripts for the F1R3FLY distributed OCI testbed (EPOCH-009 / US-003).
 
+**Naming convention.** Script names use an `oci-` prefix for cloud-specific work (e.g. `oci-provision.sh`, `oci-destroy.sh`) and no prefix for cloud-agnostic work (`deploy.sh`, `status.sh`, `teardown.sh`, `image-transfer.sh`). The wrapping Justfile recipes use a neutral `vps-` prefix so the user-facing interface stays stable when other providers (AWS, GCP) are added — see `docs/Backlog.md` BACKLOG-FI-002.
+
 ## Scope
 
 Single F1R3FLY shard distributed across two OCI VPSes:
@@ -20,6 +22,21 @@ Both VPSes run Oracle Linux 9, have Docker CE installed via cloud-init, and live
 - An OCI tenancy with the `VM.Standard.A1.Flex` shape (arm64 Ampere, free-tier eligible in `us-sanjose-1`)
 
 ## Usage
+
+The recommended entry point is the `just` recipes — they wrap the scripts with sensible defaults. Direct script invocation remains supported for overrides and for development.
+
+### Justfile recipes (recommended)
+
+```bash
+just vps-up                     # provision 2 OCI VPSes (~3-5 min)
+just vps-image-push             # ship Docker image from local daemon to both VPSes
+just vps-deploy                 # render .env.remote, scp, start shard
+just vps-status                 # health check all 4 nodes
+just vps-status target=vps1     # check bootstrap only
+just vps-down                   # stop containers + terminate VPSes
+```
+
+### Direct script invocation (for dry-run / overrides)
 
 ### Provision
 
@@ -55,20 +72,42 @@ Default image is `sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest` — matches the 
 - Local-build smoke tests before a CI publish
 - Hotfix images not yet tagged
 
-### Teardown
+### Deploy the shard
 
 ```bash
-# Dry run (default)
-./scripts/remote/oci-destroy.sh
+# Dry-run shows every planned sed / scp / ssh command
+./scripts/remote/deploy.sh
 
-# Actually terminate (prompts for VCN name confirmation)
-./scripts/remote/oci-destroy.sh --apply
-
-# Skip confirmation (CI-friendly)
-./scripts/remote/oci-destroy.sh --apply --force
+# Actually render .env.remote, scp docker/, start bootstrap on VPS-1,
+# wait for /api/status, then start followers on VPS-2
+./scripts/remote/deploy.sh --apply
 ```
 
-Teardown reads the same state file and reverses provisioning in dependency order:
+### Health check
+
+```bash
+./scripts/remote/status.sh          # all 4 nodes
+./scripts/remote/status.sh vps1     # bootstrap only
+./scripts/remote/status.sh vps2     # validators + observer
+```
+
+Exits non-zero if any node is unhealthy (suitable for CI / smoke-test use).
+
+### Teardown
+
+Two-phase so you can stop containers without terminating VPSes (e.g. between redeploys):
+
+```bash
+# Stop containers only (shard goes down, VPSes stay up)
+./scripts/remote/teardown.sh --apply
+
+# Terminate OCI VPSes (VCN, subnet, security list, instances)
+./scripts/remote/oci-destroy.sh --apply
+```
+
+`just vps-down` runs both in sequence.
+
+The OCI teardown reads `testbed-state.json` and reverses provisioning in dependency order:
 instances → subnet → security list → route rules → IGW → VCN.
 
 ## Configuration

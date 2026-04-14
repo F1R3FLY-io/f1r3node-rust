@@ -72,6 +72,34 @@ clean-standalone:
     @echo "Done. Run 'just setup-standalone' or 'just run-standalone' to reinitialize."
 
 # =================================================================
+# DISTRIBUTED OCI TESTBED (EPOCH-009)
+# =================================================================
+# See docs/oracle-cloud-setup.md for prerequisites and full walkthrough.
+# Scripts default to dry-run when invoked directly; these Justfile
+# recipes always pass --apply because that's the point of using them.
+
+# Provision 2 OCI VPSes (VCN, subnet, security list, 2x arm64 A1.Flex)
+vps-up:
+    scripts/remote/oci-provision.sh --apply
+
+# Render .env.remote, scp docker tree to both VPSes, start shard
+vps-deploy:
+    scripts/remote/deploy.sh --apply
+
+# Health check every node (use `just vps-status target=vps1` to narrow)
+vps-status target="both":
+    scripts/remote/status.sh {{target}}
+
+# Ship a Docker image from local daemon to both VPSes (parallel)
+vps-image-push image="sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest":
+    scripts/remote/image-transfer.sh --apply {{image}}
+
+# Stop containers on both VPSes, then terminate the OCI VPSes themselves
+vps-down:
+    scripts/remote/teardown.sh --apply
+    scripts/remote/oci-destroy.sh --apply --force
+
+# =================================================================
 # HELP
 # =================================================================
 

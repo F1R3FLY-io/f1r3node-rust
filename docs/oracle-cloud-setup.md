@@ -192,19 +192,15 @@ Expected: `standard-a1-core-count` should be in the thousands. The testbed uses 
 
 ## Part 6 — End-to-end testbed walkthrough
 
-Run from the repo root (`f1r3node-rust/`).
+Run from the repo root (`f1r3node-rust/`). The Justfile recipes (`vps-*`) wrap the underlying scripts and are the recommended entry point. Direct script invocation is still supported for dry-runs and overrides.
 
 ### 6.1 Provision the VPSes
 
 ```bash
-# Dry-run first — prints every planned OCI API call, creates nothing
-./scripts/remote/oci-provision.sh
-
-# Actually create (takes ~3-5 minutes for cloud-init to finish)
-./scripts/remote/oci-provision.sh --apply
+just vps-up
 ```
 
-The script persists OCIDs and public IPs to `scripts/remote/testbed-state.json` and generates an ed25519 SSH keypair at `scripts/remote/testbed.pem`. Both are gitignored.
+Takes ~3-5 minutes for cloud-init to finish. The underlying `scripts/remote/oci-provision.sh --apply` persists OCIDs and public IPs to `scripts/remote/testbed-state.json` and generates an ed25519 SSH keypair at `scripts/remote/testbed.pem`. Both are gitignored.
 
 Verify by SSH-ing in:
 
@@ -215,6 +211,12 @@ ssh -i scripts/remote/testbed.pem opc@$VPS1_IP "docker --version && cat /var/log
 
 You should see the Docker version string and a `cloud-init complete at <timestamp>` line.
 
+For a dry-run preview before provisioning, call the script directly without `--apply`:
+
+```bash
+./scripts/remote/oci-provision.sh
+```
+
 ### 6.2 Transfer a Docker image
 
 ```bash
@@ -224,23 +226,43 @@ docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest   # once OCIR publishin
 ./node/docker-commands.sh build-local && \
   docker tag f1r3fly-rust:local sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
 
-# Transfer to both VPSes in parallel
-./scripts/remote/image-transfer.sh --apply
+# Ship to both VPSes in parallel
+just vps-image-push
 ```
 
-### 6.3 Deploy the shard and run benchmarks
+To transfer a custom tag: `just vps-image-push image=my-local-tag:dev`.
 
-TASK-009-3 (distributed compose split), TASK-009-4 (Justfile recipes), and TASK-009-5 (latency benchmark port) are not yet implemented. This guide will be extended once they land.
-
-### 6.4 Teardown
+### 6.3 Deploy the shard
 
 ```bash
-# Dry-run first to see what will be terminated
-./scripts/remote/oci-destroy.sh
-
-# Actually terminate (prompts for VCN name confirmation unless --force)
-./scripts/remote/oci-destroy.sh --apply
+just vps-deploy
 ```
+
+Renders `docker/.env.remote` from the checked-in template, `scp`s `docker/conf/`, `docker/genesis/`, `docker/certs/`, and the two `shard.vps*.yml` files to both VPSes, starts the bootstrap on VPS-1, waits for its HTTP `/api/status` to respond, then starts the 2 validators + observer on VPS-2.
+
+### 6.4 Check shard health
+
+```bash
+just vps-status                     # all 4 nodes
+just vps-status target=vps1         # bootstrap only
+just vps-status target=vps2         # validators + observer
+```
+
+Exits non-zero if any node is unreachable — suitable for use in benchmark preflight (TASK-009-5).
+
+### 6.5 Run benchmarks
+
+TASK-009-5 (latency benchmark port) is not yet implemented. Once it lands, this section will be extended with `just vps-bench-latency` usage.
+
+### 6.6 Teardown
+
+```bash
+just vps-down
+```
+
+Runs `teardown.sh --apply` (stops containers, wipes volumes on both VPSes) then `oci-destroy.sh --apply --force` (terminates VMs, deletes subnet, security list, IGW, VCN).
+
+To stop the shard without terminating the VPSes — useful when iterating on configuration — use `./scripts/remote/teardown.sh --apply` alone.
 
 ---
 

@@ -542,13 +542,23 @@ tasks:
 
   - id: TASK-009-4
     title: "Justfile recipes for end-to-end orchestration"
-    status: pending
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T19:40:00Z
+    completed_at: 2026-04-13T19:58:00Z
     blocked_by: [TASK-009-1, TASK-009-2, TASK-009-3]
     acceptance:
-      - "just oci-up: provisions 2 VPSes and returns their public IPs"
-      - "just oci-deploy: scp config + images, start bootstrap (VPS-1), then validators/observer (VPS-2)"
-      - "just oci-status HOST: shows shard health via HTTP API and metrics endpoint"
-      - "just oci-down: tears down all OCI resources created by oci-up"
+      - "just vps-up: provisions 2 VPSes and returns their public IPs"
+      - "just vps-deploy: scp config + images, start bootstrap (VPS-1), then validators/observer (VPS-2)"
+      - "just vps-status [target]: shows shard health via HTTP API and metrics endpoint"
+      - "just vps-down: tears down all OCI resources created by vps-up"
+    notes:
+      - "Justfile prefix renamed oci- -> vps- per user direction to stay cloud-agnostic; BACKLOG-FI-002 captures the AWS/GCP generalization plan"
+      - "Added scripts/remote/deploy.sh (renders .env.remote from template, parallel scp, bootstrap-then-followers startup, HTTP /api/status readiness poll)"
+      - "Added scripts/remote/status.sh (per-node /api/status + /metrics check, non-zero exit on unhealthy)"
+      - "Added scripts/remote/teardown.sh (docker compose down -v on both VPSes, separate from OCI termination)"
+      - "Plus convenience recipe vps-image-push wrapping image-transfer.sh"
+      - "Dry-run validated end-to-end; full apply-run deferred pending live VPS decision"
 
   - id: TASK-009-5
     title: "Port latency benchmark (Scala -> native grpcurl/curl)"
