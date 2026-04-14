@@ -55,3 +55,11 @@ run-local/data/
 
 # Aider
 .aider*
+
+# OCI testbed state (EPOCH-009)
+scripts/remote/testbed-state.json
+scripts/remote/testbed.pem
+scripts/remote/testbed.pem.pub
+
+# story-manager.sh backup artifacts
+docs/*.md.bak
