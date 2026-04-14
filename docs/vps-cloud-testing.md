@@ -145,6 +145,16 @@ docker exec rnode.validator1 /opt/docker/bin/node eval /tmp/revaddr.rho
 docker logs rnode.validator1 --since 10s | grep "VaultAddress for"
 ```
 
+## Benchmark (optional)
+
+```bash
+# Against the local shard (targets rnode.validator1 :40413 by default)
+./scripts/bench/latency-benchmark.sh --duration 30 --rate 2 --apply
+
+# See outputs in /tmp/f1r3fly-bench-<timestamp>/ — load-summary.txt,
+# latency-report.txt, casper-profile.txt. Same flags/outputs as Part C6.5.
+```
+
 ## Teardown
 
 ```bash
@@ -431,7 +441,22 @@ just vps-status target=vps2         # validators + observer
 
 ### C6.5 — Run benchmarks
 
-TASK-009-5 (latency benchmark port) not yet implemented. Will extend this section with `just vps-bench-latency` when it lands.
+```bash
+# Default: 60s flood at 2 deploys/sec against VPS-1's validator1
+just vps-bench-latency host=$(jq -r .vps1_public_ip scripts/remote/testbed-state.json) duration=60 rate=2
+
+# Or call the script directly for dry-run / overrides:
+./scripts/bench/latency-benchmark.sh --host <VPS-IP> --duration 120 --rate 5 --apply
+```
+
+Outputs land in `/tmp/f1r3fly-bench-<timestamp>/`:
+
+- `load-summary.txt` — deploys submitted / finalized / errored, observed throughput
+- `latency-report.txt` — submit→finalize p50 / p95 / min / max / avg (ms)
+- `casper-profile.txt` — per-validator propose_core_ms / block_replay_ms / finalizer_cycle_ms percentiles from log parse
+- `submits.tsv`, `finals.tsv`, `latencies.raw` — raw data for downstream analysis
+
+The benchmark uses the `node` binary inside the container to sign + submit deploys (deploys require secp256k1 signing that bare `grpcurl` can't produce). Default deployer key is bootstrap's (funded locally and in `wallets.txt` for distributed via commit `993c239`). Override with `DEPLOYER_KEY=<hex>`.
 
 ### C6.6 — Teardown
 

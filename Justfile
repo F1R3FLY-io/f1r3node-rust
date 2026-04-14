@@ -114,6 +114,11 @@ vps-down:
     scripts/remote/teardown.sh --apply
     scripts/remote/oci-destroy.sh --apply --force
 
+# Run a latency benchmark against the shard (local or remote via --host)
+# Example: just vps-bench-latency host=203.0.113.10 duration=60 rate=3
+vps-bench-latency host="" duration="60" rate="2":
+    scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
+
 # =================================================================
 # HELP
 # =================================================================

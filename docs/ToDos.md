@@ -575,7 +575,10 @@ tasks:
 
   - id: TASK-009-5
     title: "Port latency benchmark (Scala -> native grpcurl/curl)"
-    status: pending
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T21:19:00Z
+    completed_at: 2026-04-13T21:25:00Z
     blocked_by: [TASK-009-4]
     acceptance:
       - "scripts/bench/latency-benchmark.sh: drops rust-client external dependency, uses grpcurl + HTTP /api"
@@ -583,6 +586,14 @@ tasks:
       - "Emits load-summary.txt and p50/p95 latency report"
       - "just bench-latency HOST DURATION wraps the script"
       - "scripts/bench/profile-casper-latency.sh ported for Rust node log format"
+    notes:
+      - "Implementation uses `node deploy` (via docker exec / ssh) for deploy signing rather than raw grpcurl — grpcurl can't produce secp256k1 signatures without a pre-signer binary. The AC intent (drop rust-client external dep) is met; interpretation documented in the script header."
+      - "Uses curl for /api/status preflight and node CLI (show-blocks, last-finalized-block) for block/deploy matching. No external-repo dependencies."
+      - "Parameterized via --duration, --rate, --host, --container, --http-port, --out-dir flags plus PHLO_LIMIT/PHLO_PRICE/DEPLOYER_KEY env"
+      - "Default deployer key is bootstrap's (funded locally and in wallets.txt via commit 993c239 for distributed)"
+      - "Justfile recipe: just vps-bench-latency host=<ip> duration=60 rate=2"
+      - "profile-casper-latency.sh parses Rust JSON logs (targets f1r3fly.propose.timing + f1r3fly.casper) for per-validator propose_core_ms / block_replay_ms / finalizer_cycle_ms p50/p95"
+      - "Real-apply validation against a live shard deferred (same as TASK-009-1..4)"
 ---
 ```
 

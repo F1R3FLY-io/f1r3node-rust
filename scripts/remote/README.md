@@ -33,7 +33,21 @@ just vps-image-push             # ship Docker image from local daemon to both VP
 just vps-deploy                 # render .env.remote, scp, start shard
 just vps-status                 # health check all 4 nodes
 just vps-status target=vps1     # check bootstrap only
+just vps-bench-latency host=<ip> duration=60 rate=2    # latency benchmark
 just vps-down                   # stop containers + terminate VPSes
+```
+
+Benchmark scripts live separately in `scripts/bench/`:
+
+```bash
+# Local shard (brought up via docker compose -f docker/shard.yml up)
+./scripts/bench/latency-benchmark.sh --duration 60 --rate 2 --apply
+
+# Dry-run preview (default if --apply not passed)
+./scripts/bench/latency-benchmark.sh --duration 60 --rate 2
+
+# Log-level per-validator profiler (standalone)
+./scripts/bench/profile-casper-latency.sh rnode.validator1
 ```
 
 ### Direct script invocation (for dry-run / overrides)
