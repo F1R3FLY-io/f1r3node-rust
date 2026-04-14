@@ -81,7 +81,8 @@ F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up
 | File | Purpose |
 | --- | --- |
 | `standalone.yml` | One-node development network with instant finalization |
-| `shard.yml` | Bootstrap node, validators, observer, Prometheus, Grafana |
+| `shard.yml` | Bootstrap node, validators, observer |
+| `monitoring.yml` | Prometheus + Grafana (optional, joins `f1r3fly-shard` as external) |
 | `validator4.yml` | Additional validator joining an existing shard |
 | `observer.yml` | Read-only observer joining an existing shard |
 
@@ -110,10 +111,23 @@ F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up
 
 ## Monitoring
 
-`shard.yml` includes Prometheus and Grafana.
+Prometheus + Grafana live in a separate compose file (`monitoring.yml`) and are **opt-in**. Bring them up alongside `shard.yml` when you want dashboards:
+
+```bash
+F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
+docker compose -f docker/monitoring.yml up -d
+```
 
 - Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+- Grafana: `http://localhost:3000` (admin/admin)
+
+`monitoring.yml` joins the `f1r3fly-shard` Docker network as `external`, so `shard.yml` must already be running. Scrape targets in `monitoring/prometheus.yml` resolve via Docker DNS (`rnode.bootstrap:40403`, `rnode.validator1:40413`, etc.).
+
+To stop monitoring without touching the shard:
+```bash
+docker compose -f docker/monitoring.yml down -v
+```
+`just shard-down` also stops monitoring as part of its teardown sequence.
 
 ## Smoke Testing
 

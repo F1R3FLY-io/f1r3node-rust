@@ -81,6 +81,7 @@ clean-standalone:
 # next start from genesis.
 
 shard-down:
+    -docker compose -f docker/monitoring.yml down -v
     -docker compose -f docker/validator4.yml down -v
     -docker compose -f docker/observer.yml down -v
     docker compose -f docker/shard.yml down -v

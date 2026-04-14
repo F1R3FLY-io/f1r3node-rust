@@ -132,12 +132,18 @@ claimed_at: null
 tasks:
   - id: TASK-002-1
     title: "Extract Prometheus and Grafana into docker/monitoring.yml"
-    status: pending
+    status: complete
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T21:35:00Z
     acceptance:
       - "docker/monitoring.yml contains prometheus and grafana services"
       - "monitoring.yml joins f1r3fly-shard as external network"
       - "shard.yml no longer contains prometheus/grafana services"
       - "docker/README.md updated to reflect new file"
+    notes:
+      - "Verbatim service-block move; same container names, ports, volumes, env"
+      - "Also updated Justfile shard-down to include monitoring.yml teardown"
+      - "Also updated docker/vps-cloud-testing.md Part A to reflect opt-in monitoring"
 ---
 ```
 

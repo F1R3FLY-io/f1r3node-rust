@@ -32,7 +32,7 @@ Whichever path you pick, the shard's shape is the same:
 - **Validators** — bonded, produce blocks
 - **Observer** — read-only, follows the chain
 
-**Default single-host layout** (`docker/shard.yml`): bootstrap + 3 validators + 1 observer + Prometheus + Grafana, all on one Docker network (`f1r3fly-shard`).
+**Default single-host layout** (`docker/shard.yml`): bootstrap + 3 validators + 1 observer on the `f1r3fly-shard` Docker network. Monitoring (Prometheus + Grafana) is opt-in via `docker/monitoring.yml`.
 
 **Distributed layout** (`docker/shard.vps1.yml` + `docker/shard.vps2.yml`): bootstrap on VPS-1 (ports 40400-40405), followers on VPS-2 in three port-bands (40410-15, 40420-25, 40450-55) to share one public IP.
 
@@ -64,7 +64,7 @@ The simplest path. Everything on one machine using the stock compose files.
 ## Prereqs
 
 - Docker ≥ 20.10 with compose v2 plugin
-- ~8 GB free RAM (6 container processes + Prometheus + Grafana)
+- ~6 GB free RAM (5 container processes; +2 GB if you also bring up `monitoring.yml`)
 - `just` for the teardown recipe (optional — can use `docker compose` directly)
 
 ## Build the image
@@ -82,7 +82,14 @@ First build can take 10-30 minutes depending on Rust cache warmth. Subsequent re
 F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
 ```
 
-Starts: `rnode.bootstrap`, `rnode.validator1/2/3`, `rnode.readonly`, `prometheus`, `grafana`. Genesis ceremony completes within ~60s.
+Starts: `rnode.bootstrap`, `rnode.validator1/2/3`, `rnode.readonly`. Genesis ceremony completes within ~60s.
+
+Optional — add Prometheus + Grafana dashboards:
+```bash
+docker compose -f docker/monitoring.yml up -d
+# Prometheus http://localhost:9090
+# Grafana http://localhost:3000 (admin/admin)
+```
 
 Verify:
 
@@ -92,8 +99,6 @@ curl -s http://localhost:40403/api/status | jq '{peers,nodes,shardId}'
 ```
 
 - Bootstrap: `:40403` / Validator1: `:40413` / Validator2: `:40423` / Validator3: `:40433` / Observer: `:40453`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000` (admin/admin)
 
 ## Add an observer or validator4 at runtime
 
