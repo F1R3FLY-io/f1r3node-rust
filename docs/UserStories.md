@@ -64,6 +64,27 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+#### US-003: Distributed OCI testbed for latency benchmarking
+
+> As a **platform engineer**, I want **to deploy a single F1R3FLY shard across two isolated OCI VPSes and run repeatable latency benchmarks against it** so that **we can measure network-latency-bound consensus performance and detect regressions as the node evolves**.
+
+**Implemented in:** EPOCH-009
+
+**Status:** In Progress
+
+**Acceptance Criteria:**
+- [ ] Justfile recipes provision and deploy a 2-VPS OCI testbed in us-sanjose-1 f1r3fly-devops compartment
+- [ ] VPS-1 runs the bootstrap node; VPS-2 runs 2 validators and 1 read-only observer (single shard)
+- [ ] Nodes discover each other over public internet via Kademlia and bootstrap URL (no Docker internal DNS)
+- [ ] Genesis ceremony completes and the shard finalizes blocks end-to-end
+- [ ] Latency benchmark ported from f1r3node run-latency-benchmark.sh; emits load summary and p50/p95 reports
+- [ ] `just oci-down` tears down the testbed and frees all OCI resources
+- [ ] Option B (inter-shard consensus) captured separately in Backlog.md as BACKLOG-FI-001
+
+**Completed:** Planned
+
+---
+
 ## Relationship to Epochs
 
 User stories capture the **why** (user need and benefit). Epochs capture the **what** (technical implementation tasks).

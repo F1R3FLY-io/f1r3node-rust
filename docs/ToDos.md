@@ -477,6 +477,89 @@ tasks:
 
 ---
 
+### EPOCH-009: Distributed OCI Testbed for Latency Benchmarking
+
+```yaml
+---
+epoch_id: EPOCH-009
+title: "Distributed OCI Testbed for Latency Benchmarking"
+status: pending
+priority: p2
+user_story: US-003
+blocked_by: []
+created_at: 2026-04-13
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-009-1
+    title: "OCI VPS provisioning scripts"
+    status: pending
+    acceptance:
+      - "scripts/remote/oci-provision.sh creates a dedicated f1r3node-rust-testbed-vcn in us-sanjose-1"
+      - "Creates 2x VM.Standard.A1.Flex (arm64 Ampere) instances in f1r3fly-devops compartment"
+      - "Security list opens TCP 40400-40405 and UDP 40404 to 0.0.0.0/0 (public testbed)"
+      - "SSH access provisioned via a dedicated testbed keypair"
+      - "Teardown script (oci-destroy.sh) removes VMs, VCN, and security rules cleanly"
+
+  - id: TASK-009-2
+    title: "Image distribution via docker save + scp + load"
+    status: pending
+    blocked_by: [TASK-009-1]
+    acceptance:
+      - "scripts/remote/image-transfer.sh: local docker save | scp | remote docker load"
+      - "Works against both VPSes in a single invocation (parallel transfer)"
+      - "Image tag matches what distributed compose files reference"
+      - "Migration note captured: once OCIR first-publish lands, switch to docker pull on VPS"
+
+  - id: TASK-009-3
+    title: "Distributed compose file split"
+    status: pending
+    blocked_by: [TASK-009-1]
+    acceptance:
+      - "docker/shard.vps1.yml runs bootstrap only; parameterized by BOOTSTRAP_HOST env"
+      - "docker/shard.vps2.yml runs 2 validators + observer; connects to BOOTSTRAP_HOST:40400"
+      - "No reliance on Docker internal DNS for inter-host communication"
+      - "Both files read from a shared .env.remote template"
+
+  - id: TASK-009-4
+    title: "Justfile recipes for end-to-end orchestration"
+    status: pending
+    blocked_by: [TASK-009-1, TASK-009-2, TASK-009-3]
+    acceptance:
+      - "just oci-up: provisions 2 VPSes and returns their public IPs"
+      - "just oci-deploy: scp config + images, start bootstrap (VPS-1), then validators/observer (VPS-2)"
+      - "just oci-status HOST: shows shard health via HTTP API and metrics endpoint"
+      - "just oci-down: tears down all OCI resources created by oci-up"
+
+  - id: TASK-009-5
+    title: "Port latency benchmark (Scala -> native grpcurl/curl)"
+    status: pending
+    blocked_by: [TASK-009-4]
+    acceptance:
+      - "scripts/bench/latency-benchmark.sh: drops rust-client external dependency, uses grpcurl + HTTP /api"
+      - "Parameterized for arbitrary validator count (not hardcoded to 3)"
+      - "Emits load-summary.txt and p50/p95 latency report"
+      - "just bench-latency HOST DURATION wraps the script"
+      - "scripts/bench/profile-casper-latency.sh ported for Rust node log format"
+---
+```
+
+**Context:** Stands up a realistic multi-host deployment (single shard distributed across 2 VPSes) to measure network-latency-bound consensus performance. This is distinct from in-process or single-host Docker tests — it exercises the P2P transport, Kademlia discovery, and Casper finalization under real inter-host latency.
+
+**Scope:**
+- Included: OCI provisioning, image distribution, distributed compose, deploy/teardown automation, latency benchmark port
+- Excluded: Inter-shard consensus (Option B, ~1,500+ LOC of consensus work — see BACKLOG-FI-001)
+- Excluded: Non-OCI providers (Tata cloud, etc.)
+- Excluded: Throughput, chaos, or whiteblock-plan benchmarks (future epochs)
+- Excluded: Production-grade secrets management (using `scp` for TLS keys for now)
+
+**Notes:**
+- Uses arm64 (VM.Standard.A1.Flex) for free-tier eligibility and production representativeness
+- Image distribution intentionally uses `docker save/load` rather than registry pull, to keep this epoch self-contained until the OCIR CI switch lands
+- TLS keys for bootstrap are shipped via `scp` (acceptable for a throwaway testbed)
+
+---
+
 ## Epoch Dependency Graph
 
 ```

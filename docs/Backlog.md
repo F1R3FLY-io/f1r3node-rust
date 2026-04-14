@@ -32,6 +32,42 @@ Items are organized by category and rough priority within each category.
 
 <!-- Future features that have been identified but aren't yet prioritized -->
 
+#### BACKLOG-FI-001: Inter-Shard Consensus (Option B)
+
+```yaml
+---
+backlog_id: BACKLOG-FI-001
+title: "Inter-shard consensus (cross-shard bridge between two independent shards)"
+category: feature_idea
+priority: p3
+added_at: 2026-04-13
+related_epoch: EPOCH-009
+---
+```
+
+**Description:** Make two independent F1R3FLY shards (e.g. `/root/east` and `/root/west`) agree on cross-shard state — relaying finalized blocks, bridging value, or anchoring child-shard finality into a parent shard. Today the `shard-name` and `parent-shard-id` config fields exist, blocks carry a `shard_id`, and bootstrap validates the shard name at genesis, but there is **zero** cross-shard consensus coordination. Two independent shards running simultaneously ignore each other entirely.
+
+**Current state (as of 2026-04-13 research):**
+- `shard-name` and `parent-shard-id` in `docker/conf/default.conf:214-215` — wired ✓
+- `casper/src/rust/casper_conf.rs:19-22` — config struct deserialized ✓
+- Block `shard_id` field in `models/src/rust/casper/protocol/casper_message.rs` — set at creation, validated at genesis only ✓
+- `parent_shard_id` read after initialization — **never**
+- Cross-shard routing in `comm/` — **not implemented**
+- Bridge contracts in `rholang/` — **not implemented**
+- Cross-shard deploy routing in `node/src/rust/api/` — **not implemented**
+
+**Estimated scope:** ~1,500+ lines of net-new code across:
+1. Bridge protocol + Rholang bridge contracts (~500 lines)
+2. Cross-shard routing in `comm/` transport layer (~200 lines)
+3. Fork-choice modifications for parent-shard ancestry weighting (~300 lines)
+4. Deploy API shard routing (~150 lines)
+5. Multi-shard genesis ceremony + configuration schema (~50 lines)
+6. Integration tests for multi-shard deployments (~400 lines)
+
+**When Unblocked:** Requires design doc + architectural review. Not ready for promotion to active epoch until the hierarchical-shard model is fully specified and the bridge protocol has a reviewed spec.
+
+**Related work:** EPOCH-009 stands up a **single-shard** distributed testbed on OCI. If BACKLOG-FI-001 is promoted, the testbed from EPOCH-009 would extend naturally to a 4-VPS multi-shard topology.
+
 ---
 
 ### Research & Exploration
