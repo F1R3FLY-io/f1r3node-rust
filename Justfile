@@ -74,12 +74,12 @@ clean-standalone:
 # =================================================================
 # LOCAL DOCKER SHARD
 # =================================================================
-# Tear down everything the local docker-compose shard flow brings up:
-# validator4 (optional joiner), observer (optional joiner), and the
-# base shard (bootstrap + 3 validators + readonly + prometheus +
-# grafana). Runs `down -v` so named volumes are wiped for a clean
-# next start from genesis.
+# The shard-down recipe stops every local compose stack in dependency
+# order (monitoring, validator4, observer, base shard) and wipes named
+# volumes so the next `up` starts from fresh genesis. The `-` prefix
+# lets missing stacks no-op without aborting the teardown.
 
+# Tear down local docker shard (monitoring, validator4, observer, base) and wipe volumes
 shard-down:
     -docker compose -f docker/monitoring.yml down -v
     -docker compose -f docker/validator4.yml down -v
@@ -114,8 +114,7 @@ vps-down:
     scripts/remote/teardown.sh --apply
     scripts/remote/oci-destroy.sh --apply --force
 
-# Run a latency benchmark against the shard (local or remote via --host)
-# Example: just vps-bench-latency host=203.0.113.10 duration=60 rate=3
+# Run a latency benchmark against the shard (local if host="", remote via SSH otherwise)
 vps-bench-latency host="" duration="60" rate="2":
     scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
 
