@@ -141,8 +141,11 @@ update_route_table() {
 }
 
 # --- 5. Security list ---
-# Public testbed: SSH (22/tcp), F1R3FLY P2P+APIs (40400-40405/tcp),
-# Kademlia discovery (40404/udp), all-egress.
+# Public testbed: SSH (22/tcp) and the full F1R3FLY port range used by
+# the distributed topology: VPS-1 bootstrap uses 40400-40405, VPS-2
+# hosts 3 nodes in port-shifted bands (40410-40415, 40420-40425,
+# 40450-40455). Opening 40400-40455/tcp + 40400-40455/udp covers the
+# protocol ports and all Kademlia discovery ports in one rule.
 create_seclist() {
   local existing
   existing="$(state_get seclist_id)"
@@ -157,8 +160,8 @@ create_seclist() {
   local ingress
   ingress='[
     {"source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","protocol":"6","isStateless":false,"tcpOptions":{"destinationPortRange":{"min":22,"max":22}}},
-    {"source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","protocol":"6","isStateless":false,"tcpOptions":{"destinationPortRange":{"min":40400,"max":40405}}},
-    {"source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","protocol":"17","isStateless":false,"udpOptions":{"destinationPortRange":{"min":40404,"max":40404}}}
+    {"source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","protocol":"6","isStateless":false,"tcpOptions":{"destinationPortRange":{"min":40400,"max":40455}}},
+    {"source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","protocol":"17","isStateless":false,"udpOptions":{"destinationPortRange":{"min":40400,"max":40455}}}
   ]'
   local egress
   egress='[{"destination":"0.0.0.0/0","destinationType":"CIDR_BLOCK","protocol":"all","isStateless":false}]'
@@ -176,7 +179,7 @@ create_seclist() {
     state_set seclist_id "$seclist_id"
     info "Security list created: $seclist_id"
   else
-    oci_run network security-list create --display-name "$SECLIST_NAME" --ingress-security-rules "<22,40400-40405/tcp,40404/udp>"
+    oci_run network security-list create --display-name "$SECLIST_NAME" --ingress-security-rules "<22,40400-40455/tcp,40400-40455/udp>"
   fi
 }
 

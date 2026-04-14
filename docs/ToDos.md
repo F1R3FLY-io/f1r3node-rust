@@ -483,43 +483,62 @@ tasks:
 ---
 epoch_id: EPOCH-009
 title: "Distributed OCI Testbed for Latency Benchmarking"
-status: pending
+status: in_progress
 priority: p2
 user_story: US-003
 blocked_by: []
 created_at: 2026-04-13
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-epoch009
+claimed_at: 2026-04-13T19:00:00Z
 tasks:
   - id: TASK-009-1
     title: "OCI VPS provisioning scripts"
-    status: pending
+    status: review
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T19:05:00Z
     acceptance:
       - "scripts/remote/oci-provision.sh creates a dedicated f1r3node-rust-testbed-vcn in us-sanjose-1"
       - "Creates 2x VM.Standard.A1.Flex (arm64 Ampere) instances in f1r3fly-devops compartment"
       - "Security list opens TCP 40400-40405 and UDP 40404 to 0.0.0.0/0 (public testbed)"
       - "SSH access provisioned via a dedicated testbed keypair"
       - "Teardown script (oci-destroy.sh) removes VMs, VCN, and security rules cleanly"
+    notes:
+      - "Code complete (commit be7ad3f); dry-run validated end-to-end"
+      - "Real --apply validation deferred to TASK-009-4+ integration"
+      - "Security list range (40400-40405) may need widening in TASK-009-3 to accommodate 3 nodes on VPS-2"
 
   - id: TASK-009-2
     title: "Image distribution via docker save + scp + load"
-    status: pending
+    status: review
+    claimed_by: claude-session-epoch009
     blocked_by: [TASK-009-1]
+    completed_at: 2026-04-13T19:10:00Z
     acceptance:
       - "scripts/remote/image-transfer.sh: local docker save | scp | remote docker load"
       - "Works against both VPSes in a single invocation (parallel transfer)"
       - "Image tag matches what distributed compose files reference"
       - "Migration note captured: once OCIR first-publish lands, switch to docker pull on VPS"
+    notes:
+      - "Code complete (commit 6e045c0); dry-run validated with fabricated state"
+      - "Real --apply pending live VPSes"
 
   - id: TASK-009-3
     title: "Distributed compose file split"
-    status: pending
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T19:15:00Z
+    completed_at: 2026-04-13T19:30:00Z
     blocked_by: [TASK-009-1]
     acceptance:
       - "docker/shard.vps1.yml runs bootstrap only; parameterized by BOOTSTRAP_HOST env"
       - "docker/shard.vps2.yml runs 2 validators + observer; connects to BOOTSTRAP_HOST:40400"
       - "No reliance on Docker internal DNS for inter-host communication"
       - "Both files read from a shared .env.remote template"
+    notes:
+      - "VPS-2 runs 3 rnode processes sharing one public IP; each needs a distinct port-band to avoid protocol-port collision"
+      - "Added 3 per-node conf files (validator1-remote.conf, validator2-remote.conf, readonly-remote.conf) that HOCON-include default.conf and override protocol-server.port / peers-discovery.port / api-server.port-*"
+      - "Widened oci-provision.sh security list from 40400-40405/tcp+40404/udp to 40400-40455/tcp+40400-40455/udp to cover all 3 port-bands (supersedes TASK-009-1 AC wording)"
+      - "Revisit: if node binary exposes --protocol-port / --discovery-port CLI flags, the per-node conf files could be replaced with inline compose args (would drop ~45 lines)"
 
   - id: TASK-009-4
     title: "Justfile recipes for end-to-end orchestration"
