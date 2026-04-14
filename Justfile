@@ -72,6 +72,20 @@ clean-standalone:
     @echo "Done. Run 'just setup-standalone' or 'just run-standalone' to reinitialize."
 
 # =================================================================
+# LOCAL DOCKER SHARD
+# =================================================================
+# Tear down everything the local docker-compose shard flow brings up:
+# validator4 (optional joiner), observer (optional joiner), and the
+# base shard (bootstrap + 3 validators + readonly + prometheus +
+# grafana). Runs `down -v` so named volumes are wiped for a clean
+# next start from genesis.
+
+shard-down:
+    -docker compose -f docker/validator4.yml down -v
+    -docker compose -f docker/observer.yml down -v
+    docker compose -f docker/shard.yml down -v
+
+# =================================================================
 # DISTRIBUTED OCI TESTBED (EPOCH-009)
 # =================================================================
 # See docs/oracle-cloud-setup.md for prerequisites and full walkthrough.

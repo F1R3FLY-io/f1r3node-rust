@@ -63,3 +63,4 @@ scripts/remote/testbed.pem.pub
 
 # story-manager.sh backup artifacts
 docs/*.md.bak
+.claude/
