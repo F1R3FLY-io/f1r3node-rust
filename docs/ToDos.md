@@ -87,12 +87,19 @@ tasks:
 
   - id: TASK-001-4
     title: "Verify shard starts with updated genesis and network config"
-    status: pending
+    status: complete
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T20:55:00Z
     blocked_by: []
     acceptance:
       - "docker compose -f docker/shard.yml up succeeds"
       - "Genesis ceremony completes with 20-wallet wallets.txt"
       - "Observer and validator4 can join via f1r3fly-shard network"
+    notes:
+      - "All 3 written ACs verified end-to-end with locally built f1r3fly-rust:local image"
+      - "Bonding extension also verified: added validator4's REV address (1111La6tHaCt...jtEi3M) to wallets.txt as genesis funding, then deployed bond.rho signed by validator4, propose included in block with errored=false and cost=167749 phlo, bond-status flipped to 'Validator is bonded', validator4 proceeded to produce 6+ blocks via heartbeat"
+      - "Root cause of earlier insufficient-funds error: validator4.yml was designed for runtime bonding but validator4's REV address was never added to genesis wallets.txt. Fix is a single-line addition."
+      - "REV-address computation done via `node eval` on 1.know_ones_vaultaddress.rho (output in docker stdout of the evaluating node)"
 ---
 ```
 
