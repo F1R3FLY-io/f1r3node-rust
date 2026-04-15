@@ -27,6 +27,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DOCKER_DIR="${REPO_ROOT}/docker"
 ENV_TEMPLATE="${DOCKER_DIR}/.env.remote.template"
 ENV_FILE="${DOCKER_DIR}/.env.remote"
+ENV_KEYS_FILE="${DOCKER_DIR}/.env"
 REMOTE_DOCKER_DIR="/home/opc/docker"
 SSH_USER="${SSH_USER:-opc}"
 SSH_OPTS=(-i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
@@ -85,15 +86,32 @@ else
 fi
 
 # --- 1. Render .env.remote ---
+# Reads key material from $ENV_KEYS_FILE (gitignored docker/.env) so the
+# committed template never carries key values. Required keys:
+#   BOOTSTRAP_NODE_ID, BOOTSTRAP_PUBLIC_KEY, BOOTSTRAP_PRIVATE_KEY,
+#   VALIDATOR{1,2}_PUBLIC_KEY, VALIDATOR{1,2}_PRIVATE_KEY.
 render_env() {
   info "Rendering .env.remote from template (VPS1=$VPS1_IP, VPS2=$VPS2_IP)"
+  [[ -f "$ENV_KEYS_FILE" ]] || die "Missing $ENV_KEYS_FILE (source of key material). Populate it before running deploy."
+
+  local keys=(
+    BOOTSTRAP_NODE_ID BOOTSTRAP_PUBLIC_KEY BOOTSTRAP_PRIVATE_KEY
+    VALIDATOR1_PUBLIC_KEY VALIDATOR1_PRIVATE_KEY
+    VALIDATOR2_PUBLIC_KEY VALIDATOR2_PRIVATE_KEY
+  )
+  local sed_args=(-e "s|__VPS1_PUBLIC_HOST__|${VPS1_IP}|g" -e "s|__VPS2_PUBLIC_HOST__|${VPS2_IP}|g")
+  local k val
+  for k in "${keys[@]}"; do
+    val=$(grep -E "^${k}=" "$ENV_KEYS_FILE" | head -n1 | cut -d= -f2-)
+    [[ -n "$val" ]] || die "$ENV_KEYS_FILE is missing required entry: ${k}="
+    sed_args+=(-e "s|__${k}__|${val}|g")
+  done
+
   if [[ "$APPLY" == "1" ]]; then
-    sed -e "s|__VPS1_PUBLIC_HOST__|${VPS1_IP}|g" \
-        -e "s|__VPS2_PUBLIC_HOST__|${VPS2_IP}|g" \
-        "$ENV_TEMPLATE" > "$ENV_FILE"
+    sed "${sed_args[@]}" "$ENV_TEMPLATE" > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
   else
-    echo "DRY-RUN: sed substitute __VPS{1,2}_PUBLIC_HOST__ in $ENV_TEMPLATE -> $ENV_FILE" >&2
+    echo "DRY-RUN: render $ENV_TEMPLATE -> $ENV_FILE (sub VPS hosts + ${#keys[@]} key tokens from $ENV_KEYS_FILE)" >&2
   fi
 }
 
