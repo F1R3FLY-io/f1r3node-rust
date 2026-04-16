@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: 2026-04-09
+last_updated: 2026-04-15
 ---
 
 # User Stories
