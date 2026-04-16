@@ -34,6 +34,8 @@ use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::errors::CasperError;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
 use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
@@ -128,11 +130,11 @@ fn maybe_trim_allocator_after_block() {
     if interval == 0 {
         return;
     }
+    #[allow(unused_variables)]
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if !n.is_multiple_of(interval) {}
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
+    if n.is_multiple_of(interval) {
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
             let _ = malloc_trim(0);
