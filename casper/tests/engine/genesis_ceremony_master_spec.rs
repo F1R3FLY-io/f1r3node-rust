@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/
-// GenesisCeremonyMasterSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/GenesisCeremonyMasterSpec.scala
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,9 +22,8 @@ struct GenesisCeremonyMasterSpec;
 impl GenesisCeremonyMasterSpec {
     async fn make_transition_to_running_state_after_block_approved() {
         // NOTE: LocalSet is required because the_init closure in ApproveBlockProtocol
-        // captures !Send types. In Scala, Task doesn't require Send, but Rust
-        // tokio::spawn does. LocalSet allows running !Send futures on a single
-        // thread.
+        // captures !Send types. In Scala, Task doesn't require Send, but Rust tokio::spawn does.
+        // LocalSet allows running !Send futures on a single thread.
         let local = tokio::task::LocalSet::new();
 
         local.run_until(async {

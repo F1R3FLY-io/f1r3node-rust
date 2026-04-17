@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
-use shared::rust::shared::f1r3fly_events::EventStream;
+use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
 use tracing::warn;
 
 use crate::rust::api::admin_web_api::AdminWebApi;
@@ -27,6 +27,7 @@ pub struct AppState {
     pub connections_cell: Arc<ConnectionsCell>,
     pub node_discovery: Arc<dyn NodeDiscovery + Send + Sync + 'static>,
     pub event_stream: Arc<EventStream>,
+    pub startup_events: StartupBuffer,
 }
 
 impl AppState {
@@ -38,6 +39,7 @@ impl AppState {
         connections_cell: Arc<ConnectionsCell>,
         node_discovery: Arc<dyn NodeDiscovery + Send + Sync + 'static>,
         event_consumer: Arc<EventStream>,
+        startup_events: StartupBuffer,
     ) -> Self {
         Self {
             admin_web_api,
@@ -47,6 +49,7 @@ impl AppState {
             connections_cell,
             node_discovery,
             event_stream: event_consumer,
+            startup_events,
         }
     }
 }
@@ -186,6 +189,7 @@ pub async fn data_at_name_handler(
     State(app_state): State<AppState>,
     Json(request): Json<DataAtNameRequest>,
 ) -> Response {
+    tracing::warn!("/data-at-name is deprecated, use /data-at-name-by-block-hash instead");
     match app_state.web_api.listen_for_data_at_name(request).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),

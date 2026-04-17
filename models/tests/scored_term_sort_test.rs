@@ -1,5 +1,4 @@
-// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala -
-// ScoredTermSpec
+// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala - ScoredTermSpec
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EMethod, Expr, New, Par, Var};

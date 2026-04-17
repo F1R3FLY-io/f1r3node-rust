@@ -1,5 +1,4 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/
-// LastFinalizedKeyValueStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedKeyValueStorage.scala
 
 use std::collections::HashMap;
 
@@ -166,8 +165,7 @@ impl LastFinalizedKeyValueStorage {
         let cur_vs = block_metadata_db.get_batch(&chunk_serde)?;
 
         // Update finalization flags
-        // WARNING: migration should be done before block merge, as it assumes all
-        // blocks are directly finalized.
+        // WARNING: migration should be done before block merge, as it assumes all blocks are directly finalized.
         let new_values: Vec<(BlockHashSerde, BlockMetadata)> = cur_vs
             .into_iter()
             .map(|mut v| {

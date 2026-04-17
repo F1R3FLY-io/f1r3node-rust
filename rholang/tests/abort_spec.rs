@@ -6,9 +6,9 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 /// Tests for the rho:execution:abort system process
 ///
-/// The abort system process allows Rholang code to explicitly terminate
-/// execution. When called, it raises a UserAbortError that propagates up and
-/// terminates the deploy with an error result.
+/// The abort system process allows Rholang code to explicitly terminate execution.
+/// When called, it raises a UserAbortError that propagates up and terminates the
+/// deploy with an error result.
 
 #[tokio::test]
 async fn abort_should_terminate_execution_with_user_abort_error() {

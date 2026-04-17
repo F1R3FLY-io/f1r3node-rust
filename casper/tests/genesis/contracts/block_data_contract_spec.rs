@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// BlockDataContractSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/BlockDataContractSpec.scala
 
 use std::collections::HashMap;
 use std::time::Duration;

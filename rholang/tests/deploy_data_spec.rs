@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/DeployDataSpec.
-// scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/DeployDataSpec.scala
 
 use std::sync::Arc;
 

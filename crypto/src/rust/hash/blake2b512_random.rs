@@ -130,8 +130,7 @@ impl Blake2b512Random {
     fn copy(&self) -> Blake2b512Random {
         let mut clone_block = vec![0; 128];
         clone_block.copy_from_slice(&self.last_block);
-        // In Rust, there's no need to rewind a Vec, as it doesn't have a position like
-        // a ByteBuffer.
+        // In Rust, there's no need to rewind a Vec, as it doesn't have a position like a ByteBuffer.
         let mut result = Self::new(
             Blake2b512Block::new_from_src(self.digest.clone()),
             clone_block,
@@ -143,23 +142,29 @@ impl Blake2b512Random {
     }
 
     fn hash(&mut self) {
-        // println!("\nhash_array: {:?}", self.hash_array);
         self.digest
             .peek_final_root(self.last_block.as_slice(), 0, &mut self.hash_array, 0);
-        let low = self.count_view[0];
-        // println!("\nlow: {}", low);
+        // countView is a LongBuffer view of lastBlock starting at offset 112.
+        // Scala: countView = lastBlock.duplicate().position(112).slice().asLongBuffer()
+        // So countView.get(0) reads the long at lastBlock[112..120].
+        // Rust: count_view[14] maps to last_block[112..120] (14 * 8 = 112).
+        let low = self.count_view[14];
         if low == u64::MAX {
-            let high = self.count_view[1];
-            self.count_view[0] = 0;
-            self.last_block[0] = 0;
-            self.count_view[1] = high + 1;
-            self.last_block[1] = high as i8 + 1;
+            let high = self.count_view[15];
+            self.count_view[14] = 0;
+            self.count_view[15] = high + 1;
         } else {
-            self.count_view[0] = low + 1;
-            self.last_block[112] = low as i8 + 1; // TODO: review this hardcoded
-                                                  // index
-                                                  // println!("\ncount_view:
-                                                  // {:?}", self.count_view);
+            self.count_view[14] = low + 1;
+        }
+        // Sync last_block[112..120] with count_view[14] (full 8-byte little-endian write)
+        let bytes = self.count_view[14].to_le_bytes();
+        for i in 0..8 {
+            self.last_block[112 + i] = bytes[i] as i8;
+        }
+        // Sync last_block[120..128] with count_view[15] for overflow case
+        let bytes_high = self.count_view[15].to_le_bytes();
+        for i in 0..8 {
+            self.last_block[120 + i] = bytes_high[i] as i8;
         }
     }
 
@@ -521,8 +526,7 @@ impl serde::Serialize for Blake2b512Random {
 impl<'de> serde::Deserialize<'de> for Blake2b512Random {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: serde::Deserializer<'de> {
-        // Deserialize unit and return default Blake2b512Random (like Scala's
-        // decodeDummyBlake2b512Random)
+        // Deserialize unit and return default Blake2b512Random (like Scala's decodeDummyBlake2b512Random)
         let _: () = <()>::deserialize(deserializer)?;
         Ok(Blake2b512Random::create_from_bytes(&[1]))
     }

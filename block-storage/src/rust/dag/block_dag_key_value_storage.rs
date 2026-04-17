@@ -1,7 +1,6 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
-// BlockDagKeyValueStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -69,8 +68,7 @@ impl KeyValueDagRepresentation {
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
-    // Do they need to be part of the DAG current state or they can be moved to DAG
-    // storage directly?
+    // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
 
     pub fn get_max_height(&self) -> i64 {
         if self.height_map.is_empty() {
@@ -104,8 +102,7 @@ impl KeyValueDagRepresentation {
             return true;
         }
 
-        // Finalized status is persisted in block metadata; in-memory set is a bounded
-        // cache.
+        // Finalized status is persisted in block metadata; in-memory set is a bounded cache.
         self.block_metadata_index
             .read()
             .ok()
@@ -122,11 +119,9 @@ impl KeyValueDagRepresentation {
                 .find(|hash| hash.starts_with(&truncated_bytes))
                 .cloned()
         } else {
-            // if truncatedHash is odd length string we cannot convert it to ByteString with
-            // 8 bit resolution because each symbol has 4 bit resolution. Need
-            // to make a string of even length by removing the last symbol, then
-            // find all the matching hashes and choose one that matches the full
-            // truncatedHash string
+            // if truncatedHash is odd length string we cannot convert it to ByteString with 8 bit resolution
+            // because each symbol has 4 bit resolution. Need to make a string of even length by removing the last symbol,
+            // then find all the matching hashes and choose one that matches the full truncatedHash string
             let truncated_bytes = hex::decode(&truncated_hash[..truncated_hash.len() - 1])
                 .expect("invalid truncated hash");
             self.dag_set
@@ -172,8 +167,7 @@ impl KeyValueDagRepresentation {
             .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
     }
 
-    // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
-    // BlockDagRepresentationSyntax.scala
+    // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
 
     // Get block metadata, "unsafe" because method expects block already in the DAG.
     pub fn lookup_unsafe(&self, block_hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
@@ -190,8 +184,7 @@ impl KeyValueDagRepresentation {
         &self,
         hashes: Vec<BlockHash>,
     ) -> Result<Vec<BlockMetadata>, KvStoreError> {
-        // Small batches are common on propose/snapshot paths; avoid Rayon scheduling
-        // overhead there.
+        // Small batches are common on propose/snapshot paths; avoid Rayon scheduling overhead there.
         const PARALLEL_LOOKUP_THRESHOLD: usize = 64;
 
         if hashes.len() < PARALLEL_LOOKUP_THRESHOLD {
@@ -368,25 +361,30 @@ impl KeyValueDagRepresentation {
 
     pub fn non_finalized_blocks(&self) -> Result<HashSet<BlockHash>, KvStoreError> {
         let mut result = HashSet::new();
-        let mut tips = self
+        let mut visited = HashSet::new();
+        let mut tips: VecDeque<BlockHash> = self
             .latest_messages()?
             .values()
             .map(|metadata| metadata.block_hash.clone())
-            .collect::<Vec<_>>();
+            .collect::<VecDeque<_>>();
 
-        while !tips.is_empty() {
-            let mut next_level = Vec::new();
-
-            for hash in &tips {
-                if !self.is_finalized(hash) {
-                    result.insert(hash.clone());
-
-                    let metadata = self.lookup_unsafe(hash)?;
-                    next_level.extend(metadata.parents.clone());
-                }
+        while let Some(hash) = tips.pop_front() {
+            if !visited.insert(hash.clone()) {
+                continue;
             }
 
-            tips = next_level;
+            if self.is_finalized(&hash) {
+                continue;
+            }
+
+            result.insert(hash.clone());
+
+            let metadata = self.lookup_unsafe(&hash)?;
+            for parent in metadata.parents {
+                if !visited.contains(&parent) {
+                    tips.push_back(parent);
+                }
+            }
         }
 
         Ok(result)
@@ -456,17 +454,16 @@ impl KeyValueDagRepresentation {
 
 #[derive(Clone)]
 pub struct BlockDagKeyValueStorage {
-    /// Global lock to ensure atomic snapshots, similar to Scala's
-    /// lock.withPermit. This prevents race conditions during concurrent DAG
-    /// modifications.
+    /// Global lock to ensure atomic snapshots, similar to Scala's lock.withPermit.
+    /// This prevents race conditions during concurrent DAG modifications.
     pub global_lock: Arc<std::sync::Mutex<()>>,
     pub latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub block_metadata_index: Arc<RwLock<BlockMetadataStore>>,
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     pub equivocation_tracker_index: EquivocationTrackerStore,
-    /// Monotonically increasing counter incremented on every successful block
-    /// insert. Used by caches to detect when the DAG has changed.
+    /// Monotonically increasing counter incremented on every successful block insert.
+    /// Used by caches to detect when the DAG has changed.
     pub dag_generation: Arc<AtomicU64>,
 }
 
@@ -530,8 +527,7 @@ impl BlockDagKeyValueStorage {
     }
 
     /// Current DAG generation — incremented on every block insert.
-    /// Can be used by caches to detect whether the DAG has changed since the
-    /// last snapshot.
+    /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
     /// Public method to get DAG representation with global lock protection.
@@ -653,8 +649,7 @@ impl BlockDagKeyValueStorage {
 
             let mut result = HashMap::new();
             for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height
-                // to lower
+                // This filter is required to enable adding blocks backward from higher height to lower
                 if let Ok(false) = self
                     .latest_messages_index
                     .contains_key(ValidatorSerde((*validator).clone()))
@@ -686,8 +681,7 @@ impl BlockDagKeyValueStorage {
                 )));
             }
             // TODO: should we have special error type for block hash error also?
-            //  Should this be checked before calling insert? Is DAG storage responsible for
-            // that? - OLD
+            //  Should this be checked before calling insert? Is DAG storage responsible for that? - OLD
             if block_hash_is_invalid {
                 return Err(KvStoreError::InvalidArgument(format!(
                     "Block hash {} is not correct length.",
@@ -725,8 +719,7 @@ impl BlockDagKeyValueStorage {
             }
 
             let new_latest_from_sender = if !sender_is_empty && !invalid {
-                // Add LM either if there is no existing message for the sender, or if sequence
-                // number advances
+                // Add LM either if there is no existing message for the sender, or if sequence number advances
                 // - assumes block sender is not valid hash
                 if match self
                     .latest_messages_index
@@ -777,8 +770,7 @@ impl BlockDagKeyValueStorage {
         f(&self.equivocation_tracker_index)
     }
 
-    /** Record that some hash is directly finalized (detected by finalizer
-     * and becomes LFB). */
+    /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
     pub async fn record_directly_finalized<F, Fut>(
         &self,
         directly_finalized_hash: BlockHash,
@@ -788,40 +780,73 @@ impl BlockDagKeyValueStorage {
         F: FnMut(&HashSet<BlockHash>) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
-        // Compute finalized blocks under lock (must drop before .await)
-        let (indirectly_finalized, all_finalized) = {
-            let _lock_guard = self.global_lock.lock().unwrap();
+        const MAX_FINALIZATION_RECONCILE_LOOPS: usize = 128;
 
-            let dag = self.get_representation_internal();
-            if !dag.contains(&directly_finalized_hash) {
-                return Err(KvStoreError::InvalidArgument(format!(
-                    "Attempting to finalize nonexistent hash {}",
-                    PrettyPrinter::build_string_bytes(&directly_finalized_hash)
-                )));
+        // Close TOCTOU race by repeatedly applying effects for newly observed finalized
+        // hashes until the lock-protected snapshot is stable. Keep metadata persistence
+        // aligned with already-applied effects when exiting due to errors or retry cap.
+        let persist_effect_applied =
+            |force_direct: bool, effect_applied: &HashSet<BlockHash>| -> Result<(), KvStoreError> {
+                if !force_direct && effect_applied.is_empty() {
+                    return Ok(());
+                }
+
+                let indirectly_finalized: HashSet<BlockHash> = effect_applied
+                    .iter()
+                    .filter(|hash| *hash != &directly_finalized_hash)
+                    .cloned()
+                    .collect();
+
+                let _lock_guard = self.global_lock.lock().unwrap();
+                let mut block_metadata_index_guard = self.block_metadata_index.write().unwrap();
+                block_metadata_index_guard
+                    .record_finalized(directly_finalized_hash.clone(), indirectly_finalized)
+            };
+
+        let mut effect_applied: HashSet<BlockHash> = HashSet::new();
+        for _attempt in 0..MAX_FINALIZATION_RECONCILE_LOOPS {
+            let pending_effect: HashSet<BlockHash> = {
+                let _lock_guard = self.global_lock.lock().unwrap();
+
+                let dag = self.get_representation_internal();
+                if !dag.contains(&directly_finalized_hash) {
+                    return Err(KvStoreError::InvalidArgument(format!(
+                        "Attempting to finalize nonexistent hash {}",
+                        PrettyPrinter::build_string_bytes(&directly_finalized_hash)
+                    )));
+                }
+
+                let indirectly_finalized = dag
+                    .ancestors(directly_finalized_hash.clone(), |hash| {
+                        !dag.is_finalized(hash)
+                    })?;
+
+                let mut all_finalized = indirectly_finalized.clone();
+                all_finalized.insert(directly_finalized_hash.clone());
+
+                let pending: HashSet<BlockHash> =
+                    all_finalized.difference(&effect_applied).cloned().collect();
+
+                pending
+            };
+
+            if pending_effect.is_empty() {
+                return persist_effect_applied(true, &effect_applied);
             }
 
-            let indirectly_finalized = dag.ancestors(directly_finalized_hash.clone(), |hash| {
-                !dag.is_finalized(hash)
-            })?;
-
-            let mut all_finalized = indirectly_finalized.clone();
-            all_finalized.insert(directly_finalized_hash.clone());
-
-            (indirectly_finalized, all_finalized)
-            // Lock is dropped here before .await
-        };
-
-        // Execute async effect without holding lock
-        finalization_effect(&all_finalized).await?;
-
-        // Re-acquire lock to persist changes
-        {
-            let _lock_guard = self.global_lock.lock().unwrap();
-            let mut block_metadata_index_guard = self.block_metadata_index.write().unwrap();
-            block_metadata_index_guard
-                .record_finalized(directly_finalized_hash, indirectly_finalized)?;
+            // Execute async effect without holding lock.
+            if let Err(err) = finalization_effect(&pending_effect).await {
+                persist_effect_applied(false, &effect_applied)?;
+                return Err(err);
+            }
+            effect_applied.extend(pending_effect);
         }
 
-        Ok(())
+        persist_effect_applied(false, &effect_applied)?;
+        Err(KvStoreError::IoError(format!(
+            "record_directly_finalized exceeded {} reconcile loops for {}",
+            MAX_FINALIZATION_RECONCILE_LOOPS,
+            PrettyPrinter::build_string_bytes(&directly_finalized_hash)
+        )))
     }
 }

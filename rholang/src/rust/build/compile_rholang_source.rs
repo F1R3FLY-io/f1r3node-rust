@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/build/CompileRholangSource.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/build/CompileRholangSource.scala
 
 use std::collections::HashMap;
 use std::fs;
@@ -9,8 +8,7 @@ use models::rhoapi::Par;
 use crate::rust::interpreter::compiler::compiler::Compiler;
 use crate::rust::interpreter::errors::InterpreterError;
 
-/** TODO: Currently all calls to this class use empty environment. See
- * [[NormalizerEnv]]. - OLD */
+/** TODO: Currently all calls to this class use empty environment. See [[NormalizerEnv]]. - OLD */
 pub struct CompiledRholangSource {
     pub code: String,
     pub normalizer_env: HashMap<String, Par>,
@@ -39,7 +37,7 @@ impl CompiledRholangSource {
         // Try multiple possible resource locations
         let possible_paths = [
             format!("casper/src/main/resources/{}", filepath),
-            format!("casper/src/test/resources/{}", filepath), /* TODO should we moved it from Scala to Rust [tests] folder? */
+            format!("casper/src/test/resources/{}", filepath), //TODO should we moved it from Scala to Rust [tests] folder?
             format!("src/main/resources/{}", filepath),
             format!("src/test/resources/{}", filepath),
             format!("../casper/src/main/resources/{}", filepath),
@@ -83,8 +81,8 @@ impl CompiledRholangSource {
 }
 
 /**
- * Loads code from a resource file while doing macro substitution with the
- * provided values. The macros have the format $$macro$$
+ * Loads code from a resource file while doing macro substitution with the provided values.
+ * The macros have the format $$macro$$
  * @param classpath
  * @param env a sequence of pairs macro -> value
  * @return

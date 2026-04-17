@@ -55,8 +55,7 @@ pub struct PeerTable<T: KademliaRPC> {
     /// Concurrency factor: system allows up to alpha outstanding network
     /// requests at a time. Currently unused in basic PeerTable operations,
     /// but would be used in full Kademlia iterative lookup algorithms
-    /// for controlling parallel network requests to avoid overwhelming the
-    /// network.
+    /// for controlling parallel network requests to avoid overwhelming the network.
     alpha: u32,
     kademlia_rpc: Arc<T>,
     width: usize,
@@ -299,8 +298,7 @@ impl<T: KademliaRPC> PeerTable<T> {
                 entries.sort_by(|a, b| {
                     let dist_a = self.distance(key, a.key()).unwrap_or(0);
                     let dist_b = self.distance(key, b.key()).unwrap_or(0);
-                    dist_b.cmp(&dist_a) // Descending order (closer nodes have
-                                        // higher distance)
+                    dist_b.cmp(&dist_a) // Descending order (closer nodes have higher distance)
                 });
 
                 // Take at most k entries

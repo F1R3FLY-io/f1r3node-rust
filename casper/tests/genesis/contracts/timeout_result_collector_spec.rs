@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// TimeoutResultCollectorSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TimeoutResultCollectorSpec.scala
 
 use std::collections::HashMap;
 use std::sync::Arc;

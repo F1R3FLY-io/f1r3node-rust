@@ -154,8 +154,7 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-// Global variable to track propose effects (similar to proposeEffectVar in
-// Scala)
+// Global variable to track propose effects (similar to proposeEffectVar in Scala)
 static PROPOSE_EFFECT_VAR: AtomicI32 = AtomicI32::new(0);
 
 pub struct TrackingProposeEffectHandler {

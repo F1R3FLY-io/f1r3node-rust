@@ -73,8 +73,7 @@ pub fn normalize_p_new<'ast>(
         parser,
     )?;
 
-    // TODO: we should build btree_map with real values, not a copied references
-    // from env: ref &HashMap
+    // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
@@ -92,8 +91,7 @@ pub fn normalize_p_new<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

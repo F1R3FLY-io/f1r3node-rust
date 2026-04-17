@@ -20,6 +20,7 @@ use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
+use prost::Message;
 use shared::rust::{BitSet, Byte};
 
 use super::contract_call::ContractCall;
@@ -37,8 +38,8 @@ use super::rho_type::{
 };
 use super::util::vault_address::VaultAddress;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.
-// scala NOTE: Not implementing Logger
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
+// NOTE: Not implementing Logger
 pub type RhoSysFunction = Box<
     dyn Fn(
             (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -818,7 +819,12 @@ impl SystemProcesses {
         };
 
         let output = vec![RhoString::create_par(response)];
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 
@@ -860,7 +866,12 @@ impl SystemProcesses {
         };
 
         let output = vec![RhoString::create_par(response)];
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 
@@ -891,16 +902,28 @@ impl SystemProcesses {
             let service_guard = self.openai_service.lock().await;
             service_guard.clone()
         };
-        match openai_service
-            .create_audio_speech(&input, "audio.mp3")
+        let audio_path = format!("audio_{}.mp3", uuid::Uuid::new_v4());
+        let audio_bytes = match openai_service
+            .create_audio_speech(&input, &audio_path)
             .await
         {
-            Ok(_) => Ok(vec![]),
-            Err(e) => Err(InterpreterError::NonDeterministicProcessFailure {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(InterpreterError::NonDeterministicProcessFailure {
+                    cause: Box::new(e),
+                    output_not_produced: vec![],
+                });
+            }
+        };
+
+        let output = vec![RhoByteArray::create_par(audio_bytes)];
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
                 cause: Box::new(e),
-                output_not_produced: vec![],
-            }),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
         }
+        Ok(output)
     }
 
     pub async fn ollama_chat(
@@ -955,7 +978,12 @@ impl SystemProcesses {
         };
 
         let output = vec![RhoString::create_par(response)];
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 
@@ -1006,7 +1034,12 @@ impl SystemProcesses {
         };
 
         let output = vec![RhoString::create_par(response)];
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 
@@ -1055,7 +1088,12 @@ impl SystemProcesses {
         };
         let output = vec![Par::default().with_exprs(vec![list_expr])];
 
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 
@@ -1094,8 +1132,7 @@ impl SystemProcesses {
                             client_port as u64
                         };
 
-                        // Use GrpcClientService abstraction for proper NoOp handling on observer
-                        // nodes
+                        // Use GrpcClientService abstraction for proper NoOp handling on observer nodes
                         match self
                             .grpc_client_service
                             .tell(&client_host, port, &notification_payload)
@@ -1181,14 +1218,12 @@ impl SystemProcesses {
     }
 
     /*
-     * The following functions below can be removed once rust-casper calls
-     * create_rho_runtime. Until then, they must remain in the rholang
-     * directory to avoid circular dependencies.
+     * The following functions below can be removed once rust-casper calls create_rho_runtime.
+     * Until then, they must remain in the rholang directory to avoid circular dependencies.
      */
 
     // See casper/src/test/scala/coop/rchain/casper/helper/TestResultCollector.scala
-    // TODO remove this once Rust node will be completed ( this stuff already moved
-    // under Casper, double check related files)
+    // TODO remove this once Rust node will be completed ( this stuff already moved under Casper, double check related files)
     pub async fn handle_message(
         &self,
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1362,8 +1397,7 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.
-    // scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.scala
 
     pub async fn secp256k1_sign(
         &mut self,
@@ -1407,8 +1441,7 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.
-    // scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.scala
 
     pub async fn sys_auth_token_make(
         &mut self,
@@ -1482,8 +1515,7 @@ impl SystemProcesses {
         }
     }
 
-    // See casper/src/test/scala/coop/rchain/casper/helper/
-    // CasperInvalidBlocksContract.scala
+    // See casper/src/test/scala/coop/rchain/casper/helper/CasperInvalidBlocksContract.scala
 
     pub async fn casper_invalid_blocks_set(
         &self,

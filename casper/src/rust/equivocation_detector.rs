@@ -49,8 +49,7 @@ impl EquivocationDetector {
             );
 
             tracing::warn!(
-                "Ignorable equivocation: sender is {}, creator justification is {}, latest \
-                 message of creator is {}",
+                "Ignorable equivocation: sender is {}, creator justification is {}, latest message of creator is {}",
                 sender,
                 creator_justification_hash,
                 latest_message_of_creator
@@ -183,11 +182,9 @@ impl EquivocationDetector {
             ),
             None => {
                 /*
-                 * Since block has dropped equivocatingValidator from the bonds, it has
-                 * acknowledged the equivocation. The combination of
-                 * Validate.transactions and Validate.bondsCache ensure that you can only
-                 * drop validators through transactions to the proof of stake
-                 * contract.
+                 * Since block has dropped equivocatingValidator from the bonds, it has acknowledged the equivocation.
+                 * The combination of Validate.transactions and Validate.bondsCache ensure that you can only drop
+                 * validators through transactions to the proof of stake contract.
                  */
                 Ok(EquivocationDiscoveryStatus::EquivocationDetected)
             }
@@ -218,8 +215,7 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            // TODO: This case is not necessary if assert(stake > 0) in the PoS contract -
-            // OLD
+            // TODO: This case is not necessary if assert(stake > 0) in the PoS contract - OLD
             Ok(EquivocationDiscoveryStatus::EquivocationDetected)
         }
     }
@@ -385,12 +381,11 @@ impl EquivocationDetector {
                         Ok(equivocation_children.clone())
                     }
                 }
-                None => Err(KvStoreError::KeyNotFound(
-                    "justificationBlock is missing justification pointers to \
-                     equivocatingValidator even though justificationBlock isn't a part of \
-                     equivocationDetectedBlockHashes for this equivocation record."
-                        .to_string(),
-                )),
+                None => {
+                    Err(KvStoreError::KeyNotFound(
+                        "justificationBlock is missing justification pointers to equivocatingValidator even though justificationBlock isn't a part of equivocationDetectedBlockHashes for this equivocation record.".to_string()
+                    ))
+                }
             }
         }
     }
@@ -415,11 +410,11 @@ impl EquivocationDetector {
                 updated_children.push(equivocation_child);
                 Ok(updated_children)
             }
-            None => Err(KvStoreError::KeyNotFound(
-                "creator justification ancestor with lower sequence number hasn't been added to \
-                 the blockDAG yet."
-                    .to_string(),
-            )),
+            None => {
+                Err(KvStoreError::KeyNotFound(
+                    "creator justification ancestor with lower sequence number hasn't been added to the blockDAG yet.".to_string()
+                ))
+            }
         }
     }
 

@@ -75,22 +75,19 @@ async fn interpreter_should_restore_rspace_to_its_prior_state_after_evaluation_e
         let final_content = storage_contents(&runtime);
         println!("\nRust - Final storage:\n{}", final_content);
 
-        // IMPORTANT: While the semantic state is identical between the initial
-        // and final state (as verified by comparing checkpoint roots
-        // above), the textual representation produced
-        // by the pretty_printer differs significantly. This is expected
-        // behavior and not a bug. The differences include:
+        // IMPORTANT: While the semantic state is identical between the initial and final state
+        // (as verified by comparing checkpoint roots above), the textual representation produced
+        // by the pretty_printer differs significantly. This is expected behavior and not a bug.
+        // The differences include:
         //
         // 1. Variable ordering in the output
         // 2. Different naming of variables (@{x0}, @{y1}, etc.)
-        // 3. Different representation of Unforgeable IDs (e.g.,
-        //    Unforgeable(0x07))
+        // 3. Different representation of Unforgeable IDs (e.g., Unforgeable(0x07))
         // 4. Different text formatting (whitespace, line breaks)
         //
-        // Therefore, instead of comparing string representations directly, we
-        // verify semantic equivalence through checkpoint root hashes,
-        // which accurately represent the state.
-        // assert_eq!(finalContent, init_storage);
+        // Therefore, instead of comparing string representations directly, we verify semantic
+        // equivalence through checkpoint root hashes, which accurately represent the state.
+        //assert_eq!(finalContent, init_storage);
     })
     .await
 }

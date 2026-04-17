@@ -1,9 +1,8 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/KeyValueBlockStore.
-// scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/KeyValueBlockStore.scala
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use models::casper::{ApprovedBlockProto, BlockMessageProto};
 use models::rust::block_hash::BlockHash;
@@ -21,7 +20,6 @@ pub struct KeyValueBlockStore {
 }
 
 thread_local! {
-    static DEPLOY_SIG_CACHE: RefCell<DeploySigCache> = RefCell::new(DeploySigCache::default());
     static BLOCK_PROTO_DECOMPRESS_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static DEPLOY_SIG_DECOMPRESS_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -29,10 +27,9 @@ thread_local! {
 impl KeyValueBlockStore {
     // Keep a small bounded decompression scratch buffer per thread to prevent
     // long-lived memory retention from repeatedly decoding block payloads.
-    const DECOMPRESS_BUFFER_RETAIN_BYTES_DEFAULT: usize = 64 * 1024;
-    const DECOMPRESS_BUFFER_RETAIN_BYTES_ENV: &str = "F1R3_BLOCK_PROTO_DECODE_BUFFER_BYTES";
-    const DEPLOY_SIG_CACHE_MAX_ENTRIES_DEFAULT: usize = 1024;
-    const DEPLOY_SIG_CACHE_MAX_ENTRIES_ENV: &str = "F1R3_BLOCK_STORE_DEPLOY_SIG_CACHE_MAX_ENTRIES";
+    const DECOMPRESS_BUFFER_RETAIN_BYTES: usize = 65_536;
+    const DEPLOY_SIG_CACHE_MAX_ENTRIES: usize = 1_024;
+    const MIN_DEPLOY_SIG_BYTES: usize = 32;
 
     pub fn new(
         store: Arc<dyn KeyValueStore>,
@@ -77,11 +74,9 @@ impl KeyValueBlockStore {
     }
 
     /**
-     * See block-storage/src/main/scala/coop/rchain/blockstorage/
-     * BlockStoreSyntax.scala
+     * See block-storage/src/main/scala/coop/rchain/blockstorage/BlockStoreSyntax.scala
      *
-     * Get block, "unsafe" because method expects block already in the block
-     * store.
+     * Get block, "unsafe" because method expects block already in the block store.
      */
     pub fn get_unsafe(&self, block_hash: &BlockHash) -> BlockMessage {
         let err_msg = format!(
@@ -91,8 +86,7 @@ impl KeyValueBlockStore {
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
 
-    /// Fast path used by repeat-deploy checks to avoid full BlockMessage
-    /// conversion.
+    /// Fast path used by repeat-deploy checks to avoid full BlockMessage conversion.
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
@@ -122,6 +116,12 @@ impl KeyValueBlockStore {
                 ))
             })?;
             let sig = deploy.sig;
+            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
+                return Err(KvStoreError::SerializationError(Self::error_block(
+                    block_hash.clone(),
+                    format!("Invalid deploy signature length: {}", sig.len()),
+                )));
+            }
             if deploy_sigs.contains(&sig) {
                 has_any = true;
             }
@@ -131,9 +131,8 @@ impl KeyValueBlockStore {
         Ok(has_any)
     }
 
-    /// Fetch deploy signatures for a block without decoding a full
-    /// BlockMessage. Uses the same bounded thread-local cache as
-    /// `has_any_deploy_sig`.
+    /// Fetch deploy signatures for a block without decoding a full BlockMessage.
+    /// Uses the same bounded shared cache as `has_any_deploy_sig`.
     pub fn deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -157,6 +156,12 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
+            if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
+                return Err(KvStoreError::SerializationError(Self::error_block(
+                    block_hash.clone(),
+                    format!("Invalid deploy signature length: {}", deploy.sig.len()),
+                )));
+            }
             block_deploy_sigs.push(deploy.sig);
         }
 
@@ -313,17 +318,16 @@ impl KeyValueBlockStore {
         block_hash: &[u8],
         deploy_sigs: &HashSet<Vec<u8>>,
     ) -> Option<bool> {
-        DEPLOY_SIG_CACHE.with(|cache| {
-            let cache = cache.borrow();
-            cache
-                .entries
-                .get(block_hash)
-                .map(|cached_sigs| cached_sigs.iter().any(|sig| deploy_sigs.contains(sig)))
-        })
+        let cache = Self::deploy_sig_cache().lock().ok()?;
+        cache
+            .entries
+            .get(block_hash)
+            .map(|cached_sigs| cached_sigs.iter().any(|sig| deploy_sigs.contains(sig)))
     }
 
     fn cached_deploy_sigs(block_hash: &[u8]) -> Option<Vec<Vec<u8>>> {
-        DEPLOY_SIG_CACHE.with(|cache| cache.borrow().entries.get(block_hash).cloned())
+        let cache = Self::deploy_sig_cache().lock().ok()?;
+        cache.entries.get(block_hash).cloned()
     }
 
     fn cache_deploy_sigs(block_hash: Vec<u8>, deploy_sigs: Vec<Vec<u8>>) {
@@ -331,8 +335,7 @@ impl KeyValueBlockStore {
         if max_entries == 0 {
             return;
         }
-        DEPLOY_SIG_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
+        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
             if !cache.entries.contains_key(&block_hash) {
                 cache.order.push_back(block_hash.clone());
                 while cache.order.len() > max_entries {
@@ -342,37 +345,24 @@ impl KeyValueBlockStore {
                 }
             }
             cache.entries.insert(block_hash, deploy_sigs);
-        });
+        }
     }
 
-    fn decode_buffer_retain_bytes() -> usize {
-        static VALUE: OnceLock<usize> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var(Self::DECOMPRESS_BUFFER_RETAIN_BYTES_ENV)
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|v| *v > 0)
-                .unwrap_or(Self::DECOMPRESS_BUFFER_RETAIN_BYTES_DEFAULT)
-        })
+    fn deploy_sig_cache() -> &'static Mutex<DeploySigCache> {
+        static CACHE: OnceLock<Mutex<DeploySigCache>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(DeploySigCache::default()))
     }
 
-    fn max_deploy_sig_cache_entries() -> usize {
-        static VALUE: OnceLock<usize> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var(Self::DEPLOY_SIG_CACHE_MAX_ENTRIES_ENV)
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(Self::DEPLOY_SIG_CACHE_MAX_ENTRIES_DEFAULT)
-        })
-    }
+    fn decode_buffer_retain_bytes() -> usize { Self::DECOMPRESS_BUFFER_RETAIN_BYTES }
+
+    fn max_deploy_sig_cache_entries() -> usize { Self::DEPLOY_SIG_CACHE_MAX_ENTRIES }
 
     #[cfg(test)]
     fn block_proto_decode_buffer_capacity_for_test() -> usize {
         BLOCK_PROTO_DECOMPRESS_BUFFER.with(|buffer| buffer.borrow().capacity())
     }
 
-    /// Compress bytes with varint length prefix (compatible with Java
-    /// LZ4CompressorWithLength)
+    /// Compress bytes with varint length prefix (compatible with Java LZ4CompressorWithLength)
     fn compress_bytes(bytes: &[u8]) -> Vec<u8> {
         use prost::encoding::encode_varint;
 
@@ -416,8 +406,7 @@ struct BlockDeploySigsDeploy {
     sig: Vec<u8>,
 }
 
-// See block-storage/src/test/scala/coop/rchain/blockstorage/
-// KeyValueBlockStoreSpec.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala
 
 #[cfg(test)]
 mod tests {
@@ -484,6 +473,16 @@ mod tests {
             todo!()
         }
 
+        fn iterate_while(
+            &self,
+            _f: &mut dyn FnMut(
+                shared::rust::ByteBuffer,
+                shared::rust::ByteBuffer,
+            ) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            todo!()
+        }
+
         fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
         fn to_map(
@@ -516,6 +515,13 @@ mod tests {
         fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }
 
         fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { todo!() }
+
+        fn iterate_while(
+            &self,
+            _f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            todo!()
+        }
 
         fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
@@ -719,8 +725,7 @@ mod tests {
         let baseline_cap = KeyValueBlockStore::block_proto_decode_buffer_capacity_for_test();
 
         println!(
-            "decode baseline: cap={}B ({:.2} MiB), retain_limit={}B ({:.2} MiB), rss={}KB ({:.2} \
-             MiB)",
+            "decode baseline: cap={}B ({:.2} MiB), retain_limit={}B ({:.2} MiB), rss={}KB ({:.2} MiB)",
             baseline_cap,
             bytes_to_mib(baseline_cap),
             retain_limit,
@@ -752,9 +757,7 @@ mod tests {
                     };
 
                 println!(
-                    "decode iter #{:>2}: cap={}B ({:.2} MiB) delta_base={:+}B delta_limit={:+}B \
-                     rss={}KB ({:.2} MiB) rss_delta_iter={:+}KB ({:+.2} MiB) \
-                     rss_delta_total={:+}KB ({:+.2} MiB)",
+                    "decode iter #{:>2}: cap={}B ({:.2} MiB) delta_base={:+}B delta_limit={:+}B rss={}KB ({:.2} MiB) rss_delta_iter={:+}KB ({:+.2} MiB) rss_delta_total={:+}KB ({:+.2} MiB)",
                     i + 1,
                     cap,
                     bytes_to_mib(cap),

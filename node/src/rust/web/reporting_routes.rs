@@ -51,8 +51,7 @@ async fn trace_handler(
     State(app_state): State<AppState>,
     Query(params): Query<TraceQuery>,
 ) -> Response {
-    // Validate block hash parameter - equivalent to Scala's BlockHashParam
-    // validation
+    // Validate block hash parameter - equivalent to Scala's BlockHashParam validation
     if params.block_hash.is_empty() {
         let error_response = ReportResponse::BlockReportError {
             error_message: "block_hash parameter is required".to_string(),

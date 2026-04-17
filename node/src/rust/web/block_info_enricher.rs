@@ -5,8 +5,7 @@ use models::casper::{BlockInfo, TransferInfo};
 
 use super::transaction::{TransactionResponse, TransactionType};
 
-/// Maps transaction response data into per-deploy transfer info, keyed by
-/// deploy signature.
+/// Maps transaction response data into per-deploy transfer info, keyed by deploy signature.
 pub fn map_transactions_to_transfers(
     response: &TransactionResponse,
 ) -> HashMap<String, Vec<TransferInfo>> {
@@ -35,8 +34,8 @@ pub fn map_transactions_to_transfers(
     transfers_by_deploy
 }
 
-/// Enriches a `BlockInfo` by populating the `transfers` field on each
-/// `DeployInfo` using data from the transaction response.
+/// Enriches a `BlockInfo` by populating the `transfers` field on each `DeployInfo`
+/// using data from the transaction response.
 pub fn enrich_block_info(mut block_info: BlockInfo, response: &TransactionResponse) -> BlockInfo {
     let transfers_by_deploy = map_transactions_to_transfers(response);
 

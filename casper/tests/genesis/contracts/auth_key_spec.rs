@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/AuthKeySpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/AuthKeySpec.scala
 
 use std::collections::HashMap;
 

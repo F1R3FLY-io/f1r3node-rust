@@ -1,6 +1,5 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
-// BlockDagStorageTest.scala See block-storage/src/test/scala/coop/rchain/
-// blockstorage/dag/BlockDagKeyValueStorageTest.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagStorageTest.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Once;

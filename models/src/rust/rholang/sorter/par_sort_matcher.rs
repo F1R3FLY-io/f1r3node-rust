@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
 
 use super::score_tree::ScoredTerm;
 use super::send_sort_matcher::SendSortMatcher;

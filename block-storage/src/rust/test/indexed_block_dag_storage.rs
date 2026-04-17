@@ -1,5 +1,4 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
-// IndexedBlockDagStorage.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/IndexedBlockDagStorage.scala
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

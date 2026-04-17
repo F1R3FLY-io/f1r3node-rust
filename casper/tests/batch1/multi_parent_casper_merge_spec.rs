@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperMergeSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
 use casper::rust::util::{construct_deploy, rspace_util};
@@ -89,9 +88,8 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .genesis_block
         .block_hash
         .clone()]);
-    // With multi-parent merging, all validators' latest blocks are included as
-    // parents (block0 from node0, block1 from node1, genesis from node2 who
-    // hasn't created a block yet)
+    // With multi-parent merging, all validators' latest blocks are included as parents
+    // (block0 from node0, block1 from node1, genesis from node2 who hasn't created a block yet)
     assert_eq!(multiparent_block.header.parents_hash_list.len(), 3);
     assert!(nodes[0].contains(&multiparent_block.block_hash));
     assert!(nodes[1].contains(&multiparent_block.block_hash));
@@ -335,12 +333,11 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
     assert!(nodes[1].knows_about(&single_parent_block.block_hash));
 }
 
-/// This test verifies the determinism fix for LCA computation and merge
-/// ordering. Before the fix, validators could compute different post-states for
-/// the same merge block due to non-deterministic ancestor traversal
-/// (isFinalized boundary) and ordering (hashCode, Set.head). This test creates
-/// a multi-round scenario where each round forces a multi-parent merge and
-/// verifies all nodes agree.
+/// This test verifies the determinism fix for LCA computation and merge ordering.
+/// Before the fix, validators could compute different post-states for the same
+/// merge block due to non-deterministic ancestor traversal (isFinalized boundary)
+/// and ordering (hashCode, Set.head). This test creates a multi-round scenario
+/// where each round forces a multi-parent merge and verifies all nodes agree.
 #[tokio::test]
 async fn hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks() {
     let genesis = GenesisBuilder::new()
@@ -446,13 +443,12 @@ async fn hash_set_casper_should_compute_identical_post_states_across_validators_
 }
 
 /// Regression test for the InvalidBondsCache bug.
-/// Scenario: Two validators have the same DAG structure but different
-/// finalization states. With the old code (isFinalized-bounded ancestor
-/// traversal), they would compute different ancestor sets, different LCAs, and
-/// different post-state hashes for the same block -- causing the receiving
-/// validator to reject the block with InvalidBondsCache. With the Phase 1 fix
-/// (allAncestors), finalization state is irrelevant to the merge computation,
-/// so both validators accept the block.
+/// Scenario: Two validators have the same DAG structure but different finalization
+/// states. With the old code (isFinalized-bounded ancestor traversal), they would
+/// compute different ancestor sets, different LCAs, and different post-state hashes
+/// for the same block -- causing the receiving validator to reject the block with
+/// InvalidBondsCache. With the Phase 1 fix (allAncestors), finalization state is
+/// irrelevant to the merge computation, so both validators accept the block.
 #[tokio::test]
 async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_finalization_state_divergence(
 ) {

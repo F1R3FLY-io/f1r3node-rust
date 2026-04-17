@@ -1,5 +1,4 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/
-// KeyValueDeployStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
 use std::collections::HashSet;
 
@@ -38,6 +37,26 @@ impl KeyValueDeployStorage {
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())
+    }
+
+    pub fn remove_by_sig(&mut self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        let key: ByteString = sig.to_vec();
+        let exists = self
+            .store
+            .contains(vec![key.clone()])?
+            .into_iter()
+            .next()
+            .unwrap_or(false);
+        if !exists {
+            return Ok(false);
+        }
+        self.store.delete(vec![key])?;
+        Ok(true)
+    }
+
+    pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
+    where F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError> {
+        self.store.any_value(predicate)
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {

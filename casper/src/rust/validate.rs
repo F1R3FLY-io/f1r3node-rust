@@ -7,6 +7,10 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+#[cfg(feature = "schnorr_secp256k1_experimental")]
+use crypto::rust::signatures::{
+    frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
+};
 use models::casper::Signature as ProtoSignature;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -48,6 +52,22 @@ impl Validate {
             Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
                 let secp256k1 = Secp256k1;
                 secp256k1.verify(data, signature, pub_key)
+            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
+        );
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        map.insert(
+            SchnorrSecp256k1::name(),
+            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+                let schnorr = SchnorrSecp256k1;
+                schnorr.verify(data, signature, pub_key)
+            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
+        );
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        map.insert(
+            FrostSecp256k1::name(),
+            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+                let frost = FrostSecp256k1;
+                frost.verify(data, signature, pub_key)
             }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
         );
         map
@@ -297,8 +317,7 @@ impl Validate {
             Either::Right(_) => {}
         }
 
-        // Equivalent to Scala's "} yield s).value" - return ValidBlock if all
-        // validations passed
+        // Equivalent to Scala's "} yield s).value" - return ValidBlock if all validations passed
         Either::Right(ValidBlock::Valid)
     }
 
@@ -350,34 +369,33 @@ impl Validate {
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-            let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
-            let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
-            let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
+      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
+      let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
+      let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
 
-            let duplicated_deploys = proto_util::deploys(&duplicated_block);
-            let duplicated_deploy = duplicated_deploys
-                .iter()
-                .map(|processed_deploy| &processed_deploy.deploy)
-                .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-                .expect("Duplicated deploy should exist");
+      let duplicated_deploys = proto_util::deploys(&duplicated_block);
+      let duplicated_deploy = duplicated_deploys
+        .iter()
+        .map(|processed_deploy| &processed_deploy.deploy)
+        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
+        .expect("Duplicated deploy should exist");
 
-            let term = &duplicated_deploy.data.term;
-            let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-            let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
+      let term = &duplicated_deploy.data.term;
+      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
+      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
 
-            let message = format!(
-                "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the \
-                 block {} as current block {}",
-                term,
-                &deployer_string,
-                timestamp_string,
-                block_hash_string,
-                current_block_hash_string
-            );
+      let message = format!(
+        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
+        term,
+        &deployer_string,
+        timestamp_string,
+        block_hash_string,
+        current_block_hash_string
+      );
 
-            tracing::warn!("{}", Self::ignore(block, &message));
-            BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-        });
+      tracing::warn!("{}", Self::ignore(block, &message));
+      BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
+    });
 
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
@@ -411,8 +429,7 @@ impl Validate {
                 Self::ignore(
                     b,
                     &format!(
-                        "block timestamp {} is not between latest parent block time and current \
-                         time.",
+                        "block timestamp {} is not between latest parent block time and current time.",
                         timestamp
                     )
                 )
@@ -522,10 +539,9 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
-    /// Validates that the block does not contain deploys that have expired
-    /// based on their expirationTimestamp field. A deploy is time-expired
-    /// if its expirationTimestamp is set (> 0) and the block's timestamp
-    /// exceeds the expirationTimestamp.
+    /// Validates that the block does not contain deploys that have expired based on their
+    /// expirationTimestamp field. A deploy is time-expired if its expirationTimestamp is
+    /// set (> 0) and the block's timestamp exceeds the expirationTimestamp.
     pub fn time_based_expiration(b: &BlockMessage) -> ValidBlockProcessing {
         let block_timestamp = b.header.timestamp;
         let processed_deploys = proto_util::deploys(b);
@@ -540,8 +556,7 @@ impl Validate {
 
         let maybe_error = maybe_time_expired_deploy.map(|expired_deploy| {
             let message = format!(
-                "block contains a time-expired deploy with expirationTimestamp={:?} but block \
-                 timestamp is {}: {}",
+                "block contains a time-expired deploy with expirationTimestamp={:?} but block timestamp is {}: {}",
                 expired_deploy.data.expiration_timestamp.unwrap_or(0),
                 block_timestamp,
                 expired_deploy.data.term
@@ -554,11 +569,10 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
-    /// Works with either efficient justifications or full explicit
-    /// justifications. Specifically, with efficient justifications, if a
-    /// block B doesn't update its creator justification, this check will
-    /// fail as expected. The exception is when B's creator justification is
-    /// the genesis block.
+    /// Works with either efficient justifications or full explicit justifications.
+    /// Specifically, with efficient justifications, if a block B doesn't update its
+    /// creator justification, this check will fail as expected. The exception is when
+    /// B's creator justification is the genesis block.
     pub fn sequence_number(b: &BlockMessage, s: &mut CasperSnapshot) -> ValidBlockProcessing {
         let creator_justification_seq_number =
             match proto_util::creator_justification_block_message(b) {
@@ -634,8 +648,7 @@ impl Validate {
         }
     }
 
-    // TODO: Scala message -> Double check this validation isn't shadowed by the
-    // blockSignature validation
+    // TODO: Scala message -> Double check this validation isn't shadowed by the blockSignature validation
     pub fn block_hash(b: &BlockMessage) -> ValidBlockProcessing {
         let block_hash_computed = proto_util::hash_block(b);
         if b.block_hash == block_hash_computed {
@@ -659,17 +672,14 @@ impl Validate {
 
     /// Validates that a validator has made progress since their previous block.
     ///
-    /// Rule: If validator V produced block B_prev, then V's next block B_new
-    /// must have at least one parent that was not known to V when creating
-    /// B_prev.
+    /// Rule: If validator V produced block B_prev, then V's next block B_new must have
+    /// at least one parent that was not known to V when creating B_prev.
     ///
-    /// Exception: Blocks containing user deploys are ALWAYS valid regardless of
-    /// parent status. Users pay for their deploys, so validators must
-    /// provide service immediately.
+    /// Exception: Blocks containing user deploys are ALWAYS valid regardless of parent status.
+    /// Users pay for their deploys, so validators must provide service immediately.
     ///
-    /// This ensures validators only propose empty blocks when they have
-    /// received new information, preventing spam while allowing immediate
-    /// service for paying users.
+    /// This ensures validators only propose empty blocks when they have received new information,
+    /// preventing spam while allowing immediate service for paying users.
     pub fn parents(
         b: &BlockMessage,
         genesis: &BlockMessage,
@@ -699,9 +709,8 @@ impl Validate {
         };
 
         // Check maxNumberOfParents constraint
-        // Note: We use -1 as "unlimited" here (matching config file convention) rather
-        // than Estimator::UNLIMITED_PARENTS (i32::MAX) since this value comes
-        // from config parsing.
+        // Note: We use -1 as "unlimited" here (matching config file convention) rather than
+        // Estimator::UNLIMITED_PARENTS (i32::MAX) since this value comes from config parsing.
         const UNLIMITED_PARENTS: i32 = -1;
         if max_number_of_parents != UNLIMITED_PARENTS
             && parent_hashes.len() > max_number_of_parents as usize
@@ -743,13 +752,11 @@ impl Validate {
                 };
 
                 // Special case: if previous block is genesis (no parents), allow proposal
-                // This breaks the deadlock after genesis ceremony when all validators are at
-                // genesis
+                // This breaks the deadlock after genesis ceremony when all validators are at genesis
                 let is_genesis = prev_block_meta.parents.is_empty();
 
                 // BFS traverse to get ancestor closure of previous block
-                // Stop traversal at finalized blocks to prevent unbounded traversal on long
-                // chains
+                // Stop traversal at finalized blocks to prevent unbounded traversal on long chains
                 let ancestor_hashes: Vec<BlockHash> =
                     dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
                         match s.dag.lookup(hash) {
@@ -762,8 +769,7 @@ impl Validate {
                 // Check if at least one parent is new (not in ancestor closure)
                 let has_new_parent = parent_hashes.iter().any(|p| !ancestor_set.contains(p));
                 // Heartbeat-empty block: no user deploys and only CloseBlock system deploy.
-                // Allow these to keep liveness when cluster is stale and parent frontier does
-                // not move.
+                // Allow these to keep liveness when cluster is stale and parent frontier does not move.
                 let is_heartbeat_empty_block = !has_user_deploys
                     && b.body.system_deploys.len() == 1
                     && matches!(
@@ -796,9 +802,9 @@ impl Validate {
                         .join(",");
                     let prev_block_string = PrettyPrinter::build_string_bytes(&prev_block_hash);
                     let message = format!(
-                        "validator {} has not made progress. Empty block parents [{}] are all \
-                         ancestors of previous block {}. Validator must receive new blocks before \
-                         proposing empty blocks.",
+                        "validator {} has not made progress. \
+                         Empty block parents [{}] are all ancestors of previous block {}. \
+                         Validator must receive new blocks before proposing empty blocks.",
                         PrettyPrinter::build_string_bytes(validator),
                         parents_string,
                         prev_block_string
@@ -856,15 +862,14 @@ impl Validate {
     }
 
     /// Justification regression check.
-    /// Compares justifications that has been already used by sender and
-    /// recorded in the DAG with justifications used by the same sender in
-    /// new block `b` and assures that there is no regression.
+    /// Compares justifications that has been already used by sender and recorded in the DAG with
+    /// justifications used by the same sender in new block `b` and assures that there is no
+    /// regression.
     ///
-    /// When we switch between equivocation forks for a slashed validator, we
-    /// will potentially get a justification regression that is valid. We
-    /// cannot ignore this as the creator only drops the justification block
-    /// created by the equivocator on the following block. Hence, we ignore
-    /// justification regressions involving the block's sender and
+    /// When we switch between equivocation forks for a slashed validator, we will potentially get a
+    /// justification regression that is valid. We cannot ignore this as the creator only drops the
+    /// justification block created by the equivocator on the following block.
+    /// Hence, we ignore justification regressions involving the block's sender and
     /// let checkEquivocations handle it instead.
     // TODO double check this logic
     pub fn justification_regressions(
@@ -918,8 +923,7 @@ impl Validate {
                             let no_sender_in_cur_lms = !cur_lms.contains_key(sender);
 
                             if no_sender_in_cur_lms {
-                                // If there is no justification to compare with - regression is not
-                                // possible
+                                // If there is no justification to compare with - regression is not possible
                                 remaining_lms = tail.to_vec();
                                 continue;
                             }
@@ -933,7 +937,7 @@ impl Validate {
                                     Err(e) => {
                                         return Either::Left(BlockError::BlockException(
                                             CasperError::from(e),
-                                        ));
+                                        ))
                                     }
                                 };
                             let cur_justification =
@@ -942,7 +946,7 @@ impl Validate {
                                     Err(e) => {
                                         return Either::Left(BlockError::BlockException(
                                             CasperError::from(e),
-                                        ));
+                                        ))
                                     }
                                 };
 
@@ -962,8 +966,7 @@ impl Validate {
                                 regression
                             };
 
-                            // Exit when regression detected, or continue to check remaining Latest
-                            // Messages
+                            // Exit when regression detected, or continue to check remaining Latest Messages
                             if regression_detected {
                                 return Either::Left(BlockError::Invalid(
                                     InvalidBlock::JustificationRegression,
@@ -981,9 +984,8 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B
-    /// is still bonded, return a RejectableBlock. Otherwise, return an
-    /// IncludeableBlock.
+    /// If block contains an invalid justification block B and the creator of B is still bonded,
+    /// return a RejectableBlock. Otherwise, return an IncludeableBlock.
     pub fn neglected_invalid_block(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1011,8 +1013,8 @@ impl Validate {
             }
         });
 
-        // Recovery path: if this block carries slash system deploys, allow it through
-        // so validators can converge by slashing the offending branch.
+        // Recovery path: if this block carries slash system deploys, allow it through so
+        // validators can converge by slashing the offending branch.
         let has_slash_system_deploys = block.body.system_deploys.iter().any(|system_deploy| {
             matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
                 system_deploy: SystemDeployData::Slash { .. },

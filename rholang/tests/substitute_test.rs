@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.
-// scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.scala
 
 use std::collections::BTreeMap;
 

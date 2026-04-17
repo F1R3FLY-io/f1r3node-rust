@@ -1,8 +1,6 @@
-//! JSON serialization/deserialization for SystemDeployInfoWithEventData and
-//! related types
+//! JSON serialization/deserialization for SystemDeployInfoWithEventData and related types
 //!
-//! This module provides custom JSON serialization for protobuf types that don't
-//! have serde derives by default.
+//! This module provides custom JSON serialization for protobuf types that don't have serde derives by default.
 
 use models::casper::{
     BondInfo, CloseBlockSystemDeployDataProto, JustificationInfo, PeekProto, RejectedDeployInfo,

@@ -132,8 +132,7 @@ impl RustConsoleIO {
 impl ConsoleIO for RustConsoleIO {
     fn read_line(&mut self) -> Result<String> {
         // Only print prompt in interactive mode (when stdin is a terminal)
-        // This matches Scala behavior where prompt is only set when
-        // TerminalMode.readMode is true
+        // This matches Scala behavior where prompt is only set when TerminalMode.readMode is true
         let p = if std::io::stdin().is_terminal() {
             self.prompt.green().to_string()
         } else {
@@ -167,8 +166,7 @@ impl ConsoleIO for RustConsoleIO {
 
     fn update_completion(&mut self, history: &HashSet<String>) -> Result<()> {
         // Replace completer contents like:
-        //   console.getCompleters.foreach(remove);
-        // addCompleter(StringsCompleter(history))
+        //   console.getCompleters.foreach(remove); addCompleter(StringsCompleter(history))
         let mut words: Vec<String> = history.iter().cloned().collect();
         words.sort();
         self.helper_mut().set_keywords(words);
@@ -209,8 +207,7 @@ pub fn get_validator_password(console: &mut impl ConsoleIO) -> eyre::Result<Stri
 
 pub fn request_for_password(console: &mut impl ConsoleIO) -> eyre::Result<String> {
     let prompt = format!(
-        "Environment variable {F1R3NODE_VALIDATOR_PASSWORD_ENV_VAR} is not set, please enter \
-         password for keyfile.\n
+        "Environment variable {F1R3NODE_VALIDATOR_PASSWORD_ENV_VAR} is not set, please enter password for keyfile.\n
         Password for keyfile: "
     );
     console.read_password(&prompt)

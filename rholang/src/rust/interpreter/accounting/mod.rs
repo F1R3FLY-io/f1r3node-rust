@@ -11,8 +11,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod has_cost;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/
-// package.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
 pub type _cost = CostManager;
 
@@ -25,16 +24,7 @@ pub struct CostManager {
 }
 
 impl CostManager {
-    fn resolve_max_log_entries() -> usize {
-        if cfg!(test) {
-            return usize::MAX;
-        }
-
-        std::env::var("F1R3_COST_LOG_MAX_ENTRIES")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0)
-    }
+    fn resolve_max_log_entries() -> usize { 1024 }
 
     pub fn new(initial_value: Cost, semaphore_count: usize) -> Self {
         let max_log_entries = Self::resolve_max_log_entries();

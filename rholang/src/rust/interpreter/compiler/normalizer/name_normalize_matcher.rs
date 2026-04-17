@@ -202,8 +202,7 @@ pub fn normalize_names<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// NameMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/NameMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

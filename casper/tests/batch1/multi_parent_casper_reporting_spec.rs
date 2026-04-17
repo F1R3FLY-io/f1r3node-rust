@@ -1,15 +1,12 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperReportingSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperReportingSpec.scala
 
 /*
  * THIS TEST CANNOT BE PORTED YET
  *
  * ReportingCasper trait and implementation are not ported to Rust.
- * Required Rust components missing: ReportingCasper trait, rho_reporter
- * function, ReportingRuntime, and trace method. ReportingRspace::get_report
- * exists in Rust (rspace++/src/rspace/reporting_rspace.rs:187) but is not
- * integrated with Casper. This test is marked as ignored until
- * ReportingCasper infrastructure is ported from Scala to Rust.
+ * Required Rust components missing: ReportingCasper trait, rho_reporter function, ReportingRuntime, and trace method.
+ * ReportingRspace::get_report exists in Rust (rspace++/src/rspace/reporting_rspace.rs:187) but is not integrated with Casper.
+ * This test is marked as ignored until ReportingCasper infrastructure is ported from Scala to Rust.
  */
 
 use casper::rust::util::construct_deploy;
@@ -42,14 +39,11 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
     // TODO: Once ReportingCasper is implemented for RSpace++:
     // 1. Create ReportingCasper::rho_reporter(node.data_dir)
     // 2. Call reporting_casper.trace(signed_block)
-    // 3. Verify trace.deploy_report_result[0].processed_deploy.deploy_log
-    //    contains CommEvents
+    // 3. Verify trace.deploy_report_result[0].processed_deploy.deploy_log contains CommEvents
     // 4. Count CommEvents in signed_block.body.deploys[0].deploy_log
     // 5. Assert reporting_comm_events_num == deploy_comm_events_num
-    // 6. Assert trace.post_state_hash ==
-    //    signed_block.body.state.post_state_hash
+    // 6. Assert trace.post_state_hash == signed_block.body.state.post_state_hash
 
-    // For now, just verify the block was created successfully (basic smoke
-    // test) Once reporting is implemented, uncomment and complete the
-    // assertions above
+    // For now, just verify the block was created successfully (basic smoke test)
+    // Once reporting is implemented, uncomment and complete the assertions above
 }

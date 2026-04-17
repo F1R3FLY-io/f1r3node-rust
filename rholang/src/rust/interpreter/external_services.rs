@@ -1,5 +1,5 @@
-// See rholang/src/main/scala/coop/rchain/rholang/externalservices/
-// ExternalServices.scala Ported from Scala PR #140
+// See rholang/src/main/scala/coop/rchain/rholang/externalservices/ExternalServices.scala
+// Ported from Scala PR #140
 //
 // Uses enum-based dispatch instead of trait objects for async compatibility.
 
@@ -78,11 +78,10 @@ impl ExternalServices {
         }
     }
 
-    /// Create external services for a validator node with connection
-    /// validation. This is the preferred method for production node
-    /// startup. Returns an error if Ollama is enabled with
-    /// validate_connection=true but unreachable. Matches Scala's behavior
-    /// where the node fails to start if Ollama validation fails.
+    /// Create external services for a validator node with connection validation.
+    /// This is the preferred method for production node startup.
+    /// Returns an error if Ollama is enabled with validate_connection=true but unreachable.
+    /// Matches Scala's behavior where the node fails to start if Ollama validation fails.
     pub async fn for_validator_validated(
         openai_config: &OpenAIConfig,
         ollama_config: &OllamaConfig,
@@ -97,10 +96,9 @@ impl ExternalServices {
         })
     }
 
-    /// Factory function to create external services based on node type with
-    /// validation. This is the preferred method for production node
-    /// startup. Returns an error if validation fails for any enabled
-    /// service.
+    /// Factory function to create external services based on node type with validation.
+    /// This is the preferred method for production node startup.
+    /// Returns an error if validation fails for any enabled service.
     pub async fn for_node_type_validated(
         is_validator: bool,
         openai_config: &OpenAIConfig,

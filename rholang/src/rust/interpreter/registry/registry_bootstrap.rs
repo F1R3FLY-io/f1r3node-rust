@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/registry/
-// RegistryBootstrap.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/registry/RegistryBootstrap.scala
 
 use std::collections::BTreeMap;
 

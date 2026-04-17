@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.0"
-last_updated: 2026-04-15
+last_updated: 2026-04-17
 mr_status:
   ready: false
   target_branch: master
@@ -225,17 +225,28 @@ tasks:
 ---
 epoch_id: EPOCH-004
 title: "Code Sync to f1r3node-rust"
-status: pending
+status: in_progress
 priority: p0
 user_story: US-002
 blocked_by: [EPOCH-003]
 created_at: 2026-04-09
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-epoch004
+claimed_at: 2026-04-17T19:19:55Z
+source_branch: rust/staging
+source_head: 6ee5c390a189227b4632186e065b1a964fab5b9e
 tasks:
   - id: TASK-004-1
-    title: "Sync Rust workspace crates from f1r3node rust/dev"
-    status: pending
+    title: "Sync Rust workspace crates from f1r3node rust/staging"
+    status: review
+    claimed_by: claude-session-epoch004
+    claimed_at: 2026-04-17T19:19:55Z
+    completed_at: 2026-04-17T19:45:00Z
+    notes:
+      - "Synced all 11 crates + root workspace files from f1r3node rust/staging @ 6ee5c390"
+      - "cargo build --workspace passes (1m 00s)"
+      - "cargo test -p crypto --lib passes (29/29) — full test suite not yet run"
+      - "Full sync report: docs/work-logs/task-004-1-2026-04-17T19-19-55Z.md"
+      - "Not committed yet; user to invoke /quick-commit after review"
     acceptance:
       - "All 11 workspace crates updated from f1r3node rust/dev HEAD"
       - "Cargo.toml workspace dependencies match source"
@@ -309,30 +320,41 @@ tasks:
 ---
 epoch_id: EPOCH-005
 title: "Issue Migration"
-status: pending
+status: complete
 priority: p1
 user_story: US-002
 blocked_by: [EPOCH-004]
 created_at: 2026-04-09
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-migrate
+claimed_at: 2026-04-17T19:35:00Z
+completed_at: 2026-04-17T19:35:00Z
 tasks:
   - id: TASK-005-1
     title: "Migrate 22 Rust-relevant issues to f1r3node-rust"
-    status: pending
+    status: complete
+    claimed_by: claude-session-migrate
+    completed_at: 2026-04-17T19:35:00Z
     acceptance:
-      - "16 Rust-specific issues created on f1r3node-rust with original context"
-      - "6 triage/design issues created on f1r3node-rust with original context"
-      - "Each new issue references the original f1r3node issue number"
-      - "Original issues on f1r3node get a redirect comment"
+      - "22 Rust-relevant issues created on f1r3node-rust as #5-#26 with original context"
+      - "Each new issue has migration header with source #, author, filed date, and link"
+      - "Original labels (bug/enhancement/question) preserved where applicable"
+      - "Original issues on f1r3node received redirect comments pointing to new issue numbers"
+    notes:
+      - "Spec called for 22 total (16 Rust-specific + 6 triage/design); actual open count was 22"
+      - "#437 excluded from migration — already fixed on rust/staging by commit 89ac4a7a, closed with reference"
+      - "Mapping table: /tmp/issue-migration/issue-map.tsv"
 
   - id: TASK-005-2
     title: "Close 5 Scala-only issues on f1r3node"
-    status: pending
+    status: complete
+    claimed_by: claude-session-migrate
+    completed_at: 2026-04-17T19:35:00Z
     acceptance:
-      - "Issues #452, #366, #321, #221, #184 closed with deprecation comment"
-      - "Comment directs to f1r3node-rust if the work is still relevant"
+      - "Issues #452, #366, #321, #221 closed with deprecation comment (reason: not planned)"
+      - "Comment directs reporter to f1r3node-rust if bug still reproduces there"
       - "phase_3_issues.status set to 'complete' in /tmp/migrationPlan.md"
+    notes:
+      - "#184 from the original spec was already closed pre-migration (unrelated genesis refactor), so effective count is 4 Scala + 1 already-fixed (#437) = 5 closures"
 ---
 ```
 

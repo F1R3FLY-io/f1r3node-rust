@@ -1,7 +1,7 @@
 //! Configuration model definitions
 //!
-//! This module contains the data structures that represent the node
-//! configuration, including all the nested configuration sections.
+//! This module contains the data structures that represent the node configuration,
+//! including all the nested configuration sections.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -221,14 +221,12 @@ pub struct DevConf {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIConf {
     /// Enable or disable OpenAI service functionality
-    /// Priority: 1. Environment variable OPENAI_ENABLED, 2. Config, 3. Default
-    /// (false)
+    /// Priority: 1. Environment variable OPENAI_ENABLED, 2. Config, 3. Default (false)
     #[serde(default)]
     pub enabled: bool,
 
     /// API key used by OpenAIService
-    /// Resolution: 1. OPENAI_API_KEY env, 2. OPENAI_SCALA_CLIENT_API_KEY env,
-    /// 3. Config
+    /// Resolution: 1. OPENAI_API_KEY env, 2. OPENAI_SCALA_CLIENT_API_KEY env, 3. Config
     #[serde(rename = "api-key", default)]
     pub api_key: String,
 
@@ -284,8 +282,7 @@ pub enum Command {
     /// Starts a thin client, that will connect to existing node
     Repl,
 
-    /// Starts a thin client that will evaluate rholang in file on a existing
-    /// running node
+    /// Starts a thin client that will evaluate rholang in file on a existing running node
     Eval(EvalOptions),
 
     /// Deploy a Rholang source file to Casper on an existing running node

@@ -8,8 +8,7 @@ use models::rhoapi::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash;
 use shared::rust::ByteString;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
 #[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
 pub struct Cost {
     pub value: i64,
@@ -65,8 +64,7 @@ impl Cost {
         }
     }
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/
-    // Chargeable.scala
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Chargeable.scala
     pub fn create_from_generic<A: prost::Message, S>(term: A, operation: S) -> Cost
     where S: Into<Cow<'static, str>> {
         Cost {
@@ -264,8 +262,7 @@ pub fn byte_array_append_cost(left: ByteString) -> Cost {
 // According to scala doc Vector#append is eC so it's n*eC.
 pub fn list_append_cost(right: Vec<Par>) -> Cost { Cost::create(right.len() as i64, "list append") }
 
-// String append creates a char[] of size n + m and then copies all elements to
-// it.
+// String append creates a char[] of size n + m and then copies all elements to it.
 pub fn string_append_cost(n: i64, m: i64) -> Cost { Cost::create(n + m, "string append") }
 
 // To interpolate we traverse whole base string and for each placeholder
@@ -283,9 +280,9 @@ pub fn to_byte_array_cost(message: &impl prost::Message) -> Cost {
 
 pub fn size_method_cost(size: i64) -> Cost { Cost::create(size, "size") }
 
-// slice(from, to) needs to drop `from` elements and then append `to - from`
-// elements we charge proportionally to `to` and fail if the method call is
-// incorrect, for example if underlying string is shorter then the `to` value.
+// slice(from, to) needs to drop `from` elements and then append `to - from` elements
+// we charge proportionally to `to` and fail if the method call is incorrect, for example
+// if underlying string is shorter then the `to` value.
 pub fn slice_cost(to: i64) -> Cost { Cost::create(to, "slice") }
 
 pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
@@ -312,9 +309,8 @@ pub fn receive_eval_cost() -> Cost { Cost::create(11, "receive eval") }
 
 pub fn channel_eval_cost() -> Cost { Cost::create(11, "channel eval") }
 
-// The idea is that evaluation of `new x1, x2, …, xn in { }` should be charged
-// depending on the # of bindings and constant cost of evaluating `new … in  { …
-// }` construct
+// The idea is that evaluation of `new x1, x2, …, xn in { }` should be charged depending
+// on the # of bindings and constant cost of evaluating `new … in  { … }` construct
 pub fn new_binding_cost() -> Cost { Cost::create(2, "new binding") }
 
 pub fn new_eval_cost() -> Cost { Cost::create(10, "new eval") }

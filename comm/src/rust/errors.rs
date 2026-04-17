@@ -40,12 +40,10 @@ impl fmt::Display for CommError {
             CommError::MessageToLarge(p) => {
                 write!(f, "Message rejected by peer {} because it was too large", p)
             }
-            CommError::PongNotReceivedForPing(_) => {
-                write!(
-                    f,
-                    "Peer is behind a firewall and can't be accessed from outside"
-                )
-            }
+            CommError::PongNotReceivedForPing(_) => write!(
+                f,
+                "Peer is behind a firewall and can't be accessed from outside"
+            ),
             CommError::CouldNotConnectToBootstrap => {
                 write!(f, "Node could not connect to bootstrap node")
             }
@@ -57,13 +55,11 @@ impl fmt::Display for CommError {
             CommError::UnableToStorePacket(p, er) => {
                 write!(f, "Could not serialize packet {}. Error message: {}", p, er)
             }
-            CommError::UnableToRestorePacket(p, er) => {
-                write!(
-                    f,
-                    "Could not deserialize packet {}. Error message: {}",
-                    p, er
-                )
-            }
+            CommError::UnableToRestorePacket(p, er) => write!(
+                f,
+                "Could not deserialize packet {}. Error message: {}",
+                p, er
+            ),
             CommError::ProtocolException(msg) => write!(f, "Protocol error. {}", msg),
             CommError::ParseError(msg) => write!(f, "Parse error: {}", msg),
             CommError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),

@@ -138,8 +138,7 @@ impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfo
     fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
 
-/// Compress bytes using LZ4 with varint length prefix (compatible with Java
-/// LZ4CompressorWithLength)
+/// Compress bytes using LZ4 with varint length prefix (compatible with Java LZ4CompressorWithLength)
 fn compress_bytes(bytes: &[u8]) -> Vec<u8> {
     use prost::encoding::encode_varint;
 
@@ -152,8 +151,7 @@ fn compress_bytes(bytes: &[u8]) -> Vec<u8> {
     result
 }
 
-/// Decompress bytes using LZ4 with varint length prefix (compatible with Java
-/// LZ4DecompressorWithLength)
+/// Decompress bytes using LZ4 with varint length prefix (compatible with Java LZ4DecompressorWithLength)
 fn decompress_bytes(bytes: &[u8]) -> Result<Vec<u8>, KvStoreError> {
     use std::io::Cursor;
 

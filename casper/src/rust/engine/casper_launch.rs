@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -71,29 +71,17 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     conf: CasperConf,
     trim_state: bool,
     disable_state_exporter: bool,
-    /// Shared reference to heartbeat signal for triggering immediate wake on
-    /// deploy
+    /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
-const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
-const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
-static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
+const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize {
-    *MAX_BLOCKS_IN_PROCESSING.get_or_init(|| {
-        std::env::var(MAX_BLOCKS_IN_PROCESSING_ENV)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(MAX_BLOCKS_IN_PROCESSING_DEFAULT)
-    })
-}
+fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
-    /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId,
-    /// casperShardConf, ab)
+    /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
     fn create_casper(
         &self,
         validator_id: Option<ValidatorIdentity>,
@@ -172,6 +160,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
+            finalizer_conf: conf.finalizer.clone(),
+            synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
+            synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
+            synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
+            synchrony_finalized_baseline_enabled: conf.synchrony_finalized_baseline_enabled,
+            synchrony_finalized_baseline_max_distance: conf
+                .synchrony_finalized_baseline_max_distance,
+            max_user_deploys_per_block: conf.max_user_deploys_per_block,
         };
 
         Self {
@@ -273,12 +269,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Log error if block unexpectedly exists in DAG (database inconsistency)
                     if dag_contains {
                         tracing::warn!(
-                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to \
-                             prevent requeue loops.",
-                            PrettyPrinter::build_string(
-                                CasperMessage::BlockMessage(block.clone()),
-                                true
-                            )
+                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
+                            PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
                         );
                         let hash_serde = BlockHashSerde(hash.clone());
                         if let Err(err) = casper_buffer_storage.remove(hash_serde) {
@@ -302,8 +294,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     let block_hash = block.block_hash.clone();
                     if !blocks_in_processing.insert(block_hash.clone()) {
                         tracing::debug!(
-                            "Skipping pendant {} enqueue because it is already \
-                             queued/in-processing",
+                            "Skipping pendant {} enqueue because it is already queued/in-processing",
                             PrettyPrinter::build_string_bytes(&block_hash)
                         );
                         continue;
@@ -343,8 +334,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let casper = self.create_casper(validator_id.clone(), ab)?;
         let casper_arc = Arc::new(casper);
 
-        // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <-
-        // sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
+        // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
         // Create lazy async init computation (matches Scala F[Unit])
 
         // Note: Double cloning is necessary because:
@@ -398,8 +388,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
-        // Direct-to-running path: emit init metrics that are otherwise produced in
-        // Initializing.
+        // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
         record_direct_to_running_init_metrics();
 
         // Scala equivalent: Engine.transitionToRunning[F](...)
@@ -565,16 +554,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.pos_multi_sig_quorum,
             &mut *self.runtime_manager.lock().await,
             self.last_approved_block.clone(),
-            None, // event_log
+            Some(self.event_publisher.clone()),
             self.transport_layer.clone(),
             Arc::new(self.connections_cell.clone()),
             Arc::new(self.rp_conf_ask.clone()),
         )
         .await?;
 
-        // Scala equivalent:
-        // Concurrent[F].start(GenesisCeremonyMaster.waitingForApprovedBlockLoop[F](...
-        // ))
+        // Scala equivalent: Concurrent[F].start(GenesisCeremonyMaster.waitingForApprovedBlockLoop[F](...))
         tokio::spawn({
             let block_processing_queue_tx = self.block_processing_queue_tx.clone();
             let blocks_in_processing = self.blocks_in_processing.clone();
@@ -641,8 +628,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.validator_private_key.as_deref(),
         );
 
-        // Scala: CommUtil[F].requestApprovedBlock(trimState) - passed as init to
-        // transitionToInitializing
+        // Scala: CommUtil[F].requestApprovedBlock(trimState) - passed as init to transitionToInitializing
         let transport_layer_for_init = self.transport_layer.clone();
         let rp_conf_ask_for_init = self.rp_conf_ask.clone();
 

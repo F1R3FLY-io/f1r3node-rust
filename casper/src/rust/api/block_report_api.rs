@@ -44,8 +44,7 @@ pub enum BlockReportError {
 
 pub type ApiErr<T> = Result<T, BlockReportError>;
 
-/// BlockReportAPI provides functionality to replay blocks and generate event
-/// reports
+/// BlockReportAPI provides functionality to replay blocks and generate event reports
 #[derive(Clone)]
 pub struct BlockReportAPI {
     reporting_casper: Arc<dyn ReportingCasper>,
@@ -56,13 +55,11 @@ pub struct BlockReportAPI {
     #[allow(dead_code)] // Part of constructor signature matching Scala, not directly used
     oracle: CliqueOracleImpl,
     /// Thread-safe map of block hashes to semaphores for per-block locking
-    /// Equivalent to Scala's `blockLockMap: TrieMap[BlockHash,
-    /// MetricsSemaphore[F]]`
+    /// Equivalent to Scala's `blockLockMap: TrieMap[BlockHash, MetricsSemaphore[F]]`
     block_lock_map: Arc<DashMap<BlockHash, Arc<Semaphore>>>,
     /// Transformer for converting reporting events to protobuf format
     report_transformer: Arc<ReportingProtoTransformer>,
-    /// When true, allows block reports on validator nodes (bypasses read-only
-    /// check)
+    /// When true, allows block reports on validator nodes (bypasses read-only check)
     dev_mode: bool,
 }
 
@@ -118,8 +115,7 @@ impl BlockReportAPI {
         })
     }
 
-    /// Get block report with locking to prevent concurrent replays of the same
-    /// block
+    /// Get block report with locking to prevent concurrent replays of the same block
     async fn block_report_within_lock(
         &self,
         force_replay: bool,
@@ -149,8 +145,7 @@ impl BlockReportAPI {
         result
     }
 
-    /// Inner block report logic (separated to ensure lock map cleanup on all
-    /// paths)
+    /// Inner block report logic (separated to ensure lock map cleanup on all paths)
     async fn block_report_inner(
         &self,
         force_replay: bool,

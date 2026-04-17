@@ -1,7 +1,6 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/buffer/LimitedBuffer.scala
-// See comm/src/main/scala/coop/rchain/comm/transport/buffer/
-// LimitedBufferObservable.scala See comm/src/main/scala/coop/rchain/comm/
-// transport/buffer/ConcurrentQueue.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/buffer/LimitedBufferObservable.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/buffer/ConcurrentQueue.scala
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -191,8 +190,7 @@ impl<T: Clone + Send + 'static> Stream for FlumeLimitedBufferSubscription<T> {
             std::task::Poll::Pending => {
                 // No message available yet
                 // If we're complete, check if we should end the stream
-                // We need to be careful not to end too early - only if we're sure no more items
-                // are coming
+                // We need to be careful not to end too early - only if we're sure no more items are coming
                 if self.complete.load(Ordering::Acquire) {
                     // We're complete and no items available - the stream should end
                     // Wake the waker to check again, but return None to signal end
@@ -212,8 +210,7 @@ impl<T: Clone + Send + 'static> LimitedBufferObservable<T> for FlumeLimitedBuffe
     type Subscription = FlumeLimitedBufferSubscription<T>;
 
     fn subscribe(&mut self) -> Option<Self::Subscription> {
-        // Create a new broadcast receiver - each subscription gets its own independent
-        // stream
+        // Create a new broadcast receiver - each subscription gets its own independent stream
         let receiver = self.broadcast_tx.subscribe();
         let stream = BroadcastStream::new(receiver);
 
