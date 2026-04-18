@@ -1864,7 +1864,11 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
     }]);
     let sub_proc = Par::default().with_news(vec![New {
         bind_count: 1,
-        p: Some(GPrivateBuilder::new_par_from_string("zero".to_string())),
+        p: Some({
+            let mut p = GPrivateBuilder::new_par_from_string("zero".to_string());
+            p.locally_free = vec![0];
+            p
+        }),
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![],
@@ -2674,8 +2678,7 @@ async fn plus_plus_should_work_correctly_with_string() {
     )])
 }
 
-// "ByteArray('dead') ++ ByteArray('beef)'" should "return
-// ByteArray('deadbeef')"
+// "ByteArray('dead') ++ ByteArray('beef)'" should "return ByteArray('deadbeef')"
 #[tokio::test]
 async fn plus_plus_should_work_correctly_with_byte_array() {
     let (_, reducer) =

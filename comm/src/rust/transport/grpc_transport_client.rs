@@ -134,12 +134,10 @@ impl GrpcTransportClient {
         tracing::info!("Creating new F1r3fly channel to peer {}", peer.to_address());
 
         // **F1r3fly Custom TLS Integration Architecture**
-        // This method creates tonic gRPC channels using F1r3flyConnector with
-        // connect_with_connector() providing direct integration of F1r3fly TLS
-        // verification with tonic's gRPC layer
+        // This method creates tonic gRPC channels using F1r3flyConnector with connect_with_connector()
+        // providing direct integration of F1r3fly TLS verification with tonic's gRPC layer
 
-        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname
-        // verification
+        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname verification
         let f1r3fly_id_hex = hex::encode(&peer.id.key);
         tracing::debug!(
             "Creating F1r3flyConnector with F1r3fly address for TLS hostname: {}",
@@ -180,8 +178,7 @@ impl GrpcTransportClient {
         })?;
 
         // Step 3: Use F1r3flyConnector with tonic's connect_with_connector API
-        // The F1r3flyConnector will handle TLS hostname verification against the
-        // F1r3fly address
+        // The F1r3flyConnector will handle TLS hostname verification against the F1r3fly address
         let grpc_channel = endpoint
             .connect_with_connector(f1r3fly_connector)
             .await
@@ -425,8 +422,8 @@ impl GrpcTransportClient {
 
     /// Stream a blob file from cache to a peer using pre-created client
     ///
-    /// This method uses a pre-created transport client, eliminating the need
-    /// for complex connection management in spawned tasks.
+    /// This method uses a pre-created transport client, eliminating the need for
+    /// complex connection management in spawned tasks.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,

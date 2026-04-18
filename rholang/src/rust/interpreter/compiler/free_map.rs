@@ -74,8 +74,7 @@ impl<T: Clone> FreeMap<T> {
         new_free_map
     }
 
-    /// Returns the new map, and a list of the shadowed variables with their
-    /// spans
+    /// Returns the new map, and a list of the shadowed variables with their spans
     pub fn merge(
         &self,
         free_map: FreeMap<T>,

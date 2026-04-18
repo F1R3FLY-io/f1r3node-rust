@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/ExprSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ExprSortMatcher.scala
 
 use super::score_tree::ScoredTerm;
 use super::sortable::Sortable;
@@ -664,8 +663,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::GBool(gb) => {
-                    // See models/src/main/scala/coop/rchain/models/rholang/sorter/BoolSortMatcher.
-                    // scala
+                    // See models/src/main/scala/coop/rchain/models/rholang/sorter/BoolSortMatcher.scala
                     let sorted = if *gb {
                         ScoredTerm {
                             term: gb,
@@ -748,8 +746,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                 },
             },
 
-            // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional -
-            // OLD
+            // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD
             None => ScoredTerm {
                 term: e.clone(),
                 score: Tree::<ScoreAtom>::create_node_from_i32(Score::ABSENT, Vec::new()),

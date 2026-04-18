@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.scala
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -1,5 +1,4 @@
-//See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/
-// CostAccountingSpec.scala from main branch
+//See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/CostAccountingSpec.scala from main branch
 
 use std::collections::{HashMap, HashSet};
 use std::option::Option;
@@ -27,10 +26,7 @@ async fn evaluate_with_cost_log(
     initial_phlo: i64,
     contract: String,
 ) -> (EvaluateResult, Vec<Cost>) {
-    // Cost logging is disabled by default unless F1R3_COST_LOG_MAX_ENTRIES > 0.
-    // Integration tests compile the library without cfg(test), so enable logging
-    // explicitly.
-    std::env::set_var("F1R3_COST_LOG_MAX_ENTRIES", "100000");
+    // Cost logging is enabled in test builds via cfg!(test) in CostManager.
 
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
@@ -214,62 +210,36 @@ fn from_long(index: i64) -> String {
 
 fn contracts() -> Vec<(String, i64)> {
     vec![
-        (String::from("@0!(2)"), 97i64),
-        (String::from("@0!(2) | @1!(1)"), 197i64),
-        (String::from("for(x <- @0){ Nil }"), 128i64),
-        (String::from("for(x <- @0){ Nil } | @0!(2)"), 329i64),
-        (String::from("@0!!(0) | for (_ <- @0) { 0 }"), 342i64),
-        (String::from("@0!!(0) | for (x <- @0) { 0 }"), 342i64),
-        (String::from("@0!!(0) | for (@0 <- @0) { 0 }"), 336i64),
-        (
-            String::from("@0!!(0) | @0!!(0) | for (_ <- @0) { 0 }"),
-            443i64,
-        ),
-        (
-            String::from("@0!!(0) | @1!!(1) | for (_ <- @0 & _ <- @1) { 0 }"),
-            596i64,
-        ),
-        (String::from("@0!(0) | for (_ <- @0) { 0 }"), 333i64),
-        (String::from("@0!(0) | for (x <- @0) { 0 }"), 333i64),
-        (String::from("@0!(0) | for (@0 <- @0) { 0 }"), 327i64),
-        (String::from("@0!(0) | for (_ <= @0) { 0 }"), 354i64),
-        (String::from("@0!(0) | for (x <= @0) { 0 }"), 356i64),
-        (String::from("@0!(0) | for (@0 <= @0) { 0 }"), 341i64),
-        (
-            String::from("@0!(0) | @0!(0) | for (_ <= @0) { 0 }"),
-            574i64,
-        ),
-        (
-            String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (_ <- @0) { 0 }"),
-            663i64,
-        ),
-        (
-            String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (@1 <- @0) { 0 }"),
-            551i64,
-        ),
-        (String::from("@0!(0) | for (_ <<- @0) { 0 }"), 406i64),
-        (String::from("@0!!(0) | for (_ <<- @0) { 0 }"), 343i64),
-        (
-            String::from("@0!!(0) | @0!!(0) | for (_ <<- @0) { 0 }"),
-            444i64,
-        ),
-        // TODO: This fails due to a cost mismatch - needs fixing
-        //       (String::from("new loop in {\n         contract loop(@n) = {\n           match n
-        // {\n             0 => Nil\n             _ => loop!(n-1)\n           }\n         } |\n
-        // loop!(10)\n       }"), 3892i64),
-        (String::from("42 | @0!(2) | for (x <- @0) { Nil }"), 336i64),
-        (
-            String::from(
-                "@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- \
-                 x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 \
-                 => Nil\n          42 =>
-@3!(42)\n        }\n     ",
-            ),
-            1264i64,
-        ),
-        // TODO: This fails due to a cost mismatch - needs fixing
-        // (String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"), 782i64),
-    ]
+      (String::from("@0!(2)"), 97i64),
+      (String::from("@0!(2) | @1!(1)"), 197i64),
+      (String::from("for(x <- @0){ Nil }"), 128i64),
+      (String::from("for(x <- @0){ Nil } | @0!(2)"), 329i64),
+      (String::from("@0!!(0) | for (_ <- @0) { 0 }"), 342i64),
+      (String::from("@0!!(0) | for (x <- @0) { 0 }"), 342i64),
+      (String::from("@0!!(0) | for (@0 <- @0) { 0 }"), 336i64),
+      (String::from("@0!!(0) | @0!!(0) | for (_ <- @0) { 0 }"), 443i64),
+      (String::from("@0!!(0) | @1!!(1) | for (_ <- @0 & _ <- @1) { 0 }"), 596i64),
+      (String::from("@0!(0) | for (_ <- @0) { 0 }"), 333i64),
+      (String::from("@0!(0) | for (x <- @0) { 0 }"), 333i64),
+      (String::from("@0!(0) | for (@0 <- @0) { 0 }"), 327i64),
+      (String::from("@0!(0) | for (_ <= @0) { 0 }"), 354i64),
+      (String::from("@0!(0) | for (x <= @0) { 0 }"), 356i64),
+      (String::from("@0!(0) | for (@0 <= @0) { 0 }"), 341i64),
+      (String::from("@0!(0) | @0!(0) | for (_ <= @0) { 0 }"), 574i64),
+      (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (_ <- @0) { 0 }"), 663i64),
+      (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (@1 <- @0) { 0 }"), 551i64),
+      (String::from("@0!(0) | for (_ <<- @0) { 0 }"), 406i64),
+      (String::from("@0!!(0) | for (_ <<- @0) { 0 }"), 343i64),
+      (String::from("@0!!(0) | @0!!(0) | for (_ <<- @0) { 0 }"), 444i64),
+      // TODO: This fails due to a cost mismatch - needs fixing
+//       (String::from("new loop in {\n         contract loop(@n) = {\n           match n {\n             0 => Nil\n             _ => loop!(n-1)\n           }\n         } |\n         loop!(10)\n       }"),
+// 3892i64),
+      (String::from("42 | @0!(2) | for (x <- @0) { Nil }"), 336i64),
+      (String::from("@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 => Nil\n          42 =>
+@3!(42)\n        }\n     "), 1264i64),
+      // TODO: This fails due to a cost mismatch - needs fixing
+      // (String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"), 782i64),
+]
 }
 
 fn element_counts(list: &[Cost]) -> HashSet<(Cost, usize)> {
@@ -384,12 +354,10 @@ async fn cost_should_be_deterministic() {
 }
 
 #[tokio::test]
-#[ignore] // TODO: Remove ignore when bug RCHAIN-3917 is fixed (13.05.2025 I can't find
-          // this ticket), RCHAIN-4032 - which is indicated in the Scala side error is
-          // also unknown.
+#[ignore] // TODO: Remove ignore when bug RCHAIN-3917 is fixed (13.05.2025 I can't find this ticket), RCHAIN-4032 - which is indicated in the Scala side error is also unknown.
 async fn cost_should_be_repeatable_when_generated() {
-    // Try contract fromLong(1716417707L) = @2!!(0) | @0!!(0) | for (_ <<- @2) { 0 }
-    // | @2!(0) because the cost is nondeterministic
+    // Try contract fromLong(1716417707L) = @2!!(0) | @0!!(0) | for (_ <<- @2) { 0 } | @2!(0)
+    // because the cost is nondeterministic
     let result1 = evaluate_and_replay(
         Cost::create(i32::MAX as i64, "max_value".to_string()),
         from_long(1716417707),
@@ -404,8 +372,8 @@ async fn cost_should_be_repeatable_when_generated() {
     assert!(result1.1.errors.is_empty());
     assert_eq!(result1.0.cost, result1.1.cost);
 
-    // Try contract fromLong(510661906) = @1!(0) | @1!(0) | for (_ <= @1 & _ <= @1)
-    // { 0 } because of bug RCHAIN-3917
+    // Try contract fromLong(510661906) = @1!(0) | @1!(0) | for (_ <= @1 & _ <= @1) { 0 }
+    // because of bug RCHAIN-3917
     let contract = from_long(510661906);
     println!("Generated contract: {}", contract);
     let result2 = evaluate_and_replay(

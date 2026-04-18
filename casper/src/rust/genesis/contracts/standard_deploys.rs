@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/
-// StandardDeploys.scala
+// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/StandardDeploys.scala
 
 use std::collections::HashMap;
 

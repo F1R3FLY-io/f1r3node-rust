@@ -12,24 +12,38 @@ minikube start \
     --memory=6g
 ```
 
-## Pull `rnode` into Minikube
-**This step needed if `f1r3flyindustries/f1r3fly-rust-node:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
+## Image Source
 
-Load `f1r3flyindustries/f1r3fly-rust-node:latest` Docker image inside Minikube cache
+`minikube-values.yaml` defaults to the public OCIR image (`sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest`) with `pullPolicy: IfNotPresent`, so minikube will pull on first use. For the default path, skip to [Deploy RNode](#deploy-rnode) — nothing to load.
+
+### Use a locally built image (optional)
+
+To test a locally built image instead, load it into the Minikube cache and override the image settings when deploying.
+
+Load the local Docker image:
 ```sh
-minikube image load f1r3flyindustries/f1r3fly-rust-node:latest
+minikube image load f1r3fly-rust:local
 ```
-Check the image list. `f1r3flyindustries/f1r3fly-rust-node:latest` should be listed in the table
+Check the image list. `f1r3fly-rust:local` should appear in the table:
 ```sh
 minikube image list --format=table
 ```
-If `load` command failed (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use alternative mathod via file: store image into the file and load it from the file
+If `load` fails (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use the alternative method via file — store the image into a file and load it from there:
 ```sh
-docker image save f1r3flyindustries/f1r3fly-rust-node:latest -o rnode.tar && \
+docker image save f1r3fly-rust:local -o rnode.tar && \
     minikube image load rnode.tar && \
     rm rnode.tar
 ```
 Check the image list again using the command above.
+
+When deploying, override the image fields so minikube uses the loaded image:
+```sh
+helm upgrade --install f1r3fly ../helm/f1r3fly -n f1r3fly --create-namespace -f ./minikube-values.yaml \
+    --set image.repository=f1r3fly-rust \
+    --set image.tag=local \
+    --set image.pullPolicy=Never
+```
+
 ## Check all system pods
 Get a list of running system pods and check statuses:
 ```sh

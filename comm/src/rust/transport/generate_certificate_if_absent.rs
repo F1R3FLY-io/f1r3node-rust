@@ -1,5 +1,4 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/
-// GenerateCertificateIfAbsent.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/GenerateCertificateIfAbsent.scala
 
 use crypto::rust::util::certificate_helper::{
     CertificateError, CertificateHelper, CertificatePrinter,
@@ -13,9 +12,8 @@ use crate::rust::transport::tls_conf::TlsConf;
 /// Generate certificate if absent
 ///
 /// This function checks if a certificate exists at the configured path.
-/// If not, and customCertificateLocation is false, it generates a new
-/// certificate. If a key already exists, it uses that; otherwise, it generates
-/// a new key pair.
+/// If not, and customCertificateLocation is false, it generates a new certificate.
+/// If a key already exists, it uses that; otherwise, it generates a new key pair.
 pub async fn create(tls: &TlsConf) -> Result<(), CertificateError> {
     // Generate certificate if not provided as option or in the data dir
     if !tls.custom_certificate_location && !tls.certificate_path.exists() {

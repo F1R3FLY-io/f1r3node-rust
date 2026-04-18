@@ -1,5 +1,5 @@
-// See rholang/src/main/scala/coop/rchain/rholang/externalservices/
-// OpenAIService.scala Ported from Scala PR #123 and #140
+// See rholang/src/main/scala/coop/rchain/rholang/externalservices/OpenAIService.scala
+// Ported from Scala PR #123 and #140
 //
 // This module provides OpenAI integration with configuration support.
 // Uses enum-based dispatch instead of trait objects for async compatibility.
@@ -33,8 +33,7 @@ pub struct OpenAIConfig {
     /// Priority: 1. OPENAI_ENABLED env, 2. config file, 3. default (false)
     pub enabled: bool,
     /// API key for OpenAI (only required if enabled)
-    /// Priority: 1. config file, 2. OPENAI_API_KEY env, 3.
-    /// OPENAI_SCALA_CLIENT_API_KEY env
+    /// Priority: 1. config file, 2. OPENAI_API_KEY env, 3. OPENAI_SCALA_CLIENT_API_KEY env
     pub api_key: Option<String>,
     /// Whether to validate API key at startup by calling a lightweight endpoint
     /// Default: true
@@ -53,15 +52,12 @@ impl OpenAIConfig {
         Self::from_config_values(false, String::new(), true, 15)
     }
 
-    /// Load configuration merging HOCON config values with environment
-    /// variables Priority order per Issue #127:
+    /// Load configuration merging HOCON config values with environment variables
+    /// Priority order per Issue #127:
     /// - enabled: 1. OPENAI_ENABLED env, 2. config value, 3. default (false)
-    /// - api_key: 1. OPENAI_API_KEY env, 2. OPENAI_SCALA_CLIENT_API_KEY env, 3.
-    ///   config value
-    /// - validate_api_key: 1. OPENAI_VALIDATE_API_KEY env, 2. config value, 3.
-    ///   default (true)
-    /// - validation_timeout_sec: 1. OPENAI_VALIDATION_TIMEOUT_SEC env, 2.
-    ///   config value, 3. default (15)
+    /// - api_key: 1. OPENAI_API_KEY env, 2. OPENAI_SCALA_CLIENT_API_KEY env, 3. config value
+    /// - validate_api_key: 1. OPENAI_VALIDATE_API_KEY env, 2. config value, 3. default (true)
+    /// - validation_timeout_sec: 1. OPENAI_VALIDATION_TIMEOUT_SEC env, 2. config value, 3. default (15)
     pub fn from_config_values(
         config_enabled: bool,
         config_api_key: String,
@@ -73,11 +69,9 @@ impl OpenAIConfig {
         // enabled: env var takes priority over config
         let enabled = parse_bool_env("OPENAI_ENABLED").unwrap_or(config_enabled);
 
-        // api_key: env vars take priority, then config
-        // Matches Scala's (apiKeyFromEnv orElse apiKeyFromConfig) behavior
+        // api_key: env var takes priority, then config
         let api_key = if enabled {
             let key = env::var("OPENAI_API_KEY")
-                .or_else(|_| env::var("OPENAI_SCALA_CLIENT_API_KEY"))
                 .ok()
                 .filter(|k| !k.is_empty())
                 .or_else(|| {
@@ -90,13 +84,13 @@ impl OpenAIConfig {
 
             if key.is_none() {
                 tracing::error!(
-                    "OpenAI is enabled but no API key provided. Set OPENAI_API_KEY or \
-                     OPENAI_SCALA_CLIENT_API_KEY environment variable, or configure \
-                     'openai.api-key' in the config file."
+                    "OpenAI is enabled but no API key provided. \
+                     Set OPENAI_API_KEY environment variable, \
+                     or configure 'openai.api-key' in the config file."
                 );
                 panic!(
-                    "OpenAI API key is not configured. Provide it via env var OPENAI_API_KEY, \
-                     OPENAI_SCALA_CLIENT_API_KEY, or openai.api-key config when openai is enabled."
+                    "OpenAI API key is not configured. Provide it via env var OPENAI_API_KEY \
+                     or openai.api-key config when openai is enabled."
                 );
             }
             key
@@ -104,15 +98,8 @@ impl OpenAIConfig {
             None
         };
 
-        // validate_api_key: env var takes priority over config
-        let validate_api_key =
-            parse_bool_env("OPENAI_VALIDATE_API_KEY").unwrap_or(config_validate_api_key);
-
-        // validation_timeout_sec: env var takes priority over config
-        let validation_timeout_sec = env::var("OPENAI_VALIDATION_TIMEOUT_SEC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(config_validation_timeout_sec);
+        let validate_api_key = config_validate_api_key;
+        let validation_timeout_sec = config_validation_timeout_sec;
 
         Self {
             enabled,
@@ -188,8 +175,8 @@ fn validate_api_key_or_fail_sync(api_key: &str, timeout_sec: u64) {
         Ok(Ok(Err(e))) => {
             tracing::error!("OpenAI API key validation failed: {}", e);
             panic!(
-                "OpenAI API key validation failed. Check 'openai.api-key' or 'OPENAI_API_KEY' or \
-                 'OPENAI_SCALA_CLIENT_API_KEY'. Error: {}",
+                "OpenAI API key validation failed. Check 'openai.api-key' or \
+                 'OPENAI_API_KEY' or 'OPENAI_SCALA_CLIENT_API_KEY'. Error: {}",
                 e
             );
         }
@@ -199,8 +186,8 @@ fn validate_api_key_or_fail_sync(api_key: &str, timeout_sec: u64) {
                 timeout_sec
             );
             panic!(
-                "OpenAI API key validation timed out after {} seconds. Check network connectivity \
-                 or increase validation-timeout-sec.",
+                "OpenAI API key validation timed out after {} seconds. \
+                 Check network connectivity or increase validation-timeout-sec.",
                 timeout_sec
             );
         }
@@ -327,11 +314,12 @@ impl OpenAIService {
     pub fn is_enabled(&self) -> bool { matches!(self, Self::Real(_)) }
 
     /// Create audio speech from text (text-to-speech)
+    /// Returns the raw audio bytes for use as non-deterministic produce output
     pub async fn create_audio_speech(
         &self,
         input: &str,
         output_path: &str,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<Vec<u8>, InterpreterError> {
         match self {
             Self::Real(client) => {
                 let request = AudioSpeechRequest::new(
@@ -349,18 +337,25 @@ impl OpenAIService {
                         response.headers
                     )));
                 }
-                Ok(())
+                let bytes = tokio::fs::read(&output_path).await.map_err(|e| {
+                    InterpreterError::OpenAIError(format!(
+                        "Failed to read audio file {}: {}",
+                        output_path, e
+                    ))
+                })?;
+                let _ = tokio::fs::remove_file(&output_path).await;
+                Ok(bytes)
             }
             Self::NoOp => {
                 tracing::debug!(
                     "OpenAI service is disabled - ttsCreateAudioSpeech request ignored"
                 );
-                Ok(())
+                Ok(vec![])
             }
             Self::Mock(config) => match &config.tts_response {
-                Some(Ok(_)) => Ok(()),
+                Some(Ok(bytes)) => Ok(bytes.clone()),
                 Some(Err(e)) => Err(InterpreterError::OpenAIError(e.clone())),
-                None => Ok(()),
+                None => Ok(vec![]),
             },
         }
     }

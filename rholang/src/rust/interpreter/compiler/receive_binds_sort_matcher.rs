@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/
-// ReceiveBindsSortMatcher.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
 use models::rhoapi::{Par, ReceiveBind, Var};
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;

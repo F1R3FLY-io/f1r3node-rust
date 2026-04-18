@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/
-// CryptoChannelsSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/CryptoChannelsSpec.scala
 
 #[cfg(test)]
 mod tests {

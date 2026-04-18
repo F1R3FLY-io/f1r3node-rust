@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// TreeHashMapSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TreeHashMapSpec.scala
 
 use std::collections::HashMap;
 
@@ -10,8 +9,7 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[test]
 fn tree_hash_map_spec() {
-    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent
-    // stack overflow
+    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {

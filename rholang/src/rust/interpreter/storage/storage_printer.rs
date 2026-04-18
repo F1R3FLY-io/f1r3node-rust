@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/
-// StoragePrinter.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/StoragePrinter.scala
 
 use std::collections::BTreeSet;
 
@@ -31,9 +30,7 @@ pub fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
         .collect();
 
     if pars.is_empty() {
-        "The space is empty. Note that top level terms that are not sends or receives are \
-         discarded."
-            .to_string()
+        "The space is empty. Note that top level terms that are not sends or receives are discarded.".to_string()
     } else {
         let combined_par = pars.into_iter().fold(Par::default(), concatenate_pars);
 
@@ -57,9 +54,7 @@ pub fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
         .collect();
 
     if pars.is_empty() {
-        "The space is empty. Note that top level terms that are not sends or receives are \
-         discarded."
-            .to_string()
+        "The space is empty. Note that top level terms that are not sends or receives are discarded.".to_string()
     } else {
         let combined_par = pars.into_iter().fold(Par::default(), concatenate_pars);
 

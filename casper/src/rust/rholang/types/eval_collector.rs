@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/rholang/types/EvalCollector.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/rholang/types/EvalCollector.scala
 
 use std::collections::HashSet;
 

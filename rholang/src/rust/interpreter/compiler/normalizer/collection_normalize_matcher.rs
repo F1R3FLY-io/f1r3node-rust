@@ -260,8 +260,7 @@ pub fn normalize_collection<'ast>(
     }
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// CollectMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/CollectMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

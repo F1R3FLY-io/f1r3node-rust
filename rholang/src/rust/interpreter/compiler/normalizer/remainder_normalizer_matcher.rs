@@ -17,8 +17,7 @@ fn handle_var<'ast>(
             let wildcard_var = ModelsVar {
                 var_instance: Some(Wildcard(WildcardMsg {})),
             };
-            // Current approach: Use synthetic span since rholang-rs Wildcard lacks position
-            // data
+            // Current approach: Use synthetic span since rholang-rs Wildcard lacks position data
             //
             // IDEAL: If rholang-rs enhanced Wildcard with SourcePos:
             //   let wildcard_span = SpanContext::pos_to_span(wildcard.pos);

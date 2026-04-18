@@ -6,8 +6,7 @@ use prost::Message;
 
 use super::base58;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/AddressTools.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/AddressTools.scala
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Address {
     prefix: Vec<u8>,
@@ -40,8 +39,7 @@ impl AddressTools {
      * Creates an Address given a public key.
      *
      * @param pk the public key from which the address is derived
-     * @return None if the key length is invalid or Some if the address was
-     * created successfully
+     * @return None if the key length is invalid or Some if the address was created successfully
      */
     pub fn from_public_key(&self, pk: &PublicKey) -> Option<Address> {
         if self.key_length == pk.bytes.len() {

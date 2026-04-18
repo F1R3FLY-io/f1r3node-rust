@@ -6,10 +6,10 @@ use prost::encoding::{decode_varint, encode_varint};
 
 /// Compression utilities using LZ4 algorithm
 ///
-/// IMPORTANT: Uses varint length encoding to maintain compatibility with
-/// Scala's `net.jpountz.lz4.LZ4CompressorWithLength`, which uses Java's varint
-/// format (Protocol Buffers encoding). This ensures data written by Scala can
-/// be read by Rust and vice versa.
+/// IMPORTANT: Uses varint length encoding to maintain compatibility with Scala's
+/// `net.jpountz.lz4.LZ4CompressorWithLength`, which uses Java's varint format
+/// (Protocol Buffers encoding). This ensures data written by Scala can be read
+/// by Rust and vice versa.
 pub struct Compression;
 
 impl Compression {

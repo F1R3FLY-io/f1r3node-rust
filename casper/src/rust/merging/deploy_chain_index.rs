@@ -19,8 +19,7 @@ pub struct DeployIdWithCost {
     pub cost: u64,
 }
 
-/** index of deploys depending on each other inside a single block (state
- * transition) */
+/** index of deploys depending on each other inside a single block (state transition) */
 #[derive(Debug, Clone, Hash)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
@@ -87,6 +86,28 @@ impl DeployChainIndex {
             hash_code,
         })
     }
+
+    /// Construct a DeployChainIndex directly from its parts (for testing).
+    pub fn from_parts(
+        deploys_with_cost: HashableSet<DeployIdWithCost>,
+        pre_state_hash: Blake2b256Hash,
+        post_state_hash: Blake2b256Hash,
+        event_log_index: EventLogIndex,
+        state_changes: StateChange,
+    ) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        deploys_with_cost.hash(&mut hasher);
+        let hash_code = hasher.finish() as i32;
+        DeployChainIndex {
+            deploys_with_cost,
+            pre_state_hash,
+            post_state_hash,
+            event_log_index,
+            state_changes,
+            hash_code,
+        }
+    }
 }
 
 impl PartialEq for DeployChainIndex {
@@ -101,8 +122,8 @@ impl PartialOrd for DeployChainIndex {
 
 impl Ord for DeployChainIndex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // 1. PRIMARY: Highest total cost first (economic incentive) Higher-paying
-        //    transactions get priority in conflict resolution
+        // 1. PRIMARY: Highest total cost first (economic incentive)
+        //    Higher-paying transactions get priority in conflict resolution
         let self_total_cost: u64 = self.deploys_with_cost.0.iter().map(|d| d.cost).sum();
         let other_total_cost: u64 = other.deploys_with_cost.0.iter().map(|d| d.cost).sum();
 
@@ -111,8 +132,7 @@ impl Ord for DeployChainIndex {
             return cost_cmp;
         }
 
-        // 2. SECONDARY: Highest single deploy cost (prioritize high-value individual
-        //    transactions)
+        // 2. SECONDARY: Highest single deploy cost (prioritize high-value individual transactions)
         let self_max_cost = self
             .deploys_with_cost
             .0
@@ -133,8 +153,8 @@ impl Ord for DeployChainIndex {
             return max_cost_cmp;
         }
 
-        // 3. TERTIARY: Lexicographically smallest deploy signature (deterministic) This
-        //    ensures consistent ordering across all nodes when costs are equal
+        // 3. TERTIARY: Lexicographically smallest deploy signature (deterministic)
+        //    This ensures consistent ordering across all nodes when costs are equal
         let self_min_deploy = self
             .deploys_with_cost
             .0
@@ -159,8 +179,8 @@ impl Ord for DeployChainIndex {
             return signature_cmp;
         }
 
-        // 4. QUATERNARY: Post-state hash as final fallback Ensures total ordering even
-        //    for identical deploys (should be rare)
+        // 4. QUATERNARY: Post-state hash as final fallback
+        //    Ensures total ordering even for identical deploys (should be rare)
         self.post_state_hash.cmp(&other.post_state_hash)
     }
 }

@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/
-// InterpreterUtilTest.scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/InterpreterUtilTest.scala
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -31,8 +30,7 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use crate::util::rholang::resources;
 
-// Note: In Scala, genesisContext is defined at class level. In Rust, each test
-// creates its own genesis context
+// Note: In Scala, genesisContext is defined at class level. In Rust, each test creates its own genesis context
 struct TestContext {
     genesis_context: GenesisContext,
 }
@@ -50,10 +48,9 @@ impl TestContext {
         Self { genesis_context }
     }
 
-    // Helper function to create deploys from Rholang source code with timestamp and
-    // shard_id Note: Used in tests that need to create blocks with specific
-    // timestamps (e.g., Test #1) This wraps ConstructDeploy.sourceDeploy(...,
-    // timestamp, ..., shardId)
+    // Helper function to create deploys from Rholang source code with timestamp and shard_id
+    // Note: Used in tests that need to create blocks with specific timestamps (e.g., Test #1)
+    // This wraps ConstructDeploy.sourceDeploy(..., timestamp, ..., shardId)
     fn create_deploys(
         sources: Vec<&str>,
         timestamp: i64,
@@ -77,9 +74,8 @@ impl TestContext {
     }
 
     // Helper function to create deploys from Rholang source code without timestamp
-    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults
-    // to DEFAULT_SEC if None Scala: def sourceDeployNow(source: String, sec:
-    // PrivateKey = defaultSec, ...)
+    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults to DEFAULT_SEC if None
+    // Scala: def sourceDeployNow(source: String, sec: PrivateKey = defaultSec, ...)
     fn create_deploys_now(sources: Vec<&str>, sec: Option<PrivateKey>) -> Vec<Signed<DeployData>> {
         sources
             .into_iter()
@@ -140,9 +136,9 @@ impl TestContext {
 
     // Scala: def computeDeployCosts(...): Task[Seq[PCost]] =
     //   for {
-    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy,
-    // dag, runtimeManager)     Right((_, _, processedDeploys, _, _)) =
-    // computeResult   } yield processedDeploys.map(_.cost)
+    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy, dag, runtimeManager)
+    //     Right((_, _, processedDeploys, _, _)) = computeResult
+    //   } yield processedDeploys.map(_.cost)
     async fn compute_deploy_costs(
         &self,
         runtime_manager: &mut RuntimeManager,
@@ -482,8 +478,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             assert_eq!(
                 post_state,
                 rspace_plus_plus::rspace::history::Either::Right(None),
-                "Block validation should return Right(None) for blocks with complex contract \
-                 merges"
+                "Block validation should return Right(None) for blocks with complex contract merges"
             );
         },
     )
@@ -837,8 +832,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
 
         let invalid_hash = StateHash::default();
 
-        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager
-        // =>
+        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
         let mut runtime_manager =
             resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
@@ -1520,9 +1514,8 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                     );
                 }
                 Either::Left(status) => {
-                    // In Rust implementation, invalid blocks may return Left with InvalidBlock
-                    // status which is also acceptable for this test (block is
-                    // invalid due to extra comm events)
+                    // In Rust implementation, invalid blocks may return Left with InvalidBlock status
+                    // which is also acceptable for this test (block is invalid due to extra comm events)
                     println!("Block validation returned Left with status: {:?}", status);
                 }
             }
@@ -1638,8 +1631,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                 }
 
                 // Scala: _ <- timeEff.advance()
-                // Note: timeEff.advance() in Scala is used to advance logical
-                // time
+                // Note: timeEff.advance() in Scala is used to advance logical time
             }
         },
     )

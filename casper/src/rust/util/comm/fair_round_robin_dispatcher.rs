@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/comm/
-// FairRoundRobinDispatcher.scala
+// See casper/src/main/scala/coop/rchain/casper/util/comm/FairRoundRobinDispatcher.scala
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;

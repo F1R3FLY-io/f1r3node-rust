@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.scala
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -256,8 +255,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
             .collect();
 
         let candidate = ApprovedBlockCandidate {
-            block: genesis_block.clone(), /* Needed: genesis_block used again below and stored in
-                                           * struct */
+            block: genesis_block.clone(), // Needed: genesis_block used again below and stored in struct
             required_sigs,
         };
 
@@ -358,8 +356,10 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
             Box::pin(self.complete_genesis_ceremony(signatures.clone())).await
         } else {
             tracing::info!(
-                "Failed to meet approval conditions. Signatures: {} of {} required. Duration {} \
-                 ms of {} ms minimum. Continue broadcasting UnapprovedBlock...",
+                "Failed to meet approval conditions. \
+                Signatures: {} of {} required. \
+                Duration {} ms of {} ms minimum. \
+                Continue broadcasting UnapprovedBlock...",
                 signatures.len(),
                 self.required_sigs,
                 time - self.start,
@@ -480,8 +480,8 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
 
     pub async fn run(&self) -> Result<(), CasperError> {
         tracing::info!(
-            "Starting execution of ApprovedBlockProtocol. Waiting for {} approvals from genesis \
-             validators.",
+            "Starting execution of ApprovedBlockProtocol. \
+            Waiting for {} approvals from genesis validators.",
             self.required_sigs
         );
 

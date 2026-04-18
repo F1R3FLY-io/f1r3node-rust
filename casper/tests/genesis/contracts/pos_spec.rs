@@ -49,8 +49,7 @@ fn test_vaults() -> Vec<Vault> {
 
 #[test]
 fn pos_spec() {
-    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent
-    // stack overflow
+    // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {

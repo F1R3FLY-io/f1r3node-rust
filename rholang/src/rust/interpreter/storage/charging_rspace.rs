@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/
-// ChargingRSpace.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -40,8 +39,7 @@ pub enum TriggeredBy {
 }
 
 fn consume_id(continuation: TaggedContinuation) -> Result<Blake2b512Random, InterpreterError> {
-    //TODO: Make ScalaBodyRef-s have their own random state and merge it during its
-    // COMMs - OLD
+    //TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
     match continuation.tagged_cont.unwrap() {
         TaggedCont::ParBody(par_with_random) => Ok(Blake2b512Random::create_from_bytes(
             &par_with_random.random_state,
@@ -254,9 +252,8 @@ fn handle_result(
         Some((cont, data_list)) => {
             let consume_id = consume_id(cont.continuation.clone())?;
 
-            // We refund for non-persistent continuations, and for the persistent
-            // continuation triggering the comm. That persistent continuation is
-            // going to be charged for (without refund) once it has no matches in TS.
+            // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
+            // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
             let consume_id_bytes = consume_id.to_bytes();
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {

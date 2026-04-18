@@ -90,10 +90,8 @@ impl RholangAndScalaDispatcher {
                                     output,
                                 ),
                                 Err(e) if is_non_deterministic => {
-                                    // Non-deterministic process failed - return
-                                    // FailedNonDeterministicCall
-                                    // so the produce event can be marked as failed for replay
-                                    // safety
+                                    // Non-deterministic process failed - return FailedNonDeterministicCall
+                                    // so the produce event can be marked as failed for replay safety
                                     Ok(DispatchType::FailedNonDeterministicCall(e))
                                 }
                                 Err(e) => Err(e),

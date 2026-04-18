@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/comm/CasperPacketHandler.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/util/comm/CasperPacketHandler.scala
 
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -76,8 +75,7 @@ impl BlockCreator {
     }
 
     /// Extract the BlockCreator from a CasperMessage.
-    /// Returns the block creator for BlockHashMessage, empty for all other
-    /// message types.
+    /// Returns the block creator for BlockHashMessage, empty for all other message types.
     pub fn from_message(message: &CasperMessage) -> Self {
         match message {
             CasperMessage::BlockHashMessage(bhm) => Self::new(bhm.block_creator.clone()),
@@ -189,8 +187,7 @@ async fn check_message(
 /// Handle function to process messages after dispatch.
 ///
 /// Reads the engine from EngineCell and delegates message handling to it.
-/// The block_creator parameter is only used for source identification by the
-/// dispatcher.
+/// The block_creator parameter is only used for source identification by the dispatcher.
 async fn handle_message(
     engine_cell: &EngineCell,
     _block_creator: BlockCreator,
@@ -251,8 +248,8 @@ impl PacketHandler for FairDispatcherPacketHandler {
 
 /// Create a fair dispatcher packet handler.
 ///
-/// This factory function constructs a fully configured
-/// FairDispatcherPacketHandler with the given parameters.
+/// This factory function constructs a fully configured FairDispatcherPacketHandler
+/// with the given parameters.
 ///
 /// # Parameters
 ///

@@ -1,18 +1,16 @@
 // F1r3fly custom TLS transport wrapper for tonic compatibility
 //
 // This module provides wrappers around tokio-rustls TLS streams that implement
-// the traits required by tonic for transport layer integration. This enables
-// our complete F1r3fly TLS architecture that uses custom certificate
-// verification (HostnameTrustManager) while maintaining full compatibility with
-// tonic's gRPC functionality.
+// the traits required by tonic for transport layer integration. This enables our
+// complete F1r3fly TLS architecture that uses custom certificate verification
+// (HostnameTrustManager) while maintaining full compatibility with tonic's gRPC functionality.
 //
 // ## Architecture Overview
 //
 // F1r3fly TLS integration consists of:
 // - **Client Side**: F1r3flyConnector + F1r3flyClientTlsTransport (this module)
 // - **Server Side**: F1r3flyServer + F1r3flyServerTlsTransport (this module)
-// - **Certificate Verification**: HostnameTrustManager for secp256r1 and
-//   F1r3fly addresses
+// - **Certificate Verification**: HostnameTrustManager for secp256r1 and F1r3fly addresses
 // - **SSL Interceptors**: Application-level validation on top of TLS layer
 
 use std::io;
@@ -28,10 +26,9 @@ use tonic::transport::server::Connected;
 
 /// Custom TLS transport wrapper for F1r3fly client connections
 ///
-/// Wraps a tokio-rustls client TLS stream to provide tonic-compatible
-/// transport. This enables F1r3fly's custom certificate verification while
-/// maintaining compatibility with tonic's Channel and gRPC client
-/// functionality.
+/// Wraps a tokio-rustls client TLS stream to provide tonic-compatible transport.
+/// This enables F1r3fly's custom certificate verification while maintaining
+/// compatibility with tonic's Channel and gRPC client functionality.
 #[derive(Debug)]
 pub struct F1r3flyClientTlsTransport<S> {
     inner: ClientTlsStream<S>,
@@ -67,10 +64,9 @@ impl<S> F1r3flyClientTlsTransport<S> {
 
 /// Custom TLS transport wrapper for F1r3fly server connections
 ///
-/// Wraps a tokio-rustls server TLS stream to provide tonic-compatible
-/// transport. This enables F1r3fly's custom client certificate verification
-/// while maintaining compatibility with tonic's Server and gRPC service
-/// functionality.
+/// Wraps a tokio-rustls server TLS stream to provide tonic-compatible transport.
+/// This enables F1r3fly's custom client certificate verification while maintaining
+/// compatibility with tonic's Server and gRPC service functionality.
 #[derive(Debug)]
 pub struct F1r3flyServerTlsTransport<S> {
     inner: ServerTlsStream<S>,
@@ -105,8 +101,8 @@ impl<S> F1r3flyServerTlsTransport<S> {
 
     /// Extract peer certificates from the TLS session
     ///
-    /// This method returns the peer certificates as raw DER bytes that can be
-    /// used for F1r3fly certificate verification in the application layer.
+    /// This method returns the peer certificates as raw DER bytes that can be used
+    /// for F1r3fly certificate verification in the application layer.
     pub fn peer_certificates(&self) -> Option<Vec<Vec<u8>>> {
         // Access the rustls connection state to get peer certificates
         let (_, connection) = self.inner.get_ref();
@@ -209,8 +205,7 @@ where S: Connected
     fn connect_info(&self) -> Self::ConnectInfo { self.inner.get_ref().0.connect_info() }
 }
 
-// Add Unpin implementations for both transports to make them easier to work
-// with
+// Add Unpin implementations for both transports to make them easier to work with
 impl<S> Unpin for F1r3flyClientTlsTransport<S> where S: Unpin {}
 impl<S> Unpin for F1r3flyServerTlsTransport<S> where S: Unpin {}
 
@@ -264,8 +259,7 @@ where S: AsyncRead + AsyncWrite + Unpin
 
     fn is_write_vectored(&self) -> bool {
         // Delegate to the inner TLS stream
-        false // Conservative default - tokio_rustls may not support vectored
-              // writes
+        false // Conservative default - tokio_rustls may not support vectored writes
     }
 
     fn poll_write_vectored(
@@ -401,14 +395,12 @@ mod tests {
 
     #[test]
     fn test_tonic_trait_requirements() {
-        // Verify that our transport types implement the required traits for tonic
-        // compatibility This test ensures that the types can be used where
-        // tonic expects them
+        // Verify that our transport types implement the required traits for tonic compatibility
+        // This test ensures that the types can be used where tonic expects them
 
         use std::marker::PhantomData;
 
-        // Test that we can use the types in contexts that require AsyncRead +
-        // AsyncWrite + Unpin
+        // Test that we can use the types in contexts that require AsyncRead + AsyncWrite + Unpin
         fn requires_async_io<T>(_: PhantomData<T>)
         where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
         }

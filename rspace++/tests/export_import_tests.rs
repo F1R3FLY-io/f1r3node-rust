@@ -302,12 +302,7 @@ async fn multipage_export_with_skip_should_work_correctly() {
     // Multipage export with skip from space1
     let init_start_path: Vec<(Blake2b256Hash, Option<Byte>)> =
         vec![(init_point.root.clone(), init_child_num)];
-    let init_export_data = (
-        init_history_items,
-        init_data_items,
-        init_start_path,
-        start_skip,
-    );
+    let init_export_data = (init_history_items, init_data_items, init_start_path, start_skip);
     let mut export_data = init_export_data;
     loop {
         match multipage_export_with_skip(export_data, exporter1.clone(), importer1.clone()) {

@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.scala
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -52,12 +51,22 @@ impl ReplayRuntimeOps {
         }
     }
 
-    /* REPLAY Compute state with deploys (genesis block) and System deploys
-     * (regular block) */
+    fn discard_event_log(&mut self, phase: &str, error_path: bool) {
+        let drained = self.runtime_ops.runtime.take_event_log();
+        if error_path {
+            tracing::warn!(
+                target: "f1r3fly.casper.replay-rho-runtime",
+                "Discarded {} replay events during {} error path",
+                drained.len(),
+                phase
+            );
+        }
+    }
+
+    /* REPLAY Compute state with deploys (genesis block) and System deploys (regular block) */
 
     /**
-     * Evaluates (and validates) deploys and System deploys with checkpoint
-     * to valiate final state hash
+     * Evaluates (and validates) deploys and System deploys with checkpoint to valiate final state hash
      */
     #[tracing::instrument(
         name = "replay-compute-state",
@@ -71,8 +80,7 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
-        is_genesis: bool, /* FIXME have a better way of knowing this. Pass the replayDeploy
-                           * function maybe? - OLD */
+        is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
 
@@ -92,8 +100,7 @@ impl ReplayRuntimeOps {
     /* REPLAY Deploy evaluators */
 
     /**
-     * Evaluates (and validates) deploys on root hash with checkpoint to
-     * validate final state hash
+     * Evaluates (and validates) deploys on root hash with checkpoint to validate final state hash
      */
     pub async fn replay_deploys(
         &mut self,
@@ -185,8 +192,7 @@ impl ReplayRuntimeOps {
 
         self.check_replay_data_with_fix(eval_successful)?;
 
-        // Time checkpoint-mergeable operation (matches Scala
-        // RuntimeReplaySyntax.scala:L322)
+        // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)
         let checkpoint_mergeable_start = Instant::now();
         let channels_data = self
             .runtime_ops
@@ -220,14 +226,14 @@ impl ReplayRuntimeOps {
 
         match precharge_result {
             Ok((_, mut system_eval_result)) => {
-                let _ = self.runtime_ops.runtime.take_event_log();
+                self.discard_event_log("precharge", false);
                 if system_eval_result.errors.is_empty() {
                     mergeable_channels.extend(system_eval_result.mergeable.drain());
                 }
                 tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-done");
             }
             Err(err) => {
-                let _ = self.runtime_ops.runtime.take_event_log();
+                self.discard_event_log("precharge", true);
                 return Err(err);
             }
         };
@@ -253,22 +259,21 @@ impl ReplayRuntimeOps {
 
             match refund_result {
                 Ok((_, mut system_eval_result)) => {
-                    let _ = self.runtime_ops.runtime.take_event_log();
+                    self.discard_event_log("refund", false);
                     if system_eval_result.errors.is_empty() {
                         mergeable_channels.extend(system_eval_result.mergeable.drain());
                     }
                     tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-done");
                 }
                 Err(err) => {
-                    let _ = self.runtime_ops.runtime.take_event_log();
+                    self.discard_event_log("refund", true);
                     return Err(err);
                 }
             }
 
             successful
         } else {
-            // If there was an expected failure in the system deploy, skip user deploy
-            // execution
+            // If there was an expected failure in the system deploy, skip user deploy execution
             true
         };
 
@@ -299,7 +304,7 @@ impl ReplayRuntimeOps {
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
-        let _ = self.runtime_ops.runtime.take_event_log();
+        self.discard_event_log("user-deploy", false);
 
         let eval_successful = user_eval_result.errors.is_empty();
 
@@ -373,7 +378,7 @@ impl ReplayRuntimeOps {
                     .replay_system_deploy_internal(&mut slash_deploy, &None)
                     .await
                     .map(|(_, eval_result)| {
-                        let _ = self.runtime_ops.runtime.take_event_log();
+                        self.discard_event_log("slash-system-deploy", false);
 
                         // Time checkpoint-mergeable operation for slash deploy
                         let checkpoint_mergeable_start = Instant::now();
@@ -407,7 +412,7 @@ impl ReplayRuntimeOps {
                     .replay_system_deploy_internal(&mut close_block_deploy, &None)
                     .await
                     .map(|(_, eval_result)| {
-                        let _ = self.runtime_ops.runtime.take_event_log();
+                        self.discard_event_log("close-block-system-deploy", false);
 
                         // Time checkpoint-mergeable operation for close block deploy
                         let checkpoint_mergeable_start = Instant::now();

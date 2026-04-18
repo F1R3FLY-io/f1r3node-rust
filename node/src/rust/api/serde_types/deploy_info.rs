@@ -1,7 +1,7 @@
 //! JSON serialization/deserialization for DeployInfo
 //!
-//! This module provides custom JSON serialization for the DeployInfo protobuf
-//! type that doesn't have serde derives by default.
+//! This module provides custom JSON serialization for the DeployInfo protobuf type
+//! that doesn't have serde derives by default.
 
 use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
 use serde::{Deserialize, Serialize};

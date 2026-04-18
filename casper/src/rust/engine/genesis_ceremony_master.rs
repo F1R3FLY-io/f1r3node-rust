@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.scala
 
 use std::future::Future;
 use std::pin::Pin;
@@ -146,8 +145,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                         as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
                 });
 
-                // Direct-to-running path: emit init metrics that are otherwise produced in
-                // Initializing.
+                // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
                 record_direct_to_running_init_metrics();
 
                 transition_to_running(

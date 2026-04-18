@@ -98,6 +98,29 @@ docker compose -f docker/shard.yml up
 
 See [`docker/README.md`](docker/README.md) for building local images, port map, validator setup, and monitoring.
 
+#### Pull The Prebuilt Image
+
+CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR) on pushes to `master`, on release tags, and on a nightly schedule. The repository is public — **no Oracle Cloud account or `docker login` is required** to pull.
+
+```bash
+docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
+```
+
+Tag conventions:
+
+| Tag | When it is published |
+| --- | --- |
+| `:latest` | Latest push to `master` |
+| `:VERSION` (e.g. `:v0.4.12`) | Release tag push |
+| `:nightly` / `:nightly-YYYYMMDD` | Nightly scheduled build |
+
+Use a pulled image with the compose files by overriding `F1R3FLY_IMAGE`:
+
+```bash
+F1R3FLY_IMAGE=sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest \
+    docker compose -f docker/standalone.yml up
+```
+
 To build a local image:
 
 ```bash
@@ -110,6 +133,7 @@ To build a local image:
 | --- | --- |
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
+| [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide — local Docker, generic SSH VPSes, or Oracle Cloud |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
 | [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
 | [node/README.md](node/README.md) | Node binary crate and CLI entry points |

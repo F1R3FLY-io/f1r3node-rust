@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.scala
 
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
 use super::sortable::Sortable;

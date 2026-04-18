@@ -1,20 +1,10 @@
 ---
 doc_type: completed_tasks
 version: "1.0"
-last_updated: [DATE]
+last_updated: 2026-04-15
 ---
 
 # Completed Tasks
-
-<!--
-TEMPLATE USAGE INSTRUCTIONS:
-0. Update the frontmatter date when modifying this file
-   (Update version only for significant structural changes to template)
-1. Replace all [PROJECT_NAME] and [PROJECT_SPECIFIC] markers
-2. Move completed epochs here from docs/ToDos.md
-3. Maintain chronological order (newest at top)
-4. Remove these usage instruction comments before committing
--->
 
 This document archives completed epochs and tasks for historical reference and progress tracking.
 
@@ -24,12 +14,6 @@ This document archives completed epochs and tasks for historical reference and p
 - Completed work: This file (`docs/CompletedTasks.md`)
 - Deferred work: `docs/Backlog.md`
 
-**For LLM assistance in multi-repo workspace:**
-See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/common/task-tracking-standard.md)
-
-**For reference (GitLab):**
-[Task Tracking Standard](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/task-tracking-standard.md)
-
 ---
 
 ## Completed Epochs
@@ -38,66 +22,106 @@ See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/commo
 
 ---
 
-### EPOCH-XXX: [PROJECT_SPECIFIC: Epoch Title]
+### EPOCH-R03: CI/CD Pipeline
 
 ```yaml
 ---
-epoch_id: EPOCH-XXX
-title: "[PROJECT_SPECIFIC: Epoch Title]"
+epoch_id: EPOCH-R03
+title: "CI/CD Pipeline"
 status: complete
 priority: p1
-user_story: US-XXX
-completed_at: [DATE]
-completed_by: [SESSION_ID or contributor]
-mr_pr: "[PROJECT_SPECIFIC: MR/PR link if applicable]"
+completed_at: 2026-03-19
+completed_by: human + claude
 tasks:
-  - id: TASK-XXX-1
-    title: "[PROJECT_SPECIFIC: Task 1 title]"
+  - id: TASK-R03-1
+    title: "Add GitHub Actions workflow with lint and per-crate test matrix"
     status: complete
-    completed_at: [DATE]
-
-  - id: TASK-XXX-2
-    title: "[PROJECT_SPECIFIC: Task 2 title]"
+  - id: TASK-R03-2
+    title: "Fix pre-push hooks to run tests per-crate (LMDB lock contention)"
     status: complete
-    completed_at: [DATE]
 ---
 ```
 
-**Summary:** [PROJECT_SPECIFIC: Brief summary of what was accomplished]
+**Summary:** Added GitHub Actions CI with cargo fmt, clippy linting, and per-crate test matrix. Fixed pre-push hooks to avoid LMDB lock contention by running crate tests sequentially.
 
 **Key Changes:**
-- [PROJECT_SPECIFIC: Change 1]
-- [PROJECT_SPECIFIC: Change 2]
-
-**Lessons Learned:**
-- [PROJECT_SPECIFIC: What went well or what to do differently]
+- `.github/workflows/` — lint + per-crate test jobs
+- `hooks/pre-push` — sequential per-crate test execution
 
 ---
 
-<!-- Add more completed epochs following the same format -->
+### EPOCH-R02: Developer Tooling and Hooks
+
+```yaml
+---
+epoch_id: EPOCH-R02
+title: "Developer Tooling and Hooks"
+status: complete
+priority: p1
+completed_at: 2026-03-19
+completed_by: human + claude
+tasks:
+  - id: TASK-R02-1
+    title: "Add pre-commit and pre-push git hooks (lint/test gates)"
+    status: complete
+  - id: TASK-R02-2
+    title: "Fix hook executable permissions in git index"
+    status: complete
+  - id: TASK-R02-3
+    title: "Add LMDB system dependency for hook test runs"
+    status: complete
+  - id: TASK-R02-4
+    title: "Fix wallet test data corrupted by rustfmt format_strings"
+    status: complete
+  - id: TASK-R02-5
+    title: "Fix doc comment fencing broken by wrap_comments"
+    status: complete
+  - id: TASK-R02-6
+    title: "Expand local node and Docker setup instructions"
+    status: complete
+---
+```
+
+**Summary:** Established developer guardrails with pre-commit (fmt + clippy) and pre-push (test) hooks. Fixed several issues caused by aggressive rustfmt settings and missing system dependencies.
+
+**Key Changes:**
+- `hooks/pre-commit`, `hooks/pre-push` — git hook scripts
+- `casper/` — restored test data and doc comments damaged by rustfmt
+- `DEVELOPER.md` — expanded setup instructions for macOS, Ubuntu, Fedora
+
+---
+
+### EPOCH-R01: Repository Extraction
+
+```yaml
+---
+epoch_id: EPOCH-R01
+title: "Repository Extraction"
+status: complete
+priority: p0
+completed_at: 2026-03-19
+completed_by: human
+tasks:
+  - id: TASK-R01-1
+    title: "Extract pure Rust workspace from f1r3node rust/dev branch"
+    status: complete
+---
+```
+
+**Summary:** Extracted all 11 Rust crates from the `F1R3FLY-io/f1r3fly` repository's `rust/dev` branch into a standalone Cargo workspace. Removed Nix flake, SBT build, Scala source, `.envrc`, and JVM tooling. Added native dependency install instructions.
+
+**Key Changes:**
+- Standalone Cargo workspace with 11 crates
+- Removed: Nix, SBT, Scala, JVM dependencies
+- Added: Homebrew/apt install instructions, Justfile, Docker configs
 
 ---
 
 ## Completion Statistics
 
-<!-- Optional: Track metrics over time -->
-
 | Period | Epochs Completed | Tasks Completed | Notes |
 |--------|------------------|-----------------|-------|
-| [PROJECT_SPECIFIC: Period] | [Count] | [Count] | [Notes] |
-
----
-
-## Archive Format
-
-When moving epochs from `docs/ToDos.md` to this file:
-
-1. Copy the entire epoch block (YAML frontmatter + context)
-2. Update `status: complete`
-3. Add `completed_at`, `completed_by`, and optionally `mr_pr`
-4. Update all task statuses to `complete` with `completed_at` dates
-5. Add a brief **Summary** section
-6. Optionally add **Key Changes** and **Lessons Learned**
+| 2026-03 | 3 | 9 | Repo bootstrap: extraction, tooling, CI |
 
 ---
 

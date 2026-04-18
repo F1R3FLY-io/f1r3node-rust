@@ -36,9 +36,7 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{
-    CliqueOracleImpl, SafetyOracle, MAX_FAULT_TOLERANCE, MIN_FAULT_TOLERANCE,
-};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MAX_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -65,8 +63,7 @@ fn pad_hex_string(hash: &str) -> String {
 }
 
 // Automatic error conversions for common error types used in this API
-// We can only implement From for our own types, so we implement for CasperError
-// -> String
+// We can only implement From for our own types, so we implement for CasperError -> String
 impl From<CasperError> for String {
     fn from(err: CasperError) -> String { err.to_string() }
 }
@@ -93,29 +90,12 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
     }
 }
 
-const DEPLOY_PROPOSE_MAX_ATTEMPTS_ENV: &str = "F1R3_DEPLOY_PROPOSE_MAX_ATTEMPTS";
-const DEPLOY_PROPOSE_RETRY_DELAY_MS_ENV: &str = "F1R3_DEPLOY_PROPOSE_RETRY_DELAY_MS";
-const DEFAULT_DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
-const DEFAULT_DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
-const MAX_DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 2_000;
+const DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
+const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
 
-fn deploy_propose_max_attempts() -> u32 {
-    std::env::var(DEPLOY_PROPOSE_MAX_ATTEMPTS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_DEPLOY_PROPOSE_MAX_ATTEMPTS)
-}
+fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
 
-fn deploy_propose_retry_delay() -> Duration {
-    let delay_ms = std::env::var(DEPLOY_PROPOSE_RETRY_DELAY_MS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_DEPLOY_PROPOSE_RETRY_DELAY_MS)
-        .min(MAX_DEPLOY_PROPOSE_RETRY_DELAY_MS);
-    Duration::from_millis(delay_ms)
-}
+fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
@@ -176,8 +156,7 @@ lazy_static::lazy_static! {
     static ref REPORT_TRANSFORMER: ReportingProtoTransformer = ReportingProtoTransformer::new();
 }
 
-// TODO: Scala we should refactor BlockApi with applicative errors for better
-// classification of errors and to overcome nesting when validating data.
+// TODO: Scala we should refactor BlockApi with applicative errors for better classification of errors and to overcome nesting when validating data.
 #[derive(Debug)]
 pub struct BlockRetrievalError {
     pub message: String,
@@ -222,13 +201,7 @@ impl std::fmt::Display for LatestBlockMessageError {
 impl std::error::Error for LatestBlockMessageError {}
 
 impl BlockAPI {
-    fn find_deploy_scan_depth() -> usize {
-        std::env::var("F1R3_FIND_DEPLOY_SCAN_DEPTH")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(128)
-    }
+    fn find_deploy_scan_depth() -> usize { 128 }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,
@@ -318,10 +291,9 @@ impl BlockAPI {
                 )),
             };
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency
-            // bounded. Deploy success should not block on proposal completion;
-            // finalization is checked via propose/finalization APIs separately
-            // in integration flows.
+            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
+            // Deploy success should not block on proposal completion; finalization is checked via
+            // propose/finalization APIs separately in integration flows.
             if let Some(tp) = trigger_propose {
                 let tp = Arc::clone(tp);
                 let casper_for_propose = casper.clone();
@@ -337,8 +309,7 @@ impl BlockAPI {
                                         && attempt < max_attempts
                                     {
                                         tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt \
-                                             {}/{}, seqNum {}): {}; retrying in {:?}",
+                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
                                             attempt,
                                             max_attempts,
                                             seq_number,
@@ -379,8 +350,7 @@ impl BlockAPI {
                             Err(err) => {
                                 if attempt < max_attempts {
                                     tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): \
-                                         {}; retrying in {:?}",
+                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
                                         attempt,
                                         max_attempts,
                                         err,
@@ -523,16 +493,16 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(status, seq_number) => {
+                ProposerResult::Failure(ref status, seq_number) => {
                     log_debug(&format!("Failure: {} (seqNum {})", status, seq_number))
                 }
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
                 ProposerResult::Success(_, block) => {
-                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when
-                    // checking response result  Fix to use structured result
-                    // with transport errors/codes. https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
+                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when checking response result
+                    //  Fix to use structured result with transport errors/codes.
+                    // https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
                     let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
                     log_success(&format!(
                         "Success! Block {} created and added.",
@@ -1233,24 +1203,10 @@ impl BlockAPI {
         constructor: fn(&BlockMessage, f32) -> A,
     ) -> ApiErr<A> {
         let dag = casper.block_dag().await?;
-        // TODO: Scala this is temporary solution to not calculate fault tolerance all
-        // the blocks
-        let old_block =
-            Some(dag.latest_block_number() - block.body.state.block_number).map(|diff| diff > 100);
-        let block_in_dag = dag.contains(&block.block_hash);
-
-        let normalized_fault_tolerance = if old_block.unwrap_or(false) || !block_in_dag {
-            if dag.is_finalized(&block.block_hash) {
-                MAX_FAULT_TOLERANCE
-            } else {
-                MIN_FAULT_TOLERANCE
-            }
-        } else {
-            let safety_oracle = CliqueOracleImpl;
-            safety_oracle
-                .normalized_fault_tolerance(&dag, &block.block_hash)
-                .await?
-        };
+        let safety_oracle = CliqueOracleImpl;
+        let normalized_fault_tolerance = safety_oracle
+            .normalized_fault_tolerance(&dag, &block.block_hash)
+            .await?;
 
         let weights_map = proto_util::weight_map(block);
         let weights_u64: HashMap<Bytes, u64> = weights_map
@@ -1429,22 +1385,19 @@ impl BlockAPI {
         }
     }
 
-    /// Explore the data or continuation in the tuple space for specific
-    /// blockHash
+    /// Explore the data or continuation in the tuple space for specific blockHash
     ///
-    /// - `term`: the term you want to explore in the request. Be sure the first
-    ///   `new` should be `return`
+    /// - `term`: the term you want to explore in the request. Be sure the first `new` should be `return`
     /// - `block_hash`: the block hash you want to explore
-    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash.
-    ///   If `use_pre_state_hash` is true, the explore would try to execute on
-    ///   preState.
+    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash. If `use_pre_state_hash` is true, the explore
+    ///   would try to execute on preState.
     pub async fn exploratory_deploy(
         engine_cell: &EngineCell,
         term: String,
         block_hash: Option<String>,
         use_pre_state_hash: bool,
         dev_mode: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+    ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
         let eng = engine_cell.get().await;
@@ -1526,14 +1479,14 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let res = runtime_manager
+                        let (res, cost) = runtime_manager
                             .lock()
                             .await
                             .play_exploratory_deploy(term, &state_hash)
                             .await?;
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
-                        Ok((res, light_block_info))
+                        Ok((res, light_block_info, cost))
                     }
                     None => Err(eyre::eyre!("Can not find block {:?}", block_hash)),
                 }
@@ -1594,7 +1547,8 @@ impl BlockAPI {
                     data_with_block_info.block.unwrap_or_default(),
                 ))
             } else {
-                Err(eyre::eyre!("No data found"))
+                let block_info = BlockAPI::get_light_block_info(casper, &block).await?;
+                Ok((vec![], block_info))
             }
         }
 

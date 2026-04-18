@@ -1,6 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -39,22 +40,21 @@ pub fn merge(
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
 ) -> Result<(Blake2b256Hash, Vec<Bytes>), CasperError> {
-    // Get ancestors of LFB (blocks whose state is already included in LFB's
-    // post-state) Use with_ancestors to include LFB itself in the set
-    let lfb_ancestors = dag.with_ancestors(lfb.clone(), |_| true)?;
-
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its
-    // ancestors. This includes:
+    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
+    // This includes:
     // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are
-    //    ancestors of the tips
-    // Previously we only included descendants, which missed deploy effects from
-    // sibling branches. Note: lfb_ancestors includes the LFB itself (via
-    // with_ancestors)
+    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
+    // Previously we only included descendants, which missed deploy effects from sibling branches.
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
-            // Include all scope blocks except LFB and its ancestors
-            scope_blocks.difference(&lfb_ancestors).cloned().collect()
+            // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
+            let mut result = HashSet::new();
+            for candidate in scope_blocks {
+                if !dag.is_in_main_chain(candidate, lfb)? {
+                    result.insert(candidate.clone());
+                }
+            }
+            result
         }
         None => {
             // Legacy behavior: use descendants of LFB
@@ -62,13 +62,11 @@ pub fn merge(
         }
     };
 
-    // Late blocks: With the new actualBlocks definition that includes sibling
-    // branches, there are no "late" blocks when scope is provided - all
-    // non-ancestor blocks are in actualBlocks. Late block filtering is now only
-    // relevant for legacy code paths without scope.
+    // Late blocks: With the new actualBlocks definition that includes sibling branches,
+    // there are no "late" blocks when scope is provided - all non-ancestor blocks are in actualBlocks.
+    // Late block filtering is now only relevant for legacy code paths without scope.
     let late_blocks: HashSet<BlockHash> = if disable_late_block_filtering || scope.is_some() {
-        // No late blocks when scope is provided (all relevant blocks are in
-        // actualBlocks)
+        // No late blocks when scope is provided (all relevant blocks are in actualBlocks)
         HashSet::new()
     } else {
         // Legacy: query nonFinalizedBlocks (non-deterministic, but no scope means
@@ -82,19 +80,16 @@ pub fn merge(
 
     // Log the block sets for debugging
     tracing::info!(
-        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lfbAncestors={}, \
-         lateBlocks={}",
+        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lateBlocks={}",
         hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
         actual_blocks.len(),
-        lfb_ancestors.len(),
         late_blocks.len()
     );
 
-    // Get indices for actual and late blocks, converting to sorted vectors for
-    // determinism
+    // Get indices for actual and late blocks, converting to sorted vectors for determinism
     let mut actual_set_vec = Vec::new();
     let mut late_set_vec = Vec::new();
 
@@ -118,116 +113,86 @@ pub fn merge(
     actual_set_vec.sort();
     late_set_vec.sort();
 
-    // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted
-    // Vecs)
+    // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted Vecs)
     let actual_seq = actual_set_vec;
     let late_seq = late_set_vec;
 
-    // Check if branches are conflicting
-    let branches_are_conflicting =
-        |as_set: &HashableSet<DeployChainIndex>, bs_set: &HashableSet<DeployChainIndex>| {
-            // Filter out system deploy IDs - they should never be treated as conflicts
-            // System deploys are deterministic and execute the same way in all branches
-            let as_user_deploys: HashSet<_> = as_set
-                .0
-                .iter()
-                .flat_map(|chain| chain.deploys_with_cost.0.iter())
-                .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
-                .map(|deploy| &deploy.deploy_id)
-                .collect();
+    // Pre-computed data for a single DeployChainIndex, cached by pointer address
+    // to avoid recomputing on every O(D²) depends() call.
+    struct ChainDerived {
+        produces_created: HashableSet<rspace_plus_plus::rspace::trace::event::Produce>,
+        consumes_created: HashableSet<rspace_plus_plus::rspace::trace::event::Consume>,
+    }
 
-            let bs_user_deploys: HashSet<_> = bs_set
-                .0
-                .iter()
-                .flat_map(|chain| chain.deploys_with_cost.0.iter())
-                .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
-                .map(|deploy| &deploy.deploy_id)
-                .collect();
+    // Pre-computed data for a branch (HashableSet<DeployChainIndex>), cached by
+    // pointer address to avoid recomputing on every O(B²) conflicts() call.
+    struct BranchDerived {
+        user_deploy_ids: HashSet<Bytes>,
+        combined_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+    }
 
-            // Check if user deploy IDs intersect
-            let same_deploy_in_both = as_user_deploys.intersection(&bs_user_deploys).count() > 0;
+    fn compute_branch_derived(branch: &HashableSet<DeployChainIndex>) -> BranchDerived {
+        let user_deploy_ids: HashSet<_> = branch
+            .0
+            .iter()
+            .flat_map(|chain| chain.deploys_with_cost.0.iter())
+            .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
+            .map(|deploy| deploy.deploy_id.clone())
+            .collect();
 
-            // Also filter system deploys from event log comparison
-            let as_user_indices: Vec<_> = as_set
-                .0
-                .iter()
-                .filter(|idx| {
-                    idx.deploys_with_cost
-                        .0
-                        .iter()
-                        .all(|d| !is_system_deploy_id(&d.deploy_id))
-                })
-                .collect();
-
-            let bs_user_indices: Vec<_> = bs_set
-                .0
-                .iter()
-                .filter(|idx| {
-                    idx.deploys_with_cost
-                        .0
-                        .iter()
-                        .all(|d| !is_system_deploy_id(&d.deploy_id))
-                })
-                .collect();
-
-            // Check if event logs are conflicting (using only user deploy indices)
-            let as_combined = as_user_indices
-                .iter()
-                .map(|chain| &chain.event_log_index)
-                .fold(
-                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
-                    |acc, index| {
-                        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                            &acc, index,
-                        )
-                    },
-                );
-            let bs_combined = bs_user_indices
-                .iter()
-                .map(|chain| &chain.event_log_index)
-                .fold(
-                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
-                    |acc, index| {
-                        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                            &acc, index,
-                        )
-                    },
-                );
-
-            let event_log_conflict = merging_logic::are_conflicting(&as_combined, &bs_combined);
-
-            // Debug: log conflict reason when conflict is detected
-            if same_deploy_in_both || event_log_conflict {
-                let as_deploy_ids: Vec<_> = as_user_deploys
+        let combined_event_log = branch
+            .0
+            .iter()
+            .filter(|idx| {
+                idx.deploys_with_cost
+                    .0
                     .iter()
-                    .map(|id| hex::encode(&id[..std::cmp::min(8, id.len())]))
-                    .collect();
-                let bs_deploy_ids: Vec<_> = bs_user_deploys
-                    .iter()
-                    .map(|id| hex::encode(&id[..std::cmp::min(8, id.len())]))
-                    .collect();
+                    .all(|d| !is_system_deploy_id(&d.deploy_id))
+            })
+            .map(|chain| &chain.event_log_index)
+            .fold(
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
+                |acc, index| {
+                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                        &acc, index,
+                    )
+                },
+            );
 
-                let conflict_reason_str = if same_deploy_in_both {
-                    let intersection: Vec<_> = as_user_deploys
-                        .intersection(&bs_user_deploys)
-                        .map(|id| hex::encode(&id[..std::cmp::min(8, id.len())]))
-                        .collect();
-                    format!("sameDeployInBoth: {}", intersection.join(","))
-                } else {
-                    merging_logic::conflict_reason(&as_combined, &bs_combined)
-                        .unwrap_or_else(|| "unknown".to_string())
-                };
+        BranchDerived {
+            user_deploy_ids,
+            combined_event_log,
+        }
+    }
 
-                tracing::debug!(
-                    "[DEBUG] CONFLICT DETECTED: [{}] vs [{}] - reason: {}",
-                    as_deploy_ids.join(","),
-                    bs_deploy_ids.join(","),
-                    conflict_reason_str
-                );
-            }
+    // Lazy caches keyed by pointer address. Safe because:
+    // - References come from HashSet iteration, addresses stable during iteration
+    // - DerivedSets/BranchDerived are pure functions of the item
+    let chain_cache: RefCell<HashMap<usize, ChainDerived>> = RefCell::new(HashMap::new());
+    let branch_cache: RefCell<HashMap<usize, BranchDerived>> = RefCell::new(HashMap::new());
 
-            same_deploy_in_both || event_log_conflict
-        };
+    let get_chain_derived = |chain: &DeployChainIndex| -> usize {
+        let addr = std::ptr::addr_of!(*chain) as usize;
+        let mut cache = chain_cache.borrow_mut();
+        cache.entry(addr).or_insert_with(|| ChainDerived {
+            produces_created: merging_logic::produces_created_and_not_destroyed(
+                &chain.event_log_index,
+            ),
+            consumes_created: merging_logic::consumes_created_and_not_destroyed(
+                &chain.event_log_index,
+            ),
+        });
+        addr
+    };
+
+    let get_branch_derived = |branch: &HashableSet<DeployChainIndex>| -> usize {
+        let addr = std::ptr::addr_of!(*branch) as usize;
+        let mut cache = branch_cache.borrow_mut();
+        cache
+            .entry(addr)
+            .or_insert_with(|| compute_branch_derived(branch));
+        addr
+    };
 
     // Create history reader for base state
     let history_reader = std::sync::Arc::new(
@@ -241,9 +206,61 @@ pub fn merge(
         actual_seq,
         late_seq,
         |target: &DeployChainIndex, source: &DeployChainIndex| {
-            merging_logic::depends(&target.event_log_index, &source.event_log_index)
+            // Cached depends: pre-computes source's derived sets on first access
+            let source_addr = get_chain_derived(source);
+            let cache = chain_cache.borrow();
+            let derived = cache.get(&source_addr).unwrap();
+
+            let produces_source: HashSet<_> = derived
+                .produces_created
+                .0
+                .difference(&source.event_log_index.produces_mergeable.0)
+                .collect();
+            let produces_target: HashSet<_> = target
+                .event_log_index
+                .produces_consumed
+                .0
+                .difference(&source.event_log_index.produces_mergeable.0)
+                .collect();
+
+            if produces_source
+                .intersection(&produces_target)
+                .next()
+                .is_some()
+            {
+                return true;
+            }
+
+            derived
+                .consumes_created
+                .0
+                .intersection(&target.event_log_index.consumes_produced.0)
+                .next()
+                .is_some()
         },
-        branches_are_conflicting,
+        |as_set: &HashableSet<DeployChainIndex>, bs_set: &HashableSet<DeployChainIndex>| {
+            // Cached branch conflicts: pre-computes deploy IDs and combined event log
+            let a_addr = get_branch_derived(as_set);
+            let b_addr = get_branch_derived(bs_set);
+            let cache = branch_cache.borrow();
+            let a_derived = cache.get(&a_addr).unwrap();
+            let b_derived = cache.get(&b_addr).unwrap();
+
+            let same_deploy = a_derived
+                .user_deploy_ids
+                .intersection(&b_derived.user_deploy_ids)
+                .next()
+                .is_some();
+
+            if same_deploy {
+                return true;
+            }
+
+            merging_logic::are_conflicting(
+                &a_derived.combined_event_log,
+                &b_derived.combined_event_log,
+            )
+        },
         rejection_cost_f,
         |chain: &DeployChainIndex| Ok(chain.state_changes.clone()),
         |chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone(),

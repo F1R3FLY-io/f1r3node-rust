@@ -37,8 +37,8 @@ impl MetricsSemaphore {
         }
     }
 
-    /// Creates a new MetricsSemaphore with a single permit (mutex-like
-    /// behavior). This matches Scala's `MetricsSemaphore.single`.
+    /// Creates a new MetricsSemaphore with a single permit (mutex-like behavior).
+    /// This matches Scala's `MetricsSemaphore.single`.
     pub fn single(source: &'static str) -> Self { Self::new(1, source) }
 
     /// Returns the current number of available permits.
@@ -46,8 +46,8 @@ impl MetricsSemaphore {
 
     /// Acquires a permit from the semaphore, recording metrics.
     ///
-    /// This method increments `lock.queue` while waiting, records
-    /// `lock.acquire` time, and decrements `lock.queue` after acquisition.
+    /// This method increments `lock.queue` while waiting, records `lock.acquire` time,
+    /// and decrements `lock.queue` after acquisition.
     pub async fn acquire(&self) -> MetricsSemaphorePermit {
         // Increment queue gauge
         let queue_val = self.queue_count.fetch_add(1, Ordering::SeqCst) + 1;

@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/blocks/proposer/
-// BlockCreatorSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/blocks/proposer/BlockCreatorSpec.scala
 //
 // Unit tests for BlockCreator.
 // Tests the deploy preparation and cleanup logic.
@@ -53,8 +52,7 @@ fn create_deploy(
 }
 
 /// Creates a CasperSnapshot for testing with the given parameters.
-/// Uses an in-memory DAG representation (matching Scala's
-/// TestBlockDagRepresentation).
+/// Uses an in-memory DAG representation (matching Scala's TestBlockDagRepresentation).
 fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     let shard_conf = CasperShardConf {
         fault_tolerance_threshold: 0.0,
@@ -77,6 +75,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         mergeable_channels_gc_depth_buffer: 10,
         disable_late_block_filtering: false,
         disable_validator_progress_check: false,
+        ..CasperShardConf::new()
     };
 
     let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
@@ -125,8 +124,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
 
-    // Create all stores from a single InMemoryStoreManager (like Scala's kvm
-    // pattern)
+    // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
     let deploy_storage = Arc::new(Mutex::new(
@@ -206,14 +204,11 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     }
 }
 
-/// Test: "remove both block-expired and time-expired deploys while keeping
-/// valid ones"
+/// Test: "remove both block-expired and time-expired deploys while keeping valid ones"
 ///
 /// - Block-expired deploy (validAfterBlockNumber = 0 is expired)
-/// - Time-expired deploy (validAfterBlockNumber = 60 is valid, but
-///   expirationTimestamp is past)
-/// - Valid deploy (validAfterBlockNumber = 60 is valid, no expiration
-///   timestamp)
+/// - Time-expired deploy (validAfterBlockNumber = 60 is valid, but expirationTimestamp is past)
+/// - Valid deploy (validAfterBlockNumber = 60 is valid, no expiration timestamp)
 #[tokio::test]
 async fn should_remove_both_block_expired_and_time_expired_deploys() {
     crate::init_logger();
@@ -222,8 +217,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
 
-    // Create all stores from a single InMemoryStoreManager (like Scala's kvm
-    // pattern)
+    // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
     let deploy_storage = Arc::new(Mutex::new(
@@ -260,8 +254,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Create deploys:
     // - Block-expired deploy (validAfterBlockNumber = 0 is expired)
-    // - Time-expired deploy (validAfterBlockNumber = 60 is valid, but
-    //   expirationTimestamp is past)
+    // - Time-expired deploy (validAfterBlockNumber = 60 is valid, but expirationTimestamp is past)
     // - Valid deploy (validAfterBlockNumber = 60 is valid, no expiration timestamp)
     let block_expired_deploy = create_deploy(0, None, &validator_sk);
     let time_expired_deploy = create_deploy(60, Some(past_timestamp), &validator_sk);

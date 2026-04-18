@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/state/instances/
-// BlockStateManagerImpl.scala
+// See casper/src/main/scala/coop/rchain/casper/state/instances/BlockStateManagerImpl.scala
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 

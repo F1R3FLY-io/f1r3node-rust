@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use shared::rust::hashable_set::HashableSet;
 
-use super::merging_logic::{combine_produces_copied_by_peek, NumberChannelsDiff};
+use super::merging_logic::{NumberChannelsDiff, combine_produces_copied_by_peek};
 use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -60,23 +60,23 @@ impl Ord for EventLogIndex {
         }
 
         // If numberChannelsData are identical, distinguish by event counts
-        let a_prod = self.produces_linear.0.len()
-            + self.produces_persistent.0.len()
-            + self.produces_consumed.0.len();
-        let b_prod = other.produces_linear.0.len()
-            + other.produces_persistent.0.len()
-            + other.produces_consumed.0.len();
+        let a_prod = self.produces_linear.0.len() +
+            self.produces_persistent.0.len() +
+            self.produces_consumed.0.len();
+        let b_prod = other.produces_linear.0.len() +
+            other.produces_persistent.0.len() +
+            other.produces_consumed.0.len();
         let prod_cmp = a_prod.cmp(&b_prod);
         if prod_cmp != std::cmp::Ordering::Equal {
             return prod_cmp;
         }
 
-        let a_cons = self.consumes_linear_and_peeks.0.len()
-            + self.consumes_persistent.0.len()
-            + self.consumes_produced.0.len();
-        let b_cons = other.consumes_linear_and_peeks.0.len()
-            + other.consumes_persistent.0.len()
-            + other.consumes_produced.0.len();
+        let a_cons = self.consumes_linear_and_peeks.0.len() +
+            self.consumes_persistent.0.len() +
+            self.consumes_produced.0.len();
+        let b_cons = other.consumes_linear_and_peeks.0.len() +
+            other.consumes_persistent.0.len() +
+            other.consumes_produced.0.len();
         a_cons.cmp(&b_cons)
     }
 }
@@ -436,10 +436,6 @@ mod tests {
         assert_eq!(result1, result2, "ordering must be consistent across calls");
 
         // Antisymmetry: compare(a,b) == reverse of compare(b,a)
-        assert_eq!(
-            b.cmp(&a),
-            result1.reverse(),
-            "ordering must be antisymmetric"
-        );
+        assert_eq!(b.cmp(&a), result1.reverse(), "ordering must be antisymmetric");
     }
 }

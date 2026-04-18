@@ -21,8 +21,7 @@ impl OllamaConfig {
             false,
             "http://localhost:11434".to_string(),
             "llama4:latest".to_string(),
-            30,   // default timeout
-            true, // default validate_connection
+            30,
         )
     }
 
@@ -31,7 +30,6 @@ impl OllamaConfig {
         config_base_url: String,
         config_model: String,
         config_timeout_sec: u64,
-        config_validate_connection: bool,
     ) -> Self {
         let enabled = parse_bool_env("OLLAMA_ENABLED").unwrap_or(config_enabled);
         let base_url = env::var("OLLAMA_BASE_URL").unwrap_or(config_base_url);
@@ -40,8 +38,7 @@ impl OllamaConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(config_timeout_sec);
-        let validate_connection =
-            parse_bool_env("OLLAMA_VALIDATE_CONNECTION").unwrap_or(config_validate_connection);
+        let validate_connection = enabled;
 
         Self {
             enabled,
@@ -373,10 +370,9 @@ pub fn create_disabled_ollama_service() -> SharedOllamaService {
     Arc::new(tokio::sync::Mutex::new(OllamaService::new_disabled()))
 }
 
-/// Create Ollama service with connection validation (matches Scala's
-/// validateConnectionOrFail) This should be used during node startup to ensure
-/// Ollama is reachable. Returns an error if validate_connection is true and
-/// Ollama is unreachable.
+/// Create Ollama service with connection validation (matches Scala's validateConnectionOrFail)
+/// This should be used during node startup to ensure Ollama is reachable.
+/// Returns an error if validate_connection is true and Ollama is unreachable.
 pub async fn create_ollama_service_validated(
     config: &OllamaConfig,
 ) -> Result<SharedOllamaService, InterpreterError> {
@@ -400,8 +396,7 @@ pub async fn create_ollama_service_validated(
             }
             Err(e) => {
                 return Err(InterpreterError::OllamaError(format!(
-                    "Ollama service connection validation failed. Check that Ollama is running on \
-                     {}: {}",
+                    "Ollama service connection validation failed. Check that Ollama is running on {}: {}",
                     config.base_url, e
                 )));
             }

@@ -279,8 +279,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
     .await
 }
 
-// See [[/docs/casper/images/
-// no_finalizable_block_mistake_with_no_disagreement_check.png]]
+// See [[/docs/casper/images/no_finalizable_block_mistake_with_no_disagreement_check.png]]
 #[tokio::test]
 async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_score_map_and_forkchoice(
 ) {

@@ -256,8 +256,7 @@ pub fn rho_reporter(
     })
 }
 
-/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event
-/// collection
+/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
     runtime: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
     space: RhoReportingRspace,
@@ -362,8 +361,7 @@ impl ReportingRuntime {
     ///
     /// Bootstraps registry without checkpoint
     /// `createCheckpoint` is called at the end of `replayDeploys`, not here.
-    /// The reporting space is ephemeral and reset to `preStateHash` before
-    /// replay.
+    /// The reporting space is ephemeral and reset to `preStateHash` before replay.
     pub async fn create_reporting_runtime(
         reporting_space: RhoReportingRspace,
         mergeable_tag_name: Par,

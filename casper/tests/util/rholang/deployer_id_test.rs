@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/DeployerIdTest.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/DeployerIdTest.scala
 
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};

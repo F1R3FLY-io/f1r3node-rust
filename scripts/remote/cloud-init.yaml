@@ -1,0 +1,32 @@
+#cloud-config
+# Bootstraps an Oracle Linux 9 instance for the F1R3FLY testbed.
+# Installs Docker CE, opens firewalld ports, and adds the opc user to the docker group.
+
+package_update: true
+
+yum_repos:
+  docker-ce:
+    name: Docker CE Stable
+    baseurl: https://download.docker.com/linux/centos/9/$basearch/stable
+    enabled: true
+    gpgcheck: true
+    gpgkey: https://download.docker.com/linux/centos/gpg
+
+packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - firewalld
+  - jq
+  - curl
+
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [systemctl, enable, --now, firewalld]
+  - [usermod, -aG, docker, opc]
+  - [firewall-cmd, --permanent, --add-port=22/tcp]
+  - [firewall-cmd, --permanent, --add-port=40400-40405/tcp]
+  - [firewall-cmd, --permanent, --add-port=40404/udp]
+  - [firewall-cmd, --reload]
+  - [sh, -c, 'echo "cloud-init complete at $(date -Iseconds)" > /var/log/f1r3fly-testbed-init.log']

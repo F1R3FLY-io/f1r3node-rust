@@ -3,8 +3,7 @@ use models::rhoapi::Par;
 
 use super::par_count::ParCount;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// ParSpatialMatcherUtils.scala - subPars
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - subPars
 pub fn sub_pars(
     par: &Par,
     min: &ParCount,

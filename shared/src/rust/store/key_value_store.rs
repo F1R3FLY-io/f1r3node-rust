@@ -5,6 +5,7 @@ use crate::rust::ByteBuffer;
 
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
 pub trait KeyValueStore: Send + Sync {
+    #[allow(clippy::ptr_arg)]
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
@@ -12,6 +13,10 @@ pub trait KeyValueStore: Send + Sync {
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
+    fn iterate_while(
+        &self,
+        f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError>;
 
     fn clone_box(&self) -> Box<dyn KeyValueStore>;
 

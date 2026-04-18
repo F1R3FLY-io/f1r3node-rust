@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/
-// SystemDeployUserError.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployUserError.scala
 
 use std::fmt;
 

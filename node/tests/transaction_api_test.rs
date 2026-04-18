@@ -45,8 +45,7 @@ async fn check_transaction_api(
     // Add block from validator
     let transfer_block = validator.add_block_from_deploys(&[deploy]).await?;
 
-    // Process block on readonly node - this stores the block in
-    // readonly.block_store
+    // Process block on readonly node - this stores the block in readonly.block_store
     readonly.process_block(transfer_block.clone()).await?;
 
     // Verify the block is actually in the store before proceeding
@@ -107,8 +106,7 @@ async fn check_transaction_api(
 
     // Create BlockReportAPI
     // Note: BlockReportAPI requires engine_cell, block_store, and oracle
-    // Use the readonly node's block_store directly (cloned, but shares underlying
-    // storage)
+    // Use the readonly node's block_store directly (cloned, but shares underlying storage)
     let engine_cell = readonly.engine_cell.clone();
     let block_store = readonly.block_store.clone();
     let oracle = casper::rust::safety_oracle::CliqueOracleImpl;
@@ -291,8 +289,7 @@ async fn precharge_failed_case_should_return_1_precharge_transaction() {
     assert_eq!(transaction.transaction.from_addr, from_addr);
 
     // Note: The amount check might need adjustment based on actual implementation
-    // The Scala test checks: phloLimit * phloPrice -
-    // block.body.deploys.head.cost.cost
+    // The Scala test checks: phloLimit * phloPrice - block.body.deploys.head.cost.cost
     let expected_amount = phlo_limit * phlo_price - block.body.deploys[0].cost.cost as i64;
     assert_eq!(transaction.transaction.amount, expected_amount);
     assert_eq!(

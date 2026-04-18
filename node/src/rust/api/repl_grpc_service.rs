@@ -1,8 +1,7 @@
 //! REPL gRPC Service implementation
 //!
-//! This module provides a gRPC service for the REPL (Read-Eval-Print Loop)
-//! functionality, allowing clients to execute Rholang code and receive
-//! formatted output.
+//! This module provides a gRPC service for the REPL (Read-Eval-Print Loop) functionality,
+//! allowing clients to execute Rholang code and receive formatted output.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,19 +41,16 @@ impl ReplGrpcServiceImpl {
         source: &str,
         print_unmatched_sends_only: bool,
     ) -> eyre::Result<ReplResponse> {
-        // TODO: maybe we should move this call to tokio::task::spawn_blocking if the
-        // execution will block the task for a long time
+        // TODO: maybe we should move this call to tokio::task::spawn_blocking if the execution will block the task for a long time
         use rholang::rust::interpreter::storage::storage_printer;
 
-        // Match Scala behavior: catch compilation errors and return them as successful
-        // responses with "Error: {error}" format, rather than propagating as
-        // gRPC errors
+        // Match Scala behavior: catch compilation errors and return them as successful responses
+        // with "Error: {error}" format, rather than propagating as gRPC errors
         let par = match Compiler::source_to_adt_with_normalizer_env(source, HashMap::new()) {
             Ok(p) => p,
             Err(e) => {
-                // Return error as successful response, matching Scala's ReplGrpcService
-                // behavior Scala: case _: InterpreterError =>
-                // Sync[F].delay(s"Error: ${er.toString}")
+                // Return error as successful response, matching Scala's ReplGrpcService behavior
+                // Scala: case _: InterpreterError => Sync[F].delay(s"Error: ${er.toString}")
                 let error_msg = format!("Error: {}", e);
                 return Ok(ReplResponse { output: error_msg });
             }

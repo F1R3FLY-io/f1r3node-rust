@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/
-// RunningHandleHasBlockSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/RunningHandleHasBlockSpec.scala
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,8 +21,7 @@ struct TestContext {
     hash: BlockHash,
     hb: HasBlock,
     // Note: Using full TestFixture for convenience, though this test only needs
-    // engine, block_retriever, and transport_layer. The overhead is acceptable for test
-    // simplicity.
+    // engine, block_retriever, and transport_layer. The overhead is acceptable for test simplicity.
     fixture: TestFixture,
 }
 
@@ -55,9 +53,7 @@ impl TestContext {
         }
     }
 
-    // Scala: val br =
-    // BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).
-    // right.get).get)
+    // Scala: val br = BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).right.get).get)
     fn to_block_request(protocol: &Protocol) -> BlockRequest {
         if let Some(message) = &protocol.message {
             if let Packet(packet_data) = message {
@@ -77,12 +73,10 @@ impl TestContext {
             .as_millis() as u64
     }
 
-    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] =
-    // kp(kp(Right(()))) Note: Not ported because TransportLayerTestImpl doesn't
-    // require setting success responses.
+    // Scala: private def alwaysSuccess: PeerNode => Protocol => CommErr[Unit] = kp(kp(Right(())))
+    // Note: Not ported because TransportLayerTestImpl doesn't require setting success responses.
 
-    // Scala: private def alwaysDoNotIgnoreF: BlockHash => Task[Boolean] = _ =>
-    // false.pure[Task]
+    // Scala: private def alwaysDoNotIgnoreF: BlockHash => Task[Boolean] = _ => false.pure[Task]
     fn always_do_not_ignore_f(_hash: BlockHash) -> Result<bool, casper::rust::errors::CasperError> {
         Ok(false)
     }
@@ -309,9 +303,8 @@ async fn running_handle_has_block_should_not_call_send_hash_to_block_receiver_if
 ) {
     let ctx = TestContext::new().await;
     // given
-    // Note: Scala passes null as peer because it's not used when ignore_message_f
-    // returns true. In Rust, we can't pass null for PeerNode, so we create a
-    // dummy peer instead.
+    // Note: Scala passes null as peer because it's not used when ignore_message_f returns true.
+    // In Rust, we can't pass null for PeerNode, so we create a dummy peer instead.
     let dummy_peer = TestContext::peer_node("dummy", 40400);
 
     // when

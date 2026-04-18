@@ -19,22 +19,11 @@ pub fn mk_rspace_store_manager(dir_path: PathBuf, map_size: usize) -> impl KeyVa
     let channel_env_config = LmdbEnvConfig::new("channels".to_owned(), map_size);
 
     let mut db_mapping = HashMap::new();
-    db_mapping.insert(
-        Db::new("rspace-history".to_string(), None),
-        rspace_history_env_config.clone(),
-    );
-    db_mapping.insert(
-        Db::new("rspace-roots".to_string(), None),
-        rspace_history_env_config,
-    );
-    db_mapping.insert(
-        Db::new("rspace-cold".to_string(), None),
-        rspace_cold_env_config,
-    );
-    db_mapping.insert(
-        Db::new("rspace-channels".to_string(), None),
-        channel_env_config,
-    );
+    db_mapping
+        .insert(Db::new("rspace-history".to_string(), None), rspace_history_env_config.clone());
+    db_mapping.insert(Db::new("rspace-roots".to_string(), None), rspace_history_env_config);
+    db_mapping.insert(Db::new("rspace-cold".to_string(), None), rspace_cold_env_config);
+    db_mapping.insert(Db::new("rspace-channels".to_string(), None), channel_env_config);
 
     LmdbDirStoreManager::new(dir_path, db_mapping)
 }
@@ -48,10 +37,7 @@ pub fn get_or_create_rspace_store(
     map_size: usize,
 ) -> Result<RSpaceStore, heed::Error> {
     if Path::new(lmdb_path).exists() {
-        tracing::debug!(
-            "RSpace++ storage path {} already exists (reopening)",
-            lmdb_path
-        );
+        tracing::debug!("RSpace++ storage path {} already exists (reopening)", lmdb_path);
 
         // In Scala (and Rust rnode_db_mapping), RSpace envs are in subfolders:
         // rspace/history and rspace/cold
@@ -70,10 +56,7 @@ pub fn get_or_create_rspace_store(
 
         Ok(rspace_store)
     } else {
-        tracing::debug!(
-            "RSpace++ storage path {} does not exist, creating new",
-            lmdb_path
-        );
+        tracing::debug!("RSpace++ storage path {} does not exist, creating new", lmdb_path);
         create_dir_all(lmdb_path).expect("Failed to create RSpace++ storage directory");
 
         // Create subfolders consistent with rnode_db_mapping

@@ -131,9 +131,8 @@ impl RhoSpec {
         }
     }
 
-    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of
-    // `!_.isSuccess`. This was fixed in Rust to correctly return true when
-    // there are failures (not successes).
+    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of `!_.isSuccess`.
+    // This was fixed in Rust to correctly return true when there are failures (not successes).
     pub fn has_failures(assertions: &[RhoTestAssertion]) -> bool {
         assertions.iter().any(|a| !a.is_success())
     }
@@ -314,10 +313,9 @@ pub async fn get_results(
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
     })?;
 
-    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where
-    // Matcher is created automatically (see
-    // rspace++/libs/rspace_rhotypes/src/lib.rs). In pure Rust code (without
-    // JNA), we must create the Matcher explicitly here,
+    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
+    // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
+    // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
     let matcher =
         Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
@@ -341,8 +339,7 @@ pub async fn get_results(
     let rand = Blake2b512Random::create_from_length(128).split_short(1);
 
     // Note: tokio::time::timeout similar to Scala's `monix.eval.Task.timeout()`.
-    // If test execution takes longer than `execution_timeout`, it returns a timeout
-    // error.
+    // If test execution takes longer than `execution_timeout`, it returns a timeout error.
     match tokio::time::timeout(
         execution_timeout,
         TestUtil::eval_source(test_object, &runtime, rand),
@@ -354,7 +351,7 @@ pub async fn get_results(
             return Err(InterpreterError::BugFoundError(format!(
                 "Timeout of {:?} expired while executing test from {}",
                 execution_timeout, test_object.path
-            )));
+            )))
         }
     }
 
