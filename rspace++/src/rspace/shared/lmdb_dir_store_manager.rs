@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::channel::oneshot;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tokio::sync::Mutex;
 
@@ -66,80 +65,62 @@ pub struct LmdbDirStoreManager {
 }
 
 struct StoreState {
-    envs: HashMap<String, oneshot::Receiver<Box<dyn KeyValueStoreManager>>>,
+    // Cached LmdbStoreManagers keyed by env config name. Each Arc<Mutex<...>>
+    // is created once per env config and reused for every database that shares
+    // that env. heed 0.22 rejects duplicate env opens of the same directory
+    // with EnvAlreadyOpened, so the cache must survive across store() calls.
+    envs: HashMap<String, Arc<Mutex<Box<dyn KeyValueStoreManager>>>>,
 }
 
 #[async_trait]
 impl KeyValueStoreManager for LmdbDirStoreManager {
     async fn store(&mut self, db_name: String) -> Result<Arc<dyn KeyValueStore>, heed::Error> {
-        let db_instance_mapping: HashMap<&String, (&Db, &LmdbEnvConfig)> = self
-            .db_mapping
-            .iter()
-            .map(|(db, cfg)| (&db.id, (db, cfg)))
-            .collect();
+        let (database_name, man_cfg) = {
+            let db_instance_mapping: HashMap<&String, (&Db, &LmdbEnvConfig)> = self
+                .db_mapping
+                .iter()
+                .map(|(db, cfg)| (&db.id, (db, cfg)))
+                .collect();
 
-        let (sender, receiver) = oneshot::channel::<Box<dyn KeyValueStoreManager>>();
-
-        let action = {
-            let mut state = self.managers_state.lock().await;
-
-            let (db, cfg) = db_instance_mapping.get(&db_name).ok_or({
+            let (db, cfg) = db_instance_mapping.get(&db_name).ok_or_else(|| {
                 heed::Error::Io(std::io::Error::other(format!(
                     "LMDB_Dir_Store_Manager: Key {} was not found",
                     db_name
                 )))
             })?;
 
-            let man_name = cfg.name.to_string();
-
-            let is_new = !state.envs.contains_key(&man_name);
-            if is_new {
-                state.envs.insert(man_name.to_string(), receiver);
-            }
-
-            (is_new, db, cfg)
+            (db.name_override.clone().unwrap_or(db.id.clone()), (*cfg).clone())
         };
-        let (is_new, db, man_cfg) = action;
 
-        if is_new {
-            self.create_lmdb_manager(man_cfg, sender)?;
-        }
-
-        let receiver = {
-            let mut state = self.managers_state.lock().await;
-            state.envs.remove(&man_cfg.name).ok_or({
-                heed::Error::Io(std::io::Error::other(
-                    "LMDB_Dir_Store_Manager: Receiver not found".to_string(),
-                ))
-            })?
-        };
-        let mut manager = receiver.await.map_err(|e| {
-            heed::Error::Io(std::io::Error::other(format!(
-                "LMDB_Dir_Store_Manager: Failed to receive manager, {}",
-                e
-            )))
-        })?;
-
-        let database_name = db.name_override.clone().unwrap_or(db.id.clone());
-        let database = manager.store(database_name);
-
-        database.await
-    }
-
-    async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        let pending_manager_receivers = {
+        let manager_arc = {
             let mut state = self.managers_state.lock().await;
             state
                 .envs
-                .drain()
-                .map(|(_, manager_receiver)| manager_receiver)
-                .collect::<Vec<_>>()
+                .entry(man_cfg.name.clone())
+                .or_insert_with(|| {
+                    let manager = LmdbStoreManager::new(
+                        self.dir_path.join(&man_cfg.name),
+                        man_cfg.max_env_size,
+                        man_cfg.max_dbs,
+                    );
+                    Arc::new(Mutex::new(manager))
+                })
+                .clone()
         };
 
-        for manager_receiver in pending_manager_receivers {
-            if let Ok(mut manager) = manager_receiver.await {
-                let _ = manager.shutdown().await;
-            }
+        let mut manager = manager_arc.lock().await;
+        manager.store(database_name).await
+    }
+
+    async fn shutdown(&mut self) -> Result<(), heed::Error> {
+        let managers: Vec<Arc<Mutex<Box<dyn KeyValueStoreManager>>>> = {
+            let mut state = self.managers_state.lock().await;
+            state.envs.drain().map(|(_, m)| m).collect()
+        };
+
+        for manager_arc in managers {
+            let mut manager = manager_arc.lock().await;
+            let _ = manager.shutdown().await;
         }
 
         Ok(())
@@ -159,44 +140,14 @@ impl LmdbDirStoreManager {
             })),
         }
     }
-
-    fn create_lmdb_manager(
-        &self,
-        config: &LmdbEnvConfig,
-        sender: oneshot::Sender<Box<dyn KeyValueStoreManager>>,
-    ) -> Result<(), heed::Error> {
-        let manager = LmdbStoreManager::new(
-            self.dir_path.join(&config.name),
-            config.max_env_size,
-            config.max_dbs,
-        );
-        sender.send(manager).map_err(|_| {
-            heed::Error::Io(std::io::Error::other(format!(
-                "Failed to send LMDB manager for {}",
-                config.name
-            )))
-        })?;
-
-        Ok(())
-    }
 }
 
-// Implement Drop
-// This ensures all LMDB environments are closed when the manager is dropped
+// Ensure cached managers (and their LMDB envs) are dropped when this manager
+// is dropped.
 impl Drop for LmdbDirStoreManager {
     fn drop(&mut self) {
-        // Use try_lock() for synchronous access in Drop
         if let Ok(mut state) = self.managers_state.try_lock() {
-            // Attempt to receive and drop all pending managers
-            // This allows their Drop implementations to clean up LMDB environments
-            for (_name, mut receiver) in state.envs.drain() {
-                // In Drop context we can't await, so we use try_recv()
-                // If the receiver is ready, we get the manager and let it drop
-                if let Ok(Some(_manager)) = receiver.try_recv() {
-                    // Manager will be dropped here, triggering its Drop
-                    // implementation
-                }
-            }
+            state.envs.clear();
         }
     }
 }
