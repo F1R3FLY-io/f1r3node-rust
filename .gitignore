@@ -42,7 +42,7 @@ docker/data.*/
 
 # LMDB files
 rholang/**/*.mdb
-rspace++/tests/*.proptest-regressions
+**/*.proptest-regressions
 
 # Rust JNI/JNA libraries (legacy hybrid build)
 rust_libraries/**
