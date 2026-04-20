@@ -170,7 +170,8 @@ in {
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, computeEffectiveBonds,
-                removeDelegationsForValidator, updateDelegationEntry, updateDelegatedTotalEntry in {
+                removeDelegationsForValidator, updateDelegationEntry, updateDelegatedTotalEntry,
+                sumPendingUndelegations, computeDelegatorRewardDeltas in {
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -188,14 +189,19 @@ in {
                 "withdrawers"     : {},
                 // Map[PublicKey, Int]
                 "committedRewards" : {},
+                // Map[DelegatorPublicKey, Int] - rewards accumulated for delegators
+                "delegatorRewards" : {},
                 // Map[PublicKey, Int] - the validators wishing to withdraw and the block number when their quarantine ends
                 "pendingWithdrawers": {},
+                // Map[DelegatorPublicKey, Map[ValidatorPublicKey, (Int, Int)]] -
+                // pending undelegation requests by delegator and validator, storing (amount, unlockBlock)
+                "pendingUndelegations": {},
                 "randomImages"    : {},
                 "randomNumbers"   : {},
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh,
-                    effectiveBondsCh in {
+                    effectiveBondsCh, delegatorRewardsCh, pendingUndelegationsCh in {
                   @posVault!("balance", *posBalanceCh) |
                   for (@state <<- stateCh) {
                     computeEffectiveBonds!(state, *effectiveBondsCh) |
@@ -204,9 +210,22 @@ in {
                       calTotalActiveBonds!(state, effectiveBonds, *totalActiveBondCh) |
                       accumulateItemInState!(*totalWithdrawCh, "withdrawers", *accumulateFstOfSndArg) |
                       accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
+                      accumulateItemInState!(*delegatorRewardsCh, "delegatorRewards", *accumulateSndNum) |
+                      sumPendingUndelegations!(state, *pendingUndelegationsCh) |
                       for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
-                           @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
-                        retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, effectiveBonds, state.get("activeValidators")))
+                           @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh;
+                           @totalDelegatorRewards <- delegatorRewardsCh; @totalPendingUndelegations <- pendingUndelegationsCh){
+                        retCh!((
+                          posBalance,
+                          totalBond,
+                          activeBonds,
+                          totalWithdraw,
+                          totalCommittedRewards,
+                          totalDelegatorRewards,
+                          totalPendingUndelegations,
+                          effectiveBonds,
+                          state.get("activeValidators")
+                        ))
                       }
                     }
                   }
@@ -297,15 +316,61 @@ in {
                   returnCh!(delegatedTotals.set(validatorPk, newAmount))
                 }
               }|
+              // Sums all pending undelegation principal amounts.
+              contract sumPendingUndelegations(@state, returnCh) = {
+                new sumDelegatorPending, sumValidatorPending in {
+                  @ListOps!("fold", state.get("pendingUndelegations").toList(), 0, *sumDelegatorPending, *returnCh) |
+                  contract sumDelegatorPending(@(_, validatorMap), @acc, resultCh) = {
+                    new delegatorPendingTotalCh in {
+                      @ListOps!("fold", validatorMap.toList(), 0, *sumValidatorPending, *delegatorPendingTotalCh) |
+                      contract sumValidatorPending(@(_, (pendingAmount, _)), @innerAcc, innerResultCh) = {
+                        innerResultCh!(innerAcc + pendingAmount)
+                      } |
+                      for (@delegatorPendingTotal <- delegatorPendingTotalCh) {
+                        resultCh!(acc + delegatorPendingTotal)
+                      }
+                    }
+                  }
+                }
+              }|
+              // Computes per-delegator reward deltas for current epoch validator rewards.
+              contract computeDelegatorRewardDeltas(@state, @currentRewards, returnCh) = {
+                new computeOneDelegator, computeValidatorShare in {
+                  @ListOps!("fold", state.get("delegations").toList(), {}, *computeOneDelegator, *returnCh) |
+                  contract computeOneDelegator(@(delegatorPk, validatorMap), @acc, resultCh) = {
+                    new delegatorRewardCh in {
+                      @ListOps!("fold", validatorMap.toList(), 0, *computeValidatorShare, *delegatorRewardCh) |
+                      contract computeValidatorShare(@(validatorPk, delegatedAmount), @delegatorAcc, shareOutCh) = {
+                        match currentRewards.getOrElse(validatorPk, 0) {
+                          validatorReward => {
+                            match state.get("allBonds").getOrElse(validatorPk, 0) + state.get("delegatedTotals").getOrElse(validatorPk, 0) {
+                              effectiveBond => {
+                                if (effectiveBond > 0) {
+                                  shareOutCh!(delegatorAcc + validatorReward * delegatedAmount / effectiveBond)
+                                } else {
+                                  shareOutCh!(delegatorAcc)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      } |
+                      for (@delegatorReward <- delegatorRewardCh) {
+                        resultCh!(acc.set(delegatorPk, acc.getOrElse(delegatorPk, 0) + delegatorReward))
+                      }
+                    }
+                  }
+                }
+              }|
               contract PoS(@"getCurrentEpochRewards", returnCh) = {
                 new rewardCh, computeReward in {
                   rewardsInfo!(*rewardCh)|
-                  for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet) <- rewardCh){
+                  for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, totalDelegatorRewards, totalPendingUndelegations, bondsMap, activeValidatorsSet) <- rewardCh){
                     @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
                       //  someAmount / minimumBond to reduce the possibility on overflow long
                       if (activeValidatorsSet.contains(pk)){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$) / (activeBonds / $$minimumBond$$)))
+                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards - totalDelegatorRewards - totalPendingUndelegations) * (bonds / $$minimumBond$$) / (activeBonds / $$minimumBond$$)))
                       } else {
                         outCh!(acc.set(pk, 0))
                       }
@@ -348,6 +413,18 @@ in {
               contract PoS(@"getDelegatedTotals", returnCh) = {
                 for (@state <<- stateCh) {
                   returnCh!(state.get("delegatedTotals"))
+                }
+              } |
+              // Peeks at accumulated delegator rewards.
+              contract PoS(@"getDelegatorRewards", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("delegatorRewards"))
+                }
+              } |
+              // Peeks at pending undelegation map.
+              contract PoS(@"getPendingUndelegations", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("pendingUndelegations"))
                 }
               } |
               // Peeks at active validator list.
@@ -483,15 +560,22 @@ in {
                   }
                 }
               } |
-              // Public method allowing delegators to remove previously delegated stake.
+              // Public method allowing delegators to request stake undelegation.
+              // Stake is removed from effective bonds immediately and becomes claimable after cooldown.
               contract PoS(@"undelegate", @deployerId, @validatorPk, @amount, returnCh) = {
-                new userCh, processCh, vaultAddressCh, transferCh in {
+                new userCh, processCh, blockDataCh,
+                    getBlockData(`rho:block:data`)
+                in {
                   runMVar!(*stateCh, *processCh, *returnCh) |
                   getUser!(deployerId, *userCh) |
+                  getBlockData!(*blockDataCh) |
                   for (@state, resultCh <- processCh &
-                       @delegatorPk      <- userCh) {
+                       @delegatorPk      <- userCh &
+                       @blockNumber, _, _ <- blockDataCh) {
                     if (amount <= 0) {
                       resultCh!(state, (false, "Undelegation amount must be positive."))
+                    } else if (state.get("pendingUndelegations").getOrElse(delegatorPk, {}).contains(validatorPk)) {
+                      resultCh!(state, (false, "Pending undelegation already exists for validator."))
                     } else {
                       match state
                             .get("delegations")
@@ -501,40 +585,118 @@ in {
                           if (delegatedAmount < amount) {
                             resultCh!(state, (false, "Undelegation amount exceeds delegated stake."))
                           } else {
-                            vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
-                            for (@toVaultAddress <- vaultAddressCh) {
-                              @posVault!("transfer", toVaultAddress, amount, posAuthKey, *transferCh) |
-                              for (@transferResult <- transferCh) {
-                                match transferResult {
-                                  (true, _) => {
-                                    new updatedDelegationsCh, updatedTotalsCh in {
-                                      updateDelegationEntry!(
-                                        state.get("delegations"),
-                                        delegatorPk,
-                                        validatorPk,
-                                        delegatedAmount - amount,
-                                        *updatedDelegationsCh
-                                      ) |
-                                      updateDelegatedTotalEntry!(
-                                        state.get("delegatedTotals"),
-                                        validatorPk,
-                                        state.get("delegatedTotals").getOrElse(validatorPk, 0) - amount,
-                                        *updatedTotalsCh
-                                      ) |
-                                      for (@updatedDelegations <- updatedDelegationsCh &
-                                           @updatedTotals      <- updatedTotalsCh) {
-                                        resultCh!(
+                            new updatedDelegationsCh, updatedTotalsCh in {
+                              updateDelegationEntry!(
+                                state.get("delegations"),
+                                delegatorPk,
+                                validatorPk,
+                                delegatedAmount - amount,
+                                *updatedDelegationsCh
+                              ) |
+                              updateDelegatedTotalEntry!(
+                                state.get("delegatedTotals"),
+                                validatorPk,
+                                state.get("delegatedTotals").getOrElse(validatorPk, 0) - amount,
+                                *updatedTotalsCh
+                              ) |
+                              for (@updatedDelegations <- updatedDelegationsCh &
+                                   @updatedTotals      <- updatedTotalsCh) {
+                                resultCh!(
+                                  state
+                                    .set("delegations", updatedDelegations)
+                                    .set("delegatedTotals", updatedTotals)
+                                    .set(
+                                      "pendingUndelegations",
+                                      state
+                                        .get("pendingUndelegations")
+                                        .set(
+                                          delegatorPk,
                                           state
-                                            .set("delegations", updatedDelegations)
-                                            .set("delegatedTotals", updatedTotals),
-                                          (true, Nil)
+                                            .get("pendingUndelegations")
+                                            .getOrElse(delegatorPk, {})
+                                            .set(validatorPk, (amount, blockNumber + $$epochLength$$))
                                         )
+                                    ),
+                                  (true, Nil)
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              // Public method allowing delegators to complete undelegation and transfer cooled principal back.
+              contract PoS(@"completeUndelegate", @deployerId, @validatorPk, returnCh) = {
+                new userCh, processCh, blockDataCh, vaultAddressCh, transferCh,
+                    getBlockData(`rho:block:data`)
+                in {
+                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  getUser!(deployerId, *userCh) |
+                  getBlockData!(*blockDataCh) |
+                  for (@state, resultCh <- processCh &
+                       @delegatorPk      <- userCh &
+                       @blockNumber, _, _ <- blockDataCh) {
+                    match state.get("pendingUndelegations").getOrElse(delegatorPk, {}).getOrElse(validatorPk, Nil) {
+                      Nil => {
+                        resultCh!(state, (false, "No pending undelegation for validator."))
+                      }
+                      (pendingAmount, unlockBlock) => {
+                        if (blockNumber < unlockBlock) {
+                          resultCh!(state, (false, "Undelegation cooldown not finished."))
+                        } else {
+                          vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
+                          for (@toVaultAddress <- vaultAddressCh) {
+                            @posVault!("transfer", toVaultAddress, pendingAmount, posAuthKey, *transferCh) |
+                            for (@transferResult <- transferCh) {
+                              match transferResult {
+                                (true, _) => {
+                                  match state.get("pendingUndelegations").getOrElse(delegatorPk, {}).delete(validatorPk) {
+                                    updatedDelegatorPending => {
+                                      if (updatedDelegatorPending.size() == 0) {
+                                        resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").delete(delegatorPk)), (true, Nil))
+                                      } else {
+                                        resultCh!(state.set("pendingUndelegations", state.get("pendingUndelegations").set(delegatorPk, updatedDelegatorPending)), (true, Nil))
                                       }
                                     }
                                   }
-                                  (false, errorMsg) => {
-                                    resultCh!(state, (false, "Undelegation transfer failed: " ++ errorMsg))
-                                  }
+                                }
+                                (false, errorMsg) => {
+                                  resultCh!(state, (false, "Undelegation transfer failed: " ++ errorMsg))
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              // Public method allowing delegators to claim accumulated rewards.
+              contract PoS(@"claimDelegatorRewards", @deployerId, returnCh) = {
+                new userCh, processCh, vaultAddressCh, transferCh in {
+                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  getUser!(deployerId, *userCh) |
+                  for (@state, resultCh <- processCh &
+                       @delegatorPk      <- userCh) {
+                    match state.get("delegatorRewards").getOrElse(delegatorPk, 0) {
+                      rewardAmount => {
+                        if (rewardAmount <= 0) {
+                          resultCh!(state, (false, "No delegator rewards available."))
+                        } else {
+                          vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
+                          for (@toVaultAddress <- vaultAddressCh) {
+                            @posVault!("transfer", toVaultAddress, rewardAmount, posAuthKey, *transferCh) |
+                            for (@transferResult <- transferCh) {
+                              match transferResult {
+                                (true, _) => {
+                                  resultCh!(state.set("delegatorRewards", state.get("delegatorRewards").delete(delegatorPk)), (true, Nil))
+                                }
+                                (false, errorMsg) => {
+                                  resultCh!(state, (false, "Delegator reward transfer failed: " ++ errorMsg))
                                 }
                               }
                             }
@@ -694,8 +856,10 @@ in {
                                                 "delegatedTotals" : state.get("delegatedTotals").delete(validator),
                                                 "activeValidators": state.get("activeValidators").delete(validator),
                                                 "committedRewards" : state.get("committedRewards").delete(validator),
+                                                "delegatorRewards" : state.get("delegatorRewards"),
                                                 "withdrawers"     : state.get("withdrawers"),
                                                 "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                                "pendingUndelegations": state.get("pendingUndelegations"),
                                                 "randomImages"    : state.get("randomImages"),
                                                 "randomNumbers"   : state.get("randomNumbers")
                                               },
@@ -778,11 +942,55 @@ in {
                                   }
                                 } |
                                 contract commitCurrentEpochRewards(@state, @currentRewards, returnCh) = {
-                                  new accumulate in {
-                                    @ListOps!("fold", currentRewards.toList(), state, *accumulate, *returnCh) |
-                                    contract accumulate(@(pk, reward), @updatedState, resultCh) = {
-                                      resultCh!(updatedState.set("committedRewards",
-                                                                  updatedState.get("committedRewards").set(pk, updatedState.get("committedRewards").getOrElse(pk, 0) + reward)))
+                                  new accumulateValidatorShare, updatedValidatorStateCh,
+                                      delegatorRewardDeltasCh, accumulateDelegatorShare in {
+                                    @ListOps!("fold", currentRewards.toList(), state, *accumulateValidatorShare, *updatedValidatorStateCh) |
+                                    contract accumulateValidatorShare(@(validatorPk, validatorReward), @updatedState, resultCh) = {
+                                      match updatedState.get("allBonds").getOrElse(validatorPk, 0) {
+                                        selfBond => {
+                                          match selfBond + updatedState.get("delegatedTotals").getOrElse(validatorPk, 0) {
+                                            effectiveBond => {
+                                              if (effectiveBond > 0) {
+                                                resultCh!(
+                                                  updatedState.set(
+                                                    "committedRewards",
+                                                    updatedState
+                                                      .get("committedRewards")
+                                                      .set(
+                                                        validatorPk,
+                                                        updatedState.get("committedRewards").getOrElse(validatorPk, 0) + validatorReward * selfBond / effectiveBond
+                                                      )
+                                                  )
+                                                )
+                                              } else {
+                                                resultCh!(updatedState)
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    } |
+                                    computeDelegatorRewardDeltas!(state, currentRewards, *delegatorRewardDeltasCh) |
+                                    for (@stateAfterValidatorShare <- updatedValidatorStateCh &
+                                         @delegatorRewardDeltas    <- delegatorRewardDeltasCh) {
+                                      @ListOps!("fold", delegatorRewardDeltas.toList(), stateAfterValidatorShare, *accumulateDelegatorShare, *returnCh) |
+                                      contract accumulateDelegatorShare(@(delegatorPk, rewardDelta), @accState, resultCh) = {
+                                        if (rewardDelta > 0) {
+                                          resultCh!(
+                                            accState.set(
+                                              "delegatorRewards",
+                                              accState
+                                                .get("delegatorRewards")
+                                                .set(
+                                                  delegatorPk,
+                                                  accState.get("delegatorRewards").getOrElse(delegatorPk, 0) + rewardDelta
+                                                )
+                                            )
+                                          )
+                                        } else {
+                                          resultCh!(accState)
+                                        }
+                                      }
                                     }
                                   }
                                 } |
