@@ -1258,7 +1258,7 @@ impl RuntimeOps {
         new return, rl(`rho:registry:lookup`), poSCh in {
           rl!(`rho:system:pos`, *poSCh) |
           for(@(_, PoS) <- poSCh) {
-            @PoS!("getBonds", *return)
+            @PoS!("getEffectiveBonds", *return)
           }
         }
       "#

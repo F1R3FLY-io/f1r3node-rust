@@ -16,6 +16,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_make_pos_succeeds,
       test_close_block_finishes,
       test_bonding_succeeds,
+      test_delegation_succeeds,
+      test_undelegation_succeeds,
+      test_withdraw_fails_with_active_delegations,
       test_withdraw_succeeds,
       test_validator_is_paid_after_withdraw,
       test_multiple_bonding_succeeds,
@@ -51,6 +54,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("PoS is created with empty rewards", *test_make_pos_succeeds),
               ("closeBlock finishes successfully", *test_close_block_finishes),
               ("bonding success", *test_bonding_succeeds),
+              ("delegation success", *test_delegation_succeeds),
+              ("undelegation success", *test_undelegation_succeeds),
+              ("withdraw fails when validator has active delegations", *test_withdraw_fails_with_active_delegations),
               ("withdraw succeeds", *test_withdraw_succeeds),
               ("validator is paid after withdraw", *test_validator_is_paid_after_withdraw),
               ("bonding fails if deposit fails", *test_bonding_fails_if_deposit_fails),
@@ -179,6 +185,149 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                             ],
                             *ackCh
                           )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that a user can delegate to an existing validator and the effective bonds reflect that delegation.
+          contract test_delegation_succeeds(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh,
+                initialPosBalanceCh, finalPosBalanceCh,
+                initialDelegatorBalanceCh, finalDelegatorBalanceCh,
+                selfBondsCh, effectiveBondsCh, delegationsCh, delegatedTotalsCh
+            in {
+              prepareUser!("6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a", *validatorSetupCh) |
+              prepareUser!("7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh) {
+                match (100, 40) {
+                  (validatorBond, delegationAmt) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      getPosBalance!(*initialPosBalanceCh) |
+                      @delegatorVault!("balance", *initialDelegatorBalanceCh) |
+                      for (@initialPosBalance <- initialPosBalanceCh &
+                           @initialDelegatorBalance <- initialDelegatorBalanceCh) {
+                        @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                        for (@(true, _) <- delegateCh) {
+                          getPosBalance!(*finalPosBalanceCh) |
+                          @delegatorVault!("balance", *finalDelegatorBalanceCh) |
+                          @PoS!("getBonds", *selfBondsCh) |
+                          @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                          @PoS!("getDelegations", *delegationsCh) |
+                          @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                          for (@finalPosBalance <- finalPosBalanceCh &
+                               @finalDelegatorBalance <- finalDelegatorBalanceCh &
+                               @selfBonds <- selfBondsCh &
+                               @effectiveBonds <- effectiveBondsCh &
+                               @delegations <- delegationsCh &
+                               @delegatedTotals <- delegatedTotalsCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond map is unchanged by delegation"),
+                                ((validatorBond + delegationAmt, "==", effectiveBonds.get(validatorPubKey)), "delegated stake increases validator effective bond"),
+                                ((delegationAmt, "==", delegations.getOrElse(delegatorPubKey, {}).getOrElse(validatorPubKey, 0)), "delegation map tracks delegated stake"),
+                                ((delegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0)), "delegated total tracks delegated stake per validator"),
+                                ((delegationAmt, "==", finalPosBalance - initialPosBalance), "PoS vault receives delegated amount"),
+                                ((delegationAmt, "==", initialDelegatorBalance - finalDelegatorBalance), "delegator vault pays delegated amount")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that a user can undelegate and receive funds back from the PoS vault.
+          contract test_undelegation_succeeds(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh, undelegateCh,
+                initialPosBalanceCh, finalPosBalanceCh,
+                initialDelegatorBalanceCh, finalDelegatorBalanceCh,
+                selfBondsCh, effectiveBondsCh, delegationsCh, delegatedTotalsCh
+            in {
+              prepareUser!("8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c", *validatorSetupCh) |
+              prepareUser!("9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh) {
+                match (100, 60, 60) {
+                  (validatorBond, delegationAmt, undelegationAmt) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        getPosBalance!(*initialPosBalanceCh) |
+                        @delegatorVault!("balance", *initialDelegatorBalanceCh) |
+                        for (@initialPosBalance <- initialPosBalanceCh &
+                             @initialDelegatorBalance <- initialDelegatorBalanceCh) {
+                          @PoS!("undelegate", delegatorDeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
+                          for (@(true, _) <- undelegateCh) {
+                            getPosBalance!(*finalPosBalanceCh) |
+                            @delegatorVault!("balance", *finalDelegatorBalanceCh) |
+                            @PoS!("getBonds", *selfBondsCh) |
+                            @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                            @PoS!("getDelegations", *delegationsCh) |
+                            @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                            for (@finalPosBalance <- finalPosBalanceCh &
+                                 @finalDelegatorBalance <- finalDelegatorBalanceCh &
+                                 @selfBonds <- selfBondsCh &
+                                 @effectiveBonds <- effectiveBondsCh &
+                                 @delegations <- delegationsCh &
+                                 @delegatedTotals <- delegatedTotalsCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond map is unchanged by undelegation"),
+                                  ((validatorBond, "==", effectiveBonds.get(validatorPubKey)), "full undelegation restores validator effective bond to self-bond"),
+                                  ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "delegation entry is removed after full undelegation"),
+                                  ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total entry is removed after full undelegation"),
+                                  ((undelegationAmt, "==", initialPosBalance - finalPosBalance), "PoS vault sends undelegated amount back"),
+                                  ((undelegationAmt, "==", finalDelegatorBalance - initialDelegatorBalance), "delegator receives undelegated amount")
+                                ],
+                                *ackCh
+                              )
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that validator withdrawal is blocked while delegated stake is still attached.
+          contract test_withdraw_fails_with_active_delegations(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh, withdrawCh, pendingWithdrawersCh
+            in {
+              prepareUser!("aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae", *validatorSetupCh) |
+              prepareUser!("bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   _, _, _, @delegatorDeployerId <- delegatorSetupCh) {
+                match (100, 30) {
+                  (validatorBond, delegationAmt) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        @PoS!("withdraw", validatorDeployerId, *withdrawCh) |
+                        for (@(false, errorMsg) <- withdrawCh) {
+                          @PoS!("getPendingWithdrawer", *pendingWithdrawersCh) |
+                          for (@pendingWithdrawers <- pendingWithdrawersCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                (("Validator has active delegations.", "==", errorMsg), "withdraw is rejected while delegation is active"),
+                                ((false, "==", pendingWithdrawers.contains(validatorPubKey)), "validator is not added to pending withdrawers")
+                              ],
+                              *ackCh
+                            )
+                          }
                         }
                       }
                     }
