@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/blocks/proposer/ProposeResult.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/blocks/proposer/ProposeResult.scala
 
 use std::fmt;
 
@@ -59,10 +58,9 @@ pub enum CheckProposeConstraintsFailure {
 #[derive(Debug, Clone)]
 pub enum BlockCreatorResult {
     NoNewDeploys,
-    /// The created block together with the pre- and post-state hashes that were
-    /// computed during `compute_deploys_checkpoint`. Carrying these hashes
-    /// avoids re-running the expensive checkpoint replay during
-    /// self-validation.
+    /// The created block together with the pre- and post-state hashes that were computed
+    /// during `compute_deploys_checkpoint`. Carrying these hashes avoids re-running the
+    /// expensive checkpoint replay during self-validation.
     Created(BlockMessage, Bytes, Bytes),
 }
 
@@ -132,6 +130,13 @@ impl ProposeResult {
             propose_status: ProposeStatus::Failure(status),
         }
     }
+
+    pub fn is_no_new_deploys(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::NoNewDeploys)
+        )
+    }
 }
 
 impl BlockCreatorResult {
@@ -147,7 +152,7 @@ impl fmt::Display for ProposeStatus {
         match self {
             ProposeStatus::Success(r) => write!(f, "Propose succeed: {:?}", r.result),
             ProposeStatus::Failure(failure) => match failure {
-                ProposeFailure::NoNewDeploys => write!(f, "Proposal failed: NoNewDeploys"),
+                ProposeFailure::NoNewDeploys => write!(f, "Proposal failed: NoNewDeploys. No unprocessed deploys in pool. If you just deployed, the deploy may have already been included by the auto-proposer."),
                 ProposeFailure::InternalDeployError => {
                     write!(f, "Proposal failed: internal deploy error")
                 }

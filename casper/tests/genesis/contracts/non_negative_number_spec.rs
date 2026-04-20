@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// NonNegativeNumberSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/NonNegativeNumberSpec.scala
 
 use std::collections::HashMap;
 

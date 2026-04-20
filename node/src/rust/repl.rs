@@ -24,8 +24,7 @@ impl ReplRuntime {
     pub fn new() -> Self { Self {} }
 
     /// Scala: def replProgram[F[_]: Monad: ConsoleIO: ReplClient]: F[Boolean]
-    /// Rust: returns Ok(true) if loop continued, Ok(false) if terminated (on
-    /// ":q" or failed run)
+    /// Rust: returns Ok(true) if loop continued, Ok(false) if terminated (on ":q" or failed run)
     pub fn repl_program<C, R>(&self, rt_handle: &Runtime, console: &mut C, repl: &R) -> Result<bool>
     where
         C: ConsoleIO,
@@ -77,8 +76,7 @@ impl ReplRuntime {
         }
     }
 
-    /// Scala: def evalProgram[F[_]: Monad: ReplClient: ConsoleIO](fileNames,
-    /// printUnmatchedSendsOnly, language): F[Unit]
+    /// Scala: def evalProgram[F[_]: Monad: ReplClient: ConsoleIO](fileNames, printUnmatchedSendsOnly, language): F[Unit]
     pub fn eval_program<C, R>(
         &self,
         rt_handle: &Runtime,

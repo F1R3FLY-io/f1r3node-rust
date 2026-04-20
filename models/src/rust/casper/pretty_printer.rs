@@ -37,15 +37,14 @@ impl PrettyPrinter {
                     )
                 } else {
                     format!(
-                        "Block #{} ({}) -- Sender ID {} -- M Parent Hash {} -- Contents {} -- \
-                         Shard ID {}",
-                        b.body.state.block_number,
-                        Self::build_string_bytes(&b.block_hash),
-                        Self::build_string_bytes(&b.sender),
-                        Self::build_string_bytes(main_parent),
-                        Self::build_string_f1r3fly_state(&b.body.state),
-                        Self::limit(&b.shard_id, 10)
-                    )
+                      "Block #{} ({}) -- Sender ID {} -- M Parent Hash {} -- Contents {} -- Shard ID {}",
+                      b.body.state.block_number,
+                      Self::build_string_bytes(&b.block_hash),
+                      Self::build_string_bytes(&b.sender),
+                      Self::build_string_bytes(main_parent),
+                      Self::build_string_f1r3fly_state(&b.body.state),
+                      Self::limit(&b.shard_id, 10)
+                  )
                 }
             }
         }

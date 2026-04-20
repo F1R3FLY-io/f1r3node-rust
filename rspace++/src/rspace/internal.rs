@@ -12,17 +12,7 @@ use super::trace::event::{Consume, Produce};
 
 // The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
 // The 'Default' macro is needed here for hot_store_spec.rs
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    Arbitrary,
-    Default
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, Arbitrary, Default)]
 pub struct Datum<A: Clone> {
     pub a: A,
     pub persist: bool,
@@ -40,17 +30,7 @@ where A: Clone + Serialize
 
 // The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
 // The 'Default' macro is needed here for hot_store_spec.rs
-#[derive(
-    Clone,
-    Debug,
-    Arbitrary,
-    Default,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    Hash
-)]
+#[derive(Clone, Debug, Arbitrary, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct WaitingContinuation<P: Clone, K: Clone> {
     pub patterns: Vec<P>,
     pub continuation: K,

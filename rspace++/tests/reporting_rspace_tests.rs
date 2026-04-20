@@ -24,10 +24,8 @@ impl Match<Pattern, String> for StringMatch {
     fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
 }
 
-fn build_reporting_rspace() -> (
-    RSpace<String, Pattern, String, String>,
-    ReportingRspace<String, Pattern, String, String>,
-) {
+fn build_reporting_rspace()
+-> (RSpace<String, Pattern, String, String>, ReportingRspace<String, Pattern, String, String>) {
     let mut kvm = InMemoryStoreManager::new();
     let store = futures::executor::block_on(kvm.r_space_stores()).unwrap();
 
@@ -49,11 +47,7 @@ fn build_reporting_rspace() -> (
         HotStoreInstances::create_from_hs_and_hr(cache, hr)
     };
 
-    let space = RSpace::apply(
-        history_repo.clone(),
-        hot_store,
-        Arc::new(Box::new(StringMatch)),
-    );
+    let space = RSpace::apply(history_repo.clone(), hot_store, Arc::new(Box::new(StringMatch)));
 
     let reporting_store = {
         let hr = history_reader.base();
@@ -94,11 +88,7 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
     };
 
     // base space to generate a valid trace log
-    let mut space = RSpace::apply(
-        history_repo.clone(),
-        hot_store,
-        Arc::new(Box::new(StringMatch)),
-    );
+    let mut space = RSpace::apply(history_repo.clone(), hot_store, Arc::new(Box::new(StringMatch)));
 
     let empty_point = space.create_checkpoint().unwrap();
 
@@ -144,9 +134,10 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
     let report = reporting.get_report().unwrap();
     assert!(!report.is_empty());
     let flat: Vec<_> = report.into_iter().flatten().collect();
-    assert!(flat
-        .iter()
-        .any(|e| matches!(e, ReportingEvent::ReportingComm(_))));
+    assert!(
+        flat.iter()
+            .any(|e| matches!(e, ReportingEvent::ReportingComm(_)))
+    );
 }
 
 #[tokio::test]
@@ -165,9 +156,10 @@ async fn reporting_rspace_should_capture_consume_event_only() {
 
     let report = reporting.get_report().unwrap();
     let flat: Vec<_> = report.into_iter().flatten().collect();
-    assert!(flat
-        .iter()
-        .any(|e| matches!(e, ReportingEvent::ReportingConsume(_))));
+    assert!(
+        flat.iter()
+            .any(|e| matches!(e, ReportingEvent::ReportingConsume(_)))
+    );
 }
 
 #[tokio::test]
@@ -180,9 +172,10 @@ async fn reporting_rspace_should_capture_produce_event_only() {
 
     let report = reporting.get_report().unwrap();
     let flat: Vec<_> = report.into_iter().flatten().collect();
-    assert!(flat
-        .iter()
-        .any(|e| matches!(e, ReportingEvent::ReportingProduce(_))));
+    assert!(
+        flat.iter()
+            .any(|e| matches!(e, ReportingEvent::ReportingProduce(_)))
+    );
 }
 
 #[tokio::test]

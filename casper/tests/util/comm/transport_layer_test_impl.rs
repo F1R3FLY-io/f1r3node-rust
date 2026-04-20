@@ -1,6 +1,4 @@
-// Rust port of
-// casper/src/test/scala/coop/rchain/casper/util/comm/TransportLayerTestImpl.
-// scala
+// Rust port of casper/src/test/scala/coop/rchain/casper/util/comm/TransportLayerTestImpl.scala
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -38,8 +36,7 @@ pub mod test_network {
             }
         }
 
-        /// Add a peer to the network with an empty message queue (only if not
-        /// already present)
+        /// Add a peer to the network with an empty message queue (only if not already present)
         pub fn add_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
             let mut state = self.state.lock().map_err(|_| {
                 CommError::InternalCommunicationError("Failed to acquire state lock".to_string())
@@ -81,8 +78,7 @@ pub mod test_network {
             Ok(())
         }
 
-        /// Handle all queued messages for a peer using the provided dispatch
-        /// function
+        /// Handle all queued messages for a peer using the provided dispatch function
         pub async fn handle_queue<F, Fut>(
             &self,
             dispatch: F,

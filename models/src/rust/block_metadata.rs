@@ -123,8 +123,7 @@ impl BlockMetadata {
             block_number: b.body.state.block_number,
             sequence_number: b.seq_num,
             invalid,
-            // this value is not used anywhere down the call pipeline, so its safe to set it to
-            // false
+            // this value is not used anywhere down the call pipeline, so its safe to set it to false
             directly_finalized,
             finalized,
         }

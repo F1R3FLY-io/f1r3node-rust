@@ -107,8 +107,7 @@ impl CasperMessage {
     }
 }
 
-// TODO: Remove all into() and to_vec() once we have correct ByteString type in
-// the models crate
+// TODO: Remove all into() and to_vec() once we have correct ByteString type in the models crate
 #[derive(Clone, Debug, PartialEq)]
 pub struct HasBlockRequest {
     pub hash: ByteString,
@@ -790,8 +789,7 @@ pub struct DeployData {
     pub valid_after_block_number: i64,
     #[serde(rename = "shardId")]
     pub shard_id: String,
-    /// Optional millisecond timestamp after which deploy is invalid (None = no
-    /// expiration)
+    /// Optional millisecond timestamp after which deploy is invalid (None = no expiration)
     pub expiration_timestamp: Option<i64>,
 }
 
@@ -922,8 +920,7 @@ pub struct ProduceEvent {
     pub times_repeated: i32,
     pub is_deterministic: bool,
     pub output_value: Vec<ByteString>,
-    /// Indicates whether this produce event represents a failed
-    /// non-deterministic process.
+    /// Indicates whether this produce event represents a failed non-deterministic process.
     pub failed: bool,
 }
 

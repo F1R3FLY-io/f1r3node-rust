@@ -3,7 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -65,8 +65,7 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Bounded set of seen UnapprovedBlock candidates to avoid unbounded memory growth.
     seen_candidates: Arc<Mutex<SeenCandidates>>,
-    /// Shared reference to heartbeat signal for triggering immediate wake on
-    /// deploy
+    /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
@@ -102,23 +101,13 @@ impl SeenCandidates {
     }
 }
 
-fn genesis_seen_candidates_max_entries() -> usize {
-    static GENESIS_SEEN_CANDIDATES_MAX_ENTRIES: OnceLock<usize> = OnceLock::new();
-    *GENESIS_SEEN_CANDIDATES_MAX_ENTRIES.get_or_init(|| {
-        std::env::var("F1R3_GENESIS_SEEN_CANDIDATES_MAX_ENTRIES")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(4096)
-    })
-}
+fn genesis_seen_candidates_max_entries() -> usize { 4_096 }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// Scala equivalent: Constructor for `GenesisValidator` class
     ///
-    /// NOTE: Parameter types adapted to use Arc<Mutex<Option<T>>> for storage
-    /// types to enable cloning from TestFixture and proper ownership
-    /// transfer to Initializing.
+    /// NOTE: Parameter types adapted to use Arc<Mutex<Option<T>>> for storage types
+    /// to enable cloning from TestFixture and proper ownership transfer to Initializing.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         block_processing_queue_tx: mpsc::Sender<(
@@ -246,8 +235,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
     async fn init(&self) -> Result<(), CasperError> { Ok(()) }
 
-    /// Scala equivalent: `override def handle(peer: PeerNode, msg:
-    /// CasperMessage): F[Unit]`
+    /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
         match msg {
             CasperMessage::ApprovedBlockRequest(ApprovedBlockRequest { identifier, .. }) => {

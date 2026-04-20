@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::api::web_api::{
-    DataAtNameByBlockHashRequest, DeployLookupResponse, PrepareRequest, PrepareResponse,
-    RhoDataResponse,
+    DataAtNameByBlockHashRequest, DeployDetailResponse, DeployLookupResponse, PrepareRequest,
+    PrepareResponse, RhoDataResponse,
 };
 use crate::rust::web::shared_handlers::{self, AppError, AppState};
 use crate::rust::web::transaction::TransactionResponse;
@@ -174,11 +174,12 @@ pub async fn get_blocks_by_depth_handler(
     path = "/api/deploy/{deploy_id}",
     params(
         ("deploy_id" = String, Path, description = "Deploy ID"),
-        ("view" = Option<String>, Query, description = "Response view: 'minimal' for reduced payload"),
+        ("view" = Option<String>, Query, description = "Response view: 'detail' (default) returns deploy execution info, 'block' returns containing block, 'minimal' returns block metadata only"),
     ),
     responses(
-        (status = 200, description = "Deploy information (full view)", body = LightBlockInfoSerde),
-        (status = 200, description = "Deploy information (minimal view, when ?view=minimal)", body = DeployLookupResponse),
+        (status = 200, description = "Deploy execution details (default or ?view=detail)", body = DeployDetailResponse),
+        (status = 200, description = "Containing block (?view=block)", body = LightBlockInfoSerde),
+        (status = 200, description = "Block metadata only (?view=minimal)", body = DeployLookupResponse),
         (status = 400, description = "Bad request or deploy not found")
     ),
     tag = "WebAPI"
@@ -189,6 +190,10 @@ pub async fn find_deploy_handler(
     Query(query): Query<ViewQuery>,
 ) -> Response {
     match query.view.as_deref() {
+        Some("detail") => match app_state.web_api.find_deploy_detail(deploy_id).await {
+            Ok(response) => Json(response).into_response(),
+            Err(e) => AppError(e).into_response(),
+        },
         Some("minimal") => match app_state.web_api.find_deploy_minimal(deploy_id).await {
             Ok(response) => Json(response).into_response(),
             Err(e) => AppError(e).into_response(),
@@ -343,6 +348,9 @@ mod tests {
         async fn find_deploy(&self, _: String) -> eyre::Result<LightBlockInfoSerde> {
             Ok(sample_light_block_info())
         }
+        async fn find_deploy_detail(&self, _: String) -> eyre::Result<DeployDetailResponse> {
+            unimplemented!()
+        }
         async fn find_deploy_minimal(&self, _: String) -> eyre::Result<DeployLookupResponse> {
             Ok(DeployLookupResponse::from(sample_light_block_info()))
         }
@@ -367,10 +375,10 @@ mod tests {
         }
     }
 
-    /// Test-only handler that mirrors find_deploy_handler but uses Arc<dyn
-    /// WebApi> as state instead of AppState (which requires BlockReportAPI,
-    /// RPConfCell, etc.). This is equivalent to the Scala approach where
-    /// WebApiRoutes.service(stubWebApi) takes only a WebApi instance.
+    /// Test-only handler that mirrors find_deploy_handler but uses Arc<dyn WebApi> as state
+    /// instead of AppState (which requires BlockReportAPI, RPConfCell, etc.).
+    /// This is equivalent to the Scala approach where WebApiRoutes.service(stubWebApi)
+    /// takes only a WebApi instance.
     async fn test_find_deploy_handler(
         State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
         Path(deploy_id): Path<String>,

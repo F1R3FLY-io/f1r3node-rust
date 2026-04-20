@@ -48,8 +48,7 @@ pub struct GrpcDeployService {
     client: DeployServiceClient<Channel>,
 }
 
-// ---- implement the trait for the struct by delegating to existing methods
-// ----
+// ---- implement the trait for the struct by delegating to existing methods ----
 #[async_trait::async_trait]
 impl DeployService for GrpcDeployService {
     async fn deploy(&mut self, d: Signed<DeployData>) -> ServiceResult<String> {
@@ -216,8 +215,7 @@ impl GrpcDeployService {
                     use std::fmt::Write as _;
                     let _ = writeln!(
                         out,
-                        "\n------------- block {} ---------------\n{}\\
-                         n-----------------------------------------------------\n",
+                        "\n------------- block {} ---------------\n{}\n-----------------------------------------------------\n",
                         bi.block_number,
                         proto_string(&bi)
                     );

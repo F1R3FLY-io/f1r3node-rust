@@ -1,19 +1,16 @@
 /*
- * See rholang/src/test/scala/coop/rchain/rholang/interpreter/matcher/
- * MatchTest.scala
+ * See rholang/src/test/scala/coop/rchain/rholang/interpreter/matcher/MatchTest.scala
  *
- * It's important to note that in the Scala tests there are differences in
- * the way they name their tests. For example: 'should "work"', 'should
- * "better be quick"', 'should "succeed"', etc...
+ * It's important to note that in the Scala tests there are differences in the way they name their tests.
+ * For example: 'should "work"', 'should "better be quick"', 'should "succeed"', etc...
  *
- * On the Scala side, there are multiple functions that create RhoTypes and
- * implicitly pass them to 'assertSpatialMatch' even though
- * 'assertSpatialMatch' takes type 'Par' For example: passing an 'Expr',
- * 'Expr' to function that takes type 'Par', 'Par'
+ * On the Scala side, there are multiple functions that create RhoTypes and implicitly pass them
+ * to 'assertSpatialMatch' even though 'assertSpatialMatch' takes type 'Par'
+ * For example: passing an 'Expr', 'Expr' to function that takes type 'Par', 'Par'
  *
  *
  * Might be able to use '::default()' at certain points
- */
+*/
 use std::collections::BTreeMap;
 
 use connective::ConnectiveInstance::*;

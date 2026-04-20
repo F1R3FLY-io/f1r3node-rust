@@ -37,10 +37,10 @@ static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::
 
 // Shared LMDB environment for all tests.
 //
-// This single environment is shared across all tests to avoid exhausting OS
-// resources. Test isolation is achieved through scoped database names (UUID
-// prefixes) rather than separate environments. This allows hundreds of tests to
-// run efficiently without hitting file descriptor or LMDB environment limits.
+// This single environment is shared across all tests to avoid exhausting OS resources.
+// Test isolation is achieved through scoped database names (UUID prefixes) rather than
+// separate environments. This allows hundreds of tests to run efficiently without
+// hitting file descriptor or LMDB environment limits.
 //
 // Resource Management:
 // - Single LMDB environment instead of 300+ separate environments
@@ -108,8 +108,8 @@ where
     let genesis_context = genesis_context().await?;
     let genesis_block = genesis_context.genesis_block.clone();
 
-    // Use the same scope_id as genesis to access all genesis data including RSpace
-    // history This ensures tests can reset to the genesis state root hash
+    // Use the same scope_id as genesis to access all genesis data including RSpace history
+    // This ensures tests can reset to the genesis state root hash
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
     // Use create_with_history to ensure tests can reset to genesis state root hash
     let (runtime_manager, _history_repo) = mk_runtime_manager_with_history_at(&mut *kvm).await;
@@ -153,22 +153,18 @@ pub fn mk_test_rnode_store_manager_with_scope(
 /// Creates a test store manager using a shared LMDB environment.
 ///
 /// This is the recommended approach for tests to avoid exhausting OS resources
-/// (file descriptors, LMDB environments). All tests share a single LMDB
-/// environment, with test isolation achieved through scoped database names
-/// (UUID prefixes).
+/// (file descriptors, LMDB environments). All tests share a single LMDB environment,
+/// with test isolation achieved through scoped database names (UUID prefixes).
 ///
 /// # Best Practices
-/// - Always use this function instead of `mk_test_rnode_store_manager()` for
-///   tests
+/// - Always use this function instead of `mk_test_rnode_store_manager()` for tests
 /// - Each test gets a unique scope_id via `generate_scope_id()`
 /// - The shared environment is automatically cleaned up when tests complete
-/// - Works efficiently with parallel test execution (test-threads=4-8
-///   recommended)
+/// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
 pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueStoreManager> {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Create the manager with scoped database names in the mapping
-    // This ensures isolation at the LMDB level while keeping lookup by original
-    // name
+    // This ensures isolation at the LMDB level while keeping lookup by original name
     Box::new(mk_test_rnode_store_manager_with_scope(
         shared_path.clone(),
         Some(scope_id),
@@ -193,13 +189,11 @@ pub fn get_shared_lmdb_path() -> PathBuf {
 /// Creates a test store manager with dual scoping for RSpace and other stores.
 ///
 /// This function creates a manager where:
-/// - RSpace stores (rspace-history, rspace-roots, rspace-cold) use
-///   `rspace_scope`
+/// - RSpace stores (rspace-history, rspace-roots, rspace-cold) use `rspace_scope`
 /// - All other stores (blocks, DAG, deploys, etc.) use `node_scope`
 ///
-/// This allows multiple nodes within a test to share RSpace state (see each
-/// other's committed roots) while maintaining isolation for block and DAG
-/// stores.
+/// This allows multiple nodes within a test to share RSpace state (see each other's
+/// committed roots) while maintaining isolation for block and DAG stores.
 pub fn mk_test_rnode_store_manager_with_dual_scope(
     node_scope: String,
     rspace_scope: String,
@@ -274,8 +268,7 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
 /// Creates a test store manager using the genesis rspace_scope_id directly.
 ///
 /// This function reuses the same RSpace scope where genesis was created,
-/// giving direct access to the genesis RSpace history and roots without
-/// copying.
+/// giving direct access to the genesis RSpace history and roots without copying.
 ///
 /// CRITICAL: Uses rspace_scope_id, not scope_id! Genesis RSpace data is stored
 /// in the rspace_scope_id, which ensures tests can access the genesis state and

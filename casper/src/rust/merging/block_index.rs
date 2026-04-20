@@ -164,10 +164,9 @@ pub fn new(
     let mut all_deploy_indices = usr_deploy_indices;
     all_deploy_indices.extend(sys_deploy_indices);
 
-    // Here deploys from a single block are examined. Atm deploys in block are
-    // executed sequentially, so all conflicts are resolved according to order
-    // of sequential execution. Therefore there won't be any conflicts between
-    // event logs. But there can be dependencies.
+    // Here deploys from a single block are examined. Atm deploys in block are executed sequentially,
+    // so all conflicts are resolved according to order of sequential execution.
+    // Therefore there won't be any conflicts between event logs. But there can be dependencies.
     let deploy_chains = merging_logic::compute_related_sets(
         &all_deploy_indices.into_iter().collect(),
         |l: &DeployIndex, r: &DeployIndex| {

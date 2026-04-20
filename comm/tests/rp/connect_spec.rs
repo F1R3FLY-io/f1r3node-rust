@@ -133,8 +133,7 @@ mod tests {
     // Additional tests corresponding to the pending Scala tests
     #[tokio::test]
     async fn test_should_send_protocol_handshake_response_back_to_the_remote() {
-        // This test simulates receiving a ProtocolHandshake and verifying we send back
-        // a response
+        // This test simulates receiving a ProtocolHandshake and verifying we send back a response
         use comm::rust::rp::protocol_helper;
 
         // given
@@ -174,8 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_add_node_once_protocol_handshake_response_is_sent() {
-        // This test verifies that after a successful handshake exchange, the node is
-        // added to connections
+        // This test verifies that after a successful handshake exchange, the node is added to connections
         use comm::rust::rp::connect::ConnectionsCell;
 
         // given
@@ -215,8 +213,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_not_respond_if_message_can_not_be_decrypted() {
-        // This test verifies that malformed/encrypted messages that can't be decrypted
-        // are ignored given
+        // This test verifies that malformed/encrypted messages that can't be decrypted are ignored
+        // given
         let src = peer_node("src", 40400);
         let remote = peer_node("remote", 40401);
         let rp_conf = create_rp_conf_ask(src, None, None);
@@ -244,8 +242,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_not_respond_if_it_does_not_contain_remotes_public_key() {
-        // This test verifies that messages without proper public key information are
-        // rejected given
+        // This test verifies that messages without proper public key information are rejected
+        // given
         let src = peer_node("src", 40400);
         let remote = peer_node("remote", 40401);
         let rp_conf = create_rp_conf_ask(src, None, None);

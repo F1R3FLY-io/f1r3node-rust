@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/
-// RholangMergingLogic.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogic.scala
 
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
@@ -26,8 +25,7 @@ impl RholangMergingLogic {
     /**
      * Transforms absolute values with the difference from initial values.
      *
-     * Example for 3 state changes (A, B, C are channels, PSH is initial
-     * value/pre-state hash):
+     * Example for 3 state changes (A, B, C are channels, PSH is initial value/pre-state hash):
      *
      * Initial state (PSH):
      *   A = 10, B = 2, C = 20
@@ -192,8 +190,7 @@ impl RholangMergingLogic {
     }
 
     /**
-     * Converts function to get all data on a channel to function to get
-     * single number value.
+     * Converts function to get all data on a channel to function to get single number value.
      */
     pub fn convert_to_read_number<F>(get_data_func: F) -> impl Fn(&Blake2b256Hash) -> Option<i64>
     where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
@@ -223,8 +220,7 @@ pub struct NumberChannel {
     pub diff: i64,
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/
-// RholangMergingLogicSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogicSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -238,9 +234,9 @@ mod tests {
          *  ---------------       ----------
          *  PSH  10      20
          *
-         *   0. 20               10
-         *   1. 3      ==>       3
-         *   2. 15      10       -5     -10
+         *   0.  20               10
+         *   1.       3      ==>       3
+         *   2.  15      10       -5     -10
          */
 
         // Create string hashes for readability

@@ -44,10 +44,9 @@ impl TestContext {
     }
 }
 
-/// Creates an EngineCell with EngineWithCasper from a TestNode's casper
-/// instance Equivalent to Scala: val engine = new
-/// EngineWithCasper[Task](n1.casperEff)                       engineCell <-
-/// Cell.mvarCell[Task, Engine[Task]](engine)
+/// Creates an EngineCell with EngineWithCasper from a TestNode's casper instance
+/// Equivalent to Scala: val engine = new EngineWithCasper[Task](n1.casperEff)
+///                       engineCell <- Cell.mvarCell[Task, Engine[Task]](engine)
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
         block_retriever: node.casper.block_retriever.clone(),
@@ -111,8 +110,7 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
 
     // Note: We create deploys one by one with sleep to ensure unique timestamps.
     // In Scala, the Time effect provides unique timestamps automatically,
-    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys
-    // error.
+    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys error.
     let mut produce_deploys = Vec::new();
     for i in 0..7 {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;

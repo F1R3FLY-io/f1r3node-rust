@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/
-// SystemContractInitializationSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/SystemContractInitializationSpec.scala
 //
 // Tests to verify system contracts (PoS, SystemVault) are properly
 // initialized at genesis and accessible in subsequent blocks.
@@ -41,7 +40,7 @@ async fn pos_contract_should_return_correct_bonds_at_genesis() {
 
     let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
 
-    let result = node
+    let (result, _cost) = node
         .runtime_manager
         .play_exploratory_deploy(get_bonds_query.to_string(), &post_state_hash)
         .await
@@ -61,41 +60,6 @@ async fn pos_contract_should_return_correct_bonds_at_genesis() {
     );
 
     tracing::info!("PoS getBonds result: {:?}", result);
-}
-
-/// Legacy PoS alias should stay backward-compatible for older clients.
-#[tokio::test]
-async fn legacy_pos_alias_should_return_correct_bonds_at_genesis() {
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .expect("Failed to build genesis");
-
-    let get_bonds_query = r#"
-        new return, rl(`rho:registry:lookup`), posCh in {
-          rl!(`rho:rchain:pos`, *posCh) |
-          for (@(_, PoS) <- posCh) {
-            @PoS!("getBonds", *return)
-          }
-        }
-    "#;
-
-    let node = TestNode::standalone(genesis.clone())
-        .await
-        .expect("Failed to create standalone node");
-
-    let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
-
-    let result = node
-        .runtime_manager
-        .play_exploratory_deploy(get_bonds_query.to_string(), &post_state_hash)
-        .await
-        .expect("Failed to execute exploratory deploy");
-
-    assert!(
-        !result.is_empty(),
-        "Legacy PoS alias should return a non-empty result"
-    );
 }
 
 /// SystemVault should be accessible at genesis post-state
@@ -132,7 +96,7 @@ async fn system_vault_should_be_accessible_at_genesis() {
 
     let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
 
-    let result = node
+    let (result, _cost) = node
         .runtime_manager
         .play_exploratory_deploy(get_vault_query, &post_state_hash)
         .await
@@ -145,51 +109,6 @@ async fn system_vault_should_be_accessible_at_genesis() {
     );
 
     tracing::info!("SystemVault balance result: {:?}", result);
-}
-
-/// Legacy revVault alias should stay backward-compatible for older clients.
-#[tokio::test]
-async fn legacy_revvault_alias_should_be_accessible_at_genesis() {
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .expect("Failed to build genesis");
-
-    let (_, vault_pk) = &genesis.genesis_vaults[0];
-    let vault_addr = VaultAddress::from_public_key(vault_pk)
-        .expect("Should create vault address from public key");
-
-    let get_vault_query = format!(
-        r#"
-        new return, rl(`rho:registry:lookup`), SystemVaultCh, vaultCh in {{
-          rl!(`rho:rchain:revVault`, *SystemVaultCh) |
-          for (@(_, SystemVault) <- SystemVaultCh) {{
-            @SystemVault!("findOrCreate", "{}", *vaultCh) |
-            for (@(true, vault) <- vaultCh) {{
-              @vault!("balance", *return)
-            }}
-          }}
-        }}
-    "#,
-        vault_addr.to_base58()
-    );
-
-    let node = TestNode::standalone(genesis.clone())
-        .await
-        .expect("Failed to create standalone node");
-
-    let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
-
-    let result = node
-        .runtime_manager
-        .play_exploratory_deploy(get_vault_query, &post_state_hash)
-        .await
-        .expect("Failed to execute exploratory deploy");
-
-    assert!(
-        !result.is_empty(),
-        "Legacy revVault alias should return a non-empty result"
-    );
 }
 
 /// Validator vaults should have zero balance at genesis
@@ -226,14 +145,13 @@ async fn validator_vaults_should_have_zero_balance_at_genesis() {
 
     let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
 
-    let result = node
+    let (result, _cost) = node
         .runtime_manager
         .play_exploratory_deploy(get_validator_vault_query, &post_state_hash)
         .await
         .expect("Failed to execute exploratory deploy");
 
-    // Verify we got a result (validator vaults are initialized to 0 token per
-    // GenesisBuilder)
+    // Verify we got a result (validator vaults are initialized to 0 token per GenesisBuilder)
     assert!(
         !result.is_empty(),
         "Validator vault balance query should return a non-empty result"
@@ -358,7 +276,7 @@ async fn system_contracts_should_work_after_adding_block() {
     tracing::info!("Added block: {:?}", block.block_hash);
 
     // Query PoS in the new block's post-state
-    let result = node
+    let (result, _cost) = node
         .runtime_manager
         .play_exploratory_deploy(
             get_bonds_query.to_string(),
@@ -413,7 +331,7 @@ async fn validator_key_lookup_should_succeed_in_all_bonds() {
 
     let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
 
-    let result = node
+    let (result, _cost) = node
         .runtime_manager
         .play_exploratory_deploy(lookup_query, &post_state_hash)
         .await

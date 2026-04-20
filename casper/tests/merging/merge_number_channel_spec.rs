@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/merging/MergeNumberChannelSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/merging/MergeNumberChannelSpec.scala
 
 use std::collections::HashMap;
 
@@ -154,7 +153,9 @@ async fn test_case(
         let eval_results = join_all(futures).await;
         let end_checkpoint = runtime.create_checkpoint();
         let (log_vec, num_chan_abs) = eval_results.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
-        let num_chan_diffs = rm.convert_number_channels_to_diff(num_chan_abs, &pre_state);
+        let num_chan_diffs = rm
+            .convert_number_channels_to_diff(num_chan_abs, &pre_state)
+            .expect("convert_number_channels_to_diff should succeed");
 
         let event_log_indices: Vec<DeployIndex> = log_vec
             .iter()
@@ -356,7 +357,7 @@ async fn test_case(
     assert_eq!(rejected_sigs, expected_rejected);
 
     let mut runtime_ops = RuntimeOps::new(runtime);
-    let res = runtime_ops
+    let (res, _cost) = runtime_ops
         .play_exploratory_deploy(RHO_EXPLORE_READ.to_owned(), &final_hash.to_bytes_prost())
         .await
         .unwrap();

@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/
-// CostAccounting.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/CostAccounting.scala
 
 use super::costs::Cost;
 use super::{CostManager, _cost};

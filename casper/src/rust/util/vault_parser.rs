@@ -31,11 +31,9 @@ pub enum VaultParserError {
 pub struct VaultParser;
 
 impl VaultParser {
-    /// Parser for wallets file used in genesis ceremony to set initial token
-    /// accounts.
+    /// Parser for wallets file used in genesis ceremony to set initial token accounts.
     ///
-    /// TODO: Create async file operations. For now it's ok because it's used
-    /// only once at genesis.
+    /// TODO: Create async file operations. For now it's ok because it's used only once at genesis.
     pub fn parse(vaults_path: &Path) -> Result<Vec<Vault>, VaultParserError> {
         tracing::info!("Parsing wallets file {:?}.", vaults_path);
 
@@ -133,9 +131,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
 
-        let wallets_content =
-            "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,50000000000000\n\
-             1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n";
+        let wallets_content = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,50000000000000\n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n";
         fs::write(&wallets_file, wallets_content).unwrap();
 
         let result = VaultParser::parse(&wallets_file);
@@ -189,12 +185,10 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_balance() {
-        // First test: Try with a known good address pattern that might parse
-        // successfully If VaultAddress validation fails, we'll create a simpler
-        // case
+        // First test: Try with a known good address pattern that might parse successfully
+        // If VaultAddress validation fails, we'll create a simpler case
 
-        // Create a test that bypasses VaultAddress parsing issues by creating our own
-        // scenario
+        // Create a test that bypasses VaultAddress parsing issues by creating our own scenario
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
 
@@ -225,8 +219,7 @@ mod tests {
                 fs::write(&wallets_file2, invalid_content2).unwrap();
 
                 let result2 = VaultParser::parse(&wallets_file2);
-                assert!(result2.is_err()); // Should fail somewhere, either on
-                                           // address or balance
+                assert!(result2.is_err()); // Should fail somewhere, either on address or balance
             }
             _ => {
                 // If we get here, the test reveals an issue with our assumptions
@@ -272,9 +265,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
 
-        let wallets_content =
-            "\n1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,50000000000000\n\n   \
-             \n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n\n";
+        let wallets_content = "\n1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP,50000000000000\n\n   \n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,50000000000000\n\n";
         fs::write(&wallets_file, wallets_content).unwrap();
 
         let result = VaultParser::parse(&wallets_file);

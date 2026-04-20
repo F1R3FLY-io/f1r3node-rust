@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - trait SpatialMatcher
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -58,8 +57,7 @@ impl SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - forTuple
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple
 impl SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: (Par, Par), pattern: (Par, Par)) -> Option<()> {
         self.spatial_match(target.0, pattern.0)
@@ -67,8 +65,7 @@ impl SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - connectiveMatcher
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - connectiveMatcher
 impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Connective) -> Option<()> {
         // println!("\nHit Par, Connective");
@@ -85,8 +82,7 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                     // println!("\ncalling spatial match in ConnAndBody");
                     let match_result = self.spatial_match(target.clone(), p);
                     if match_result.is_some() {
-                        // println!("\nfinished calling spatialMatch in
-                        // ConnAndBody");
+                        // println!("\nfinished calling spatialMatch in ConnAndBody");
                     }
                     match_result.map(|_| ())
                 })
@@ -176,8 +172,7 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - parSpatialMatcher
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
         // println!("\nhit Par, Par");
@@ -269,8 +264,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 })
                 .collect();
 
-            // println!("\nconnectives_with_bounds length: {:?}",
-            // connectives_with_bounds.len());
+            // println!("\nconnectives_with_bounds length: {:?}", connectives_with_bounds.len());
 
             fn match_connective_with_bounds(
                 s: &mut SpatialMatcherContext,
@@ -287,9 +281,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     // println!("\ncalling spatialMatch in match_connective_with_bounds");
 
                     if s.spatial_match(sp.0, con.clone()).is_some() {
-                        // println!("\nfinished calling spatialMatch in
-                        // match_connective_with_bounds"); println!("\
-                        // nreturning sp.1: {:?}", sp.1);
+                        // println!("\nfinished calling spatialMatch in match_connective_with_bounds");
+                        // println!("\nreturning sp.1: {:?}", sp.1);
                         return Some(sp.1);
                     }
                 }
@@ -373,9 +366,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - bundleSpatialMatcherInstance Apparently this code is
-// never reached according to Scala code comment
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - bundleSpatialMatcherInstance
+// Apparently this code is never reached according to Scala code comment
 impl SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Bundle, pattern: Bundle) -> Option<()> {
         // println!("\nHit Bundle, Bundle");
@@ -385,8 +377,7 @@ impl SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - sendSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - sendSpatialMatcherInstance
 impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Send, pattern: Send) -> Option<()> {
         // println!("\nHit Send, Send");
@@ -407,8 +398,7 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - receiveSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveSpatialMatcherInstance
 impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Receive, pattern: Receive) -> Option<()> {
         // println!("\nHit Receive, Receive");
@@ -418,8 +408,7 @@ impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - newSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - newSpatialMatcherInstance
 impl SpatialMatcher<New, New> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: New, pattern: New) -> Option<()> {
         // println!("\nHit New, New");
@@ -428,8 +417,7 @@ impl SpatialMatcher<New, New> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - exprSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - exprSpatialMatcherInstance
 impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Expr, pattern: Expr) -> Option<()> {
         // println!("\nHit Expr, Expr");
@@ -647,8 +635,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - matchSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchSpatialMatcherInstance
 impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Match, pattern: Match) -> Option<()> {
         // println!("\nHit Match, Match");
@@ -661,9 +648,8 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - unfSpatialMatcherInstance Apparently this code is
-// never reached according to Scala code comment
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - unfSpatialMatcherInstance
+// Apparently this code is never reached according to Scala code comment
 impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: GUnforgeable, pattern: GUnforgeable) -> Option<()> {
         // println!("\nHit GUnforgeable, GUnforgeable");
@@ -676,8 +662,7 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - receiveBindSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveBindSpatialMatcherInstance
 impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
         // println!("\nHit ReceiveBind, ReceiveBind");
@@ -686,8 +671,7 @@ impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// SpatialMatcher.scala - matchCaseSpatialMatcherInstance
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchCaseSpatialMatcherInstance
 impl SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: MatchCase, pattern: MatchCase) -> Option<()> {
         // println!("\nHit MatchCase, MatchCase");
@@ -698,10 +682,10 @@ impl SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext {
 
 // This implementation for type 'KeyValuePair' is NOT on the Scala side
 // Somewhere, somehow, on Scala side they are are just calling this logic
-// Could be related to ParMap. See RhoTypes.proto and how they set custom types
-// for fields impl SpatialMatcher<KeyValuePair, KeyValuePair> for
-// SpatialMatcherContext {     fn spatial_match(&mut self, target: KeyValuePair,
-// pattern: KeyValuePair) -> Option<()> {         self.spatial_match(target.key.
-// unwrap(), pattern.key.unwrap())             .and_then(|_|
-// self.spatial_match(target.value.unwrap(), pattern.value.unwrap()))     }
+// Could be related to ParMap. See RhoTypes.proto and how they set custom types for fields
+// impl SpatialMatcher<KeyValuePair, KeyValuePair> for SpatialMatcherContext {
+//     fn spatial_match(&mut self, target: KeyValuePair, pattern: KeyValuePair) -> Option<()> {
+//         self.spatial_match(target.key.unwrap(), pattern.key.unwrap())
+//             .and_then(|_| self.spatial_match(target.value.unwrap(), pattern.value.unwrap()))
+//     }
 // }

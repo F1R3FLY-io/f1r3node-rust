@@ -1,5 +1,4 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/
-// LastFinalizedStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedStorage.scala
 
 use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;

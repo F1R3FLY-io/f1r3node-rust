@@ -1,0 +1,53 @@
+# =================================================================
+# F1R3FLY RUST NODE - DISTRIBUTED SHARD, VPS-1 (BOOTSTRAP)
+# =================================================================
+# Runs only the bootstrap/ceremony-master node. Followers live on
+# VPS-2 via shard.vps2.yml and connect here via BOOTSTRAP_HOST.
+#
+# Usage (on VPS-1, env from .env.remote):
+#   docker compose --env-file .env.remote -f shard.vps1.yml up -d
+#   docker compose --env-file .env.remote -f shard.vps1.yml logs -f
+#   docker compose --env-file .env.remote -f shard.vps1.yml down
+#
+# Ports published on VPS-1's public interface:
+#   Bootstrap: 40400 (protocol), 40401-40402 (gRPC), 40403 (HTTP),
+#              40404 (discovery), 40405 (admin HTTP)
+
+services:
+  boot:
+    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    container_name: rnode.bootstrap
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+      - MALLOC_ARENA_MAX=2
+      - MALLOC_TRIM_THRESHOLD_=131072
+      - MALLOC_MMAP_THRESHOLD_=131072
+    command:
+      - run
+      - --host=${BOOTSTRAP_HOST}
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --allow-private-addresses
+      - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY}
+      - --required-signatures
+      - "2"
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      - "40402:40402"
+      - "40403:40403"
+      - "40404:40404/udp"
+      - "40405:40405"
+    volumes:
+      - boot-data:/var/lib/rnode/
+      - ./conf/bootstrap.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+volumes:
+  boot-data:

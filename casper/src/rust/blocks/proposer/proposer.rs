@@ -98,8 +98,7 @@ pub trait ProposeEffectHandler {
         block: &BlockMessage,
     ) -> Result<(), CasperError>;
 
-    /// Publish BlockCreated event immediately after block creation (before
-    /// validation).
+    /// Publish BlockCreated event immediately after block creation (before validation).
     fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError>;
 }
 
@@ -143,9 +142,8 @@ where
     pub block_creator: BC,
     pub block_validator: BV,
     pub propose_effect_handler: E,
-    /// When true, allows creating blocks with only system deploys (no user
-    /// deploys). This is required for heartbeat to create empty blocks for
-    /// liveness.
+    /// When true, allows creating blocks with only system deploys (no user deploys).
+    /// This is required for heartbeat to create empty blocks for liveness.
     pub allow_empty_blocks: bool,
 }
 
@@ -216,8 +214,7 @@ where
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
-                        // Publish BlockCreated event immediately after block is created (before
-                        // validation)
+                        // Publish BlockCreated event immediately after block is created (before validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
 
                         let validation_result = casper
@@ -237,9 +234,8 @@ where
                                 Ok((ProposeResult::success(valid_status), Some(block)))
                             }
                             ValidBlockProcessing::Left(invalid_reason) => {
-                                // Some self-validation failures are recoverable races in fast,
-                                // multi-parent proposing: parent
-                                // selection can become stale, and safety checks can reject
+                                // Some self-validation failures are recoverable races in fast, multi-parent
+                                // proposing: parent selection can become stale, and safety checks can reject
                                 // the candidate by the time validation runs.
                                 if matches!(
                                     invalid_reason,
@@ -280,8 +276,8 @@ where
                                     )
                                     .increment(1);
                                     tracing::info!(
-                                        "Block validation failed with {:?} - proposal conditions \
-                                         no longer met, skipping propose",
+                                        "Block validation failed with {:?} - \
+                                         proposal conditions no longer met, skipping propose",
                                         invalid_reason
                                     );
                                     return Ok((
@@ -292,8 +288,7 @@ where
 
                                 // Other validation failures are unexpected and should error
                                 Err(CasperError::RuntimeError(format!(
-                                    "Validation of self created block failed with reason: {:?}, \
-                                     cancelling propose.",
+                                    "Validation of self created block failed with reason: {:?}, cancelling propose.",
                                     invalid_reason
                                 )))
                             }
@@ -402,8 +397,7 @@ where
         let allow_empty_for_recovery = finality_lag > 20;
         if allow_empty_for_recovery && !is_async {
             tracing::info!(
-                "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, \
-                 block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
+                "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
                 finality_lag,
                 block_lag,
                 seq_lag,
@@ -731,8 +725,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
             .ack_in_casper(block.block_hash.clone())
             .await?;
 
-        // Broadcast hash to peers on a best-effort basis, but do not let network
-        // fan-out tail block local propose completion latency.
+        // Broadcast hash to peers on a best-effort basis, but do not let network fan-out tail
+        // block local propose completion latency.
         let transport = Arc::clone(&self.transport);
         let connections_cell = self.connections_cell.clone();
         let conf = self.conf.clone();

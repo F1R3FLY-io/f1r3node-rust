@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// RhoSpecContractSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RhoSpecContractSpec.scala
 
 use std::collections::HashMap;
 

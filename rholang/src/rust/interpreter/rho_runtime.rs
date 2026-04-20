@@ -55,21 +55,19 @@ use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
 
 /*
  * This trait has been combined with the 'ReplayRhoRuntime' trait
- */
+*/
 #[allow(async_fn_in_trait)]
 pub trait RhoRuntime: HasCost {
     /**
-     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it
-     * with provided initial phlo.
+     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it with provided initial phlo.
      *
      * This function would change the state in the runtime.
      * @param term The rholang contract which would run on the runtime
-     * @param initialPhlo initial cost for the this evaluation. If the phlo
-     * is not enough,                    
-     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]
-     * would return. @param normalizerEnv additional env for Par when
-     * parsing term into Par @param rand random seed for rholang
-     * execution @return
+     * @param initialPhlo initial cost for the this evaluation. If the phlo is not enough,
+     *                    [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]] would return.
+     * @param normalizerEnv additional env for Par when parsing term into Par
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn evaluate(
         &self,
@@ -79,8 +77,7 @@ pub trait RhoRuntime: HasCost {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.
-    // scala
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.scala
     async fn evaluate_with_env(
         &mut self,
         term: &str,
@@ -132,18 +129,17 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * The function would execute the par regardless setting cost which
-     * would possibly cause [[coop.rchain.rholang.interpreter.errors.
-     * OutOfPhlogistonsError]]. Because of that, use this function in
-     * some situation which is not cost sensitive.
+     * The function would execute the par regardless setting cost which would possibly cause
+     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
+     * function in some situation which is not cost sensitive.
      *
      * This function would change the state in the runtime.
      *
-     * Ideally, this function should be removed or hack the runtime without
-     * cost accounting in the future . @param par
-     * [[coop.rchain.models.Par]] for the execution @param env
-     * additional env for execution @param rand random seed for rholang
-     * execution @return
+     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
+     * @param par [[coop.rchain.models.Par]] for the execution
+     * @param env additional env for execution
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn inj(
         &self,
@@ -153,9 +149,8 @@ pub trait RhoRuntime: HasCost {
     ) -> Result<(), InterpreterError>;
 
     /**
-     * After some executions([[evaluate]]) on the runtime, you can create a
-     * soft checkpoint which is the changes for the current state of the
-     * runtime. You can revert the changes by [[revertToSoftCheckpoint]]
+     * After some executions([[evaluate]]) on the runtime, you can create a soft checkpoint which is the changes
+     * for the current state of the runtime. You can revert the changes by [[revertToSoftCheckpoint]]
      * @return
      */
     fn create_soft_checkpoint(
@@ -174,16 +169,16 @@ pub trait RhoRuntime: HasCost {
     ) -> ();
 
     /**
-     * Create a checkpoint for the runtime. All the changes which happened
-     * in the runtime would persistent in the disk and result in a new
-     * stateHash for the new state. @return
+     * Create a checkpoint for the runtime. All the changes which happened in the runtime would persistent in the disk
+     * and result in a new stateHash for the new state.
+     * @return
      */
     fn create_checkpoint(&mut self) -> Checkpoint;
 
     /**
-     * Reset the runtime to the specific state. Then you can operate some
-     * execution on the state. @param root the target state hash to
-     * reset @return
+     * Reset the runtime to the specific state. Then you can operate some execution on the state.
+     * @param root the target state hash to reset
+     * @return
      */
     fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
 
@@ -252,7 +247,7 @@ pub trait RhoRuntime: HasCost {
 
 /*
  * We use this struct for both normal and replay RhoRuntime instances
- */
+*/
 #[derive(Clone)]
 pub struct RhoRuntimeImpl {
     pub reducer: Arc<DebruijnInterpreter>,
@@ -1154,11 +1149,9 @@ where
 // This is from Nassim Taleb's "Skin in the Game"
 fn bootstrap_rand() -> Blake2b512Random {
     // println!("\nhit bootstrap_rand");
-    Blake2b512Random::create_from_bytes(
-        "Decentralization is based on the simple notion that it is easier to macrobull***t than \
-         microbull***t. Decentralization reduces large structural asymmetries."
-            .as_bytes(),
-    )
+    Blake2b512Random::create_from_bytes("Decentralization is based on the simple notion that it is easier to macrobull***t than microbull***t. \
+         Decentralization reduces large structural asymmetries."
+         .as_bytes())
 }
 
 pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
@@ -1238,15 +1231,14 @@ where
 /// # Parameters
 ///
 /// - `rspace`: The rspace which the runtime would operate on
-/// - `extra_system_processes`: Extra system rholang processes exposed to the
-///   runtime which you can execute functions on
-/// - `init_registry`: For a newly created rspace, you might need to bootstrap
-///   registry in the runtime to use rholang registry normally. This is not the
-///   only thing you need for rholang registry - after the bootstrap registry,
-///   you still need to insert registry contract on the rspace. For an existing
-///   rspace which bootstrapped registry before, you can skip this. For some
-///   test cases, you don't need the registry, then you can skip this init
-///   process which can be faster.
+/// - `extra_system_processes`: Extra system rholang processes exposed to the runtime
+///   which you can execute functions on
+/// - `init_registry`: For a newly created rspace, you might need to bootstrap registry
+///   in the runtime to use rholang registry normally. This is not the only thing you need
+///   for rholang registry - after the bootstrap registry, you still need to insert registry
+///   contract on the rspace. For an existing rspace which bootstrapped registry before, you
+///   can skip this. For some test cases, you don't need the registry, then you can skip this
+///   init process which can be faster.
 /// - `mergeable_tag_name`: Tag name for mergeable channels
 /// - `external_services`: External services configuration (OpenAI, gRPC)
 ///
@@ -1282,8 +1274,7 @@ where
     .await
 }
 
-/// Creates a replay runtime for executing Rholang code with replay
-/// capabilities.
+/// Creates a replay runtime for executing Rholang code with replay capabilities.
 ///
 /// # Parameters
 ///

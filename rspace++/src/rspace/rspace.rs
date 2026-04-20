@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -15,7 +15,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::{HistoryRepositoryError, RSpaceError};
@@ -23,18 +23,18 @@ use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
 use super::logging::BasicLogger;
+use super::r#match::Match;
 use super::metrics_constants::{
     CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, REVERT_SOFT_CHECKPOINT_SPAN,
     RSPACE_METRICS_SOURCE,
 };
-use super::r#match::Match;
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
-use super::trace::event::{Consume, Event, IOEvent, Produce, COMM};
 use super::trace::Log;
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -59,19 +59,6 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A>>>,
 }
 
-fn block_creator_phase_substep_profile_enabled() -> bool {
-    static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| {
-                let normalized = v.trim().to_ascii_lowercase();
-                matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-            })
-            .unwrap_or(false)
-    })
-}
-
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
@@ -92,42 +79,7 @@ where
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
-        event!(
-            Level::DEBUG,
-            mark = "started-create-checkpoint",
-            "create_checkpoint"
-        );
-        let mem_profile_enabled = block_creator_phase_substep_profile_enabled();
-        let read_rss_kb = || -> Option<u64> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
-            let mut parts = line.split_whitespace();
-            let _ = parts.next();
-            parts.next()?.parse::<u64>().ok()
-        };
-        let mut mem_prev_kb = if mem_profile_enabled {
-            read_rss_kb()
-        } else {
-            None
-        };
-        let mem_base_kb = mem_prev_kb;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr_kb) = read_rss_kb() {
-                let prev_kb = mem_prev_kb.unwrap_or(curr_kb);
-                let base_kb = mem_base_kb.unwrap_or(curr_kb);
-                let delta_prev_kb = curr_kb as i64 - prev_kb as i64;
-                let delta_total_kb = curr_kb as i64 - base_kb as i64;
-                eprintln!(
-                    "create_checkpoint.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step, curr_kb, delta_prev_kb, delta_total_kb
-                );
-                mem_prev_kb = Some(curr_kb);
-            }
-        };
-        log_mem_step("start");
+        event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
 
         // Get changes with span
         let changes = {
@@ -135,7 +87,6 @@ where
                 tracing::info_span!(target: "f1r3fly.rspace", CHANGES_SPAN).entered();
             self.store.changes()
         };
-        log_mem_step("after_store_changes");
 
         // Create history checkpoint with span
         let next_history = {
@@ -143,32 +94,20 @@ where
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
             self.history_repository.checkpoint(changes)
         };
-        log_mem_step("after_history_checkpoint");
         self.history_repository = Arc::new(next_history);
-        log_mem_step("after_set_history_repository");
 
         let log = std::mem::take(&mut self.event_log);
-        log_mem_step("after_take_event_log");
         let _ = std::mem::take(&mut self.produce_counter);
-        log_mem_step("after_take_produce_counter");
 
         let history_reader = self
             .history_repository
             .get_history_reader(&self.history_repository.root())?;
-        log_mem_step("after_get_history_reader");
 
         self.create_new_hot_store(history_reader);
-        log_mem_step("after_create_new_hot_store");
         self.restore_installs();
-        log_mem_step("after_restore_installs");
 
         // Mark the completion of create-checkpoint
-        event!(
-            Level::DEBUG,
-            mark = "finished-create-checkpoint",
-            "create_checkpoint"
-        );
-        log_mem_step("finish");
+        event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
 
         Ok(Checkpoint {
             root: self.history_repository.root(),
@@ -542,11 +481,7 @@ where
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-consume") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
-        event!(
-            Level::DEBUG,
-            mark = "started-locked-consume",
-            "locked_consume"
-        );
+        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
 
         // println!("\nHit locked_consume");
         // println!(
@@ -554,14 +489,7 @@ where
         // {:?}>",     patterns, channels
         // );
 
-        self.log_consume(
-            consume_ref,
-            channels,
-            patterns,
-            continuation,
-            persist,
-            peeks,
-        );
+        self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
 
         let channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         // println!("\nchannel_to_indexed_data: {:?}", channel_to_indexed_data);
@@ -606,19 +534,11 @@ where
                 //     "consume: data found for <patterns: {:?}> at <channels: {:?}>",
                 //     patterns, channels
                 // );
-                event!(
-                    Level::DEBUG,
-                    mark = "finished-locked-consume",
-                    "locked_consume"
-                );
+                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
                 Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
             }
             None => {
-                event!(
-                    Level::DEBUG,
-                    mark = "finished-locked-consume",
-                    "locked_consume"
-                );
+                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 Ok(None)
             }
@@ -653,11 +573,7 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
-        event!(
-            Level::DEBUG,
-            mark = "started-locked-produce",
-            "locked_produce"
-        );
+        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
 
         // println!("\nHit locked_produce");
         let grouped_channels = self.store.get_joins(&channel);
@@ -677,11 +593,7 @@ where
 
         match extracted {
             Some(produce_candidate) => {
-                event!(
-                    Level::DEBUG,
-                    mark = "finished-locked-produce",
-                    "locked_produce"
-                );
+                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
                 Ok(self
                     .process_match_found(produce_candidate)
                     .map(|consume_result| {
@@ -689,11 +601,7 @@ where
                     }))
             }
             None => {
-                event!(
-                    Level::DEBUG,
-                    mark = "finished-locked-produce",
-                    "locked_produce"
-                );
+                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
                 Ok(self.store_data(channel, data, persist, produce_ref.clone()))
             }
         }
@@ -931,7 +839,7 @@ where
                 } = consume_candidate;
 
                 if !persist {
-                    self.store.remove_datum(channel, *datum_index)
+                    self.store.remove_datum(channel, *datum_index).ok()
                 } else {
                     Some(())
                 }
@@ -1074,8 +982,11 @@ where
                     datum_index,
                 } = consume_candidate;
 
-                if *datum_index >= 0 && !persist {
-                    self.store.remove_datum(channel, *datum_index);
+                if *datum_index >= 0 &&
+                    !persist &&
+                    self.store.remove_datum(channel, *datum_index).is_err()
+                {
+                    return None;
                 }
                 self.store.remove_join(channel, channels);
 

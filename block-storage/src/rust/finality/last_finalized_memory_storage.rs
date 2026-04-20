@@ -1,5 +1,4 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/
-// LastFinalizedMemoryStorage.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedMemoryStorage.scala
 
 use std::sync::{Arc, Mutex};
 

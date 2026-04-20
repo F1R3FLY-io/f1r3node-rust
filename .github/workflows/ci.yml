@@ -6,12 +6,17 @@ on:
     branches:
       - dev
       - master
+      - migration-plan
+    tags: "**"
   pull_request:
     branches:
       - dev
       - master
       - "feature/**"
 
+# Lint and test jobs cancel previous runs for the same ref (cheap, on
+# GitHub-hosted runners). Self-hosted runner jobs queue instead to avoid
+# wasting expensive native Docker builds.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -20,11 +25,13 @@ env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
+  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,6 +62,7 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -105,3 +113,351 @@ jobs:
           name: test-logs-${{ matrix.crate }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
+  build_docker_image:
+    name: Build Docker Image (${{ matrix.arch }})
+    needs: lint
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # Queue instead of cancel for self-hosted runners (one runner per arch).
+    concurrency:
+      group: docker-build-${{ matrix.arch }}-${{ github.ref }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: [self-hosted, Linux, X64, f1r3fly-rust-ci]
+            arch: amd64
+          - platform: linux/arm64
+            runner: [self-hosted, Linux, ARM64, f1r3fly-rust-ci]
+            arch: arm64
+    steps:
+      - name: Clean self-hosted runner state
+        shell: bash {0}
+        run: |
+          sudo rm -rf system-integration/integration-tests/data
+          rm -rf ../artifacts /tmp/rust-node-docker.tar.gz
+
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Enable Containerd Image Store
+        shell: bash -ex {0}
+        run: |
+          sudo mkdir -p /etc/docker
+          DESIRED='{"features": {"containerd-snapshotter": true}}'
+          CURRENT=$(cat /etc/docker/daemon.json 2>/dev/null || echo '{}')
+          if [ "$CURRENT" != "$DESIRED" ]; then
+            echo "$DESIRED" | sudo tee /etc/docker/daemon.json | jq
+            sudo systemctl restart docker
+            echo "Docker daemon restarted (config changed)"
+          else
+            echo "Docker daemon config already up to date, skipping restart"
+          fi
+
+      - name: Build Docker Image
+        shell: bash -ex {0}
+        run: |
+          docker context use default
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file node/Dockerfile \
+            --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
+            --load \
+            .
+
+      - name: Export Docker Image
+        shell: bash -ex {0}
+        run: |
+          docker image save ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
+              | gzip > /tmp/rust-node-docker.tar.gz
+
+      - name: Save Docker Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp/rust-node-docker.tar.gz
+
+  # Integration tests on Oracle Cloud self-hosted runners.
+  # Boots a full shard (bootstrap + 3 validators + observer) and runs the
+  # system-integration pytest suite against the freshly built Docker image.
+  integration_tests:
+    name: Integration Tests (${{ matrix.arch }})
+    needs: build_docker_image
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    concurrency:
+      group: integration-${{ matrix.arch }}-${{ github.ref }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: [self-hosted, Linux, X64, f1r3fly-rust-ci]
+          - arch: arm64
+            runner: [self-hosted, Linux, ARM64, f1r3fly-rust-ci]
+    steps:
+      - name: Clean self-hosted runner state
+        shell: bash {0}
+        run: |
+          sudo rm -rf system-integration/integration-tests/data
+          rm -f /tmp/rust-node-docker.tar.gz /tmp/*.log
+
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - name: Clone system-integration
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: main
+          path: system-integration
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: 'pip'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.5
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Install docker-compose
+        shell: bash -ex {0}
+        run: |
+          if ! command -v docker-compose &>/dev/null; then
+            sudo curl -L "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+          fi
+          docker-compose --version
+
+      - name: Reset Docker networking
+        shell: bash {0}
+        run: |
+          docker rm -f $(docker ps -aq) 2>/dev/null || true
+          docker network prune -f 2>/dev/null || true
+          echo "Restarting Docker daemon to clear any TIME_WAIT sockets from previous runs"
+          sudo systemctl restart docker
+          sleep 3
+
+      - name: Install system-integration dependencies
+        shell: bash -ex {0}
+        run: |
+          cd system-integration
+          poetry lock --no-update
+          poetry install --with integration
+
+      - name: Run Integration Tests
+        shell: bash -ex {0}
+        env:
+          DEFAULT_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}
+        run: |
+          cd system-integration
+          SCALE_FLAG=""
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            SCALE_FLAG="--timeout-scale=2.0"
+          fi
+          poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING \
+            --startup-timeout=600 --command-timeout=300 --timeout=600 $SCALE_FLAG
+
+      - name: Upload Integration Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ matrix.arch }}
+          path: system-integration/integration-tests/
+          retention-days: 7
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs-${{ matrix.arch }}
+          path: /tmp/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Clean Docker state
+        if: always()
+        shell: bash {0}
+        run: |
+          docker rm -f rnode.bootstrap rnode.validator1 rnode.validator2 rnode.validator3 rnode.readonly \
+            rnode.standalone rnode.custom.boot rnode.custom.validator1 rnode.custom.validator2 \
+            rnode.custom.validator3 rnode.custom.joiner 2>/dev/null
+          docker network rm f1r3fly-shard f1r3fly-test-shard f1r3fly-test-standalone f1r3fly-test-custom 2>/dev/null
+          sudo rm -rf system-integration/integration-tests/data
+
+  # Push Docker image to Docker Hub (multi-arch manifest).
+  # Runs only on push to master or on tags, after all tests pass.
+  release_docker_image:
+    name: Release Docker Image
+    timeout-minutes: 15
+    needs:
+      - test
+      - integration_tests
+      - build_docker_image
+    if: >-
+      github.event_name == 'push' && (
+        startsWith(github.ref, 'refs/tags/') ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/migration-plan'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for version)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load AMD64 Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp/amd64
+
+      - name: Import AMD64 Docker Image
+        shell: bash -ex {0}
+        run: zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
+
+      - name: Load ARM64 Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-arm64
+          path: /tmp/arm64
+
+      - name: Import ARM64 Docker Image
+        shell: bash -ex {0}
+        run: zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
+
+      - name: Log in to Docker Hub
+        if: >-
+          startsWith(github.ref, 'refs/tags/') ||
+          github.ref == 'refs/heads/master'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish Docker Image
+        if: >-
+          startsWith(github.ref, 'refs/tags/') ||
+          github.ref == 'refs/heads/master'
+        shell: bash -exu -o pipefail {0}
+        run: |
+          VERSION="$(git describe --tags --always)"
+
+          SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
+          SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
+
+          IMG_VERSION_RAW="${DOCKER_IMAGE_NAME}:${VERSION}"
+          IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+          IMG_LATEST="${DOCKER_IMAGE_NAME}:latest"
+
+          # Tag and push arch-specific images
+          docker tag $SOURCE_AMD64 $IMG_VERSION-amd64
+          docker tag $SOURCE_ARM64 $IMG_VERSION-arm64
+          docker push $IMG_VERSION-amd64
+          docker push $IMG_VERSION-arm64
+
+          docker tag $SOURCE_AMD64 $IMG_LATEST-amd64
+          docker tag $SOURCE_ARM64 $IMG_LATEST-arm64
+          docker push $IMG_LATEST-amd64
+          docker push $IMG_LATEST-arm64
+
+          # Create and push multi-arch manifests
+          docker manifest create $IMG_VERSION --amend $IMG_VERSION-amd64 $IMG_VERSION-arm64
+          docker manifest push $IMG_VERSION
+
+          docker manifest create $IMG_LATEST --amend $IMG_LATEST-amd64 $IMG_LATEST-arm64
+          docker manifest push $IMG_LATEST
+
+      - name: Log in to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.OCIR_REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Publish to OCIR
+        shell: bash -exu -o pipefail {0}
+        run: |
+          VERSION="$(git describe --tags --always)"
+          OCIR_IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
+
+          SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
+          SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
+
+          IMG_VERSION_RAW="${OCIR_IMAGE}:${VERSION}"
+          IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+
+          docker tag "$SOURCE_AMD64" "${IMG_VERSION}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_VERSION}-arm64"
+          docker push "${IMG_VERSION}-amd64"
+          docker push "${IMG_VERSION}-arm64"
+
+          docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
+          docker manifest push "${IMG_VERSION}"
+
+          case "${GITHUB_REF}" in
+            refs/tags/*|refs/heads/master) EXTRA_TAG="latest" ;;
+            refs/heads/migration-plan)     EXTRA_TAG="migration-plan" ;;
+            *)                             EXTRA_TAG="" ;;
+          esac
+
+          if [ -n "$EXTRA_TAG" ]; then
+            IMG_EXTRA="${OCIR_IMAGE}:${EXTRA_TAG}"
+            docker tag "$SOURCE_AMD64" "${IMG_EXTRA}-amd64"
+            docker tag "$SOURCE_ARM64" "${IMG_EXTRA}-arm64"
+            docker push "${IMG_EXTRA}-amd64"
+            docker push "${IMG_EXTRA}-arm64"
+            docker manifest create "${IMG_EXTRA}" --amend "${IMG_EXTRA}-amd64" "${IMG_EXTRA}-arm64"
+            docker manifest push "${IMG_EXTRA}"
+          fi
+
+  # GitHub release with artifacts (tags only)
+  release_packages:
+    name: Release Packages
+    timeout-minutes: 10
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    needs:
+      - test
+      - integration_tests
+      - build_docker_image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load Packages
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp/artifacts
+
+      - name: Update release and release artifacts
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: /tmp/artifacts/*
+          prerelease: true
+          draft: true
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          token: ${{ secrets.GITHUB_TOKEN }}

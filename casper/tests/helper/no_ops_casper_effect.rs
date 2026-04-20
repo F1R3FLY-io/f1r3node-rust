@@ -37,13 +37,11 @@ pub struct NoOpsCasperEffect {
 unsafe impl Send for NoOpsCasperEffect {}
 unsafe impl Sync for NoOpsCasperEffect {}
 
-// For testing purposes, we'll implement Clone manually by creating stub
-// instances
+// For testing purposes, we'll implement Clone manually by creating stub instances
 impl Clone for NoOpsCasperEffect {
     fn clone(&self) -> Self {
-        // Create a clone that shares the same underlying storage so that blocks added
-        // to one instance are visible to cloned instances (which is necessary
-        // for the engine tests to work)
+        // Create a clone that shares the same underlying storage so that blocks added to one instance
+        // are visible to cloned instances (which is necessary for the engine tests to work)
 
         // Create new KeyValueBlockStore with shared underlying storage
         // Note: We need to share the underlying data between clones for tests to work
@@ -72,8 +70,7 @@ impl Clone for NoOpsCasperEffect {
 
 impl NoOpsCasperEffect {
     pub fn new(
-        _blocks: Option<HashMap<BlockHash, BlockMessage>>, /* No longer used - blocks stored in
-                                                            * actual KeyValueBlockStore */
+        _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
         estimator_func: Option<Vec<BlockHash>>,
         runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
@@ -105,8 +102,7 @@ impl NoOpsCasperEffect {
     }
 
     /// Create NoOpsCasperEffect with externally provided shared kvm data
-    /// This ensures all storages use the SAME kvm (like Scala's
-    /// InMemoryStoreManager)
+    /// This ensures all storages use the SAME kvm (like Scala's InMemoryStoreManager)
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
         runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
@@ -114,8 +110,8 @@ impl NoOpsCasperEffect {
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     ) -> Self {
-        // Use the provided shared kvm data for BOTH block store and approved block
-        // store This matches Scala's behavior where all storages share one kvm
+        // Use the provided shared kvm data for BOTH block store and approved block store
+        // This matches Scala's behavior where all storages share one kvm
         let block_store = KeyValueBlockStore::new(
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
@@ -187,15 +183,12 @@ impl MultiParentCasper for NoOpsCasperEffect {
 impl Casper for NoOpsCasperEffect {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
-            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for \
-             heartbeat tests"
-                .to_string(),
+            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
         ))
     }
 
     fn contains(&self, hash: &BlockHash) -> bool {
-        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test
-        // logic)
+        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test logic)
         match self.block_store.get(hash) {
             Ok(maybe_block) => maybe_block.is_some(),
             Err(_) => false,
@@ -270,22 +263,18 @@ impl Casper for NoOpsCasperEffect {
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         // For test purposes, this is not used by our tests but we need to implement it
-        // In a real implementation, this would return the actual approved block from
-        // storage
+        // In a real implementation, this would return the actual approved block from storage
         Err(CasperError::RuntimeError(
             "get_approved_block not implemented for NoOpsCasperEffect test helper".to_string(),
         ))
     }
 }
 
-// Additional test-friendly methods for compatibility with the old MockCasper
-// API
+// Additional test-friendly methods for compatibility with the old MockCasper API
 impl NoOpsCasperEffect {
-    /// Add a block to the actual KeyValueBlockStore (preserving Scala test
-    /// logic)
+    /// Add a block to the actual KeyValueBlockStore (preserving Scala test logic)
     pub fn add_block_to_store(&mut self, block: BlockMessage) {
-        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap
-        // fallback
+        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap fallback
         match self.block_store.put_block_message(&block) {
             Ok(_) => {
                 tracing::debug!(
@@ -297,13 +286,11 @@ impl NoOpsCasperEffect {
         }
     }
 
-    /// Add block to DAG storage and update latest messages (like Scala
-    /// blockDagStorage.insert)
+    /// Add block to DAG storage and update latest messages (like Scala blockDagStorage.insert)
     pub fn add_to_dag(&mut self, block_hash: BlockHash) {
         use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
-        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala
-        // test logic)
+        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
             self.block_dag_storage.dag_set.insert(block_hash.clone());
@@ -387,12 +374,10 @@ impl NoOpsCasperEffect {
         }
     }
 
-    /// Insert block to both block store and DAG (matches Scala
-    /// blockDagStorage.insert pattern)
+    /// Insert block to both block store and DAG (matches Scala blockDagStorage.insert pattern)
     ///
-    /// This method provides a more Scala-like API that combines storage and DAG
-    /// operations matching the pattern: blockDagStorage.insert(block,
-    /// approved)
+    /// This method provides a more Scala-like API that combines storage and DAG operations
+    /// matching the pattern: blockDagStorage.insert(block, approved)
     pub fn insert_block(&mut self, block: BlockMessage, approved: bool) {
         // First add to block store
         self.add_block_to_store(block.clone());

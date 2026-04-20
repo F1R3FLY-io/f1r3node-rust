@@ -102,7 +102,6 @@ async fn our_build_system_should_execute_the_genesis_block() {
     let _node = TestNode::standalone(genesis.clone()).await.unwrap();
 
     // Scala: (logEff.warns should be(Nil)).pure[Effect]
-    // Note: In Rust we don't have direct access to log warnings in tests like
-    // in Scala If we got here without panicking, the genesis was
-    // successfully created
+    // Note: In Rust we don't have direct access to log warnings in tests like in Scala
+    // If we got here without panicking, the genesis was successfully created
 }

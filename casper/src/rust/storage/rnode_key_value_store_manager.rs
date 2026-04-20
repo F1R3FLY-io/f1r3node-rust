@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/storage/
-// RNodeKeyValueStoreManager.scala
+// See casper/src/main/scala/coop/rchain/casper/storage/RNodeKeyValueStoreManager.scala
 
 use std::path::PathBuf;
 

@@ -1,5 +1,4 @@
-// Unit tests for PathMap zipper path management methods: createPath, prunePath,
-// reset
+// Unit tests for PathMap zipper path management methods: createPath, prunePath, reset
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
@@ -10,8 +9,7 @@ mod zipper_path_management_tests {
     use super::*;
 
     fn create_test_pathmap() -> EPathMap {
-        // Create PathMap with entries: ["a", "value1"], ["a", "b", "value2"], ["a",
-        // "b", "c", "value3"]
+        // Create PathMap with entries: ["a", "value1"], ["a", "b", "value2"], ["a", "b", "c", "value3"]
         let entries = vec![
             create_path_par(vec!["a".to_string()], "value1"),
             create_path_par(vec!["a".to_string(), "b".to_string()], "value2"),
@@ -297,8 +295,7 @@ mod zipper_path_management_tests {
     #[test]
     fn test_create_path_validates_format() {
         // createPath is currently a no-op that validates path format
-        // This test verifies the structure is correct for potential future
-        // implementation
+        // This test verifies the structure is correct for potential future implementation
         let pathmap = create_test_pathmap();
 
         // The method should accept the PathMap and return it unchanged

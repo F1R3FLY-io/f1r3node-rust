@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/helper/Secp256k1SignContract.scala
 
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};

@@ -43,11 +43,6 @@ where
                 remaining,
             )) => match matcher.get(pattern.clone(), match_candidate.clone()) {
                 Some(mat) => {
-                    // println!("\npattern: {:?}", pattern);
-                    // println!("\nmatch_candidate: {:?}", match_candidate);
-
-                    // println!("\nmatch found! Match: {:?}", mat);
-
                     let indexed_datums = if *persist {
                         data.clone()
                     } else {
@@ -70,10 +65,6 @@ where
                     ))
                 }
                 None => {
-                    // println!("\npattern: {:?}", pattern);
-                    // println!("\nmatch_candidate: {:?}", match_candidate);
-                    // println!("\nno match found!");
-
                     let mut new_prefix = prefix;
                     new_prefix.push((datum.clone(), *data_index));
                     self.find_matching_data_candidate(
@@ -106,54 +97,41 @@ where
         channel_to_indexed_data: DashMap<C, Vec<(Datum<A>, i32)>>,
         acc: Vec<Option<ConsumeCandidate<C, A>>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
-        // println!("\nHit extract_data_candidates");
-        match channel_pattern_pairs.last() {
-            Some((channel, pattern)) => {
+        match channel_pattern_pairs.split_first() {
+            Some(((channel, pattern), tail)) => {
                 let maybe_tuple: Option<MatchingDataCandidate<C, A>> =
                     match channel_to_indexed_data.get(channel) {
-                        Some(indexed_data) => {
-                            // println!("\nCalling findMatchingDataCandidate");
-                            self.find_matching_data_candidate(
-                                matcher,
-                                channel.clone(),
-                                indexed_data.clone(),
-                                pattern.clone(),
-                                Vec::new(),
-                            )
-                        }
-                        None => {
-                            // println!("\nHitting None in maybeTuple");
-                            None
-                        }
+                        Some(indexed_data) => self.find_matching_data_candidate(
+                            matcher,
+                            channel.clone(),
+                            indexed_data.clone(),
+                            pattern.clone(),
+                            Vec::new(),
+                        ),
+                        None => None,
                     };
-
-                // println!("\nmaybe_tuple: {:?}", maybe_tuple);
 
                 match maybe_tuple {
                     Some((cand, rem)) => {
                         let mut new_acc = acc;
                         new_acc.push(Some(cand));
-                        let mut new_pairs = channel_pattern_pairs.clone();
-                        new_pairs.pop();
                         let new_data = channel_to_indexed_data;
                         new_data.insert(channel.clone(), rem);
-                        self.extract_data_candidates(matcher, new_pairs, new_data, new_acc)
+                        self.extract_data_candidates(matcher, tail.to_vec(), new_data, new_acc)
                     }
                     None => {
                         let mut new_acc = acc;
                         new_acc.push(None);
-                        let mut new_pairs = channel_pattern_pairs;
-                        new_pairs.pop();
                         self.extract_data_candidates(
                             matcher,
-                            new_pairs,
+                            tail.to_vec(),
                             channel_to_indexed_data,
                             new_acc,
                         )
                     }
                 }
             }
-            None => acc.into_iter().rev().collect(),
+            None => acc,
         }
     }
 
@@ -164,8 +142,8 @@ where
         match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
         channel_to_index_data: DashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
-        match match_candidates.last() {
-            Some((cont @ WaitingContinuation { patterns, .. }, index)) => {
+        match match_candidates.split_first() {
+            Some(((cont @ WaitingContinuation { patterns, .. }, index), remaining)) => {
                 let maybe_data_candidates: Option<Vec<ConsumeCandidate<C, A>>> = {
                     let data_candidates = self.extract_data_candidates(
                         matcher,
@@ -179,7 +157,6 @@ where
                         None
                     }
                 };
-                // println!("\nmaybe_data_candidates: {:?}", maybe_data_candidates);
                 match maybe_data_candidates {
                     Some(data_candidates) => Some(ProduceCandidate {
                         channels,
@@ -187,16 +164,12 @@ where
                         continuation_index: *index,
                         data_candidates,
                     }),
-                    None => {
-                        let mut new_candidates = match_candidates;
-                        new_candidates.pop();
-                        self.extract_first_match(
-                            matcher,
-                            channels,
-                            new_candidates,
-                            channel_to_index_data,
-                        )
-                    }
+                    None => self.extract_first_match(
+                        matcher,
+                        channels,
+                        remaining.to_vec(),
+                        channel_to_index_data,
+                    ),
                 }
             }
             None => None,

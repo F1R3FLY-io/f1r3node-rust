@@ -167,8 +167,7 @@ async fn digraph_nodes_with_style() {
     g.close().await.unwrap();
 
     let result = ser.get_content().await;
-    let expected = "digraph \"G\" {\n  \"Hello\" [shape=box]\n  \"World\" [shape=doublecircle]\n  \
-                    \"Hello\" -> \"World\"\n}";
+    let expected = "digraph \"G\" {\n  \"Hello\" [shape=box]\n  \"World\" [shape=doublecircle]\n  \"Hello\" -> \"World\"\n}";
     assert_eq!(result, expected);
 }
 
@@ -259,10 +258,7 @@ async fn digraph_with_simple_subgraphs() {
     g.close().await.unwrap();
 
     let result = ser.get_content().await;
-    let expected = "digraph \"Process\" {\n  \"0\"\n  subgraph {\n    \"A\"\n    \"B\"\n    \
-                    \"C\"\n    \"A\" -> \"B\"\n    \"B\" -> \"C\"\n  }\n  \"0\" -> \"A\"\n  \
-                    subgraph {\n    \"K\"\n    \"L\"\n    \"M\"\n    \"K\" -> \"L\"\n    \"L\" -> \
-                    \"M\"\n  }\n  \"0\" -> \"K\"\n  \"1\"\n  \"M\" -> \"1\"\n  \"C\" -> \"1\"\n}";
+    let expected = "digraph \"Process\" {\n  \"0\"\n  subgraph {\n    \"A\"\n    \"B\"\n    \"C\"\n    \"A\" -> \"B\"\n    \"B\" -> \"C\"\n  }\n  \"0\" -> \"A\"\n  subgraph {\n    \"K\"\n    \"L\"\n    \"M\"\n    \"K\" -> \"L\"\n    \"L\" -> \"M\"\n  }\n  \"0\" -> \"K\"\n  \"1\"\n  \"M\" -> \"1\"\n  \"C\" -> \"1\"\n}";
     assert_eq!(result, expected);
 }
 
@@ -353,12 +349,7 @@ async fn digraph_with_fancy_subgraphs() {
     g.close().await.unwrap();
 
     let result = ser.get_content().await;
-    let expected = "digraph \"Process\" {\n  \"0\"\n  subgraph \"cluster_p1\" {\n    label = \
-                    \"process #1\"\n    color=blue\n    \"A\"\n    \"B\"\n    \"C\"\n    \"A\" -> \
-                    \"B\"\n    \"B\" -> \"C\"\n  }\n  \"0\" -> \"A\"\n  subgraph \"cluster_p2\" \
-                    {\n    label = \"process #2\"\n    color=green\n    \"K\"\n    \"L\"\n    \
-                    \"M\"\n    \"K\" -> \"L\"\n    \"L\" -> \"M\"\n  }\n  \"0\" -> \"K\"\n  \
-                    \"1\"\n  \"M\" -> \"1\"\n  \"C\" -> \"1\"\n}";
+    let expected = "digraph \"Process\" {\n  \"0\"\n  subgraph \"cluster_p1\" {\n    label = \"process #1\"\n    color=blue\n    \"A\"\n    \"B\"\n    \"C\"\n    \"A\" -> \"B\"\n    \"B\" -> \"C\"\n  }\n  \"0\" -> \"A\"\n  subgraph \"cluster_p2\" {\n    label = \"process #2\"\n    color=green\n    \"K\"\n    \"L\"\n    \"M\"\n    \"K\" -> \"L\"\n    \"L\" -> \"M\"\n  }\n  \"0\" -> \"K\"\n  \"1\"\n  \"M\" -> \"1\"\n  \"C\" -> \"1\"\n}";
     assert_eq!(result, expected);
 }
 
@@ -481,13 +472,7 @@ async fn blockchain_simple() {
     g.close().await.unwrap();
 
     let result = ser.get_content().await;
-    let expected = "digraph \"Blockchain\" {\n  rankdir=BT\n  subgraph {\n    rank=same\n    \
-                    \"1\"\n    \"ddeecc\" [shape=box]\n    \"ffeeff\" [shape=box]\n  }\n  \
-                    \"000000\" -> \"ffeeff\"\n  \"000000\" -> \"ddeecc\"\n  subgraph {\n    \
-                    rank=same\n    \"0\"\n    \"000000\" [shape=box]\n  }\n  subgraph \
-                    \"timeline\" {\n    \"3\" [shape=plaintext]\n    \"2\" [shape=plaintext]\n    \
-                    \"1\" [shape=plaintext]\n    \"0\" [shape=plaintext]\n    \"0\" -> \"1\"\n    \
-                    \"1\" -> \"2\"\n    \"2\" -> \"3\"\n  }\n}";
+    let expected = "digraph \"Blockchain\" {\n  rankdir=BT\n  subgraph {\n    rank=same\n    \"1\"\n    \"ddeecc\" [shape=box]\n    \"ffeeff\" [shape=box]\n  }\n  \"000000\" -> \"ffeeff\"\n  \"000000\" -> \"ddeecc\"\n  subgraph {\n    rank=same\n    \"0\"\n    \"000000\" [shape=box]\n  }\n  subgraph \"timeline\" {\n    \"3\" [shape=plaintext]\n    \"2\" [shape=plaintext]\n    \"1\" [shape=plaintext]\n    \"0\" [shape=plaintext]\n    \"0\" -> \"1\"\n    \"1\" -> \"2\"\n    \"2\" -> \"3\"\n  }\n}";
     assert_eq!(result, expected);
 }
 
@@ -528,11 +513,7 @@ async fn process_example() {
     g.close().await.unwrap();
 
     let result = ser.get_content().await;
-    let expected = "graph \"G\" {\n  \"run\" -- \"intr\"\n  \"intr\" -- \"runbl\"\n  \"runbl\" -- \
-                    \"run\"\n  \"run\" -- \"kernel\"\n  \"kernel\" -- \"zombie\"\n  \"kernel\" -- \
-                    \"sleep\"\n  \"kernel\" -- \"runmem\"\n  \"sleep\" -- \"swap\"\n  \"swap\" -- \
-                    \"runswap\"\n  \"runswap\" -- \"new\"\n  \"runswap\" -- \"runmem\"\n  \"new\" \
-                    -- \"runmem\"\n  \"sleep\" -- \"runmem\"\n}";
+    let expected = "graph \"G\" {\n  \"run\" -- \"intr\"\n  \"intr\" -- \"runbl\"\n  \"runbl\" -- \"run\"\n  \"run\" -- \"kernel\"\n  \"kernel\" -- \"zombie\"\n  \"kernel\" -- \"sleep\"\n  \"kernel\" -- \"runmem\"\n  \"sleep\" -- \"swap\"\n  \"swap\" -- \"runswap\"\n  \"runswap\" -- \"new\"\n  \"runswap\" -- \"runmem\"\n  \"new\" -- \"runmem\"\n  \"sleep\" -- \"runmem\"\n}";
     assert_eq!(result, expected);
 }
 

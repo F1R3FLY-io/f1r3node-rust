@@ -1,41 +1,30 @@
-# crypto
+# Crypto
 
-Cryptography primitives used across the Rust workspace.
+Cryptographic primitives for the F1r3fly node: hashing, signing, key management, and TLS certificates.
 
-## Responsibilities
+## Features
 
-| Area | Implementation |
-| --- | --- |
-| Hashes | Blake2b, Keccak256, SHA-256 |
-| Signatures | Ed25519 and secp256k1 |
-| Keys | Public/private key parsing and helpers |
-| TLS | Certificate generation and address derivation helpers |
+| Category | Implementations |
+|----------|----------------|
+| Hashing | Blake2b256, Blake2b512, Keccak256, SHA-256 |
+| Signing | Secp256k1, Secp256k1Eth (Ethereum-compatible), Ed25519, Schnorr (secp256k1), FROST (threshold signatures) |
+| Keys | Private/public key types, key generation, Base16 encoding |
+| TLS | Certificate generation and validation |
 
-## Build
+## Building
 
 ```bash
-cargo build -p crypto
 cargo build --release -p crypto
+cargo build --profile dev -p crypto   # debug mode
 ```
 
-## Test
+## Testing
 
 ```bash
 cargo test -p crypto
-cargo test -p crypto --release
+cargo test --release -p crypto
 ```
 
-## Key Source Areas
+## Documentation
 
-| Path | Purpose |
-| --- | --- |
-| `src/rust/hash/` | Hash implementations |
-| `src/rust/signatures/` | Signature algorithms and helpers |
-| `src/rust/private_key.rs` | Private key parsing and conversion |
-| `src/rust/public_key.rs` | Public key parsing and conversion |
-| `src/rust/util/certificate_helper.rs` | TLS certificate helpers and peer identity support |
-
-## Dependency Notes
-
-- OpenSSL headers and libraries are required for this crate to compile.
-- Higher-level networking code in `comm` uses the certificate helpers defined here.
+- [Crypto Module Overview](../docs/crypto/README.md) — Hashing, signing, certificates, Schnorr/FROST

@@ -15,16 +15,14 @@ use crate::helper::block_generator::{create_block, create_genesis_block};
 
 #[test]
 fn bf_traverse_f_should_lazily_breadth_first_traverse_a_dag_with_effectful_neighbours() {
-    // Port of Scala test: val stream = DagOps.bfTraverseF[Id, Int](List(1))(i =>
-    // List(i * 2, i * 3)) stream.take(10).toList shouldBe List(1, 2, 3, 4, 6,
-    // 9, 8, 12, 18, 27)
+    // Port of Scala test: val stream = DagOps.bfTraverseF[Id, Int](List(1))(i => List(i * 2, i * 3))
+    // stream.take(10).toList shouldBe List(1, 2, 3, 4, 6, 9, 8, 12, 18, 27)
     //
-    // Key difference: Scala's StreamT is lazy - it generates elements only when
-    // needed. When .take(10) is called, the stream stops after producing
-    // exactly 10 elements. Rust's bf_traverse is eager - it tries to traverse
-    // the entire graph before returning. Since the graph i -> [i*2, i*3] is
-    // infinite, we need to limit neighbor generation to simulate the lazy
-    // behavior and prevent infinite traversal/overflow.
+    // Key difference: Scala's StreamT is lazy - it generates elements only when needed.
+    // When .take(10) is called, the stream stops after producing exactly 10 elements.
+    // Rust's bf_traverse is eager - it tries to traverse the entire graph before returning.
+    // Since the graph i -> [i*2, i*3] is infinite, we need to limit neighbor generation
+    // to simulate the lazy behavior and prevent infinite traversal/overflow.
 
     let neighbors = |i: &i32| vec![i * 2, i * 3];
 

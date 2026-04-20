@@ -25,10 +25,8 @@ impl DeployRuntime {
     where F: std::future::Future<Output = ServiceResult<String>> {
         let attempted = program.await;
 
-        // Note: usage of the sync IO is not a good practice in the async context. The
-        // reason of such impl is because ProposeService API is async and that
-        // DeployRuntime is used only in CLI context where it will not influence the
-        // performance.
+        // Note: usage of the sync IO is not a good practice in the async context. The reason of such impl
+        // is because ProposeService API is async and that DeployRuntime is used only in CLI context where it will not influence the performance.
         match attempted {
             Ok(msg) => {
                 println!("{msg}");

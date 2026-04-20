@@ -86,9 +86,8 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
 
 impl RuntimeOps {
     /**
-     * Because of the history legacy, the emptyStateHash does not really
-     * represent an empty trie. The `emptyStateHash` is used as genesis
-     * block pre state which the state only contains registry
+     * Because of the history legacy, the emptyStateHash does not really represent an empty trie.
+     * The `emptyStateHash` is used as genesis block pre state which the state only contains registry
      * fixed channels in the state.
      */
     pub async fn empty_state_hash(&mut self) -> Result<StateHash, CasperError> {
@@ -99,12 +98,10 @@ impl RuntimeOps {
         Ok(checkpoint.root.bytes().into())
     }
 
-    /* Compute state with deploys (genesis block) and System deploys (regular
-     * block) */
+    /* Compute state with deploys (genesis block) and System deploys (regular block) */
 
     /**
-     * Evaluates deploys and System deploys with checkpoint to get final
-     * state hash
+     * Evaluates deploys and System deploys with checkpoint to get final state hash
      */
     pub async fn compute_state(
         &mut self,
@@ -121,18 +118,9 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
         } else {
@@ -217,7 +205,7 @@ impl RuntimeOps {
                     return Err(CasperError::RuntimeError(format!(
                         "Unexpected system error during play of system deploy: {}",
                         error_msg
-                    )));
+                    )))
                 }
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
@@ -225,7 +213,7 @@ impl RuntimeOps {
                     return Err(CasperError::RuntimeError(
                         "Unreachable code path. This is likely caused by a bug in the runtime."
                             .to_string(),
-                    ));
+                    ))
                 }
             }
         }
@@ -278,26 +266,16 @@ impl RuntimeOps {
     /* Deploy evaluators */
 
     /**
-     * Evaluates deploys on root hash with checkpoint to get final state
-     * hash
+     * Evaluates deploys on root hash with checkpoint to get final state hash
      */
     pub async fn play_deploys_for_state(
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
         } else {
@@ -312,8 +290,7 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_deploys_for_state.mem step={} rss_kb={} delta_prev_kb={} \
-                     delta_total_kb={}",
+                    "play_deploys_for_state.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     step,
                     curr,
                     curr as i64 - prev as i64,
@@ -358,8 +335,7 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates deploys on root hash with checkpoint to get final state
-     * hash
+     * Evaluates deploys on root hash with checkpoint to get final state hash
      */
     pub async fn play_deploys_for_genesis(
         &mut self,
@@ -381,25 +357,15 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund
-     * calls)
+     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
      */
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
         } else {
@@ -414,8 +380,7 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_deploy_with_cost_accounting.mem step={} rss_kb={} delta_prev_kb={} \
-                     delta_total_kb={}",
+                    "play_deploy_with_cost_accounting.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     step,
                     curr,
                     curr as i64 - prev as i64,
@@ -517,8 +482,7 @@ impl RuntimeOps {
 
                     Either::Left(error) => {
                         // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic
-                        // deploys.
+                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
                         let refund_amount = pd.refund_amount();
                         let failure_context = format!(
                             "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
@@ -637,9 +601,8 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
-                // proposing. Keep behavior deterministic by selecting the
-                // maximum observed numeric value.
+                // Liveness-first fallback: ambiguous mergeable channel values should not wedge proposing.
+                // Keep behavior deterministic by selecting the maximum observed numeric value.
                 let num = ch_values
                     .iter()
                     .map(|datum| {
@@ -748,18 +711,9 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let deploy_type = std::any::type_name::<S>();
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
@@ -775,8 +729,7 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "play_system_deploy_internal.mem deploy_type={} step={} rss_kb={} \
-                     delta_prev_kb={} delta_total_kb={}",
+                    "play_system_deploy_internal.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -814,18 +767,9 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<SysEvalResult<S>, CasperError> {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let deploy_type = std::any::type_name::<S>();
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
@@ -841,8 +785,7 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "eval_system_deploy.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} \
-                     delta_total_kb={}",
+                    "eval_system_deploy.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -902,7 +845,7 @@ impl RuntimeOps {
         &mut self,
         term: String,
         hash: &StateHash,
-    ) -> Result<Vec<Par>, CasperError> {
+    ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
             let deploy = construct_deploy::source_deploy(
                 term,
@@ -931,9 +874,8 @@ impl RuntimeOps {
         match deploy_result.await {
             Ok(result) => Ok(result),
             Err(err) => {
-                println!("Error in play_exploratory_deploy: {:?}", err);
                 tracing::error!("Error in play_exploratory_deploy: {:?}", err);
-                Ok(Vec::new())
+                Ok((Vec::new(), 0))
             }
         }
     }
@@ -943,18 +885,9 @@ impl RuntimeOps {
         par: Par,
         hash: &StateHash,
     ) -> Result<Vec<Par>, CasperError> {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
         } else {
@@ -1061,8 +994,10 @@ impl RuntimeOps {
             })),
         }]);
 
-        self.capture_results_with_name(start, deploy, &return_name)
-            .await
+        let (data, _cost) = self
+            .capture_results_with_name(start, deploy, &return_name)
+            .await?;
+        Ok(data)
     }
 
     pub async fn capture_results_with_name(
@@ -1070,7 +1005,7 @@ impl RuntimeOps {
         start: &StateHash,
         deploy: &Signed<DeployData>,
         name: &Par,
-    ) -> Result<Vec<Par>, CasperError> {
+    ) -> Result<(Vec<Par>, u64), CasperError> {
         match self.capture_results_with_errors(start, deploy, name).await {
             Ok(result) => Ok(result),
             Err(err) => Err(CasperError::InterpreterError(
@@ -1087,7 +1022,7 @@ impl RuntimeOps {
         start: &StateHash,
         deploy: &Signed<DeployData>,
         name: &Par,
-    ) -> Result<Vec<Par>, CasperError> {
+    ) -> Result<(Vec<Par>, u64), CasperError> {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start))?;
 
@@ -1096,7 +1031,8 @@ impl RuntimeOps {
             return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
         }
 
-        Ok(self.get_data_par(name))
+        let cost = eval_res.cost.value.max(0) as u64;
+        Ok((self.get_data_par(name), cost))
     }
 
     /* Evaluates Rholang source code */
@@ -1128,18 +1064,9 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<EvaluateResult, CasperError> {
-        let mem_profile_enabled = std::env::var("F1R3_BLOCK_CREATOR_PHASE_SUBSTEP_PROFILE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let read_vm_rss_kb = || -> Option<usize> {
-            let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            status
-                .lines()
-                .find(|line| line.starts_with("VmRSS:"))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<usize>().ok())
-        };
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
         let deploy_type = std::any::type_name::<S>();
         let mut rss_baseline = if mem_profile_enabled {
             read_vm_rss_kb()
@@ -1155,8 +1082,7 @@ impl RuntimeOps {
                 let prev = rss_prev.unwrap_or(curr);
                 let baseline = rss_baseline.unwrap_or(curr);
                 eprintln!(
-                    "evaluate_system_source.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} \
-                     delta_total_kb={}",
+                    "evaluate_system_source.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
                     deploy_type,
                     step,
                     curr,
@@ -1171,8 +1097,7 @@ impl RuntimeOps {
         };
         log_mem_step("start");
 
-        // Using tracing events for async - Span[F].traceI("evaluate-system-source")
-        // from Scala
+        // Using tracing events for async - Span[F].traceI("evaluate-system-source") from Scala
         tracing::debug!(target: "f1r3fly.casper.evaluate-system-source", "evaluate-system-source-started");
         let eval_start = Instant::now();
         log_mem_step("before_build_env");
@@ -1252,8 +1177,7 @@ impl RuntimeOps {
 
         if validators_pars.is_empty() {
             tracing::warn!(
-                "No result from getActiveValidators query for state {}; treating as no active \
-                 validators",
+                "No result from getActiveValidators query for state {}; treating as no active validators",
                 PrettyPrinter::build_string_bytes(start_hash)
             );
             return Ok(Vec::new());

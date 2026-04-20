@@ -95,8 +95,7 @@ pub struct TestNode {
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
     // Note: no need for SynchronyConstraintChecker struct, will use 'check' method directly
-    // Note: no need for LastFinalizedHeightConstraintChecker struct, will use 'check' method
-    // directly
+    // Note: no need for LastFinalizedHeightConstraintChecker struct, will use 'check' method directly
     pub estimator: Estimator,
     pub safety_oracle: Box<dyn SafetyOracle>,
     // TODO: pub time: Time,
@@ -134,8 +133,7 @@ impl TestNode {
         }
     }
 
-    /// Creates a block with the given deploys (equivalent to Scala createBlock,
-    /// line 233-239).
+    /// Creates a block with the given deploys (equivalent to Scala createBlock, line 233-239).
     ///
     /// This method:
     /// 1. Deploys each datum to casper
@@ -143,8 +141,7 @@ impl TestNode {
     /// 3. Gets validator identity
     /// 4. Calls BlockCreator.create to produce the block
     ///
-    /// Returns BlockCreatorResult which may be Created, NoNewDeploys, or
-    /// ReadOnlyMode.
+    /// Returns BlockCreatorResult which may be Created, NoNewDeploys, or ReadOnlyMode.
     pub async fn create_block(
         &mut self,
         deploy_datums: &[Signed<DeployData>],
@@ -175,8 +172,7 @@ impl TestNode {
         .await
     }
 
-    /// Creates a block with the given deploys, assuming success (equivalent to
-    /// Scala createBlockUnsafe, line 242-255).
+    /// Creates a block with the given deploys, assuming success (equivalent to Scala createBlockUnsafe, line 242-255).
     ///
     /// Unlike create_block, this method:
     /// - Returns the BlockMessage directly (not BlockCreatorResult)
@@ -198,11 +194,9 @@ impl TestNode {
         }
     }
 
-    /// Processes a block through the validation pipeline (equivalent to Scala
-    /// processBlock, line 257-260).
+    /// Processes a block through the validation pipeline (equivalent to Scala processBlock, line 257-260).
     ///
-    /// This is the wrapper method that processes an existing block through the
-    /// full validation pipeline.
+    /// This is the wrapper method that processes an existing block through the full validation pipeline.
     pub async fn process_block(
         &mut self,
         block: BlockMessage,
@@ -210,8 +204,7 @@ impl TestNode {
         self.process_block_through_pipe(block).await
     }
 
-    /// Processes a block through the validation pipeline (internal
-    /// implementation).
+    /// Processes a block through the validation pipeline (internal implementation).
     ///
     /// This method:
     /// 1. Checks if block is of interest
@@ -257,11 +250,9 @@ impl TestNode {
             .await
     }
 
-    /// Adds and processes a block (equivalent to Scala addBlock(block), line
-    /// 198-199).
+    /// Adds and processes a block (equivalent to Scala addBlock(block), line 198-199).
     ///
-    /// Takes an existing block and processes it through the validation
-    /// pipeline.
+    /// Takes an existing block and processes it through the validation pipeline.
     pub async fn add_block(
         &mut self,
         block: BlockMessage,
@@ -269,8 +260,7 @@ impl TestNode {
         self.process_block_through_pipe(block).await
     }
 
-    /// Creates and adds a block from deploys (equivalent to Scala
-    /// addBlock(deploys), line 201-202).
+    /// Creates and adds a block from deploys (equivalent to Scala addBlock(deploys), line 201-202).
     ///
     /// This is a convenience method that:
     /// 1. Creates a block from the given deploys
@@ -284,8 +274,7 @@ impl TestNode {
             .await
     }
 
-    /// Creates and adds a block with expected status validation (equivalent to
-    /// Scala addBlockStatus, line 223-231).
+    /// Creates and adds a block with expected status validation (equivalent to Scala addBlockStatus, line 223-231).
     ///
     /// This method:
     /// 1. Creates a block from deploys
@@ -314,7 +303,7 @@ impl TestNode {
                 return Err(CasperError::RuntimeError(format!(
                     "Expected Created block, got: {:?}",
                     other
-                )));
+                )))
             }
         };
 
@@ -332,8 +321,7 @@ impl TestNode {
         Ok(block)
     }
 
-    /// Publishes a block to other nodes (equivalent to Scala publishBlock, line
-    /// 204-208).
+    /// Publishes a block to other nodes (equivalent to Scala publishBlock, line 204-208).
     ///
     /// This method:
     /// 1. Creates a block from deploys
@@ -361,11 +349,9 @@ impl TestNode {
         Ok(block)
     }
 
-    /// Helper method to propagate a block from a node at a specific index in a
-    /// nodes array.
+    /// Helper method to propagate a block from a node at a specific index in a nodes array.
     ///
-    /// This method works around Rust's borrow checker limitation where we
-    /// cannot do:
+    /// This method works around Rust's borrow checker limitation where we cannot do:
     /// ```ignore
     /// nodes[0].propagate_block(&deploys, &mut nodes)
     /// ```
@@ -373,13 +359,11 @@ impl TestNode {
     /// - First borrow: `nodes[0]` (mutable access to call the method)
     /// - Second borrow: `&mut nodes` (mutable parameter to pass all nodes)
     ///
-    /// This helper uses `split_at_mut` to split the array into non-overlapping
-    /// parts, allowing the borrow checker to verify that we're accessing
-    /// different memory regions.
+    /// This helper uses `split_at_mut` to split the array into non-overlapping parts,
+    /// allowing the borrow checker to verify that we're accessing different memory regions.
     ///
     /// # Scala equivalent
-    /// In Scala this is simply: `nodes(index).propagateBlock(deploys)(nodes:
-    /// _*)`
+    /// In Scala this is simply: `nodes(index).propagateBlock(deploys)(nodes: _*)`
     ///
     /// # Parameters
     /// * `nodes` - All nodes in the network
@@ -399,28 +383,23 @@ impl TestNode {
             .await
     }
 
-    /// Helper method to propagate a block from one node to another specific
-    /// node.
+    /// Helper method to propagate a block from one node to another specific node.
     ///
-    /// This method works around Rust's borrow checker limitation where we
-    /// cannot do:
+    /// This method works around Rust's borrow checker limitation where we cannot do:
     /// ```ignore
     /// nodes[from_index].propagate_block(&deploys, &mut [&mut nodes[to_index]])
     /// ```
     /// because it would require borrowing from `nodes` mutably twice.
     ///
-    /// This helper uses `split_at_mut` to split the array into non-overlapping
-    /// parts, allowing the borrow checker to verify that we're accessing
-    /// different memory regions.
+    /// This helper uses `split_at_mut` to split the array into non-overlapping parts,
+    /// allowing the borrow checker to verify that we're accessing different memory regions.
     ///
     /// # Scala equivalent
-    /// In Scala this is simply:
-    /// `nodes(from_index).propagateBlock(deploys)(nodes(to_index))`
+    /// In Scala this is simply: `nodes(from_index).propagateBlock(deploys)(nodes(to_index))`
     ///
     /// # Parameters
     /// * `nodes` - All nodes in the network
-    /// * `from_index` - Index of the node that should create and propagate the
-    ///   block
+    /// * `from_index` - Index of the node that should create and propagate the block
     /// * `to_index` - Index of the node that should receive the block
     /// * `deploy_datums` - Deploys to include in the block
     pub async fn propagate_block_to_one(
@@ -452,11 +431,9 @@ impl TestNode {
         }
     }
 
-    /// Helper method to publish a block from a node at a specific index to all
-    /// other nodes.
+    /// Helper method to publish a block from a node at a specific index to all other nodes.
     ///
-    /// This method works around Rust's borrow checker limitation similar to
-    /// `propagate_block_at_index`.
+    /// This method works around Rust's borrow checker limitation similar to `propagate_block_at_index`.
     ///
     /// # Scala equivalent
     /// In Scala this is simply: `nodes(index).publishBlock(deploys)(nodes: _*)`
@@ -482,13 +459,11 @@ impl TestNode {
     /// Helper method to publish a block from one node to another specific node.
     ///
     /// # Scala equivalent
-    /// In Scala this is simply:
-    /// `nodes(from_index).publishBlock(deploys)(nodes(to_index))`
+    /// In Scala this is simply: `nodes(from_index).publishBlock(deploys)(nodes(to_index))`
     ///
     /// # Parameters
     /// * `nodes` - All nodes in the network
-    /// * `from_index` - Index of the node that should create and publish the
-    ///   block
+    /// * `from_index` - Index of the node that should create and publish the block
     /// * `to_index` - Index of the node that should receive the block
     /// * `deploy_datums` - Deploys to include in the block
     pub async fn publish_block_to_one(
@@ -515,8 +490,7 @@ impl TestNode {
         }
     }
 
-    /// Propagates a block to target nodes (equivalent to Scala propagateBlock,
-    /// line 210-221).
+    /// Propagates a block to target nodes (equivalent to Scala propagateBlock, line 210-221).
     ///
     /// This method:
     /// 1. Logs block creation
@@ -564,8 +538,7 @@ impl TestNode {
         Ok(block)
     }
 
-    /// Synchronizes this node with other nodes (equivalent to Scala syncWith,
-    /// line 293-344).
+    /// Synchronizes this node with other nodes (equivalent to Scala syncWith, line 293-344).
     ///
     /// This method implements iterative synchronization:
     /// 1. Drains message queues from requested block peers
@@ -687,12 +660,10 @@ impl TestNode {
         self.sync_with(nodes).await
     }
 
-    /// Checks if this node contains a block (equivalent to Scala contains, line
-    /// 346).
+    /// Checks if this node contains a block (equivalent to Scala contains, line 346).
     pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
 
-    /// Checks if this node knows about a block (in storage or requested)
-    /// (equivalent to Scala knowsAbout, line 347-348).
+    /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
         // Check if in storage
         let in_storage = self.contains(block_hash);
@@ -706,20 +677,16 @@ impl TestNode {
         in_storage || in_requested
     }
 
-    /// Shuts off this node by clearing its transport layer queue (equivalent to
-    /// Scala shutoff, line 350).
+    /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
     ///
-    /// This is useful for simulating network partitions or node failures in
-    /// tests.
+    /// This is useful for simulating network partitions or node failures in tests.
     pub fn shutoff(&self) -> Result<(), CommError> { self.tle.test_network().clear(&self.local) }
 
-    /// Visualizes the DAG starting from a block number (equivalent to Scala
-    /// visualizeDag, line 352-369).
+    /// Visualizes the DAG starting from a block number (equivalent to Scala visualizeDag, line 352-369).
     ///
     /// This method:
     /// 1. Creates a StringSerializer for capturing the graph
-    /// 2. Calls BlockAPI::visualize_dag with depth=Int::MAX and
-    ///    max_depth_limit=50
+    /// 2. Calls BlockAPI::visualize_dag with depth=Int::MAX and max_depth_limit=50
     /// 3. Uses GraphzGenerator::dag_as_cluster to generate the DOT format graph
     /// 4. Returns the graph as a String
     ///
@@ -790,8 +757,7 @@ impl TestNode {
         }
     }
 
-    /// Prints a URL for visualizing the DAG (equivalent to Scala
-    /// printVisualizeDagUrl, line 375-383).
+    /// Prints a URL for visualizing the DAG (equivalent to Scala printVisualizeDagUrl, line 375-383).
     ///
     /// This method:
     /// 1. Calls visualize_dag to get the DOT format graph
@@ -946,8 +912,7 @@ impl TestNode {
     ) -> Result<Vec<TestNode>, CasperError> {
         let n = sks.len();
 
-        // Generate node names: "node-1", "node-2", ..., "readOnly-{i}" for read-only
-        // nodes
+        // Generate node names: "node-1", "node-2", ..., "readOnly-{i}" for read-only nodes
         let names: Vec<String> = (1..=n)
             .map(|i| {
                 if i <= (n - with_read_only_size) {
@@ -1028,13 +993,11 @@ impl TestNode {
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
 
-        // Use shared RSpace stores to ensure all nodes in the test can access the same
-        // RSpace history/roots This is required for ReportingCasper to access
-        // the committed roots from block processing
+        // Use shared RSpace stores to ensure all nodes in the test can access the same RSpace history/roots
+        // This is required for ReportingCasper to access the committed roots from block processing
         let new_storage_dir =
             crate::rust::test_utils::util::rholang::resources::copy_storage(storage_dir);
-        // Create a store manager with shared RSpace scope but isolated block/DAG stores
-        // for test isolation
+        // Create a store manager with shared RSpace scope but isolated block/DAG stores for test isolation
         let mut kvm = crate::rust::test_utils::util::rholang::resources::mk_test_rnode_store_manager_with_dual_scope(
             crate::rust::test_utils::util::rholang::resources::generate_scope_id(),
             rspace_scope_id,
@@ -1077,9 +1040,8 @@ impl TestNode {
         let clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
         let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
-        let event_publisher = F1r3flyEvents::new(None);
-        // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F,
-        // Map[BlockHash, RequestState]](Map.empty)
+        let event_publisher = F1r3flyEvents::new();
+        // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
         let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
         // Scala: implicit val blockRetriever: BlockRetriever[F] = BlockRetriever.of[F]
         let block_retriever = BlockRetriever::new(
@@ -1127,11 +1089,9 @@ impl TestNode {
 
         let block_processor = BlockProcessor::new(bp_dependencies);
 
-        // Creates an unbounded tokio channel for processing (Casper, BlockMessage)
-        // tuples
+        // Creates an unbounded tokio channel for processing (Casper, BlockMessage) tuples
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
-        // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing
-        //   pipeline
+        // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
         let (block_processor_queue_tx, block_processor_queue_rx) =
             mpsc::unbounded_channel::<(Arc<dyn MultiParentCasper>, BlockMessage)>();
         let block_processor_queue = (
@@ -1175,6 +1135,7 @@ impl TestNode {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            ..CasperShardConf::new()
         };
 
         let casper_impl = MultiParentCasperImpl {
@@ -1196,7 +1157,7 @@ impl TestNode {
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(std::sync::Mutex::new(
-                None::<(u64, Arc<DashSet<Bytes>>)>,
+                None::<(u64, BlockHash, Arc<DashSet<Bytes>>)>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };
@@ -1205,8 +1166,7 @@ impl TestNode {
 
         // Create EngineWithCasper (matches Scala line 167-177)
         // For engine, create a separate Arc without Mutex by cloning the inner impl
-        // This works because MultiParentCasperImpl fields are already Arc-wrapped where
-        // needed
+        // This works because MultiParentCasperImpl fields are already Arc-wrapped where needed
         let casper_for_engine = {
             let casper_guard = casper.clone();
             Arc::new(MultiParentCasperImpl {
@@ -1291,8 +1251,7 @@ impl TestNode {
     /// Creates an endpoint with the given port for both TCP and UDP
     fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
 
-    /// Propagates messages across all nodes until all queues are empty
-    /// (equivalent to Scala propagate, line 640-649).
+    /// Propagates messages across all nodes until all queues are empty (equivalent to Scala propagate, line 640-649).
     ///
     /// This static method:
     /// 1. Repeatedly calls handleReceive on all nodes
@@ -1350,8 +1309,7 @@ impl TestNode {
         Ok(())
     }
 
-    /// Propagates messages between two nodes (equivalent to Scala propagate
-    /// overload, line 651-652).
+    /// Propagates messages between two nodes (equivalent to Scala propagate overload, line 651-652).
     ///
     /// Convenience method for two-node propagation.
     pub async fn propagate_two(

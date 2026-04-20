@@ -2,17 +2,18 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use tracing::warn;
 
+use super::errors::RSpaceError;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
@@ -34,12 +35,8 @@ const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
 const MAX_HISTORY_STORE_CACHE_CONT_ITEMS: usize = 8192;
 const MAX_HISTORY_STORE_CACHE_DATA_ITEMS: usize = 8192;
 const MAX_HISTORY_STORE_CACHE_JOIN_ITEMS: usize = 8192;
-const HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS_DEFAULT: u64 = 250;
-const HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS_ENV: &str =
-    "F1R3_HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS";
-const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS_DEFAULT: u64 = 250;
-const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS_ENV: &str =
-    "F1R3_HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS";
+const HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
+const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
@@ -50,7 +47,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn put_datum(&self, channel: &C, d: Datum<A>) -> ();
-    fn remove_datum(&self, channel: &C, index: i32) -> Option<()>;
+    fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError>;
 
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>>;
     fn put_join(&self, channel: &C, join: &[C]) -> Option<()>;
@@ -375,30 +372,36 @@ where
         Self::update_hot_store_state_metrics(&state);
     }
 
-    fn remove_datum(&self, channel: &C, index: i32) -> Option<()> {
+    fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
         let state = self.hot_store_state.lock().unwrap();
         let result = match state.data.entry(channel.clone()) {
             Entry::Occupied(mut occupied) => {
                 let out_of_bounds = index < 0 || index as usize >= occupied.get().len();
                 if out_of_bounds {
-                    warn!(index, "Index out of bounds when removing datum");
-                    None
+                    Err(RSpaceError::BugFoundError(format!(
+                        "Index {} out of bounds when removing datum (len={})",
+                        index,
+                        occupied.get().len()
+                    )))
                 } else {
                     occupied.get_mut().remove(index as usize);
-                    Some(())
+                    Ok(())
                 }
             }
             Entry::Vacant(vacant) => {
                 let mut from_history_store = self.get_data_from_history_store(channel);
                 let out_of_bounds = index < 0 || index as usize >= from_history_store.len();
                 if out_of_bounds {
-                    warn!(index, "Index out of bounds when removing datum");
+                    let len = from_history_store.len();
                     vacant.insert(from_history_store);
-                    None
+                    Err(RSpaceError::BugFoundError(format!(
+                        "Index {} out of bounds when removing datum (len={})",
+                        index, len
+                    )))
                 } else {
                     from_history_store.remove(index as usize);
                     vacant.insert(from_history_store);
-                    Some(())
+                    Ok(())
                 }
             }
         };
@@ -777,10 +780,7 @@ where
     K: Clone + Debug + Sync + Send,
 {
     fn continuation_identity(wc: &WaitingContinuation<P, K>) -> String {
-        format!(
-            "{:?}|{:?}|{}|{:?}",
-            wc.patterns, wc.continuation, wc.persist, wc.peeks
-        )
+        format!("{:?}|{:?}|{}|{:?}", wc.patterns, wc.continuation, wc.persist, wc.peeks)
     }
 
     fn now_millis() -> u64 {
@@ -790,24 +790,10 @@ where
             .as_millis() as u64
     }
 
-    fn state_metrics_update_interval_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var(HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS_ENV)
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS_DEFAULT)
-        })
-    }
+    fn state_metrics_update_interval_ms() -> u64 { HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS }
 
     fn history_cache_metrics_update_interval_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var(HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS_ENV)
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS_DEFAULT)
-        })
+        HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS
     }
 
     fn should_emit_metrics(last_emit_at_ms: &AtomicU64, update_interval_ms: u64) -> bool {
@@ -912,18 +898,18 @@ where
         let data_items: usize = cache.datums.iter().map(|entry| entry.value().len()).sum();
         let joins_items: usize = cache.joins.iter().map(|entry| entry.value().len()).sum();
 
-        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
         {
             cache.continuations.clear();
         }
-        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
         {
             cache.datums.clear();
         }
-        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
         {
             cache.joins.clear();
         }

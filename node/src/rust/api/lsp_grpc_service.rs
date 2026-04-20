@@ -1,8 +1,7 @@
 //! LSP gRPC Service implementation
 //!
-//! This module provides a gRPC service for Language Server Protocol (LSP)
-//! functionality, allowing clients to validate Rholang code and receive
-//! diagnostic information.
+//! This module provides a gRPC service for Language Server Protocol (LSP) functionality,
+//! allowing clients to validate Rholang code and receive diagnostic information.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -92,8 +91,7 @@ impl LspGrpcServiceImpl {
     }
 
     /// Parse top-level free variables from error message
-    /// Format: "x at SourceSpan { start: SourcePos { line: 1, col: 1 }, end:
-    /// ... }, y at SourceSpan { ... }"
+    /// Format: "x at SourceSpan { start: SourcePos { line: 1, col: 1 }, end: ... }, y at SourceSpan { ... }"
     fn parse_top_level_free_vars(&self, message: &str) -> Vec<(String, usize, usize)> {
         let mut result = Vec::new();
         // Split by ", " but be careful with nested braces
@@ -124,8 +122,8 @@ impl LspGrpcServiceImpl {
             items.push(current.trim().to_string());
         }
 
-        // Regex to match "var_name at SourceSpan { start: SourcePos { line: X, col: Y
-        // }, ..." Be flexible with whitespace
+        // Regex to match "var_name at SourceSpan { start: SourcePos { line: X, col: Y }, ..."
+        // Be flexible with whitespace
         let var_span_re = Regex::new(r"(\w+)\s+at\s+SourceSpan\s*\{\s*start:\s*SourcePos\s*\{\s*line:\s*(\d+)\s*,\s*col:\s*(\d+)")
             .expect("Failed to compile var_span_regex");
 
@@ -433,9 +431,7 @@ impl LspGrpcServiceImpl {
 
     /// Validate Rholang source code
     async fn validate_source(&self, source: &str) -> ValidateResponse {
-        // TODO: potentially Compiler::source_to_adt_with_normalizer_env should be
-        // wrapped in a tokio::task::spawn_blocking but better to prove it with
-        // benchmarks
+        // TODO: potentially Compiler::source_to_adt_with_normalizer_env should be wrapped in a tokio::task::spawn_blocking but better to prove it with benchmarks
         match Compiler::source_to_adt_with_normalizer_env(source, HashMap::new()) {
             Ok(_) => ValidateResponse {
                 result: Some(lsp::validate_response::Result::Success(DiagnosticList {
@@ -475,10 +471,9 @@ mod tests {
 
     use super::*;
 
-    // Note: in Scala version we expect all errors positions to start from 1:1(line,
-    // column) while in Rust they start from 0:0. This is because of the
-    // internal logic of the Compiler::source_to_adt_with_normalizer_env Because
-    // of this all positions in next tests differs from Scala version.
+    // Note: in Scala version we expect all errors positions to start from 1:1(line, column) while in Rust they start from 0:0.
+    // This is because of the internal logic of the Compiler::source_to_adt_with_normalizer_env
+    // Because of this all positions in next tests differs from Scala version.
 
     /// Helper function to run validation and extract diagnostics
     async fn validate_and_get_diagnostics(code: &str) -> Vec<Diagnostic> {
@@ -530,22 +525,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_detect_unexpected_reuse_of_name_context_free() {
+        // for/; is desugared to nested for loops by the normalizer, so
+        // "for (x <- @Nil; y <- @Nil) { x | y }" becomes
+        // "for (x <- @Nil) { for (y <- @Nil) { x | y } }"
+        // x is bound as a name (channel) but used in process context (x | y).
         let code = "for (x <- @Nil; y <- @Nil) { x | y }";
         let diagnostics = validate_and_get_diagnostics(code).await;
-
         assert_eq!(diagnostics.len(), 1);
         check_diagnostic_basics(&diagnostics[0]);
         assert_eq!(
             diagnostics[0].message,
-            "Receiving on the same channels is currently not allowed (at 0:0)." /* in Scala the
-                                                                                 * error message
-                                                                                 * is different
-                                                                                 * "Name variable:
-                                                                                 * x at 1:6 used
-                                                                                 * in process
-                                                                                 * context at
-                                                                                 * 1:30".
-                                                                                 * Check the Compiler::source_to_adt_with_normalizer_env logic */
+            "Name variable: x at 0:5 used in process context at 0:29"
         );
     }
 
@@ -577,15 +567,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_detect_receive_on_same_channels_error() {
+        // for/; is desugared to nested for loops by the normalizer, so
+        // "for (x <- @Nil; x <- @Nil) { Nil }" becomes
+        // "for (x <- @Nil) { for (x <- @Nil) { Nil } }" — each receive
+        // has a single channel, so the same-channels error no longer fires.
         let code = "for (x <- @Nil; x <- @Nil) { Nil }";
         let diagnostics = validate_and_get_diagnostics(code).await;
-
-        assert_eq!(diagnostics.len(), 1);
-        check_diagnostic_basics(&diagnostics[0]);
-        assert_eq!(
-            diagnostics[0].message,
-            "Receiving on the same channels is currently not allowed (at 0:0)."
-        );
+        assert_eq!(diagnostics.len(), 0);
     }
 
     #[tokio::test]
@@ -600,8 +588,7 @@ mod tests {
             .message
             .contains("Syntax error: Syntax error in code: for (x <- @Nil { Nil }"));
         // in Scala we also expect "at 1:9-1:10"
-        // the Compiler::source_to_adt_with_normalizer_env logic should be
-        // checked
+        // the Compiler::source_to_adt_with_normalizer_env logic should be checked
     }
 
     #[tokio::test]
@@ -613,8 +600,7 @@ mod tests {
         check_diagnostic_basics(&diagnostics[0]);
         assert!(diagnostics[0]
             .message
-            .contains("Syntax error in code: @invalid&token")); // in Scala we also expect "at 1:9-1:10" but the
-                                                                // InterpreterError::LexerError(message) does not contain it.
+            .contains("Syntax error in code: @invalid&token")); // in Scala we also expect "at 1:9-1:10" but the InterpreterError::LexerError(message) does not contain it.
                                                                 // the Compiler::source_to_adt_with_normalizer_env logic should be checked
         assert_eq!(
             diagnostics[0].range.unwrap().start,

@@ -79,8 +79,7 @@ pub fn normalize_p_conjunction<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::rhoapi::connective::ConnectiveInstance;
