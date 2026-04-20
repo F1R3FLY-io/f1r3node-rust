@@ -9,6 +9,11 @@ This document describes the delegation extension in:
 
 Validation notes below are from runs on **April 20, 2026 (UTC)**.
 
+This revision includes:
+
+- on-chain delegator reward accrual + claiming
+- undelegation cooldown (`undelegate` request + `completeUndelegate` transfer)
+
 ## Goal
 
 Allow an external account to stake to an already bonded validator without becoming a validator itself.
@@ -25,6 +30,10 @@ PoS state now includes:
   - Ownership ledger of delegated stake.
 - `delegatedTotals : Map[ValidatorPk, Int]`
   - Aggregated delegated stake per validator.
+- `delegatorRewards : Map[DelegatorPk, Int]`
+  - Accrued rewards claimable by delegators.
+- `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (Int, Int)]]`
+  - Pending undelegation principal by delegator/validator as `(amount, unlockBlock)`.
 
 Effective stake is computed as:
 
@@ -44,6 +53,8 @@ Effective stake is computed as:
 - `PoS("getEffectiveBonds", returnCh)`
 - `PoS("getDelegations", returnCh)`
 - `PoS("getDelegatedTotals", returnCh)`
+- `PoS("getDelegatorRewards", returnCh)`
+- `PoS("getPendingUndelegations", returnCh)`
 
 ### New write methods
 
@@ -62,10 +73,27 @@ Effective stake is computed as:
   - Preconditions:
     - `amount > 0`
     - delegator has at least `amount` delegated to `validatorPk`
+    - no active pending undelegation for `(delegatorPk, validatorPk)`
   - Effects:
-    - transfers `amount` from PoS vault back to delegator vault
+    - removes `amount` from active delegation immediately
     - decrements `delegations[delegatorPk][validatorPk]`
     - decrements `delegatedTotals[validatorPk]`
+    - creates `pendingUndelegations[delegatorPk][validatorPk] = (amount, blockNumber + epochLength)`
+
+- `PoS("completeUndelegate", deployerId, validatorPk, returnCh)`
+  - Preconditions:
+    - pending undelegation exists for `(delegatorPk, validatorPk)`
+    - `currentBlock >= unlockBlock`
+  - Effects:
+    - transfers cooled undelegation principal from PoS vault to delegator vault
+    - removes pending undelegation entry
+
+- `PoS("claimDelegatorRewards", deployerId, returnCh)`
+  - Preconditions:
+    - `delegatorRewards[delegatorPk] > 0`
+  - Effects:
+    - transfers accumulated delegator rewards to delegator vault
+    - clears delegator reward entry
 
 ## Wallet SDK Integration (Reference)
 
@@ -75,7 +103,7 @@ This section shows one practical integration pattern for a wallet SDK that can:
 - wait for finalization
 - run exploratory deploys for read-only state checks
 
-### 1) Build deploy payloads (delegate/undelegate)
+### 1) Build deploy payloads (delegate/undelegate/claim)
 
 ```ts
 export function buildDelegateRho(validatorPkHex: string, amount: number): string {
@@ -98,6 +126,32 @@ new retCh, PoSCh, rl(\`rho:registry:lookup\`) in {
   for(@(_, PoS) <- PoSCh) {
     new deployerId(\`rho:system:deployerId\`) in {
       @PoS!("undelegate", *deployerId, "${validatorPkHex}".hexToBytes(), ${amount}, *retCh)
+    }
+  }
+}
+`;
+}
+
+export function buildCompleteUndelegateRho(validatorPkHex: string): string {
+  return `
+new retCh, PoSCh, rl(\`rho:registry:lookup\`) in {
+  rl!(\`rho:system:pos\`, *PoSCh) |
+  for(@(_, PoS) <- PoSCh) {
+    new deployerId(\`rho:system:deployerId\`) in {
+      @PoS!("completeUndelegate", *deployerId, "${validatorPkHex}".hexToBytes(), *retCh)
+    }
+  }
+}
+`;
+}
+
+export function buildClaimDelegatorRewardsRho(): string {
+  return `
+new retCh, PoSCh, rl(\`rho:registry:lookup\`) in {
+  rl!(\`rho:system:pos\`, *PoSCh) |
+  for(@(_, PoS) <- PoSCh) {
+    new deployerId(\`rho:system:deployerId\`) in {
+      @PoS!("claimDelegatorRewards", *deployerId, *retCh)
     }
   }
 }
@@ -126,6 +180,23 @@ export async function delegateStake(
   await sdk.waitForFinalization(deployId);
   return deployId;
 }
+
+export async function undelegateWithCooldown(
+  sdk: WalletSdk,
+  validatorPkHex: string,
+  amount: number
+): Promise<{ requestDeployId: string; completeDeployId: string }> {
+  const requestRho = buildUndelegateRho(validatorPkHex, amount);
+  const request = await sdk.deploy(requestRho, { phloLimit: 500_000, phloPrice: 1 });
+  await sdk.waitForFinalization(request.deployId);
+
+  // SDK should poll pending undelegations + current block height off-chain until unlock.
+  const completeRho = buildCompleteUndelegateRho(validatorPkHex);
+  const complete = await sdk.deploy(completeRho, { phloLimit: 500_000, phloPrice: 1 });
+  await sdk.waitForFinalization(complete.deployId);
+
+  return { requestDeployId: request.deployId, completeDeployId: complete.deployId };
+}
 ```
 
 Finalization reliability note for SDKs:
@@ -138,19 +209,23 @@ Finalization reliability note for SDKs:
 ```ts
 export function buildDelegationStateQueryRho(delegatorPkHex: string, validatorPkHex: string): string {
   return `
-new ret, PoSCh, rl(\`rho:registry:lookup\`), bondsCh, effBondsCh, delCh, totalsCh in {
+new ret, PoSCh, rl(\`rho:registry:lookup\`), bondsCh, effBondsCh, delCh, totalsCh, rewardsCh, pendingCh in {
   rl!(\`rho:system:pos\`, *PoSCh) |
   for(@(_, PoS) <- PoSCh) {
     @PoS!("getBonds", *bondsCh) |
     @PoS!("getEffectiveBonds", *effBondsCh) |
     @PoS!("getDelegations", *delCh) |
     @PoS!("getDelegatedTotals", *totalsCh) |
-    for (@b <- bondsCh & @e <- effBondsCh & @d <- delCh & @t <- totalsCh) {
+    @PoS!("getDelegatorRewards", *rewardsCh) |
+    @PoS!("getPendingUndelegations", *pendingCh) |
+    for (@b <- bondsCh & @e <- effBondsCh & @d <- delCh & @t <- totalsCh & @r <- rewardsCh & @p <- pendingCh) {
       ret!((
         b.getOrElse("${validatorPkHex}".hexToBytes(), 0),
         e.getOrElse("${validatorPkHex}".hexToBytes(), 0),
         d.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), 0),
-        t.getOrElse("${validatorPkHex}".hexToBytes(), 0)
+        t.getOrElse("${validatorPkHex}".hexToBytes(), 0),
+        r.getOrElse("${delegatorPkHex}".hexToBytes(), 0),
+        p.getOrElse("${delegatorPkHex}".hexToBytes(), {}).getOrElse("${validatorPkHex}".hexToBytes(), Nil)
       ))
     }
   }
@@ -165,6 +240,8 @@ Interpretation in wallet UI:
 - second value = validator effective stake (`getEffectiveBonds`)
 - third value = this wallet's delegated amount to validator
 - fourth value = total delegated amount on validator
+- fifth value = this wallet's claimable delegator rewards
+- sixth value = this wallet's pending undelegation tuple `(amount, unlockBlock)` for validator (or `Nil`)
 
 ### 4) Error handling mapping (recommended)
 
@@ -176,20 +253,37 @@ Map these contract errors to stable SDK/user-facing codes:
 - `Validator is pending withdrawal.`
 - `Undelegation amount must be positive.`
 - `Undelegation amount exceeds delegated stake.`
+- `Pending undelegation already exists for validator.`
+- `No pending undelegation for validator.`
+- `Undelegation cooldown not finished.`
+- `No delegator rewards available.`
 - `Validator has active delegations.` (withdraw path)
 
 ## Behavior Changes in Core Flows
 
 ### Rewards
 
-`rewardsInfo` and `getCurrentEpochRewards` now use effective bonds:
+`rewardsInfo` and `getCurrentEpochRewards` use effective bonds and split epoch rewards:
 
 - `totalBond` is computed from `effectiveBonds`
 - `activeBonds` is computed from active validators over `effectiveBonds`
 
-This means delegation increases validator reward weight.
+This means delegation increases validator reward weight, and delegators receive on-chain rewards via `delegatorRewards`.
+
+Reward accounting now treats these as liabilities before minting new epoch rewards:
+
+- validator `committedRewards`
+- delegator `delegatorRewards`
+- `pendingUndelegations` principal
 
 Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus stake reads include delegated stake.
+
+### Undelegation Cooldown
+
+`PoS("undelegate", ...)` no longer transfers principal immediately.
+
+- request step: removes active delegation stake and creates pending undelegation with unlock block
+- completion step: `PoS("completeUndelegate", ...)` transfers principal only after cooldown
 
 ### Withdraw
 
@@ -216,6 +310,8 @@ Expected invariants for valid state transitions:
 3. Validator with positive delegated total cannot enter pending withdrawal.
 4. On slash, both validator self-bond and delegated stake attached to that validator are slashed.
 5. Reward weighting uses effective stake, but active-set selection remains based on `allBonds` path in `closeBlock`.
+6. Undelegation request removes stake from effective bonds immediately and records claimable principal in `pendingUndelegations`.
+7. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
 
 ## Operational Validation (April 20, 2026 UTC)
 
@@ -246,8 +342,9 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 
 ## Current Limitations
 
-1. Delegators do not receive on-chain reward distribution directly; rewards accrue to validators.
-2. There is no undelegation delay/cooldown; undelegated stake is returned immediately.
+1. Cooldown duration is fixed to `epochLength` (no separate undelegation-parameter yet).
+2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
+3. Delegator rewards are tracked per delegator total (not bucketed per validator).
 
 ## Minimal Usage Example (Rholang)
 
@@ -265,8 +362,28 @@ new return, rl(`rho:registry:lookup`), posCh in {
 new return, rl(`rho:registry:lookup`), posCh in {
   rl!(`rho:system:pos`, *posCh) |
   for (@(_, PoS) <- posCh) {
-    // Undelegate 25 tokens.
+    // Request undelegation of 25 tokens (starts cooldown).
     @PoS!("undelegate", delegatorDeployerId, validatorPk, 25, *return)
+  }
+}
+```
+
+```rho
+new return, rl(`rho:registry:lookup`), posCh in {
+  rl!(`rho:system:pos`, *posCh) |
+  for (@(_, PoS) <- posCh) {
+    // Complete undelegation after unlock block is reached.
+    @PoS!("completeUndelegate", delegatorDeployerId, validatorPk, *return)
+  }
+}
+```
+
+```rho
+new return, rl(`rho:registry:lookup`), posCh in {
+  rl!(`rho:system:pos`, *posCh) |
+  for (@(_, PoS) <- posCh) {
+    // Claim accumulated delegator rewards.
+    @PoS!("claimDelegatorRewards", delegatorDeployerId, *return)
   }
 }
 ```
