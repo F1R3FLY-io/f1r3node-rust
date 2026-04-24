@@ -14,7 +14,7 @@ use casper::rust::blocks::proposer::proposer::new_proposer;
 use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
-use casper::rust::engine::running::Running;
+use casper::rust::engine::running::{Running, RunningRecoveryContext};
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
@@ -42,6 +42,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
@@ -68,6 +69,8 @@ pub struct TestNode {
     pub rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
+    pub last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
+    pub rspace_state_manager: RSpaceStateManager,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
@@ -913,11 +916,15 @@ impl TestNode {
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, _rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, rho_history_repository) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        );
+        let rspace_state_manager = RSpaceStateManager::new(
+            rho_history_repository.exporter(),
+            rho_history_repository.importer(),
         );
 
         let connections_cell = ConnectionsCell::new();
@@ -996,6 +1003,7 @@ impl TestNode {
             },
             sigs: vec![],
         };
+        let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
 
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
@@ -1062,6 +1070,8 @@ impl TestNode {
                 + Sync,
         > = Arc::new(|| Box::pin(async { Ok(()) }));
 
+        let engine_cell = EngineCell::init();
+
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
             Arc::new(DashSet::new()),        // blocks_in_processing
@@ -1072,10 +1082,22 @@ impl TestNode {
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever
+            Some(RunningRecoveryContext {
+                connections_cell: connections_cell.clone(),
+                last_approved_block: last_approved_block.clone(),
+                block_store: block_store.clone(),
+                block_dag_storage: block_dag_storage.clone(),
+                deploy_storage: deploy_storage.lock().unwrap().clone(),
+                casper_buffer_storage: casper_buffer_storage.clone(),
+                rspace_state_manager: rspace_state_manager.clone(),
+                event_publisher: event_publisher.clone(),
+                engine_cell: Arc::new(engine_cell.clone()),
+                runtime_manager: Arc::new(tokio::sync::Mutex::new(runtime_manager.clone())),
+                estimator: estimator.clone(),
+                casper_shard_conf: casper.casper_shard_conf.clone(),
+                heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
+            }),
         );
-
-        // Create EngineCell
-        let engine_cell = EngineCell::init();
         engine_cell.set(Arc::new(running_engine)).await;
 
         // Create CasperPacketHandler
@@ -1093,6 +1115,8 @@ impl TestNode {
             block_dag_storage,
             deploy_storage,
             rejected_deploy_buffer,
+            last_approved_block,
+            rspace_state_manager,
             runtime_manager,
             requested_blocks,
             connections_cell,
