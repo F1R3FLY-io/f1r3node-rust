@@ -171,6 +171,87 @@ async fn interpreter_should_yield_correct_results_for_prime_check_contract() {
     .await
 }
 
+#[tokio::test]
+async fn interpreter_should_capture_the_current_outer_value_in_nested_contracts() {
+    with_runtime("nested-contract-capture-spec-", |mut runtime| async move {
+        let term = r#"
+            @"service_id_listeners"!({}) |
+            contract @"service_id_notify_listeners"(@payload, @ret_id) = {
+                new loop, stdOut(`rho:io:stdout`) in {
+                    stdOut!(["before loop", payload]) |
+                    contract loop(@listeners) = {
+                        stdOut!(["loop", payload, *loop]) |
+                        @"results"!((ret_id, payload))
+                    } |
+                    for(@listeners <<- @"service_id_listeners") {
+                        stdOut!(["outer", payload, *loop]) |
+                        loop!("whatever")
+                    }
+                }
+            } |
+            @"service_id_notify_listeners"!("1", "result1") |
+            @"service_id_notify_listeners"!("2", "result2")
+        "#;
+
+        success(&mut runtime, term).await.unwrap();
+
+        fn rho_par(expr: Expr) -> Vec<Par> {
+            vec![Par {
+                exprs: vec![expr],
+                ..Default::default()
+            }]
+        }
+
+        fn rho_string(s: &str) -> Vec<Par> {
+            rho_par(Expr {
+                expr_instance: Some(expr::ExprInstance::GString(s.to_string())),
+            })
+        }
+
+        let tuple_space = runtime.get_hot_changes();
+        let results_channel = rho_string("results");
+        let results_row = tuple_space.get(&results_channel).expect("results row");
+        let results: HashSet<Par> = results_row
+            .data
+            .iter()
+            .flat_map(|datum| datum.a.pars.clone())
+            .collect();
+        let expected: HashSet<Par> = vec![
+            Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(expr::ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                        ps: vec![
+                            rho_string("result1").into_iter().next().expect("result1"),
+                            rho_string("1").into_iter().next().expect("payload1"),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }],
+                ..Default::default()
+            },
+            Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(expr::ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                        ps: vec![
+                            rho_string("result2").into_iter().next().expect("result2"),
+                            rho_string("2").into_iter().next().expect("payload2"),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }],
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(results, expected);
+    })
+    .await
+}
+
 //TODO should throw SyntaxError, but throw ParserError
 #[tokio::test]
 async fn interpreter_should_signal_syntax_errors_to_the_caller() {
