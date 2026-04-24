@@ -7,11 +7,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
+use models::casper::ApprovedBlockRequestProto;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -21,16 +26,20 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::casper::MultiParentCasper;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::estimator::Estimator;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {
@@ -107,6 +116,7 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
             transport
                 .send_fork_choice_tip_request(connections_cell, conf)
                 .await?;
+            let _ = engine.recover_stuck_validator(delay_threshold).await?;
         }
     }
 
@@ -114,7 +124,7 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
 }
 
 #[async_trait]
-impl<T: TransportLayer + Send + Sync + 'static> Engine for Running<T> {
+impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
     async fn init(&self) -> Result<(), CasperError> {
         {
             let mut init_called = self.init_called.lock().map_err(|_| {
@@ -295,6 +305,10 @@ impl<T: TransportLayer + Send + Sync + 'static> Engine for Running<T> {
 
     /// Running always contains casper; enables `EngineDynExt::with_casper(...)`
     /// to mirror Scala `Engine.withCasper` behavior.
+    async fn recover_stuck_validator(&self, delay_threshold: Duration) -> Result<bool, CasperError> {
+        self.recover_stuck_validator_inner(delay_threshold).await
+    }
+
     fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
         Some(Arc::clone(&self.casper) as Arc<dyn MultiParentCasper + Send + Sync>)
     }
@@ -317,6 +331,24 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     transport: Arc<T>,
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
+    recovery_context: Option<RunningRecoveryContext>,
+}
+
+#[derive(Clone)]
+pub struct RunningRecoveryContext {
+    pub connections_cell: ConnectionsCell,
+    pub last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
+    pub block_store: KeyValueBlockStore,
+    pub block_dag_storage: BlockDagKeyValueStorage,
+    pub deploy_storage: KeyValueDeployStorage,
+    pub casper_buffer_storage: CasperBufferKeyValueStorage,
+    pub rspace_state_manager: RSpaceStateManager,
+    pub event_publisher: F1r3flyEvents,
+    pub engine_cell: Arc<EngineCell>,
+    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub estimator: Estimator,
+    pub casper_shard_conf: CasperShardConf,
+    pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -339,6 +371,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         transport: Arc<T>,
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
+        recovery_context: Option<RunningRecoveryContext>,
     ) -> Self {
         Running {
             block_processing_queue_tx,
@@ -351,6 +384,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             transport,
             conf,
             block_retriever,
+            recovery_context,
         }
     }
 
@@ -359,6 +393,104 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         let buffer_contains = self.casper.buffer_contains(&hash);
         let dag_contains = self.casper.dag_contains(&hash);
         Ok(blocks_in_processing || buffer_contains || dag_contains)
+    }
+
+    async fn recover_stuck_validator_inner(
+        &self,
+        delay_threshold: Duration,
+    ) -> Result<bool, CasperError>
+    where
+        T: Clone + 'static,
+    {
+        let Some(recovery_context) = &self.recovery_context else {
+            return Ok(false);
+        };
+        let Some(validator_id) = self.casper.get_validator() else {
+            return Ok(false);
+        };
+
+        let validator = validator_id.public_key.bytes.clone();
+        let dag = self.casper.block_dag().await?;
+        let latest_hash = match dag.latest_message_hash(&validator) {
+            Some(hash) => hash,
+            None => return Ok(false),
+        };
+        if latest_hash == dag.last_finalized_block() {
+            return Ok(false);
+        }
+
+        let latest_block = match self.casper.block_store().get(&latest_hash)? {
+            Some(block) => block,
+            None => return Ok(false),
+        };
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let latest_age_ms = now_ms.saturating_sub(latest_block.header.timestamp);
+        if latest_age_ms < delay_threshold.as_millis() as i64 {
+            return Ok(false);
+        }
+
+        let transport = Arc::clone(&self.transport);
+        let conf = self.conf.clone();
+        let connections = recovery_context.connections_cell.clone();
+        let init = Arc::new(move || {
+            let transport = Arc::clone(&transport);
+            let conf = conf.clone();
+            let connections = connections.clone();
+
+            Box::pin(async move {
+                transport
+                    .send_message_to_peers(
+                        &connections,
+                        &conf,
+                        Arc::new(ApprovedBlockRequestProto {
+                            identifier: "".to_string(),
+                            trim_state: true,
+                        }),
+                        None,
+                    )
+                    .await?;
+                Ok(())
+            })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        });
+
+        tracing::warn!(
+            "Validator latest message {} has been stale for {}ms; rejoining from approved block.",
+            PrettyPrinter::build_string_bytes(&latest_hash),
+            latest_age_ms
+        );
+
+        engine::transition_to_initializing(
+            &self.block_processing_queue_tx,
+            &self.blocks_in_processing,
+            &recovery_context.casper_shard_conf,
+            &Some(validator_id),
+            init,
+            true,
+            self.disable_state_exporter,
+            &self.transport,
+            &self.conf,
+            &recovery_context.connections_cell,
+            &recovery_context.last_approved_block,
+            &recovery_context.block_store,
+            &recovery_context.block_dag_storage,
+            &recovery_context.deploy_storage,
+            &recovery_context.casper_buffer_storage,
+            &recovery_context.rspace_state_manager,
+            recovery_context.event_publisher.clone(),
+            self.block_retriever.clone(),
+            &recovery_context.engine_cell,
+            &recovery_context.runtime_manager,
+            &recovery_context.estimator,
+            &recovery_context.heartbeat_signal_ref,
+        )
+        .await?;
+
+        Ok(true)
     }
 
     pub async fn handle_block_hash_message(
