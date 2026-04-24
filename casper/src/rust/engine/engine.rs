@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -46,6 +47,10 @@ pub trait Engine: Send + Sync {
     async fn init(&self) -> Result<(), CasperError>;
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
+
+    async fn recover_stuck_validator(&self, _delay_threshold: Duration) -> Result<bool, CasperError> {
+        Ok(false)
+    }
 
     /// Returns the casper instance as an Arc if this engine wraps one.
     /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
@@ -187,7 +192,7 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
-pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
+pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
     block_processing_queue_tx: mpsc::Sender<(
         Arc<dyn MultiParentCasper + Send + Sync>,
         BlockMessage,
@@ -202,6 +207,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
     transport: Arc<U>,
     conf: RPConf,
     block_retriever: BlockRetriever<U>,
+    recovery_context: Option<crate::rust::engine::running::RunningRecoveryContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
 ) -> Result<(), CasperError> {
@@ -240,6 +246,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + 'static>(
         transport,
         conf,
         block_retriever,
+        recovery_context,
     );
 
     engine_cell.set(Arc::new(running)).await;
