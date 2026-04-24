@@ -30,6 +30,7 @@ use crate::rust::engine::engine::{
     record_direct_to_running_init_metrics, transition_to_initializing, transition_to_running,
 };
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::errors::CasperError;
@@ -402,6 +403,21 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            Some(RunningRecoveryContext {
+                connections_cell: self.connections_cell.clone(),
+                last_approved_block: self.last_approved_block.clone(),
+                block_store: self.block_store.clone(),
+                block_dag_storage: self.block_dag_storage.clone(),
+                deploy_storage: self.deploy_storage.clone(),
+                casper_buffer_storage: self.casper_buffer_storage.clone(),
+                rspace_state_manager: self.rspace_state_manager.clone(),
+                event_publisher: self.event_publisher.clone(),
+                engine_cell: self.engine_cell.clone(),
+                runtime_manager: self.runtime_manager.clone(),
+                estimator: self.estimator.clone(),
+                casper_shard_conf: self.casper_shard_conf.clone(),
+                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
+            }),
             &self.engine_cell,
             &self.event_publisher,
         )
