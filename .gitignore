@@ -21,6 +21,11 @@ Thumbs.db
 # Rust
 *.rs.bk
 
+# Per-crate Cargo.lock (cargo build artifacts when invoked in subdirs)
+# Only the workspace-root Cargo.lock is tracked.
+Cargo.lock
+!/Cargo.lock
+
 # BNFC generated
 rholang/bnfc/
 rholang/src/main/java/
