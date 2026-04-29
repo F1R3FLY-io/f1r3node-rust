@@ -13,10 +13,28 @@ use tokio::sync::Mutex;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 // Process-global cache of opened LMDB environments, keyed by directory path.
-// heed 0.22 rejects duplicate env opens of the same directory with
-// EnvAlreadyOpened, so every LmdbStoreManager that targets a given path must
-// reuse the same Env handle. heed's Env is internally refcounted; clones are
-// cheap and safe to share across threads.
+//
+// Lifecycle: entries are inserted on first open for a given path and are NOT
+// evicted on shutdown(). This is intentional. heed 0.22 rejects duplicate env
+// opens of the same directory with EnvAlreadyOpened, so any code that reopens
+// the same path (the casper shared-LMDB test pattern, or a manager recreated
+// after shutdown) must observe the same Env handle. Evicting on shutdown
+// would be unsafe whenever an LmdbKeyValueStore still holds an Env clone:
+// the next open would attempt env_builder.open() and trip EnvAlreadyOpened.
+//
+// Bounded growth: one entry per unique LMDB directory path. In production
+// this is a small fixed set (history, cold, channels). In tests, per-test
+// tempdirs accumulate for the process lifetime, but test processes are
+// short-lived, so the bound is acceptable.
+//
+// Locking: a single StdMutex guards the HashMap. The critical section on the
+// hot path is HashMap::get + Env::clone (an Arc bump). The slow path
+// (env_builder.open) only runs once per unique path for the process
+// lifetime, so per-path lock granularity would add complexity without
+// measurable benefit.
+//
+// heed's Env is internally refcounted; clones are cheap and safe to share
+// across threads.
 static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Env>>> = OnceLock::new();
 
 fn get_or_open_env(dir_path: &Path, max_env_size: usize, max_dbs: u32) -> Result<Env, heed::Error> {
@@ -31,6 +49,16 @@ fn get_or_open_env(dir_path: &Path, max_env_size: usize, max_dbs: u32) -> Result
     env_builder.map_size(max_env_size);
     env_builder.max_dbs(max_dbs);
     env_builder.max_readers(2048);
+    // SAFETY: heed::EnvOpenOptions::open is unsafe because LMDB mmaps the
+    // data file. Callers must guarantee that:
+    //   1. No other process modifies the file while this Env is alive.
+    //   2. The path is on a local filesystem (LMDB does not support NFS or similar
+    //      networked storage without explicit configuration).
+    //   3. The same Env is not opened more than once in this process.
+    // We uphold (3) via ENV_CACHE: this call only runs after a cache miss
+    // under the cache mutex, so no concurrent open of the same path is
+    // possible. (1) and (2) are responsibilities of the caller's deployment
+    // configuration and are documented at the workspace level.
     let env = unsafe { env_builder.open(dir_path)? };
     cache_lock.insert(dir_path.to_path_buf(), env.clone());
     Ok(env)

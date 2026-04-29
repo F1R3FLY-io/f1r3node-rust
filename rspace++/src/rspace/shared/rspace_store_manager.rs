@@ -93,6 +93,13 @@ fn create_lmdb_store(
     env_builder.max_dbs(10000);
     env_builder.max_readers(2048);
 
+    // SAFETY: heed::EnvOpenOptions::open is unsafe because LMDB mmaps the
+    // data file. Callers must guarantee that no other process modifies the
+    // file while this Env is alive, that the path is on a local filesystem,
+    // and that the same Env is not opened more than once in this process.
+    // This function is the create-time entry point; deduplication of opens
+    // is the caller's responsibility (see LmdbStoreManager::ENV_CACHE for
+    // the manager-mediated path).
     let env = unsafe { env_builder.open(lmdb_path)? };
     let mut wtxn = env.write_txn()?;
     let db = env.create_database(&mut wtxn, Some(db_name))?;
@@ -105,6 +112,8 @@ fn open_lmdb_store(lmdb_path: &str, db_name: &str) -> Result<LmdbKeyValueStore, 
     let mut env_builder = EnvOpenOptions::new();
     env_builder.max_dbs(10000);
 
+    // SAFETY: see create_lmdb_store above for the LMDB mmap safety contract.
+    // This is the reopen path; the same constraints apply.
     let env = unsafe { env_builder.open(lmdb_path)? };
     let rtxn = env.read_txn()?;
     let db = env.open_database(&rtxn, Some(db_name))?;
