@@ -17,7 +17,7 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_deploy_id() {
     let contract = r#"
         new deployData(`rho:deploy:data`) in {
@@ -78,7 +78,7 @@ impl TestDeployDataFixture {
             expr_instance: Some(ExprInstance::GInt(0)),
         }]);
 
-        let data = runtime.get_data(&channel);
+        let data = runtime.get_data(&channel).await;
 
         let result: Vec<Par> = if !data.is_empty() {
             data.into_iter().flat_map(|datum| datum.a.pars).collect()

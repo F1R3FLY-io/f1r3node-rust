@@ -18,7 +18,7 @@ fn default_sec() -> PrivateKey { construct_deploy::DEFAULT_SEC.clone() }
 
 fn default_sec2() -> PrivateKey { construct_deploy::DEFAULT_SEC2.clone() }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deployer_id_should_be_equal_to_the_deployers_public_key() {
     with_runtime_manager(|runtime_manager, _, _| async move {
         let sk = PrivateKey::from_bytes(
@@ -129,7 +129,7 @@ new return, auth(`rho:system:deployerId`), ret in {
     assert_eq!(result[0], expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deployer_id_should_make_drain_vault_attacks_impossible() {
     let deployer = default_sec();
     let attacker = default_sec2();

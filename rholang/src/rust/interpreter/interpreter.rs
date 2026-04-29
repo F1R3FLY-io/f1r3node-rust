@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
+use tokio::sync::RwLock;
 use tracing::{event, Level};
 
 use super::accounting::_cost;
@@ -131,7 +132,7 @@ impl Interpreter for InterpreterImpl {
             };
             // Empty mergeable channels
             {
-                let mut merge_chs_lock = self.merge_chs.write().unwrap();
+                let mut merge_chs_lock = self.merge_chs.write().await;
                 merge_chs_lock.clear();
             }
             // Trace: reduce-term (matching Scala's Span[F].traceI("reduce-term"))
@@ -141,7 +142,7 @@ impl Interpreter for InterpreterImpl {
                 Ok(()) => {
                     event!(Level::DEBUG, mark = "finished-reduce-term", "inj_attempt");
                     let phlos_left = self.c.get();
-                    let mergeable_channels = { self.merge_chs.read().unwrap().clone() };
+                    let mergeable_channels = { self.merge_chs.read().await.clone() };
 
                     Ok(EvaluateResult {
                         cost: initial_phlo.clone() - phlos_left,

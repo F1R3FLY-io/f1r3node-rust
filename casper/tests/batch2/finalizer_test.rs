@@ -193,7 +193,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
                 &dag,
                 -1.0,
                 0,
-                move |m| {
+                move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
                     async move {
                         *lfb_store.borrow_mut() = m;
@@ -207,11 +207,11 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
         };
 
         // check output
-        assert_eq!(lfb, Some(b1.block_hash.clone()));
+        assert_eq!(lfb.as_ref().map(|(h, _)| h), Some(&b1.block_hash));
         // check if new LFB effect is invoked
         assert_eq!(*lfb_store.borrow(), b1.block_hash);
 
-        let finalized_height = dag.lookup_unsafe(&lfb.unwrap()).unwrap().block_number;
+        let finalized_height = dag.lookup_unsafe(&lfb.unwrap().0).unwrap().block_number;
 
         /* next layer */
         let b7 = creator1(
@@ -260,7 +260,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
                 &dag,
                 -1.0,
                 finalized_height,
-                move |_m| {
+                move |(_m, _ft)| {
                     let lfb_effect_invoked = lfb_effect_invoked.clone();
                     async move {
                         *lfb_effect_invoked.borrow_mut() = true;
@@ -324,7 +324,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
                 &dag,
                 -1.0,
                 0,
-                move |m| {
+                move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
                     let finalised_store = finalised_store.clone();
                     async move {
@@ -340,7 +340,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
         };
 
         // check output
-        assert_eq!(lfb, Some(b7.block_hash.clone()));
+        assert_eq!(lfb.as_ref().map(|(h, _)| h), Some(&b7.block_hash));
         // check if new LFB effect is invoked
         assert_eq!(*lfb_store.borrow(), b7.block_hash);
 
@@ -417,7 +417,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
                     &dag,
                     -1.0,
                     0,
-                    |_m| async { Ok::<(), KvStoreError>(()) },
+                    |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
                     &FinalizerConf::default(),
                 )
                 .await

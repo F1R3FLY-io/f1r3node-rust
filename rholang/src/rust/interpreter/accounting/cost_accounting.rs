@@ -13,5 +13,5 @@ impl CostAccounting {
         }
     }
 
-    pub fn empty_cost() -> _cost { CostManager::new(Self::empty(), 1) }
+    pub fn empty_cost() -> _cost { CostManager::new(Self::empty()) }
 }

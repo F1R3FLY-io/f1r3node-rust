@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use super::key_value_store::KvStoreError;
 
 pub trait KeyValueTypedStore<K, V> {
-    #[allow(clippy::ptr_arg)]
     fn get(&self, keys: &Vec<K>) -> Result<Vec<Option<V>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(K, V)>) -> Result<(), KvStoreError>;
