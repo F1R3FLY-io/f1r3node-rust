@@ -224,7 +224,6 @@ const TAB: &str = "  ";
 
 pub fn default_shape() -> GraphShape { GraphShape::Circle }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     name: String,
     gtype: GraphType,
@@ -284,7 +283,6 @@ pub async fn apply(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn subgraph(
     name: String,
     gtype: GraphType,

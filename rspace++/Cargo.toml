@@ -1,6 +1,7 @@
 [package]
 name = "rspace_plus_plus"
 version = "0.1.0"
+publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
 
 # [workspace]

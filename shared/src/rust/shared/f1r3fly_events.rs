@@ -31,10 +31,6 @@ pub struct F1r3flyEvents {
     startup_buffer: StartupBuffer,
 }
 
-impl Default for F1r3flyEvents {
-    fn default() -> Self { Self::new() }
-}
-
 impl F1r3flyEvents {
     /// Create a new F1r3flyEvents backed by a broadcast channel.
     /// The startup buffer is active from creation until `seal_startup()`.

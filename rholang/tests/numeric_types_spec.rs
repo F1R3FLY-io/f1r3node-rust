@@ -1,3 +1,6 @@
+// 3.14 is used as a generic test double, not as the constant PI.
+#![allow(clippy::approx_constant)]
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
     BindPattern, EDiv, EEq, EGt, EGte, ELt, ELte, EMinus, EMod, EMult, ENeg, ENeq, EPlus, Expr,

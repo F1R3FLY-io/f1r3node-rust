@@ -1,3 +1,4 @@
+// JNA/FFI bindings — public extern "C" fns intentionally accept raw pointers.
 #![allow(clippy::not_unsafe_ptr_arg_deref, clippy::unnecessary_unwrap)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};

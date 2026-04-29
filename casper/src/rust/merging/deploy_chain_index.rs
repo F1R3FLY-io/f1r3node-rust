@@ -22,6 +22,7 @@ pub struct DeployIdWithCost {
 }
 
 /** index of deploys depending on each other inside a single block (state transition) */
+#[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Debug, Clone, Hash)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,

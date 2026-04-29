@@ -784,7 +784,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rustls 0.23.37",
  "rustls-pemfile 2.2.0",
- "rustls-webpki 0.102.8",
+ "rustls-webpki 0.103.10",
  "shared",
  "thiserror 2.0.18",
  "tokio",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "node"
-version = "0.4.10"
+version = "0.4.13"
 dependencies = [
  "async-trait",
  "axum",
@@ -4620,17 +4620,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
 dependencies = [
  "ring",
- "untrusted",
-]
-
-[[package]]
-name = "rustls-webpki"
-version = "0.102.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
-dependencies = [
- "ring",
- "rustls-pki-types",
  "untrusted",
 ]
 

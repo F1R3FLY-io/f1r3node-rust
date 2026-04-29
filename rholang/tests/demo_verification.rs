@@ -16,8 +16,8 @@ async fn execute(
 async fn test_demo_scenario() {
     with_runtime("demo-verification-", |mut runtime| async move {
         // Initial database
-        let db = r#"{| ["backend", "api", "done"],
-                      ["backend", "database", "in-progress"],
+        let db = r#"{| ["backend", "api", "done"], 
+                      ["backend", "database", "in-progress"], 
                       ["frontend", "ui", "todo"],
                       ["frontend", "tests", "todo"] |}"#;
 
@@ -49,8 +49,8 @@ async fn test_demo_scenario() {
         let demo3 = r#"
             new stdoutAck(`rho:io:stdoutAck`) in {
               stdoutAck!(
-                {| ["backend", "api", "done"],
-                   ["backend", "database", "in-progress"],
+                {| ["backend", "api", "done"], 
+                   ["backend", "database", "in-progress"], 
                    ["frontend", "ui", "todo"],
                    ["frontend", "tests", "todo"],
                    ["frontend", "ui", "done"] |}
@@ -68,9 +68,9 @@ async fn test_demo_scenario() {
         let demo4 = r#"
             new stdoutAck(`rho:io:stdoutAck`) in {
               stdoutAck!(
-                {| ["backend", "api", "done"],
+                {| ["backend", "api", "done"], 
                    ["backend", "database", "in-progress"],
-                   ["frontend", "dashboard", "done"],
+                   ["frontend", "dashboard", "done"], 
                    ["frontend", "profile", "todo"] |}
                   .writeZipperAt(["devops"])
                   .setSubtrie({| ["deploy", "todo"], ["monitor", "in-progress"] |}),
@@ -89,9 +89,9 @@ async fn test_demo_scenario() {
                 zipper!({| ["metrics", "cpu", "85%"], ["metrics", "memory", "60%"], ["alerts", "disk-full"] |}.readZipper()) |
                 for (@z <- zipper) {
                   stdoutAck!(
-                    {| ["backend", "api", "done"],
+                    {| ["backend", "api", "done"], 
                        ["backend", "database", "in-progress"],
-                       ["frontend", "dashboard", "done"],
+                       ["frontend", "dashboard", "done"], 
                        ["frontend", "profile", "todo"],
                        ["devops", "deploy", "todo"],
                        ["devops", "monitor", "in-progress"] |}

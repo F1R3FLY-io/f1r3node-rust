@@ -36,7 +36,6 @@ pub mod serde_vec_bytes {
     use prost::bytes::Bytes;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[allow(clippy::ptr_arg)]
     pub fn serialize<S>(bytes_vec: &Vec<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
     where S: Serializer {
         // Convert Vec<Bytes> to Vec<Vec<u8>> for serialization
