@@ -32,6 +32,11 @@ ignore = [
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+
+    # Rand unsoundness with custom-logger + rand::rng(). We don't override
+    # the global rng with a custom logger; the unsafe path is unreachable in
+    # this codebase. Track upstream rand fix.
+    "RUSTSEC-2026-0097",
 ]
 
 # ---------------------------------------------------------------------------

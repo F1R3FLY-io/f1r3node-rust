@@ -93,8 +93,10 @@ fn create_lmdb_store(
     env_builder.max_dbs(10000);
     env_builder.max_readers(2048);
 
-    let env = env_builder.open(lmdb_path)?;
-    let db = env.create_database(Some(db_name))?;
+    let env = unsafe { env_builder.open(lmdb_path)? };
+    let mut wtxn = env.write_txn()?;
+    let db = env.create_database(&mut wtxn, Some(db_name))?;
+    wtxn.commit()?;
 
     Ok(LmdbKeyValueStore::new(env, db))
 }
@@ -103,8 +105,10 @@ fn open_lmdb_store(lmdb_path: &str, db_name: &str) -> Result<LmdbKeyValueStore, 
     let mut env_builder = EnvOpenOptions::new();
     env_builder.max_dbs(10000);
 
-    let env = env_builder.open(lmdb_path)?;
-    let db = env.open_database(Some(db_name))?;
+    let env = unsafe { env_builder.open(lmdb_path)? };
+    let rtxn = env.read_txn()?;
+    let db = env.open_database(&rtxn, Some(db_name))?;
+    drop(rtxn);
     match db {
         Some(open_db) => Ok(LmdbKeyValueStore {
             env: env.into(),
