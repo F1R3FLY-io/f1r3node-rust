@@ -157,13 +157,13 @@ impl KeyValueStore for LmdbKeyValueStore {
 }
 
 impl LmdbKeyValueStore {
-    pub fn new(env: Env, db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>) -> Self {
-        let env_arc = Arc::new(env);
-        let db_arc = Arc::new(Mutex::new(db));
-
+    pub fn new(
+        env: Arc<Env>,
+        db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
+    ) -> Self {
         LmdbKeyValueStore {
-            env: env_arc,
-            db: db_arc,
+            env,
+            db: Arc::new(Mutex::new(db)),
         }
     }
 }
