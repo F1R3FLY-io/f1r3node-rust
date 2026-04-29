@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/StoragePrinter.scala
 
 use std::collections::BTreeSet;
@@ -12,8 +14,8 @@ use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use crate::rust::interpreter::pretty_printer::PrettyPrinter;
 use crate::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 
-pub fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
-    let mapped = runtime.get_hot_changes();
+pub async fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
+    let mapped = runtime.get_hot_changes().await;
 
     let pars: Vec<Par> = mapped
         .iter()
@@ -39,8 +41,8 @@ pub fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
     }
 }
 
-pub fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
-    let mapped = runtime.get_hot_changes();
+pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
+    let mapped = runtime.get_hot_changes().await;
 
     let pars: Vec<Par> = mapped
         .iter()

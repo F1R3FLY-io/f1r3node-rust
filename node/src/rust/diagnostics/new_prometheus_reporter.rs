@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_pattern_matching)]
+
 use std::sync::{Arc, OnceLock};
 
 use eyre::Result;

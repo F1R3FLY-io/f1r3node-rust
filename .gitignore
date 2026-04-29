@@ -21,6 +21,10 @@ Thumbs.db
 # Rust
 *.rs.bk
 
+# Per-crate Cargo.lock files (workspace lock at /Cargo.lock is authoritative;
+# these are stale artifacts from running cargo inside individual crate dirs)
+*/Cargo.lock
+
 # BNFC generated
 rholang/bnfc/
 rholang/src/main/java/

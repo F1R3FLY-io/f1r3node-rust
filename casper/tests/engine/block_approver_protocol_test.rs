@@ -10,6 +10,7 @@ use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockMessage, UnapprovedBlock,
 };
+use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
 use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
@@ -73,6 +74,9 @@ impl TestContext {
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
+            genesis_params.native_token_name.clone(),
+            genesis_params.native_token_symbol.clone(),
+            genesis_params.native_token_decimals,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -86,6 +90,7 @@ impl TestContext {
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_respond_to_valid_approved_block_candidates() {
     // In Rust, we use TestContext struct to hold both protocol and node.
     let mut ctx = TestContext::create_protocol().await.unwrap();
@@ -124,6 +129,7 @@ async fn block_approver_protocol_should_respond_to_valid_approved_block_candidat
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block_candidates() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -173,6 +179,7 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_successfully_validate_correct_candidate() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -194,6 +201,9 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -201,6 +211,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -224,6 +235,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -231,6 +245,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -254,6 +269,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -267,6 +285,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_contracts() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -288,6 +307,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 

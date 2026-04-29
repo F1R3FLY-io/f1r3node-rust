@@ -1,3 +1,5 @@
+#![allow(clippy::manual_strip)]
+
 use models::rhoapi::Expr;
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,

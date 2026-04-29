@@ -1,3 +1,5 @@
+#![allow(clippy::empty_line_after_doc_comments)]
+
 /// System deploy marker constants.
 /// System deploy IDs are 33 bytes: [32-byte blockHash][1-byte marker]
 

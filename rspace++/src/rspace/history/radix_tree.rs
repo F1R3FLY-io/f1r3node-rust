@@ -1,3 +1,13 @@
+#![allow(
+    clippy::assertions_on_constants,
+    clippy::collapsible_match,
+    clippy::empty_line_after_doc_comments,
+    clippy::manual_memcpy,
+    clippy::match_single_binding,
+    clippy::type_complexity,
+    clippy::unnecessary_unwrap
+)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/history/RadixTree.scala
 
 use std::collections::BTreeMap;

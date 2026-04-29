@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.scala
 
 use std::collections::HashSet;
@@ -132,6 +134,9 @@ impl ApproveBlockProtocolFactory {
         block_number: i64,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
+        native_token_name: String,
+        native_token_symbol: String,
+        native_token_decimals: u32,
         runtime_manager: &mut RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -183,6 +188,9 @@ impl ApproveBlockProtocolFactory {
             vaults,
             supply: i64::MAX,
             version: 1,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;

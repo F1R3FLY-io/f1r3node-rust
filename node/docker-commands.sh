@@ -4,9 +4,9 @@
 
 set -e
 
-# Configuration
+# Configuration (matching build.sbt)
 DOCKER_REPOSITORY="f1r3flyindustries"
-IMAGE_NAME="f1r3node-rust"
+IMAGE_NAME="f1r3fly-rust-node"
 FULL_IMAGE_NAME="${DOCKER_REPOSITORY}/${IMAGE_NAME}"
 # Auto-detect version from Cargo.toml if not set via env
 if [ -z "${VERSION:-}" ]; then

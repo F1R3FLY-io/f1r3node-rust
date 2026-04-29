@@ -46,7 +46,6 @@ impl From<TransferInfoSerde> for TransferInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[derive(Default)]
 pub struct DeployInfoSerde {
     pub deployer: String,
     pub term: String,
@@ -64,7 +63,8 @@ pub struct DeployInfoSerde {
     pub errored: bool,
     #[serde(rename = "systemDeployError")]
     pub system_deploy_error: String,
-    pub transfers: Vec<TransferInfoSerde>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfers: Option<Vec<TransferInfoSerde>>,
 }
 
 impl From<DeployInfo> for DeployInfoSerde {
@@ -81,17 +81,20 @@ impl From<DeployInfo> for DeployInfoSerde {
             cost: deploy.cost,
             errored: deploy.errored,
             system_deploy_error: deploy.system_deploy_error,
-            transfers: deploy
-                .transfers
-                .into_iter()
-                .map(TransferInfoSerde::from)
-                .collect(),
+            transfers: Some(
+                deploy
+                    .transfers
+                    .into_iter()
+                    .map(TransferInfoSerde::from)
+                    .collect(),
+            ),
         }
     }
 }
 
 impl From<DeployInfoSerde> for DeployInfo {
     fn from(json: DeployInfoSerde) -> Self {
+        let transfers_available = json.transfers.is_some();
         DeployInfo {
             deployer: json.deployer,
             term: json.term,
@@ -104,7 +107,32 @@ impl From<DeployInfoSerde> for DeployInfo {
             cost: json.cost,
             errored: json.errored,
             system_deploy_error: json.system_deploy_error,
-            transfers: json.transfers.into_iter().map(TransferInfo::from).collect(),
+            transfers: json
+                .transfers
+                .unwrap_or_default()
+                .into_iter()
+                .map(TransferInfo::from)
+                .collect(),
+            transfers_available,
+        }
+    }
+}
+
+impl Default for DeployInfoSerde {
+    fn default() -> Self {
+        Self {
+            deployer: String::new(),
+            term: String::new(),
+            timestamp: 0,
+            sig: String::new(),
+            sig_algorithm: String::new(),
+            phlo_price: 0,
+            phlo_limit: 0,
+            valid_after_block_number: 0,
+            cost: 0,
+            errored: false,
+            system_deploy_error: String::new(),
+            transfers: Some(Vec::new()),
         }
     }
 }

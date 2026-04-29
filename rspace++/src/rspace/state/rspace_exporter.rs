@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/state/RSpaceExporter.scala
 
 use std::sync::Arc;

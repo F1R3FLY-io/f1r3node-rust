@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/ProposeResult.scala
 
 use std::fmt;

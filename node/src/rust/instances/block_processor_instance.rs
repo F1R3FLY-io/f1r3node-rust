@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
 use std::sync::atomic::{AtomicUsize, Ordering};

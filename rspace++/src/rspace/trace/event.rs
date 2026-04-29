@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 

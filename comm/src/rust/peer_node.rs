@@ -1,3 +1,5 @@
+#![allow(clippy::inherent_to_string)]
+
 // See comm/src/main/scala/coop/rchain/comm/PeerNode.scala
 
 use std::fmt;

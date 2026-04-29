@@ -1,3 +1,5 @@
+#![allow(clippy::empty_line_after_doc_comments)]
+
 // See casper/src/main/scala/coop/rchain/casper/ReportingProtoTransformer.scala
 
 use models::casper::{

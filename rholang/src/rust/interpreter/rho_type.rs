@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoType.scala
 
 use models::rhoapi::expr::ExprInstance;

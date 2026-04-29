@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_fallible_conversions)]
+
 //! JSON serialization/deserialization for LightBlockInfo and related types
 //!
 //! This module provides custom JSON serialization for protobuf-generated types
@@ -48,6 +50,8 @@ pub struct LightBlockInfoSerde {
     pub justifications: Vec<JustificationInfoJson>,
     #[serde(rename = "rejectedDeploys")]
     pub rejected_deploys: Vec<RejectedDeployInfoJson>,
+    #[serde(rename = "isFinalized")]
+    pub is_finalized: bool,
 }
 
 /// Custom JSON representation of BondInfo
@@ -114,6 +118,7 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
                 .iter()
                 .map(|r| RejectedDeployInfoJson { sig: r.sig.clone() })
                 .collect(),
+            is_finalized: block.is_finalized,
         }
     }
 }
@@ -161,6 +166,7 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
                 .into_iter()
                 .map(|r| RejectedDeployInfo { sig: r.sig })
                 .collect(),
+            is_finalized: json.is_finalized,
         }
     }
 }
@@ -208,6 +214,7 @@ impl Default for LightBlockInfoSerde {
             fault_tolerance: 0.0,
             justifications: Vec::new(),
             rejected_deploys: Vec::new(),
+            is_finalized: false,
         }
     }
 }
@@ -263,6 +270,7 @@ mod tests {
             rejected_deploys: vec![RejectedDeployInfo {
                 sig: "rejected_sig".to_string(),
             }],
+            is_finalized: false,
         }
     }
 

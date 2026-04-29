@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 use std::borrow::Cow;
 use std::ops::{Add, Mul, Sub};
 

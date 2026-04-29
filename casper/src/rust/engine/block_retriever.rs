@@ -1,3 +1,5 @@
+#![allow(clippy::if_same_then_else)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockRetriever.scala
 
 use std::collections::{HashMap, HashSet};

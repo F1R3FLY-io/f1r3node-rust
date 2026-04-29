@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
 use std::collections::HashSet;

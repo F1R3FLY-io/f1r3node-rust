@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;

@@ -15,18 +15,21 @@ use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 pub struct BlockInfoSerde {
     #[serde(rename = "blockInfo")]
     pub block_info: LightBlockInfoSerde,
-    pub deploys: Vec<DeployInfoSerde>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deploys: Option<Vec<DeployInfoSerde>>,
 }
 
 impl From<BlockInfo> for BlockInfoSerde {
     fn from(block: BlockInfo) -> Self {
         Self {
             block_info: block.block_info.unwrap_or_default().into(),
-            deploys: block
-                .deploys
-                .iter()
-                .map(|d| DeployInfoSerde::from(d.clone()))
-                .collect(),
+            deploys: Some(
+                block
+                    .deploys
+                    .iter()
+                    .map(|d| DeployInfoSerde::from(d.clone()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -35,7 +38,12 @@ impl From<BlockInfoSerde> for BlockInfo {
     fn from(json: BlockInfoSerde) -> Self {
         BlockInfo {
             block_info: Some(json.block_info.into()),
-            deploys: json.deploys.into_iter().map(DeployInfo::from).collect(),
+            deploys: json
+                .deploys
+                .unwrap_or_default()
+                .into_iter()
+                .map(DeployInfo::from)
+                .collect(),
         }
     }
 }
@@ -50,4 +58,14 @@ pub fn deserialize_block_info<'de, D>(deserializer: D) -> Result<BlockInfo, D::E
 where D: Deserializer<'de> {
     let json_block = BlockInfoSerde::deserialize(deserializer)?;
     Ok(json_block.into())
+}
+
+impl BlockInfoSerde {
+    /// Create a summary view (block info only, no deploys).
+    pub fn from_light(light: LightBlockInfoSerde) -> Self {
+        Self {
+            block_info: light,
+            deploys: None,
+        }
+    }
 }

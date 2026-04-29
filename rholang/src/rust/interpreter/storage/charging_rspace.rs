@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
@@ -27,26 +27,22 @@ pub struct ChargingRSpace;
 #[derive(Clone)]
 pub enum TriggeredBy {
     Consume {
-        id: Blake2b512Random,
+        id: Vec<u8>,
         persistent: bool,
         channels_count: i64,
     },
     Produce {
-        id: Blake2b512Random,
+        id: Vec<u8>,
         persistent: bool,
         channels_count: i64,
     },
 }
 
-fn consume_id(continuation: TaggedContinuation) -> Result<Blake2b512Random, InterpreterError> {
-    //TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
-    match continuation.tagged_cont.unwrap() {
-        TaggedCont::ParBody(par_with_random) => Ok(Blake2b512Random::create_from_bytes(
-            &par_with_random.random_state,
-        )),
-        TaggedCont::ScalaBodyRef(value) => {
-            Ok(Blake2b512Random::create_from_bytes(&value.to_be_bytes()))
-        }
+//TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
+fn consume_id_bytes(continuation: &TaggedContinuation) -> Result<Vec<u8>, InterpreterError> {
+    match continuation.tagged_cont.as_ref().unwrap() {
+        TaggedCont::ParBody(par_with_random) => Ok(par_with_random.random_state.clone()),
+        TaggedCont::ScalaBodyRef(value) => Ok(value.to_be_bytes().to_vec()),
     }
 }
 
@@ -64,11 +60,12 @@ impl ChargingRSpace {
             cost: _cost,
         }
 
+        #[async_trait]
         impl<T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>
             ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for ChargingRSpace<T>
         {
-            fn consume(
-                &mut self,
+            async fn consume(
+                &self,
                 channels: Vec<Par>,
                 patterns: Vec<BindPattern>,
                 continuation: TaggedContinuation,
@@ -84,15 +81,18 @@ impl ChargingRSpace {
                     continuation.clone(),
                 ))?;
 
-                let consume_res = self.space.consume(
-                    channels.clone(),
-                    patterns,
-                    continuation.clone(),
-                    persist,
-                    peeks,
-                )?;
+                let consume_res = self
+                    .space
+                    .consume(
+                        channels.clone(),
+                        patterns,
+                        continuation.clone(),
+                        persist,
+                        peeks,
+                    )
+                    .await?;
 
-                let id = consume_id(continuation)?;
+                let id = consume_id_bytes(&continuation)?;
                 handle_result(
                     consume_res.clone(),
                     TriggeredBy::Consume {
@@ -105,8 +105,8 @@ impl ChargingRSpace {
                 Ok(consume_res)
             }
 
-            fn produce(
-                &mut self,
+            async fn produce(
+                &self,
                 channel: Par,
                 data: ListParWithRandom,
                 persist: bool,
@@ -116,14 +116,14 @@ impl ChargingRSpace {
             > {
                 self.cost
                     .charge(storage_cost_produce(channel.clone(), data.clone()))?;
-                let produce_res = self.space.produce(channel, data.clone(), persist)?;
+                let produce_res = self.space.produce(channel, data.clone(), persist).await?;
                 let common_result = produce_res
                     .clone()
                     .map(|(cont, data_list, _)| (cont, data_list));
                 handle_result(
                     common_result,
                     TriggeredBy::Produce {
-                        id: Blake2b512Random::create_from_bytes(&data.random_state),
+                        id: data.random_state.clone(),
                         persistent: persist,
                         channels_count: 1,
                     },
@@ -132,97 +132,104 @@ impl ChargingRSpace {
                 Ok(produce_res)
             }
 
-            fn install(
-                &mut self,
+            async fn install(
+                &self,
                 channels: Vec<Par>,
                 patterns: Vec<BindPattern>,
                 continuation: TaggedContinuation,
             ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError>
             {
-                self.space.install(channels, patterns, continuation)
+                self.space.install(channels, patterns, continuation).await
             }
 
-            fn create_checkpoint(&mut self) -> Result<Checkpoint, RSpaceError> {
-                self.space.create_checkpoint()
+            async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+                self.space.create_checkpoint().await
             }
 
-            fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-                self.space.get_data(channel)
+            async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
+                self.space.get_data(channel).await
             }
 
-            fn get_waiting_continuations(
+            async fn get_waiting_continuations(
                 &self,
                 channels: Vec<Par>,
             ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-                self.space.get_waiting_continuations(channels)
+                self.space.get_waiting_continuations(channels).await
             }
 
-            fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> { self.space.get_joins(channel) }
-
-            fn clear(&mut self) -> Result<(), RSpaceError> { self.space.clear() }
-
-            fn get_root(&self) -> Blake2b256Hash { self.space.get_root() }
-
-            fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
-                self.space.reset(root)
+            async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
+                self.space.get_joins(channel).await
             }
 
-            fn consume_result(
-                &mut self,
+            async fn clear(&self) -> Result<(), RSpaceError> { self.space.clear().await }
+
+            async fn get_root(&self) -> Blake2b256Hash { self.space.get_root().await }
+
+            async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+                self.space.reset(root).await
+            }
+
+            async fn consume_result(
+                &self,
                 channel: Vec<Par>,
                 pattern: Vec<BindPattern>,
             ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError>
             {
-                let consume_res = self.space.consume(
-                    channel,
-                    pattern,
-                    TaggedContinuation::default(),
-                    false,
-                    BTreeSet::new(),
-                )?;
+                let consume_res = self
+                    .space
+                    .consume(
+                        channel,
+                        pattern,
+                        TaggedContinuation::default(),
+                        false,
+                        BTreeSet::new(),
+                    )
+                    .await?;
                 Ok(unpack_option(&consume_res))
             }
 
-            fn to_map(
+            async fn to_map(
                 &self,
             ) -> HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>
             {
-                self.space.to_map()
+                self.space.to_map().await
             }
 
-            fn create_soft_checkpoint(
-                &mut self,
+            async fn create_soft_checkpoint(
+                &self,
             ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>
             {
-                self.space.create_soft_checkpoint()
+                self.space.create_soft_checkpoint().await
             }
 
-            fn take_event_log(&mut self) -> Log { self.space.take_event_log() }
+            async fn take_event_log(&self) -> Log { self.space.take_event_log().await }
 
-            fn revert_to_soft_checkpoint(
-                &mut self,
+            async fn revert_to_soft_checkpoint(
+                &self,
                 checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
             ) -> Result<(), RSpaceError> {
-                self.space.revert_to_soft_checkpoint(checkpoint)
+                self.space.revert_to_soft_checkpoint(checkpoint).await
             }
 
-            fn rig_and_reset(
-                &mut self,
+            async fn rig_and_reset(
+                &self,
                 start_root: Blake2b256Hash,
                 log: Log,
             ) -> Result<(), RSpaceError> {
-                self.space.rig_and_reset(start_root, log)
+                self.space.rig_and_reset(start_root, log).await
             }
 
-            fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log) }
+            async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log).await }
 
-            fn check_replay_data(&self) -> Result<(), RSpaceError> {
-                self.space.check_replay_data()
+            async fn check_replay_data(&self) -> Result<(), RSpaceError> {
+                self.space.check_replay_data().await
             }
 
-            fn is_replay(&self) -> bool { self.space.is_replay() }
+            async fn is_replay(&self) -> bool { self.space.is_replay().await }
 
-            fn update_produce(&mut self, produce: Produce) { self.space.update_produce(produce) }
+            async fn update_produce(&self, produce: Produce) -> () {
+                self.space.update_produce(produce).await
+            }
         }
 
         ChargingRSpace { space, cost }
@@ -234,7 +241,7 @@ fn handle_result(
     triggered_by: TriggeredBy,
     cost: _cost,
 ) -> Result<(), InterpreterError> {
-    let triggered_by_id = match triggered_by.clone() {
+    let triggered_by_id_bytes = match triggered_by.clone() {
         TriggeredBy::Consume { id, .. } => id,
         TriggeredBy::Produce { id, .. } => id,
     };
@@ -246,15 +253,13 @@ fn handle_result(
         TriggeredBy::Consume { persistent, .. } => persistent,
         TriggeredBy::Produce { persistent, .. } => persistent,
     };
-    let triggered_by_id_bytes = triggered_by_id.to_bytes();
 
     match result {
         Some((cont, data_list)) => {
-            let consume_id = consume_id(cont.continuation.clone())?;
+            let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
             // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
             // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
-            let consume_id_bytes = consume_id.to_bytes();
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
                     storage_cost_consume(
@@ -295,11 +300,10 @@ fn refund_for_removing_produces(
     cont: ContResult<Par, BindPattern, TaggedContinuation>,
     triggered_by: TriggeredBy,
 ) -> Cost {
-    let triggered_id = match triggered_by {
+    let triggered_id_bytes = match triggered_by {
         TriggeredBy::Consume { id, .. } => id,
         TriggeredBy::Produce { id, .. } => id,
     };
-    let triggered_id_bytes = triggered_id.to_bytes();
 
     let removed_data: Vec<(RSpaceResult<Par, ListParWithRandom>, Par)> = data_list
         .into_iter()

@@ -1,3 +1,5 @@
+#![allow(clippy::new_ret_no_self)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/build/CompileRholangSource.scala
 
 use std::collections::HashMap;

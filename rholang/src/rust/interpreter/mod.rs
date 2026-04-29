@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 use errors::InterpreterError;
 
 pub mod accounting;

@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant, clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
 use std::sync::{Arc, Mutex};

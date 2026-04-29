@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 use std::collections::HashMap;
 
 use block_storage::rust::dag::block_dag_key_value_storage::{

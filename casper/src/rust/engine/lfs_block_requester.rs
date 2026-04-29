@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_pattern_matching, clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsBlockRequester.scala
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};

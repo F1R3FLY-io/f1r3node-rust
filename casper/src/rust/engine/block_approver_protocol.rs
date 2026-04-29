@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockApproverProtocol.scala
 
 use std::collections::HashMap;
@@ -39,6 +41,9 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
+    pub native_token_name: String,
+    pub native_token_symbol: String,
+    pub native_token_decimals: u32,
 
     // Infrastructure
     transport: Arc<T>,
@@ -60,6 +65,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
+        native_token_name: String,
+        native_token_symbol: String,
+        native_token_decimals: u32,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -94,6 +102,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
             transport,
             conf,
         })
@@ -145,6 +156,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -208,6 +222,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 vaults,
                 i64::MAX,
                 shard_id,
+                native_token_name,
+                native_token_symbol,
+                native_token_decimals,
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -300,6 +317,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
+            &self.native_token_name,
+            &self.native_token_symbol,
+            self.native_token_decimals,
         )
         .await
     }

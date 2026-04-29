@@ -172,6 +172,8 @@ mod tests {
     fn test_transform_block_created_event() {
         let event = F1r3flyEvent::block_created(
             "hash123".to_string(),
+            100,
+            1700000000000,
             vec!["parent1".to_string()],
             vec![("j1".to_string(), "j2".to_string())],
             vec![create_test_deploy("deploy1")],
@@ -199,6 +201,8 @@ mod tests {
     fn test_transform_block_added_event() {
         let event = F1r3flyEvent::block_added(
             "hash456".to_string(),
+            200,
+            1700000001000,
             vec!["parent2".to_string()],
             vec![("j3".to_string(), "j4".to_string())],
             vec![create_test_deploy("deploy2")],
@@ -220,6 +224,8 @@ mod tests {
         // BlockFinalised has full block metadata
         let event = F1r3flyEvent::block_finalised(
             "hash789".to_string(),
+            300,
+            1700000002000,
             vec!["parent1".to_string()],
             vec![("j1".to_string(), "j2".to_string())],
             vec![create_test_deploy("deploy1")],
@@ -313,6 +319,8 @@ mod tests {
     fn test_transformation_has_correct_structure() {
         let event = F1r3flyEvent::block_finalised(
             "test-hash".to_string(),
+            400,
+            1700000003000,
             vec!["parent1".to_string()],
             vec![("j1".to_string(), "j2".to_string())],
             vec![create_test_deploy("deploy1")],

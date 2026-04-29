@@ -1,3 +1,5 @@
+#![allow(clippy::new_ret_no_self)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

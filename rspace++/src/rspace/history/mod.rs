@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod history;
 pub mod history_reader;
 pub mod history_repository;

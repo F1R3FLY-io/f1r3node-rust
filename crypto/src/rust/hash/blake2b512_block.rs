@@ -1,3 +1,9 @@
+#![allow(
+    clippy::needless_range_loop,
+    clippy::ptr_arg,
+    clippy::too_many_arguments
+)]
+
 /* See crypto/src/main/scala/coop/rchain/crypto/hash/Blake2b512Block.scala */
 
 /**

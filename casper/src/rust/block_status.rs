@@ -1,3 +1,5 @@
+#![allow(clippy::match_like_matches_macro)]
+
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
 use shared::rust::store::key_value_store::KvStoreError;

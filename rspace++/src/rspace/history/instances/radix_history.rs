@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/history/instances/RadixHistory.
 // scala
 
