@@ -47,7 +47,10 @@ docker/data.*/
 
 # LMDB files
 rholang/**/*.mdb
-rspace++/tests/*.proptest-regressions
+
+# proptest regression artifacts (created by proptest on test failures, used to
+# replay shrunken counterexamples; safe to regenerate, not worth tracking)
+**/*.proptest-regressions
 
 # Rust JNI/JNA libraries (legacy hybrid build)
 rust_libraries/**
