@@ -68,9 +68,13 @@ const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
 const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
 const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT: u64 = 64;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS_ENV: &str = "F1R3_MALLOC_TRIM_EVERY_BLOCKS";
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_INTERVAL_BLOCKS: OnceLock<u64> = OnceLock::new();
 static CASPER_BUFFER_MAX_APPROX_NODES_CFG: OnceLock<usize> = OnceLock::new();
 static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
@@ -84,6 +88,7 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn malloc_trim_interval_blocks() -> u64 {
     *MALLOC_TRIM_INTERVAL_BLOCKS.get_or_init(|| {
         env::var_or(
@@ -125,16 +130,14 @@ fn casper_buffer_prune_interval_ms() -> u64 {
     })
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
     let interval = malloc_trim_interval_blocks();
     if interval == 0 {
         return;
     }
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if !n.is_multiple_of(interval) {}
-
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
+    if n.is_multiple_of(interval) {
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
             let _ = malloc_trim(0);
@@ -143,6 +146,9 @@ fn maybe_trim_allocator_after_block() {
             .increment(1);
     }
 }
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn maybe_trim_allocator_after_block() {}
 
 fn missing_dependency_attempts_max() -> u32 {
     *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
