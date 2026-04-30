@@ -115,6 +115,7 @@ jobs:
           RUST_BACKTRACE: "1"
           RUST_MIN_STACK: "8388608"
         run: |
+          ulimit -n 65536
           mkdir -p /tmp/test-logs
           cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
           exit ${PIPESTATUS[0]}
