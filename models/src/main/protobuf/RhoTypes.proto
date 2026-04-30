@@ -154,6 +154,11 @@ message Receive {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 7;
+  // Optional `where`-clause guard. When non-empty, the receive only commits
+  // (consumes the matched messages) if every spatial pattern matches AND
+  // the condition evaluates to GBool(true) under the bound variables. An
+  // empty Par means no guard. See plan §3.3 / §3.5.
+  Par condition = 8;
 }
 
 // Number of variables bound in the new statement.
@@ -178,6 +183,12 @@ message MatchCase {
   Par pattern = 1 [(scalapb.field).no_box = true];
   Par source = 2 [(scalapb.field).no_box = true];
   int32 freeCount = 3;
+  // Optional per-case `where`-clause guard. When non-empty, the case only
+  // fires if the pattern matches AND the guard evaluates to GBool(true)
+  // under the pattern's bindings. Anything else (false, non-bool, error)
+  // falls through to the next case. An empty Par means no guard. See plan
+  // §3.4 / §3.8.
+  Par guard = 4;
 }
 
 message Match {

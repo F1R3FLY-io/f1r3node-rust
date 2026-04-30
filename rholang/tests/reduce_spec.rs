@@ -461,6 +461,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -601,6 +602,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -656,6 +658,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -724,6 +727,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -808,6 +812,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let mut expected_elements = HashMap::new();
@@ -915,6 +920,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -998,6 +1004,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1059,6 +1066,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let send = Par::default().with_sends(vec![Send {
@@ -1082,6 +1090,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1151,6 +1160,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
     par_param = par_param.with_sends(vec![Send {
         chan: Some(new_gint_par(1, Vec::new(), false)),
@@ -1222,6 +1232,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
                 connective_used: false,
             }])),
             free_count: 2,
+            guard: None,
         }],
         locally_free: Vec::new(),
         connective_used: false,
@@ -1324,6 +1335,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     assert!(reducer
@@ -1430,6 +1442,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env = Env::new();
@@ -1798,6 +1811,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let serialized_process = proc.encode_to_vec();
@@ -2223,6 +2237,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                     bind_count: 0,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    condition: None,
                 }]),
         ),
         uri: Vec::new(),
@@ -2276,6 +2291,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
                     connective_used: false,
                 }])),
                 free_count: 0,
+                guard: None,
             }],
             locally_free: Vec::new(),
             connective_used: false,
@@ -2343,6 +2359,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                         connective_used: false,
                     }])),
                     free_count: 0,
+                    guard: None,
                 }],
                 locally_free: Vec::new(),
                 connective_used: false,
@@ -2352,6 +2369,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
             bind_count: 0,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         }]);
 
     let env = Env::new();

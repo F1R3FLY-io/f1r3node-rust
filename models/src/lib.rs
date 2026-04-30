@@ -333,6 +333,7 @@ impl PartialEq for Receive {
             && self.persistent == other.persistent
             && self.peek == other.peek
             && self.bind_count == other.bind_count
+            && self.condition == other.condition
             && self.connective_used == other.connective_used
     }
 }
@@ -344,6 +345,7 @@ impl Hash for Receive {
         self.persistent.hash(state);
         self.peek.hash(state);
         self.bind_count.hash(state);
+        self.condition.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -371,6 +373,7 @@ impl PartialEq for MatchCase {
         self.pattern == other.pattern
             && self.source == other.source
             && self.free_count == other.free_count
+            && self.guard == other.guard
     }
 }
 
@@ -379,6 +382,7 @@ impl Hash for MatchCase {
         self.pattern.hash(state);
         self.source.hash(state);
         self.free_count.hash(state);
+        self.guard.hash(state);
     }
 }
 

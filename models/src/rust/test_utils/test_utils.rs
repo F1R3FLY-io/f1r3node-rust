@@ -154,6 +154,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
             bind_count: 0,
             locally_free: vec![],
             connective_used: false,
+            condition: None,
         })
         .boxed();
     }
@@ -190,6 +191,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
                 bind_count,
                 locally_free,
                 connective_used,
+                condition: None,
             },
         )
         .boxed()
@@ -292,6 +294,7 @@ pub fn generate_match(depth: usize) -> BoxedStrategy<Match> {
                     pattern: Some(pattern),
                     source: Some(source),
                     free_count,
+                    guard: None,
                 }),
             0..1,
         ),

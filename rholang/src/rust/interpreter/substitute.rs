@@ -485,6 +485,11 @@ impl SubstituteTrait<Receive> for Substitute {
             &env.shift(term.bind_count),
         )?;
 
+        let condition_sub = match term.condition {
+            Some(c) => Some(self.substitute_no_sort(c, depth, &env.shift(term.bind_count))?),
+            None => None,
+        };
+
         Ok(Receive {
             binds: binds_sub,
             body: Some(body_sub),
@@ -493,6 +498,7 @@ impl SubstituteTrait<Receive> for Substitute {
             bind_count: term.bind_count,
             locally_free: set_bits_until(term.locally_free, env.shift),
             connective_used: term.connective_used,
+            condition: condition_sub,
         })
     }
 
@@ -554,6 +560,7 @@ impl SubstituteTrait<Match> for Substitute {
                      pattern,
                      source,
                      free_count,
+                     guard,
                  }| {
                     let par = self.substitute_no_sort(
                         unwrap_option_safe(source.clone())?,
@@ -567,10 +574,20 @@ impl SubstituteTrait<Match> for Substitute {
                         env,
                     )?;
 
+                    let sub_guard = match guard {
+                        Some(g) => Some(self.substitute_no_sort(
+                            g.clone(),
+                            depth,
+                            &env.shift(*free_count),
+                        )?),
+                        None => None,
+                    };
+
                     Ok(MatchCase {
                         pattern: Some(sub_case),
                         source: Some(par),
                         free_count: *free_count,
+                        guard: sub_guard,
                     })
                 },
             )

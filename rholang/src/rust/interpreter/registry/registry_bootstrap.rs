@@ -48,6 +48,7 @@ fn bootstrap(channel: Par) -> New {
                 bind_count: 1,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             }],
             news: Vec::new(),
             exprs: Vec::new(),

@@ -16,13 +16,6 @@ pub fn normalize_p_match<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    //We don't have any CaseImpl inside Rust AST, so we should work with simple Case struct
-    fn lift_case<'ast>(
-        case: &'ast Case<'ast>,
-    ) -> Result<(&'ast AnnProc<'ast>, &'ast AnnProc<'ast>), InterpreterError> {
-        Ok((&case.pattern, &case.proc))
-    }
-
     let target_result = normalize_ann_proc(
         expression,
         ProcVisitInputs {
@@ -36,7 +29,12 @@ pub fn normalize_p_match<'ast>(
     let mut init_acc = (vec![], target_result.free_map.clone(), Vec::new(), false);
 
     for case in cases {
-        let (pattern, case_body) = lift_case(case)?;
+        let Case {
+            pattern,
+            guard,
+            proc: case_body,
+        } = case;
+
         let pattern_result = normalize_ann_proc(
             pattern,
             ProcVisitInputs {
@@ -53,12 +51,33 @@ pub fn normalize_p_match<'ast>(
             .absorb_free_span(&pattern_result.free_map);
         let bound_count = pattern_result.free_map.count_no_wildcards();
 
+        // Optional `where` guard: normalized in the same scope as the
+        // case body (pattern bindings absorbed into bound_map_chain).
+        // No syntactic check on the guard's content (see plan §3.8) —
+        // bool-ness is enforced at runtime by the matcher in Phase 6.
+        let guard_result = match guard {
+            Some(g) => Some(normalize_ann_proc(
+                g,
+                ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: case_env.clone(),
+                    free_map: init_acc.1.clone(),
+                },
+                env,
+                parser,
+            )?),
+            None => None,
+        };
+
         let case_body_result = normalize_ann_proc(
             case_body,
             ProcVisitInputs {
                 par: Par::default(),
                 bound_map_chain: case_env.clone(),
-                free_map: init_acc.1.clone(),
+                free_map: guard_result
+                    .as_ref()
+                    .map(|gr| gr.free_map.clone())
+                    .unwrap_or_else(|| init_acc.1.clone()),
             },
             env,
             parser,
@@ -68,13 +87,28 @@ pub fn normalize_p_match<'ast>(
             pattern: Some(pattern_result.par.clone()),
             source: Some(case_body_result.par.clone()),
             free_count: bound_count as i32,
+            guard: guard_result.as_ref().map(|gr| gr.par.clone()),
         });
         init_acc.1 = case_body_result.free_map;
         init_acc.2 = union(
             union(init_acc.2.clone(), pattern_result.par.locally_free.clone()),
-            filter_and_adjust_bitset(case_body_result.par.locally_free.clone(), bound_count),
+            filter_and_adjust_bitset(
+                {
+                    let mut lf = case_body_result.par.locally_free.clone();
+                    if let Some(gr) = &guard_result {
+                        lf = union(lf, gr.par.locally_free.clone());
+                    }
+                    lf
+                },
+                bound_count,
+            ),
         );
-        init_acc.3 = init_acc.3 || case_body_result.par.connective_used;
+        init_acc.3 = init_acc.3
+            || case_body_result.par.connective_used
+            || guard_result
+                .as_ref()
+                .map(|gr| gr.par.connective_used)
+                .unwrap_or(false);
     }
 
     let result_match = Match {
@@ -238,11 +272,13 @@ mod tests {
                     )),
                     source: Some(Par::default()),
                     free_count: 1,
+                    guard: None,
                 },
                 MatchCase {
                     pattern: Some(new_wildcard_par(Vec::new(), true)),
                     source: Some(Par::default()),
                     free_count: 0,
+                    guard: None,
                 },
             ],
             locally_free: create_bit_vector(&vec![0]),
@@ -348,11 +384,13 @@ mod tests {
                             pattern: Some(new_gint_par(42, Vec::new(), false)),
                             source: Some(Par::default()),
                             free_count: 0,
+                            guard: None,
                         },
                         MatchCase {
                             pattern: Some(new_freevar_par(0, Vec::new())),
                             source: Some(Par::default()),
                             free_count: 1,
+                            guard: None,
                         },
                     ],
                     locally_free: create_bit_vector(&vec![0]),
@@ -363,6 +401,7 @@ mod tests {
                 bind_count: 1,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -447,6 +486,7 @@ mod tests {
                             pattern: Some(new_gint_par(47, Vec::new(), false)),
                             source: Some(Par::default()),
                             free_count: 0,
+                            guard: None,
                         }],
                         locally_free: Vec::new(),
                         connective_used: true,
@@ -464,9 +504,115 @@ mod tests {
             bind_count: 2,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.unwrap().free_map, inputs.free_map);
+    }
+
+    // Phase 5 tests: guard normalization populates IR fields. Phase 6
+    // wires up runtime evaluation; for now we only check the IR shape.
+
+    #[test]
+    fn p_match_should_populate_match_case_guard() {
+        // match x { y where y => Nil _ => Nil } → MatchCase.guard is Some
+        // for the first case, None for the wildcard.
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par = ParBuilderUtil::mk_term("new x in { match *x { y where y => Nil _ => Nil } }")
+            .expect("compile failed");
+        // Walk the Par structure to find the Match. The outer New holds a
+        // body Par with a single Match. Easier: print and assert via
+        // structural checks.
+        // We pull the Match out via the Par.matches slot inside the New
+        // body.
+        assert_eq!(par.news.len(), 1, "expected one New");
+        let body = par.news[0].p.as_ref().expect("New.p missing");
+        assert_eq!(body.matches.len(), 1, "expected one Match in New body");
+        let m = &body.matches[0];
+        assert_eq!(m.cases.len(), 2);
+        assert!(
+            m.cases[0].guard.is_some(),
+            "first case should carry a guard"
+        );
+        assert!(m.cases[1].guard.is_none(), "wildcard case has no guard");
+    }
+
+    #[test]
+    fn p_match_without_where_leaves_guard_none() {
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par = ParBuilderUtil::mk_term("match 1 { 1 => Nil _ => Nil }").expect("compile failed");
+        assert_eq!(par.matches.len(), 1);
+        for case in &par.matches[0].cases {
+            assert!(case.guard.is_none(), "no guard expected");
+        }
+    }
+
+    #[test]
+    fn p_input_should_populate_receive_condition() {
+        // for (@x <- a where x) { Nil } → Receive.condition is Some.
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par = ParBuilderUtil::mk_term("new a in { for (@x <- a where x) { Nil } }")
+            .expect("compile failed");
+        assert_eq!(par.news.len(), 1);
+        let body = par.news[0].p.as_ref().expect("New.p missing");
+        assert_eq!(body.receives.len(), 1);
+        assert!(
+            body.receives[0].condition.is_some(),
+            "Receive.condition should be populated by `where` clause"
+        );
+    }
+
+    #[test]
+    fn p_input_without_where_leaves_condition_none() {
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par =
+            ParBuilderUtil::mk_term("new a in { for (@x <- a) { Nil } }").expect("compile failed");
+        assert_eq!(par.news.len(), 1);
+        let body = par.news[0].p.as_ref().expect("New.p missing");
+        assert!(body.receives[0].condition.is_none());
+    }
+
+    #[test]
+    fn p_input_join_with_where_attaches_to_receipt() {
+        // for (@x <- a & @y <- b where x) { Nil } — join with single guard.
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par =
+            ParBuilderUtil::mk_term("new a, b in { for (@x <- a & @y <- b where x) { Nil } }")
+                .expect("compile failed");
+        let body = par.news[0].p.as_ref().expect("New.p missing");
+        assert_eq!(body.receives.len(), 1);
+        assert_eq!(body.receives[0].binds.len(), 2, "two &-joined binds");
+        assert!(
+            body.receives[0].condition.is_some(),
+            "the guard attaches to the receipt as a whole"
+        );
+    }
+
+    #[test]
+    fn p_input_sequential_receipts_with_guards_nest() {
+        // for (@x <- a where x; @y <- b where y) { Nil }
+        // ; desugars to nested for, so we get an outer Receive with
+        // condition Some(...) whose body is a Par containing an inner
+        // Receive with its own condition.
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+
+        let par = ParBuilderUtil::mk_term(
+            "new a, b in { for (@x <- a where x; @y <- b where y) { Nil } }",
+        )
+        .expect("compile failed");
+        let body = par.news[0].p.as_ref().expect("New.p missing");
+        assert_eq!(body.receives.len(), 1, "outer receive");
+        let outer = &body.receives[0];
+        assert!(outer.condition.is_some(), "outer guard");
+
+        let inner_par = outer.body.as_ref().expect("outer body");
+        assert_eq!(inner_par.receives.len(), 1, "inner receive (nested)");
+        assert!(inner_par.receives[0].condition.is_some(), "inner guard");
     }
 }

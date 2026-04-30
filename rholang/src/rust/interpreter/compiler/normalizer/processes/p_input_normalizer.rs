@@ -42,17 +42,20 @@ pub fn normalize_p_input<'ast>(
 
     // Multiple receipt groups (separated by `;`) are desugared into nested
     // for loops, matching Scala's PInputNormalizer behavior.
-    //   for (@a <- ch1; @b <- ch2) { body }
+    //   for (@a <- ch1 where g1; @b <- ch2 where g2) { body }
     // becomes:
-    //   for (@a <- ch1) { for (@b <- ch2) { body } }
+    //   for (@a <- ch1 where g1) { for (@b <- ch2 where g2) { body } }
+    // Each receipt's original `where` guard is preserved on its own
+    // nested `for` via alloc_for_with_guards.
     if receipts.len() > 1 {
         let desugared = receipts
             .iter()
             .rev()
             .fold(*body, |acc_body, receipt_group| AnnProc {
-                proc: parser
-                    .ast_builder()
-                    .alloc_for(vec![receipt_group.to_vec()], acc_body),
+                proc: parser.ast_builder().alloc_for_with_guards(
+                    vec![(receipt_group.binds.to_vec(), receipt_group.guard)],
+                    acc_body,
+                ),
                 span: body.span,
             });
         return normalize_ann_proc(&desugared, input, env, parser);
@@ -434,21 +437,56 @@ pub fn normalize_p_input<'ast>(
             },
         )?;
 
+        let body_env = input
+            .bound_map_chain
+            .absorb_free_span(&receive_binds_free_map);
+
+        // Optional `where`-clause guard. By the time we reach this branch
+        // there is a single receipt (multi-receipt is desugared into nested
+        // `for`s above), so its guard is the one we care about. Normalize
+        // the guard against the same scope as the body — the merged-bind
+        // free map has been absorbed into bound_map_chain, so guard and
+        // body see the same de Bruijn levels.
+        let guard_result = match receipts[0].guard.as_ref().map(|g| g) {
+            Some(guard) => Some(normalize_ann_proc(
+                guard,
+                ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: body_env.clone(),
+                    free_map: sources_free.clone(),
+                },
+                env,
+                parser,
+            )?),
+            None => None,
+        };
+
         // Process body
         let proc_visit_outputs = normalize_ann_proc(
             body,
             ProcVisitInputs {
                 par: Par::default(),
-                bound_map_chain: input
-                    .bound_map_chain
-                    .absorb_free_span(&receive_binds_free_map),
-                free_map: sources_free,
+                bound_map_chain: body_env,
+                free_map: guard_result
+                    .as_ref()
+                    .map(|gr| gr.free_map.clone())
+                    .unwrap_or(sources_free),
             },
             env,
             parser,
         )?;
 
         let bind_count = receive_binds_free_map.count_no_wildcards();
+
+        let guard_par = guard_result.as_ref().map(|gr| gr.par.clone());
+        let guard_locally_free = guard_result
+            .as_ref()
+            .map(|gr| gr.par.locally_free.clone())
+            .unwrap_or_default();
+        let guard_connective_used = guard_result
+            .as_ref()
+            .map(|gr| gr.par.connective_used)
+            .unwrap_or(false);
 
         Ok(ProcVisitOutputs {
             par: input.par.clone().prepend_receive(Receive {
@@ -468,13 +506,16 @@ pub fn normalize_p_input<'ast>(
                                     union(locally_free1, locally_free2)
                                 }),
                             filter_and_adjust_bitset(
-                                proc_visit_outputs.par.locally_free,
+                                union(proc_visit_outputs.par.locally_free, guard_locally_free),
                                 bind_count,
                             ),
                         ),
                     )
                 },
-                connective_used: sources_connective_used || proc_visit_outputs.par.connective_used,
+                connective_used: sources_connective_used
+                    || proc_visit_outputs.par.connective_used
+                    || guard_connective_used,
+                condition: guard_par,
             }),
             free_map: proc_visit_outputs.free_map,
         })
@@ -568,6 +609,7 @@ mod tests {
             bind_count,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -661,6 +703,7 @@ mod tests {
             bind_count,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);
@@ -800,6 +843,7 @@ mod tests {
                     bind_count: 2,
                     locally_free: create_bit_vector(&vec![0, 1]),
                     connective_used: false,
+                    condition: None,
                 });
                 inner_par.locally_free = create_bit_vector(&vec![0, 1]);
                 inner_par
@@ -809,6 +853,7 @@ mod tests {
             bind_count: 2,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);

@@ -377,6 +377,7 @@ pub fn new_receive_par(
         bind_count: _bind_count,
         locally_free: _locally_free,
         connective_used: _connective_used,
+        condition: None,
     }])
 }
 
