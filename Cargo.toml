@@ -51,3 +51,10 @@ num-integer = "0.1"
 
 [profile.dev]
 debug = true
+
+# Local override: pin rholang-parser to the in-tree feature branch in
+# ../rholang-rs while developing the where-clauses extension. Once that
+# branch is pushed and a SHA is available, replace this with the upstream
+# rev pin in the per-crate dependency declarations.
+[patch."https://github.com/F1R3FLY-io/rholang-rs"]
+rholang-parser = { path = "../rholang-rs/rholang-parser" }

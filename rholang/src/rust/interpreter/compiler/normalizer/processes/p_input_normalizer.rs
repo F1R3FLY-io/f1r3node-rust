@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use models::rhoapi::{Par, Receive, ReceiveBind};
 use models::rust::utils::union;
-use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Source};
+use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source};
 use rholang_parser::{SourcePos, SourceSpan};
 use shared::rust::BitSet;
 use uuid::Uuid;
@@ -24,7 +24,7 @@ use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_input<'ast>(
-    receipts: &'ast smallvec::SmallVec<[smallvec::SmallVec<[Bind<'ast>; 1]>; 1]>,
+    receipts: &'ast Receipts<'ast>,
     body: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,

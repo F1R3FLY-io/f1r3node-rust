@@ -125,6 +125,7 @@ mod tests {
             expression,
             vec![Case {
                 pattern,
+                guard: None,
                 proc: case_body,
             }],
             &parser,

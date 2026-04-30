@@ -136,6 +136,7 @@ mod tests {
             expression,
             vec![Case {
                 pattern,
+                guard: None,
                 proc: case_proc,
             }],
             &parser,
@@ -205,10 +206,12 @@ mod tests {
             vec![
                 Case {
                     pattern: list_pattern,
+                    guard: None,
                     proc: nil_proc1,
                 },
                 Case {
                     pattern: wildcard_pattern,
+                    guard: None,
                     proc: nil_proc2,
                 },
             ],
@@ -275,10 +278,12 @@ mod tests {
             vec![
                 Case {
                     pattern: pattern1,
+                    guard: None,
                     proc: proc1,
                 },
                 Case {
                     pattern: pattern2,
+                    guard: None,
                     proc: proc2,
                 },
             ],
@@ -396,8 +401,15 @@ mod tests {
         // Create match: match {x | y} { 47 => Nil }
         let pattern = ParBuilderUtil::create_ast_long_literal(47, &parser);
         let proc = ParBuilderUtil::create_ast_nil(&parser);
-        let match_proc =
-            ParBuilderUtil::create_ast_match(par_expr, vec![Case { pattern, proc }], &parser);
+        let match_proc = ParBuilderUtil::create_ast_match(
+            par_expr,
+            vec![Case {
+                pattern,
+                guard: None,
+                proc,
+            }],
+            &parser,
+        );
 
         // Create bind: @{match} <- @Nil
         let match_pattern = ParBuilderUtil::create_ast_quote_name(match_proc);
