@@ -1,6 +1,7 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.
 // scala
 
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -18,7 +19,9 @@ use tokio::sync::mpsc;
 const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
 const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
+#[cfg(target_os = "linux")]
 static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "linux")]
 static MALLOC_TRIM_EVERY_BLOCKS: OnceLock<usize> = OnceLock::new();
 static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
 static TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: OnceLock<bool> = OnceLock::new();
@@ -28,6 +31,7 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+#[cfg(target_os = "linux")]
 fn malloc_trim_every_blocks() -> usize {
     *MALLOC_TRIM_EVERY_BLOCKS.get_or_init(|| {
         std::env::var("F1R3_MALLOC_TRIM_EVERY_BLOCKS")
@@ -59,20 +63,23 @@ fn trigger_propose_after_block_processing_enabled() -> bool {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn maybe_trim_allocator_after_block() {
     let interval = malloc_trim_every_blocks();
     if interval == 0 {
         return;
     }
-
     let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !count.is_multiple_of(interval) {}
-
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let _ = malloc_trim(0);
+    if count.is_multiple_of(interval) {
+        // Best-effort return of free heap pages to OS to limit RSS ratcheting.
+        unsafe {
+            let _ = malloc_trim(0);
+        }
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+fn maybe_trim_allocator_after_block() {}
 
 /// Ensures the in-flight marker is always cleared, even on early-return or
 /// panic.
