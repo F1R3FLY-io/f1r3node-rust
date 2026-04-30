@@ -72,6 +72,53 @@ clean-standalone:
     @echo "Done. Run 'just setup-standalone' or 'just run-standalone' to reinitialize."
 
 # =================================================================
+# LOCAL DOCKER SHARD
+# =================================================================
+# The shard-down recipe stops every local compose stack in dependency
+# order (monitoring, validator4, observer, base shard) and wipes named
+# volumes so the next `up` starts from fresh genesis. The `-` prefix
+# lets missing stacks no-op without aborting the teardown.
+
+# Tear down local docker shard (monitoring, validator4, observer, base) and wipe volumes
+shard-down:
+    -docker compose -f docker/monitoring.yml down -v
+    -docker compose -f docker/validator4.yml down -v
+    -docker compose -f docker/observer.yml down -v
+    docker compose -f docker/shard.yml down -v
+
+# =================================================================
+# DISTRIBUTED OCI TESTBED (EPOCH-009)
+# =================================================================
+# See docs/vps-cloud-testing.md for prerequisites and full walkthrough.
+# Scripts default to dry-run when invoked directly; these Justfile
+# recipes always pass --apply because that's the point of using them.
+
+# Provision 2 OCI VPSes (VCN, subnet, security list, 2x arm64 A1.Flex)
+vps-up:
+    scripts/remote/oci-provision.sh --apply
+
+# Render .env.remote, scp docker tree to both VPSes, start shard
+vps-deploy:
+    scripts/remote/deploy.sh --apply
+
+# Health check every node (use `just vps-status target=vps1` to narrow)
+vps-status target="both":
+    scripts/remote/status.sh {{target}}
+
+# Ship a Docker image from local daemon to both VPSes (parallel)
+vps-image-push image="sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest":
+    scripts/remote/image-transfer.sh --apply {{image}}
+
+# Stop containers on both VPSes, then terminate the OCI VPSes themselves
+vps-down:
+    scripts/remote/teardown.sh --apply
+    scripts/remote/oci-destroy.sh --apply --force
+
+# Run a latency benchmark against the shard (local if host="", remote via SSH otherwise)
+vps-bench-latency host="" duration="60" rate="2":
+    scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
+
+# =================================================================
 # HELP
 # =================================================================
 

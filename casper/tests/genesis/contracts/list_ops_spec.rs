@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/ListOpsSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/ListOpsSpec.scala
 
 use std::collections::HashMap;
 

@@ -1,20 +1,37 @@
-# RNode API Documentation Notes
+# RNode API
+[Use it live!](https://developer.rchain.coop/rnode-api)
 
-This directory contains generated reference material for the node's gRPC and HTTP-facing schemas.
+`rnode` communicates primarily using gRPC but
+it also has a Web API that supports use directly from browsers, `curl`, etc.
 
-## Source Of `index.md`
+## extracting docs from gRPC .proto files
 
-`index.md` is derived from the protobuf definitions in:
+`index.md` is derived from `.proto` files. Details are in `Makefile`.
+In particular:
 
-- `models/src/main/protobuf/`
-- `node/src/main/protobuf/`
+```
+MODELS=../../models
+DEPLOY_PROTOS=$(MODELS)/src/main/protobuf
+DIAG_PROTOS=../../node/src/main/protobuf
 
-Those files define the deploy, propose, diagnostics, and term schemas used by the Rust node.
+index.md: $(DEPLOY_PROTOS)/CasperMessage.proto $(DEPLOY_PROTOS)/RhoTypes.proto ...
+```
 
-## Regeneration
+## Swagger / OpenAPI documentation
 
-If you update the protobuf files, regenerate the derived API reference using the local documentation tooling or the same workflow that produced the checked-in `index.md`.
+`rnode-openapi.json` is a _best effort_ at an OpenAPI 2.0 (swagger) description
+of the Web API for use in tools such as [Swagger UI](https://petstore.swagger.io/).
 
-## OpenAPI
+### NOTICE: OpenAPI docs may be out of sync
 
-Any OpenAPI or Swagger material in this directory should be treated as generated documentation and kept aligned with the protobuf and HTTP route definitions in the Rust workspace.
+`rnode-openapi.json` was tested somewhat during initial development, but
+unlike `integration-tests/test/test_web_api.py` (now in the
+[system-integration](https://github.com/F1R3FLY-io/system-integration) repository), it is not
+tested during continuous integration.
+
+Much of it was generated directly from scala code that implements the API
+but that effort is incomplete and considerable manual changes were made,
+both to fix correctness bugs and to provide editorial material.
+
+The `Makefile` includes a stanza for using `swagger-to-ts` to generate TypeScript.
+The results are not currently mechanically tested but they are useful as a guide.

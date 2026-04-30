@@ -6,8 +6,8 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::FutureExt;
 use models::casper::{
-    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, DataAtNameQuery,
-    FindDeployQuery, IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
+    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, FindDeployQuery,
+    IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
 };
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
@@ -25,10 +25,8 @@ impl DeployRuntime {
     where F: std::future::Future<Output = ServiceResult<String>> {
         let attempted = program.await;
 
-        // Note: usage of the sync IO is not a good practice in the async context. The
-        // reason of such impl is because ProposeService API is async and that
-        // DeployRuntime is used only in CLI context where it will not influence the
-        // performance.
+        // Note: usage of the sync IO is not a good practice in the async context. The reason of such impl
+        // is because ProposeService API is async and that DeployRuntime is used only in CLI context where it will not influence the performance.
         match attempted {
             Ok(msg) => {
                 println!("{msg}");
@@ -73,26 +71,6 @@ impl DeployRuntime {
 
     pub async fn machine_verifiable_dag<S: DeployService>(svc: &mut S) {
         Self::graceful_exit(svc.machine_verifiable_dag(MachineVerifyQuery {})).await
-    }
-
-    pub async fn listen_for_data_at_name<S: DeployService + Clone>(svc: &mut S, name: Name) {
-        // Use graceful_exit like other methods, but with polling logic
-        Self::graceful_exit(async {
-            listen_at_name::listen_at_name_until_changes(name, |par| {
-                let mut value = svc.clone();
-                async move {
-                    value
-                        .listen_for_data_at_name(DataAtNameQuery {
-                            depth: i32::MAX,
-                            name: Some(par.clone()),
-                        })
-                        .await
-                }
-            })
-            .await
-            .map(|res| format!("{:?}", res))
-        })
-        .await
     }
 
     pub async fn listen_for_continuation_at_name<S: DeployService + Clone>(

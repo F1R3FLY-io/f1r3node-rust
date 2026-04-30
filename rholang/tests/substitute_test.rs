@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.
-// scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.scala
 
 use std::collections::BTreeMap;
 
@@ -28,7 +27,7 @@ fn env() -> Env<Par> { Env::new() }
 
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
-    let cost_manager = CostManager::new(cost, 1);
+    let cost_manager = CostManager::new(cost);
     let substitute = Substitute { cost: cost_manager };
     substitute
 }

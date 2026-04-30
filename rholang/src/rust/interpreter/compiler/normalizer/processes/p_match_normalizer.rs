@@ -16,8 +16,7 @@ pub fn normalize_p_match<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    //We don't have any CaseImpl inside Rust AST, so we should work with simple
-    // Case struct
+    //We don't have any CaseImpl inside Rust AST, so we should work with simple Case struct
     fn lift_case<'ast>(
         case: &'ast Case<'ast>,
     ) -> Result<(&'ast AnnProc<'ast>, &'ast AnnProc<'ast>), InterpreterError> {
@@ -91,8 +90,7 @@ pub fn normalize_p_match<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -262,8 +260,7 @@ mod tests {
 
         let parser = rholang_parser::RholangParser::new();
 
-        // Create the complete Par structure: for (@x <- @Nil) { match x { case 42 =>
-        // Nil ; case y => Nil } } | @Nil!(47)
+        // Create the complete Par structure: for (@x <- @Nil) { match x { case 42 => Nil ; case y => Nil } } | @Nil!(47)
 
         // Create Match body: match x { case 42 => Nil ; case y => Nil }
         let x_eval =

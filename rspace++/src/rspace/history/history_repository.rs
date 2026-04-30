@@ -85,9 +85,7 @@ where
     > {
         // Roots store
         let roots_repository = RootRepository {
-            roots_store: Box::new(RootsStoreInstances::roots_store(
-                roots_key_value_store.clone(),
-            )),
+            roots_store: Box::new(RootsStoreInstances::roots_store(roots_key_value_store.clone())),
         };
 
         let current_root = roots_repository.current_root()?;

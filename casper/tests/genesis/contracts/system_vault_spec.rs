@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// SystemVaultSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/SystemVaultSpec.scala
 
 use casper::rust::util::construct_deploy::DEFAULT_PUB;
 use models::rust::normalizer_env::with_deployer_id;

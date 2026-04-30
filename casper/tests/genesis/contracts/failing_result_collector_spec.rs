@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// FailingResultCollectorSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/FailingResultCollectorSpec.scala
 
 use std::collections::HashMap;
 use std::sync::Arc;

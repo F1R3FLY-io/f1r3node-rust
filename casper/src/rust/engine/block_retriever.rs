@@ -1,7 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockRetriever.scala
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use comm::rust::peer_node::PeerNode;
@@ -10,7 +10,6 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use shared::rust::env;
 use tracing::{debug, info};
 
 use crate::rust::errors::CasperError;
@@ -57,8 +56,7 @@ pub struct RequestState {
 }
 
 // Scala: type RequestedBlocks[F[_]] = Ref[F, Map[BlockHash, RequestState]]
-// In Rust, we use Arc<Mutex<...>> as shared mutable state (passed as implicit
-// in Scala)
+// In Rust, we use Arc<Mutex<...>> as shared mutable state (passed as implicit in Scala)
 pub type RequestedBlocks = Arc<Mutex<HashMap<BlockHash, RequestState>>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,8 +70,8 @@ enum AckReceiveResult {
  * Block is in scope of BlockRetriever until it is added to CasperBuffer.
  *
  * Scala: BlockRetriever.of[F[_]: Monad: RequestedBlocks: ...]
- * In Scala, RequestedBlocks is passed as an implicit parameter (type class
- * constraint). In Rust, we explicitly pass it as a constructor parameter.
+ * In Scala, RequestedBlocks is passed as an implicit parameter (type class constraint).
+ * In Rust, we explicitly pass it as a constructor parameter.
  */
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
@@ -92,110 +90,20 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
 impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const MAX_REQUESTED_BLOCKS_ENTRIES: usize = 2048;
     const MAX_WAITING_LIST_PER_HASH: usize = 64;
-    fn peer_requery_retry_cooldown_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_PEER_REQUERY_COOLDOWN_MS",
-                3000,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn broadcast_only_retry_cooldown_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_BROADCAST_ONLY_COOLDOWN_MS",
-                2000,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn min_rerequest_interval_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_MIN_REREQUEST_INTERVAL_MS",
-                1000,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn max_retries_per_hash() -> u32 {
-        static VALUE: OnceLock<u32> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_MAX_RETRIES_PER_HASH",
-                32,
-                |v: &u32| *v > 0,
-            )
-        })
-    }
-
-    fn dependency_recovery_rerequest_cooldown_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_DEPENDENCY_RECOVERY_COOLDOWN_MS",
-                1000,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn stale_request_lifetime_multiplier() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_STALE_REQUEST_LIFETIME_MULTIPLIER",
-                6,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn known_peer_requery_soft_limit() -> u32 {
-        static VALUE: OnceLock<u32> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_KNOWN_PEER_REQUERY_SOFT_LIMIT",
-                8,
-                |v: &u32| *v > 0,
-            )
-        })
-    }
-
-    fn retry_budget_quarantine_ms() -> u64 {
-        static VALUE: OnceLock<u64> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_RETRY_BUDGET_QUARANTINE_MS",
-                120000,
-                |v: &u64| *v > 0,
-            )
-        })
-    }
-
-    fn missing_dependency_seed_peers() -> usize {
-        static VALUE: OnceLock<usize> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            env::var_or_filtered(
-                "F1R3_BLOCK_RETRIEVER_MISSING_DEPENDENCY_SEED_PEERS",
-                4,
-                |v: &usize| *v > 0,
-            )
-            .min(Self::MAX_WAITING_LIST_PER_HASH)
-        })
-    }
+    const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
+    const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
+    const MIN_REREQUEST_INTERVAL_MS: u64 = 500;
+    const MAX_RETRIES_PER_HASH: u32 = 32;
+    const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
+    const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
+    const KNOWN_PEER_REQUERY_SOFT_LIMIT: u32 = 8;
+    const RETRY_BUDGET_QUARANTINE_MS: u64 = 10_000;
+    const MISSING_DEPENDENCY_SEED_PEERS: usize = 4;
 
     fn broadcast_retry_cooldown_ms_for_hash(&self, hash: &BlockHash) -> Result<u64, CasperError> {
         // Increase broadcast backoff when hash resolution is repeatedly failing.
         let attempts = self.retry_attempt_count(hash)?;
-        let base = Self::broadcast_only_retry_cooldown_ms();
+        let base = Self::BROADCAST_ONLY_COOLDOWN_MS;
         if attempts <= 8 {
             return Ok(base);
         }
@@ -273,8 +181,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             .set(dep_size as f64);
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
             .set(broadcast_size as f64);
-        // Reuse broadcast-tracking gauge as a proxy to include the requery cooldown map
-        // pressure.
+        // Reuse broadcast-tracking gauge as a proxy to include the requery cooldown map pressure.
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "kind" => "peer_requery")
             .set(peer_requery_size as f64);
         metrics::gauge!(BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "kind" => "retry_attempts")
@@ -492,8 +399,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Creates a new BlockRetriever with shared requested_blocks state.
     ///
     /// # Arguments
-    /// * `requested_blocks` - Shared state for tracking block requests
-    ///   (equivalent to Scala implicit RequestedBlocks[F])
+    /// * `requested_blocks` - Shared state for tracking block requests (equivalent to Scala implicit RequestedBlocks[F])
     /// * `transport` - Transport layer for network communication
     /// * `connections_cell` - Peer connections
     /// * `conf` - RP configuration
@@ -526,7 +432,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
             retry_attempts.get(hash).copied().unwrap_or(0)
         };
-        Ok(attempts >= Self::max_retries_per_hash())
+        Ok(attempts >= Self::MAX_RETRIES_PER_HASH)
     }
 
     fn retry_attempt_count(&self, hash: &BlockHash) -> Result<u32, CasperError> {
@@ -549,10 +455,9 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         &self,
         hash: &BlockHash,
     ) -> Result<u64, CasperError> {
-        // Back off progressively for hashes that keep failing to resolve, to reduce
-        // retry storms.
+        // Back off progressively for hashes that keep failing to resolve, to reduce retry storms.
         let attempts = self.retry_attempt_count(hash)?;
-        let base = Self::peer_requery_retry_cooldown_ms();
+        let base = Self::PEER_REQUERY_COOLDOWN_MS;
         if attempts <= 8 {
             return Ok(base);
         }
@@ -566,8 +471,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         hash: &BlockHash,
         base_interval_ms: u64,
     ) -> Result<u64, CasperError> {
-        // Apply adaptive backoff so repeatedly unresolved hashes are retried less
-        // aggressively.
+        // Apply adaptive backoff so repeatedly unresolved hashes are retried less aggressively.
         let attempts = self.retry_attempt_count(hash)?;
         if attempts <= 4 {
             return Ok(base_interval_ms);
@@ -599,7 +503,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     fn mark_retry_budget_quarantine(&self, hash: &BlockHash, now: u64) -> Result<(), CasperError> {
-        let until = now.saturating_add(Self::retry_budget_quarantine_ms());
+        let until = now.saturating_add(Self::RETRY_BUDGET_QUARANTINE_MS);
         let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire retry_budget_quarantine_until lock".to_string(),
@@ -684,7 +588,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
         Ok(connections
             .iter()
-            .take(Self::missing_dependency_seed_peers())
+            .take(Self::MISSING_DEPENDENCY_SEED_PEERS)
             .cloned()
             .collect())
     }
@@ -766,7 +670,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             debug!(
                 "Ignoring {} due to retry-budget quarantine for {}ms.",
                 PrettyPrinter::build_string_bytes(&hash),
-                Self::retry_budget_quarantine_ms()
+                Self::RETRY_BUDGET_QUARANTINE_MS
             );
             return Ok(AdmitHashResult {
                 status: AdmitHashStatus::Ignore,
@@ -942,8 +846,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
     pub async fn request_all(&self, age_threshold: Duration) -> Result<(), CasperError> {
         let current_time = Self::current_millis();
-        let min_rerequest_interval_ms = Self::min_rerequest_interval_ms();
-        let stale_request_lifetime_multiplier = Self::stale_request_lifetime_multiplier();
+        let min_rerequest_interval_ms = Self::MIN_REREQUEST_INTERVAL_MS;
+        let stale_request_lifetime_multiplier = Self::STALE_REQUEST_LIFETIME_MULTIPLIER;
         let effective_age_threshold_ms =
             std::cmp::max(age_threshold.as_millis() as u64, min_rerequest_interval_ms);
         let stale_request_lifetime_ms =
@@ -993,8 +897,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
                     if !received {
                         debug!(
-                            "Casper loop: checking if should re-request {}. Received: {}. \
-                             rerequest_interval_ms={}.",
+                            "Casper loop: checking if should re-request {}. Received: {}. rerequest_interval_ms={}.",
                             PrettyPrinter::build_string_bytes(&hash),
                             received,
                             rerequest_interval_ms
@@ -1029,11 +932,10 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         self.cleanup_aux_tracking_for_hash(&hash)?;
                         metrics::counter!(BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => "retry_budget").increment(1);
                         debug!(
-                            "Evicting unresolved block request {} after reaching retry budget {}. \
-                             Quarantine for {}ms.",
+                            "Evicting unresolved block request {} after reaching retry budget {}. Quarantine for {}ms.",
                             PrettyPrinter::build_string_bytes(&hash),
-                            Self::max_retries_per_hash(),
-                            Self::retry_budget_quarantine_ms()
+                            Self::MAX_RETRIES_PER_HASH,
+                            Self::RETRY_BUDGET_QUARANTINE_MS
                         );
                     }
                     continue;
@@ -1080,9 +982,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Force dependency recovery by reopening request state and rebroadcasting
-    /// HasBlockRequest. This is used when the processor detects buffered
-    /// dependency deadlocks.
+    /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
+    /// This is used when the processor detects buffered dependency deadlocks.
     pub async fn recover_dependency(&self, hash: BlockHash) -> Result<(), CasperError> {
         let now = Self::current_millis();
 
@@ -1090,7 +991,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             debug!(
                 "Skipping dependency recovery for {} due to retry-budget quarantine ({}ms).",
                 PrettyPrinter::build_string_bytes(&hash),
-                Self::retry_budget_quarantine_ms()
+                Self::RETRY_BUDGET_QUARANTINE_MS
             );
             return Ok(());
         }
@@ -1110,17 +1011,15 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 )
                 .increment(1);
                 debug!(
-                    "Evicting dependency {} during recovery after retry budget exhaustion. \
-                     Quarantine for {}ms.",
+                    "Evicting dependency {} during recovery after retry budget exhaustion. Quarantine for {}ms.",
                     PrettyPrinter::build_string_bytes(&hash),
-                    Self::retry_budget_quarantine_ms()
+                    Self::RETRY_BUDGET_QUARANTINE_MS
                 );
             }
             return Ok(());
         }
 
-        let dependency_recovery_rerequest_cooldown_ms =
-            Self::dependency_recovery_rerequest_cooldown_ms();
+        let dependency_recovery_rerequest_cooldown_ms = Self::DEPENDENCY_RECOVERY_COOLDOWN_MS;
 
         {
             let mut last_requests = self.dependency_recovery_last_request.lock().map_err(|_| {
@@ -1181,8 +1080,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Helper method to try re-requesting a block from the next peer in waiting
-    /// list
+    /// Helper method to try re-requesting a block from the next peer in waiting list
     async fn try_rerequest(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         enum RerequestAction {
             RequestPeer(PeerNode, Vec<PeerNode>),
@@ -1192,10 +1090,9 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         }
 
         let peer_requery_attempts = self.peer_requery_attempt_count(hash)?;
-        let known_peer_requery_soft_limit = Self::known_peer_requery_soft_limit();
+        let known_peer_requery_soft_limit = Self::KNOWN_PEER_REQUERY_SOFT_LIMIT;
 
-        // Determine retry action and update request timestamp only when a network
-        // request is attempted.
+        // Determine retry action and update request timestamp only when a network request is attempted.
         let action = {
             let now = Self::current_millis();
             let mut state = self.requested_blocks.lock().map_err(|_| {
@@ -1219,8 +1116,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         std::cmp::min(known_peer_requery_soft_limit, known_peer_count),
                     );
                     // Budget based on known-peer requery attempts only.
-                    // Using total retries here incorrectly consumes budget with waiting-list peer
-                    // requests.
+                    // Using total retries here incorrectly consumes budget with waiting-list peer requests.
                     if peer_requery_attempts < peer_requery_budget {
                         RerequestAction::RequestKnownPeer(known_peer, now)
                     } else {
@@ -1256,8 +1152,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     .request_for_block(&self.conf, &next_peer, hash.clone())
                     .await?;
 
-                // If this was the last peer in the waiting list, also broadcast
-                // HasBlockRequest.
+                // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
                 if remaining_waiting.is_empty() {
                     debug!(
                         "Last peer in waiting list for block {}. Broadcasting HasBlockRequest.",
@@ -1373,8 +1268,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
 
             match state.get(&hash) {
-                // There might be blocks that are not maintained by RequestedBlocks, e.g.
-                // fork-choice tips
+                // There might be blocks that are not maintained by RequestedBlocks, e.g. fork-choice tips
                 None => {
                     Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new());
                     (AckReceiveResult::AddedAsReceived, None)
@@ -1390,8 +1284,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
         };
 
-        // Record block download end-to-end time if we have the original request
-        // timestamp
+        // Record block download end-to-end time if we have the original request timestamp
         if let Some(timestamp) = request_timestamp {
             let download_time_ms = now.saturating_sub(timestamp);
             let download_time_seconds = download_time_ms as f64 / 1000.0;
@@ -1436,8 +1329,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    /// Explicitly stop tracking a hash when it is no longer required by
-    /// CasperBuffer dependency graph.
+    /// Explicitly stop tracking a hash when it is no longer required by CasperBuffer dependency graph.
     pub fn forget_hash_tracking(&self, hash: &BlockHash) -> Result<(), CasperError> {
         self.cleanup_hash_tracking(hash)
     }
@@ -1778,8 +1670,7 @@ mod tests {
         let first_count = transport.request_count();
         assert_eq!(
             first_count, 1,
-            "first retry should request from waiting peer (broadcast may be a no-op when no \
-             connections)"
+            "first retry should request from waiting peer (broadcast may be a no-op when no connections)"
         );
 
         let mut state = block_retriever

@@ -131,8 +131,7 @@ mod der_converter_tests {
         );
 
         // The roundtrip should preserve the signature data
-        // Note: Due to DER normalization, the exact bytes might differ, but the
-        // mathematical values should be preserved
+        // Note: Due to DER normalization, the exact bytes might differ, but the mathematical values should be preserved
         assert_eq!(
             decoded_rs, test_signature,
             "Roundtrip should preserve signature data"

@@ -80,11 +80,7 @@ impl LmdbStoreManager {
         let env = {
             let mut env_slot = self.env.lock().await;
             if env_slot.is_none() {
-                *env_slot = Some(get_or_open_env(
-                    &self.dir_path,
-                    self.max_env_size,
-                    self.max_dbs,
-                )?);
+                *env_slot = Some(get_or_open_env(&self.dir_path, self.max_env_size, self.max_dbs)?);
             }
             env_slot.as_ref().unwrap().clone()
         };

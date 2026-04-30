@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.scala
 
 use super::score_tree::ScoredTerm;
 use super::sortable::Sortable;

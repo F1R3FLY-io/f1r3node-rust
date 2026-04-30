@@ -28,7 +28,6 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use shared::rust::shared::f1r3fly_events::{EventPublisher, EventPublisherFactory};
 use shared::rust::ByteVector;
 use tokio::sync::mpsc;
 
@@ -37,8 +36,6 @@ use crate::engine::setup::TestFixture;
 struct InitializingSpec;
 
 impl InitializingSpec {
-    fn event_bus() -> Box<dyn EventPublisher> { EventPublisherFactory::noop() }
-
     fn before_each(fixture: &TestFixture) {
         fixture
             .transport_layer
@@ -47,7 +44,7 @@ impl InitializingSpec {
 
     fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
     async fn make_transition_to_running_once_approved_block_received() {
-        let _event_bus = Self::event_bus();
+        let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
         let fixture = TestFixture::new().await;
 
@@ -60,8 +57,7 @@ impl InitializingSpec {
 
         let engine_cell = Arc::new(EngineCell::init());
 
-        // interval and duration don't really matter since we don't require and signs
-        // from validators
+        // interval and duration don't really matter since we don't require and signs from validators
         let initializing_engine =
             create_initializing_engine(&fixture, the_init, engine_cell.clone())
                 .await
@@ -93,9 +89,8 @@ impl InitializingSpec {
         };
 
         // Get exporter for genesis block
-        // Note: Instead of default exported, we should use
-        // RSpaceExporterItems::get_history_and_data let _genesis_exporter =
-        // &fixture.exporter;
+        // Note: Instead of default exported, we should use RSpaceExporterItems::get_history_and_data
+        //let _genesis_exporter = &fixture.exporter;
 
         let chunk_size = lfs_tuple_space_requester::PAGE_SIZE;
 
@@ -136,9 +131,8 @@ impl InitializingSpec {
         );
         let genesis_exporter_arc = Arc::new(genesis_exporter_impl);
 
-        // Build all StoreItems requests/responses dynamically until exporter indicates
-        // completion. The number of chunks can change when genesis tuplespace
-        // shape changes.
+        // Build all StoreItems requests/responses dynamically until exporter indicates completion.
+        // The number of chunks can change when genesis tuplespace shape changes.
         let mut store_request_messages = Vec::new();
         let mut store_response_messages = Vec::new();
         let mut next_start_path = start_path1.clone();
@@ -198,8 +192,7 @@ impl InitializingSpec {
         // Scala equivalent: stateResponseQueue.enqueue1(storeResponseMessage1) *>
         //                   stateResponseQueue.enqueue1(storeResponseMessage2) *>
         //                   blockResponseQueue.enqueue1(genesis)
-        // IMPORTANT: Write directly to channels (NOT through handle()) like Scala test
-        // does
+        // IMPORTANT: Write directly to channels (NOT through handle()) like Scala test does
         let tuple_space_tx = initializing_engine
             .tuple_space_tx
             .lock()
@@ -219,16 +212,14 @@ impl InitializingSpec {
         let genesis_clone = genesis.clone();
 
         let enqueue_responses = async move {
-            // Write directly to tuple space channel (equivalent to
-            // stateResponseQueue.enqueue1)
+            // Write directly to tuple space channel (equivalent to stateResponseQueue.enqueue1)
             for store_msg in store_msgs_clone {
                 tuple_space_tx
                     .send(store_msg)
                     .await
                     .expect("Failed to enqueue tuple space response");
             }
-            // Write directly to block message channel (equivalent to
-            // blockResponseQueue.enqueue1)
+            // Write directly to block message channel (equivalent to blockResponseQueue.enqueue1)
             block_message_tx
                 .send(genesis_clone)
                 .await
@@ -297,10 +288,8 @@ impl InitializingSpec {
 
             let handler_internal = engine_cell.get().await;
 
-            // We use with_casper().is_some() as a proxy: Running engines have casper,
-            // Initializing engines return None. This is functionally equivalent
-            // since after transition_to_running(), only Running engines should be in the
-            // cell.
+            // We use with_casper().is_some() as a proxy: Running engines have casper, Initializing engines return None.
+            // This is functionally equivalent since after transition_to_running(), only Running engines should be in the cell.
             assert!(
                 handler_internal.with_casper().is_some(),
                 "Engine should be Running (checked via casper presence)"
@@ -314,9 +303,8 @@ impl InitializingSpec {
                 "Transport layer should have received expected number of requests"
             );
 
-            // Note: Since Protocol doesn't implement Hash/Eq, we compare packet contents
-            // like in original Scala code which compares
-            // `_.msg.message.packet.get.content`, not the entire Protocol objects
+            // Note: Since Protocol doesn't implement Hash/Eq, we compare packet contents like in original Scala code
+            // which compares `_.msg.message.packet.get.content`, not the entire Protocol objects
             let request_packet_contents: HashSet<_> = requests
                 .iter()
                 .filter_map(|r| match &r.msg.message {
@@ -333,8 +321,7 @@ impl InitializingSpec {
                 .collect();
             assert_eq!(
                 request_packet_contents, expected_packet_contents,
-                "Request packet contents should match expected packet contents (order doesn't \
-                 matter)"
+                "Request packet contents should match expected packet contents (order doesn't matter)"
             );
 
             fixture.transport_layer.reset();
@@ -375,14 +362,12 @@ impl InitializingSpec {
     }
 }
 
-// Creates an Initializing engine using TestFixture's shared stores and
-// managers. This matches Scala's approach where InitializingSpec extends Setup
-// and uses implicit vals from the Setup trait (blockStore, blockDagStorage,
-// runtimeManager, etc.).
+// Creates an Initializing engine using TestFixture's shared stores and managers.
+// This matches Scala's approach where InitializingSpec extends Setup and uses
+// implicit vals from the Setup trait (blockStore, blockDagStorage, runtimeManager, etc.).
 //
-// CRITICAL: Using fixture's stores ensures genesis data exported from
-// fixture.rspace_store is imported into the SAME rspace_store instance,
-// preventing storage isolation bugs.
+// CRITICAL: Using fixture's stores ensures genesis data exported from fixture.rspace_store
+// is imported into the SAME rspace_store instance, preventing storage isolation bugs.
 async fn create_initializing_engine(
     fixture: &TestFixture,
     the_init: Arc<
@@ -522,13 +507,11 @@ fn transition_to_initializing_invokes_init_immediately() {
                     Box::pin(async move {
                         init_called_ref.store(true, Ordering::SeqCst);
                         Ok(())
-                    })
-                        as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+                    }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
                 });
 
                 let engine_cell = Arc::new(EngineCell::init());
-                let heartbeat_signal_ref =
-                    casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
+                let heartbeat_signal_ref = casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
 
                 fixture.transport_layer.reset();
                 fixture
@@ -584,8 +567,7 @@ fn transition_to_initializing_invokes_init_immediately() {
 
                 assert!(
                     found_approved_block_request,
-                    "transition_to_initializing should trigger ApprovedBlockRequest via immediate \
-                     init; requests: {:?}",
+                    "transition_to_initializing should trigger ApprovedBlockRequest via immediate init; requests: {:?}",
                     requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
                 );
 

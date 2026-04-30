@@ -7,6 +7,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::secp256k1::Secp256k1;
 use super::secp256k1_eth::Secp256k1Eth;
+#[cfg(feature = "schnorr_secp256k1_experimental")]
+use super::{frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1};
 use crate::rust::private_key::PrivateKey;
 use crate::rust::public_key::PublicKey;
 
@@ -68,6 +70,10 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
                     "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),
+                    #[cfg(feature = "schnorr_secp256k1_experimental")]
+                    "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
+                    #[cfg(feature = "schnorr_secp256k1_experimental")]
+                    "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
                     // "ed25519" => Ok(Box::new(Ed25519)),
                     _ => Err(de::Error::custom(format!("Unknown algorithm: {}", value))),
                 }
@@ -89,6 +95,10 @@ impl SignaturesAlgFactory {
             // case Ed25519.name => Some(Ed25519)
             "secp256k1" => Some(Box::new(Secp256k1)),
             "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            "frost-secp256k1" => Some(Box::new(FrostSecp256k1)),
             _ => None,
         }
     }

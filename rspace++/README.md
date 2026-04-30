@@ -1,49 +1,25 @@
 # rspace++
 
-Tuple space storage and replay engine used by the Rust node.
+Rust implementation of the F1r3fly tuple space engine. Provides produce/consume pattern matching, LMDB-backed trie history, and checkpointing for the Rholang interpreter.
 
-## Responsibilities
+See [rspace/README.md](../rspace/README.md) for the original Scala implementation and conceptual overview.
 
-- Manage hot and cold tuple space state
-- Store and replay checkpoints and history
-- Export and import trie-backed state
-- Support mergeable channel and replay workflows used by `casper` and `rholang`
-
-## Build
-
-Main crate:
+## Building
 
 ```bash
-cargo build -p rspace_plus_plus
 cargo build --release -p rspace_plus_plus
+cargo build --profile dev -p rspace_plus_plus   # debug mode
 ```
 
-Rho types helper crate:
-
-```bash
-cargo build -p rspace_plus_plus_rhotypes
-cargo build --release -p rspace_plus_plus_rhotypes
-```
-
-## Test
+## Testing
 
 ```bash
 cargo test -p rspace_plus_plus
-cargo test -p rspace_plus_plus --release
+cargo test --release -p rspace_plus_plus
+cargo test --test <test_file_name>               # specific test file
+cargo test --test <folder>::<test_file_name>      # specific test in folder
 ```
 
-## Key Source Areas
+## Documentation
 
-| Path | Purpose |
-| --- | --- |
-| `src/rspace/history/` | Checkpoints, roots, history repository |
-| `src/rspace/merger/` | Merge and state change logic |
-| `src/rspace/state/` | Import, export, and state manager code |
-| `src/rspace/shared/` | Store manager implementations |
-| `tests/` | Replay, storage, export/import, and reporting tests |
-| `libs/rspace_rhotypes/` | Helper crate shared with model and contract code |
-
-## Notes
-
-- The crate uses LMDB via `heed`.
-- Test data is created under temporary directories and may leave `.mdb` files behind if interrupted.
+- [RSpace Module Overview](../docs/rspace/README.md) — Tuple space engine, produce/consume matching, trie history

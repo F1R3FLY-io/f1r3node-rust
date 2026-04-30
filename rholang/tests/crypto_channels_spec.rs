@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/
-// CryptoChannelsSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/CryptoChannelsSpec.scala
 
 #[cfg(test)]
 mod tests {
@@ -41,8 +40,12 @@ mod tests {
 
     fn empty_env() -> Env<Par> { Env::new() }
 
-    fn assert_store_contains(runtime: RhoRuntimeImpl, ack_channel: Par, data: ListParWithRandom) {
-        let space_map = runtime.get_hot_changes();
+    async fn assert_store_contains(
+        runtime: RhoRuntimeImpl,
+        ack_channel: Par,
+        data: ListParWithRandom,
+    ) {
+        let space_map = runtime.get_hot_changes().await;
         // println!("space_map: {:?}", space_map.len());
         let datum = space_map
             .get(&vec![ack_channel])
@@ -72,7 +75,7 @@ mod tests {
         runtime
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sha256hash_channel_should_hash_input_data_and_send_result_on_ack_channel() {
         let runtime = create_runtime().await;
 
@@ -99,10 +102,11 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
-        });
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn keccak256hash_channel_should_hash_input_data_and_send_result_on_ack_channel() {
         let runtime = create_runtime().await;
 
@@ -129,10 +133,11 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
-        });
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn blake2b256hash_channel_should_hash_input_data_and_send_result_on_ack_channel() {
         let runtime = create_runtime().await;
 
@@ -159,10 +164,11 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
-        });
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn secp256k1verify_channel_should_verify_integrity_of_the_data_and_send_result_on_ack_channel(
     ) {
         let runtime = create_runtime().await;
@@ -211,10 +217,11 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![new_gbool_par(true, Vec::new(), false)],
             random_state: rand().to_bytes(),
-        });
+        })
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ed25519verify_channel_should_verify_integrity_of_the_data_and_send_result_on_ack_channel(
     ) {
         let runtime = create_runtime().await;
@@ -257,6 +264,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![new_gbool_par(true, Vec::new(), false)],
             random_state: rand().to_bytes(),
-        });
+        })
+        .await;
     }
 }

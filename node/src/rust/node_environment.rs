@@ -58,14 +58,11 @@ fn certificate_public_key_to_node_name(public_key: Vec<u8>) -> eyre::Result<Stri
 
 fn can_create_data_dir(data_dir: &Path) -> eyre::Result<()> {
     if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir).map_err(|e| {
-            eyre::eyre!(format!(
-                "The data dir must be a directory and have read and write \
-                 permissions:\n{}\nError: {}",
-                data_dir.display(),
-                e
-            ))
-        })?;
+        std::fs::create_dir_all(data_dir)
+            .map_err(|e| eyre::eyre!(format!(
+                "The data dir must be a directory and have read and write permissions:\n{}\nError: {}",
+                data_dir.display(), e
+            )))?;
     }
     Ok(())
 }

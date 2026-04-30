@@ -55,6 +55,9 @@ mod tests {
                 genesis_block_number: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 0,
+                native_token_name: "F1R3CAP".to_string(),
+                native_token_symbol: "F1R3".to_string(),
+                native_token_decimals: 8,
             },
             genesis_ceremony: GenesisCeremony {
                 required_signatures: 0,
@@ -69,11 +72,19 @@ mod tests {
                 enabled: false,
                 check_interval: Duration::from_secs(60),
                 max_lfb_age: Duration::from_secs(300),
+                self_propose_cooldown: Duration::from_secs(15),
             },
             disable_late_block_filtering: true,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
+            finalizer: casper::rust::casper_conf::FinalizerConf::default(),
+            synchrony_recovery_stall_window: Duration::from_secs(60),
+            synchrony_recovery_cooldown: Duration::from_secs(20),
+            synchrony_recovery_max_bypasses: 2,
+            synchrony_finalized_baseline_enabled: true,
+            synchrony_finalized_baseline_max_distance: 2048,
+            max_user_deploys_per_block: 32,
         }
     }
 

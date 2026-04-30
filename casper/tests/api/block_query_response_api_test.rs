@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.scala
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -176,7 +175,7 @@ async fn empty_effects(
     (engine_cell, clique_oracle_effect)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_block_should_return_successful_block_info_response() {
     let (genesis_block, second_block, random_deploys) = create_test_blocks();
 
@@ -337,7 +336,7 @@ async fn get_block_should_return_successful_block_info_response() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_block_should_return_error_when_no_block_exists() {
     let (genesis_block, second_block, _random_deploys) = create_test_blocks();
 
@@ -369,7 +368,7 @@ async fn get_block_should_return_error_when_no_block_exists() {
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_block_should_return_error_when_hash_is_invalid_hex_string() {
     let (genesis_block, second_block, _random_deploys) = create_test_blocks();
 
@@ -402,7 +401,7 @@ async fn get_block_should_return_error_when_hash_is_invalid_hex_string() {
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_block_should_return_error_when_hash_is_too_short() {
     let (genesis_block, second_block, _random_deploys) = create_test_blocks();
 
@@ -435,7 +434,7 @@ async fn get_block_should_return_error_when_hash_is_too_short() {
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn find_deploy_should_return_successful_block_info_response_when_block_contains_deploy_with_given_signature(
 ) {
     let (genesis_block, second_block, random_deploys) = create_test_blocks();
@@ -606,7 +605,7 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn find_deploy_should_return_error_when_no_block_contains_deploy_with_given_signature() {
     let (genesis_block, second_block, _random_deploys) = create_test_blocks();
 

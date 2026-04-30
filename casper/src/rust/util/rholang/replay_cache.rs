@@ -6,9 +6,9 @@ use indexmap::IndexMap;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::Event;
 
-/// Cache key: parent state + block identity (sender, seqNum) + replay payload
-/// fingerprint. Including a payload fingerprint prevents unsafe cache hits for
-/// mutated deploy content that happens to share (parent, sender, seqNum).
+/// Cache key: parent state + block identity (sender, seqNum) + replay payload fingerprint.
+/// Including a payload fingerprint prevents unsafe cache hits for mutated deploy content
+/// that happens to share (parent, sender, seqNum).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReplayCacheKey {
     pub parent_state: StateHash,

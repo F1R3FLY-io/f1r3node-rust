@@ -112,14 +112,12 @@ pub fn conflict_reason(a: &EventLogIndex, b: &EventLogIndex) -> Option<String> {
                 consume_races.len(),
                 produce_races.len()
             )),
-            (false, true) => Some(format!(
-                "racesForSameIOEvent: consumeRaces={}",
-                consume_races.len()
-            )),
-            (true, false) => Some(format!(
-                "racesForSameIOEvent: produceRaces={}",
-                produce_races.len()
-            )),
+            (false, true) => {
+                Some(format!("racesForSameIOEvent: consumeRaces={}", consume_races.len()))
+            }
+            (true, false) => {
+                Some(format!("racesForSameIOEvent: produceRaces={}", produce_races.len()))
+            }
             (true, true) => None,
         }
     };
@@ -633,8 +631,8 @@ pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
                 // No more conflicts, this is a valid rejection option
                 // Only add if not already in result
                 let already_exists = result.iter().any(|existing_set: &HashableSet<A>| {
-                    existing_set.0.len() == option.rejected_so_far.0.len()
-                        && existing_set
+                    existing_set.0.len() == option.rejected_so_far.0.len() &&
+                        existing_set
                             .0
                             .iter()
                             .all(|item| option.rejected_so_far.0.contains(item))
@@ -678,14 +676,16 @@ mod tests {
 
         let result1 = compute_rejection_options(&map1);
         assert_eq!(result1.0.len(), 2);
-        assert!(result1
-            .0
-            .iter()
-            .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&2)));
-        assert!(result1.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&2)
-            && set.0.contains(&3)
-            && set.0.contains(&4)));
+        assert!(
+            result1
+                .0
+                .iter()
+                .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&2))
+        );
+        assert!(result1.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&2) &&
+            set.0.contains(&3) &&
+            set.0.contains(&4)));
 
         // Test 2
         let mut map2: HashMap<i32, HashableSet<i32>> = HashMap::new();
@@ -696,22 +696,22 @@ mod tests {
 
         let result2 = compute_rejection_options(&map2);
         assert_eq!(result2.0.len(), 4);
-        assert!(result2.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&2)
-            && set.0.contains(&3)
-            && set.0.contains(&4)));
-        assert!(result2.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&1)
-            && set.0.contains(&3)
-            && set.0.contains(&4)));
-        assert!(result2.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&1)
-            && set.0.contains(&2)
-            && set.0.contains(&4)));
-        assert!(result2.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&1)
-            && set.0.contains(&2)
-            && set.0.contains(&3)));
+        assert!(result2.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&2) &&
+            set.0.contains(&3) &&
+            set.0.contains(&4)));
+        assert!(result2.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&1) &&
+            set.0.contains(&3) &&
+            set.0.contains(&4)));
+        assert!(result2.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&1) &&
+            set.0.contains(&2) &&
+            set.0.contains(&4)));
+        assert!(result2.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&1) &&
+            set.0.contains(&2) &&
+            set.0.contains(&3)));
 
         // Test 3
         let mut map3: HashMap<i32, HashableSet<i32>> = HashMap::new();
@@ -722,18 +722,22 @@ mod tests {
 
         let result3 = compute_rejection_options(&map3);
         assert_eq!(result3.0.len(), 3);
-        assert!(result3.0.iter().any(|set| set.0.len() == 3
-            && set.0.contains(&2)
-            && set.0.contains(&3)
-            && set.0.contains(&4)));
-        assert!(result3
-            .0
-            .iter()
-            .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&3)));
-        assert!(result3
-            .0
-            .iter()
-            .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&4)));
+        assert!(result3.0.iter().any(|set| set.0.len() == 3 &&
+            set.0.contains(&2) &&
+            set.0.contains(&3) &&
+            set.0.contains(&4)));
+        assert!(
+            result3
+                .0
+                .iter()
+                .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&3))
+        );
+        assert!(
+            result3
+                .0
+                .iter()
+                .any(|set| set.0.len() == 2 && set.0.contains(&1) && set.0.contains(&4))
+        );
 
         // Test 4
         let mut map4: HashMap<i32, HashableSet<i32>> = HashMap::new();
@@ -744,14 +748,18 @@ mod tests {
 
         let result4 = compute_rejection_options(&map4);
         assert_eq!(result4.0.len(), 2);
-        assert!(result4
-            .0
-            .iter()
-            .any(|set| set.0.len() == 1 && set.0.contains(&3)));
-        assert!(result4
-            .0
-            .iter()
-            .any(|set| set.0.len() == 2 && set.0.contains(&2) && set.0.contains(&4)));
+        assert!(
+            result4
+                .0
+                .iter()
+                .any(|set| set.0.len() == 1 && set.0.contains(&3))
+        );
+        assert!(
+            result4
+                .0
+                .iter()
+                .any(|set| set.0.len() == 2 && set.0.contains(&2) && set.0.contains(&4))
+        );
 
         let all: HashSet<i32> = (1..=1000).collect();
         let mut map5: HashMap<i32, HashableSet<i32>> = HashMap::new();
@@ -767,9 +775,9 @@ mod tests {
             let mut expected = all.clone();
             expected.remove(&i);
             assert!(result5.0.iter().any(|set| {
-                set.0.len() == 999
-                    && !set.0.contains(&i)
-                    && (1..=1000).filter(|j| *j != i).all(|j| set.0.contains(&j))
+                set.0.len() == 999 &&
+                    !set.0.contains(&i) &&
+                    (1..=1000).filter(|j| *j != i).all(|j| set.0.contains(&j))
             }));
         }
     }
@@ -1191,9 +1199,11 @@ mod tests {
         // Test empty case
         let empty_x = EventLogIndex::empty();
         let empty_y = EventLogIndex::empty();
-        assert!(combine_produces_copied_by_peek(&empty_x, &empty_y)
-            .0
-            .is_empty());
+        assert!(
+            combine_produces_copied_by_peek(&empty_x, &empty_y)
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1244,10 +1254,7 @@ mod tests {
 
         // All results must be identical
         for r in &results[1..] {
-            assert_eq!(
-                results[0], *r,
-                "compute_rejection_options must be deterministic"
-            );
+            assert_eq!(results[0], *r, "compute_rejection_options must be deterministic");
         }
     }
 
@@ -1264,10 +1271,7 @@ mod tests {
             .collect();
 
         for r in &results[1..] {
-            assert_eq!(
-                results[0], *r,
-                "compute_rejection_options must be deterministic"
-            );
+            assert_eq!(results[0], *r, "compute_rejection_options must be deterministic");
         }
     }
 }

@@ -70,8 +70,8 @@ where
 
 /// Listen at name until changes occur
 ///
-/// This function monitors a name and waits until the number of results
-/// increases, indicating that new data has been added.
+/// This function monitors a name and waits until the number of results increases,
+/// indicating that new data has been added.
 /// Note: this
 pub async fn listen_at_name_until_changes<F, Fut, T>(name: Name, mut request: F) -> Fut::Output
 where

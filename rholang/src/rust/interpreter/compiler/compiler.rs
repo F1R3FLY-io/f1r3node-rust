@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/Compiler.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/Compiler.scala
 
 use std::collections::HashMap;
 

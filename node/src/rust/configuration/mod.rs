@@ -23,15 +23,14 @@ pub mod builder {
     use crate::rust::configuration::commandline::ConfigMapper;
 
     /// Builds Configuration instance from CLI options.
-    /// If config file is provided as part of CLI options, it shall be parsed
-    /// and merged with CLI options having higher priority.
+    /// If config file is provided as part of CLI options, it shall be parsed and merged
+    /// with CLI options having higher priority.
     ///
     /// # Arguments
     /// * `options` - CLI options
     ///
     /// # Returns
-    /// * `Result<(NodeConf, Profile, Option<PathBuf>, KamonConf)>` -
-    ///   Configuration tuple
+    /// * `Result<(NodeConf, Profile, Option<PathBuf>, KamonConf)>` - Configuration tuple
     pub fn build(
         default_dir: &Path,
         options: Options,
@@ -133,13 +132,21 @@ pub mod builder {
 
         if pos_multi_sig_quorum > pos_multi_sig_public_keys_length as u32 {
             eyre::bail!(
-                "defaults.conf: The value 'pos-multi-sig-quorum' should be less or equal the \
-                 length of 'pos-multi-sig-public-keys' (the actual values are '{}' and '{}' \
-                 respectively)",
+                "defaults.conf: The value 'pos-multi-sig-quorum' should be less or equal the length of 'pos-multi-sig-public-keys' \
+                (the actual values are '{}' and '{}' respectively)",
                 pos_multi_sig_quorum,
                 pos_multi_sig_public_keys_length
             );
         }
+
+        // Reject empty/whitespace native token name/symbol and out-of-range
+        // decimals before the node starts. Catches misconfigured shell variable
+        // expansion, typos, and values outside the industry-standard range.
+        node_conf
+            .casper
+            .genesis_block_data
+            .validate_native_token()
+            .map_err(|e| eyre::eyre!("native token config invalid: {}", e))?;
 
         Ok(())
     }

@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/EitherSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/EitherSpec.scala
 
 use std::collections::HashMap;
 

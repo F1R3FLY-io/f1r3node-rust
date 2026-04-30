@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/NewSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/NewSortMatcher.scala
 
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{ScoreAtom, ScoredTerm, Tree};

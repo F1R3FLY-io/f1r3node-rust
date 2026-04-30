@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RegistrySpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RegistrySpec.scala
 
 use std::collections::HashMap;
 

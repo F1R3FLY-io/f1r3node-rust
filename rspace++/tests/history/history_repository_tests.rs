@@ -26,15 +26,10 @@ use rspace_plus_plus::rspace::shared::trie_importer::TrieImporter;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::ByteVector;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 use crate::history::history_action_tests::{random_blake, zeros_blake};
-
-type InsertContinuationResult = (
-    HotStoreAction<String, String, String, String>,
-    InsertContinuations<String, String, String>,
-);
 
 #[tokio::test]
 async fn history_repository_should_process_insert_one_datum() {
@@ -45,9 +40,8 @@ async fn history_repository_should_process_insert_one_datum() {
         data: vec![test_datum.clone()],
     };
 
-    let next_repo = repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(
-        insert_data,
-    ))]);
+    let next_repo =
+        repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))]);
     let history_reader = next_repo.get_history_reader(&next_repo.root());
     let data = history_reader
         .unwrap()
@@ -97,10 +91,7 @@ async fn history_repository_should_allow_insert_of_joins_datum_continuation_on_s
     assert_eq!(fetched_data.first().unwrap().clone(), test_datum);
 
     assert_eq!(fetched_continuation.len(), 1);
-    assert_eq!(
-        fetched_continuation.first().unwrap().clone(),
-        test_continuation
-    );
+    assert_eq!(fetched_continuation.first().unwrap().clone(), test_continuation);
 
     assert_eq!(fetched_joins.len(), 2);
     assert_eq!(
@@ -137,9 +128,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
         .1
         .into_iter()
         .map(|j| {
-            HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
-                channel: j.channel,
-            }))
+            HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins { channel: j.channel }))
         })
         .collect();
 
@@ -259,22 +248,26 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
         .iter()
         .map(|c| deleted_reader.get_continuations(&c.channels))
         .collect();
-    assert!(fetched_conts
-        .iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .is_empty());
+    assert!(
+        fetched_conts
+            .iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .is_empty()
+    );
 
     let fetched_joins: Vec<Vec<Vec<String>>> = joins
         .1
         .iter()
         .map(|j| deleted_reader.get_joins(&j.channel))
         .collect();
-    assert!(fetched_joins
-        .iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .is_empty());
+    assert!(
+        fetched_joins
+            .iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -289,8 +282,8 @@ async fn history_repository_should_not_allow_switching_to_a_not_existing_root() 
                 err
             )
         }
-        Ok(_) => panic!("Expected a failure"),
-        _ => panic!("Wrong error thrown"),
+        Ok(_) => assert!(false, "Expected a failure"),
+        _ => assert!(false, "Wrong error thrown"),
     }
 }
 
@@ -303,9 +296,8 @@ async fn history_repository_should_record_next_root_as_valid() {
         data: vec![test_datum.clone()],
     };
 
-    let next_repo = repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(
-        insert_data,
-    ))]);
+    let next_repo =
+        repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert_data))]);
     let _ = repo.reset(&RadixHistory::empty_root_node_hash());
     let binding = next_repo.history();
     let next_repo_history = binding.lock().expect("Failed to acquire history lock");
@@ -320,48 +312,33 @@ fn test_channel_continuations_prefix() -> String { "channel-continuations".to_st
 
 fn insert_datum(
     s: i32,
-) -> (
-    HotStoreAction<String, String, String, String>,
-    InsertData<String, String>,
-) {
+) -> (HotStoreAction<String, String, String, String>, InsertData<String, String>) {
     let insert = InsertData {
         channel: format!("{}{}", test_channel_data_prefix(), s),
         data: vec![datum(s)],
     };
 
-    (
-        HotStoreAction::Insert(InsertAction::InsertData(insert.clone())),
-        insert,
-    )
+    (HotStoreAction::Insert(InsertAction::InsertData(insert.clone())), insert)
 }
 
-fn insert_join(
-    s: i32,
-) -> (
-    HotStoreAction<String, String, String, String>,
-    InsertJoins<String>,
-) {
+fn insert_join(s: i32) -> (HotStoreAction<String, String, String, String>, InsertJoins<String>) {
     let insert = InsertJoins {
         channel: format!("{}{}", test_channel_joins_prefix(), s),
         joins: join(s),
     };
 
-    (
-        HotStoreAction::Insert(InsertAction::InsertJoins(insert.clone())),
-        insert,
-    )
+    (HotStoreAction::Insert(InsertAction::InsertJoins(insert.clone())), insert)
 }
 
-fn insert_continuation(s: i32) -> InsertContinuationResult {
+fn insert_continuation(
+    s: i32,
+) -> (HotStoreAction<String, String, String, String>, InsertContinuations<String, String, String>) {
     let insert = InsertContinuations {
         channels: vec![format!("{}{}", test_channel_continuations_prefix(), s)],
         continuations: vec![continuation(s)],
     };
 
-    (
-        HotStoreAction::Insert(InsertAction::InsertContinuations(insert.clone())),
-        insert,
-    )
+    (HotStoreAction::Insert(InsertAction::InsertContinuations(insert.clone())), insert)
 }
 
 fn join(s: i32) -> Vec<Vec<String>> {
@@ -502,9 +479,9 @@ impl RSpaceImporter for EmptyImporter {
 }
 
 impl TrieImporter for EmptyImporter {
-    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
+    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
 
-    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
+    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
 
-    fn set_root(&self, _key: &KeyHash) { todo!() }
+    fn set_root(&self, _key: &KeyHash) -> () { todo!() }
 }

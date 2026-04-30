@@ -1,21 +1,18 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/GenesisTest.scala
 //
 // Note: Tests are simplified compared to Scala original.
-// In Scala, LogStub (from
-// comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala) implements
-// Log[F] trait and is passed as implicit parameter to functions like
-// BondsParser. When these functions call log.info("..."), messages go directly
-// to LogStub. Tests then assert on log.warns.count and log.infos.count.
+// In Scala, LogStub (from comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala)
+// implements Log[F] trait and is passed as implicit parameter to functions like BondsParser.
+// When these functions call log.info("..."), messages go directly to LogStub.
+// Tests then assert on log.warns.count and log.infos.count.
 //
 // In Rust, BondsParser uses `tracing` crate (tracing::info!, tracing::warn!).
-// These logs are not captured because we don't set up a tracing subscriber in
-// tests. There are two ways to capture tracing logs:
-// 1. Use `tracing-test` crate with #[traced_test] attribute and logs_contain()
-//    macro
+// These logs are not captured because we don't set up a tracing subscriber in tests.
+// There are two ways to capture tracing logs:
+// 1. Use `tracing-test` crate with #[traced_test] attribute and logs_contain() macro
 // 2. Implement custom tracing_subscriber::Layer that captures logs into a Vec
 // However, this adds complexity and dependencies for marginal benefit.
-// For now, tests verify the end result (e.g., bonds.len()) instead of log
-// message counts.
+// For now, tests verify the end result (e.g., bonds.len()) instead of log message counts.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -63,10 +60,9 @@ where
     let scope_id = generate_scope_id();
     let gp = genesis_path();
 
-    // Scala uses MetricsNOP, and this class in turn is empty, if it is used it
-    // means that the test does not log metrics. implicit val noopMetrics:
-    // Metrics[F] = new metrics.Metrics.MetricsNOP[F] implicit val span: Span[F]
-    // = NoopSpan[F]()
+    // Scala uses MetricsNOP, and this class in turn is empty, if it is used it means that the test does not log metrics.
+    // implicit val noopMetrics: Metrics[F] = new metrics.Metrics.MetricsNOP[F]
+    // implicit val span: Span[F]           = NoopSpan[F]()
 
     let time = LogicalTime::new();
     let log = LogStub::new();
@@ -92,8 +88,7 @@ where
     let result = body(runtime_manager, gp.clone(), log, time).await;
 
     // Note: Scala uses PathOps.recursivelyDelete() with FileVisitor pattern.
-    // Rust fs::remove_dir_all does the same - recursively removes directory with
-    // all contents.
+    // Rust fs::remove_dir_all does the same - recursively removes directory with all contents.
     let _ = fs::remove_dir_all(&scope_id);
     let _ = fs::remove_dir_all(&gp);
 
@@ -244,6 +239,9 @@ async fn from_input_files(
         supply: i64::MAX,
         block_number: params.block_number,
         version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
     };
 
     let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
@@ -251,7 +249,7 @@ async fn from_input_files(
     Ok(genesis_block)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_generate_random_validators_when_no_bonds_file_is_given() {
     with_gen_resources(
         |mut runtime_manager, genesis_path, _log, _time| async move {
@@ -276,12 +274,11 @@ async fn genesis_from_input_files_should_generate_random_validators_when_no_bond
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_tell_when_bonds_file_does_not_exist() {
     with_gen_resources(
         |mut runtime_manager, genesis_path, _log, _time| async move {
-            // Path that does not exist - using a fake path, no need to create a real
-            // directory
+            // Path that does not exist - using a fake path, no need to create a real directory
             let non_existing_path = "/tmp/non_existing_test_path/not/a/real/file".to_string();
 
             let result =
@@ -291,8 +288,7 @@ async fn genesis_from_input_files_should_tell_when_bonds_file_does_not_exist() {
                 })
                 .await;
 
-            // BondsParser::parse_with_autogen logs warn "BONDS FILE NOT FOUND" and creates
-            // random bonds
+            // BondsParser::parse_with_autogen logs warn "BONDS FILE NOT FOUND" and creates random bonds
             assert!(
                 result.is_ok(),
                 "Genesis creation should succeed with auto-generated bonds"
@@ -302,7 +298,7 @@ async fn genesis_from_input_files_should_tell_when_bonds_file_does_not_exist() {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_fail_with_error_when_bonds_file_cannot_be_parsed() {
     with_gen_resources(
         |mut runtime_manager, genesis_path, _log, _time| async move {
@@ -332,7 +328,7 @@ async fn genesis_from_input_files_should_fail_with_error_when_bonds_file_cannot_
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_bonds_when_a_proper_bonds_file_is_given(
 ) {
     with_gen_resources(
@@ -378,7 +374,7 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
     with_storage(|block_store, mut block_dag_storage| async move {
         with_gen_resources(
@@ -412,13 +408,11 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
 
                 match maybe_post_genesis_state_hash {
                     Either::Right(Some(_)) => {
-                        // Success - full checkpoint replay produced a post-state
-                        // hash.
+                        // Success - full checkpoint replay produced a post-state hash.
                     }
                     Either::Right(None) => {
-                        // Also acceptable: genesis checkpoint may be treated as
-                        // already validated and return no
-                        // additional post-state hash.
+                        // Also acceptable: genesis checkpoint may be treated as already validated
+                        // and return no additional post-state hash.
                     }
                     Either::Left(block_error) => {
                         panic!("Expected Right(Some(_)), got Left({:?})", block_error);
@@ -431,7 +425,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_default_location() {
     with_gen_resources(
         |mut runtime_manager, genesis_path, _log, _time| async move {
@@ -476,7 +470,7 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corresponding_rev_vaults(
 ) {

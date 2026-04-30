@@ -36,9 +36,7 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{
-    CliqueOracleImpl, SafetyOracle, MAX_FAULT_TOLERANCE, MIN_FAULT_TOLERANCE,
-};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
 use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -65,8 +63,7 @@ fn pad_hex_string(hash: &str) -> String {
 }
 
 // Automatic error conversions for common error types used in this API
-// We can only implement From for our own types, so we implement for CasperError
-// -> String
+// We can only implement From for our own types, so we implement for CasperError -> String
 impl From<CasperError> for String {
     fn from(err: CasperError) -> String { err.to_string() }
 }
@@ -93,29 +90,12 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
     }
 }
 
-const DEPLOY_PROPOSE_MAX_ATTEMPTS_ENV: &str = "F1R3_DEPLOY_PROPOSE_MAX_ATTEMPTS";
-const DEPLOY_PROPOSE_RETRY_DELAY_MS_ENV: &str = "F1R3_DEPLOY_PROPOSE_RETRY_DELAY_MS";
-const DEFAULT_DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
-const DEFAULT_DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
-const MAX_DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 2_000;
+const DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
+const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
 
-fn deploy_propose_max_attempts() -> u32 {
-    std::env::var(DEPLOY_PROPOSE_MAX_ATTEMPTS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_DEPLOY_PROPOSE_MAX_ATTEMPTS)
-}
+fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
 
-fn deploy_propose_retry_delay() -> Duration {
-    let delay_ms = std::env::var(DEPLOY_PROPOSE_RETRY_DELAY_MS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_DEPLOY_PROPOSE_RETRY_DELAY_MS)
-        .min(MAX_DEPLOY_PROPOSE_RETRY_DELAY_MS);
-    Duration::from_millis(delay_ms)
-}
+fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
@@ -176,8 +156,7 @@ lazy_static::lazy_static! {
     static ref REPORT_TRANSFORMER: ReportingProtoTransformer = ReportingProtoTransformer::new();
 }
 
-// TODO: Scala we should refactor BlockApi with applicative errors for better
-// classification of errors and to overcome nesting when validating data.
+// TODO: Scala we should refactor BlockApi with applicative errors for better classification of errors and to overcome nesting when validating data.
 #[derive(Debug)]
 pub struct BlockRetrievalError {
     pub message: String,
@@ -222,13 +201,7 @@ impl std::fmt::Display for LatestBlockMessageError {
 impl std::error::Error for LatestBlockMessageError {}
 
 impl BlockAPI {
-    fn find_deploy_scan_depth() -> usize {
-        std::env::var("F1R3_FIND_DEPLOY_SCAN_DEPTH")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(128)
-    }
+    fn find_deploy_scan_depth() -> usize { 128 }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,
@@ -318,10 +291,9 @@ impl BlockAPI {
                 )),
             };
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency
-            // bounded. Deploy success should not block on proposal completion;
-            // finalization is checked via propose/finalization APIs separately
-            // in integration flows.
+            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
+            // Deploy success should not block on proposal completion; finalization is checked via
+            // propose/finalization APIs separately in integration flows.
             if let Some(tp) = trigger_propose {
                 let tp = Arc::clone(tp);
                 let casper_for_propose = casper.clone();
@@ -337,8 +309,7 @@ impl BlockAPI {
                                         && attempt < max_attempts
                                     {
                                         tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt \
-                                             {}/{}, seqNum {}): {}; retrying in {:?}",
+                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
                                             attempt,
                                             max_attempts,
                                             seq_number,
@@ -379,8 +350,7 @@ impl BlockAPI {
                             Err(err) => {
                                 if attempt < max_attempts {
                                     tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): \
-                                         {}; retrying in {:?}",
+                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
                                         attempt,
                                         max_attempts,
                                         err,
@@ -523,16 +493,16 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(status, seq_number) => {
+                ProposerResult::Failure(ref status, seq_number) => {
                     log_debug(&format!("Failure: {} (seqNum {})", status, seq_number))
                 }
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
                 ProposerResult::Success(_, block) => {
-                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when
-                    // checking response result  Fix to use structured result
-                    // with transport errors/codes. https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
+                    // TODO: Scala [WARNING] Format of this message is hardcoded in pyrchain when checking response result
+                    //  Fix to use structured result with transport errors/codes.
+                    // https://github.com/rchain/pyrchain/blob/a2959c75bf/rchain/client.py#L42
                     let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
                     log_success(&format!(
                         "Success! Block {} created and added.",
@@ -896,37 +866,70 @@ impl BlockAPI {
         end_block_number: i64,
         max_blocks_limit: i32,
     ) -> ApiErr<Vec<LightBlockInfo>> {
+        Self::get_blocks_by_heights_with_constructor(
+            engine_cell,
+            start_block_number,
+            end_block_number,
+            max_blocks_limit,
+            Self::construct_light_block_info,
+        )
+        .await
+    }
+
+    pub async fn get_blocks_by_heights_full(
+        engine_cell: &EngineCell,
+        start_block_number: i64,
+        end_block_number: i64,
+        max_blocks_limit: i32,
+    ) -> ApiErr<Vec<BlockInfo>> {
+        Self::get_blocks_by_heights_with_constructor(
+            engine_cell,
+            start_block_number,
+            end_block_number,
+            max_blocks_limit,
+            Self::construct_block_info,
+        )
+        .await
+    }
+
+    async fn get_blocks_by_heights_with_constructor<A: Sized + Send>(
+        engine_cell: &EngineCell,
+        start_block_number: i64,
+        end_block_number: i64,
+        max_blocks_limit: i32,
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<Vec<A>> {
         let error_message = format!(
             "Could not retrieve blocks from {} to {}",
             start_block_number, end_block_number
         );
 
-        async fn casper_response(
+        async fn casper_response<A: Sized + Send>(
             casper: &dyn MultiParentCasper,
             start_block_number: i64,
             end_block_number: i64,
-        ) -> ApiErr<Vec<LightBlockInfo>> {
+            constructor: fn(&BlockMessage, f32, bool) -> A,
+        ) -> ApiErr<Vec<A>> {
             let dag = casper.block_dag().await?;
 
             let topo_sort_dag = dag.topo_sort(start_block_number, Some(end_block_number))?;
 
-            let result: ApiErr<Vec<LightBlockInfo>> = {
-                let mut block_infos_at_height_acc = Vec::new();
-                for block_hashes_at_height in topo_sort_dag {
-                    let blocks_at_height: Vec<_> = block_hashes_at_height
-                        .iter()
-                        .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                        .collect();
+            let mut block_infos_at_height_acc = Vec::new();
+            for block_hashes_at_height in topo_sort_dag {
+                let blocks_at_height: Vec<_> = block_hashes_at_height
+                    .iter()
+                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
+                    .collect();
 
-                    for block in blocks_at_height {
-                        let block_info = BlockAPI::get_light_block_info(casper, &block).await?;
-                        block_infos_at_height_acc.push(block_info);
-                    }
+                for block in blocks_at_height {
+                    let block_info =
+                        BlockAPI::get_block_info_with_dag(casper, &dag, &block, constructor)
+                            .await?;
+                    block_infos_at_height_acc.push(block_info);
                 }
-                Ok(block_infos_at_height_acc)
-            };
+            }
 
-            result
+            Ok(block_infos_at_height_acc)
         }
 
         let effective_end_block_number =
@@ -938,6 +941,7 @@ impl BlockAPI {
                 casper.as_ref(),
                 start_block_number,
                 effective_end_block_number,
+                constructor,
             )
             .await
         } else {
@@ -1043,26 +1047,74 @@ impl BlockAPI {
         depth: i32,
         max_depth_limit: i32,
     ) -> ApiErr<Vec<LightBlockInfo>> {
-        let do_it = |(casper, topo_sort): (&dyn MultiParentCasper, Vec<Vec<BlockHash>>)| -> ApiErr<Vec<LightBlockInfo>> {
-            let mut block_infos_acc = Vec::new();
+        let effective_depth = clamp_depth(depth, max_depth_limit, "get-blocks");
+        let error_message =
+            "Could not get blocks, casper instance was not available yet.".to_string();
 
-            for block_hashes_at_height in topo_sort {
-                let blocks_at_height: Vec<_> = block_hashes_at_height
-                    .iter()
-                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                    .collect();
-
-                for block in blocks_at_height {
-                    let block_info = BlockAPI::construct_light_block_info(&block, 0.0);
-                    block_infos_acc.push(block_info);
-                }
-            }
-
-            block_infos_acc.reverse();
-            Ok(block_infos_acc)
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            return Err(eyre::eyre!("Error: {}", error_message));
         };
 
-        BlockAPI::toposort_dag(engine_cell, depth, max_depth_limit, do_it).await
+        let dag = casper.block_dag().await?;
+        let latest_block_number = dag.latest_block_number();
+        let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
+
+        let mut block_infos_acc = Vec::new();
+        for block_hashes_at_height in topo_sort {
+            for block_hash in block_hashes_at_height {
+                let block = casper.block_store().get_unsafe(&block_hash);
+                let block_info = BlockAPI::get_block_info_with_dag(
+                    casper.as_ref(),
+                    &dag,
+                    &block,
+                    Self::construct_light_block_info,
+                )
+                .await?;
+                block_infos_acc.push(block_info);
+            }
+        }
+
+        block_infos_acc.reverse();
+        Ok(block_infos_acc)
+    }
+
+    /// Like `get_blocks` but returns full `BlockInfo` (with deploys).
+    pub async fn get_blocks_full(
+        engine_cell: &EngineCell,
+        depth: i32,
+        max_depth_limit: i32,
+    ) -> ApiErr<Vec<BlockInfo>> {
+        let effective_depth = clamp_depth(depth, max_depth_limit, "get-blocks-full");
+        let error_message =
+            "Could not get blocks, casper instance was not available yet.".to_string();
+
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let dag = casper.block_dag().await?;
+        let latest_block_number = dag.latest_block_number();
+        let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
+
+        let mut block_infos_acc = Vec::new();
+        for block_hashes_at_height in topo_sort {
+            for block_hash in block_hashes_at_height {
+                let block = casper.block_store().get_unsafe(&block_hash);
+                let block_info = BlockAPI::get_block_info_with_dag(
+                    casper.as_ref(),
+                    &dag,
+                    &block,
+                    Self::construct_block_info,
+                )
+                .await?;
+                block_infos_acc.push(block_info);
+            }
+        }
+
+        block_infos_acc.reverse();
+        Ok(block_infos_acc)
     }
 
     pub async fn show_main_chain(
@@ -1098,7 +1150,13 @@ impl BlockAPI {
 
             let mut block_infos = Vec::new();
             for block in main_chain {
-                let block_info = BlockAPI::construct_light_block_info(&block, 0.0);
+                let block_info = BlockAPI::get_block_info_with_dag(
+                    casper,
+                    &dag_mut,
+                    &block,
+                    BlockAPI::construct_light_block_info,
+                )
+                .await?;
                 block_infos.push(block_info);
             }
 
@@ -1227,28 +1285,27 @@ impl BlockAPI {
         }
     }
 
-    async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+    async fn get_block_info_with_dag<M: MultiParentCasper + ?Sized, A: Sized + Send>(
         casper: &M,
+        dag: &KeyValueDagRepresentation,
         block: &BlockMessage,
-        constructor: fn(&BlockMessage, f32) -> A,
+        constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let dag = casper.block_dag().await?;
-        // TODO: Scala this is temporary solution to not calculate fault tolerance all
-        // the blocks
-        let old_block =
-            Some(dag.latest_block_number() - block.body.state.block_number).map(|diff| diff > 100);
-        let block_in_dag = dag.contains(&block.block_hash);
+        let is_finalized = dag.is_finalized(&block.block_hash);
 
-        let normalized_fault_tolerance = if old_block.unwrap_or(false) || !block_in_dag {
-            if dag.is_finalized(&block.block_hash) {
-                MAX_FAULT_TOLERANCE
+        let normalized_fault_tolerance = if is_finalized {
+            if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
+                meta.fault_tolerance_value
             } else {
-                MIN_FAULT_TOLERANCE
+                let safety_oracle = CliqueOracleImpl;
+                safety_oracle
+                    .normalized_fault_tolerance(dag, &block.block_hash)
+                    .await?
             }
         } else {
             let safety_oracle = CliqueOracleImpl;
             safety_oracle
-                .normalized_fault_tolerance(&dag, &block.block_hash)
+                .normalized_fault_tolerance(dag, &block.block_hash)
                 .await?
         };
 
@@ -1261,8 +1318,17 @@ impl BlockAPI {
         let initial_fault = casper.normalized_initial_fault(weights_u64)?;
         let fault_tolerance = normalized_fault_tolerance - initial_fault;
 
-        let block_info = constructor(block, fault_tolerance);
+        let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)
+    }
+
+    async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        block: &BlockMessage,
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<A> {
+        let dag = casper.block_dag().await?;
+        Self::get_block_info_with_dag(casper, &dag, block, constructor).await
     }
 
     async fn get_full_block_info<M: MultiParentCasper + ?Sized>(
@@ -1279,8 +1345,13 @@ impl BlockAPI {
         Self::get_block_info(casper, block, Self::construct_light_block_info).await
     }
 
-    fn construct_block_info(block: &BlockMessage, fault_tolerance: f32) -> BlockInfo {
-        let light_block_info = Self::construct_light_block_info(block, fault_tolerance);
+    fn construct_block_info(
+        block: &BlockMessage,
+        fault_tolerance: f32,
+        is_finalized: bool,
+    ) -> BlockInfo {
+        let light_block_info =
+            Self::construct_light_block_info(block, fault_tolerance, is_finalized);
         let deploys = block
             .body
             .deploys
@@ -1294,7 +1365,11 @@ impl BlockAPI {
         }
     }
 
-    fn construct_light_block_info(block: &BlockMessage, fault_tolerance: f32) -> LightBlockInfo {
+    fn construct_light_block_info(
+        block: &BlockMessage,
+        fault_tolerance: f32,
+        is_finalized: bool,
+    ) -> LightBlockInfo {
         LightBlockInfo {
             block_hash: PrettyPrinter::build_string_no_limit(&block.block_hash),
             sender: PrettyPrinter::build_string_no_limit(&block.sender),
@@ -1341,6 +1416,7 @@ impl BlockAPI {
                     sig: PrettyPrinter::build_string_no_limit(&r.sig),
                 })
                 .collect(),
+            is_finalized,
         }
     }
 
@@ -1371,20 +1447,16 @@ impl BlockAPI {
                 )
             })?;
 
-            // LFB is already finalized; avoid an additional clique-oracle pass in this
-            // read API path and derive fault tolerance directly from finalized status.
-            let weights_map = proto_util::weight_map(&last_finalized_block);
-            let weights_u64: HashMap<Bytes, u64> = weights_map
-                .into_iter()
-                .map(|(k, v)| (k, v as u64))
-                .collect();
-            let initial_fault = casper.normalized_initial_fault(weights_u64)?;
-            let fault_tolerance = MAX_FAULT_TOLERANCE - initial_fault;
-
-            Ok(Self::construct_block_info(
+            // Use the same FT computation path as get_block for consistency.
+            // Reads cached FT from DAG metadata (populated at finalization time,
+            // propagated upward by propagate_ft_to_finalized_blocks).
+            Ok(Self::get_block_info_with_dag(
+                casper.as_ref(),
+                &dag,
                 &last_finalized_block,
-                fault_tolerance,
-            ))
+                Self::construct_block_info,
+            )
+            .await?)
         } else {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
@@ -1429,22 +1501,19 @@ impl BlockAPI {
         }
     }
 
-    /// Explore the data or continuation in the tuple space for specific
-    /// blockHash
+    /// Explore the data or continuation in the tuple space for specific blockHash
     ///
-    /// - `term`: the term you want to explore in the request. Be sure the first
-    ///   `new` should be `return`
+    /// - `term`: the term you want to explore in the request. Be sure the first `new` should be `return`
     /// - `block_hash`: the block hash you want to explore
-    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash.
-    ///   If `use_pre_state_hash` is true, the explore would try to execute on
-    ///   preState.
+    /// - `use_pre_state_hash`: Each block has preStateHash and postStateHash. If `use_pre_state_hash` is true, the explore
+    ///   would try to execute on preState.
     pub async fn exploratory_deploy(
         engine_cell: &EngineCell,
         term: String,
         block_hash: Option<String>,
         use_pre_state_hash: bool,
         dev_mode: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+    ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
         let eng = engine_cell.get().await;
@@ -1526,14 +1595,14 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let res = runtime_manager
+                        let (res, cost) = runtime_manager
                             .lock()
                             .await
                             .play_exploratory_deploy(term, &state_hash)
                             .await?;
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
-                        Ok((res, light_block_info))
+                        Ok((res, light_block_info, cost))
                     }
                     None => Err(eyre::eyre!("Can not find block {:?}", block_hash)),
                 }
@@ -1594,7 +1663,8 @@ impl BlockAPI {
                     data_with_block_info.block.unwrap_or_default(),
                 ))
             } else {
-                Err(eyre::eyre!("No data found"))
+                let block_info = BlockAPI::get_light_block_info(casper, &block).await?;
+                Ok((vec![], block_info))
             }
         }
 

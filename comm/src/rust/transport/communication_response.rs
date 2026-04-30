@@ -1,5 +1,4 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/CommunicationResponse.
-// scala
+// See comm/src/main/scala/coop/rchain/comm/transport/CommunicationResponse.scala
 
 use models::routing::Protocol;
 

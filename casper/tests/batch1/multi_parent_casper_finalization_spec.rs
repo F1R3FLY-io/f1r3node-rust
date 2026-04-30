@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperFinalizationSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperFinalizationSpec.scala
 
 use std::collections::HashMap;
 
@@ -11,8 +10,8 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-// TODO: Round-robin finalization concept no longer applies with multi-parent
-// merging. Scala deleted this test in PR #288.
+// TODO: Round-robin finalization concept no longer applies with multi-parent merging.
+// Scala deleted this test in PR #288.
 #[tokio::test]
 #[ignore = "Round-robin finalization concept no longer applies with multi-parent blocks"]
 async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriate_in_round_robin() {
@@ -105,10 +104,9 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
     assert_finalized_block(&nodes[0], &block4);
 }
 
-/// This test verifies that finalization advances monotonically (block number
-/// never decreases) during round-robin block production with multi-parent
-/// merging, and that all validators agree on the last finalized block at the
-/// end.
+/// This test verifies that finalization advances monotonically (block number never
+/// decreases) during round-robin block production with multi-parent merging, and
+/// that all validators agree on the last finalized block at the end.
 #[tokio::test]
 async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_robin() {
     fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {

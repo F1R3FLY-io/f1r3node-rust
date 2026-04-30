@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/
-// InterpreterUtilTest.scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/InterpreterUtilTest.scala
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -31,8 +30,7 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use crate::util::rholang::resources;
 
-// Note: In Scala, genesisContext is defined at class level. In Rust, each test
-// creates its own genesis context
+// Note: In Scala, genesisContext is defined at class level. In Rust, each test creates its own genesis context
 struct TestContext {
     genesis_context: GenesisContext,
 }
@@ -50,10 +48,9 @@ impl TestContext {
         Self { genesis_context }
     }
 
-    // Helper function to create deploys from Rholang source code with timestamp and
-    // shard_id Note: Used in tests that need to create blocks with specific
-    // timestamps (e.g., Test #1) This wraps ConstructDeploy.sourceDeploy(...,
-    // timestamp, ..., shardId)
+    // Helper function to create deploys from Rholang source code with timestamp and shard_id
+    // Note: Used in tests that need to create blocks with specific timestamps (e.g., Test #1)
+    // This wraps ConstructDeploy.sourceDeploy(..., timestamp, ..., shardId)
     fn create_deploys(
         sources: Vec<&str>,
         timestamp: i64,
@@ -77,9 +74,8 @@ impl TestContext {
     }
 
     // Helper function to create deploys from Rholang source code without timestamp
-    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults
-    // to DEFAULT_SEC if None Scala: def sourceDeployNow(source: String, sec:
-    // PrivateKey = defaultSec, ...)
+    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults to DEFAULT_SEC if None
+    // Scala: def sourceDeployNow(source: String, sec: PrivateKey = defaultSec, ...)
     fn create_deploys_now(sources: Vec<&str>, sec: Option<PrivateKey>) -> Vec<Signed<DeployData>> {
         sources
             .into_iter()
@@ -140,9 +136,9 @@ impl TestContext {
 
     // Scala: def computeDeployCosts(...): Task[Seq[PCost]] =
     //   for {
-    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy,
-    // dag, runtimeManager)     Right((_, _, processedDeploys, _, _)) =
-    // computeResult   } yield processedDeploys.map(_.cost)
+    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy, dag, runtimeManager)
+    //     Right((_, _, processedDeploys, _, _)) = computeResult
+    //   } yield processedDeploys.map(_.cost)
     async fn compute_deploy_costs(
         &self,
         runtime_manager: &mut RuntimeManager,
@@ -219,7 +215,7 @@ impl TestContext {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_block_checkpoint_should_compute_the_final_post_state_of_a_chain_properly() {
     let time = 0i64;
 
@@ -317,7 +313,7 @@ async fn compute_block_checkpoint_should_compute_the_final_post_state_of_a_chain
 }
 
 //TODO: Scala reenable when merging of REV balances is done
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents() {
     let b1_deploys = TestContext::create_deploys_now(
@@ -382,7 +378,7 @@ new ri(`rho:registry:insertArbitrary`) in {
 }
 "#;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_with_complex_contract(
 ) {
@@ -482,15 +478,14 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             assert_eq!(
                 post_state,
                 rspace_plus_plus::rspace::history::Either::Right(None),
-                "Block validation should return Right(None) for blocks with complex contract \
-                 merges"
+                "Block validation should return Right(None) for blocks with complex contract merges"
             );
         },
     )
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_uneven_histories(
 ) {
@@ -650,7 +645,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_programs_within_the_block(
 ) {
     //reference costs
@@ -756,7 +751,7 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore, pendingUntilFixed"]
 async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_of_the_programs_within_the_deployment_throws_an_error(
 ) {
@@ -830,15 +825,14 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
 }
 
 //7
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid_block() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let processed_deploys = TestContext::prepare_deploys(vec!["@1!(1)"], PCost { cost: 1 });
 
         let invalid_hash = StateHash::default();
 
-        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager
-        // =>
+        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
         let mut runtime_manager =
             resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
@@ -879,7 +873,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_hash_for_a_valid_block(
 ) {
     let ctx = TestContext::new().await;
@@ -976,7 +970,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_linked_list_test() {
     let ctx = TestContext::new().await;
 
@@ -1087,7 +1081,7 @@ contract @"recursionTest"(@list) = {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_causality() {
     let ctx = TestContext::new().await;
 
@@ -1202,7 +1196,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
     let ctx = TestContext::new().await;
 
@@ -1313,7 +1307,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_tests_involving_races() {
     let ctx = TestContext::new().await;
 
@@ -1422,7 +1416,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_comm_events() {
     let ctx = TestContext::new().await;
 
@@ -1520,9 +1514,8 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                     );
                 }
                 Either::Left(status) => {
-                    // In Rust implementation, invalid blocks may return Left with InvalidBlock
-                    // status which is also acceptable for this test (block is
-                    // invalid due to extra comm events)
+                    // In Rust implementation, invalid blocks may return Left with InvalidBlock status
+                    // which is also acceptable for this test (block is invalid due to extra comm events)
                     println!("Block validation returned Left with status: {:?}", status);
                 }
             }
@@ -1531,7 +1524,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_map_update_test() {
     let ctx = TestContext::new().await;
 
@@ -1638,8 +1631,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                 }
 
                 // Scala: _ <- timeEff.advance()
-                // Note: timeEff.advance() in Scala is used to advance logical
-                // time
+                // Note: timeEff.advance() in Scala is used to advance logical time
             }
         },
     )
@@ -1647,7 +1639,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
 }
 
 // Test for cost mismatch between play and replay in case of out of phlo error
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all_phlos_consumed() {
     let ctx = TestContext::new().await;
 
@@ -1723,7 +1715,7 @@ const MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR: &str = r#"
   }
 "#;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_should_match_in_case_of_out_of_phlo_error() {
     let ctx = TestContext::new().await;
 
@@ -1765,7 +1757,7 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_should_match_in_case_of_user_execution_error() {
     let ctx = TestContext::new().await;
 

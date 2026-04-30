@@ -78,6 +78,10 @@ fi
 # Unset git environment variables that leak from hook context
 unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
 
+# Raise FD limit for parallel LMDB-heavy tests (rholang/casper open many envs).
+# heed 0.22 holds more FDs per Env than 0.11; macOS default of 256 trips EMFILE.
+ulimit -n 65536 2>/dev/null || true
+
 cd "$REPO_ROOT"
 
 # Temp directory for test results

@@ -22,7 +22,6 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
-use shared::rust::env;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, trace, warn};
@@ -34,10 +33,8 @@ use crate::rust::runtime::api_servers::APIServers;
 use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
 use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 
-const PROPOSER_QUEUE_MAX_PENDING_DEFAULT: usize = 1024;
-const PROPOSER_QUEUE_MAX_PENDING_ENV: &str = "F1R3_PROPOSER_QUEUE_MAX_PENDING";
-const BLOCK_PROCESSOR_QUEUE_MAX_PENDING_DEFAULT: usize = 512;
-const BLOCK_PROCESSOR_QUEUE_MAX_PENDING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
+const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
+const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
@@ -46,21 +43,9 @@ type ProposerQueueEntry = (
     u8,
 );
 
-fn proposer_queue_max_pending() -> usize {
-    env::var_or_filtered(
-        PROPOSER_QUEUE_MAX_PENDING_ENV,
-        PROPOSER_QUEUE_MAX_PENDING_DEFAULT,
-        |v: &usize| *v > 0,
-    )
-}
+fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
-fn block_processor_queue_max_pending() -> usize {
-    env::var_or_filtered(
-        BLOCK_PROCESSOR_QUEUE_MAX_PENDING_ENV,
-        BLOCK_PROCESSOR_QUEUE_MAX_PENDING_DEFAULT,
-        |v: &usize| *v > 0,
-    )
-}
+fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
@@ -279,8 +264,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     };
 
     // RSpace state manager (for CasperLaunch)
-    // Note: rnodeStateManager is created in Scala but never used, so we only create
-    // rspaceStateManager
+    // Note: rnodeStateManager is created in Scala but never used, so we only create rspaceStateManager
     let rspace_state_manager = {
         use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
@@ -296,8 +280,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         EngineCell::init()
     };
 
-    // Block processor queue - mpsc channel connecting producers (CasperLaunch,
-    // Running) to consumer (BlockProcessorInstance)
+    // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
+    // to consumer (BlockProcessorInstance)
     let block_processor_queue_max_pending = block_processor_queue_max_pending();
     let (block_processor_queue_tx, block_processor_queue_rx) =
         mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
@@ -369,8 +353,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         None => info!("Running without proposer"),
     }
 
-    // Propose request is a tuple - Casper, async flag and deferred proposer result
-    // that will be resolved by proposer
+    // Propose request is a tuple - Casper, async flag and deferred proposer result that will be resolved by proposer
     let proposer_queue_pending = Arc::new(AtomicUsize::new(0));
     let proposer_queue_max_pending = proposer_queue_max_pending();
     metrics::gauge!(
@@ -382,8 +365,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let (proposer_queue_tx, proposer_queue_rx) =
         mpsc::channel::<ProposerQueueEntry>(proposer_queue_max_pending);
 
-    // Trigger propose function - wraps proposerQueue to provide propose
-    // functionality
+    // Trigger propose function - wraps proposerQueue to provide propose functionality
     let trigger_propose_f_opt: Option<Arc<ProposeFunction>> = if proposer.is_some() {
         let queue_tx = proposer_queue_tx.clone();
         let queue_pending = proposer_queue_pending.clone();
@@ -392,8 +374,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
                 let queue_tx = queue_tx.clone();
                 let queue_pending = queue_pending.clone();
-                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper
-                // extends Casper)
+                // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
                 let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
 
                 Box::pin(async move {
@@ -461,9 +442,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .map(|_| Arc::new(RwLock::new(ProposerState::default())));
 
     // CasperLaunch - orchestrates the launch of the Casper consensus
-    // Create heartbeat signal reference - starts empty, will be set when heartbeat
-    // starts Created outside the block so it can be returned for use by
-    // HeartbeatProposer
+    // Create heartbeat signal reference - starts empty, will be set when heartbeat starts
+    // Created outside the block so it can be returned for use by HeartbeatProposer
     let heartbeat_signal_ref = casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
 
     let casper_launch = {
@@ -511,9 +491,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     info!("CasperLaunch initialized");
 
     // Packet handler - handles incoming Casper protocol messages
-    // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277)
-    // that uses round-robin dispatching with queue management. Currently using
-    // simple handler.
+    // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277) that uses
+    // round-robin dispatching with queue management. Currently using simple handler.
     let packet_handler = casper::rust::util::comm::casper_packet_handler::CasperPacketHandler::new(
         engine_cell.clone(),
     );
@@ -547,79 +526,66 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     let block_report_api_for_return = block_report_api.clone();
 
-    // Create transaction API and cache before API servers so the block enricher
-    // can be threaded into the gRPC service
-    let transaction_api = {
-        use crate::rust::web::transaction::{transfer_unforgeable, TransactionAPIImpl};
-
-        let block_report_api_for_transaction = block_report_api.clone();
-        let transfer_unforgeable_par = transfer_unforgeable();
-        TransactionAPIImpl::new(block_report_api_for_transaction, transfer_unforgeable_par)
+    // Transfer unforgeable channel — used for transfer extraction from block reports
+    let transfer_unforgeable = {
+        use crate::rust::web::transaction::transfer_unforgeable;
+        transfer_unforgeable()
     };
 
-    let cache_transaction_api = {
-        use crate::rust::web::transaction::cache_transaction_api;
+    // Shared is_ready flag — set to true when engine enters Running state.
+    // Used by both HTTP and gRPC status endpoints.
+    let is_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        cache_transaction_api(transaction_api, &mut rnode_store_manager)
-            .await
-            .map_err(|e| {
-                CasperError::Other(format!("Failed to create cache transaction API: {}", e))
-            })?
-    };
-
-    let block_enricher: Arc<dyn crate::rust::web::block_info_enricher::BlockEnricher> = {
-        use crate::rust::web::block_info_enricher::CacheTransactionEnricher;
-        Arc::new(CacheTransactionEnricher::new(cache_transaction_api.clone()))
-    };
-
-    // Proactive transfer extraction: subscribe to BlockFinalised events and trigger
-    // cache_transaction_api.get_transaction() in the background so transfer data is
-    // pre-cached before clients request it.
-    //
-    // Note: This event-driven approach has a small race window where a client could
-    // call get_block for a just-finalized block before transfers are cached.
-    // CacheTransactionAPI handles this gracefully by computing on demand.
+    // Event-driven background tasks: transfer extraction + readiness tracking.
+    // Listens on the broadcast event stream and handles:
+    // - BlockFinalised: pre-warm ReportStore cache, extract transfers, emit TransfersAvailable
+    // - EnteredRunningState: flip is_ready flag for status endpoints
     {
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
-        let cache_tx_api = cache_transaction_api.clone();
+        let report_api = block_report_api.clone();
+        let transfer_unforgeable_for_events = transfer_unforgeable.clone();
+        let event_pub = event_publisher.clone();
+        let is_ready_flag = is_ready.clone();
         let mut event_stream = event_publisher.consume();
-        let concurrency_limit = Arc::new(tokio::sync::Semaphore::new(8));
 
         tokio::spawn(async move {
             while let Some(event) = event_stream.next().await {
-                if let F1r3flyEvent::BlockFinalised(finalized) = event {
-                    let api = cache_tx_api.clone();
-                    let block_hash = finalized.block_hash.clone();
-                    let permit = match concurrency_limit.clone().acquire_owned().await {
-                        Ok(permit) => permit,
-                        Err(_) => break,
-                    };
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        if let Err(e) = api.get_transaction(block_hash.clone()).await {
-                            tracing::warn!(
-                                target: "f1r3fly.transaction",
-                                block_hash = %block_hash,
-                                error = %e,
-                                "Failed to extract transfers for finalized block"
-                            );
-                        }
-                    });
+                match &event {
+                    F1r3flyEvent::BlockFinalised(finalized) => {
+                        let api = report_api.clone();
+                        let unforgeable = transfer_unforgeable_for_events.clone();
+                        let publisher = event_pub.clone();
+                        let block_hash = finalized.block_hash.clone();
+                        let block_number = finalized.block_number;
+                        tokio::spawn(async move {
+                            handle_block_finalized(
+                                api,
+                                unforgeable,
+                                publisher,
+                                block_hash,
+                                block_number,
+                            )
+                            .await;
+                        });
+                    }
+                    F1r3flyEvent::EnteredRunningState(_) => {
+                        is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
+                        tracing::info!("Node is ready (EnteredRunningState received)");
+                    }
+                    _ => {}
                 }
             }
         });
     }
 
-    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it
-    // later for web_api, admin_web_api, and return value
+    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value
     let trigger_propose_f_opt_for_web_api = trigger_propose_f_opt.clone();
     let trigger_propose_f_opt_for_admin_web_api = trigger_propose_f_opt.clone();
     let trigger_propose_f_opt_for_return = trigger_propose_f_opt.clone();
 
-    // Clone proposer_state_ref_opt before passing to api_servers since we'll use it
-    // later for admin_web_api and return value
+    // Clone proposer_state_ref_opt before passing to api_servers since we'll use it later for admin_web_api and return value
     let proposer_state_ref_opt_for_admin_web_api = proposer_state_ref_opt.clone();
     let proposer_state_ref_opt_for_return = proposer_state_ref_opt.clone();
 
@@ -631,16 +597,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         conf.dev_mode,
         propose_f_for_api,
         block_report_api,
+        transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
         conf.casper.min_phlo_price,
+        conf.casper.genesis_block_data.native_token_name.clone(),
+        conf.casper.genesis_block_data.native_token_symbol.clone(),
+        conf.casper.genesis_block_data.native_token_decimals,
         is_node_read_only,
         engine_cell.clone(),
         block_store.clone(),
         rp_conf_cell.clone(),
         rp_connections.clone(),
         node_discovery.clone(),
-        Some(block_enricher.clone()),
+        conf.casper.genesis_block_data.epoch_length,
+        is_ready.clone(),
     );
 
     // Reporting HTTP Routes - REST API for block reporting and tracing
@@ -760,8 +731,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     //   1. async shutdown() methods for graceful cleanup
     //   2. Drop implementations for fallback cleanup
     // - shutdown() should be called explicitly for proper async cleanup
-    // - This should be implemented in the main runtime's signal handler (SIGTERM,
-    //   SIGINT, etc.) before program exit
+    // - This should be implemented in the main runtime's signal handler
+    //   (SIGTERM, SIGINT, etc.) before program exit
     // - For now, Drop implementations will handle cleanup on program exit
     //
     // When implementing, add shutdown call like:
@@ -774,8 +745,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let is_node_read_only = conf.casper.validator_private_key.is_none();
 
         // Conditional propose function for autopropose.
-        // Expose deploy-triggered propose from REST API whenever autopropose is
-        // enabled.
+        // Expose deploy-triggered propose from REST API whenever autopropose is enabled.
         let trigger_propose_f = if conf.autopropose {
             trigger_propose_f_opt_for_web_api
         } else {
@@ -788,14 +758,20 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
             conf.casper.min_phlo_price,
+            conf.casper.genesis_block_data.native_token_name.clone(),
+            conf.casper.genesis_block_data.native_token_symbol.clone(),
+            conf.casper.genesis_block_data.native_token_decimals,
             is_node_read_only,
-            block_enricher.clone(),
-            cache_transaction_api,
+            block_report_api_for_return.clone(),
+            transfer_unforgeable,
             Arc::new(engine_cell.clone()),
             rp_conf_cell.clone(),
             rp_connections.clone(),
             node_discovery.clone(),
             trigger_propose_f,
+            conf.casper.genesis_block_data.epoch_length,
+            conf.casper.genesis_block_data.quarantine_length,
+            is_ready.clone(),
         )
     };
 
@@ -810,9 +786,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         )
     };
 
-    // Mergeable Channels GC Loop - background garbage collection for mergeable
-    // channel data Only created when GC is enabled in config (required for
-    // multi-parent mode)
+    // Mergeable Channels GC Loop - background garbage collection for mergeable channel data
+    // Only created when GC is enabled in config (required for multi-parent mode)
     let mergeable_channels_gc_loop: Option<CasperLoop> = if conf.casper.enable_mergeable_channel_gc
     {
         use casper::rust::casper::CasperShardConf;
@@ -842,6 +817,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
+            finalizer_conf: conf.casper.finalizer.clone(),
+            synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
+            synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
+            synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
+            synchrony_finalized_baseline_enabled: conf.casper.synchrony_finalized_baseline_enabled,
+            synchrony_finalized_baseline_max_distance: conf
+                .casper
+                .synchrony_finalized_baseline_max_distance,
+            max_user_deploys_per_block: conf.casper.max_user_deploys_per_block,
+            native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
+            native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
+            native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
         };
 
         Some(Arc::new(
@@ -910,4 +897,77 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         // Mergeable channels GC loop
         mergeable_channels_gc_loop,
     ))
+}
+
+/// Pre-warm the ReportStore cache for a finalized block, then extract transfers
+/// and publish a `TransfersAvailable` event so WebSocket clients can receive
+/// transfer data without polling the REST API.
+///
+/// Runs as a fire-and-forget task — errors (e.g. on validators where block
+/// reports are unavailable) are logged at debug level and silently ignored.
+async fn handle_block_finalized(
+    report_api: casper::rust::api::block_report_api::BlockReportAPI,
+    transfer_unforgeable: models::rhoapi::Par,
+    event_publisher: shared::rust::shared::f1r3fly_events::F1r3flyEvents,
+    block_hash: String,
+    block_number: i64,
+) {
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
+
+    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
+
+    let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
+        Ok(bytes) => bytes.into(),
+        Err(e) => {
+            tracing::warn!(
+                %block_hash,
+                error = %e,
+                "Invalid block hash hex in finalization event"
+            );
+            return;
+        }
+    };
+    match report_api.block_report(block_hash_bytes, false).await {
+        Ok(report) => {
+            let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+            let deploy_transfers: Vec<DeployTransfers> = transfers_by_deploy
+                .into_iter()
+                .map(|(deploy_id, transfers)| DeployTransfers {
+                    deploy_id,
+                    transfers: transfers
+                        .into_iter()
+                        .map(|t| TransferEvent {
+                            from_addr: t.from_addr,
+                            to_addr: t.to_addr,
+                            amount: t.amount,
+                            success: t.success,
+                        })
+                        .collect(),
+                })
+                .collect();
+
+            if !deploy_transfers.is_empty() {
+                if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
+                    block_hash.clone(),
+                    block_number,
+                    deploy_transfers,
+                )) {
+                    tracing::warn!(
+                        %block_hash,
+                        error = %e,
+                        "Failed to publish TransfersAvailable event"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                target: "f1r3fly.transaction",
+                %block_hash,
+                error = %e,
+                "Block report pre-cache skipped (expected on validators)"
+            );
+        }
+    }
 }

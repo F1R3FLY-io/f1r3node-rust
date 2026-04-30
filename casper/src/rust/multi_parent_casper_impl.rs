@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -56,22 +56,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 const FINALIZER_BLOCKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 4096;
-const DEPLOY_HEARTBEAT_WAKE_ENV: &str = "F1R3_DEPLOY_HEARTBEAT_WAKE";
-
-fn deploy_heartbeat_wake_enabled() -> bool {
-    static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var(DEPLOY_HEARTBEAT_WAKE_ENV)
-            .ok()
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false)
-    })
-}
+fn deploy_heartbeat_wake_enabled() -> bool { false }
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -95,24 +80,19 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
-    /// Flag to track finalization status - block proposals fail fast if
-    /// finalization is running. This prevents validators from creating
-    /// blocks with stale snapshots during finalization.
+    /// Flag to track finalization status - block proposals fail fast if finalization is running.
+    /// This prevents validators from creating blocks with stale snapshots during finalization.
     pub finalization_in_progress: Arc<AtomicBool>,
-    /// Single-flight guard for background finalizer scheduling from propose
-    /// path.
+    /// Single-flight guard for background finalizer scheduling from propose path.
     pub finalizer_task_in_progress: Arc<AtomicBool>,
-    /// Indicates a finalizer run was requested while another run was still in
-    /// progress. The next queued run will execute immediately after the
-    /// current one finishes.
+    /// Indicates a finalizer run was requested while another run was still in progress.
+    /// The next queued run will execute immediately after the current one finishes.
     pub finalizer_task_queued: Arc<AtomicBool>,
-    /// Shared reference to heartbeat signal for triggering immediate wake on
-    /// deploy
+    /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    /// Cache for deploys_in_scope BFS result keyed by DAG generation.
-    /// Avoids re-traversing the full block window on every snapshot when the
-    /// DAG hasn't changed.
-    pub deploys_in_scope_cache: Arc<Mutex<Option<(u64, Arc<dashmap::DashSet<Bytes>>)>>>,
+    /// Cache for deploys_in_scope BFS result keyed by DAG generation and snapshot LFB.
+    /// Including LFB in the key avoids stale scope reuse across finalization advances.
+    pub deploys_in_scope_cache: Arc<Mutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
@@ -131,8 +111,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         // Parent selection: Use latest block from EACH bonded validator.
         // Every block should have one parent per validator to ensure all deploy effects
-        // are included in the merged state. Apply maxNumberOfParents and maxParentDepth
-        // limits.
+        // are included in the merged state. Apply maxNumberOfParents and maxParentDepth limits.
         let latest_msgs_hashes: HashMap<Validator, BlockHash> = dag
             .latest_message_hashes()
             .iter()
@@ -155,8 +134,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         .map(|meta| (validator.clone(), meta))
                 })
                 .collect();
-        // Deduplicate: multiple validators may have the same latest block (e.g.,
-        // genesis)
+        // Deduplicate: multiple validators may have the same latest block (e.g., genesis)
         let unique_parent_hashes: HashSet<BlockHash> =
             valid_latest_msgs.values().cloned().collect();
         let parent_blocks_list: Vec<BlockMessage> = unique_parent_hashes
@@ -165,25 +143,19 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .collect();
 
         // Sort parents deterministically with a near-tip tolerance:
-        // - if both parents are near the maximum parent height, order by hash only to
-        //   keep main-parent choice stable across validators even under slight view
-        //   skew;
+        // - if both parents are near the maximum parent height, order by hash only to keep
+        //   main-parent choice stable across validators even under slight view skew;
         // - otherwise prefer higher block number, then hash.
         //
-        // Without this, validators tend to pick their own freshest block as main
-        // parent, which can keep latest messages on disjoint main-parent chains
-        // and starve finalization.
+        // Without this, validators tend to pick their own freshest block as main parent,
+        // which can keep latest messages on disjoint main-parent chains and starve finalization.
         let mut sorted_parents_list = parent_blocks_list;
         let max_parent_block_number = sorted_parents_list
             .iter()
             .map(|b| b.body.state.block_number)
             .max()
             .unwrap_or(0);
-        let near_tip_tolerance_blocks = std::env::var("F1R3_MAIN_PARENT_NEAR_TIP_TOLERANCE")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .filter(|v| *v >= 0)
-            .unwrap_or(2);
+        let near_tip_tolerance_blocks: i64 = 0;
         sorted_parents_list.sort_by(|a, b| {
             let a_num = a.body.state.block_number;
             let b_num = b.body.state.block_number;
@@ -245,8 +217,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         }
 
         // Apply maxParentDepth filtering (similar to Estimator.filterDeepParents)
-        // Find the parent with highest block number to use as reference for depth
-        // filtering
+        // Find the parent with highest block number to use as reference for depth filtering
         let parents = if self.casper_shard_conf.max_parent_depth != i32::MAX
             && parents_after_count_limit.len() > 1
         {
@@ -299,8 +270,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         // Log parent selection for debugging
         tracing::debug!(
-            "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} \
-             parents",
+            "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} parents",
             latest_msgs_hashes.len(),
             invalid_latest_msgs.len(),
             valid_latest_msgs.len(),
@@ -354,14 +324,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         let deploys_in_scope = {
             let current_dag_generation = self.block_dag_storage.current_generation();
+            let snapshot_lfb_hash = dag.last_finalized_block();
 
             // Phase 1: check cache under a short-lived lock.
             let cached: Option<Arc<dashmap::DashSet<Bytes>>> = {
                 let cache_guard = self.deploys_in_scope_cache.lock().map_err(|_| {
                     CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
                 })?;
-                cache_guard.as_ref().and_then(|(gen, set)| {
-                    if *gen == current_dag_generation {
+                cache_guard.as_ref().and_then(|(gen, cached_lfb, set)| {
+                    if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
                         Some(set.clone())
                     } else {
                         None
@@ -402,7 +373,11 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 let mut cache_guard = self.deploys_in_scope_cache.lock().map_err(|_| {
                     CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
                 })?;
-                *cache_guard = Some((current_dag_generation, all_deploys.clone()));
+                *cache_guard = Some((
+                    current_dag_generation,
+                    snapshot_lfb_hash,
+                    all_deploys.clone(),
+                ));
                 all_deploys
             }
         };
@@ -514,8 +489,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         if valid_latest.is_empty() {
             Ok(vec![self.approved_block.block_hash.clone()])
         } else {
-            // Deduplicate: multiple validators may have the same latest block (e.g.,
-            // genesis)
+            // Deduplicate: multiple validators may have the same latest block (e.g., genesis)
             let unique_hashes: HashSet<BlockHash> = valid_latest.values().cloned().collect();
             Ok(unique_hashes.into_iter().collect())
         }
@@ -834,9 +808,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 return Ok(Either::Left(block_error));
             }
 
-            // SKIP validate_block_checkpoint: hashes were computed in
-            // block_creator::create. SKIP Validate::bonds_cache: bonds were
-            // computed from the same post_state_hash.
+            // SKIP validate_block_checkpoint: hashes were computed in block_creator::create.
+            // SKIP Validate::bonds_cache: bonds were computed from the same post_state_hash.
 
             let (neglected_invalid_block_result, t4) = timed_step(
                 "neglected-invalid-block",
@@ -1029,14 +1002,12 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         // for the next heartbeat timer tick.
         if let Some(validator_id) = &self.validator_id {
             if block.sender != validator_id.public_key.bytes {
-                if let Ok(signal_guard) = self.heartbeat_signal_ref.try_read() {
-                    if let Some(ref signal) = *signal_guard {
-                        tracing::debug!(
-                            "Triggering heartbeat wake for accepted peer block {}",
-                            PrettyPrinter::build_string_bytes(&block.block_hash)
-                        );
-                        signal.trigger_wake();
-                    }
+                if let Some(signal) = self.heartbeat_signal_ref.get() {
+                    tracing::debug!(
+                        "Triggering heartbeat wake for accepted peer block {}",
+                        PrettyPrinter::build_string_bytes(&block.block_hash)
+                    );
+                    signal.trigger_wake();
                 }
             }
         }
@@ -1063,8 +1034,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     status
                 );
 
-                // TODO: should be nice to have this transition of a block from casper buffer to
-                // dag storage atomic - OLD
+                // TODO: should be nice to have this transition of a block from casper buffer to dag storage atomic - OLD
                 let updated_dag = block_dag_storage.insert(block, true, false)?;
                 self.record_dag_cardinality_metrics(&updated_dag);
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
@@ -1076,8 +1046,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             InvalidBlock::AdmissibleEquivocation => {
                 let base_equivocation_block_seq_num = block.seq_num - 1;
 
-                // Check if equivocation record already exists for this validator and sequence
-                // number
+                // Check if equivocation record already exists for this validator and sequence number
                 let equivocation_records = self.block_dag_storage.equivocation_records()?;
                 let record_exists = equivocation_records.iter().any(|record| {
                     record.equivocator == block.sender
@@ -1107,9 +1076,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
             InvalidBlock::IgnorableEquivocation => {
                 /*
-                 * We don't have to include these blocks to the equivocation tracker because
-                 * if any validator will build off this side of the
-                 * equivocation, we will get another attempt to add this block
+                 * We don't have to include these blocks to the equivocation tracker because if any validator
+                 * will build off this side of the equivocation, we will get another attempt to add this block
                  * through the admissible equivocations.
                  */
                 tracing::info!(
@@ -1176,8 +1144,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         }
 
         let buffer_dag = self.casper_buffer_storage.to_doubly_linked_dag();
-        for child_entry in buffer_dag.child_to_parent_adjacency_list.iter() {
-            candidate_hashes.insert(BlockHash::from(child_entry.key().0.clone()));
+        for (child_hash, _) in buffer_dag.child_to_parent_adjacency_list.iter() {
+            candidate_hashes.insert(BlockHash::from(child_hash.0.clone()));
         }
 
         // Keep only candidates that exist in block store.
@@ -1221,8 +1189,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let dag = self.casper_buffer_storage.to_doubly_linked_dag();
         let all_hashes = dag
             .child_to_parent_adjacency_list
-            .iter()
-            .map(|entry| BlockHash::from(entry.key().clone()));
+            .keys()
+            .map(|hash| BlockHash::from(hash.clone()));
 
         let mut blocks = Vec::new();
         for hash in all_hashes {
@@ -1246,6 +1214,7 @@ async fn run_queued_finalizer(
     finalizer_task_queued: Arc<AtomicBool>,
     enable_mergeable_channel_gc: bool,
     fault_tolerance_threshold: f32,
+    finalizer_conf: crate::rust::casper_conf::FinalizerConf,
 ) {
     let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
@@ -1262,6 +1231,7 @@ async fn run_queued_finalizer(
                 finalization_in_progress.clone(),
                 enable_mergeable_channel_gc,
                 fault_tolerance_threshold,
+                &finalizer_conf,
             ),
         )
         .await
@@ -1272,8 +1242,7 @@ async fn run_queued_finalizer(
             }
             Err(_) => {
                 tracing::warn!(
-                    "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking \
-                     propose",
+                    "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
                     FINALIZER_BLOCKING_TIMEOUT
                 );
             }
@@ -1370,12 +1339,12 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.finalization_in_progress.clone(),
             self.casper_shard_conf.enable_mergeable_channel_gc,
             self.casper_shard_conf.fault_tolerance_threshold,
+            &self.casper_shard_conf.finalizer_conf,
         )
         .await
     }
 
-    // Equivalent to Scala's def blockDag: F[BlockDagRepresentation[F]] =
-    // BlockDagStorage[F].getRepresentation
+    // Equivalent to Scala's def blockDag: F[BlockDagRepresentation[F]] = BlockDagStorage[F].getRepresentation
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.block_dag_storage.get_representation())
     }
@@ -1414,50 +1383,36 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let mut storage = self.deploy_storage.lock().map_err(|_| {
+        let storage = self.deploy_storage.lock().map_err(|_| {
             CasperError::RuntimeError("Failed to acquire deploy_storage lock".to_string())
         })?;
-        let unfinalized = storage.read_all().map_err(|e| {
-            CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
-        })?;
-
-        let mut expired_to_remove = Vec::new();
-        let mut has_eligible_pending = false;
-
-        for deploy in unfinalized.iter() {
-            let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-            let time_expired = deploy.data.is_expired_at(current_time_millis);
-
-            if block_expired || time_expired {
-                expired_to_remove.push(deploy.clone());
-                continue;
-            }
-
-            // Align with BlockCreator::not_future_deploy(next_block_num):
-            // a deploy is eligible for the *next* block when valid_after < next_block_num,
-            // i.e. valid_after <= latest_block_number.
-            let is_future = pending_deploy_is_future_for_next_block(
-                latest_block_number,
-                deploy.data.valid_after_block_number,
-            );
-            let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
-
-            if !is_future && !already_in_scope {
-                has_eligible_pending = true;
-                break;
-            }
+        if !storage.non_empty().map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
+        })? {
+            return Ok(false);
         }
 
-        if !expired_to_remove.is_empty() {
-            storage.remove(expired_to_remove).map_err(|e| {
-                CasperError::RuntimeError(format!(
-                    "Failed to prune expired deploys from storage: {:?}",
-                    e
-                ))
-            })?;
-        }
+        storage
+            .any(|deploy| {
+                let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
+                let time_expired = deploy.data.is_expired_at(current_time_millis);
+                if block_expired || time_expired {
+                    return Ok(false);
+                }
 
-        Ok(has_eligible_pending)
+                // Align with BlockCreator::not_future_deploy(next_block_num):
+                // a deploy is eligible for the *next* block when valid_after < next_block_num,
+                // i.e. valid_after <= latest_block_number.
+                let is_future = pending_deploy_is_future_for_next_block(
+                    latest_block_number,
+                    deploy.data.valid_after_block_number,
+                );
+                let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
+                Ok(!is_future && !already_in_scope)
+            })
+            .map_err(|e| {
+                CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e))
+            })
     }
 }
 
@@ -1478,6 +1433,7 @@ async fn compute_last_finalized_block(
     finalization_in_progress: Arc<AtomicBool>,
     enable_mergeable_channel_gc: bool,
     fault_tolerance_threshold: f32,
+    finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
 ) -> Result<BlockMessage, CasperError> {
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
@@ -1485,8 +1441,7 @@ async fn compute_last_finalized_block(
     let last_finalized_block_hash = dag.last_finalized_block();
     let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
 
-    // Keep effect closure FnMut-compatible by cloning captured state on each
-    // invocation.
+    // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
@@ -1495,7 +1450,7 @@ async fn compute_last_finalized_block(
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
 
     // Create simple finalization effect closure
-    let new_lfb_found_effect = move |new_lfb: BlockHash| {
+    let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
@@ -1505,7 +1460,7 @@ async fn compute_last_finalized_block(
         async move {
             let effect_started = std::time::Instant::now();
             block_dag_storage
-                .record_directly_finalized(new_lfb.clone(), |finalized_set: &HashSet<BlockHash>| {
+                .record_directly_finalized(new_lfb.clone(), ft_value, |finalized_set: &HashSet<BlockHash>| {
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
@@ -1601,6 +1556,7 @@ async fn compute_last_finalized_block(
         fault_tolerance_threshold,
         last_finalized_block_height,
         new_lfb_found_effect,
+        finalizer_conf,
     )
     .await
     .map_err(CasperError::KvStoreError)?;
@@ -1608,7 +1564,9 @@ async fn compute_last_finalized_block(
     let new_lfb_found = new_finalized_hash_opt.is_some();
 
     // Get the final LFB hash (either new or existing)
-    let final_lfb_hash = new_finalized_hash_opt.unwrap_or(last_finalized_block_hash);
+    let final_lfb_hash = new_finalized_hash_opt
+        .map(|(hash, _ft)| hash)
+        .unwrap_or(last_finalized_block_hash);
 
     // Return the finalized block
     let read_started = std::time::Instant::now();
@@ -1667,6 +1625,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
             let finalizer_task_queued = self.finalizer_task_queued.clone();
             let enable_mergeable_channel_gc = self.casper_shard_conf.enable_mergeable_channel_gc;
             let fault_tolerance_threshold = self.casper_shard_conf.fault_tolerance_threshold;
+            let finalizer_conf = self.casper_shard_conf.finalizer_conf.clone();
 
             tokio::spawn(async move {
                 run_queued_finalizer(
@@ -1680,6 +1639,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
                     finalizer_task_queued,
                     enable_mergeable_channel_gc,
                     fault_tolerance_threshold,
+                    finalizer_conf,
                 )
                 .await;
             });
@@ -1699,8 +1659,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
         if let Some(cached) = cached_hit {
             metrics::gauge!(ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .set(cache_len as f64);
-            // bonds are available in block message, but please remember this is just a
-            // cache, source of truth is RSpace.
+            // bonds are available in block message, but please remember this is just a cache, source of truth is RSpace.
             let bm = &block.body.state.bonds;
             return Ok(OnChainCasperState {
                 shard_conf: self.casper_shard_conf.clone(),
@@ -1736,8 +1695,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
             entry
         };
 
-        // bonds are available in block message, but please remember this is just a
-        // cache, source of truth is RSpace.
+        // bonds are available in block message, but please remember this is just a cache, source of truth is RSpace.
         let bm = &block.body.state.bonds;
 
         Ok(OnChainCasperState {
@@ -1763,20 +1721,16 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
         let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&deploy);
         tracing::info!("Received {}", deploy_info);
 
-        // Deploy API already triggers propose asynchronously. Keep heartbeat wake
-        // opt-in to avoid duplicate propose races that inflate inclusion
-        // latency.
+        // Wake the heartbeat immediately so it picks up the new deploy without
+        // waiting for the next timer tick (up to check_interval seconds).
+        // ProposerInstance's Semaphore(1) prevents concurrent proposals even if
+        // both the heartbeat and autopropose (when enabled) try to propose.
         if deploy_heartbeat_wake_enabled() {
-            if let Ok(signal_guard) = self.heartbeat_signal_ref.try_read() {
-                if let Some(ref signal) = *signal_guard {
-                    tracing::debug!(
-                        "Triggering heartbeat wake for immediate block proposal via {}",
-                        DEPLOY_HEARTBEAT_WAKE_ENV
-                    );
-                    signal.trigger_wake();
-                } else {
-                    tracing::debug!("No heartbeat signal available (heartbeat may be disabled)");
-                }
+            if let Some(signal) = self.heartbeat_signal_ref.get() {
+                tracing::debug!("Triggering heartbeat wake for immediate block proposal");
+                signal.trigger_wake();
+            } else {
+                tracing::debug!("No heartbeat signal available (heartbeat may be disabled)");
             }
         }
 
@@ -1790,6 +1744,8 @@ fn block_event(
     block: &BlockMessage,
 ) -> (
     String,
+    i64,
+    i64,
     Vec<String>,
     Vec<(String, String)>,
     Vec<DeployEvent>,
@@ -1831,11 +1787,15 @@ fn block_event(
         })
         .collect::<Vec<_>>();
 
+    let block_number = block.body.state.block_number;
+    let timestamp = block.header.timestamp;
     let creator = hex::encode(block.sender.clone());
     let seq_num = block.seq_num;
 
     (
         block_hash,
+        block_number,
+        timestamp,
         parent_hashes,
         justification_hashes,
         deploys,
@@ -1846,10 +1806,20 @@ fn block_event(
 
 /// Create BlockCreated event for a block.
 pub fn created_event(block: &BlockMessage) -> F1r3flyEvent {
-    let (block_hash, parent_hashes, justification_hashes, deploys, creator, seq_num) =
-        block_event(block);
+    let (
+        block_hash,
+        block_number,
+        timestamp,
+        parent_hashes,
+        justification_hashes,
+        deploys,
+        creator,
+        seq_num,
+    ) = block_event(block);
     F1r3flyEvent::block_created(
         block_hash,
+        block_number,
+        timestamp,
         parent_hashes,
         justification_hashes,
         deploys,
@@ -1860,10 +1830,20 @@ pub fn created_event(block: &BlockMessage) -> F1r3flyEvent {
 
 /// Create BlockAdded event for a block.
 pub fn added_event(block: &BlockMessage) -> F1r3flyEvent {
-    let (block_hash, parent_hashes, justification_hashes, deploys, creator, seq_num) =
-        block_event(block);
+    let (
+        block_hash,
+        block_number,
+        timestamp,
+        parent_hashes,
+        justification_hashes,
+        deploys,
+        creator,
+        seq_num,
+    ) = block_event(block);
     F1r3flyEvent::block_added(
         block_hash,
+        block_number,
+        timestamp,
         parent_hashes,
         justification_hashes,
         deploys,
@@ -1874,10 +1854,20 @@ pub fn added_event(block: &BlockMessage) -> F1r3flyEvent {
 
 /// Create BlockFinalised event for a block.
 pub fn finalised_event(block: &BlockMessage) -> F1r3flyEvent {
-    let (block_hash, parent_hashes, justification_hashes, deploys, creator, seq_num) =
-        block_event(block);
+    let (
+        block_hash,
+        block_number,
+        timestamp,
+        parent_hashes,
+        justification_hashes,
+        deploys,
+        creator,
+        seq_num,
+    ) = block_event(block);
     F1r3flyEvent::block_finalised(
         block_hash,
+        block_number,
+        timestamp,
         parent_hashes,
         justification_hashes,
         deploys,

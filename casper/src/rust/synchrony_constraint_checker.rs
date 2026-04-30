@@ -1,120 +1,21 @@
 // See casper/src/main/scala/coop/rchain/casper/SynchronyConstraintChecker.scala
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use lazy_static::lazy_static;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
-use shared::rust::env;
 
 use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
-use super::casper::CasperSnapshot;
+use super::casper::{CasperShardConf, CasperSnapshot};
 use super::errors::CasperError;
 use super::util::rholang::runtime_manager::RuntimeManager;
 use super::validator_identity::ValidatorIdentity;
 use crate::rust::util::proto_util;
-
-const SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS_ENV: &str =
-    "F1R3_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS";
-const SYNCHRONY_RECOVERY_COOLDOWN_SECONDS_ENV: &str = "F1R3_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS";
-const SYNCHRONY_RECOVERY_MAX_BYPASSES_ENV: &str = "F1R3_SYNCHRONY_RECOVERY_MAX_BYPASSES";
-const SYNCHRONY_CONSTRAINT_THRESHOLD_ENV: &str = "F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD";
-const SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE_ENV: &str =
-    "F1R3_SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE";
-const SYNCHRONY_FINALIZED_BASELINE_ENABLED_ENV: &str = "F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED";
-const DEFAULT_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS: u64 = 8;
-const DEFAULT_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS: u64 = 20;
-const DEFAULT_SYNCHRONY_RECOVERY_MAX_BYPASSES: u32 = 0;
-const DEFAULT_SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE: i64 = 8;
-const DEFAULT_SYNCHRONY_FINALIZED_BASELINE_ENABLED: bool = false;
-
-static SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS: OnceLock<u64> = OnceLock::new();
-static SYNCHRONY_RECOVERY_COOLDOWN_SECONDS: OnceLock<u64> = OnceLock::new();
-static SYNCHRONY_RECOVERY_MAX_BYPASSES: OnceLock<u32> = OnceLock::new();
-static SYNCHRONY_CONSTRAINT_THRESHOLD_OVERRIDE: OnceLock<Option<f64>> = OnceLock::new();
-static SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE: OnceLock<i64> = OnceLock::new();
-static SYNCHRONY_FINALIZED_BASELINE_ENABLED: OnceLock<bool> = OnceLock::new();
-
-fn read_bool_from_env(name: &str, default: bool) -> bool { env::var_bool(name, default) }
-
-fn read_i64_from_env(name: &str, default: i64) -> i64 { env::var_or(name, default) }
-
-fn read_non_negative_u64_from_env(name: &str, default: u64) -> u64 {
-    let value = read_i64_from_env(name, default as i64);
-    if value <= 0 {
-        0
-    } else {
-        value as u64
-    }
-}
-
-fn synchrony_recovery_stall_window_seconds() -> u64 {
-    *SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS.get_or_init(|| {
-        read_non_negative_u64_from_env(
-            SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS_ENV,
-            DEFAULT_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS,
-        )
-    })
-}
-
-fn synchrony_recovery_cooldown_seconds() -> u64 {
-    *SYNCHRONY_RECOVERY_COOLDOWN_SECONDS.get_or_init(|| {
-        read_non_negative_u64_from_env(
-            SYNCHRONY_RECOVERY_COOLDOWN_SECONDS_ENV,
-            DEFAULT_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS,
-        )
-    })
-}
-
-fn synchrony_recovery_max_bypasses() -> u32 {
-    *SYNCHRONY_RECOVERY_MAX_BYPASSES.get_or_init(|| {
-        let value = env::var_or(
-            SYNCHRONY_RECOVERY_MAX_BYPASSES_ENV,
-            DEFAULT_SYNCHRONY_RECOVERY_MAX_BYPASSES as i32,
-        );
-
-        if value <= 0 {
-            0
-        } else {
-            value as u32
-        }
-    })
-}
-
-fn synchrony_constraint_threshold_override() -> Option<f64> {
-    *SYNCHRONY_CONSTRAINT_THRESHOLD_OVERRIDE.get_or_init(|| {
-        env::var_parsed::<f64>(SYNCHRONY_CONSTRAINT_THRESHOLD_ENV).and_then(|value| {
-            if value.is_finite() {
-                Some(value.clamp(0.0, 1.0))
-            } else {
-                None
-            }
-        })
-    })
-}
-
-fn synchrony_finalized_baseline_max_distance() -> i64 {
-    *SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE.get_or_init(|| {
-        read_i64_from_env(
-            SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE_ENV,
-            DEFAULT_SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE,
-        )
-        .max(0)
-    })
-}
-
-fn synchrony_finalized_baseline_enabled() -> bool {
-    *SYNCHRONY_FINALIZED_BASELINE_ENABLED.get_or_init(|| {
-        read_bool_from_env(
-            SYNCHRONY_FINALIZED_BASELINE_ENABLED_ENV,
-            DEFAULT_SYNCHRONY_FINALIZED_BASELINE_ENABLED,
-        )
-    })
-}
 
 #[derive(Debug)]
 struct SynchronyRecoveryState {
@@ -141,33 +42,29 @@ impl SynchronyRecoveryState {
         self.last_bypass_at = None;
     }
 
-    fn should_bypass(&mut self, now: Instant) -> bool {
+    fn should_bypass(&mut self, now: Instant, conf: &CasperShardConf) -> bool {
         let first_failure_at = self.first_failure_at.unwrap_or(now);
         self.first_failure_at = Some(first_failure_at);
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
 
-        let stalled_long_enough = now.duration_since(first_failure_at)
-            >= Duration::from_secs(synchrony_recovery_stall_window_seconds());
+        let stalled_long_enough =
+            now.duration_since(first_failure_at) >= conf.synchrony_recovery_stall_window;
 
-        let in_cooldown = self.last_bypass_at.is_some_and(|last| {
-            now.duration_since(last) < Duration::from_secs(synchrony_recovery_cooldown_seconds())
-        });
+        let in_cooldown = self
+            .last_bypass_at
+            .is_some_and(|last| now.duration_since(last) < conf.synchrony_recovery_cooldown);
         if !stalled_long_enough || in_cooldown {
             return false;
         }
 
-        let max_bypasses = synchrony_recovery_max_bypasses();
+        let max_bypasses = conf.synchrony_recovery_max_bypasses;
         if max_bypasses == 0 {
             return false;
         }
 
         if self.bypass_count >= max_bypasses {
-            // Recycle the bypass budget only after another full stall window.
-            // This avoids permanent deadlock on one hash while still rate-limiting
-            // repeated bypasses.
             let can_recycle_budget = self.last_bypass_at.is_some_and(|last| {
-                now.duration_since(last)
-                    >= Duration::from_secs(synchrony_recovery_stall_window_seconds())
+                now.duration_since(last) >= conf.synchrony_recovery_stall_window
             });
             if can_recycle_budget {
                 self.bypass_count = 0;
@@ -186,10 +83,23 @@ impl SynchronyRecoveryState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+
+    fn test_conf() -> CasperShardConf {
+        let mut conf = CasperShardConf::new();
+        conf.synchrony_recovery_stall_window = Duration::from_secs(60);
+        conf.synchrony_recovery_cooldown = Duration::from_secs(20);
+        conf.synchrony_recovery_max_bypasses = 2;
+        conf.synchrony_finalized_baseline_enabled = true;
+        conf.synchrony_finalized_baseline_max_distance = 2048;
+        conf
+    }
 
     #[test]
     fn should_not_bypass_before_stall_window() {
+        let conf = test_conf();
         let now = Instant::now();
         let mut state = SynchronyRecoveryState {
             last_known_hash: vec![1],
@@ -200,23 +110,24 @@ mod tests {
         };
 
         assert!(
-            !state.should_bypass(now),
+            !state.should_bypass(now, &conf),
             "should not bypass before stall window elapsed"
         );
     }
 
     #[test]
     fn should_recycle_bypass_budget_after_stall_window() {
-        let max_bypasses = synchrony_recovery_max_bypasses();
+        let conf = test_conf();
+        let max_bypasses = conf.synchrony_recovery_max_bypasses;
         if max_bypasses == 0 {
             return;
         }
 
         let now = Instant::now();
-        let elapsed = Duration::from_secs(
-            synchrony_recovery_stall_window_seconds().max(synchrony_recovery_cooldown_seconds()),
-        )
-        .saturating_add(Duration::from_secs(1));
+        let stall_window = conf.synchrony_recovery_stall_window.as_secs();
+        let cooldown = conf.synchrony_recovery_cooldown.as_secs();
+        let elapsed =
+            Duration::from_secs(stall_window.max(cooldown)).saturating_add(Duration::from_secs(1));
 
         let mut state = SynchronyRecoveryState {
             last_known_hash: vec![1],
@@ -227,7 +138,7 @@ mod tests {
         };
 
         assert!(
-            state.should_bypass(now),
+            state.should_bypass(now, &conf),
             "should bypass again after budget recycle window elapsed"
         );
         assert_eq!(
@@ -299,7 +210,7 @@ mod tests {
     #[test]
     fn finalized_baseline_is_used_when_proposer_is_near_finalized_height() {
         assert!(
-            super::can_use_finalized_baseline(12, 10, 2),
+            super::can_use_finalized_baseline(12, 10, 2, 2048),
             "proposer at threshold distance from finalized should use finalized fallback"
         );
     }
@@ -307,7 +218,7 @@ mod tests {
     #[test]
     fn finalized_baseline_is_not_used_when_proposer_is_far_ahead() {
         assert!(
-            !super::can_use_finalized_baseline(30, 10, 2),
+            !super::can_use_finalized_baseline(30, 10, 2, 2048),
             "proposer far ahead of finalized should not use finalized fallback"
         );
     }
@@ -315,7 +226,7 @@ mod tests {
     #[test]
     fn finalized_baseline_distance_is_capped_even_if_height_threshold_is_large() {
         assert!(
-            !super::can_use_finalized_baseline(20, 10, 1000),
+            !super::can_use_finalized_baseline(20, 10, 1000, 8),
             "finalized fallback must stay tightly bounded and not inherit large height thresholds"
         );
     }
@@ -357,10 +268,9 @@ fn can_use_finalized_baseline(
     last_proposed_block_number: i64,
     last_finalized_block_number: i64,
     height_constraint_threshold: i64,
+    max_distance: u64,
 ) -> bool {
-    let allowed_ahead = height_constraint_threshold
-        .max(0)
-        .min(synchrony_finalized_baseline_max_distance());
+    let allowed_ahead = height_constraint_threshold.max(0).min(max_distance as i64);
     let proposer_ahead_of_finalized = last_proposed_block_number - last_finalized_block_number;
     proposer_ahead_of_finalized <= allowed_ahead
 }
@@ -368,6 +278,7 @@ fn can_use_finalized_baseline(
 fn should_bypass_synchrony_constraint(
     validator: &Validator,
     last_proposed_block_hash: &[u8],
+    conf: &CasperShardConf,
 ) -> bool {
     let now = Instant::now();
 
@@ -378,7 +289,7 @@ fn should_bypass_synchrony_constraint(
 
     match states.get_mut(validator) {
         Some(state) if state.last_known_hash == last_proposed_block_hash => {
-            state.should_bypass(now)
+            state.should_bypass(now, conf)
         }
         Some(state) => {
             state.reset_for_hash(last_proposed_block_hash, now);
@@ -405,20 +316,14 @@ pub async fn check(
 ) -> Result<CheckProposeConstraintsResult, CasperError> {
     let validator = validator_identity.public_key.bytes.clone();
     let main_parent_opt = snapshot.parents.first();
-    let mut synchrony_constraint_threshold = snapshot
-        .on_chain_state
-        .shard_conf
-        .synchrony_constraint_threshold as f64;
-    if let Some(override_threshold) = synchrony_constraint_threshold_override() {
-        synchrony_constraint_threshold = override_threshold;
-    }
+    let shard_conf = &snapshot.on_chain_state.shard_conf;
+    let synchrony_constraint_threshold = shard_conf.synchrony_constraint_threshold as f64;
 
     match snapshot.dag.latest_message_hash(&validator) {
         Some(last_proposed_block_hash) => {
             let last_proposed_block_meta = snapshot.dag.lookup_unsafe(&last_proposed_block_hash)?;
 
-            // If validator's latest block is genesis, it's not proposed any block yet and
-            // hence allowed to propose once.
+            // If validator's latest block is genesis, it's not proposed any block yet and hence allowed to propose once.
             let latest_block_is_genesis = last_proposed_block_meta.block_number == 0;
             if latest_block_is_genesis {
                 update_recovery_state_on_success(&validator);
@@ -440,8 +345,7 @@ pub async fn check(
                 let main_parent_state_hash = proto_util::post_state_hash(&main_parent_block);
 
                 // Get bonds map from PoS
-                // NOTE: It would be useful to have active validators cached in the block in the
-                // same way as bonds.
+                // NOTE: It would be useful to have active validators cached in the block in the same way as bonds.
                 let active_validators = runtime_manager
                     .get_active_validators(&main_parent_state_hash)
                     .await?;
@@ -489,23 +393,20 @@ pub async fn check(
                     Ok(CheckProposeConstraintsResult::success())
                 } else {
                     // Keep the same synchrony threshold, but evaluate it against finalized baseline
-                    // before any explicit bypass logic when proposer is still near finalized
-                    // height. This avoids circular waits where all validators
-                    // block on each other's latest block while preventing
-                    // over-permissive proposing far ahead of finalization.
+                    // before any explicit bypass logic when proposer is still near finalized height.
+                    // This avoids circular waits where all validators block on each other's latest
+                    // block while preventing over-permissive proposing far ahead of finalization.
                     let last_finalized_block_hash = snapshot.dag.last_finalized_block();
                     let last_finalized_block_meta =
                         snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
                     let can_use_finalized = can_use_finalized_baseline(
                         last_proposed_block_meta.block_number,
                         last_finalized_block_meta.block_number,
-                        snapshot
-                            .on_chain_state
-                            .shard_conf
-                            .height_constraint_threshold,
+                        shard_conf.height_constraint_threshold,
+                        shard_conf.synchrony_finalized_baseline_max_distance,
                     );
 
-                    if can_use_finalized && synchrony_finalized_baseline_enabled() {
+                    if can_use_finalized && shard_conf.synchrony_finalized_baseline_enabled {
                         let finalized_seen_senders = calculate_seen_senders_since(
                             last_finalized_block_meta,
                             snapshot.dag.clone(),
@@ -519,8 +420,7 @@ pub async fn check(
                             );
 
                         tracing::warn!(
-                            "Finalized-baseline synchrony: seen {} senders with weight {} out of \
-                             total {} ({:.2} out of {:.2} needed)",
+                            "Finalized-baseline synchrony: seen {} senders with weight {} out of total {} ({:.2} out of {:.2} needed)",
                             finalized_seen_senders.len(),
                             finalized_seen_senders_weight,
                             other_validators_weight,
@@ -530,8 +430,7 @@ pub async fn check(
 
                         if finalized_synchrony_constraint_value >= synchrony_constraint_threshold {
                             tracing::warn!(
-                                "Synchrony constraint satisfied via finalized-block baseline \
-                                 (primary {:.2} < {:.2}, finalized {:.2} >= {:.2})",
+                                "Synchrony constraint satisfied via finalized-block baseline (primary {:.2} < {:.2}, finalized {:.2} >= {:.2})",
                                 synchrony_constraint_value,
                                 threshold_f64,
                                 finalized_synchrony_constraint_value,
@@ -541,14 +440,10 @@ pub async fn check(
                             return Ok(CheckProposeConstraintsResult::success());
                         }
                     } else if can_use_finalized {
-                        tracing::debug!(
-                            "Finalized-baseline synchrony fallback disabled via {}",
-                            SYNCHRONY_FINALIZED_BASELINE_ENABLED_ENV
-                        );
+                        tracing::debug!("Finalized-baseline synchrony fallback disabled in config");
                     } else {
                         tracing::warn!(
-                            "Skipping finalized-baseline synchrony fallback: validator is too far \
-                             ahead of finalized (proposed #{}, finalized #{})",
+                            "Skipping finalized-baseline synchrony fallback: validator is too far ahead of finalized (proposed #{}, finalized #{})",
                             last_proposed_block_meta.block_number,
                             last_finalized_block_meta.block_number
                         );
@@ -557,12 +452,12 @@ pub async fn check(
                     let bypass = should_bypass_synchrony_constraint(
                         &validator,
                         last_proposed_block_hash.as_ref(),
+                        shard_conf,
                     );
 
                     if bypass {
                         tracing::warn!(
-                            "Synchrony constraint bypassed after sustained stall (validator {}, \
-                             seen {} senders with ratio {:.2} < {:.2})",
+                            "Synchrony constraint bypassed after sustained stall (validator {}, seen {} senders with ratio {:.2} < {:.2})",
                             hex::encode(&validator[..8]),
                             seen_senders.len(),
                             synchrony_constraint_value,

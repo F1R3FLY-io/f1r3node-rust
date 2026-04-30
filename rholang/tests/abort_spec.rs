@@ -6,11 +6,11 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 /// Tests for the rho:execution:abort system process
 ///
-/// The abort system process allows Rholang code to explicitly terminate
-/// execution. When called, it raises a UserAbortError that propagates up and
-/// terminates the deploy with an error result.
+/// The abort system process allows Rholang code to explicitly terminate execution.
+/// When called, it raises a UserAbortError that propagates up and terminates the
+/// deploy with an error result.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn abort_should_terminate_execution_with_user_abort_error() {
     with_runtime("abort-spec-", |mut runtime| async move {
         let rho_code = r#"
@@ -38,7 +38,7 @@ async fn abort_should_terminate_execution_with_user_abort_error() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn abort_without_message_should_terminate_execution() {
     with_runtime("abort-spec-no-msg-", |mut runtime| async move {
         let rho_code = r#"
@@ -59,7 +59,7 @@ async fn abort_without_message_should_terminate_execution() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn abort_should_stop_parallel_execution() {
     with_runtime("abort-spec-parallel-", |mut runtime| async move {
         // In parallel execution, abort should halt the entire computation

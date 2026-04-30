@@ -1,8 +1,14 @@
-// FFI boundary functions dereference raw pointers by design.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(clippy::unnecessary_unwrap)]
+// JNA/FFI bindings — public extern "C" fns intentionally accept raw pointers.
+#![allow(clippy::not_unsafe_ptr_arg_deref, clippy::unnecessary_unwrap)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tokio::runtime::Runtime;
+
+fn blocking_runtime() -> &'static Runtime {
+    static RT: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| Runtime::new().unwrap())
+}
 
 // Tracks total bytes currently allocated and leaked to JNA callers
 static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -12,7 +18,7 @@ pub extern "C" fn get_allocated_bytes() -> usize { ALLOCATED_BYTES.load(Ordering
 
 #[no_mangle]
 pub extern "C" fn reset_allocated_bytes() { ALLOCATED_BYTES.store(0, Ordering::SeqCst) }
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::sync::{Arc, Mutex};
 
 use models::rhoapi::*;
@@ -94,8 +100,8 @@ pub extern "C" fn space_new_replay(rspace: *mut Space) -> *mut ReplaySpace {
     let rspace = unsafe { (*rspace).rspace.lock().unwrap() };
 
     let replay_space = ReplayRSpace::apply(
-        rspace.history_repository.clone(),
-        rspace.store.clone(),
+        rspace.get_history_repository(),
+        rspace.get_store(),
         Arc::new(Box::new(Matcher)),
     );
 
@@ -106,19 +112,18 @@ pub extern "C" fn space_new_replay(rspace: *mut Space) -> *mut ReplaySpace {
 
 #[no_mangle]
 pub extern "C" fn space_print(rspace: *mut Space) {
-    unsafe { (*rspace).rspace.lock().unwrap().store.print() }
+    unsafe { (*rspace).rspace.lock().unwrap().get_store().print() }
 }
 
 #[no_mangle]
 pub extern "C" fn space_clear(rspace: *mut Space) {
-    unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    blocking_runtime().block_on(async {
+        space
             .clear()
-            .expect("Rust RSpacePlusPlus Library: Failed to clear");
-    }
+            .await
+            .expect("Rust RSpacePlusPlus Library: Failed to clear")
+    });
 }
 
 #[no_mangle]
@@ -175,14 +180,10 @@ pub extern "C" fn produce(
     let channel = Par::decode(channel_slice).unwrap();
     let data = ListParWithRandom::decode(data_slice).unwrap();
 
-    let result_option = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .produce(channel, data, persist)
-    }
-    .unwrap();
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let result_option = blocking_runtime()
+        .block_on(async { space.produce(channel, data, persist).await })
+        .unwrap();
 
     match result_option {
         Some((cont_result, rspace_results, produce_event)) => {
@@ -254,14 +255,14 @@ pub extern "C" fn consume(
     let persist = consume_params.persist;
     let peeks = consume_params.peeks.into_iter().map(|e| e.value).collect();
 
-    let result_option = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .consume(channels, patterns, continuation, persist, peeks)
-    }
-    .unwrap();
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let result_option = blocking_runtime()
+        .block_on(async {
+            space
+                .consume(channels, patterns, continuation, persist, peeks)
+                .await
+        })
+        .unwrap();
 
     match result_option {
         Some((cont_result, rspace_results)) => {
@@ -322,14 +323,10 @@ pub extern "C" fn install(
     let patterns = consume_params.patterns;
     let continuation = consume_params.continuation.unwrap();
 
-    let result_option = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .install(channels, patterns, continuation)
-    }
-    .unwrap();
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let result_option = blocking_runtime()
+        .block_on(async { space.install(channels, patterns, continuation).await })
+        .unwrap();
 
     match result_option {
         None => std::ptr::null(),
@@ -466,7 +463,7 @@ pub extern "C" fn reset_rspace(
     let root_slice = unsafe { std::slice::from_raw_parts(root_pointer, root_bytes_len) };
     let root = Blake2b256Hash::from_bytes(root_slice.to_vec());
 
-    let mut rs = match unsafe { (*rspace).rspace.lock() } {
+    let rs = match unsafe { (*rspace).rspace.lock() } {
         Ok(guard) => guard,
         Err(poisoned) => {
             eprintln!("ERROR: failed to lock rspace in reset: poisoned");
@@ -474,7 +471,7 @@ pub extern "C" fn reset_rspace(
         }
     };
 
-    match rs.reset(&root) {
+    match blocking_runtime().block_on(async { rs.reset(&root).await }) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("ERROR: rspace reset failed: {:?}", e);
@@ -607,7 +604,7 @@ pub extern "C" fn reset_rspace(
 
 #[no_mangle]
 pub extern "C" fn to_map(rspace: *mut Space) -> *const u8 {
-    let hot_store_mapped = unsafe { (*rspace).rspace.lock().unwrap().store.to_map() };
+    let hot_store_mapped = unsafe { (*rspace).rspace.lock().unwrap().get_store().to_map() };
 
     let mut map_entries: Vec<StoreToMapEntry> = Vec::new();
 
@@ -679,17 +676,13 @@ pub extern "C" fn to_map(rspace: *mut Space) -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn spawn(rspace: *mut Space) -> *mut Space {
-    let rspace = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .spawn()
-            .expect("Rust RSpacePlusPlus Library: Failed to spawn")
-    };
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let new_rspace = space
+        .spawn()
+        .expect("Rust RSpacePlusPlus Library: Failed to spawn");
 
     Box::into_raw(Box::new(Space {
-        rspace: Mutex::new(rspace),
+        rspace: Mutex::new(new_rspace),
     }))
 }
 
@@ -1200,7 +1193,14 @@ pub extern "C" fn spawn(rspace: *mut Space) -> *mut Space {
 
 #[no_mangle]
 pub extern "C" fn history_repo_root(rspace: *mut Space) -> *const u8 {
-    let root = unsafe { (*rspace).rspace.lock().unwrap().history_repository.root() };
+    let root = unsafe {
+        (*rspace)
+            .rspace
+            .lock()
+            .unwrap()
+            .get_history_repository()
+            .root()
+    };
 
     let hash = hash(&root);
     let hash_proto = HashProto { hash: hash.bytes() };
@@ -1308,7 +1308,7 @@ pub extern "C" fn get_history_items(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .exporter()
             .get_history_items(keys)
             .unwrap()
@@ -1355,7 +1355,7 @@ pub extern "C" fn get_data_items(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .exporter()
             .get_data_items(keys)
             .unwrap()
@@ -1411,7 +1411,7 @@ pub extern "C" fn get_history_and_data(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .exporter()
     };
 
@@ -1499,7 +1499,7 @@ pub extern "C" fn get_exporter_root(rspace: *mut Space) -> *const u8 {
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .exporter()
             .get_root()
             .unwrap()
@@ -1598,10 +1598,7 @@ pub extern "C" fn validate_state_items(
         .history_items
         .into_iter()
         .map(|history_item_proto| {
-            (
-                Blake2b256Hash::from_bytes(history_item_proto.key_hash),
-                history_item_proto.value,
-            )
+            (Blake2b256Hash::from_bytes(history_item_proto.key_hash), history_item_proto.value)
         })
         .collect();
 
@@ -1609,10 +1606,7 @@ pub extern "C" fn validate_state_items(
         .data_items
         .into_iter()
         .map(|data_item_proto| {
-            (
-                Blake2b256Hash::from_bytes(data_item_proto.key_hash),
-                data_item_proto.value,
-            )
+            (Blake2b256Hash::from_bytes(data_item_proto.key_hash), data_item_proto.value)
         })
         .collect();
 
@@ -1636,7 +1630,7 @@ pub extern "C" fn validate_state_items(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .importer()
     };
 
@@ -1672,7 +1666,10 @@ pub extern "C" fn set_history_items(
 
     unsafe {
         let space = (*rspace).rspace.lock().unwrap();
-        space.history_repository.importer().set_history_items(data)
+        space
+            .get_history_repository()
+            .importer()
+            .set_history_items(data)
     };
 }
 
@@ -1698,7 +1695,10 @@ pub extern "C" fn set_data_items(
 
     unsafe {
         let space = (*rspace).rspace.lock().unwrap();
-        space.history_repository.importer().set_data_items(data)
+        space
+            .get_history_repository()
+            .importer()
+            .set_data_items(data)
     };
 }
 
@@ -1712,7 +1712,7 @@ pub extern "C" fn set_root(rspace: *mut Space, root_pointer: *const u8, root_byt
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .importer()
             .set_root(&root)
     }
@@ -1732,7 +1732,7 @@ pub extern "C" fn get_history_item(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .importer()
             .get_history_item(hash)
     };
@@ -1772,7 +1772,7 @@ pub extern "C" fn history_reader_root(
             .rspace
             .lock()
             .unwrap()
-            .history_repository
+            .get_history_repository()
             .get_history_reader(&state_hash)
             .unwrap()
             .root()
@@ -1810,7 +1810,7 @@ pub extern "C" fn get_history_data(
     let datums = unsafe {
         let space = (*rspace).rspace.lock().unwrap();
         space
-            .history_repository
+            .get_history_repository()
             .get_history_reader(&state_hash)
             .unwrap()
             .get_data(&key)
@@ -1865,7 +1865,7 @@ pub extern "C" fn get_history_waiting_continuations(
     let wks = unsafe {
         let space = (*rspace).rspace.lock().unwrap();
         space
-            .history_repository
+            .get_history_repository()
             .get_history_reader(&state_hash)
             .unwrap()
             .get_continuations(&key)
@@ -1931,7 +1931,7 @@ pub extern "C" fn get_history_joins(
     let joins = unsafe {
         let space = (*rspace).rspace.lock().unwrap();
         space
-            .history_repository
+            .get_history_repository()
             .get_history_reader(&state_hash)
             .unwrap()
             .get_joins(&key)
@@ -1971,14 +1971,10 @@ pub extern "C" fn replay_produce(
     let channel = Par::decode(channel_slice).unwrap();
     let data = ListParWithRandom::decode(data_slice).unwrap();
 
-    let result_option = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .produce(channel, data, persist)
-    }
-    .unwrap();
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let result_option = blocking_runtime()
+        .block_on(async { space.produce(channel, data, persist).await })
+        .unwrap();
 
     match result_option {
         Some((cont_result, rspace_results, produce_event)) => {
@@ -2050,14 +2046,14 @@ pub extern "C" fn replay_consume(
     let persist = consume_params.persist;
     let peeks = consume_params.peeks.into_iter().map(|e| e.value).collect();
 
-    let result_option = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
-            .consume(channels, patterns, continuation, persist, peeks)
-    }
-    .unwrap();
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let result_option = blocking_runtime()
+        .block_on(async {
+            space
+                .consume(channels, patterns, continuation, persist, peeks)
+                .await
+        })
+        .unwrap();
 
     match result_option {
         Some((cont_result, rspace_results)) => {
@@ -2105,14 +2101,13 @@ pub extern "C" fn replay_consume(
 
 #[no_mangle]
 pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
-    let checkpoint = unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    let checkpoint = blocking_runtime().block_on(async {
+        space
             .create_checkpoint()
+            .await
             .expect("Rust RSpacePlusPlus Library: Failed to create checkpoint")
-    };
+    });
 
     let log = checkpoint.log;
     let log_proto: Vec<EventProto> = log
@@ -2232,29 +2227,24 @@ pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn replay_clear(rspace: *mut Space) {
-    unsafe {
-        (*rspace)
-            .rspace
-            .lock()
-            .unwrap()
+    let space = unsafe { (*rspace).rspace.lock().unwrap() };
+    blocking_runtime().block_on(async {
+        space
             .clear()
-            .expect("Rust RSpacePlusPlus Library: Failed to clear");
-    }
+            .await
+            .expect("Rust RSpacePlusPlus Library: Failed to clear")
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn replay_spawn(replay_rspace_ptr: *mut ReplaySpace) -> *mut ReplaySpace {
-    let _replay_space = unsafe {
-        (*replay_rspace_ptr)
-            .replay_space
-            .lock()
-            .unwrap()
-            .spawn()
-            .expect("Rust RSpacePlusPlus Library: Failed to spawn")
-    };
+    let replay_space = unsafe { (*replay_rspace_ptr).replay_space.lock().unwrap() };
+    let new_replay_space = replay_space
+        .spawn()
+        .expect("Rust RSpacePlusPlus Library: Failed to spawn");
 
     Box::into_raw(Box::new(ReplaySpace {
-        replay_space: Mutex::new(_replay_space),
+        replay_space: Mutex::new(new_replay_space),
     }))
 }
 

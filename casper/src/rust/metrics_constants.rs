@@ -57,8 +57,7 @@ pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transiti
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
-// pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str =
-// "mergeable.channels.gc.deleted";
+// pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
 
 // Casper timer metrics (recorded as histograms with _seconds suffix)
 pub const BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC: &str =
@@ -66,6 +65,17 @@ pub const BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_TIME_METRIC: &str = "block.validation.time";
 pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.storage.time";
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
+pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.time";
+pub const DAG_MERGE_TOTAL_TIME_METRIC: &str = "dag.merge.total.time";
+pub const DAG_MERGE_INDEX_TIME_METRIC: &str = "dag.merge.index.time";
+pub const DAG_MERGE_CONFLICT_TIME_METRIC: &str = "dag.merge.conflict.time";
+pub const DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.compute-trie-actions.time";
+pub const DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.apply-trie-actions.time";
+pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
+pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
+pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
+pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
@@ -88,6 +98,20 @@ pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC: &str =
     "block.replay.sysdeploy.eval.evaluate-source.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC: &str =
     "block.replay.sysdeploy.eval.consume-result.time";
+
+// Per-deploy replay breakdown metrics
+pub const BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC: &str = "block.replay.deploy.rig.time";
+pub const BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC: &str = "block.replay.deploy.precharge.time";
+pub const BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC: &str = "block.replay.deploy.evaluate.time";
+pub const BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.replay.deploy.refund.time";
+pub const BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC: &str =
+    "block.replay.deploy.discard-event-log.time";
+pub const BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC: &str =
+    "block.replay.deploy.check-replay-data.time";
+
+// Runtime spawn timing metrics
+pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
+pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
 
 // Block validation step time metrics (7 variants)
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =

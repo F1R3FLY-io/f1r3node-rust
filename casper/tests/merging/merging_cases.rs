@@ -13,12 +13,11 @@ use rspace_plus_plus::rspace::merger::merging_logic;
 use crate::util::rholang::resources::with_runtime_manager;
 
 /**
- * Two deploys inside single state transition are using the same PVV for
- * precharge and refund. So this should be dependent over produce that puts
- * new value into PVV balance in the first deploy. TODO adjust this once/if
- * there is a solution to make deploys touching the same PVV non dependent
+ * Two deploys inside single state transition are using the same PVV for precharge and refund.
+ * So this should be dependent over produce that puts new value into PVV balance in the first deploy.
+ * TODO adjust this once/if there is a solution to make deploys touching the same PVV non dependent
  */
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_deploys_executed_inside_single_state_transition_should_be_dependent() {
     with_runtime_manager(|mut runtime_manager, genesis_context, _| async move {
         let base_state = genesis_context.genesis_block.body.state.post_state_hash;
@@ -117,13 +116,11 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             merging_logic::depends,
         );
 
-        // deploys inside one state transition never conflict, as executed in a sequence
-        // (for now)
+        // deploys inside one state transition never conflict, as executed in a sequence (for now)
         assert!(!conflicts);
         // first deploy does not depend on the second
         assert!(!first_depends);
-        // second deploy depends on the first, as it consumes produce put by first one
-        // when updating per validator vault balance
+        // second deploy depends on the first, as it consumes produce put by first one when updating per validator vault balance
         assert!(!second_depends);
         // deploys should be be put in separate deploy chains
         assert_eq!(deploy_chains.0.len(), 2);

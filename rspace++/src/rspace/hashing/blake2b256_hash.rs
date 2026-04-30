@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // Blake2b256Hash.scala The 'Hash' macro is needed here for test util function
 // 'check_same_elements' The 'Arbitrary' macro is needed here for proptest in
 // hot_store_spec.rs The 'Default' macro is needed here for hot_store_spec.rs
-#[derive(Eq, Clone, Serialize, Deserialize, Hash, Arbitrary, Default)]
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Hash, Arbitrary, Default)]
 pub struct Blake2b256Hash(pub Vec<u8>);
 
 pub const LENGTH: i64 = 32;
@@ -46,10 +46,6 @@ impl Ord for Blake2b256Hash {
 
 impl PartialOrd for Blake2b256Hash {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
-}
-
-impl PartialEq for Blake2b256Hash {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
 }
 
 impl std::fmt::Display for Blake2b256Hash {

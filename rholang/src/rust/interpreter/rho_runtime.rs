@@ -55,21 +55,19 @@ use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
 
 /*
  * This trait has been combined with the 'ReplayRhoRuntime' trait
- */
+*/
 #[allow(async_fn_in_trait)]
 pub trait RhoRuntime: HasCost {
     /**
-     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it
-     * with provided initial phlo.
+     * Parse the rholang term into [[coop.rchain.models.Par]] and execute it with provided initial phlo.
      *
      * This function would change the state in the runtime.
      * @param term The rholang contract which would run on the runtime
-     * @param initialPhlo initial cost for the this evaluation. If the phlo
-     * is not enough,                    
-     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]
-     * would return. @param normalizerEnv additional env for Par when
-     * parsing term into Par @param rand random seed for rholang
-     * execution @return
+     * @param initialPhlo initial cost for the this evaluation. If the phlo is not enough,
+     *                    [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]] would return.
+     * @param normalizerEnv additional env for Par when parsing term into Par
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn evaluate(
         &self,
@@ -79,8 +77,7 @@ pub trait RhoRuntime: HasCost {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError>;
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.
-    // scala
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntimeSyntax.scala
     async fn evaluate_with_env(
         &mut self,
         term: &str,
@@ -111,39 +108,38 @@ pub trait RhoRuntime: HasCost {
         normalizer_env: HashMap<String, Par>,
     ) -> Result<EvaluateResult, InterpreterError> {
         let rand = Blake2b512Random::create_from_length(128);
-        let checkpoint = self.create_soft_checkpoint();
+        let checkpoint = self.create_soft_checkpoint().await;
         match self
             .evaluate(term, initial_phlo, normalizer_env, rand)
             .await
         {
             Ok(eval_result) => {
                 if !eval_result.errors.is_empty() {
-                    self.revert_to_soft_checkpoint(checkpoint);
+                    self.revert_to_soft_checkpoint(checkpoint).await;
                     Ok(eval_result)
                 } else {
                     Ok(eval_result)
                 }
             }
             Err(err) => {
-                self.revert_to_soft_checkpoint(checkpoint);
+                self.revert_to_soft_checkpoint(checkpoint).await;
                 Err(err)
             }
         }
     }
 
     /**
-     * The function would execute the par regardless setting cost which
-     * would possibly cause [[coop.rchain.rholang.interpreter.errors.
-     * OutOfPhlogistonsError]]. Because of that, use this function in
-     * some situation which is not cost sensitive.
+     * The function would execute the par regardless setting cost which would possibly cause
+     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
+     * function in some situation which is not cost sensitive.
      *
      * This function would change the state in the runtime.
      *
-     * Ideally, this function should be removed or hack the runtime without
-     * cost accounting in the future . @param par
-     * [[coop.rchain.models.Par]] for the execution @param env
-     * additional env for execution @param rand random seed for rholang
-     * execution @return
+     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
+     * @param par [[coop.rchain.models.Par]] for the execution
+     * @param env additional env for execution
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn inj(
         &self,
@@ -153,39 +149,38 @@ pub trait RhoRuntime: HasCost {
     ) -> Result<(), InterpreterError>;
 
     /**
-     * After some executions([[evaluate]]) on the runtime, you can create a
-     * soft checkpoint which is the changes for the current state of the
-     * runtime. You can revert the changes by [[revertToSoftCheckpoint]]
+     * After some executions([[evaluate]]) on the runtime, you can create a soft checkpoint which is the changes
+     * for the current state of the runtime. You can revert the changes by [[revertToSoftCheckpoint]]
      * @return
      */
-    fn create_soft_checkpoint(
+    async fn create_soft_checkpoint(
         &mut self,
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
     /// Drain and return runtime event log without cloning hot-store state.
-    fn take_event_log(&mut self) -> Log;
+    async fn take_event_log(&mut self) -> Log;
 
     /// Return current runtime root hash without creating a checkpoint.
-    fn get_root(&self) -> Blake2b256Hash;
+    async fn get_root(&self) -> Blake2b256Hash;
 
-    fn revert_to_soft_checkpoint(
+    async fn revert_to_soft_checkpoint(
         &mut self,
         soft_checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> ();
 
     /**
-     * Create a checkpoint for the runtime. All the changes which happened
-     * in the runtime would persistent in the disk and result in a new
-     * stateHash for the new state. @return
+     * Create a checkpoint for the runtime. All the changes which happened in the runtime would persistent in the disk
+     * and result in a new stateHash for the new state.
+     * @return
      */
-    fn create_checkpoint(&mut self) -> Checkpoint;
+    async fn create_checkpoint(&mut self) -> Checkpoint;
 
     /**
-     * Reset the runtime to the specific state. Then you can operate some
-     * execution on the state. @param root the target state hash to
-     * reset @return
+     * Reset the runtime to the specific state. Then you can operate some execution on the state.
+     * @param root the target state hash to reset
+     * @return
      */
-    fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
+    async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
 
     /**
      * Consume the result in the rspace.
@@ -195,7 +190,7 @@ pub trait RhoRuntime: HasCost {
      * @param pattern pattern for the consume
      * @return
      */
-    fn consume_result(
+    async fn consume_result(
         &mut self,
         channel: Vec<Par>,
         pattern: Vec<BindPattern>,
@@ -206,16 +201,16 @@ pub trait RhoRuntime: HasCost {
      *
      * This function would not change the state in the runtime
      */
-    fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
+    async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
 
-    fn get_joins(&self, channel: Par) -> Vec<Vec<Par>>;
+    async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>>;
 
     /**
      * get continuation directly from history repository
      *
      * This function would not change the state in the runtime
      */
-    fn get_continuations(
+    async fn get_continuations(
         &self,
         channels: Vec<Par>,
     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>>;
@@ -239,20 +234,20 @@ pub trait RhoRuntime: HasCost {
      * Get the hot changes after some executions for the runtime.
      * Currently this is only for debug info mostly.
      */
-    fn get_hot_changes(
+    async fn get_hot_changes(
         &self,
     ) -> HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>;
 
     /* Replay functions */
 
-    fn rig(&self, log: Log) -> Result<(), InterpreterError>;
+    async fn rig(&self, log: Log) -> Result<(), InterpreterError>;
 
-    fn check_replay_data(&self) -> Result<(), InterpreterError>;
+    async fn check_replay_data(&self) -> Result<(), InterpreterError>;
 }
 
 /*
  * We use this struct for both normal and replay RhoRuntime instances
- */
+*/
 #[derive(Clone)]
 pub struct RhoRuntimeImpl {
     pub reducer: Arc<DebruijnInterpreter>,
@@ -260,7 +255,7 @@ pub struct RhoRuntimeImpl {
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-    pub merge_chs: Arc<std::sync::RwLock<HashSet<Par>>>,
+    pub merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -270,7 +265,7 @@ impl RhoRuntimeImpl {
         block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-        merge_chs: Arc<std::sync::RwLock<HashSet<Par>>>,
+        merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -312,33 +307,15 @@ impl RhoRuntime for RhoRuntimeImpl {
         _env: Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        // println!(
-        //     "\nspace hot store size before in inj: {:?}",
-        //     self.get_hot_changes().len()
-        // );
-        // println!("\nenv in inj: {:?}", _env);
-        // println!("\npar in inj: {:?}", par);
         let res = self.reducer.inj(par, rand).await;
-        // println!(
-        //     "space hot store size after in inj: {:?}",
-        //     self.get_hot_changes().len()
-        // );
         res
     }
 
-    fn create_soft_checkpoint(
+    async fn create_soft_checkpoint(
         &mut self,
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
-        let _span =
-            tracing::info_span!(target: "f1r3fly.rholang.runtime", "create-soft-checkpoint")
-                .entered();
         let start = Instant::now();
-        let checkpoint = self
-            .reducer
-            .space
-            .try_lock()
-            .unwrap()
-            .create_soft_checkpoint();
+        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -346,8 +323,8 @@ impl RhoRuntime for RhoRuntimeImpl {
         checkpoint
     }
 
-    fn take_event_log(&mut self) -> Log {
-        let log = self.reducer.space.try_lock().unwrap().take_event_log();
+    async fn take_event_log(&mut self) -> Log {
+        let log = self.reducer.space.take_event_log().await;
         let log_len = log.len() as u64;
         metrics::counter!(RUNTIME_TAKE_EVENT_LOG_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .increment(1);
@@ -364,12 +341,12 @@ impl RhoRuntime for RhoRuntimeImpl {
         log
     }
 
-    fn get_root(&self) -> Blake2b256Hash { self.reducer.space.try_lock().unwrap().get_root() }
+    async fn get_root(&self) -> Blake2b256Hash { self.reducer.space.get_root().await }
 
-    fn revert_to_soft_checkpoint(
+    async fn revert_to_soft_checkpoint(
         &mut self,
         soft_checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    ) {
+    ) -> () {
         metrics::counter!(
             RUNTIME_REVERT_SOFT_CHECKPOINT_TOTAL_METRIC,
             "source" => RUNTIME_METRICS_SOURCE
@@ -377,23 +354,14 @@ impl RhoRuntime for RhoRuntimeImpl {
         .increment(1);
         self.reducer
             .space
-            .try_lock()
-            .unwrap()
             .revert_to_soft_checkpoint(soft_checkpoint)
+            .await
             .unwrap()
     }
 
-    fn create_checkpoint(&mut self) -> Checkpoint {
-        let _span =
-            tracing::info_span!(target: "f1r3fly.rholang.runtime", "create-checkpoint").entered();
+    async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
-        let checkpoint = self
-            .reducer
-            .space
-            .try_lock()
-            .unwrap()
-            .create_checkpoint()
-            .unwrap();
+        let checkpoint = self.reducer.space.create_checkpoint().await.unwrap();
         metrics::histogram!(CREATE_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -401,44 +369,32 @@ impl RhoRuntime for RhoRuntimeImpl {
         checkpoint
     }
 
-    fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
-        let mut space_lock = self.reducer.space.try_lock().map_err(|_| {
-            InterpreterError::ReduceError("RhoRuntime reset: failed to lock reducer.space".into())
-        })?;
-        space_lock.reset(root)?;
+    async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
+        self.reducer.space.reset(root).await?;
         Ok(())
     }
 
-    fn consume_result(
+    async fn consume_result(
         &mut self,
         channel: Vec<Par>,
         pattern: Vec<BindPattern>,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, InterpreterError> {
-        Ok(self
-            .reducer
-            .space
-            .try_lock()
-            .unwrap()
-            .consume_result(channel, pattern)?)
+        Ok(self.reducer.space.consume_result(channel, pattern).await?)
     }
 
-    fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-        self.reducer.space.try_lock().unwrap().get_data(channel)
+    async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
+        self.reducer.space.get_data(channel).await
     }
 
-    fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
-        self.reducer.space.try_lock().unwrap().get_joins(channel)
+    async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
+        self.reducer.space.get_joins(channel).await
     }
 
-    fn get_continuations(
+    async fn get_continuations(
         &self,
         channels: Vec<Par>,
     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.reducer
-            .space
-            .try_lock()
-            .unwrap()
-            .get_waiting_continuations(channels)
+        self.reducer.space.get_waiting_continuations(channels).await
     }
 
     async fn set_block_data(&self, block_data: BlockData) -> () {
@@ -475,19 +431,19 @@ impl RhoRuntime for RhoRuntimeImpl {
         self.invalid_blocks_param.set_params(invalid_blocks).await
     }
 
-    fn get_hot_changes(
+    async fn get_hot_changes(
         &self,
     ) -> HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>> {
-        self.reducer.space.try_lock().unwrap().to_map()
+        self.reducer.space.to_map().await
     }
 
-    fn rig(&self, log: Log) -> Result<(), InterpreterError> {
-        self.reducer.space.try_lock().unwrap().rig(log)?;
+    async fn rig(&self, log: Log) -> Result<(), InterpreterError> {
+        self.reducer.space.rig(log).await?;
         Ok(())
     }
 
-    fn check_replay_data(&self) -> Result<(), InterpreterError> {
-        self.reducer.space.try_lock().unwrap().check_replay_data()?;
+    async fn check_replay_data(&self) -> Result<(), InterpreterError> {
+        self.reducer.space.check_replay_data().await?;
         Ok(())
     }
 }
@@ -496,26 +452,14 @@ impl HasCost for RhoRuntimeImpl {
     fn cost(&self) -> &_cost { &self.cost }
 }
 
-pub type RhoTuplespace = Arc<
-    tokio::sync::Mutex<
-        Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
-    >,
->;
+pub type RhoTuplespace =
+    Arc<Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
 
-pub type RhoISpace = Arc<
-    tokio::sync::Mutex<
-        Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
-    >,
->;
+pub type RhoISpace =
+    Arc<Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
 
 pub type RhoReplayISpace = Arc<
-    tokio::sync::Mutex<
-        Box<
-            dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-                + Send
-                + Sync,
-        >,
-    >,
+    Box<dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
 >;
 
 pub type RhoHistoryRepository = Arc<
@@ -529,7 +473,7 @@ pub type RhoHistoryRepository = Arc<
 
 pub type ISpaceAndReplay = (RhoISpace, RhoReplayISpace);
 
-fn introduce_system_process<T>(
+async fn introduce_system_process<T>(
     mut spaces: Vec<&mut T>,
     processes: Vec<(Name, Arity, Remainder, BodyRef)>,
 ) -> Vec<Option<(TaggedContinuation, Vec<ListParWithRandom>)>>
@@ -551,7 +495,9 @@ where
         };
 
         for space in &mut spaces {
-            let result = space.install(channels.clone(), patterns.clone(), continuation.clone());
+            let result = space
+                .install(channels.clone(), patterns.clone(), continuation.clone())
+                .await;
             results.push(result.map_err(|err| panic!("{}", err)).unwrap());
         }
     }
@@ -1004,15 +950,13 @@ async fn setup_reducer(
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     extra_system_processes: &mut Vec<Definition>,
     urn_map: HashMap<String, Par>,
-    merge_chs: Arc<std::sync::RwLock<HashSet<Par>>>,
+    merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
     mergeable_tag_name: Par,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     cost: _cost,
 ) -> Arc<DebruijnInterpreter> {
-    // println!("\nsetup_reducer");
-
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1101,7 +1045,7 @@ fn setup_maps_and_refs(
 
 pub async fn create_rho_env<T>(
     mut rspace: T,
-    merge_chs: Arc<std::sync::RwLock<HashSet<Par>>>,
+    merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
     mergeable_tag_name: Par,
     extra_system_processes: &mut Vec<Definition>,
     cost: _cost,
@@ -1121,11 +1065,12 @@ where
 {
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, urn_map, proc_defs) = maps_and_refs;
-    let res = introduce_system_process(vec![&mut rspace], proc_defs);
+    let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
-    let charging_rspace: RhoISpace = Arc::new(tokio::sync::Mutex::new(Box::new(
-        ChargingRSpace::charging_rspace(rspace, cost.clone()),
+    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+        rspace,
+        cost.clone(),
     )));
 
     // Use services from ExternalServices
@@ -1153,32 +1098,18 @@ where
 
 // This is from Nassim Taleb's "Skin in the Game"
 fn bootstrap_rand() -> Blake2b512Random {
-    // println!("\nhit bootstrap_rand");
-    Blake2b512Random::create_from_bytes(
-        "Decentralization is based on the simple notion that it is easier to macrobull***t than \
-         microbull***t. Decentralization reduces large structural asymmetries."
-            .as_bytes(),
-    )
+    Blake2b512Random::create_from_bytes("Decentralization is based on the simple notion that it is easier to macrobull***t than microbull***t. \
+         Decentralization reduces large structural asymmetries."
+         .as_bytes())
 }
 
 pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
-    // println!("\ncalling bootstrap_registry");
     let rand = bootstrap_rand();
-    // rand.debug_str();
     let cost = runtime.cost().get();
     runtime
         .cost()
         .set(Cost::create(i64::MAX, "bootstrap registry".to_string()));
-    // println!("\nast: {:?}", ast());
-    // println!(
-    //     "\nruntime space before inject, {:?}",
-    //     runtime_lock.get_hot_changes().len()
-    // );
     runtime.inj(ast(), Env::new(), rand).await.unwrap();
-    // println!(
-    //     "\nruntime space after inject, {:?}",
-    //     runtime_lock.get_hot_changes().len()
-    // );
     runtime.cost().set(Cost::create_from_cost(cost));
 }
 
@@ -1196,9 +1127,8 @@ where
         + Sync
         + 'static,
 {
-    // println!("\nrust create_runtime");
     let cost = CostAccounting::empty_cost();
-    let merge_chs = Arc::new(std::sync::RwLock::new({
+    let merge_chs = Arc::new(tokio::sync::RwLock::new({
         let mut set = HashSet::new();
         set.insert(Par::default());
         set
@@ -1225,9 +1155,8 @@ where
     );
 
     if init_registry {
-        // println!("\ninit_registry");
         bootstrap_registry(&runtime).await;
-        runtime.create_checkpoint();
+        runtime.create_checkpoint().await;
     }
 
     runtime
@@ -1238,15 +1167,14 @@ where
 /// # Parameters
 ///
 /// - `rspace`: The rspace which the runtime would operate on
-/// - `extra_system_processes`: Extra system rholang processes exposed to the
-///   runtime which you can execute functions on
-/// - `init_registry`: For a newly created rspace, you might need to bootstrap
-///   registry in the runtime to use rholang registry normally. This is not the
-///   only thing you need for rholang registry - after the bootstrap registry,
-///   you still need to insert registry contract on the rspace. For an existing
-///   rspace which bootstrapped registry before, you can skip this. For some
-///   test cases, you don't need the registry, then you can skip this init
-///   process which can be faster.
+/// - `extra_system_processes`: Extra system rholang processes exposed to the runtime
+///   which you can execute functions on
+/// - `init_registry`: For a newly created rspace, you might need to bootstrap registry
+///   in the runtime to use rholang registry normally. This is not the only thing you need
+///   for rholang registry - after the bootstrap registry, you still need to insert registry
+///   contract on the rspace. For an existing rspace which bootstrapped registry before, you
+///   can skip this. For some test cases, you don't need the registry, then you can skip this
+///   init process which can be faster.
 /// - `mergeable_tag_name`: Tag name for mergeable channels
 /// - `external_services`: External services configuration (OpenAI, gRPC)
 ///
@@ -1282,8 +1210,7 @@ where
     .await
 }
 
-/// Creates a replay runtime for executing Rholang code with replay
-/// capabilities.
+/// Creates a replay runtime for executing Rholang code with replay capabilities.
 ///
 /// # Parameters
 ///

@@ -102,37 +102,51 @@ pub fn merge<
         (rejected, to_merge)
     };
 
-    // Compute related sets to split merging set into branches without cross
-    // dependencies
+    // Compute related sets to split merging set into branches without cross dependencies
     use rspace_plus_plus::rspace::merger::merging_logic::compute_related_sets;
     let (branches, branches_time) =
         measure_time(|| compute_related_sets(&merge_set, |a, b| depends(a, b)));
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_BRANCHES_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(branches_time.as_secs_f64());
 
     // Compute relation map for conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_relation_map;
     let branches_set = HashableSet(branches.0.iter().cloned().collect());
     let (conflict_map, conflicts_map_time) =
         measure_time(|| compute_relation_map(&branches_set, |a, b| conflicts(a, b)));
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(conflicts_map_time.as_secs_f64());
 
-    // Compute rejection options that leave only non-conflicting branches with
-    // timing
+    // Compute rejection options that leave only non-conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
     let (rejection_options, rejection_options_time) =
         measure_time(|| compute_rejection_options(&conflict_map));
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_options_time.as_secs_f64());
 
     // Get base mergeable channel results
+    let channel_reads_start = Instant::now();
     // Sort keys for deterministic ordering across instances
-    let mut all_channel_keys: Vec<Blake2b256Hash> = Vec::new();
+    let mut all_channel_keys_set: std::collections::HashSet<Blake2b256Hash> =
+        std::collections::HashSet::new();
     for branch in &branches {
         for item in branch {
             let item_channels = mergeable_channels(item);
             for (channel_hash, _) in item_channels.iter() {
-                if !all_channel_keys.contains(channel_hash) {
-                    all_channel_keys.push(channel_hash.clone());
-                }
+                all_channel_keys_set.insert(channel_hash.clone());
             }
         }
     }
+    let mut all_channel_keys: Vec<Blake2b256Hash> = all_channel_keys_set.into_iter().collect();
     // Sort channel keys for deterministic processing order
     all_channel_keys.sort();
 
@@ -154,6 +168,12 @@ pub fn merge<
             }
         }
     }
+
+    metrics::histogram!(
+        "dag.merge.channel-reads.time",
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(channel_reads_start.elapsed().as_secs_f64());
 
     // Get merged result rejection options
     let rejection_options_with_overflow = get_merged_result_rejection(
@@ -205,8 +225,8 @@ pub fn merge<
     // Detailed INFO logging for rejection breakdown (always visible)
     info!(
         "ConflictSetMerger rejection breakdown: lateSet={}, rejectedAsDependents={}, \
-         optimalRejection={}, total rejected={}, branches={}, toMerge={}, conflictMap entries \
-         with conflicts={}, rejectionOptions={}, rejectionOptionsWithOverflow={}",
+        optimalRejection={}, total rejected={}, branches={}, toMerge={}, \
+        conflictMap entries with conflicts={}, rejectionOptions={}, rejectionOptionsWithOverflow={}",
         late_set.len(),
         rejected_as_dependents.0.len(),
         optimal_rejection_flattened.0.len(),
@@ -215,7 +235,7 @@ pub fn merge<
         to_merge.len(),
         conflict_map.iter().filter(|(_, v)| !v.0.is_empty()).count(),
         rejection_options.0.len(),
-        1 // rejectionOptionsWithOverflow.size - approximation
+        1  // rejectionOptionsWithOverflow.size - approximation
     );
 
     // Sort toMerge for deterministic processing order
@@ -241,6 +261,16 @@ pub fn merge<
             Ok(combined)
         })?;
 
+    metrics::histogram!(
+        "dag.merge.combine-changes.time",
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(combine_all_changes_time.as_secs_f64());
+
+    let combined_datums_count = all_changes.datums_changes.len();
+    let combined_conts_count = all_changes.cont_changes.len();
+    let combined_joins_count = all_changes.consume_channels_to_join_serialized_map.len();
+
     // Combine all mergeable channels (in sorted order)
     let mut all_mergeable_channels = NumberChannelsDiff::new();
     for item in &to_merge_items {
@@ -260,9 +290,9 @@ pub fn merge<
     // Prepare log message
     let log_str = format!(
         "Merging done: late set size {}; actual set size {}; computed branches ({}) in {:?}; \
-         conflicts map in {:?}; rejection options ({}) in {:?}; optimal rejection set size {}; \
-         rejected as late dependency {}; changes combined in {:?}; trie actions ({}) in {:?}; \
-         actions applied in {:?}",
+        conflicts map in {:?}; rejection options ({}) in {:?}; optimal rejection set size {}; \
+        rejected as late dependency {}; changes combined (datums={}, conts={}, joins={}) in {:?}; \
+        trie actions ({}) in {:?}; actions applied in {:?}",
         late_set.len(),
         actual_set.len(),
         branches_set.0.len(),
@@ -272,6 +302,9 @@ pub fn merge<
         rejection_options_time,
         optimal_rejection.0.len(),
         rejected_as_dependents.0.len(),
+        combined_datums_count,
+        combined_conts_count,
+        combined_joins_count,
         combine_all_changes_time,
         trie_actions.len(),
         compute_actions_time,
@@ -306,8 +339,7 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             .collect::<Vec<_>>()
             .len()
             == options.0.len(),
-        "Same rejection unit is found in two rejection options. Please report this to code \
-         maintainer."
+        "Same rejection unit is found in two rejection options. Please report this to code maintainer."
     );
 
     // Convert to sorted list for deterministic processing
@@ -329,9 +361,8 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first
-        // branch Use sorted branches and min element for deterministic
-        // tie-breaking
+        // Third criterion: For tie-breaking, compare the first element of the first branch
+        // Use sorted branches and min element for deterministic tie-breaking
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
@@ -403,8 +434,7 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
     sorted_branches.sort_by(|a, b| compare_branches(a, b));
 
-    // Fold branches to find which ones would result in negative or overflow
-    // balances
+    // Fold branches to find which ones would result in negative or overflow balances
     let (_, rejected) = sorted_branches.iter().fold(
         (base_balance, HashableSet(HashSet::new())),
         |(balances, mut rejected), branch| {

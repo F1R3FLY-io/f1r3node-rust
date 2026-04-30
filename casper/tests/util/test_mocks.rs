@@ -5,9 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
-/// A mock KeyValueStore implementation for testing that uses in-memory HashMap
-/// storage. This implementation is thread-safe and supports cloning for use in
-/// multi-threaded tests.
+/// A mock KeyValueStore implementation for testing that uses in-memory HashMap storage.
+/// This implementation is thread-safe and supports cloning for use in multi-threaded tests.
 #[derive(Clone, Default)]
 pub struct MockKeyValueStore {
     data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -21,9 +20,8 @@ impl MockKeyValueStore {
         }
     }
 
-    /// Create a new MockKeyValueStore that shares the same underlying data as
-    /// another store This is useful for creating stores that share state
-    /// between clones
+    /// Create a new MockKeyValueStore that shares the same underlying data as another store
+    /// This is useful for creating stores that share state between clones
     pub fn with_shared_data(shared_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>) -> Self {
         Self { data: shared_data }
     }
@@ -80,6 +78,19 @@ impl KeyValueStore for MockKeyValueStore {
         Ok(())
     }
 
+    fn iterate_while(
+        &self,
+        f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        for (k, v) in data.iter() {
+            if !f(k.clone(), v.clone())? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
@@ -103,9 +114,8 @@ impl KeyValueStore for MockKeyValueStore {
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.data.lock().unwrap().is_empty()) }
 }
 
-/// A simple empty KeyValueStore implementation that always returns empty
-/// results. Useful for cases where you need a KeyValueStore but don't need it
-/// to store anything.
+/// A simple empty KeyValueStore implementation that always returns empty results.
+/// Useful for cases where you need a KeyValueStore but don't need it to store anything.
 #[derive(Clone, Default)]
 pub struct EmptyKeyValueStore;
 
@@ -129,6 +139,13 @@ impl KeyValueStore for EmptyKeyValueStore {
     fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> { Ok(BTreeMap::new()) }
 
     fn iterate(&self, _f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> {
+        Ok(()) // Nothing to iterate over
+    }
+
+    fn iterate_while(
+        &self,
+        _f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError> {
         Ok(()) // Nothing to iterate over
     }
 

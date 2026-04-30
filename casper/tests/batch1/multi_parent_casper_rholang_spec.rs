@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperRholangSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperRholangSpec.scala
 
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
@@ -11,9 +10,8 @@ use crate::util::genesis_builder::GenesisBuilder;
 
 // Scala comments:
 // Uncomment this to use the debugger on M2
-// May need to modify if architecture required is different or if path is
-// different. See ./scripts/build_rust_libraries.sh System.setProperty("jna.
-// library.path", "../rspace++/target/x86_64-apple-darwin/debug/")
+// May need to modify if architecture required is different or if path is different. See ./scripts/build_rust_libraries.sh
+// System.setProperty("jna.library.path", "../rspace++/target/x86_64-apple-darwin/debug/")
 
 // Scala comments:
 //put a new casper instance at the start of each
@@ -91,8 +89,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         hex::encode(unforgeable_id_u8)
     }
 
-    // 900_000 phlogiston: enough for registry insert, under 9M vault balance
-    // (avoids "Insufficient funds")
+    // 900_000 phlogiston: enough for registry insert, under 9M vault balance (avoids "Insufficient funds")
     let register_deploy = construct_deploy::source_deploy_now_full(
         register_source.to_string(),
         Some(900_000),

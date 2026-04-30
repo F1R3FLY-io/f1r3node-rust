@@ -1,20 +1,58 @@
-// Upstream casper code triggers many clippy lints due to complex consensus logic.
-#![allow(clippy::type_complexity)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::module_inception)]
-#![allow(clippy::match_like_matches_macro)]
-#![allow(clippy::large_enum_variant)]
-#![allow(clippy::empty_line_after_doc_comments)]
-#![allow(clippy::doc_lazy_continuation)]
-#![allow(clippy::derived_hash_with_manual_eq)]
-#![allow(clippy::arc_with_non_send_sync)]
-#![allow(clippy::manual_try_fold)]
-#![allow(clippy::map_identity)]
-#![allow(clippy::nonminimal_bool)]
-#![allow(clippy::if_same_then_else)]
-#![allow(clippy::redundant_pattern_matching)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::cloned_ref_to_slice_refs)]
+#![allow(
+    clippy::type_complexity,
+    clippy::ptr_arg,
+    clippy::too_many_arguments,
+    clippy::module_inception,
+    clippy::large_enum_variant,
+    clippy::match_like_matches_macro,
+    clippy::inherent_to_string,
+    clippy::mixed_attributes_style,
+    clippy::needless_range_loop,
+    clippy::should_implement_trait,
+    clippy::manual_memcpy,
+    clippy::unnecessary_sort_by,
+    clippy::borrowed_box,
+    clippy::match_single_binding,
+    clippy::unnecessary_unwrap,
+    clippy::redundant_iter_cloned,
+    clippy::new_ret_no_self,
+    clippy::new_without_default,
+    clippy::empty_line_after_doc_comments,
+    clippy::assertions_on_constants,
+    clippy::collapsible_match,
+    clippy::no_effect,
+    clippy::non_canonical_partial_ord_impl,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::extra_unused_lifetimes,
+    clippy::if_same_then_else,
+    clippy::manual_strip,
+    clippy::manual_try_fold,
+    clippy::map_identity,
+    clippy::only_used_in_recursion,
+    clippy::redundant_pattern_matching,
+    clippy::useless_conversion,
+    clippy::while_let_loop,
+    clippy::wrong_self_convention,
+    clippy::arc_with_non_send_sync,
+    clippy::derived_hash_with_manual_eq,
+    clippy::doc_lazy_continuation,
+    clippy::map_entry,
+    clippy::nonminimal_bool,
+    clippy::not_unsafe_ptr_arg_deref,
+    clippy::unnecessary_fallible_conversions,
+    clippy::unnecessary_get_then_check,
+    clippy::approx_constant,
+    clippy::single_component_path_imports,
+    clippy::overly_complex_bool_expr,
+    clippy::partialeq_to_none,
+    clippy::clone_on_copy,
+    clippy::redundant_closure,
+    clippy::single_char_pattern,
+    clippy::unnecessary_to_owned,
+    clippy::vec_init_then_push,
+    clippy::unused_io_amount,
+    clippy::large_stack_arrays,
+    clippy::manual_div_ceil
+)]
 
 pub mod rust;

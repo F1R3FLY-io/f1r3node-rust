@@ -20,10 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (node_hash_bytes, _node_bytes) = hash_node(&empty_node());
 
-    println!(
-        "\nNode Hash: {}",
-        Blake2b256Hash::from_bytes(node_hash_bytes)
-    );
+    println!("\nNode Hash: {}", Blake2b256Hash::from_bytes(node_hash_bytes));
 
     Ok(())
 }

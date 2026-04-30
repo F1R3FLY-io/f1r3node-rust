@@ -102,8 +102,7 @@ async fn get_listening_name_data_response_should_work_across_a_chain() {
 
     // Note: We create deploys one by one with sleep to ensure unique timestamps.
     // In Scala, the Time effect provides unique timestamps automatically,
-    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys
-    // error.
+    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys error.
     let mut deploy_datas = Vec::new();
     for _ in 0..8 {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;

@@ -58,8 +58,7 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
-        // we should not bother about blocking calls in this case since we are expecting
-        // consecutive execution
+        // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
     }
@@ -77,9 +76,8 @@ async fn start_node(options: Options) -> Result<()> {
     let (node_conf, profile, config_file, kamon_conf) =
         node::rust::configuration::builder::build(&default_dir, options)?;
 
-    // Set system property for data directory (equivalent to Scala's
-    // System.setProperty) SAFETY: This is called early in node startup before
-    // spawning threads that read env vars
+    // Set system property for data directory (equivalent to Scala's System.setProperty)
+    // SAFETY: This is called early in node startup before spawning threads that read env vars
     unsafe {
         std::env::set_var(
             "RNODE_DATA_DIR",
@@ -225,13 +223,6 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 rt.block_on(DeployRuntime::bond_status(&mut deploy_client, &public_key));
                 Ok(())
             }
-            OptionsSubCommand::DataAtName { name } => {
-                rt.block_on(DeployRuntime::listen_for_data_at_name(
-                    &mut deploy_client,
-                    name,
-                ));
-                Ok(())
-            }
             OptionsSubCommand::ContAtName { names } => {
                 rt.block_on(DeployRuntime::listen_for_continuation_at_name(
                     &mut deploy_client,
@@ -321,8 +312,7 @@ fn generate_key(
     Ok(())
 }
 
-/// Get private key from either direct key or file path (equivalent to Scala's
-/// getPrivateKey)
+/// Get private key from either direct key or file path (equivalent to Scala's getPrivateKey)
 fn get_private_key(
     maybe_private_key: Option<PrivateKey>,
     maybe_private_key_path: Option<PathBuf>,

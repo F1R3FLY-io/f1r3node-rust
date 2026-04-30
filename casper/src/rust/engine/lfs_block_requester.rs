@@ -100,8 +100,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
-    /// Adds new keys to Init state, ready for processing. Existing keys are
-    /// skipped. Returns a new ST instance with the added keys.
+    /// Adds new keys to Init state, ready for processing. Existing keys are skipped.
+    /// Returns a new ST instance with the added keys.
     pub fn add(&self, keys: HashSet<Key>) -> Self {
         // Filter keys that are in Done status or in request Map.
         let new_keys: HashSet<Key> = keys
@@ -126,9 +126,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
-    /// Get next keys not already requested or in case of resend together with
-    /// Requested. Returns updated state with requested keys and the set of
-    /// keys that were marked for request.
+    /// Get next keys not already requested or in case of resend together with Requested.
+    /// Returns updated state with requested keys and the set of keys that were marked for request.
     pub fn get_next(&self, resend: bool) -> (Self, HashSet<Key>) {
         // Check if latest are requested
         let requests = if self.latest.is_empty() {
@@ -182,8 +181,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     }
 
     /// Confirm key is Received if it was Requested.
-    /// Returns updated state with the flags if Requested and last latest
-    /// received.
+    /// Returns updated state with the flags if Requested and last latest received.
     pub fn received(
         &self,
         k: Key,
@@ -307,9 +305,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         Ok(())
     }
 
-    /// Validate received block, check if it was requested and if block hash is
-    /// correct. Following justifications from last finalized block gives us
-    /// proof for all ancestor blocks.
+    /// Validate received block, check if it was requested and if block hash is correct.
+    /// Following justifications from last finalized block gives us proof for all ancestor blocks.
     async fn validate_received_block(&self, block: &BlockMessage) -> Result<bool, CasperError> {
         let validation_start = std::time::Instant::now();
         let block_number = proto_util::block_number(block);
@@ -327,8 +324,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 CasperError::StreamError("Failed to acquire state lock for validation".to_string())
             })?;
 
-            // if message received is latest as per approved block - add its self
-            // justification to target latest messages that has to be pulled
+            // if message received is latest as per approved block - add its self justification
+            // to target latest messages that has to be pulled
             let lm_replacement = if self.latest_messages.contains(&block.block_hash) {
                 tracing::info!(
                     "Block {} is a latest message, checking for self-justification replacement",
@@ -663,8 +660,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 }
 
 /// Create a stream to receive blocks needed for Last Finalized State.
-/// Uses exponential backoff: starts at request_timeout, doubles up to
-/// max_request_timeout. Resets to request_timeout when a response is received.
+/// Uses exponential backoff: starts at request_timeout, doubles up to max_request_timeout.
+/// Resets to request_timeout when a response is received.
 pub async fn stream<'a, T: BlockRequesterOps>(
     approved_block: &'a ApprovedBlock,
     initial_response_messages: &'a VecDeque<BlockMessage>,
@@ -679,8 +676,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     let block = &approved_block.candidate.block;
 
     // Active validators as per approved block state
-    // - for approved state to be complete it is required to have block from each of
-    //   them
+    // - for approved state to be complete it is required to have block from each of them
     let latest_messages: HashSet<BlockHash> = block
         .justifications
         .iter()
@@ -742,8 +738,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         }
         Err(e) => {
             tracing::error!("Failed to create LFS Block Requester stream: {:?}", e);
-            // Cleanup is handled automatically by Drop implementations for
-            // channels
+            // Cleanup is handled automatically by Drop implementations for channels
         }
     }
 
@@ -776,15 +771,13 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     let mut current_timeout = request_timeout;
     let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
 
-    // Process all initial messages immediately and merge with regular message
-    // stream This ensures proper ordering and efficient processing of
-    // pre-existing messages
+    // Process all initial messages immediately and merge with regular message stream
+    // This ensures proper ordering and efficient processing of pre-existing messages
     let initial_messages_channel_capacity = std::cmp::max(1, initial_response_messages.len());
     let (initial_messages_tx, mut initial_messages_rx) =
         mpsc::channel(initial_messages_channel_capacity);
 
-    // Enqueue all initial messages for processing - this preserves order and
-    // integrates with normal flow
+    // Enqueue all initial messages for processing - this preserves order and integrates with normal flow
     if !initial_response_messages.is_empty() {
         tracing::info!(
             "Processing {} initial response messages",

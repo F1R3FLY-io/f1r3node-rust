@@ -129,7 +129,7 @@ impl GenesisBuilder {
         };
 
         BlockMessage {
-            block_hash: bytes::Bytes::from(Blake2b256::hash(b"test_genesis".to_vec())), /* Create a deterministic hash */
+            block_hash: bytes::Bytes::from(Blake2b256::hash(b"test_genesis".to_vec())), // Create a deterministic hash
             header,
             body,
             justifications: vec![],
@@ -257,6 +257,9 @@ impl GenesisBuilder {
             supply: i64::MAX,
             block_number: 0,
             version: 1,
+            native_token_name: "F1R3CAP".to_string(),
+            native_token_symbol: "F1R3".to_string(),
+            native_token_decimals: 8,
         })
     }
 
@@ -308,8 +311,7 @@ impl GenesisBuilder {
         let cache_misses = CACHE_MISSES.fetch_add(1, Ordering::SeqCst) + 1;
         let cache_accesses = CACHE_ACCESSES.load(Ordering::SeqCst);
         println!(
-            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) \
-             cache accesses.",
+            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses.",
             cache_misses,
             cache_accesses,
             (cache_misses as f64 / cache_accesses as f64) * 100.0
@@ -323,9 +325,8 @@ impl GenesisBuilder {
         }
 
         // With shared LMDB, we don't need to create a separate directory for storage.
-        // Use the shared LMDB path instead. The directory is kept for backward
-        // compatibility and logging purposes, but actual LMDB storage is in the
-        // shared environment.
+        // Use the shared LMDB path instead. The directory is kept for backward compatibility
+        // and logging purposes, but actual LMDB storage is in the shared environment.
         let storage_directory_path = get_shared_lmdb_path();
         // No TempDir guard needed since we're using the shared environment
 
@@ -334,8 +335,7 @@ impl GenesisBuilder {
 
         // Build genesis in a scoped block to ensure LMDB handles are closed
         let genesis = {
-            // Create genesis with rspace_scope_id so TestNodes can share the same RSpace
-            // stores
+            // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
             let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
             let r_store = (&mut *kvs_manager)
                 .r_space_stores()
@@ -382,8 +382,7 @@ pub struct GenesisContext {
     pub genesis_vaults: Vec<(PrivateKey, PublicKey)>,
     pub storage_directory: PathBuf,
     /// The shared RSpace scope_id for all nodes in the same test.
-    /// All TestNodes in this test share the same RSpace stores to see each
-    /// other's state.
+    /// All TestNodes in this test share the same RSpace stores to see each other's state.
     pub rspace_scope_id: String,
     // Keep TempDir guard alive to prevent auto-cleanup while context is in use
     // Only the original context holds Some(tempdir), clones have None
@@ -394,8 +393,7 @@ pub struct GenesisContext {
 }
 
 // Manual Clone implementation: clones don't get the TempDir guard
-// This is intentional - only the original context (stored in cache) keeps the
-// directory alive
+// This is intentional - only the original context (stored in cache) keeps the directory alive
 impl Clone for GenesisContext {
     fn clone(&self) -> Self {
         Self {

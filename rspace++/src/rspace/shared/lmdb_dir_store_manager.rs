@@ -89,10 +89,7 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
                 )))
             })?;
 
-            (
-                db.name_override.clone().unwrap_or(db.id.clone()),
-                (*cfg).clone(),
-            )
+            (db.name_override.clone().unwrap_or(db.id.clone()), (*cfg).clone())
         };
 
         let manager_arc = {

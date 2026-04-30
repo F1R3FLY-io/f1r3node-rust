@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/
-// VaultsGenerator.scala
+// See casper/src/main/scala/coop/rchain/casper/genesis/contracts/VaultsGenerator.scala
 
 use super::vault::Vault;
 

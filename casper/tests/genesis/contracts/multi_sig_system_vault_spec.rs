@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// MultiSigSystemVaultSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/MultiSigSystemVaultSpec.scala
 
 use std::collections::HashMap;
 

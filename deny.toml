@@ -33,17 +33,10 @@ ignore = [
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
 
-    # === MASTER-ONLY DEBT — REMOVE BEFORE MERGING TO STAGING/DEV ===
-    # These advisories are tripped by master's older transitive deps but NOT by
-    # staging/dev. If this block survives a merge into staging or dev, those
-    # branches will silently mask advisories they would otherwise catch. Strip
-    # the entire block (banner-to-banner) when reconciling deny.toml during a
-    # merge, and verify with `cargo deny check advisories` on the merge result.
-    "RUSTSEC-2026-0044", # AWS-LC X.509 name-constraints bypass; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0048", # AWS-LC CRL distribution-point scope; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0049", # CRLs not authoritative; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0097", # rand unsound w/ custom logger; cleared by heed-0.22 dep tree on staging/dev
-    # === END MASTER-ONLY DEBT ===
+    # Rand unsoundness with custom-logger + rand::rng(). We don't override
+    # the global rng with a custom logger; the unsafe path is unreachable in
+    # this codebase. Track upstream rand fix.
+    "RUSTSEC-2026-0097",
 ]
 
 # ---------------------------------------------------------------------------

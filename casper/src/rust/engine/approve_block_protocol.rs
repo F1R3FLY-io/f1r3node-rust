@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.scala
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -133,6 +132,9 @@ impl ApproveBlockProtocolFactory {
         block_number: i64,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
+        native_token_name: String,
+        native_token_symbol: String,
+        native_token_decimals: u32,
         runtime_manager: &mut RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -184,6 +186,9 @@ impl ApproveBlockProtocolFactory {
             vaults,
             supply: i64::MAX,
             version: 1,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
@@ -256,8 +261,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
             .collect();
 
         let candidate = ApprovedBlockCandidate {
-            block: genesis_block.clone(), /* Needed: genesis_block used again below and stored in
-                                           * struct */
+            block: genesis_block.clone(), // Needed: genesis_block used again below and stored in struct
             required_sigs,
         };
 
@@ -358,8 +362,10 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
             Box::pin(self.complete_genesis_ceremony(signatures.clone())).await
         } else {
             tracing::info!(
-                "Failed to meet approval conditions. Signatures: {} of {} required. Duration {} \
-                 ms of {} ms minimum. Continue broadcasting UnapprovedBlock...",
+                "Failed to meet approval conditions. \
+                Signatures: {} of {} required. \
+                Duration {} ms of {} ms minimum. \
+                Continue broadcasting UnapprovedBlock...",
                 signatures.len(),
                 self.required_sigs,
                 time - self.start,
@@ -480,8 +486,8 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
 
     pub async fn run(&self) -> Result<(), CasperError> {
         tracing::info!(
-            "Starting execution of ApprovedBlockProtocol. Waiting for {} approvals from genesis \
-             validators.",
+            "Starting execution of ApprovedBlockProtocol. \
+            Waiting for {} approvals from genesis validators.",
             self.required_sigs
         );
 

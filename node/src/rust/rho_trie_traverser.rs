@@ -19,8 +19,8 @@ pub type ReadParams = (Vec<Vec<i32>>, i32, Par, Vec<ParMap>);
 /// This is a 1:1 port of the Scala RhoTrieTraverser from:
 /// https://github.com/rchain/rchain/blob/19880674b9c50aa29efe91d77f70b06b861ca7a8/casper/src/main/resources/Registry.rho
 ///
-/// According to the trie implementation in Rholang, the methods below are hacks
-/// to traverse the trie structure used in the Registry implementation.
+/// According to the trie implementation in Rholang, the methods below are hacks to traverse the trie
+/// structure used in the Registry implementation.
 ///
 /// # Example
 ///
@@ -248,15 +248,14 @@ impl RhoTrieTraverser {
     /// * `runtime` - RhoRuntime instance for data access
     ///
     /// # Returns
-    /// Result containing either an integer value (left) or a ParMap (right) if
-    /// found, None otherwise
-    fn tree_hash_map_getter<R: RhoRuntime>(
+    /// Result containing either an integer value (left) or a ParMap (right) if found, None otherwise
+    async fn tree_hash_map_getter<R: RhoRuntime>(
         map_par: &Par,
         nyb_list: &[i32],
         runtime: &R,
     ) -> Result<Option<Result<i64, ParMap>>, InterpreterError> {
         let query = Self::node_map_list(map_par, nyb_list);
-        let result = runtime.get_data(&query);
+        let result = runtime.get_data(&query).await;
 
         if let Some(first) = result.first() {
             if let Some(head_par) = first.a.pars.first() {
@@ -276,8 +275,7 @@ impl RhoTrieTraverser {
         Ok(None)
     }
 
-    /// Convert a vector of ParMaps to a HashMap using provided key/value
-    /// extractors
+    /// Convert a vector of ParMaps to a HashMap using provided key/value extractors
     ///
     /// # Arguments
     /// * `values` - Vector of ParMaps to convert
@@ -315,15 +313,14 @@ impl RhoTrieTraverser {
     /// * `runtime` - RhoRuntime instance for data access
     ///
     /// # Returns
-    /// Result containing vector of all ParMaps found during traversal, or an
-    /// error
-    pub fn traverse_trie<R: RhoRuntime>(
+    /// Result containing vector of all ParMaps found during traversal, or an error
+    pub async fn traverse_trie<R: RhoRuntime>(
         depth: i32,
         map_par: &Par,
         runtime: &R,
     ) -> Result<Vec<ParMap>, InterpreterError> {
         let start_params: ReadParams = (vec![vec![]], depth * 2, map_par.clone(), vec![]);
-        Self::traverse_trie_rec(start_params, runtime)
+        Self::traverse_trie_rec(start_params, runtime).await
     }
 
     /// Extend a key based on bit patterns in the value
@@ -345,17 +342,16 @@ impl RhoTrieTraverser {
     /// and implements the same logic as the Scala tailrec version.
     ///
     /// # Returns
-    /// Result containing Either continuation parameters (Left) or final result
-    /// (Right) In practice, this iterative version always returns Right
-    /// with the final result
-    fn traverse_trie_rec<R: RhoRuntime>(
+    /// Result containing Either continuation parameters (Left) or final result (Right)
+    /// In practice, this iterative version always returns Right with the final result
+    async fn traverse_trie_rec<R: RhoRuntime>(
         read_params: ReadParams,
         runtime: &R,
     ) -> Result<Vec<ParMap>, InterpreterError> {
         let (mut keys, depth, map_par, mut collected_results) = read_params;
 
         while let Some(key) = keys.pop() {
-            let current_node = Self::tree_hash_map_getter(&map_par, &key, runtime)?;
+            let current_node = Self::tree_hash_map_getter(&map_par, &key, runtime).await?;
 
             match current_node {
                 Some(Ok(i)) => {

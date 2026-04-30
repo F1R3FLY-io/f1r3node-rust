@@ -264,8 +264,7 @@ where
     Ok((test_result, ping_handler, lookup_handler))
 }
 
-/// Two nodes test execution without starting remote server (simulates dead
-/// remote peer)
+/// Two nodes test execution without starting remote server (simulates dead remote peer)
 pub async fn run_two_nodes_test_remote_dead<T, F, Fut>(
     runtime: &TestRuntime,
     execute_fn: F,

@@ -22,11 +22,10 @@ use tokio::fs;
 
 /// Creates a unique temporary directory path with the given prefix.
 ///
-/// This function handles the case where `std::env::temp_dir()` returns an empty
-/// path by falling back to `/tmp` (standard on macOS/Unix systems).
+/// This function handles the case where `std::env::temp_dir()` returns an empty path
+/// by falling back to `/tmp` (standard on macOS/Unix systems).
 ///
-/// The directory name is made unique using a combination of process ID and
-/// nanosecond timestamp.
+/// The directory name is made unique using a combination of process ID and nanosecond timestamp.
 fn mk_unique_temp_dir(prefix: &str) -> PathBuf {
     // Get system temp directory with fallback to /tmp
     let mut temp_dir = std::env::temp_dir();
@@ -179,12 +178,12 @@ fn print_normalized_term(normalized_term: &Par) {
     println!("{}", printer.build_string_from_message(normalized_term));
 }
 
-fn print_storage_contents(runtime: &RhoRuntimeImpl, unmatched_sends_only: bool) {
+async fn print_storage_contents(runtime: &RhoRuntimeImpl, unmatched_sends_only: bool) {
     println!("\nStorage Contents:");
     let output = if unmatched_sends_only {
-        storage_printer::pretty_print_unmatched_sends(runtime)
+        storage_printer::pretty_print_unmatched_sends(runtime).await
     } else {
-        storage_printer::pretty_print(runtime)
+        storage_printer::pretty_print(runtime).await
     };
     println!("{}", output);
 }
@@ -296,8 +295,7 @@ async fn write_binary(file_name: &str, source: &str) -> Result<(), InterpreterEr
     Ok(())
 }
 
-/// Wait for evaluation result with timeout feedback, similar to Scala's
-/// waitForSuccess
+/// Wait for evaluation result with timeout feedback, similar to Scala's waitForSuccess
 async fn wait_for_success<F, T>(mut future: std::pin::Pin<Box<F>>) -> Result<T, InterpreterError>
 where F: std::future::Future<Output = Result<T, InterpreterError>> {
     loop {
@@ -331,7 +329,7 @@ async fn evaluate_par(
     print_errors(&result.errors);
 
     if !quiet {
-        print_storage_contents(runtime, unmatched_sends_only);
+        print_storage_contents(runtime, unmatched_sends_only).await;
     }
 
     Ok(())
