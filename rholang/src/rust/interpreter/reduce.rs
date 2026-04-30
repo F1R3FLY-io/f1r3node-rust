@@ -1,3 +1,12 @@
+#![allow(
+    clippy::collapsible_match,
+    clippy::match_like_matches_macro,
+    clippy::ptr_arg,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::useless_conversion
+)]
+
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

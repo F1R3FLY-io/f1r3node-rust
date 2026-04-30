@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 //! Command-line options definition using clap
 //!
 //! This module defines all command-line arguments and subcommands for the F1r3fly node.

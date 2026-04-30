@@ -1,3 +1,5 @@
+#![allow(clippy::only_used_in_recursion)]
+
 use models::rhoapi::var::VarInstance::{FreeVar, Wildcard};
 use models::rhoapi::{MatchCase, Par, Var};
 

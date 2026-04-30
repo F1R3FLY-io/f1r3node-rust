@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_iter_cloned, clippy::type_complexity, clippy::unnecessary_sort_by)]
+
 // See /home/spreston/src/firefly/f1r3fly/rspace/src/main/scala/coop/rchain/
 // rspace/ReplayRSpace.scala
 

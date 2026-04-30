@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See casper/src/main/scala/coop/rchain/casper/ReportingCasper.scala
 
 use std::collections::HashMap;

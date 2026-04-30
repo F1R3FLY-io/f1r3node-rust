@@ -1,3 +1,5 @@
+#![allow(clippy::match_like_matches_macro)]
+
 use models::rust::utils::no_frees;
 
 use super::exports::*;

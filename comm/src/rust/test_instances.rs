@@ -1,3 +1,5 @@
+#![allow(clippy::cloned_ref_to_slice_refs)]
+
 // See comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala
 
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::type_complexity,
+    clippy::unnecessary_unwrap
+)]
+
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
 use std::collections::{HashMap, HashSet};

@@ -1,3 +1,5 @@
+#![allow(clippy::doc_lazy_continuation, clippy::map_entry)]
+
 // See casper/src/main/scala/coop/rchain/casper/finality/Finalizer.scala
 
 use std::collections::HashMap;

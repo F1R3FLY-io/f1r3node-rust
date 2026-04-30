@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Deploy gRPC Service V1 implementation
 //!
 //! This module provides a gRPC service for deploy functionality,

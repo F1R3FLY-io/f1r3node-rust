@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match, clippy::manual_try_fold, clippy::ptr_arg)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
 use models::rhoapi::connective::ConnectiveInstance;

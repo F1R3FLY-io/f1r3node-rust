@@ -1,3 +1,5 @@
+#![allow(clippy::match_like_matches_macro, clippy::too_many_arguments)]
+
 use std::collections::BTreeMap;
 
 use expr::ExprInstance;

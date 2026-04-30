@@ -1,3 +1,10 @@
+#![allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::map_identity,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;

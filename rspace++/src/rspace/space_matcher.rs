@@ -1,3 +1,5 @@
+#![allow(clippy::borrowed_box, clippy::type_complexity)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/SpaceMatcher.scala
 
 use std::collections::HashMap;

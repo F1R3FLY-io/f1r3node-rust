@@ -1,3 +1,5 @@
+#![allow(clippy::inherent_to_string)]
+
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
 use crypto::rust::public_key::PublicKey;

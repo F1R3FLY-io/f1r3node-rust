@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 //! REPL client module
 
 //! REPL client for F1r3fly node

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
 // Imports needed for function signature and return type
 use std::future::Future;

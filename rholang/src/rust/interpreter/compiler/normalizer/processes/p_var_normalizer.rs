@@ -1,3 +1,5 @@
+#![allow(clippy::extra_unused_lifetimes)]
+
 use std::result::Result;
 
 use models::rust::utils::{new_boundvar_expr, new_freevar_expr, new_wildcard_expr};

@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 use bincode;
 use serde::Serialize;
 

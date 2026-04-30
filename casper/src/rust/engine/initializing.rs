@@ -1,3 +1,5 @@
+#![allow(clippy::match_like_matches_macro, clippy::type_complexity)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/Initializing.scala
 
 use std::collections::{BTreeMap, HashSet, VecDeque};

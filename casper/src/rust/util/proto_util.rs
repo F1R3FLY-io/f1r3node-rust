@@ -1,3 +1,5 @@
+#![allow(clippy::nonminimal_bool, clippy::ptr_arg)]
+
 // See casper/src/main/scala/coop/rchain/casper/util/ProtoUtil.scala
 
 use std::collections::HashSet;

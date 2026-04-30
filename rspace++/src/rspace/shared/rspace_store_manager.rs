@@ -1,16 +1,19 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use heed::EnvOpenOptions;
-use lazy_static::lazy_static;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
+use super::env_cache;
 use super::lmdb_dir_store_manager::{Db, LmdbEnvConfig};
 use crate::rspace::rspace::RSpaceStore;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::shared::lmdb_dir_store_manager::LmdbDirStoreManager;
+
+// max_dbs limit for shared envs (history + roots live in the same env).
+// Increased to support parallel test execution with scoped database names.
+const RSPACE_MAX_DBS: u32 = 10000;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RholangCLI.scala
 pub fn mk_rspace_store_manager(dir_path: PathBuf, map_size: usize) -> impl KeyValueStoreManager {
@@ -28,10 +31,6 @@ pub fn mk_rspace_store_manager(dir_path: PathBuf, map_size: usize) -> impl KeyVa
     LmdbDirStoreManager::new(dir_path, db_mapping)
 }
 
-lazy_static! {
-    static ref LMDB_DIR_STATE_MANAGER: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
-}
-
 pub fn get_or_create_rspace_store(
     lmdb_path: &str,
     map_size: usize,
@@ -40,21 +39,19 @@ pub fn get_or_create_rspace_store(
         tracing::debug!("RSpace++ storage path {} already exists (reopening)", lmdb_path);
 
         // In Scala (and Rust rnode_db_mapping), RSpace envs are in subfolders:
-        // rspace/history and rspace/cold
+        // rspace/history and rspace/cold. history and roots share the same env.
         let history_env_path = format!("{}/rspace/history", lmdb_path);
         let cold_env_path = format!("{}/rspace/cold", lmdb_path);
 
-        let history_store = open_lmdb_store(&history_env_path, "rspace-history")?;
-        let roots_store = open_lmdb_store(&history_env_path, "rspace-roots")?;
-        let cold_store = open_lmdb_store(&cold_env_path, "rspace-cold")?;
+        let history_store = open_lmdb_store(&history_env_path, "rspace-history", map_size)?;
+        let roots_store = open_lmdb_store(&history_env_path, "rspace-roots", map_size)?;
+        let cold_store = open_lmdb_store(&cold_env_path, "rspace-cold", map_size)?;
 
-        let rspace_store = RSpaceStore {
+        Ok(RSpaceStore {
             history: Arc::new(history_store),
             roots: Arc::new(roots_store),
             cold: Arc::new(cold_store),
-        };
-
-        Ok(rspace_store)
+        })
     } else {
         tracing::debug!("RSpace++ storage path {} does not exist, creating new", lmdb_path);
         create_dir_all(lmdb_path).expect("Failed to create RSpace++ storage directory");
@@ -69,13 +66,11 @@ pub fn get_or_create_rspace_store(
         let roots_store = create_lmdb_store(&history_env_path, "rspace-roots", map_size)?;
         let cold_store = create_lmdb_store(&cold_env_path, "rspace-cold", map_size)?;
 
-        let rspace_store = RSpaceStore {
+        Ok(RSpaceStore {
             history: Arc::new(history_store),
             roots: Arc::new(roots_store),
             cold: Arc::new(cold_store),
-        };
-
-        Ok(rspace_store)
+        })
     }
 }
 
@@ -86,34 +81,27 @@ fn create_lmdb_store(
     db_name: &str,
     max_env_size: usize,
 ) -> Result<LmdbKeyValueStore, heed::Error> {
-    let mut env_builder = EnvOpenOptions::new();
-    env_builder.map_size(max_env_size);
-    // Increased max_dbs to support parallel test execution with scoped database
-    // names
-    env_builder.max_dbs(10000);
-    env_builder.max_readers(2048);
-
-    let env = unsafe { env_builder.open(lmdb_path)? };
+    // Route through env_cache so a second create_lmdb_store call for the same
+    // path (e.g. rspace-history + rspace-roots both in rspace/history) reuses
+    // the same Env handle instead of tripping EnvAlreadyOpened under heed 0.22.
+    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size, RSPACE_MAX_DBS)?;
     let mut wtxn = env.write_txn()?;
     let db = env.create_database(&mut wtxn, Some(db_name))?;
     wtxn.commit()?;
-
     Ok(LmdbKeyValueStore::new(env, db))
 }
 
-fn open_lmdb_store(lmdb_path: &str, db_name: &str) -> Result<LmdbKeyValueStore, heed::Error> {
-    let mut env_builder = EnvOpenOptions::new();
-    env_builder.max_dbs(10000);
-
-    let env = unsafe { env_builder.open(lmdb_path)? };
+fn open_lmdb_store(
+    lmdb_path: &str,
+    db_name: &str,
+    max_env_size: usize,
+) -> Result<LmdbKeyValueStore, heed::Error> {
+    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size, RSPACE_MAX_DBS)?;
     let rtxn = env.read_txn()?;
     let db = env.open_database(&rtxn, Some(db_name))?;
     drop(rtxn);
     match db {
-        Some(open_db) => Ok(LmdbKeyValueStore {
-            env: env.into(),
-            db: Arc::new(Mutex::new(open_db)),
-        }),
+        Some(open_db) => Ok(LmdbKeyValueStore::new(env, open_db)),
         None => panic!("\nFailed to open database: {}", db_name),
     }
 }

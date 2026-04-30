@@ -1,3 +1,5 @@
+#![allow(clippy::non_canonical_partial_ord_impl)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/merger/StateChange.scala
 
 use std::collections::HashSet;

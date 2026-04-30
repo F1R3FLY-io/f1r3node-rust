@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg, clippy::too_many_arguments, clippy::type_complexity)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

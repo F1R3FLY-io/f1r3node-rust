@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockApproverProtocol.scala
 
 use std::collections::HashMap;

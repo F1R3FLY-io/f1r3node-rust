@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_fallible_conversions)]
+
 //! JSON serialization/deserialization for LightBlockInfo and related types
 //!
 //! This module provides custom JSON serialization for protobuf-generated types

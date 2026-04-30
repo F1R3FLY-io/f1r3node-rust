@@ -1,3 +1,5 @@
+#![allow(clippy::while_let_loop)]
+
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};

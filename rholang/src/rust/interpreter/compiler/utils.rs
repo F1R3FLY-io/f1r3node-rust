@@ -1,3 +1,5 @@
+#![allow(clippy::wrong_self_convention)]
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
     EAnd, EDiv, EEq, EGt, EGte, ELt, ELte, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,

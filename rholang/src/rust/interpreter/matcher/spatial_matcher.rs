@@ -1,3 +1,9 @@
+#![allow(
+    clippy::match_like_matches_macro,
+    clippy::match_single_binding,
+    clippy::type_complexity
+)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
 use models::rust::par_map_type_mapper::ParMapTypeMapper;

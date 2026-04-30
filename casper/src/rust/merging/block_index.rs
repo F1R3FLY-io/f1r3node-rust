@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
 use models::rust::block_hash::BlockHash;

@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/ReportingRspace.scala
 
 use std::collections::{BTreeSet, HashMap};

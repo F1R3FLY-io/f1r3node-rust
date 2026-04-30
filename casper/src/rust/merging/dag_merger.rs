@@ -1,3 +1,5 @@
+#![allow(clippy::arc_with_non_send_sync, clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
 use std::cell::RefCell;

@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod hashing;
 pub mod history;
 pub mod hot_store;

@@ -1,3 +1,5 @@
+#![allow(clippy::empty_line_after_doc_comments)]
+
 // See casper/src/main/scala/coop/rchain/casper/protocol/package.scala
 // See models/src/main/scala/coop/rchain/casper/protocol/PacketTypeTag.scala
 

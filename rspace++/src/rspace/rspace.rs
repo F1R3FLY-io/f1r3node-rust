@@ -1,3 +1,10 @@
+#![allow(
+    clippy::ptr_arg,
+    clippy::redundant_iter_cloned,
+    clippy::type_complexity,
+    clippy::unnecessary_sort_by
+)]
+
 // See rspace/src/main/scala/coop/rchain/rspace/RSpace.scala
 
 // NOTE: Manual marks are used instead of trace_i()/with_marks() because

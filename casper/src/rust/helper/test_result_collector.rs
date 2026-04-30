@@ -1,3 +1,5 @@
+#![allow(clippy::map_identity)]
+
 // See casper/src/test/scala/coop/rchain/casper/helper/TestResultCollector.scala
 
 use std::collections::HashMap;

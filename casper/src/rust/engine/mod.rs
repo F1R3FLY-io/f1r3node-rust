@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod approve_block_protocol;
 pub mod block_approver_protocol;
 pub mod block_retriever;

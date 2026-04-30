@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // See models/src/test/scala/coop/rchain/models/blockImplicits.scala
 
 use crypto::rust::signatures::secp256k1::Secp256k1;

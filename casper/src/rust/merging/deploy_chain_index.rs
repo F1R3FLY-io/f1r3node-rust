@@ -1,3 +1,5 @@
+#![allow(clippy::derived_hash_with_manual_eq)]
+
 // See casper/src/main/scala/coop/rchain/casper/merging/DeployChainIndex.scala
 
 use std::collections::HashSet;

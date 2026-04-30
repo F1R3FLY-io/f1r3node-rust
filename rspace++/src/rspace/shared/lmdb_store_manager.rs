@@ -1,53 +1,31 @@
+#![allow(clippy::new_ret_no_self)]
+
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use heed::types::SerdeBincode;
-use heed::{Database, Env, EnvOpenOptions};
+use heed::{Database, Env};
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use tokio::sync::Mutex;
 
+use crate::rspace::shared::env_cache;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
-// Process-global cache of opened LMDB environments, keyed by directory path.
-// heed 0.22 rejects duplicate env opens of the same directory with
-// EnvAlreadyOpened, so every LmdbStoreManager that targets a given path must
-// reuse the same Env handle. heed's Env is internally refcounted; clones are
-// cheap and safe to share across threads.
-static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Env>>> = OnceLock::new();
-
-fn get_or_open_env(dir_path: &Path, max_env_size: usize, max_dbs: u32) -> Result<Env, heed::Error> {
-    let cache = ENV_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
-    let mut cache_lock = cache.lock().expect("LMDB env cache mutex poisoned");
-    if let Some(env) = cache_lock.get(dir_path) {
-        return Ok(env.clone());
-    }
-
-    fs::create_dir_all(dir_path)?;
-    let mut env_builder = EnvOpenOptions::new();
-    env_builder.map_size(max_env_size);
-    env_builder.max_dbs(max_dbs);
-    env_builder.max_readers(2048);
-    let env = unsafe { env_builder.open(dir_path)? };
-    cache_lock.insert(dir_path.to_path_buf(), env.clone());
-    Ok(env)
-}
 
 // See shared/src/main/scala/coop/rchain/store/LmdbStoreManager.scala
 pub struct LmdbStoreManager {
     dir_path: PathBuf,
     max_env_size: usize,
     max_dbs: u32,
-    env: Arc<Mutex<Option<Env>>>,
+    env: Arc<Mutex<Option<Arc<Env>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
 }
 
 #[derive(Clone)]
 struct DbEnv {
-    env: Env,
+    env: Arc<Env>,
     db: Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>,
 }
 
@@ -74,13 +52,18 @@ impl LmdbStoreManager {
             }
         }
 
-        // Obtain a handle to the shared env for this path. Multiple
-        // LmdbStoreManager instances targeting the same dir_path (e.g. the
-        // casper shared-LMDB test pattern) all reuse the same Env clone.
+        // Obtain a shared Arc<Env> for this path from the workspace-level
+        // env_cache. Multiple LmdbStoreManager instances targeting the same
+        // dir_path (e.g. the casper shared-LMDB test pattern) all observe the
+        // same Env via the cache.
         let env = {
             let mut env_slot = self.env.lock().await;
             if env_slot.is_none() {
-                *env_slot = Some(get_or_open_env(&self.dir_path, self.max_env_size, self.max_dbs)?);
+                *env_slot = Some(env_cache::get_or_open_env(
+                    &self.dir_path,
+                    self.max_env_size,
+                    self.max_dbs,
+                )?);
             }
             env_slot.as_ref().unwrap().clone()
         };
@@ -105,8 +88,9 @@ impl KeyValueStoreManager for LmdbStoreManager {
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        // Drop all cached DbEnv handles and the underlying env. heed's Env
-        // Drop closes the LMDB file handles when the last clone is released.
+        // Drop our Arc<Env> clones. The env_cache holds Weak refs, so when
+        // the last consumer drops, the cache entry auto-evicts on the next
+        // lookup and heed closes the LMDB file handles.
         let mut dbs = self.dbs.lock().await;
         dbs.clear();
         let mut env_slot = self.env.lock().await;

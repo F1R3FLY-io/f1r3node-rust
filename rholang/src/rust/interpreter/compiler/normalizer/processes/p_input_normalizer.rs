@@ -1,3 +1,5 @@
+#![allow(clippy::match_like_matches_macro, clippy::type_complexity)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PInputNormalizer.scala
 
 use std::collections::{HashMap, HashSet};

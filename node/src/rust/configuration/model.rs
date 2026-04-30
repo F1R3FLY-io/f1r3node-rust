@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 //! Configuration model definitions
 //!
 //! This module contains the data structures that represent the node configuration,

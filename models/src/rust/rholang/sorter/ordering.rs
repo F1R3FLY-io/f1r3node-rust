@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ordering.scala
 
 use std::collections::HashMap;

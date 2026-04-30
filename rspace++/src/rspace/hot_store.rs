@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_get_then_check)]
+
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::Debug;

@@ -1,3 +1,5 @@
+#![allow(clippy::manual_try_fold, clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/merging/ConflictSetMerger.scala
 
 use std::collections::{HashMap, HashSet};

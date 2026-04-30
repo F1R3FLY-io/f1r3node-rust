@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/StoragePrinter.scala
 
 use std::collections::BTreeSet;

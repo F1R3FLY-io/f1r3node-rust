@@ -1,3 +1,5 @@
+#![allow(clippy::doc_lazy_continuation)]
+
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
 use std::collections::HashMap;

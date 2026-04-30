@@ -1,3 +1,5 @@
+#![allow(clippy::ptr_arg, clippy::too_many_arguments)]
+
 // See casper/src/main/scala/coop/rchain/casper/genesis/Genesis.scala
 
 use crypto::rust::signatures::signed::Signed;

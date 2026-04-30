@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
 use models::rhoapi::{Par, ReceiveBind, Var};

@@ -1,3 +1,5 @@
+#![allow(clippy::should_implement_trait)]
+
 use std::collections::HashMap;
 
 // Prometheus histogram bucket definitions
