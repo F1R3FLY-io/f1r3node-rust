@@ -86,21 +86,37 @@ Mismatched arity means the send/receive will never match.
 
 ## Joins
 
-Wait for messages on multiple channels simultaneously. The body executes only when ALL channels have a message.
+Wait for messages on multiple channels simultaneously. The body executes only when ALL channels have a message, atomically consuming one from each. Use the `&` operator between binds:
 
 ```rho
-for (@x <- chan1; @y <- chan2) {
+for (@x <- chan1 & @y <- chan2) {
   stdout!(x + y)
 }
 ```
 
-This is a synchronization primitive. The body does not execute until both `chan1` and `chan2` have pending messages.
+This is a synchronization primitive. The body does not execute until both `chan1` and `chan2` have pending messages, and the consumption is atomic — neither message is removed unless both can be.
 
-### Join vs Parallel Receives
+### Sequential nesting with `;`
+
+A semicolon `;` between bind groups is *not* a join — it's sugar for nested `for`-comprehensions:
 
 ```rho
-// JOIN: waits for BOTH channels
+// Equivalent: ; desugars to nesting
+for (@x <- chan1; @y <- chan2) { P }
+for (@x <- chan1) { for (@y <- chan2) { P } }
+```
+
+The outer receive must fire before the inner receive begins. This is **not** deadlock-free for circular dependencies — for that use `&`.
+
+### Join vs sequential vs parallel receives
+
+```rho
+// JOIN (atomic): waits for BOTH channels, consumes both atomically
+for (@x <- chan1 & @y <- chan2) { ... }
+
+// SEQUENTIAL: consume from chan1 first, then start waiting on chan2
 for (@x <- chan1; @y <- chan2) { ... }
+// equivalently: for (@x <- chan1) { for (@y <- chan2) { ... } }
 
 // PARALLEL: two independent receives
 for (@x <- chan1) { ... } | for (@y <- chan2) { ... }

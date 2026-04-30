@@ -612,19 +612,21 @@ Here's how to solve the problem:
      1 new philosopher1, philosopher2, north, south, knife, spoon in {
      2   north!(*knife) |
      3   south!(*spoon) |
-     4   for (@knf <- north; @spn <- south) {
+     4   for (@knf <- north & @spn <- south) {
      5     philosopher1!("Complete!") |
      6     north!(knf) |
      7     south!(spn)
      8   } |
-     9   for (@spn <- south; @knf <- north) {
+     9   for (@spn <- south & @knf <- north) {
     10     philosopher2!("Complete!") |
     11     north!(knf) |
     12     south!(spn)
     13   }
     14 }
 
-4, 9) The join operator, denoted with a semicolon `;`, declares that the continuation should only proceed if there is a message available on each of the channels simultaneously, preventing the deadlock above.
+4, 9) The join operator, denoted with an ampersand `&`, declares that the continuation should only proceed if there is a message available on every channel in the group simultaneously, atomically consuming one from each. This prevents the deadlock above.
+
+A semicolon `;` between bind groups means *sequential nesting*, not atomic join: `for (a; b) { P }` desugars to `for (a) { for (b) { P } }`. Use `;` when the second receive should only start after the first has fired; use `&` when both must happen atomically.
 
 ## Crypto channels
 
