@@ -15,8 +15,8 @@
 #   Validator2:  40420-40425
 #   Validator3:  40430-40435
 #   Observer:    40450-40455
-#   Prometheus:  9090
-#   Grafana:     3000 (admin/admin)
+#
+# Monitoring (Prometheus, Grafana) is in monitoring.yml.
 
 x-rnode: &default-rnode
   image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}

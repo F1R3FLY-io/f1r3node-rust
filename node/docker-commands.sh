@@ -8,9 +8,10 @@ set -e
 DOCKER_REPOSITORY="f1r3flyindustries"
 IMAGE_NAME="f1r3node-rust"
 FULL_IMAGE_NAME="${DOCKER_REPOSITORY}/${IMAGE_NAME}"
-# Auto-detect version from Cargo.toml if not set via env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [ -z "${VERSION:-}" ]; then
-    VERSION=$(grep '^version = ' node/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    VERSION=$(grep '^version = ' "$SCRIPT_DIR/Cargo.toml" 2>/dev/null | head -1 | sed 's/version = "\(.*\)"/\1/')
 fi
 VERSION="${VERSION:-latest}"
 
@@ -193,4 +194,3 @@ if [ "${BASH_SOURCE[0]}" == "${0}" ]; then
             ;;
     esac
 fi
-

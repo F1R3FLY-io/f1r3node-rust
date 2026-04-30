@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Manual release script for f1r3node (Rust)
+# Manual release script for f1r3node-rust
 #
 # Usage: ./scripts/release.sh [major|minor|patch]
 #   Default bump type: minor
 #
 # This is an escape hatch for when you need a non-minor bump (e.g., major
-# or patch). For normal releases, merging to rust/main triggers the CI
-# workflow which auto-bumps minor.
+# or patch). For normal releases, the nightly workflow auto-bumps minor
+# when master has new commits.
 
 set -euo pipefail
 
@@ -15,32 +15,28 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_DIR"
 
-# Ensure working tree is clean
 git diff --quiet && git diff --cached --quiet || {
     echo "ERROR: working tree is dirty — commit or stash changes first"
     exit 1
 }
 
-# Source shared version logic
 source "$SCRIPT_DIR/version.sh"
 bump_version "${1:-minor}"
 
 echo "Current: ${CURRENT_VERSION} -> Next: ${NEXT_VERSION} (${TAG_NAME})"
 echo ""
 
-# Update node/Cargo.toml version (portable sed for GNU + BSD/macOS)
 sed -i'' -e "0,/^version = \".*\"/s//version = \"${NEXT_VERSION}\"/" node/Cargo.toml
 echo "Updated node/Cargo.toml to ${NEXT_VERSION}"
 
-# Update Dockerfile LABEL (portable sed)
-sed -i'' -e "s/^LABEL version=\".*\"/LABEL version=\"${NEXT_VERSION}\"/" node/Dockerfile
-echo "Updated node/Dockerfile LABEL to ${NEXT_VERSION}"
+if grep -q '^LABEL version=' node/Dockerfile; then
+    sed -i'' -e "s/^LABEL version=\".*\"/LABEL version=\"${NEXT_VERSION}\"/" node/Dockerfile
+    echo "Updated node/Dockerfile LABEL to ${NEXT_VERSION}"
+fi
 
-# Update Cargo.lock
 cargo generate-lockfile 2>/dev/null || true
 echo "Updated Cargo.lock"
 
-# Generate CHANGELOG if git-cliff is available
 if command -v git-cliff &>/dev/null; then
     git-cliff --config cliff.toml --tag "$TAG_NAME" -o CHANGELOG.md
     echo "Generated CHANGELOG.md"
@@ -49,10 +45,14 @@ else
     echo "Install: cargo install git-cliff"
 fi
 
-# Commit and tag
-git add node/Cargo.toml node/Dockerfile Cargo.lock CHANGELOG.md
-git commit -m "chore(release): rust v${NEXT_VERSION}"
-git tag -a "$TAG_NAME" -m "Release rust v${NEXT_VERSION}"
+files=(node/Cargo.toml node/Dockerfile Cargo.lock)
+if [ -f CHANGELOG.md ]; then
+    files+=(CHANGELOG.md)
+fi
+
+git add "${files[@]}"
+git commit -m "chore(release): v${NEXT_VERSION}"
+git tag -a "$TAG_NAME" -m "Release v${NEXT_VERSION}"
 
 echo ""
 echo "Release ${TAG_NAME} created."

@@ -36,8 +36,8 @@ This document captures user stories that drive feature development. User stories
 - [x] Genesis wallets.txt identical between repos (20 wallets, correct balances)
 - [x] Docker image env var standardized to `F1R3FLY_IMAGE`
 - [x] Shard network name standardized to `f1r3fly-shard`
-- [ ] Monitoring separated into its own compose file (matches system-integration pattern)
-- [ ] Shard verified to start with updated configuration
+- [x] Monitoring separated into its own compose file (matches system-integration pattern)
+- [x] Shard verified to start with updated configuration
 - [ ] system-integration's `services.yml` can point to this repo's `master` branch
 
 **Completed:** Planned
@@ -78,7 +78,7 @@ This document captures user stories that drive feature development. User stories
 - [ ] Nodes discover each other over public internet via Kademlia and bootstrap URL (no Docker internal DNS)
 - [ ] Genesis ceremony completes and the shard finalizes blocks end-to-end
 - [ ] Latency benchmark ported from f1r3node run-latency-benchmark.sh; emits load summary and p50/p95 reports
-- [ ] `just oci-down` tears down the testbed and frees all OCI resources
+- [ ] `just vps-down` tears down the testbed and frees all OCI resources
 - [ ] Option B (inter-shard consensus) captured separately in Backlog.md as BACKLOG-FI-001
 
 **Completed:** Planned

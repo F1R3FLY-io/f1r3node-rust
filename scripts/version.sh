@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared version discovery and bumping logic for f1r3node (Rust)
+# Shared version discovery and bumping logic for f1r3node-rust
 #
 # Usage (sourced by other scripts):
 #   source scripts/version.sh
@@ -11,28 +11,44 @@
 
 set -euo pipefail
 
-TAG_PREFIX="rust-v"
-TAG_PATTERN="rust-v*"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MANIFEST_PATH="$REPO_DIR/node/Cargo.toml"
 
-# Discover the current version from the latest matching tag
+TAG_PREFIX="v"
+TAG_PATTERN="v[0-9]*"
+
+get_manifest_version() {
+    local manifest_version
+    manifest_version=$(grep '^version = ' "$MANIFEST_PATH" | head -1 | sed 's/version = "\(.*\)"/\1/')
+    if [ -z "$manifest_version" ]; then
+        echo "ERROR: unable to read version from $MANIFEST_PATH" >&2
+        exit 1
+    fi
+
+    if ! [[ "$manifest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "ERROR: invalid version format in $MANIFEST_PATH: $manifest_version" >&2
+        exit 1
+    fi
+
+    echo "$manifest_version"
+}
+
 get_current_version() {
     local latest_tag
     latest_tag=$(git tag -l "$TAG_PATTERN" --sort=-v:refname | head -1)
     if [ -z "$latest_tag" ]; then
-        CURRENT_VERSION="0.1.0"
+        CURRENT_VERSION="$(get_manifest_version)"
         return
     fi
     CURRENT_VERSION="${latest_tag#$TAG_PREFIX}"
 
-    # Validate semver format
     if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "ERROR: invalid version format in tag '$latest_tag': $CURRENT_VERSION" >&2
         exit 1
     fi
 }
 
-# Bump version based on type (major|minor|patch)
-# Sets NEXT_VERSION and TAG_NAME
 bump_version() {
     local bump_type="${1:-minor}"
 
@@ -66,7 +82,6 @@ bump_version() {
     TAG_NAME="${TAG_PREFIX}${NEXT_VERSION}"
 }
 
-# Standalone usage
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     CMD="${1:-current}"
     case "$CMD" in

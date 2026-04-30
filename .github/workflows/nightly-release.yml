@@ -1,0 +1,129 @@
+# Nightly release — creates a baseline tag if needed, otherwise bumps minor
+#
+# Runs daily at 08:00 UTC (midnight Pacific). If no standalone v* tag
+# exists yet, it tags the current node/Cargo.toml version as the baseline.
+# Otherwise it checks for commits since the last v* tag and bumps the minor
+# version when changes exist. The tag push triggers the CI workflow which
+# handles Docker build, integration tests, and Docker Hub release.
+#
+# Requires organization secret: RELEASE_PAT (PAT with contents:write)
+# so that tag pushes trigger downstream workflows.
+
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 08:00 UTC = midnight Pacific
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Bump Version & Tag
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Force-refresh tags
+        run: git fetch origin --tags --force
+
+      - name: Check for changes since last tag
+        id: changes
+        run: |
+          LATEST_TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing tags — will create baseline"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            COMMITS=$(git rev-list "${LATEST_TAG}..HEAD" --count)
+            echo "Commits since ${LATEST_TAG}: ${COMMITS}"
+            if [ "$COMMITS" -gt 0 ]; then
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              echo "No changes since ${LATEST_TAG}, skipping release"
+            fi
+          fi
+
+      - name: Configure Git
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install git-cliff
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --version
+
+      - name: Determine next version
+        if: steps.changes.outputs.has_changes == 'true'
+        id: version
+        run: |
+          source scripts/version.sh
+          LATEST_TAG=$(git tag -l "$TAG_PATTERN" --sort=-v:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            get_current_version
+            NEXT_VERSION="$CURRENT_VERSION"
+            TAG_NAME="${TAG_PREFIX}${NEXT_VERSION}"
+            echo "No standalone tag found; creating baseline ${TAG_NAME}"
+          else
+            bump_version minor
+          fi
+          echo "NEXT_VERSION=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT_VERSION (tag: $TAG_NAME)"
+
+      - name: Update node/Cargo.toml version
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          sed -i "0,/^version = \".*\"/s//version = \"${{ steps.version.outputs.NEXT_VERSION }}\"/" node/Cargo.toml
+
+      - name: Update node/Dockerfile label
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          if grep -q '^LABEL version=' node/Dockerfile; then
+            sed -i "s/^LABEL version=\".*\"/LABEL version=\"${{ steps.version.outputs.NEXT_VERSION }}\"/" node/Dockerfile
+          fi
+
+      - name: Update Cargo.lock
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          # Install Rust for cargo generate-lockfile
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source "$HOME/.cargo/env"
+          cargo generate-lockfile
+
+      - name: Generate CHANGELOG
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ steps.version.outputs.TAG_NAME }} -o CHANGELOG.md
+
+      - name: Commit release
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git add node/Cargo.toml node/Dockerfile Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v${{ steps.version.outputs.NEXT_VERSION }}"
+
+      - name: Create tag
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git tag -a "${{ steps.version.outputs.TAG_NAME }}" \
+            -m "Release v${{ steps.version.outputs.NEXT_VERSION }}"
+
+      - name: Push
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git push origin master --follow-tags

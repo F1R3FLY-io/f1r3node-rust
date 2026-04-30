@@ -111,10 +111,10 @@ F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up
 
 ## Monitoring
 
-Prometheus + Grafana live in a separate compose file (`monitoring.yml`) and are **opt-in**. Bring them up alongside `shard.yml` when you want dashboards:
+Prometheus + Grafana live in a separate compose file (`monitoring.yml`) and are optional. Start the shard first, then bring up monitoring when you want dashboards:
 
 ```bash
-F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
+docker compose -f docker/shard.yml up -d
 docker compose -f docker/monitoring.yml up -d
 ```
 

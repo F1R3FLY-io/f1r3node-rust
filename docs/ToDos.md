@@ -55,7 +55,7 @@ mr_status:
 ---
 epoch_id: EPOCH-001
 title: "System-Integration Alignment"
-status: in_progress
+status: complete
 priority: p1
 user_story: US-001
 blocked_by: []
@@ -122,7 +122,7 @@ tasks:
 ---
 epoch_id: EPOCH-002
 title: "Separate Monitoring from Shard Compose"
-status: pending
+status: complete
 priority: p2
 user_story: US-001
 blocked_by: []
@@ -261,8 +261,8 @@ tasks:
     status: pending
     blocked_by: [TASK-004-1]
     acceptance:
-      - "build-test-and-deploy.yml ported (Docker build, multi-arch, artifact publishing)"
-      - "release.yml ported (automated versioning, changelog, tagging)"
+      - ".github/workflows/ci.yml covers Docker build, test, artifact publishing, and tag-driven release jobs"
+      - ".github/workflows/nightly-release.yml handles automated versioning, changelog generation, and tagging"
       - "cliff.toml ported (changelog generation)"
       - ".github/apt-dependencies.txt ported"
       - "Docker image name set to f1r3fly-rust in CI"
@@ -297,7 +297,7 @@ tasks:
     blocked_by: [TASK-004-1, TASK-004-2]
     acceptance:
       - "node/Cargo.toml version continues from f1r3node's last release"
-      - "Tag v0.4.12 (or matching version) created on f1r3node-rust"
+      - "Tag v0.4.13 (or matching current version) created on f1r3node-rust"
       - "phase_2_code_sync.status set to 'complete' in /tmp/migrationPlan.md"
       - "phase_2_code_sync.synced_from_commit populated"
 ---
