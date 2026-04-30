@@ -797,6 +797,34 @@ receive/match (must succeed — keyword is contextual).
     clash with anything else, and pick a stable proto field number (the
     largest unused number on `Par` is the convention).
 
+12. **Multi-bind cross-channel guards — known limitation, follow-up.**
+    The Phase 7 implementation evaluates the guard inside
+    `rholang::matcher::Match::get`, which is invoked once per
+    `(BindPattern, ListParWithRandom)` — once per channel of an
+    `&`-joined receive. The guard sees only the variables introduced
+    by *that* channel's bind. So:
+    - `for (@x <- @c where x > 0) { … }` — works (single bind).
+    - `for (@x <- @a & @y <- @b where x > 0) { … }` — works only
+      because the guard happens to reference `x`, which is in the
+      same bind that the matcher is evaluating. The guard fires
+      duplicatively against each channel; the channel that has `y`
+      sees the guard reference `x` as unbound and the per-channel
+      eval treats unbound-var as guard-fail. Net effect: the join
+      can't ever commit.
+    - `for (@x <- @a & @y <- @b where x < y) { … }` — doesn't work
+      for the same reason: neither channel has both `x` and `y` in
+      its per-bind scope.
+
+    The proper fix requires extending rspace's COMM-event commit
+    logic so the guard runs once against the *combined* bindings
+    from all channels, after they've all matched but before the
+    consume is committed. That involves widening the rspace
+    consume API to carry the guard (or storing it in the
+    continuation metadata accessible at COMM time) and adding a
+    coordinator-level guard hook. Not done in Phase 7 because the
+    single-bind case covers the common shape and the API change is
+    invasive enough to deserve its own commit pair.
+
 ## 8. Implementation phasing
 
 Each phase ends in green tests and is mergeable independently.
@@ -833,28 +861,40 @@ Each phase ends in green tests and is mergeable independently.
   deferred — `rho-pure-eval` is independently written for now;
   `reduce.rs::eval_expr` still drives `eval_match` / `eval_if`
   unchanged. Phase 5/6 will move logic over as needed.
-- **Phase 5 — proto + normalizer for guards**:
-    1. Add `Receive.condition`, `MatchCase.guard`, `EMatchExpr` to the
-       proto.
-    2. Plumb guard payloads through the rholang-rs CPS parser
-       (`K::ConsumeForComprehension`, `K::ConsumeMatch`) so they end
-       up populated in `Receipt.guard` / `Case.guard` rather than
-       `None`.
-    3. Normalizer changes for match guards and receive guards (no
-       syntactic checks; runtime handles bool-ness).
-    4. Tests 1–9.
-- **Phase 6 — match-as-expr runtime**:
-    1. `eval_match` fall-through (non-bool guard → next case).
-    2. `EMatchExpr` evaluation (delegates to `rho-pure-eval`; this
-       will drive the first chunk of additional Expr support being
-       extracted into `rho-pure-eval`).
-    3. Tests 7, 13, fall-through runtime tests.
-- **Phase 7 — receive guard in rspace matcher**:
-    1. Extend rspace matcher API to take optional guard predicate.
-    2. Wire `rho-pure-eval` into the matcher.
-    3. Bind-type behaviour tests for `<-`, `<<-`, `<=` (§3.7).
-    4. Tests 10–14.
-- **Phase 8 — docs, tutorial updates, examples in `examples/`**.
+- **Phase 5 — proto + normalizer for guards** ✅ **Done** (rholang-rs
+  commit `d5dfe2c`, f1r3node-rust commit `8d540d2`,
+  consensus-affecting). Added `Receive.condition` and
+  `MatchCase.guard` proto fields. CPS parser plumbs guard payloads
+  from CST into `Receipt.guard` / `Case.guard`. Normalizers
+  consume guards from AST and populate IR. The `;`-desugar uses
+  `alloc_for_with_guards` so per-receipt guards are preserved on
+  each nested `for`. 6 new normalizer tests.
+- **Phase 6 — match-as-expr runtime** ✅ **Done** (commit `e66de77`,
+  consensus-affecting). `eval_match` evaluates `MatchCase.guard`
+  via `rho_pure_eval` and falls through on non-true. `EMatchExpr`
+  proto added (Expr tag 38) — normalizer auto-emits it when every
+  case body is a single pure-bool expression. `eval_match_expr` in
+  reduce.rs does spatial matching and returns the matched body's
+  value. `if (match x { … })` now works because the condition's
+  match becomes an EMatchExpr. 3 new normalizer tests; 143/143
+  rholang lib tests pass.
+- **Phase 7 — receive guard in rspace matcher** ✅ **Done** (commit
+  `2c33567`, consensus-affecting). `BindPattern.condition` proto
+  field added; `eval_receive` substitutes `Receive.condition` and
+  replicates it into every BindPattern. `rholang::matcher::Match::get`
+  evaluates the guard via `rho_pure_eval` against the bound vars
+  after spatial match succeeds; non-true is treated as match-fail
+  (no consumption, continuation stays installed). 3 runtime tests
+  in `reduce_spec.rs`. **Known limitation**: multi-bind joins where
+  the guard references variables from a different channel's bind
+  fail (UnboundVariable in pure-eval is treated as guard-fail) —
+  see §7.12.
+- **Phase 8 — docs, tutorial updates, examples** ✅ **Done**. Added a
+  `where`-clauses tutorial section to `rholangtut.md`, extended the
+  Joins section in `08-channels-and-concurrency.md`, added three
+  example `.rho` files (`where_receive_guard.rho`,
+  `where_match_fallthrough.rho`, `where_match_as_expression.rho`),
+  and a parse/normalize sanity test (`where_examples_compile.rs`).
 
 ## 9. Out of scope
 

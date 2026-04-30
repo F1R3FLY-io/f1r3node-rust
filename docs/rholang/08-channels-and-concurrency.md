@@ -122,6 +122,29 @@ for (@x <- chan1; @y <- chan2) { ... }
 for (@x <- chan1) { ... } | for (@y <- chan2) { ... }
 ```
 
+### Receive guards with `where`
+
+A `where` clause adds a boolean predicate that the matcher checks after spatial matching succeeds. The receive only commits — i.e. only consumes the messages and fires the body — when both the patterns match AND the guard evaluates to `true`. A failing guard is indistinguishable from a spatial mismatch: the messages stay in the tuple space and the continuation stays installed.
+
+```rho
+// Receive only positive prices.
+for (@x <- @"price" where x > 0) {
+  stdout!("got price", x)
+}
+```
+
+This is useful for relational predicates that spatial patterns can't express (`x > 0`, `x % 2 == 0`, `length(list) > 5`, etc.). The guard runs in the rspace matcher, so guard-fail leaves the messages available for other consumers — no race window.
+
+The guard sees variables introduced by *this* receipt's binds. For single-bind receives, this is straightforward. For `&`-joined multi-bind receives, the matcher today evaluates each bind independently — a guard that mentions a variable from a different channel's bind currently fails (an unbound-variable error is treated as guard-fail). Full multi-bind cross-channel coordination is a planned follow-up.
+
+For `;`-separated receipts, each receipt carries its own guard:
+
+```rho
+for (@x <- @a where x > 0 ; @y <- @b where y < x) { ... }
+```
+
+The desugar to nested `for`s gives the inner guard `y < x` access to both `x` (outer) and `y` (inner) via lexical scope.
+
 ## Parallel Composition
 
 The `|` operator runs processes concurrently. This is Rholang's primary composition mechanism.
