@@ -1042,13 +1042,13 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-04-30 by Phase 2/5/6 of where-clauses-and-match-guards
-        // (commits 1740ca8, 8d540d2, e66de77): the new If, Receive.condition,
-        // MatchCase.guard, and EMatchExpr IR fields shifted the canonical
-        // encoding of the bootstrap registry Pars used to compute the empty
-        // state hash. This is the consensus-affecting change called out in
-        // those commits — coordinated upgrade required.
-        hex::decode("e43dc6a823174fe3d44f90a49ba3711a2bd2cc00eb6185f8186eed2d3193a790")
+        // Updated 2026-04-30 by Phases 2/5/6/7 of where-clauses-and-match-guards
+        // (commits 1740ca8, 8d540d2, e66de77, plus Phase 7's BindPattern.condition):
+        // the new If, Receive.condition, MatchCase.guard, EMatchExpr, and
+        // BindPattern.condition IR fields shifted the canonical encoding of
+        // the bootstrap registry Pars and BindPatterns used to compute the
+        // empty state hash. Coordinated upgrade required.
+        hex::decode("bdf9813d486bc6905fa7427b0c559a5dcc183d523f2fa87e517cbf25f81c57c9")
             .unwrap()
             .into()
     }

@@ -620,6 +620,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         ],
         remainder: None,
         free_count: 0,
+        condition: None,
     };
 
     assert!(check_continuation(
@@ -674,7 +675,8 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
         vec![BindPattern {
             patterns: vec![Par::default()],
             remainder: None,
-            free_count: 0
+            free_count: 0,
+            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1113,6 +1115,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
+            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1137,6 +1140,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
+            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1179,6 +1183,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
+            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -4665,4 +4670,188 @@ async fn term_split_size_max_should_limited_to_max_value() {
             "The number of terms in the Par is 32768, which exceeds the limit of 32767".to_string()
         ))
     )
+}
+
+// =====================================================================
+// Phase 7: receive guard runtime — `where` clause on for-comprehensions
+// evaluated inside the rspace matcher (plan §3.5 / Option 3).
+// =====================================================================
+
+/// Build a guard Par expressing `BoundVar(0) > GInt(0)`. The matcher
+/// resolves BoundVar(0) to the bind's first bound variable.
+fn guard_first_bound_gt_zero() -> Par {
+    let p1 = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let p2 = new_gint_par(0, Vec::new(), false);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(p1),
+            p2: Some(p2),
+        })),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_true_guard_should_consume_message() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let split_send = rand().split_byte(0);
+    let split_recv = rand().split_byte(1);
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send 5 (positive → guard `x > 0` passes).
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer.eval(send, &env, split_send).await.unwrap();
+    reducer.eval(receive, &env, split_recv).await.unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space should be empty after guard-true match: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_false_guard_should_leave_data_and_continuation() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let split_send = rand().split_byte(0);
+    let split_recv = rand().split_byte(1);
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send -3 (non-positive → guard `x > 0` fails).
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(-3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer.eval(send, &env, split_send).await.unwrap();
+    reducer.eval(receive, &env, split_recv).await.unwrap();
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![chan.clone()])
+        .expect("channel should still hold state after guard-fail");
+    assert_eq!(
+        row.data.len(),
+        1,
+        "the unmatched datum stays in the tuple space"
+    );
+    assert_eq!(row.wks.len(), 1, "the continuation stays installed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_guard_filters_among_multiple_messages() {
+    // Send -1 first (guard fails), then send 7 (guard passes). Verify
+    // only the matching message is consumed and the continuation fires.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let send_neg = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(-1, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let send_pos = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(7, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(receive, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_neg.clone(), &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    // After send_neg: guard failed, the -1 datum stays AND the
+    // continuation stays installed.
+    let mid = space.to_map().await;
+    let mid_row = mid.get(&vec![chan.clone()]).expect("state present");
+    assert_eq!(mid_row.data.len(), 1, "rejected datum stays");
+    assert_eq!(mid_row.wks.len(), 1, "continuation stays");
+
+    reducer
+        .eval(send_pos, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let final_state = space.to_map().await;
+    let final_row = final_state.get(&vec![chan]).expect("state present");
+    // The 7 was consumed (guard true); the -1 still sitting there.
+    assert_eq!(final_row.data.len(), 1, "the rejected -1 still sits there");
+    assert_eq!(final_row.wks.len(), 0, "continuation fired and was removed");
 }

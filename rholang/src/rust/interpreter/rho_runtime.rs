@@ -488,6 +488,7 @@ where
             patterns: (0..arity).map(|i| new_freevar_par(i, Vec::new())).collect(),
             remainder,
             free_count: arity,
+            condition: None,
         }];
 
         let continuation = TaggedContinuation {

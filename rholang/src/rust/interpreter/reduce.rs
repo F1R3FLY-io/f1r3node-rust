@@ -947,6 +947,20 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+
+        // Optional `where`-clause guard. Substituted at depth=1 so any
+        // variables in scope at the receive site (but not pattern-bound)
+        // get replaced with their values, while pattern-bound free vars
+        // stay as free vars for the matcher to fill in. Replicated into
+        // every BindPattern below so the matcher has it accessible
+        // per-channel. Phase 7 / plan §3.7.
+        let subst_condition = match receive.condition.as_ref() {
+            Some(c) if c != &Par::default() => {
+                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+            }
+            _ => None,
+        };
+
         let binds = receive
             .binds
             .clone()
@@ -964,6 +978,7 @@ impl DebruijnInterpreter {
                         patterns: subst_patterns,
                         remainder: rb.remainder,
                         free_count: rb.free_count,
+                        condition: subst_condition.clone(),
                     },
                     q,
                 ))

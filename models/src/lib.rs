@@ -307,6 +307,7 @@ impl PartialEq for BindPattern {
         self.patterns == other.patterns
             && self.remainder == other.remainder
             && self.free_count == other.free_count
+            && self.condition == other.condition
     }
 }
 
@@ -315,6 +316,7 @@ impl Hash for BindPattern {
         self.patterns.hash(state);
         self.remainder.hash(state);
         self.free_count.hash(state);
+        self.condition.hash(state);
     }
 }
 
