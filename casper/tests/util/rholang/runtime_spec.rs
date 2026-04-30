@@ -77,8 +77,15 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
+    // Updated 2026-04-30 by Phase 2/5/6 of where-clauses-and-match-guards
+    // (commits 1740ca8, 8d540d2, e66de77): the new If, Receive.condition,
+    // MatchCase.guard, and EMatchExpr IR fields shifted the canonical
+    // encoding of the Pars produced by this fixed Rholang term. The
+    // test's "without_hard_fork" name is now descriptive of the *new*
+    // post-fork-hash baseline; any further unintended drift would still
+    // be caught.
     let expected_hash = Blake2b256Hash::from_hex(
-        "5a17a1ed5ddcec2394d9d0b47d514eafeaec6fd78c3e38b70fcdfb43c4d96bfa",
+        "22b8f65009c1731abe4fc099592491ca44e664fab15ae771b4521a075bef2024",
     );
 
     assert_eq!(expected_hash, checkpoint.root);
