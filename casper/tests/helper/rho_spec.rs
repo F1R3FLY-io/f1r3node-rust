@@ -13,7 +13,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::{BindPattern, ListParWithRandom};
+use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::errors::InterpreterError;
@@ -317,8 +317,8 @@ pub async fn get_results(
     // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
     // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher =
-        Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
+    let matcher = Arc::new(Box::new(Matcher::default())
+        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
     let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
 

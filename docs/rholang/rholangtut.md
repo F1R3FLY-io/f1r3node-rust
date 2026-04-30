@@ -417,6 +417,59 @@ If you want to capture the value you matched, you can use the and logcial connec
 
     for( @{x /\ Int} <- ack) { ... }
 
+
+## `where` clauses (guards)
+
+Spatial patterns are limited to *structural* tests — they can check shape, type, or specific values, but they can't express relational predicates like "x is greater than 5" or "the first element of the list is even". The `where` clause adds a boolean guard that the matcher evaluates after spatial matching succeeds.
+
+### `where` on a receive
+
+Attach a `where` clause after a receipt's binds. The guard runs in the rspace matcher: spatial-match first, then the guard. Only when both pass do the messages get consumed.
+
+    for (@x <- @price where x > 0) {
+      // body fires only for positive prices
+    }
+
+If the guard evaluates to anything other than `true` (false, non-bool, or an error), the receive behaves exactly as if the spatial pattern had not matched: nothing is consumed, the continuation stays installed, and the messages remain available for other consumers.
+
+The guard sees the variables introduced by *this* receipt's binds. So:
+
+    for (@x <- @c where x < 100) { ... }    // works — `x` is in scope
+    for (@x <- @c) { ... where x < 100 }    // syntax error — `where` attaches to the receipt
+
+For `&`-joined receipts (atomic joins across channels), the guard sees variables from all channels combined — but with one current limitation: the matcher today evaluates each channel's bind independently, so a guard that mentions a variable from a *different* channel won't fire (it's treated as an unbound-variable, hence guard-fail). Single-bind receives — the most common shape — work without restriction.
+
+`;`-separated receipts each carry their own optional guard:
+
+    for (@x <- @a where x > 0 ; @y <- @b where y < x) { ... }
+    // desugars to nested `for`s, so `cond_2` (y < x) sees both `x` and `y`
+
+### `where` on a match case
+
+Attach a `where` clause between a case's pattern and `=>`. If the pattern matches the target *and* the guard evaluates to `true`, the case fires. Anything else (false, non-bool, eval-error) falls through to the next case.
+
+    match age {
+      n where n < 13  => "child"
+      n where n < 20  => "teen"
+      _               => "adult"
+    }
+
+This is a clean way to express overlapping patterns differentiated by a runtime predicate.
+
+### Match as a boolean expression
+
+A `match` block whose every right-hand side is a boolean expression is itself a boolean expression — it can be used as the condition of `if`, inside another `where` clause, or anywhere a boolean is expected:
+
+    new ok in {
+      for (@x <- ok) {
+        if (match x { i where i % 2 == 0 => i > 0   _ => false }) {
+          // x is a positive even number
+        }
+      }
+    }
+
+The compiler picks this up structurally: when every case's body is a single bool-yielding expression (`true`/`false`/comparisons/`&&`/`||`/`!`/`matches`/recursive bool-match), the match compiles to an `EMatchExpr` Expr, not a process-level `Match`. If even one case body is a process (a `Send`, a `New`, etc.), it stays as a regular match.
+
 ## Mutable state
 
      1 new MakeCell in {
@@ -612,19 +665,21 @@ Here's how to solve the problem:
      1 new philosopher1, philosopher2, north, south, knife, spoon in {
      2   north!(*knife) |
      3   south!(*spoon) |
-     4   for (@knf <- north; @spn <- south) {
+     4   for (@knf <- north & @spn <- south) {
      5     philosopher1!("Complete!") |
      6     north!(knf) |
      7     south!(spn)
      8   } |
-     9   for (@spn <- south; @knf <- north) {
+     9   for (@spn <- south & @knf <- north) {
     10     philosopher2!("Complete!") |
     11     north!(knf) |
     12     south!(spn)
     13   }
     14 }
 
-4, 9) The join operator, denoted with a semicolon `;`, declares that the continuation should only proceed if there is a message available on each of the channels simultaneously, preventing the deadlock above.
+4, 9) The join operator, denoted with an ampersand `&`, declares that the continuation should only proceed if there is a message available on every channel in the group simultaneously, atomically consuming one from each. This prevents the deadlock above.
+
+A semicolon `;` between bind groups means *sequential nesting*, not atomic join: `for (a; b) { P }` desugars to `for (a) { for (b) { P } }`. Use `;` when the second receive should only start after the first has fired; use `&` when both must happen atomically.
 
 ## Crypto channels
 

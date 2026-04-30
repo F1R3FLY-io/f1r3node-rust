@@ -120,6 +120,7 @@ fn to_receives(
                     bind_count: free_count_sum,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    condition: None,
                 });
             }
             _ => {
@@ -131,6 +132,7 @@ fn to_receives(
                     bind_count: 0,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    condition: None,
                 });
             }
         }

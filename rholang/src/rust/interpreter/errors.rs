@@ -46,6 +46,9 @@ pub enum InterpreterError {
         expected: String,
         other_type: String,
     },
+    IfConditionTypeError {
+        actual_type: String,
+    },
     AggregateError {
         interpreter_errors: Vec<InterpreterError>,
     },
@@ -209,6 +212,12 @@ impl fmt::Display for InterpreterError {
                 f,
                 "Error: Operator `{}` is not defined on {}.",
                 op, other_type
+            ),
+
+            InterpreterError::IfConditionTypeError { actual_type } => write!(
+                f,
+                "Error: `if` condition must evaluate to a boolean, but got {}.",
+                actual_type
             ),
 
             InterpreterError::OperatorExpectedError {

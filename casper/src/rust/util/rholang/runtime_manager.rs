@@ -1053,7 +1053,13 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        hex::decode("852cc7a4a4e14a05574b9cd0779dbfb1f85489b606e75677f3ce3239dfec4e36")
+        // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
+        // (plan §7.12): the guard moved from BindPattern.condition (Phase 7)
+        // to TaggedContinuation.guard, dropping a field from BindPattern and
+        // adding one to TaggedContinuation. Both shifts re-encode the
+        // bootstrap registry's installed continuations and patterns.
+        // Coordinated upgrade required.
+        hex::decode("cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe")
             .unwrap()
             .into()
     }

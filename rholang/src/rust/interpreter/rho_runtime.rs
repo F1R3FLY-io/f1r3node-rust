@@ -492,6 +492,7 @@ where
 
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
+            guard: None,
         };
 
         for space in &mut spaces {
@@ -1303,7 +1304,7 @@ pub async fn create_runtime_from_kv_store(
     mergeable_tag_name: Par,
     init_registry: bool,
     additional_system_processes: &mut Vec<Definition>,
-    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom>>>,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
     external_services: ExternalServices,
 ) -> RhoRuntimeImpl {
     let space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> =

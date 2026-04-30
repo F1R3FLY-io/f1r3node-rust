@@ -4,10 +4,10 @@ pub use models::rhoapi::connective::ConnectiveInstance::{
 };
 pub use models::rhoapi::expr::ExprInstance::{
     EAndBody, EDivBody, EEqBody, EGtBody, EGteBody, EListBody, ELtBody, ELteBody, EMapBody,
-    EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody, ENegBody,
-    ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody, EPlusPlusBody,
-    ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool, GByteArray, GDouble,
-    GFixedPoint, GInt, GString, GUri,
+    EMatchExprBody, EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody,
+    ENegBody, ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody,
+    EPlusPlusBody, ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool,
+    GByteArray, GDouble, GFixedPoint, GInt, GString, GUri,
 };
 pub use models::rhoapi::g_unforgeable::UnfInstance::{GDeployerIdBody, GPrivateBody};
 pub use models::rhoapi::var::VarInstance::{BoundVar, FreeVar, Wildcard};

@@ -26,16 +26,24 @@ impl Sortable<Match> for MatchSortMatcher {
             let free_count_score =
                 Tree::<ScoreAtom>::create_leaf_from_i64(match_case.free_count as i64);
 
+            // The optional `where` guard: if absent, sort the empty Par
+            // and contribute a stable but non-empty score node so that
+            // un-guarded cases still hash deterministically.
+            let guard_par = match_case.guard.clone().unwrap_or_default();
+            let sorted_guard = ParSortMatcher::sort_match(&guard_par);
+
             ScoredTerm {
                 term: MatchCase {
                     pattern: Some(sorted_pattern.term),
                     source: Some(sorted_body.term),
                     free_count: match_case.free_count,
+                    guard: match_case.guard.as_ref().map(|_| sorted_guard.term.clone()),
                 },
                 score: Tree::Node(vec![
                     sorted_pattern.score,
                     sorted_body.score,
                     free_count_score,
+                    sorted_guard.score,
                 ]),
             }
         }

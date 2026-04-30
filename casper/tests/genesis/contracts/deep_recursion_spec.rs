@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use casper::rust::genesis::genesis::Genesis;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{BindPattern, ListParWithRandom};
+use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
@@ -21,8 +21,8 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
         .await
         .map_err(|e| format!("Failed to create RSpaceStore: {}", e))?;
 
-    let matcher =
-        Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
+    let matcher = Arc::new(Box::new(Matcher::default())
+        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
     let runtime = create_runtime_from_kv_store(
         r_store,

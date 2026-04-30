@@ -1,0 +1,23 @@
+// Match used as a boolean expression. When every case body is a single
+// pure-bool expression, the compiler emits an `EMatchExpr` (an Expr,
+// not a process) so the match composes inside `if` conditions, `where`
+// guards, and other expression positions.
+//
+// Demonstrates: for each input, decide whether to emit a "good" log line
+// using an inline `match`-as-bool inside `if`.
+new ch, stdout(`rho:io:stdout`) in {
+    ch!(2)  |
+    ch!(7)  |
+    ch!(-4) |
+    ch!(0)  |
+    for (@x <= ch) {
+        if (match x {
+                i where i % 2 == 0 => i > 0
+                _                  => false
+            }) {
+            stdout!(("good", x))
+        } else {
+            stdout!(("rejected", x))
+        }
+    }
+}

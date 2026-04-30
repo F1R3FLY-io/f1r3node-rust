@@ -51,7 +51,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     installs: Arc<Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
-    matcher: Arc<Box<dyn Match<P, A>>>,
+    matcher: Arc<Box<dyn Match<P, A, K>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
@@ -445,7 +445,7 @@ where
     pub fn apply(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> ReplayRSpace<C, P, A, K>
     where
         C: Clone + Debug + Ord + Hash,
@@ -471,7 +471,7 @@ where
     pub fn apply_with_logger(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
         logger: Box<dyn RSpaceLogger<C, P, A, K>>,
     ) -> ReplayRSpace<C, P, A, K>
     where

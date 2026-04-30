@@ -40,6 +40,7 @@ message Par {
   repeated GUnforgeable unforgeables = 7;  // unforgeable names
   repeated Bundle bundles = 11;
   repeated Connective connectives = 8;
+  repeated If conditionals = 12;
   bytes locallyFree = 9
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
@@ -54,6 +55,12 @@ message TaggedContinuation {
     ParWithRandom par_body = 1;
     int64 scala_body_ref = 2;
   }
+  // Optional `where`-clause guard, lifted from `Receive.condition` when the
+  // continuation is registered with rspace. The matcher coordinator evaluates
+  // it (via rho-pure-eval) against the *combined* bindings of all binds after
+  // every spatial pattern has matched, so cross-channel guards see every
+  // bound variable. Empty Par = no guard. See plan §7.12.
+  Par guard = 3;
 }
 
 /**
@@ -153,6 +160,11 @@ message Receive {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 7;
+  // Optional `where`-clause guard. When non-empty, the receive only commits
+  // (consumes the matched messages) if every spatial pattern matches AND
+  // the condition evaluates to GBool(true) under the bound variables. An
+  // empty Par means no guard. See plan §3.3 / §3.5.
+  Par condition = 8;
 }
 
 // Number of variables bound in the new statement.
@@ -177,11 +189,47 @@ message MatchCase {
   Par pattern = 1 [(scalapb.field).no_box = true];
   Par source = 2 [(scalapb.field).no_box = true];
   int32 freeCount = 3;
+  // Optional per-case `where`-clause guard. When non-empty, the case only
+  // fires if the pattern matches AND the guard evaluates to GBool(true)
+  // under the pattern's bindings. Anything else (false, non-bool, error)
+  // falls through to the next case. An empty Par means no guard. See plan
+  // §3.4 / §3.8.
+  Par guard = 4;
 }
 
 message Match {
   Par target = 1 [(scalapb.field).no_box = true];
   repeated MatchCase cases = 2;
+  bytes locallyFree = 4
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 5;
+}
+
+// Match used in expression context. Mirrors `Match` structurally but
+// lives inside `Expr` so it composes inside `if` conditions, `where`
+// guards, and other expression positions. The normalizer emits an
+// EMatchExpr (instead of a `Match`) when every case body is a single
+// pure boolean expression — see plan §3.4. At runtime, the matcher
+// evaluates each case's body as a value (not as a process).
+message EMatchExpr {
+  Par target = 1 [(scalapb.field).no_box = true];
+  repeated MatchCase cases = 2;
+  bytes locallyFree = 3
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 4;
+}
+
+// First-class conditional. Reduction evaluates `condition`'s expression slot;
+// fires `if_true` when it reduces to GBool(true), `if_false` when it reduces
+// to GBool(false), and raises InterpreterError::IfConditionTypeError
+// otherwise. Side effects in `condition` (sends/news/receives) are inert
+// because the evaluator only walks par.exprs.
+message If {
+  Par condition = 1 [(scalapb.field).no_box = true];
+  Par if_true = 2 [(scalapb.field).no_box = true];
+  Par if_false = 3 [(scalapb.field).no_box = true];
   bytes locallyFree = 4
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
@@ -237,6 +285,9 @@ message Expr {
     bytes g_big_int = 35;          // Arbitrary-precision signed integer (big-endian two's complement)
     GBigRational g_big_rat = 36;   // Exact rational number
     GFixedPoint g_fixed_point = 37; // Fixed-point decimal
+
+    // Match used in expression context. See `EMatchExpr` definition.
+    EMatchExpr e_match_expr_body = 38;
   }
 }
 

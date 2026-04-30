@@ -125,6 +125,7 @@ mod tests {
             expression,
             vec![Case {
                 pattern,
+                guard: None,
                 proc: case_body,
             }],
             &parser,
@@ -153,6 +154,7 @@ mod tests {
                         ),
                         source: Some(Par::default()),
                         free_count: 0,
+                        guard: None,
                     }],
 
                     locally_free: create_bit_vector(&vec![0]),
@@ -233,6 +235,7 @@ mod tests {
                 bind_count: 0,
                 locally_free: create_bit_vector(&vec![0]),
                 connective_used: false,
+                condition: None,
             }])
             .with_locally_free(create_bit_vector(&vec![0]));
 

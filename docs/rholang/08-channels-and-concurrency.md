@@ -86,25 +86,64 @@ Mismatched arity means the send/receive will never match.
 
 ## Joins
 
-Wait for messages on multiple channels simultaneously. The body executes only when ALL channels have a message.
+Wait for messages on multiple channels simultaneously. The body executes only when ALL channels have a message, atomically consuming one from each. Use the `&` operator between binds:
 
 ```rho
-for (@x <- chan1; @y <- chan2) {
+for (@x <- chan1 & @y <- chan2) {
   stdout!(x + y)
 }
 ```
 
-This is a synchronization primitive. The body does not execute until both `chan1` and `chan2` have pending messages.
+This is a synchronization primitive. The body does not execute until both `chan1` and `chan2` have pending messages, and the consumption is atomic — neither message is removed unless both can be.
 
-### Join vs Parallel Receives
+### Sequential nesting with `;`
+
+A semicolon `;` between bind groups is *not* a join — it's sugar for nested `for`-comprehensions:
 
 ```rho
-// JOIN: waits for BOTH channels
+// Equivalent: ; desugars to nesting
+for (@x <- chan1; @y <- chan2) { P }
+for (@x <- chan1) { for (@y <- chan2) { P } }
+```
+
+The outer receive must fire before the inner receive begins. This is **not** deadlock-free for circular dependencies — for that use `&`.
+
+### Join vs sequential vs parallel receives
+
+```rho
+// JOIN (atomic): waits for BOTH channels, consumes both atomically
+for (@x <- chan1 & @y <- chan2) { ... }
+
+// SEQUENTIAL: consume from chan1 first, then start waiting on chan2
 for (@x <- chan1; @y <- chan2) { ... }
+// equivalently: for (@x <- chan1) { for (@y <- chan2) { ... } }
 
 // PARALLEL: two independent receives
 for (@x <- chan1) { ... } | for (@y <- chan2) { ... }
 ```
+
+### Receive guards with `where`
+
+A `where` clause adds a boolean predicate that the matcher checks after spatial matching succeeds. The receive only commits — i.e. only consumes the messages and fires the body — when both the patterns match AND the guard evaluates to `true`. A failing guard is indistinguishable from a spatial mismatch: the messages stay in the tuple space and the continuation stays installed.
+
+```rho
+// Receive only positive prices.
+for (@x <- @"price" where x > 0) {
+  stdout!("got price", x)
+}
+```
+
+This is useful for relational predicates that spatial patterns can't express (`x > 0`, `x % 2 == 0`, `length(list) > 5`, etc.). The guard runs in the rspace matcher, so guard-fail leaves the messages available for other consumers — no race window.
+
+The guard sees variables introduced by *this* receipt's binds. For single-bind receives, this is straightforward. For `&`-joined multi-bind receives, the matcher today evaluates each bind independently — a guard that mentions a variable from a different channel's bind currently fails (an unbound-variable error is treated as guard-fail). Full multi-bind cross-channel coordination is a planned follow-up.
+
+For `;`-separated receipts, each receipt carries its own guard:
+
+```rho
+for (@x <- @a where x > 0 ; @y <- @b where y < x) { ... }
+```
+
+The desugar to nested `for`s gives the inner guard `y < x` access to both `x` (outer) and `y` (inner) via lexical scope.
 
 ## Parallel Composition
 

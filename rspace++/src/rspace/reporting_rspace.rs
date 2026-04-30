@@ -122,7 +122,7 @@ where
     pub fn apply(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> ReportingRspace<C, P, A, K> {
         let report = Arc::new(Mutex::new(Vec::new()));
         let soft_report = Arc::new(Mutex::new(Vec::new()));
@@ -145,7 +145,7 @@ where
     /// Creates [[ReportingRspace]] from [[KeyValueStore]]'s
     pub fn create(
         store: super::rspace::RSpaceStore,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> Result<ReportingRspace<C, P, A, K>, RSpaceError> {
         let history = RSpace::create_history_repo(store).map_err(|e| {
             RSpaceError::InterpreterError(format!("Failed to create history repo: {:?}", e))
