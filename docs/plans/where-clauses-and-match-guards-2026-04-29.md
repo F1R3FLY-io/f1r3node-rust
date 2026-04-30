@@ -797,7 +797,10 @@ receive/match (must succeed — keyword is contextual).
     clash with anything else, and pick a stable proto field number (the
     largest unused number on `Par` is the convention).
 
-12. **Multi-bind cross-channel guards — known limitation, follow-up.**
+12. **Multi-bind cross-channel guards — known limitation + Phase 9 plan.**
+
+    #### The limitation
+
     The Phase 7 implementation evaluates the guard inside
     `rholang::matcher::Match::get`, which is invoked once per
     `(BindPattern, ListParWithRandom)` — once per channel of an
@@ -815,15 +818,146 @@ receive/match (must succeed — keyword is contextual).
       for the same reason: neither channel has both `x` and `y` in
       its per-bind scope.
 
-    The proper fix requires extending rspace's COMM-event commit
-    logic so the guard runs once against the *combined* bindings
-    from all channels, after they've all matched but before the
-    consume is committed. That involves widening the rspace
-    consume API to carry the guard (or storing it in the
-    continuation metadata accessible at COMM time) and adding a
-    coordinator-level guard hook. Not done in Phase 7 because the
-    single-bind case covers the common shape and the API change is
-    invasive enough to deserve its own commit pair.
+    The fix requires evaluating the guard *once* against bindings
+    combined from all channels, at the moment rspace decides whether
+    to commit a candidate COMM event.
+
+    #### Architecture
+
+    rspace already has the right shape for this. In
+    `rspace++/src/rspace/space_matcher.rs::extract_first_match`,
+    the coordinator iterates candidate continuations and, for each,
+    calls `extract_data_candidates_rollback` which produces a vector
+    of per-channel match results. The current code commits the COMM
+    when *all* per-channel matches succeed:
+
+    ```rust
+    if data_candidates.iter().all(|x| x.is_some()) {
+        return Some(ProduceCandidate { … });
+    }
+    // otherwise: rollback channel data and try next candidate
+    ```
+
+    The fix inserts a guard check between the per-channel-success
+    test and the `return Some(...)`. If the guard fails, the loop
+    falls through to the existing rollback-and-retry path.
+
+    #### Implementation plan (call this Phase 9)
+
+    1. **Move the guard from `BindPattern.condition` to the
+       continuation envelope.** Add `Par guard = 3` to
+       `TaggedContinuation` (proto in
+       `models/src/main/protobuf/RhoTypes.proto`). Drop
+       `BindPattern.condition` (Phase 7's field). Reason: the guard
+       is per-receive, not per-channel; it should live with the
+       continuation that the COMM event will fire.
+
+    2. **Extend the `Match` trait** in `rspace++/src/rspace/match.rs`
+       with a default-true commit hook that takes the continuation
+       and the per-channel match outputs:
+
+       ```rust
+       pub trait Match<P, A, K>: Send + Sync {
+           fn get(&self, p: P, a: A) -> Option<A>;
+           /// Cross-channel commit predicate. Default returns true.
+           /// Implementers can use the continuation envelope (which
+           /// may carry a guard predicate) and the combined per-channel
+           /// match outputs to decide whether to commit.
+           fn check_commit(&self, _continuation: &K, _matches: &[A]) -> bool {
+               true
+           }
+       }
+       ```
+
+       Adding `K` as a type parameter ripples through the trait's
+       impls. Alternative if rippling is undesirable: keep `Match<P, A>`
+       and pass the commit check as a separate `Box<dyn Fn>` parameter
+       to `consume`. Same effect, different shape. Recommend the
+       trait method form because the rholang `Matcher` already needs
+       to reference Par-typed details — the alternative pushes the
+       same data through a closure capture.
+
+    3. **Wire the hook into `extract_first_match`.** In
+       `rspace++/src/rspace/space_matcher.rs`, after the
+       `data_candidates.iter().all(|x| x.is_some())` test:
+
+       ```rust
+       if data_candidates.iter().all(|x| x.is_some()) {
+           let matched_outputs: Vec<&A> = data_candidates
+               .iter()
+               .map(|opt| &opt.as_ref().unwrap().datum.a)
+               .collect();
+           if matcher.check_commit(&cont.continuation, &matched_outputs) {
+               return Some(ProduceCandidate { … });
+           }
+           // guard failed — fall through to rollback and try next
+           //                candidate continuation
+       }
+       ```
+
+       The rollback path at lines 152–155 already restores the
+       channel data, so guard-fail behaves identically to a spatial
+       mismatch.
+
+    4. **Implement `check_commit` on rholang's `Matcher`** in
+       `rholang/src/rust/interpreter/matcher/match.rs`. Read the
+       guard from the `TaggedContinuation`. If the guard is empty
+       (no `where` clause), return true. Otherwise build a
+       `rho_pure_eval::Env` from the *concatenation* of all
+       per-channel matched bindings and evaluate the guard. Return
+       `true` iff the result is `GBool(true)`.
+
+       The bindings need to be ordered so that the guard's De
+       Bruijn indices line up. The normalizer's
+       `receive_binds_free_map.merge()` (in
+       `p_input_normalizer.rs`) already produces a deterministic
+       per-receive index ordering — match that ordering here.
+
+    5. **Update `eval_receive`** in `rholang/src/rust/interpreter/reduce.rs`:
+       store the substituted condition on the `TaggedContinuation`
+       before passing to `space.consume`, and stop populating
+       `BindPattern.condition` (which no longer exists after step 1).
+
+    6. **Replay `ReplayRSpace`.** The replay path
+       (`rspace++/src/rspace/replay_rspace.rs`) has its own
+       `extract_first_match` mirror. Apply the same hook there.
+       Casper replay determinism depends on it producing the same
+       commit decision as the consume path.
+
+    7. **Tests.** Add to `rholang/tests/reduce_spec.rs`:
+       - `multi_bind_join_with_cross_channel_guard_fires_when_true`:
+         `for (@x <- @a & @y <- @b where x < y)`. Send `1` on `@a`
+         and `2` on `@b` → fires.
+       - `multi_bind_join_with_cross_channel_guard_blocks_when_false`:
+         same join, send `5` on `@a` and `2` on `@b` → both stay.
+       - `multi_bind_join_filters_among_candidates`: install the
+         continuation, send several `(@a, @b)` pairs; only the pair
+         satisfying the guard should fire.
+
+    8. **Hash bumps.** `BindPattern.condition` removal +
+       `TaggedContinuation.guard` addition together change the
+       canonical encoding of stored continuations and Pars. Update
+       both `empty_state_hash_fixed` and the hard-coded fixed-term
+       state hash, mirroring the Phase 5/6/7 process.
+
+    #### Risks
+
+    - **`Match` trait type-param widening.** Adding `K` to the trait
+      is a breaking change for any rspace consumer. The alternative
+      callback shape avoids this but is a less honest rendering of
+      the data flow. Decide based on out-of-tree consumer impact.
+    - **Replay determinism.** The combined-bindings ordering must be
+      reproducible across nodes — i.e. don't depend on hash-set
+      iteration order. `pre_sort_binds` already gives deterministic
+      ordering; reuse it.
+    - **Guard sees substituted bindings.** Per-channel matcher
+      output is post-substitution. The guard expects post-spatial-
+      match bindings, which line up — verify with a mixed
+      single/multi-bind test that both still work.
+    - **Hard fork.** This is the third consensus-affecting change in
+      the where-clauses series (after Phase 2 `If`, Phase 5
+      condition/guard, Phase 7 `BindPattern.condition`). Bundle it
+      with any other planned hard-fork changes if possible.
 
 ## 8. Implementation phasing
 
@@ -895,6 +1029,14 @@ Each phase ends in green tests and is mergeable independently.
   example `.rho` files (`where_receive_guard.rho`,
   `where_match_fallthrough.rho`, `where_match_as_expression.rho`),
   and a parse/normalize sanity test (`where_examples_compile.rs`).
+- **Phase 9 — multi-bind cross-channel guards** (planned, not yet
+  implemented; consensus-affecting). Lifts the Phase 7 limitation
+  by moving the guard from `BindPattern.condition` to a
+  `TaggedContinuation.guard` field, extending rspace's `Match`
+  trait with a `check_commit` hook, and wiring the hook into
+  `extract_first_match` so the guard is evaluated against
+  *combined* per-channel bindings before the COMM event commits.
+  See §7.12 for the full design and step-by-step plan.
 
 ## 9. Out of scope
 
