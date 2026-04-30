@@ -14,8 +14,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
+    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -169,6 +169,10 @@ impl DebruijnInterpreter {
             par.matches
                 .into_iter()
                 .map(GeneratedMessage::Match)
+                .collect(),
+            par.conditionals
+                .into_iter()
+                .map(GeneratedMessage::If)
                 .collect(),
             par.bundles
                 .into_iter()
@@ -852,6 +856,7 @@ impl DebruijnInterpreter {
             GeneratedMessage::Receive(term) => self.eval_receive(term, env, rand).await,
             GeneratedMessage::New(term) => self.eval_new(term, env.clone(), rand).await,
             GeneratedMessage::Match(term) => self.eval_match(term, env, rand).await,
+            GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
@@ -1081,6 +1086,33 @@ impl DebruijnInterpreter {
             .substitute_and_charge(&evaled_target, 0, env)?;
 
         first_match(subst_target, mat.cases.clone(), rand).await
+    }
+
+    async fn eval_if(
+        &self,
+        conditional: &If,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        self.cost.charge(match_eval_cost())?;
+        let evaled_cond = self.eval_expr(conditional.condition.as_ref().unwrap(), env)?;
+        let subst_cond = self
+            .substitute
+            .substitute_and_charge(&evaled_cond, 0, env)?;
+
+        match extract_bool(&subst_cond) {
+            Some(true) => {
+                self.eval(conditional.if_true.clone().unwrap(), env, rand)
+                    .await
+            }
+            Some(false) => {
+                self.eval(conditional.if_false.clone().unwrap(), env, rand)
+                    .await
+            }
+            None => Err(InterpreterError::IfConditionTypeError {
+                actual_type: describe_par_type(&subst_cond),
+            }),
+        }
     }
 
     /**
@@ -7159,5 +7191,56 @@ fn divide_fixed_points(
     models::rhoapi::GFixedPoint {
         unscaled: bigint_to_bytes(&result),
         scale: a.scale,
+    }
+}
+
+/// Returns `Some(b)` iff `par` represents the bool value `b` —
+/// exactly one Expr (a `GBool`) and nothing else of substance.
+fn extract_bool(par: &Par) -> Option<bool> {
+    if !par.sends.is_empty()
+        || !par.receives.is_empty()
+        || !par.news.is_empty()
+        || !par.matches.is_empty()
+        || !par.bundles.is_empty()
+        || !par.unforgeables.is_empty()
+        || !par.connectives.is_empty()
+        || !par.conditionals.is_empty()
+        || par.exprs.len() != 1
+    {
+        return None;
+    }
+    match par.exprs[0].expr_instance.as_ref()? {
+        ExprInstance::GBool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+fn describe_par_type(par: &Par) -> String {
+    if par.exprs.len() == 1
+        && par.sends.is_empty()
+        && par.receives.is_empty()
+        && par.news.is_empty()
+        && par.matches.is_empty()
+        && par.bundles.is_empty()
+        && par.unforgeables.is_empty()
+        && par.connectives.is_empty()
+        && par.conditionals.is_empty()
+    {
+        match par.exprs[0].expr_instance.as_ref() {
+            Some(ExprInstance::GBool(_)) => "Bool".to_string(),
+            Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GString(_)) => "String".to_string(),
+            Some(ExprInstance::GUri(_)) => "Uri".to_string(),
+            Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),
+            Some(ExprInstance::EListBody(_)) => "List".to_string(),
+            Some(ExprInstance::ETupleBody(_)) => "Tuple".to_string(),
+            Some(ExprInstance::ESetBody(_)) => "Set".to_string(),
+            Some(ExprInstance::EMapBody(_)) => "Map".to_string(),
+            Some(ExprInstance::EVarBody(_)) => "unbound variable".to_string(),
+            _ => "non-boolean expression".to_string(),
+        }
+    } else {
+        "non-boolean process".to_string()
     }
 }

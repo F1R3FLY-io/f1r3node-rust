@@ -40,6 +40,7 @@ message Par {
   repeated GUnforgeable unforgeables = 7;  // unforgeable names
   repeated Bundle bundles = 11;
   repeated Connective connectives = 8;
+  repeated If conditionals = 12;
   bytes locallyFree = 9
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
@@ -182,6 +183,21 @@ message MatchCase {
 message Match {
   Par target = 1 [(scalapb.field).no_box = true];
   repeated MatchCase cases = 2;
+  bytes locallyFree = 4
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 5;
+}
+
+// First-class conditional. Reduction evaluates `condition`'s expression slot;
+// fires `if_true` when it reduces to GBool(true), `if_false` when it reduces
+// to GBool(false), and raises InterpreterError::IfConditionTypeError
+// otherwise. Side effects in `condition` (sends/news/receives) are inert
+// because the evaluator only walks par.exprs.
+message If {
+  Par condition = 1 [(scalapb.field).no_box = true];
+  Par if_true = 2 [(scalapb.field).no_box = true];
+  Par if_false = 3 [(scalapb.field).no_box = true];
   bytes locallyFree = 4
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];

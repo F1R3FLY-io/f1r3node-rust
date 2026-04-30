@@ -1,4 +1,4 @@
-use models::rhoapi::{Bundle, Connective, Expr, Match, New, Par, Receive, Send};
+use models::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
 use models::rust::utils::union;
 
 use super::matcher::has_locally_free::HasLocallyFree;
@@ -16,6 +16,7 @@ pub enum GeneratedMessage {
     Match(Match),
     Bundle(Bundle),
     Expr(Expr),
+    If(If),
 }
 
 // These two functions need to be under 'rholang' dir because of HasLocallyFree Trait.

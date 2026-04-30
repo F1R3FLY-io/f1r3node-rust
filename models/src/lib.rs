@@ -123,6 +123,7 @@ impl PartialEq for Par {
             && self.unforgeables == other.unforgeables
             && self.bundles == other.bundles
             && self.connectives == other.connectives
+            && self.conditionals == other.conditionals
             && self.connective_used == other.connective_used
     }
 }
@@ -137,6 +138,7 @@ impl Hash for Par {
         self.unforgeables.hash(state);
         self.bundles.hash(state);
         self.connectives.hash(state);
+        self.conditionals.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -392,6 +394,24 @@ impl Hash for Match {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.target.hash(state);
         self.cases.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for If {
+    fn eq(&self, other: &Self) -> bool {
+        self.condition == other.condition
+            && self.if_true == other.if_true
+            && self.if_false == other.if_false
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for If {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.condition.hash(state);
+        self.if_true.hash(state);
+        self.if_false.hash(state);
         self.connective_used.hash(state);
     }
 }

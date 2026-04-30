@@ -131,6 +131,18 @@ impl Par {
         }
     }
 
+    pub fn prepend_if(&mut self, i: If) -> Par {
+        let mut new_conditionals = vec![i.clone()];
+        new_conditionals.append(&mut self.conditionals);
+
+        Par {
+            conditionals: new_conditionals,
+            locally_free: union(self.locally_free.clone(), i.locally_free),
+            connective_used: self.connective_used || i.connective_used,
+            ..self.clone()
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sends.is_empty()
             && self.receives.is_empty()
@@ -194,6 +206,7 @@ impl Par {
             unforgeables: [self.unforgeables.clone(), other.unforgeables].concat(),
             bundles: [self.bundles.clone(), other.bundles].concat(),
             connectives: [self.connectives.clone(), other.connectives].concat(),
+            conditionals: [self.conditionals.clone(), other.conditionals].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }
