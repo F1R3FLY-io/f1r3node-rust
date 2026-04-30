@@ -16,6 +16,7 @@ path = "src/rholang_cli.rs"
 [dependencies]
 crypto = { path = "../crypto" }
 models = { path = "../models" }
+rho-pure-eval = { path = "../rho-pure-eval" }
 shared = { path = "../shared" }
 rspace_plus_plus = { path = "../rspace++" }
 itertools = { workspace = true }

@@ -4,6 +4,7 @@ members = [
 	"casper",
 	"rspace++",
 	"rholang",
+	"rho-pure-eval",
 	"shared",
 	"node",
 	"models",
