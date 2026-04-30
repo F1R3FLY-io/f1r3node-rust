@@ -17,6 +17,15 @@ use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueSt
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::{Byte, ByteVector};
 
+type RandomInsertDeleteResult = Result<
+    (
+        Box<dyn History>,
+        Vec<HistoryAction>,
+        BTreeMap<Vec<u8>, Blake2b256Hash>,
+    ),
+    Box<dyn Error>,
+>;
+
 #[test]
 fn creating_and_read_one_record_should_work() {
     let (history_action, insert_action) = history_insert(zeros());
@@ -343,14 +352,7 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
 
     let empty_history = create_empty_history();
 
-    let res: Result<
-        (
-            Box<dyn History>,
-            Vec<HistoryAction>,
-            BTreeMap<Vec<u8>, Blake2b256Hash>,
-        ),
-        _,
-    > = (1..=10).try_fold(
+    let res: RandomInsertDeleteResult = (1..=10).try_fold(
         (empty_history, inserts, state),
         |(history, inserts, state), _| {
             let new_inserts = generate_random_insert(size_inserts);
@@ -366,14 +368,14 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
 
             let new_deletes = generate_random_delete_from_insert(size_deletes, last_inserts)
                 .into_iter()
-                .chain(generate_random_delete(size_deletes).into_iter())
+                .chain(generate_random_delete(size_deletes))
                 .collect::<Vec<_>>();
 
             let actions = new_inserts
                 .clone()
                 .into_iter()
-                .chain(new_deletes.clone().into_iter())
-                .chain(new_updates.into_iter())
+                .chain(new_deletes.clone())
+                .chain(new_updates)
                 .collect::<Vec<_>>();
 
             println!("\nprocess {}", actions.len());
@@ -387,29 +389,20 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
                     Ok(Some(v)) => assert!(v == value.bytes()),
                     Err(e) => {
                         println!("{:?}", e);
-                        assert!(false, "Can not get value")
+                        panic!("Can not get value")
                     }
-                    Ok(None) => {
-                        assert!(false, "Can not get value")
-                    }
+                    Ok(None) => panic!("Can not get value"),
                 }
             }
 
             for d in new_deletes.iter() {
                 match new_history.as_ref().unwrap().read(d.key()) {
-                    Ok(None) => assert!(true),
-                    _ => assert!(false, "got empty pointer after remove"),
+                    Ok(None) => {}
+                    _ => panic!("got empty pointer after remove"),
                 }
             }
 
-            Ok::<
-                (
-                    Box<dyn History>,
-                    Vec<HistoryAction>,
-                    BTreeMap<Vec<u8>, Blake2b256Hash>,
-                ),
-                Box<dyn Error>,
-            >((new_history.unwrap(), new_inserts, new_state))
+            Ok::<_, Box<dyn Error>>((new_history.unwrap(), new_inserts, new_state))
         },
     );
 
@@ -475,10 +468,10 @@ fn generate_random_delete_from_insert(
 
 fn generate_random_insert_from_insert(
     size: usize,
-    inserts: &Vec<HistoryAction>,
+    inserts: &[HistoryAction],
 ) -> Vec<HistoryAction> {
     let mut rng = rand::thread_rng();
-    let mut shuffled_inserts = inserts.clone();
+    let mut shuffled_inserts = inserts.to_owned();
     shuffled_inserts.shuffle(&mut rng);
     shuffled_inserts
         .into_iter()
@@ -489,7 +482,7 @@ fn generate_random_insert_from_insert(
 
 fn update_state(
     mut state: BTreeMap<KeyPath, Blake2b256Hash>,
-    actions: &Vec<HistoryAction>,
+    actions: &[HistoryAction],
 ) -> BTreeMap<KeyPath, Blake2b256Hash> {
     for action in actions {
         match action {

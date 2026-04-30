@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity, clippy::useless_vec)]
+
 // See rspace/src/test/scala/coop/rchain/rspace/StorageActionsTests.scala
 
 use std::collections::{BTreeSet, HashSet, LinkedList};
@@ -247,8 +249,7 @@ async fn consuming_on_one_channel_should_persist_continuation_in_store() {
     assert_eq!(
         insert_continuations
             .into_iter()
-            .map(|c| c.channels)
-            .flatten()
+            .flat_map(|c| c.channels)
             .collect::<Vec<String>>(),
         key
     );
@@ -1618,7 +1619,7 @@ async fn clear_should_reset_to_the_same_hash_on_multiple_runs() {
     let _ = rspace.create_checkpoint().unwrap();
 
     // force clearing of trie store state
-    let _ = rspace.clear().unwrap();
+    rspace.clear().unwrap();
 
     // the checkpointing mechanism should not interfere with the empty root
     let checkpoint2 = rspace.create_checkpoint().unwrap();
@@ -1647,7 +1648,7 @@ async fn create_checkpoint_should_clear_the_store_contents() {
         BTreeSet::default(),
     );
 
-    let _ = rspace.create_checkpoint().unwrap();
+    rspace.create_checkpoint().unwrap();
     let checkpoint0_changes = rspace.store.changes();
     assert_eq!(checkpoint0_changes.len(), 0);
 }
@@ -1683,7 +1684,7 @@ async fn reset_should_change_the_state_of_the_store_and_reset_the_trie_updates_l
     assert!(!checkpoint0_changes.is_empty());
     assert_eq!(checkpoint0_changes.len(), 1);
 
-    let _ = rspace.reset(&checkpint0.root).unwrap();
+    rspace.reset(&checkpint0.root).unwrap();
     let reset_changes = rspace.store.changes();
     assert!(reset_changes.is_empty());
     assert_eq!(reset_changes.len(), 0);
@@ -1751,7 +1752,7 @@ proptest! {
       }
 
       assert_eq!(checkpoint2.root, RadixHistory::empty_root_node_hash());
-      let _ = rspace.reset(&checkpoint1.root).unwrap();
+      rspace.reset(&checkpoint1.root).unwrap();
 
       for channel in data.iter() {
         let result = rspace.consume(vec![channel.to_string()], vec![Pattern::Wildcard], StringsCaptor::new(), false, BTreeSet::default());
@@ -1969,7 +1970,7 @@ async fn revert_to_soft_checkpoint_should_revert_the_state_of_the_store_to_the_g
 
     // the operation should be on the list of changes
     assert!(!changes.is_empty());
-    let _ = rspace.revert_to_soft_checkpoint(s1).unwrap();
+    rspace.revert_to_soft_checkpoint(s1).unwrap();
 
     let changes: Vec<InsertContinuations<String, Pattern, StringsCaptor>> = rspace
         .store

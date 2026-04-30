@@ -700,7 +700,7 @@ proptest! {
       let (_, _, hot_store) = fixture();
 
       hot_store.put_join(&channel.clone(), &channels.clone());
-      hot_store.put_join(&channel.clone(), &vec!["other_channel".to_string()]);
+      hot_store.put_join(&channel.clone(), &["other_channel".to_string()]);
       hot_store.remove_join(&channel.clone(), &channels.clone());
       let res = hot_store.get_joins(&channel);
       assert_eq!(res, vec![vec!["other_channel".to_string()]]);
@@ -895,7 +895,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .data
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         data
     }
 
@@ -905,7 +905,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .continuations
             .get(channels)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         continuations
     }
 
@@ -915,7 +915,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .joins
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         joins
     }
 
@@ -927,21 +927,17 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
 }
 
 impl<C: Eq + Hash, P: Clone, A: Clone, K: Clone> TestHistory<C, P, A, K> {
-    fn put_data(&self, channel: C, data: Vec<Datum<A>>) -> () {
+    fn put_data(&self, channel: C, data: Vec<Datum<A>>) {
         let state = self.state.lock().unwrap();
         state.data.insert(channel, data);
     }
 
-    fn put_continuations(
-        &self,
-        channels: Vec<C>,
-        continuations: Vec<WaitingContinuation<P, K>>,
-    ) -> () {
+    fn put_continuations(&self, channels: Vec<C>, continuations: Vec<WaitingContinuation<P, K>>) {
         let state = self.state.lock().unwrap();
         state.continuations.insert(channels, continuations);
     }
 
-    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) -> () {
+    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) {
         let state = self.state.lock().unwrap();
         state.joins.insert(channel, joins);
     }

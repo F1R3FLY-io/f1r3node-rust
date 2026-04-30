@@ -24,10 +24,12 @@ impl Match<Pattern, String> for StringMatch {
     fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
 }
 
-fn build_reporting_rspace() -> (
+type ReportingSetup = (
     RSpace<String, Pattern, String, String>,
     ReportingRspace<String, Pattern, String, String>,
-) {
+);
+
+fn build_reporting_rspace() -> ReportingSetup {
     let mut kvm = InMemoryStoreManager::new();
     let store = futures::executor::block_on(kvm.r_space_stores()).unwrap();
 

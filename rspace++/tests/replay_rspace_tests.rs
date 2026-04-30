@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 // See rspace/src/test/scala/coop/rchain/rspace/ReplayRSpaceTests.scala
 
 use std::collections::{BTreeSet, HashSet};
@@ -43,11 +45,11 @@ fn get_metrics_snapshotter() -> &'static Snapshotter {
 
 fn capture_baseline_metrics(snapshotter: &Snapshotter) -> (u64, usize) {
     let snapshot = snapshotter.snapshot();
-    let metrics = snapshot.into_hashmap();
+    let metrics = snapshot.into_vec();
     let mut count = 0u64;
     let mut samples = 0;
 
-    for (key, (_, _, value)) in metrics.iter() {
+    for (key, _, _, value) in metrics.iter() {
         let key_str = format!("{:?}", key);
         if key_str.contains(PRODUCE_COMM_LABEL) && key_str.contains(RSPACE_METRICS_SOURCE) {
             if let metrics_util::debugging::DebugValue::Counter(c) = value {
@@ -71,12 +73,12 @@ fn verify_metrics_incremented(
     baseline_samples: usize,
 ) {
     let snapshot = snapshotter.snapshot();
-    let metrics = snapshot.into_hashmap();
+    let metrics = snapshot.into_vec();
 
     let mut after_produce_count = 0u64;
     let mut after_produce_time_samples = 0;
 
-    for (key, (_, _, value)) in metrics.iter() {
+    for (key, _, _, value) in metrics.iter() {
         let key_str = format!("{:?}", key);
 
         if key_str.contains(PRODUCE_COMM_LABEL) && key_str.contains(RSPACE_METRICS_SOURCE) {
@@ -604,7 +606,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         space: &mut impl ISpace<String, Pattern, String, String>,
         range: Vec<i32>,
         channels_creator: F,
-        patterns: &Vec<Pattern>,
+        patterns: &[Pattern],
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
@@ -627,7 +629,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
             .map(|i| {
                 let result = space.consume(
                     channels_creator(i),
-                    patterns.clone(),
+                    patterns.to_owned(),
                     continuation_creator(i),
                     persist,
                     peeks.clone(),
@@ -671,7 +673,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         space: &mut impl ISpace<String, Pattern, String, String>,
         range: Vec<i32>,
         channels_creator: F,
-        patterns: &Vec<Pattern>,
+        patterns: &[Pattern],
         continuation_creator: G,
         persist: bool,
         peeks: &BTreeSet<i32>,
@@ -694,7 +696,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
             .map(|i| {
                 let result = space.consume(
                     channels_creator(i),
-                    patterns.clone(),
+                    patterns.to_owned(),
                     continuation_creator(i),
                     persist,
                     peeks.clone(),
@@ -754,7 +756,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         &mut space,
         range.clone(),
         kp(vec!["ch1".to_string()]),
-        &vec![Pattern::Wildcard],
+        &[Pattern::Wildcard],
         continuation_creator,
         false,
         &BTreeSet::default(),
@@ -775,7 +777,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         &mut replay_space,
         range,
         kp(vec!["ch1".to_string()]),
-        &vec![Pattern::Wildcard],
+        &[Pattern::Wildcard],
         continuation_creator,
         false,
         &BTreeSet::default(),
@@ -807,11 +809,11 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
 
     fn consume_and_produce(
         space: &mut impl ISpace<String, Pattern, String, String>,
-        channels: &Vec<String>,
-        patterns: &Vec<Pattern>,
-        continuation: &String,
+        channels: &[String],
+        patterns: &[Pattern],
+        continuation: &str,
         peeks: &BTreeSet<i32>,
-        produces: &Vec<String>,
+        produces: &[String],
     ) -> Vec<
         Option<(
             ContResult<String, Pattern, String>,
@@ -821,9 +823,9 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
     > {
         let mut results = vec![];
         let _ = space.consume(
-            channels.clone(),
-            patterns.clone(),
-            continuation.clone(),
+            channels.to_owned(),
+            patterns.to_owned(),
+            continuation.to_owned(),
             false,
             peeks.clone(),
         );
@@ -1343,13 +1345,13 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .replay_data
             .map
             .get(&IOEvent::Consume(cr_1.clone()))
-            .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+            .map(|counter| counter.values().copied().sum::<usize>())
             .unwrap_or(0)
             + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2.clone()))
-                .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+                .map(|counter| counter.values().copied().sum::<usize>())
                 .unwrap_or(0),
         2
     );
@@ -1376,13 +1378,13 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .replay_data
             .map
             .get(&IOEvent::Consume(cr_1.clone()))
-            .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+            .map(|counter| counter.values().copied().sum::<usize>())
             .unwrap_or(0)
             + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2.clone()))
-                .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+                .map(|counter| counter.values().copied().sum::<usize>())
                 .unwrap_or(0),
         1
     );
@@ -1394,13 +1396,13 @@ async fn replay_rspace_should_correctly_remove_things_from_replay_data() {
             .replay_data
             .map
             .get(&IOEvent::Consume(cr_1))
-            .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+            .map(|counter| counter.values().copied().sum::<usize>())
             .unwrap_or(0)
             + replay_space
                 .replay_data
                 .map
                 .get(&IOEvent::Consume(cr_2))
-                .map(|counter| counter.iter().map(|(_, c)| *c).sum::<usize>())
+                .map(|counter| counter.values().copied().sum::<usize>())
                 .unwrap_or(0),
         0
     );
@@ -1542,12 +1544,8 @@ async fn clear_should_empty_the_replay_store_reset_the_replay_event_log_reset_th
             .changes()
             .into_iter()
             .filter_map(|action| {
-                if let HotStoreAction::Insert(insert) = action {
-                    if let InsertAction::InsertContinuations(conts) = insert {
-                        Some(conts)
-                    } else {
-                        None
-                    }
+                if let HotStoreAction::Insert(InsertAction::InsertContinuations(conts)) = action {
+                    Some(conts)
                 } else {
                     None
                 }

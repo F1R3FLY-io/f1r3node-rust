@@ -31,6 +31,11 @@ use shared::rust::ByteVector;
 
 use crate::history::history_action_tests::{random_blake, zeros_blake};
 
+type InsertContinuationResult = (
+    HotStoreAction<String, String, String, String>,
+    InsertContinuations<String, String, String>,
+);
+
 #[tokio::test]
 async fn history_repository_should_process_insert_one_datum() {
     let repo = create_empty_repository();
@@ -284,8 +289,8 @@ async fn history_repository_should_not_allow_switching_to_a_not_existing_root() 
                 err
             )
         }
-        Ok(_) => assert!(false, "Expected a failure"),
-        _ => assert!(false, "Wrong error thrown"),
+        Ok(_) => panic!("Expected a failure"),
+        _ => panic!("Wrong error thrown"),
     }
 }
 
@@ -347,12 +352,7 @@ fn insert_join(
     )
 }
 
-fn insert_continuation(
-    s: i32,
-) -> (
-    HotStoreAction<String, String, String, String>,
-    InsertContinuations<String, String, String>,
-) {
+fn insert_continuation(s: i32) -> InsertContinuationResult {
     let insert = InsertContinuations {
         channels: vec![format!("{}{}", test_channel_continuations_prefix(), s)],
         continuations: vec![continuation(s)],
@@ -502,9 +502,9 @@ impl RSpaceImporter for EmptyImporter {
 }
 
 impl TrieImporter for EmptyImporter {
-    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
+    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
 
-    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
+    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
 
-    fn set_root(&self, _key: &KeyHash) -> () { todo!() }
+    fn set_root(&self, _key: &KeyHash) { todo!() }
 }
