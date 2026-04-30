@@ -51,13 +51,30 @@ cargo install just
 
 The workspace is pinned to `nightly-2026-02-09` in `rust-toolchain.toml`.
 
-### Install Git Hooks
+### Git Hooks (Required)
+
+The pre-commit and pre-push hooks gate every commit and every push. **Install them before your first commit:**
 
 ```bash
-./scripts/setup-hooks.sh
+cargo install cargo-deny --locked   # one-time, required by the pre-commit deny step
+./scripts/setup-hooks.sh            # points core.hooksPath at .githooks/
 ```
 
-This enables pre-commit linting (`cargo fmt --check` + `cargo clippy`) and pre-push testing (`cargo test --release`). See [DEVELOPER.md](DEVELOPER.md#git-hooks) for options and bypass flags.
+| Hook | When | Checks |
+| --- | --- | --- |
+| `pre-commit` | Every commit | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check` |
+| `pre-push` | Every push | `cargo clippy` (re-check), `cargo test --release` (per-crate) |
+
+Both hooks auto-skip in CI environments (the same gates run server-side in `.github/workflows/ci.yml`).
+
+**Mandatory for all contributors:**
+
+- All three pre-commit checks (fmt, clippy, deny) must pass.
+- The pre-push test suite must pass.
+- Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI; bypassing locally only defers the failure.
+- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local in-progress experimentation only — every commit and push that reaches the remote must pass without skips.
+
+See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and `setup-hooks.sh --status` / `--remove` management commands.
 
 ### Build
 
