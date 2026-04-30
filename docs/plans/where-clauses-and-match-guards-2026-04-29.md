@@ -519,6 +519,31 @@ etc.) from `reduce.rs` into the new crate. `reduce.rs` keeps `eval_send`,
 `eval_receive`, `eval_new`, `eval_match`, `eval_if`, etc. (anything that
 fires processes), and delegates pure-Expr evaluation to `rho-pure-eval`.
 
+#### Status (Phase 4 commit `d89e72b`)
+
+The crate is in place with:
+
+- `Env<A>` migrated out of `rholang/.../env.rs` (which is now a thin
+  re-export). Phase 6 will pass the same Env type into the rspace
+  matcher.
+- An initial subset of `eval`: ground values pass-through (incl.
+  collection literals), EVar resolution, ENot, ENeg, EAnd, EOr, EEq,
+  ENeq, ELt, ELte, EGt, EGte, EPlus, EMinus, EMult, EDiv, EMod.
+- `EvalError::UnsupportedExpression { kind }` for everything not yet
+  implemented: EMethodBody, EMatchesBody, EPercentPercentBody,
+  EPlusPlusBody, EMinusMinusBody, EPathmapBody, EZipperBody.
+- 28 unit tests covering the subset, type-mismatch errors,
+  division-by-zero, side-effect-content preservation (process-level
+  Par fields carried through unchanged), and a determinism smoke
+  test.
+
+**Not yet done**: the actual extraction from `reduce.rs`. The eval
+logic in `rho-pure-eval` is independently written, not extracted.
+`reduce.rs::eval_expr` continues to exist and is still the path used
+by `eval_match`, `eval_if`, etc. The extraction will happen as Phase
+5/6 surface a need to share method dispatch and the rest. For now,
+both paths exist; the choice of which to call is at the call site.
+
 ### 3.10 First-class `if` IR construct with synchronous type error
 
 Today `p_if_normalizer.rs` desugars `if (cond) { P } else { Q }` to a
@@ -783,38 +808,46 @@ Each phase ends in green tests and is mergeable independently.
   `08-channels-and-concurrency.md`) and rewrote
   `tut-philosophers.rho` to use `&`.
 - **Phase 2 — `if` as a first-class IR construct (language + consensus
-  change).**
-    1. Add `If` proto message and `Par.conditionals` field; regenerate
-       prost types.
-    2. Update `p_if_normalizer.rs` to emit `If` instead of `Match`.
-       (No syntactic check on the condition — see §3.8.)
-    3. Add `eval_if` reducer arm and
-       `InterpreterError::IfConditionTypeError`.
-    4. Update existing `p_if_normalizer.rs` tests (which currently assert
-       the `Match` desugaring shape).
-    5. Verify casper replay paths (`replay_runtime.rs`, `replay_rspace.rs`)
-       handle `If` nodes.
-    6. Corpus sweep — confirm no `.rho` programs rely on silent-no-op
-       semantics for non-bool `if` conditions. Isolated commit.
-- **Phase 3 — `rholang-rs` external**:
-    1. Grammar + AST + parser tests for receive `where`, match `where`.
-    2. Tag a feature-branch SHA.
-- **Phase 4 — `rho-pure-eval` crate**:
-    1. New crate skeleton with `eval(par, env) -> Par` API.
-    2. Extract `eval_expr` and per-Expr evaluators from `reduce.rs`.
-    3. Replace `reduce.rs` call sites with delegation (including
-       `eval_if`'s condition evaluation).
-    4. Round-trip tests against the existing rholang test corpus.
+  change).** ✅ **Done** (commit `1740ca8`). Added `If` proto message
+  + `Par.conditionals` field; `p_if_normalizer.rs` emits `If`;
+  `eval_if` arm in `reduce.rs` raises
+  `InterpreterError::IfConditionTypeError` synchronously on non-bool
+  conditions. Tests rewritten to assert the `If` shape. Corpus sweep
+  found only `examples/dupe.rho` using `if`, with a properly-bool
+  condition.
+- **Phase 3 — `rholang-rs` external** ✅ **Done** (rholang-rs commit
+  `988edd6`, f1r3node-rust commit `87dad55`). Grammar accepts
+  `where` on receipts and match cases (66 existing + 6 new corpus
+  tests). AST: `Receipt { binds, guard }`, `Case { pattern, guard,
+  proc }`. AST builder constructs them with `guard: None` for now;
+  populating guard payloads from CST nodes is bundled with Phase 5.
+  Pinned via `[patch]` override to local feature branch in
+  `../rholang-rs`; will switch to a remote SHA once that branch is
+  pushed.
+- **Phase 4 — `rho-pure-eval` crate** ✅ **Done** (commit `d89e72b`).
+  Crate skeleton with `eval(par, env) -> Par` API. Initial subset
+  (ground values, EVar, bool/comparison/integer arithmetic) plus
+  `EvalError::UnsupportedExpression` stubs for the rest. `Env<A>`
+  migrated out of `rholang/.../env.rs` (now a re-export). 28 unit
+  tests. The actual *extraction* of `eval_expr` from `reduce.rs` is
+  deferred — `rho-pure-eval` is independently written for now;
+  `reduce.rs::eval_expr` still drives `eval_match` / `eval_if`
+  unchanged. Phase 5/6 will move logic over as needed.
 - **Phase 5 — proto + normalizer for guards**:
-    1. Bump `rholang-parser` pin to Phase 3 SHA.
-    2. Add `Receive.condition`, `MatchCase.guard`, `EMatchExpr` to the
+    1. Add `Receive.condition`, `MatchCase.guard`, `EMatchExpr` to the
        proto.
+    2. Plumb guard payloads through the rholang-rs CPS parser
+       (`K::ConsumeForComprehension`, `K::ConsumeMatch`) so they end
+       up populated in `Receipt.guard` / `Case.guard` rather than
+       `None`.
     3. Normalizer changes for match guards and receive guards (no
        syntactic checks; runtime handles bool-ness).
     4. Tests 1–9.
 - **Phase 6 — match-as-expr runtime**:
     1. `eval_match` fall-through (non-bool guard → next case).
-    2. `EMatchExpr` evaluation (delegates to `rho-pure-eval`).
+    2. `EMatchExpr` evaluation (delegates to `rho-pure-eval`; this
+       will drive the first chunk of additional Expr support being
+       extracted into `rho-pure-eval`).
     3. Tests 7, 13, fall-through runtime tests.
 - **Phase 7 — receive guard in rspace matcher**:
     1. Extend rspace matcher API to take optional guard predicate.
