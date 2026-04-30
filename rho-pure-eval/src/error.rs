@@ -35,6 +35,9 @@ pub enum EvalError {
     /// for the operands of `==`) but reduced to something more complex.
     /// Boxed so that the rest of the EvalError variants stay small.
     NotASingleValue { actual: Box<Par> },
+
+    /// An EMatchExpr's target didn't match any of its cases.
+    NoMatch,
 }
 
 impl std::fmt::Display for EvalError {
@@ -58,6 +61,7 @@ impl std::fmt::Display for EvalError {
             EvalError::NotASingleValue { .. } => {
                 write!(f, "expected a single ground value")
             }
+            EvalError::NoMatch => write!(f, "no case in EMatchExpr matched the target"),
         }
     }
 }

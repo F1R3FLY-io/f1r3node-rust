@@ -176,6 +176,106 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         ExprInstance::EZipperBody(_) => Err(EvalError::UnsupportedExpression {
             kind: "EZipperBody",
         }),
+        ExprInstance::EMatchExprBody(em) => eval_match_expr(em, env),
+    }
+}
+
+/// Evaluates an `EMatchExpr` — match used in expression context. Spatial
+/// matching for complex patterns lives in `rholang::matcher` and is not
+/// reachable from this crate; for now we handle only the minimal subset
+/// of patterns that doesn't require it: ground-value equality and
+/// wildcard. Anything richer (free-var binding, structural destructure)
+/// returns `UnsupportedExpression { kind: "EMatchExprBody" }`. Phase 7
+/// will move spatial matching into a place this crate can call.
+fn eval_match_expr(em: &models::rhoapi::EMatchExpr, env: &Env<Par>) -> Result<Par, EvalError> {
+    let target = em.target.as_ref().ok_or(EvalError::MissingExprInstance)?;
+    let evaled_target = eval(target, env)?;
+
+    for case in &em.cases {
+        let pattern = case
+            .pattern
+            .as_ref()
+            .ok_or(EvalError::MissingExprInstance)?;
+        if simple_pattern_match(pattern, &evaled_target).is_some() {
+            // Apply guard if present. Same fall-through rule as eval_match.
+            if let Some(g) = case.guard.as_ref() {
+                let guard_result = eval(g, env)?;
+                if extract_bool_par(&guard_result) != Some(true) {
+                    continue;
+                }
+            }
+            // Pattern matched; evaluate body. Simple patterns don't bind
+            // free vars, so the env is unchanged.
+            let body = case.source.as_ref().ok_or(EvalError::MissingExprInstance)?;
+            return eval(body, env);
+        } else if pattern_has_free_vars_or_structure(pattern) {
+            // The pattern needs spatial matching, which we can't do
+            // here. Tell the caller to fall back to the full reducer.
+            return Err(EvalError::UnsupportedExpression {
+                kind: "EMatchExprBody",
+            });
+        }
+        // Non-matching simple pattern → try next case.
+    }
+
+    Err(EvalError::NoMatch)
+}
+
+/// True iff the pattern has anything beyond ground values, simple
+/// collection literals, or wildcard. Triggers the "unsupported" fallback
+/// when a richer pattern is encountered.
+fn pattern_has_free_vars_or_structure(pattern: &Par) -> bool {
+    !pattern.sends.is_empty()
+        || !pattern.receives.is_empty()
+        || !pattern.news.is_empty()
+        || !pattern.matches.is_empty()
+        || !pattern.bundles.is_empty()
+        || !pattern.unforgeables.is_empty()
+        || !pattern.conditionals.is_empty()
+        || pattern.connectives.iter().any(|c| {
+            !matches!(
+                c.connective_instance,
+                Some(models::rhoapi::connective::ConnectiveInstance::ConnBool(_))
+                    | Some(models::rhoapi::connective::ConnectiveInstance::ConnInt(_))
+                    | Some(models::rhoapi::connective::ConnectiveInstance::ConnString(
+                        _
+                    ))
+                    | Some(models::rhoapi::connective::ConnectiveInstance::ConnUri(_))
+                    | Some(models::rhoapi::connective::ConnectiveInstance::ConnByteArray(_))
+            )
+        })
+        || pattern.exprs.iter().any(|e| {
+            matches!(
+                e.expr_instance,
+                Some(ExprInstance::EVarBody(_))
+                    | Some(ExprInstance::EMethodBody(_))
+                    | Some(ExprInstance::EMatchesBody(_))
+                    | Some(ExprInstance::EMatchExprBody(_))
+            )
+        })
+}
+
+/// Simple structural equality match for ground-value patterns. Returns
+/// `Some(())` if pattern matches target, `None` otherwise. No bindings
+/// produced.
+fn simple_pattern_match(pattern: &Par, target: &Par) -> Option<()> {
+    if pattern == target {
+        Some(())
+    } else {
+        None
+    }
+}
+
+/// Extracts a bool from a Par with exactly one GBool Expr, ignoring any
+/// other Par content (mirrors the rholang interpreter's
+/// `single_expr` discipline). Returns None if not a clean single-bool.
+fn extract_bool_par(par: &Par) -> Option<bool> {
+    if par.exprs.len() != 1 {
+        return None;
+    }
+    match par.exprs[0].expr_instance.as_ref()? {
+        ExprInstance::GBool(b) => Some(*b),
+        _ => None,
     }
 }
 

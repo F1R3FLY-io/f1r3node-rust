@@ -420,6 +420,22 @@ impl Hash for If {
     }
 }
 
+impl PartialEq for EMatchExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.cases == other.cases
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for EMatchExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.target.hash(state);
+        self.cases.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool { self.expr_instance == other.expr_instance }
 }
@@ -467,6 +483,7 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GBigInt(a), ExprInstance::GBigInt(b)) => a == b,
             (ExprInstance::GBigRat(a), ExprInstance::GBigRat(b)) => a == b,
             (ExprInstance::GFixedPoint(a), ExprInstance::GFixedPoint(b)) => a == b,
+            (ExprInstance::EMatchExprBody(a), ExprInstance::EMatchExprBody(b)) => a == b,
             _ => false,
         }
     }
@@ -511,6 +528,7 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GBigInt(a) => a.hash(state),
             ExprInstance::GBigRat(a) => a.hash(state),
             ExprInstance::GFixedPoint(a) => a.hash(state),
+            ExprInstance::EMatchExprBody(a) => a.hash(state),
         }
     }
 }

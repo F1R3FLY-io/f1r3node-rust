@@ -4,8 +4,9 @@ use super::score_tree::ScoredTerm;
 use super::sortable::Sortable;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{
-    EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg,
-    ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar, EZipper, Expr, Par, Var,
+    EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatchExpr, EMatches, EMinus, EMinusMinus, EMod,
+    EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar, EZipper, Expr,
+    MatchCase, Par, Var,
 };
 use crate::rust::par_map::ParMap;
 use crate::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -744,6 +745,62 @@ impl Sortable<Expr> for ExprSortMatcher {
                         Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
                     ]),
                 },
+
+                ExprInstance::EMatchExprBody(em) => {
+                    let sorted_target = ParSortMatcher::sort_match(
+                        em.target
+                            .as_ref()
+                            .expect("target field on EMatchExpr was None, should be Some"),
+                    );
+                    let sorted_cases: Vec<ScoredTerm<MatchCase>> = em
+                        .cases
+                        .iter()
+                        .map(|c| {
+                            let sorted_pattern = ParSortMatcher::sort_match(
+                                c.pattern.as_ref().expect("MatchCase.pattern was None"),
+                            );
+                            let sorted_source = ParSortMatcher::sort_match(
+                                c.source.as_ref().expect("MatchCase.source was None"),
+                            );
+                            let guard_par = c.guard.clone().unwrap_or_default();
+                            let sorted_guard = ParSortMatcher::sort_match(&guard_par);
+                            ScoredTerm {
+                                term: MatchCase {
+                                    pattern: Some(sorted_pattern.term),
+                                    source: Some(sorted_source.term),
+                                    free_count: c.free_count,
+                                    guard: c.guard.as_ref().map(|_| sorted_guard.term.clone()),
+                                },
+                                score: Tree::Node(vec![
+                                    sorted_pattern.score,
+                                    sorted_source.score,
+                                    Tree::<ScoreAtom>::create_leaf_from_i64(c.free_count as i64),
+                                    sorted_guard.score,
+                                ]),
+                            }
+                        })
+                        .collect();
+                    let connective_used_score: i64 = if em.connective_used { 1 } else { 0 };
+
+                    construct_expr(
+                        ExprInstance::EMatchExprBody(EMatchExpr {
+                            target: Some(sorted_target.term),
+                            cases: sorted_cases.iter().map(|c| c.term.clone()).collect(),
+                            locally_free: em.locally_free.clone(),
+                            connective_used: em.connective_used,
+                        }),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMATCH_EXPR,
+                            vec![sorted_target.score]
+                                .into_iter()
+                                .chain(sorted_cases.into_iter().map(|c| c.score))
+                                .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
+                                    connective_used_score,
+                                )])
+                                .collect(),
+                        ),
+                    )
+                }
             },
 
             // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD

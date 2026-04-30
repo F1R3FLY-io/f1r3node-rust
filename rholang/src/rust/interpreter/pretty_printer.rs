@@ -566,6 +566,35 @@ impl PrettyPrinter {
                         }
                     }
                 }
+
+                ExprInstance::EMatchExprBody(em) => {
+                    let target_str = match em.target.as_ref() {
+                        Some(t) => self.build_string_from_message(t),
+                        None => "Nil".to_string(),
+                    };
+                    let mut cases_str = String::new();
+                    for c in &em.cases {
+                        let pat = match c.pattern.as_ref() {
+                            Some(p) => self.build_string_from_message(p),
+                            None => "_".to_string(),
+                        };
+                        let body = match c.source.as_ref() {
+                            Some(s) => self.build_string_from_message(s),
+                            None => "Nil".to_string(),
+                        };
+                        match c.guard.as_ref() {
+                            Some(g) => {
+                                let g_str = self.build_string_from_message(g);
+                                cases_str
+                                    .push_str(&format!(" {} where {} => {}", pat, g_str, body));
+                            }
+                            None => {
+                                cases_str.push_str(&format!(" {} => {}", pat, body));
+                            }
+                        }
+                    }
+                    Ok(format!("match {} {{{}  }}", target_str, cases_str))
+                }
             },
             // TODO: Figure out if we can prevent prost from generating - OLD
             None => Ok(String::from("Nil")),
