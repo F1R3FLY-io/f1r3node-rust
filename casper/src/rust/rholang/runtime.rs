@@ -81,7 +81,6 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
         patterns: vec![new_freevar_par(0, Vec::new())],
         remainder: None,
         free_count: 1,
-        condition: None,
     }
 }
 

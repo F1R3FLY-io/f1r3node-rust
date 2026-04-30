@@ -22,9 +22,10 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::GPrivateBuilder;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par_gint,
-    new_etuple_par, new_freevar_par, new_freevar_var, new_gbool_expr, new_gbool_par, new_gint_expr,
-    new_gint_par, new_gstring_expr, new_gstring_par, new_wildcard_par,
+    new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par,
+    new_eplus_par_gint, new_etuple_par, new_freevar_par, new_freevar_var, new_gbool_expr,
+    new_gbool_par, new_gint_expr, new_gint_par, new_gstring_expr, new_gstring_par,
+    new_wildcard_par,
 };
 use prost::Message;
 use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
@@ -86,6 +87,7 @@ fn check_continuation(
             &bind_patterns,
             &TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body)),
+                guard: None,
             },
             false,
             BTreeSet::new(),
@@ -620,7 +622,6 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         ],
         remainder: None,
         free_count: 0,
-        condition: None,
     };
 
     assert!(check_continuation(
@@ -676,7 +677,6 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
             patterns: vec![Par::default()],
             remainder: None,
             free_count: 0,
-            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1115,7 +1115,6 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
-            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1140,7 +1139,6 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
-            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -1183,7 +1181,6 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             patterns: vec![new_gint_par(2, Vec::new(), false)],
             remainder: None,
             free_count: 0,
-            condition: None,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -4854,4 +4851,288 @@ async fn receive_with_guard_filters_among_multiple_messages() {
     // The 7 was consumed (guard true); the -1 still sitting there.
     assert_eq!(final_row.data.len(), 1, "the rejected -1 still sits there");
     assert_eq!(final_row.wks.len(), 0, "continuation fired and was removed");
+}
+
+// =====================================================================
+// Phase 9: cross-channel multi-bind `where` guards (plan §7.12). The
+// guard now lives on the TaggedContinuation and is evaluated by the
+// matcher coordinator after every spatial bind has matched, so it can
+// reference variables bound by *any* of the binds.
+// =====================================================================
+
+/// Build a guard expressing `BoundVar(0) + BoundVar(1) > GInt(10)`.
+/// In a two-bind receive `for(@x <- a; @y <- b)` the parser would emit
+/// BoundVar(0) for the most recently bound name (y) and BoundVar(1) for
+/// the previously bound name (x). The matcher concatenates bind 0's
+/// pars with bind 1's pars and pushes them into rho-pure-eval's Env in
+/// that order, so this guard reads as `x + y > 10`.
+fn guard_cross_bind_sum_gt_ten() -> Par {
+    let lhs = new_eplus_par(
+        new_boundvar_par(1, models::create_bit_vector(&vec![1]), false),
+        new_boundvar_par(0, models::create_bit_vector(&vec![0]), false),
+    );
+    let rhs = new_gint_par(10, Vec::new(), false);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(lhs),
+            p2: Some(rhs),
+        })),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // 3 + 15 = 18 > 10 → guard passes → both messages consumed,
+    // continuation fires, tuple space ends up empty.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(15, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space should be empty after cross-bind guard passes: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // 3 + 5 = 8 ≤ 10 → guard fails → neither bind commits. Both data
+    // points stay in their channels and the continuation gets installed.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    // to_map only surfaces single-channel keys; multi-channel
+    // continuation keys aren't enumerated here. We still verify the
+    // *data* stays put — if the guard had passed and committed, both
+    // data entries would have been removed.
+    let row_a = result.get(&vec![chan_a]).expect("chan a state present");
+    assert_eq!(row_a.data.len(), 1, "rejected datum on a stays");
+    let row_b = result.get(&vec![chan_b]).expect("chan b state present");
+    assert_eq!(row_b.data.len(), 1, "rejected datum on b stays");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_filters_among_multiple_messages() {
+    // Send a=3 b=5 first (sum 8, guard fails → both stay), then send
+    // b=20 (a=3 still there, sum 23, guard passes). Verify the second
+    // pair gets consumed and the first pair stays in the tuple space.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(receive, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+
+    // First pair: a=3, b=5 → guard fails, both stay.
+    let send_a_small = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b_small = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    reducer
+        .eval(send_a_small, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b_small, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let mid = space.to_map().await;
+    // After the failing pair: data for both channels still sitting in
+    // the tuple space (the receive didn't commit). to_map can't show
+    // the multi-channel wk, so we check via data presence.
+    assert_eq!(
+        mid.get(&vec![chan_a.clone()])
+            .map(|r| r.data.len())
+            .unwrap_or(0),
+        1,
+        "rejected a=3 stays after first pair"
+    );
+    assert_eq!(
+        mid.get(&vec![chan_b.clone()])
+            .map(|r| r.data.len())
+            .unwrap_or(0),
+        1,
+        "rejected b=5 stays after first pair"
+    );
+
+    // Second pair: send b=20 (paired with the still-present a=3 → 23 > 10).
+    let send_b_big = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(20, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    reducer
+        .eval(send_b_big, &env, rand().split_byte(3))
+        .await
+        .unwrap();
+
+    let final_state = space.to_map().await;
+    // a=3 should be consumed; the rejected b=5 stays put.
+    assert!(
+        final_state
+            .get(&vec![chan_a])
+            .map(|r| r.data.is_empty())
+            .unwrap_or(true),
+        "a=3 was consumed when guard finally passed"
+    );
+    let final_b = final_state.get(&vec![chan_b]).expect("chan b state");
+    assert_eq!(final_b.data.len(), 1, "the rejected b=5 still sits there");
 }

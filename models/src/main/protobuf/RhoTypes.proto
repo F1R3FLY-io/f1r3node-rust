@@ -55,6 +55,12 @@ message TaggedContinuation {
     ParWithRandom par_body = 1;
     int64 scala_body_ref = 2;
   }
+  // Optional `where`-clause guard, lifted from `Receive.condition` when the
+  // continuation is registered with rspace. The matcher coordinator evaluates
+  // it (via rho-pure-eval) against the *combined* bindings of all binds after
+  // every spatial pattern has matched, so cross-channel guards see every
+  // bound variable. Empty Par = no guard. See plan §7.12.
+  Par guard = 3;
 }
 
 /**
@@ -131,12 +137,6 @@ message BindPattern {
   repeated Par patterns = 1;
   Var remainder = 2;
   int32 freeCount = 3;
-  // Optional `where`-clause guard, replicated from `Receive.condition`
-  // when this BindPattern is registered with rspace. The matcher
-  // evaluates it (via rho-pure-eval) against this bind's bound
-  // variables after spatial matching succeeds. Empty Par = no guard.
-  // See plan §3.5 / §3.7 (Option 3).
-  Par condition = 4;
 }
 
 message ListBindPatterns {

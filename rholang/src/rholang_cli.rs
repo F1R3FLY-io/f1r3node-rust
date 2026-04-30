@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -95,7 +95,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stores = get_or_create_rspace_store(&data_dir.to_string_lossy(), conf.map_size)?;
         let matcher_impl = Matcher;
         let matcher: Arc<
-            Box<dyn rspace_plus_plus::rspace::r#match::Match<BindPattern, ListParWithRandom>>,
+            Box<
+                dyn rspace_plus_plus::rspace::r#match::Match<
+                    BindPattern,
+                    ListParWithRandom,
+                    TaggedContinuation,
+                >,
+            >,
         > = Arc::new(Box::new(matcher_impl));
         let mut additional_system_processes: Vec<Definition> = vec![];
 

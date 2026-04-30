@@ -144,11 +144,16 @@ impl Hash for Par {
 }
 
 impl PartialEq for TaggedContinuation {
-    fn eq(&self, other: &Self) -> bool { self.tagged_cont == other.tagged_cont }
+    fn eq(&self, other: &Self) -> bool {
+        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+    }
 }
 
 impl Hash for TaggedContinuation {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.tagged_cont.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tagged_cont.hash(state);
+        self.guard.hash(state);
+    }
 }
 
 impl PartialEq for TaggedCont {
@@ -307,7 +312,6 @@ impl PartialEq for BindPattern {
         self.patterns == other.patterns
             && self.remainder == other.remainder
             && self.free_count == other.free_count
-            && self.condition == other.condition
     }
 }
 
@@ -316,7 +320,6 @@ impl Hash for BindPattern {
         self.patterns.hash(state);
         self.remainder.hash(state);
         self.free_count.hash(state);
-        self.condition.hash(state);
     }
 }
 

@@ -372,6 +372,7 @@ impl DebruijnInterpreter {
         body: ParWithRandom,
         persistent: bool,
         peek: bool,
+        guard: Option<Par>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -380,7 +381,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek),
+            inner: self.consume_inner(binds, body, persistent, peek, guard),
         })
     }
 
@@ -390,6 +391,7 @@ impl DebruijnInterpreter {
         body: ParWithRandom,
         persistent: bool,
         peek: bool,
+        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -405,6 +407,7 @@ impl DebruijnInterpreter {
                 patterns.clone(),
                 TaggedContinuation {
                     tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+                    guard: guard.clone(),
                 },
                 persistent,
                 if peek {
@@ -424,6 +427,7 @@ impl DebruijnInterpreter {
             peek,
             is_replay,
             Vec::new(),
+            guard,
         )
         .await
     }
@@ -586,6 +590,7 @@ impl DebruijnInterpreter {
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
+        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -608,6 +613,7 @@ impl DebruijnInterpreter {
                     let persistent_flag = persistent;
                     let peek_flag = peek;
                     let is_replay_flag = is_replay;
+                    let guard_clone = guard.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -637,7 +643,13 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .consume(binds_clone, body_clone, persistent_flag, peek_flag)
+                            .consume(
+                                binds_clone,
+                                body_clone,
+                                persistent_flag,
+                                peek_flag,
+                                guard_clone,
+                            )
                             .await
                     })
                         as Pin<
@@ -951,10 +963,10 @@ impl DebruijnInterpreter {
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
         // get replaced with their values, while pattern-bound free vars
-        // stay as free vars for the matcher to fill in. Replicated into
-        // every BindPattern below so the matcher has it accessible
-        // per-channel. Phase 7 / plan §3.7.
-        let subst_condition = match receive.condition.as_ref() {
+        // stay as free vars for the matcher to fill in. Stored once on
+        // the TaggedContinuation so it sees every bound variable across
+        // every bind. Plan §7.12.
+        let subst_guard = match receive.condition.as_ref() {
             Some(c) if c != &Par::default() => {
                 Some(self.substitute.substitute_and_charge(c, 1, env)?)
             }
@@ -978,7 +990,6 @@ impl DebruijnInterpreter {
                         patterns: subst_patterns,
                         remainder: rb.remainder,
                         free_count: rb.free_count,
-                        condition: subst_condition.clone(),
                     },
                     q,
                 ))
@@ -1000,6 +1011,7 @@ impl DebruijnInterpreter {
             },
             receive.persistent,
             receive.peek,
+            subst_guard,
         )
         .await?;
         Ok(())

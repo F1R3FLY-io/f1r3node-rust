@@ -20,7 +20,7 @@ enum Pattern {
 #[derive(Clone)]
 struct StringMatch;
 
-impl Match<Pattern, String> for StringMatch {
+impl Match<Pattern, String, String> for StringMatch {
     fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
 }
 

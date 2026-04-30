@@ -77,14 +77,14 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
-    // Updated 2026-04-30 by Phases 2/5/6/7 of where-clauses-and-match-guards.
-    // Each phase added consensus-relevant IR fields that shifted the
-    // canonical encoding: If (Phase 2), Receive.condition + MatchCase.guard
-    // (Phase 5), EMatchExpr (Phase 6), BindPattern.condition (Phase 7).
-    // The test's "without_hard_fork" name now refers to the post-fork
-    // baseline; further unintended drift would still be caught.
+    // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
+    // (plan §7.12). The guard moved from BindPattern.condition to
+    // TaggedContinuation.guard, re-encoding the bootstrap registry's
+    // installed continuations and patterns. The "without_hard_fork"
+    // name now refers to the post-fork baseline; further unintended
+    // drift would still be caught.
     let expected_hash = Blake2b256Hash::from_hex(
-        "d8b012fada66160c13fe47a9ef6391795efbde9c91aa73e61b6754824b882a57",
+        "b3eeba72ea8b293a95635b8caf03973d55f721a4ad915da9ff8aa6b6cdcc0ba4",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

@@ -1029,14 +1029,15 @@ Each phase ends in green tests and is mergeable independently.
   example `.rho` files (`where_receive_guard.rho`,
   `where_match_fallthrough.rho`, `where_match_as_expression.rho`),
   and a parse/normalize sanity test (`where_examples_compile.rs`).
-- **Phase 9 — multi-bind cross-channel guards** (planned, not yet
-  implemented; consensus-affecting). Lifts the Phase 7 limitation
-  by moving the guard from `BindPattern.condition` to a
+- **Phase 9 — multi-bind cross-channel guards** ✅ **Done**
+  (consensus-affecting). Lifted the Phase 7 limitation by moving
+  the guard from `BindPattern.condition` to a new
   `TaggedContinuation.guard` field, extending rspace's `Match`
-  trait with a `check_commit` hook, and wiring the hook into
-  `extract_first_match` so the guard is evaluated against
-  *combined* per-channel bindings before the COMM event commits.
-  See §7.12 for the full design and step-by-step plan.
+  trait with a `check_commit` hook, and wiring the hook into both
+  `extract_first_match` (produce-driven path) and `locked_consume`
+  (consume-driven path). Also bumped the empty-state hash and the
+  fixed-execution hash. 3 new runtime tests in `reduce_spec.rs`
+  (`cross_bind_guard_*`). See §7.12 for full design.
 
 ## 9. Out of scope
 

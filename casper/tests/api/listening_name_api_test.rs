@@ -352,7 +352,6 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
                 }],
                 remainder: None,
                 free_count: 0,
-                condition: None,
             },
             BindPattern {
                 patterns: vec![Par {
@@ -363,7 +362,6 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
                 }],
                 remainder: None,
                 free_count: 0,
-                condition: None,
             },
         ],
         post_block_continuation: Some(Par {

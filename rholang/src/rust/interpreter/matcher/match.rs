@@ -18,7 +18,7 @@ unsafe impl Send for Matcher {}
 unsafe impl Sync for Matcher {}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
-impl Match<BindPattern, ListParWithRandom> for Matcher {
+impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn get(&self, pattern: BindPattern, data: ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
 
@@ -51,24 +51,6 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
 
                 let bound_pars = to_vec(remainder_map, pattern.free_count);
 
-                // Optional `where`-clause guard. If present, evaluate
-                // it via rho-pure-eval against this bind's bound vars.
-                // Treat anything-not-GBool(true) as match-fail (plan
-                // §3.5 / Option 3): guard-fail is indistinguishable
-                // from spatial mismatch, so the messages stay in the
-                // tuple space and the continuation stays installed.
-                //
-                // Limitation: cross-channel guards (in &-joined receives
-                // where the guard mentions vars from another bind) are
-                // evaluated per-channel here, so a missing var triggers
-                // an UnboundVariable error which we treat as guard-fail.
-                // Full multi-channel coordination is a follow-up.
-                if let Some(condition) = pattern.condition.as_ref() {
-                    if !is_empty_par(condition) && !guard_passes(condition, &bound_pars) {
-                        return None;
-                    }
-                }
-
                 Some(ListParWithRandom {
                     pars: bound_pars,
                     random_state: data.random_state,
@@ -77,14 +59,35 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
             None => None,
         }
     }
+
+    /// Cross-channel `where`-clause guard. Called by the matcher
+    /// coordinator after every spatial bind has produced a
+    /// `ListParWithRandom`. The bound variables of every bind are
+    /// concatenated in receive-bind order (matching the De Bruijn
+    /// indices the parser assigned), then the guard expression is
+    /// evaluated via rho-pure-eval. Returns true iff it reduces to
+    /// `GBool(true)`. Anything else (false, non-bool, error) means
+    /// guard-fail and the consume stays uncommitted. See plan §7.12.
+    fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
+        let Some(guard) = k.guard.as_ref() else {
+            return true;
+        };
+        if is_empty_par(guard) {
+            return true;
+        }
+        let mut combined: Vec<Par> = Vec::new();
+        for m in matched {
+            combined.extend_from_slice(&m.pars);
+        }
+        guard_passes(guard, &combined)
+    }
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }
 
-/// Evaluates a guard against bind-bound variables. Returns true iff
-/// the guard reduces to GBool(true). Anything else (false, non-bool,
-/// eval-error including unbound-variable for cross-channel references)
-/// is treated as guard-fail.
+/// Evaluates a guard against the combined cross-bind variables.
+/// Returns true iff the guard reduces to GBool(true). Anything else
+/// (false, non-bool, or eval-error) is treated as guard-fail.
 fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
     let mut env: PureEnv<Par> = PureEnv::new();
     for p in bound_pars.iter() {
