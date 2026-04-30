@@ -544,6 +544,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -558,6 +559,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -572,6 +574,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -586,6 +589,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -600,6 +604,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -614,6 +619,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
         ],
         ..Default::default()
@@ -634,6 +640,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -648,6 +655,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -662,6 +670,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -676,6 +685,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -690,6 +700,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -704,6 +715,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 bind_count: 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             },
         ],
         ..Default::default()
@@ -728,11 +740,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(5, Vec::new(), false)),
                         source: Some(new_gint_par(5, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
@@ -745,11 +759,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(5, Vec::new(), false)),
                         source: Some(new_gint_par(5, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
@@ -762,11 +778,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(3, Vec::new(), false)),
                         source: Some(new_gint_par(3, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
@@ -785,11 +803,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(3, Vec::new(), false)),
                         source: Some(new_gint_par(3, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
@@ -802,11 +822,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(5, Vec::new(), false)),
                         source: Some(new_gint_par(5, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
@@ -819,11 +841,13 @@ fn par_should_sort_matches_based_on_value_and_cases() {
                         pattern: Some(new_gint_par(5, Vec::new(), false)),
                         source: Some(new_gint_par(5, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                     MatchCase {
                         pattern: Some(new_gint_par(4, Vec::new(), false)),
                         source: Some(new_gint_par(4, Vec::new(), false)),
                         free_count: 0,
+                        guard: None,
                     },
                 ],
                 locally_free: Vec::new(),
