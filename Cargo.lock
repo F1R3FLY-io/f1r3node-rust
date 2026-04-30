@@ -4271,6 +4271,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d5dfe2c#d5dfe2caf9c787afd15a1a919c7132f757efa0da"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -4285,6 +4286,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d5dfe2c#d5dfe2caf9c787afd15a1a919c7132f757efa0da"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -4293,6 +4295,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d5dfe2c#d5dfe2caf9c787afd15a1a919c7132f757efa0da"
 dependencies = [
  "anyhow",
  "quote",
