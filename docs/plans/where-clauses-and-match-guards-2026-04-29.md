@@ -437,97 +437,87 @@ times for the same datum just because the guard is being re-evaluated. The
 existing rspace bookkeeping for `<=` already prevents redundant fires; the
 guard simply gates whether a fire happens at all.
 
-### 3.8 Guard predicate sublanguage
+### 3.8 No syntactic sublanguage; runtime bool check only
 
-Guards everywhere — `Receive.condition`, `MatchCase.guard`,
-`EMatchExpr.cases[i].guard`, and (for parity) the `if` condition — share one
-sublanguage of pure boolean-yielding expressions. Defined syntactically at
-normalize time:
+Guards (`Receive.condition`, `MatchCase.guard`, `EMatchExpr.cases[i].guard`)
+and `if` conditions accept **any process** syntactically. There is no
+normalize-time forbidden-list and no `is_pure_boolean_expr_par` helper.
+This was the original symmetric tightening proposal; it turned out to be
+redundant.
 
-**Allowed:**
-- Ground literals: `Bool`, `Int`, `String`, `Uri`, `ByteArray`.
-- Bound variable references (resolved against the current bindings).
-- Boolean ops: `&&`, `||`, `!`.
-- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`.
-- Arithmetic: `+`, `-`, `*`, `/`, `%`, unary minus (for use inside
-  comparisons).
-- `matches` (returns bool).
-- Method calls on built-in types (lists, maps, sets, strings, byte arrays):
-  `nth`, `length`, `slice`, `get`, `getOrElse`, `contains`, `keys`, `union`,
-  `diff`, `add`, `delete`, `toByteArray`, `hexToBytes`, etc. All such methods
-  are functional in Rholang.
-- Tuple/collection projections.
-- Recursive `EMatchExpr`.
+The reason: the only Rholang constructs that can cause observable side
+effects are `Send`, `Receive`, `New`, `Bundle`, and `Contract`. The
+evaluators we use never fire any of these on a guard / condition Par:
 
-**Forbidden:** sends (`!`, `!!`), receives (`for`, `<-`, `<<-`, `<=`),
-new-name declarations (`new`), bundles, contracts, `select`, `let` with
-non-pure RHS. Anything that would create a channel, communicate, or have a
-side effect.
+- `if` and match-case guards in process context use the existing
+  `eval_expr` (`reduce.rs:6856-6875`), which walks `par.exprs` only.
+  Sends/news/receives sitting in `par.sends` / `par.news` / `par.receives`
+  are left in place as inert data and dropped when no case matches.
+- Receive guards in rspace context use `rho-pure-eval` (§3.9), which is
+  pure by construction. Same Expr-only walk; nothing in the guard ever
+  executes as a process.
 
-The terminal value must be of type `Bool` at runtime. There is no static
-type check beyond the syntactic forbidden-list; type errors at runtime
-produce a non-`true` result, which the matcher treats as guard-false.
+So a program like `for (x <- c where { y!(5); true }) { … }` is well-formed
+at normalize time, but the `y!(5)` Send is never sent — the guard's Par
+contains both a Send and the Expr `true`; pure-eval extracts the Expr and
+ignores the rest; matcher reads `true` and the guard passes. The Send is
+abandoned. Likewise `if (y!(5)) { P } else { Q }` today silently no-ops
+(see Phase 2 for the change to a synchronous error).
 
-The same syntactic restriction is applied to `if` conditions in
-`p_if_normalizer.rs` (see §3.10). **This is a tightening** — today `if`
-accepts any process. The check rejects sends/news/receives/bundles in the
-condition position; everything that's actually a meaningful boolean
-expression remains accepted. Validate against the existing `.rho` corpus
-(`examples/`, `rholang/tests/`); fix or relax if anything real breaks.
+Runtime behaviour for non-bool result:
 
-The normalizer helper:
+- **Receive guards** (rspace context, via `rho-pure-eval`): non-bool →
+  matcher treats as guard-false (no consumption). Preserves rspace's
+  "matching is total" contract; an ill-typed guard is semantically
+  equivalent to a non-matching pattern.
+- **Match-case guards** (interpreter context, via `eval_expr`): non-bool →
+  fall-through to the next case. Same shape as receive-guard behaviour:
+  fail closed, try the next thing.
+- **`if` conditions** (interpreter context, via the new `eval_if`):
+  non-bool → synchronous `InterpreterError::IfConditionTypeError`. See
+  §3.10. The asymmetry vs match-case is deliberate: `if` has only two
+  intended outcomes (true / false / Q), so a non-bool is a programmer
+  error worth reporting; match has explicit fall-through, so non-bool can
+  be threaded through it.
 
-```rust
-// In rholang/src/rust/interpreter/compiler/normalize.rs
-pub fn is_pure_boolean_expr_par(par: &Par) -> Result<(), InterpreterError> {
-    // Walks the Par. Errors with NonPureGuard if any forbidden Par variant
-    // (sends, receives, news, bundles, …) appears anywhere in the tree.
-    // Otherwise Ok(()).
-}
-```
-
-This validates *structure*, not the bool-ness of the result. Non-bool values
-at runtime are handled separately:
-- **Receive guards** (rspace context): `rho-pure-eval` returns a non-bool →
-  the matcher treats this as guard-false (no consumption, no abort). This
-  preserves rspace's "matching is total" contract; an ill-typed guard is
-  semantically equivalent to a non-matching pattern.
-- **`if` conditions and match-case guards** (interpreter context): non-bool
-  triggers the abort case (see §3.10). This is the user-visible "you used a
-  non-bool where a bool was expected" error.
-
-The asymmetry — receive guards silently don't fire, `if` aborts — is
-deliberate. Aborting from inside the rspace matcher would tear down a deploy
-based on a state of the tuple space the user didn't directly cause; treating
-it as no-match keeps the deploy alive and keeps replay deterministic.
+The asymmetry between receive guards (non-bool = match-fail) and `if`
+(non-bool = error) is also deliberate. Aborting from inside the rspace
+matcher would tear down a deploy based on a state of the tuple space the
+user didn't directly cause; treating it as no-match keeps the deploy alive
+and keeps replay deterministic.
 
 ### 3.9 New crate `rho-pure-eval`
 
 Lives at `/Users/stay/greg/f1r3fly/f1r3node-rust/rho-pure-eval/`. Pure
-function from `(Par, Env) -> Result<Par, EvalError>` over the sublanguage in
-§3.8. Critical properties:
+function from `(Par, Env) -> Result<Par, EvalError>` that mirrors the
+existing `Reduce::eval_expr` (`reduce.rs:6856`) — walks `par.exprs`,
+evaluates each `Expr` (arithmetic, comparisons, boolean ops, methods,
+`matches`, `EMatchExpr` recursively), and assembles the resulting Par
+with the rest of the input Par's fields (sends/news/receives/etc.) carried
+through as inert data. Critical properties:
 
 - **No I/O, no rspace, no continuation creation.** A literal pure function.
 - **Deterministic.** Same input → same output, byte-identical, on every
   node. This is what makes Option 3 safe under casper replay.
 - **No async.** Synchronous, no `tokio` dependency, so it can be called from
   inside the rspace matcher's tight loops without runtime contamination.
-- Returns the resulting `Par`. Callers extract the bool (or treat non-bool as
-  guard-false).
+- Returns the resulting `Par`. Callers extract the bool (`Par with one
+  GBool Expr`) or treat anything else as guard-false.
 
 Dependencies:
 - Depends only on `models` (for `Par`, `Expr`, etc.) and `shared`.
 - Does **not** depend on `rholang` or `rspace++`.
 
 Consumers:
-- `rholang` calls it for `if`, match-case guards, `EMatchExpr`.
+- `rholang` calls it for match-case guards and `EMatchExpr` (`if`
+  conditions also use it via the new `eval_if`).
 - `rspace++` calls it for receive-guard evaluation inside the matcher.
 
-This is a moderate refactor: the existing expression evaluator inside
-`rholang/src/rust/interpreter/reduce.rs` already implements most of the
-sublanguage; we'll extract the pure subset into the new crate and have
-`reduce.rs` delegate to it. Out-of-sublanguage Par variants stay in
-`reduce.rs`.
+Refactor: extract the existing `eval_expr` (and the per-expression
+evaluators it calls — `EAddBody`, `EAndBody`, `EEqBody`, method dispatch,
+etc.) from `reduce.rs` into the new crate. `reduce.rs` keeps `eval_send`,
+`eval_receive`, `eval_new`, `eval_match`, `eval_if`, etc. (anything that
+fires processes), and delegates pure-Expr evaluation to `rho-pure-eval`.
 
 ### 3.10 First-class `if` IR construct with synchronous type error
 
@@ -559,15 +549,14 @@ let desugared_if = If {
 let updated_par = input.par.prepend_if(desugared_if);
 ```
 
-Apply `is_pure_boolean_expr_par` (§3.8) to the condition; on rejection
-raise `InterpreterError::NonPureGuard` at normalize time. (This is the
-syntactic check — same sublanguage as `where` guards.)
+No syntactic check on the condition (see §3.8). Any Par is accepted; the
+runtime check enforces bool-ness at the eval site below.
 
 **Reducer:** new arm in `reduce.rs` (or wherever `eval_match` lives):
 
 ```rust
 async fn eval_if(&self, conditional: &If, env: &Env<Par>, rand: ...) -> Result<(), InterpreterError> {
-    let cond_par = self.eval_par_to_value(&conditional.condition, env).await?;
+    let cond_par = rho_pure_eval::eval(&conditional.condition, env)?;
     match extract_bool(&cond_par) {
         Some(true)  => self.eval_par(&conditional.if_true,  env, rand).await,
         Some(false) => self.eval_par(&conditional.if_false, env, rand).await,
@@ -578,10 +567,13 @@ async fn eval_if(&self, conditional: &If, env: &Env<Par>, rand: ...) -> Result<(
 }
 ```
 
-`extract_bool` returns `Some(b)` iff the Par is a single `Expr::GBool(b)`.
-Anything else (Par with multiple things, Par with non-bool Expr, Par with a
-Send/Receive/etc., Par with a still-unevaluated EVar) returns `None`,
-yielding the type error.
+`rho_pure_eval::eval` evaluates the condition's `Expr` slots without firing
+any sends/news/receives that may also be present in the Par (mirroring
+today's `eval_expr` semantics). `extract_bool` returns `Some(b)` iff the
+resulting Par has exactly one entry — a `GBool(b)` Expr — and nothing else.
+Anything else (Par with sends or news still inert, Par with a non-bool
+Expr, Par with a still-unevaluated EVar) returns `None`, yielding the type
+error.
 
 **New error variant:** `InterpreterError::IfConditionTypeError { actual:
 Par }`. Synchronous — raised at the point of evaluation. Propagates through
@@ -660,12 +652,14 @@ Normalizer tests (`p_input_normalizer.rs`, `p_match_normalizer.rs`,
 4. Multi-receipt guard `cond_2` references vars from `R_1` and `R_2` → ok
    (lexical scope via nesting); `cond_1` referencing `R_2`'s vars → unbound
    variable error (no special check needed).
-5. Guard contains a forbidden Par variant → `NonPureGuard`.
+5. Guard contains a Send/New/Receive — accepted at normalize, treated as
+   inert at runtime; guard reads as guard-false (matcher fails atomically).
 6. Match without guard → `MatchCase.guard` default (regression).
 7. Match with guard, all-bool RHS → emits `EMatchExpr`.
 8. Match with guard, mixed RHS → emits `Match` with guards.
-9. `if (cond)` with non-pure cond → `NonPureGuard` at normalize.
-10. `if` desugaring includes the `_ => EAbort` case in the IR.
+9. `If` IR shape: condition / if_true / if_false; else-less form has
+   `if_false = Par::default()`.
+10. (slot retained for stable numbering)
 
 Integration tests (`reduce_spec.rs` and a new `where_spec.rs`):
 
@@ -701,21 +695,15 @@ receive/match (must succeed — keyword is contextual).
    correctly tries multiple candidate datums on guard-fail (rather than
    short-circuiting after first spatial match).
 
-2. **`;` semantics change is a breaking change.** This plan changes `;`
-   from atomic-join (current Rust impl, `p_input_normalizer.rs:216-219`) to
-   sequential nested-`for`. Existing programs that used `;` for atomic
-   join across mixed bind kinds — including the cell-state idiom shown in
-   `docs/rholang-language-analysis.md:97-104` and `docs/rholang/rholangtut.md`
-   — will need to use `&` instead. Mitigation:
-     - Run all `.rho` under `examples/` and `rholang/tests/` through the
-       new normalizer. Catalog every program that contains `;` in a
-       receive. For each, decide: (i) the program meant atomic join
-       (rewrite with `&`), or (ii) the program meant sequential
-       (already correct under new semantics).
-     - Update the tutorial (`docs/rholang/rholangtut.md`) to describe `;`
-       as sequential nesting and recommend `&` for atomic joins.
-     - This change in isolation (without `where` clauses) should land as
-       its own commit so the language change is isolated and bisectable.
+2. **`;` semantics — already aligned in Phase 1.** Investigation during
+   Phase 1 (committed at `1b94fe9`) found the Rust normalizer already
+   desugars `;` to nested `for`s at `p_input_normalizer.rs:48-59`; the
+   plan's earlier description of "atomic flatten" was based on a stale
+   exploration. Phase 1 aligned docs (`rholangtut.md`,
+   `08-channels-and-concurrency.md`) and rewrote `tut-philosophers.rho`
+   to use `&` (the only example that would deadlock under nested
+   semantics). Other corpus programs are pattern-equivalent under both
+   semantics. No further mitigation needed.
 
 3. **`if` becomes a first-class IR node — consensus-affecting.** Today
    `if` desugars to `Match`; under §3.10 it produces a new `If` Par
@@ -733,7 +721,7 @@ receive/match (must succeed — keyword is contextual).
        in the IR) — only newly-deployed code uses the new `If` shape.
      - Corpus sweep: existing `if (5) { … }` style programs now error at
        runtime instead of silently no-op'ing. Fix in corpus or accept.
-     - Like #2, land as an isolated commit so the IR change is bisectable.
+     - Land as an isolated commit so the IR change is bisectable.
 
 4. **Parser pin coordination.** `rholang-rs` rev pin must be bumped after the
    external repo lands. Develop on a feature branch in `rholang-rs`, pin to
@@ -789,53 +777,51 @@ receive/match (must succeed — keyword is contextual).
 Each phase ends in green tests and is mergeable independently.
 
 - **Phase 0** (this doc): plan reviewed and accepted.
-- **Phase 1 — `;` → nested `for` desugaring (language change).**
-    1. Replace the `;`/`&` flatten in `p_input_normalizer.rs:216-219` with a
-       desugaring step that peels each receipt into its own nested `for`.
-    2. Run all `.rho` under `examples/` and `rholang/tests/` through the
-       new normalizer. Catalogue programs using `;`; rewrite atomic-join
-       intent with `&`.
-    3. Update `docs/rholang/rholangtut.md` and
-       `docs/rholang-language-analysis.md` to describe the new semantics.
-    4. Land as an isolated commit so the language change is bisectable.
+- **Phase 1 — `;` semantics docs alignment.** ✅ **Done** (commit `1b94fe9`).
+  Discovered the normalizer already desugars `;` to nested `for`s at
+  `p_input_normalizer.rs:48-59`. Aligned docs (`rholangtut.md`,
+  `08-channels-and-concurrency.md`) and rewrote
+  `tut-philosophers.rho` to use `&`.
 - **Phase 2 — `if` as a first-class IR construct (language + consensus
   change).**
     1. Add `If` proto message and `Par.conditionals` field; regenerate
        prost types.
     2. Update `p_if_normalizer.rs` to emit `If` instead of `Match`.
-    3. Apply the syntactic sublanguage check to `if` conditions.
-    4. Add `eval_if` reducer arm and `InterpreterError::IfConditionTypeError`.
-    5. Update existing `p_if_normalizer.rs` tests (which currently assert
+       (No syntactic check on the condition — see §3.8.)
+    3. Add `eval_if` reducer arm and
+       `InterpreterError::IfConditionTypeError`.
+    4. Update existing `p_if_normalizer.rs` tests (which currently assert
        the `Match` desugaring shape).
-    6. Verify casper replay paths (`replay_runtime.rs`, `replay_rspace.rs`)
+    5. Verify casper replay paths (`replay_runtime.rs`, `replay_rspace.rs`)
        handle `If` nodes.
-    7. Corpus sweep, fix any rejections (non-bool `if` conditions now
-       error), isolated commit.
+    6. Corpus sweep — confirm no `.rho` programs rely on silent-no-op
+       semantics for non-bool `if` conditions. Isolated commit.
 - **Phase 3 — `rholang-rs` external**:
     1. Grammar + AST + parser tests for receive `where`, match `where`.
     2. Tag a feature-branch SHA.
 - **Phase 4 — `rho-pure-eval` crate**:
-    1. New crate skeleton with `eval_bool(par, env)` API.
-    2. Extract pure expression evaluation from `reduce.rs`.
-    3. Replace `reduce.rs` call sites with delegation (including the new
-       `if` desugar's bool extraction).
+    1. New crate skeleton with `eval(par, env) -> Par` API.
+    2. Extract `eval_expr` and per-Expr evaluators from `reduce.rs`.
+    3. Replace `reduce.rs` call sites with delegation (including
+       `eval_if`'s condition evaluation).
     4. Round-trip tests against the existing rholang test corpus.
 - **Phase 5 — proto + normalizer for guards**:
     1. Bump `rholang-parser` pin to Phase 3 SHA.
-    2. Add `Receive.condition`, `MatchCase.guard`, `EMatchExpr` to the proto.
-    3. Add `is_pure_boolean_expr_par` helper.
-    4. Normalizer changes for match guards and receive guards.
-    5. Tests 1–10.
+    2. Add `Receive.condition`, `MatchCase.guard`, `EMatchExpr` to the
+       proto.
+    3. Normalizer changes for match guards and receive guards (no
+       syntactic checks; runtime handles bool-ness).
+    4. Tests 1–9.
 - **Phase 6 — match-as-expr runtime**:
-    1. `eval_match` fall-through.
+    1. `eval_match` fall-through (non-bool guard → next case).
     2. `EMatchExpr` evaluation (delegates to `rho-pure-eval`).
     3. Tests 7, 13, fall-through runtime tests.
 - **Phase 7 — receive guard in rspace matcher**:
     1. Extend rspace matcher API to take optional guard predicate.
     2. Wire `rho-pure-eval` into the matcher.
     3. Bind-type behaviour tests for `<-`, `<<-`, `<=` (§3.7).
-    5. Tests 10–14.
-- **Phase 7 — docs, tutorial updates, examples in `examples/`**.
+    4. Tests 10–14.
+- **Phase 8 — docs, tutorial updates, examples in `examples/`**.
 
 ## 9. Out of scope
 
