@@ -669,13 +669,18 @@ tasks:
 
   - id: TASK-010-2
     title: "Phase 1 — Discharge sorry proofs"
-    status: pending
+    status: in_progress
     blocked_by: [TASK-010-1]
     acceptance:
       - "NonTriviality.thy compiles with no `sorry`"
       - "SoundnessGC0.thy compiles with no `sorry`"
       - "SoundnessGC1.thy compiles with no `sorry`"
-      - "isabelle build -d formal/isabelle RholangGC succeeds locally"
+      - "isabelle build -D formal/isabelle/RholangGC succeeds locally"
+    notes:
+      - "Skeleton converted from Nominal2 (AFP, not bundled in Isabelle 2025-2) to plain HOL datatypes with explicit freshness side-conditions.  Build verified against Isabelle 2025-2."
+      - "NonTriviality.thy proved (commit 3e828c9): gc0 P is countably infinite for any P, via the witness a |-> GPrivate a from UNIV - (atoms_of_par P U bn_new_par P U pub)."
+      - "SoundnessGC0.thy proved (commit e327044): every name in gc0(P) is garbage with respect to P, via the total_atoms invariant on the small-step reduction relation."
+      - "SoundnessGC1.thy still has sorry: the escape + one-sided + bundle-aware refinements require a stronger reduction-relation invariant (P-private atoms cannot appear as sync channels) and Comm-rule case analysis distinguishing datum-side vs.\ continuation-side atom origins.  See SoundnessGC1.thy comments for the proof outline."
 
   - id: TASK-010-3
     title: "Phase 2 — Differential testing of Isabelle vs Rust traces"
