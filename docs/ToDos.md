@@ -635,6 +635,74 @@ tasks:
 
 ---
 
+### EPOCH-010: Rholang Name Garbage Collection — Formal Mechanization
+
+```yaml
+---
+epoch_id: EPOCH-010
+title: "Rholang Name Garbage Collection — Formal Mechanization"
+status: in_progress
+priority: p3
+user_story: null
+blocked_by: []
+created_at: 2026-05-01
+claimed_by: claude-session-gc-formal
+claimed_at: 2026-05-01T12:00:00Z
+branch: feat/rholang-gc-formal
+tasks:
+  - id: TASK-010-1
+    title: "Phase 0 — Isabelle skeleton: definitions and theorem statements"
+    status: review
+    claimed_by: claude-session-gc-formal
+    claimed_at: 2026-05-01T12:00:00Z
+    acceptance:
+      - "docs/discoveries/rholang-gc-design.md captures model, refined garbage definition, GC0/GC1 algorithms, adequacy story"
+      - "docs/plans/rholang-gc-isabelle.md describes the phased plan"
+      - "formal/isabelle/RholangGC/ contains ROOT and 11 theory files"
+      - "Atoms.thy, Syntax.thy, Names.thy, Patterns.thy, RSpace.thy, Reduction.thy, FreeNames.thy, Garbage.thy modeled faithfully (cite Rust file:line)"
+      - "SoundnessGC0.thy, NonTriviality.thy, SoundnessGC1.thy state theorems with `sorry` proof bodies"
+      - "Adequacy.thy lists rule-by-rule correspondences with Rust source"
+    notes:
+      - "Targets the full Rholang of this project, not a textbook pi-calculus fragment: full Par AST, all four name shapes plus Quote/Bundle, persistent/peek receives, joins, where-guards (Phase 9), match guards with fall-through, first-class If."
+      - "Patterns and rho-pure-eval treated as oracles — sound over-approximation justified in the design doc."
+      - "No Rust changes in this phase; runtime integration deferred to Phase 3."
+
+  - id: TASK-010-2
+    title: "Phase 1 — Discharge sorry proofs"
+    status: pending
+    blocked_by: [TASK-010-1]
+    acceptance:
+      - "NonTriviality.thy compiles with no `sorry`"
+      - "SoundnessGC0.thy compiles with no `sorry`"
+      - "SoundnessGC1.thy compiles with no `sorry`"
+      - "isabelle build -d formal/isabelle RholangGC succeeds locally"
+
+  - id: TASK-010-3
+    title: "Phase 2 — Differential testing of Isabelle vs Rust traces"
+    status: pending
+    blocked_by: [TASK-010-2]
+    acceptance:
+      - "Test harness under formal/diff/ drives both engines"
+      - "Discrepancy report captured in docs/discoveries/"
+
+  - id: TASK-010-4
+    title: "Phase 3 — Implement GC1 in a rholang-gc Rust crate; optional rspace++ integration"
+    status: pending
+    blocked_by: [TASK-010-2]
+    acceptance:
+      - "rholang-gc crate exposes gc1(par: &Par) -> NameSet"
+      - "Unit tests cover the examples in the design doc"
+      - "Optional rspace++ integration behind a feature flag"
+---
+```
+
+**Notes:**
+- This epoch produces formal artefacts; CI does not yet run Isabelle.  Phase 1 will pin the Isabelle/AFP versions and document the local build.
+- The model is parameterized over `pub` (the publicly-known unforgeable set); the system-channel registry from `system_processes.rs` instantiates it.
+- Phase 1's hardest obligation is the SoundnessGC1 preservation lemma at the COMM rule, which requires constraining the abstract `matches` oracle so the spatial matcher cannot synthesize names with private atoms not already in the configuration.
+
+---
+
 ## Epoch Dependency Graph
 
 ```

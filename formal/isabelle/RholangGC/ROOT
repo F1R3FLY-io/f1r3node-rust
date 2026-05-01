@@ -1,0 +1,32 @@
+(*
+  Isabelle session for the Rholang name garbage collection mechanization.
+
+  Phase 0 (this branch): definitions and theorem statements; proofs are
+  `sorry`.  See docs/plans/rholang-gc-isabelle.md for the phased plan and
+  docs/discoveries/rholang-gc-design.md for the model.
+
+  This session targets Isabelle/HOL with the Nominal2 entry from the AFP.
+  It is not yet wired into CI; build locally with
+
+      isabelle build -d formal/isabelle RholangGC
+*)
+
+session RholangGC = "HOL-Nominal2" +
+  description \<open>
+    Mechanization of Rholang name garbage collection.  Phase 0: skeleton with
+    definitions and theorem statements; all theorems are sorry'd.
+  \<close>
+  options [document = false, quick_and_dirty]
+  theories
+    Atoms
+    Syntax
+    Names
+    Patterns
+    RSpace
+    Reduction
+    FreeNames
+    Garbage
+    SoundnessGC0
+    NonTriviality
+    SoundnessGC1
+    Adequacy
