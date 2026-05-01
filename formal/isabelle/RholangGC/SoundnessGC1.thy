@@ -35,11 +35,47 @@ theory SoundnessGC1
   imports SoundnessGC0
 begin
 
+text \<open>
+  The gc1-only fragment: names with at least one atom flagged by
+  \<open>gc1_atom\<close> --- i.e.\ a P-bound atom that is retained-private and has
+  one-sided usage (or bundle-blocked refinements).
+\<close>
+
+definition gc1_only :: "par \<Rightarrow> name set" where
+  "gc1_only P = {c. \<exists>u \<in> atoms_of_name c. gc1_atom P u}"
+
+lemma gc1_decomp: "gc1 P = gc0 P \<union> gc1_only P"
+  by (auto simp: gc1_def gc1_only_def)
+
+text \<open>
+  Soundness for the gc1-only fragment.  The proof requires a
+  retained-private preservation invariant on the reduction relation that
+  goes beyond the total_atoms argument used for gc0.  See the file
+  header for the proof outline; this is the remaining gap.
+\<close>
+
+lemma soundness_gc1_only:
+  assumes "c \<in> gc1_only P"
+  assumes safe: rholang_safe
+  shows "is_garbage P c"
+  sorry
+
 theorem soundness_gc1:
   assumes c_in_gc1: "c \<in> gc1 P"
   assumes safe: rholang_safe
   shows "is_garbage P c"
-  sorry
+proof -
+  from c_in_gc1 have "c \<in> gc0 P \<or> c \<in> gc1_only P"
+    using gc1_decomp by blast
+  thus ?thesis
+  proof
+    assume "c \<in> gc0 P"
+    thus ?thesis using safe soundness_gc0 by blast
+  next
+    assume "c \<in> gc1_only P"
+    thus ?thesis using safe soundness_gc1_only by blast
+  qed
+qed
 
 text \<open>
   When the user's gc1 atom witness is itself a gc0 atom, soundness
