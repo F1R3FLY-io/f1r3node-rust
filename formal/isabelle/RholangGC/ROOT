@@ -1,22 +1,24 @@
 (*
   Isabelle session for the Rholang name garbage collection mechanization.
 
-  Phase 0 (this branch): definitions and theorem statements; proofs are
-  `sorry`.  See docs/plans/rholang-gc-isabelle.md for the phased plan and
-  docs/discoveries/rholang-gc-design.md for the model.
+  Targets Isabelle 2025-2 with bundled HOL only --- the AFP entry Nominal2
+  is not assumed.  Binders are handled with explicit freshness side-
+  conditions; \<alpha>-equivalence at the top level is informal and discharged by
+  the New rule's freshness invariant.
 
-  This session targets Isabelle/HOL with the Nominal2 entry from the AFP.
-  It is not yet wired into CI; build locally with
-
+  Build locally with:
       isabelle build -d formal/isabelle RholangGC
 *)
 
-session RholangGC = "HOL-Nominal2" +
+session RholangGC = HOL +
   description \<open>
     Mechanization of Rholang name garbage collection.  Phase 0: skeleton with
-    definitions and theorem statements; all theorems are sorry'd.
+    definitions and theorem statements; soundness/non-triviality proofs are
+    being discharged in Phase 1.
   \<close>
   options [document = false, quick_and_dirty]
+  sessions
+    "HOL-Library"
   theories
     Atoms
     Syntax

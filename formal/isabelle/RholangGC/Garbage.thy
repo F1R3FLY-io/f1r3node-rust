@@ -56,10 +56,10 @@ definition is_garbage :: "par \<Rightarrow> name \<Rightarrow> bool" where
 subsection \<open>GC0: the coarse algorithm.\<close>
 
 text \<open>
-  \<^const>\<open>gc0\<close> reports as garbage every name whose atom set contains an atom
-  that is neither in \<open>P\<close>'s syntax nor in the public ambient set nor bound
-  by any \<open>new\<close> in \<open>P\<close>.  This is the workhorse of non-triviality: such atoms
-  always exist by cardinality.
+  The \<open>gc0\<close> set reports as garbage every name whose atom set contains an
+  atom that is neither in \<open>P\<close>'s syntax nor in the public ambient set nor
+  bound by any \<open>new\<close> in \<open>P\<close>.  This is the workhorse of non-triviality:
+  such atoms always exist by cardinality.
 \<close>
 
 definition gc0 :: "par \<Rightarrow> name set" where

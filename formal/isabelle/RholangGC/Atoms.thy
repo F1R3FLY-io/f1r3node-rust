@@ -11,34 +11,35 @@
       (eval_new, draws bytes from Blake2b512Random).
     - System channels:   rholang/src/rust/interpreter/system_processes.rs:86-144
       (FixedChannels: rho:io:stdout, rho:crypto:*, rho:registry:*, ...).
+
+  Phase-1 simplification: we pick \<^typ>\<open>nat\<close> as the atom carrier instead of an
+  abstract type.  Naturals are countably infinite, fully decidable, and
+  give us the freshness witnesses we need without dragging in Nominal2.
 *)
 
 theory Atoms
-  imports "HOL-Nominal2.Nominal2"
+  imports Main
 begin
 
-text \<open>
-  The atom seed type.  In the Rust runtime each \<^const>\<open>GPrivate\<close> atom is a
-  32-byte Blake2b512Random output; here we abstract over an arbitrary
-  countably-infinite atom sort and rely on Nominal2's freshness machinery.
-\<close>
+type_synonym atom = nat
 
-atom_decl atom
+lemma infinite_atoms: "infinite (UNIV :: atom set)"
+  by (simp add: infinite_UNIV_nat)
 
 text \<open>
-  Public unforgeables: system channels and deploy-time ambients that every
-  context can be assumed to know.  Treated as a model parameter --- a fixed
-  but arbitrary finite set.
+  The set of public unforgeables \<open>pub\<close>: system channel URIs and deploy-time
+  ambients that every adversarial context can be assumed to know.  Treated
+  as a model parameter --- a fixed but finite set of atoms.
+
+  At the model level, the only thing that matters about a public atom is
+  that it cannot be the witness for the GC0 non-triviality argument; we
+  axiomatize finiteness and leave the contents abstract so different
+  deploys can instantiate \<open>pub\<close> independently.
 \<close>
 
-consts pub :: "atom set"
-
-axiomatization where
+axiomatization
+  pub :: "atom set"
+where
   pub_finite: "finite pub"
-
-text \<open>
-  We do not commit to whether \<^const>\<open>pub\<close> is empty; downstream theories
-  only use that it is finite.
-\<close>
 
 end
