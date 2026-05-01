@@ -100,18 +100,74 @@ text \<open>
   not escape via any payload.  If retained-private and either (a) \<open>P\<close> only
   syncs on it as a sender, or (b) only as a receiver, or (c) not at all,
   then no COMM on a name carrying \<open>u\<close> can fire.
+
+  We use \<^emph>\<open>structural\<close> definitions of one-sided usage: \<open>u\<close> appears in \<open>P\<close>
+  only in send-channel positions (resp.\ only in receive-channel positions),
+  and nowhere in payloads, match targets, if conditions, patterns, or
+  guard processes.  The structural form closes the matcher-rebinding gap
+  that a purely position-based check (\<open>u \<notin> sync_chans_recv P\<close>) would
+  leave open: a \<open>match\<close> target containing \<open>u\<close> could otherwise let the
+  spatial matcher rebind \<open>u\<close> into a recv-channel position.
 \<close>
 
 definition retained_private :: "par \<Rightarrow> atom \<Rightarrow> bool" where
-  "retained_private P u \<longleftrightarrow> u \<in> bn_new_par P \<and> \<not> escapes_in_par P u"
+  "retained_private P u \<longleftrightarrow> u \<in> bn_new_par P \<and> \<not> escapes_in_par P u \<and> u \<notin> pub"
+   \<comment> \<open>Adding \<open>u \<notin> pub\<close> keeps the witness atom out of the publicly known
+       set, so \<open>ctx_private\<close> implies K cannot mention u at all.\<close>
+
+text \<open>
+  Structural predicates: \<open>u\<close> is admissible only in send-channel positions
+  (resp.\ recv-channel positions) of a process; everywhere else \<open>u\<close> must
+  not appear.  Defined mutually with a name-level companion to follow
+  the structure of \<^typ>\<open>name\<close> through quotations and bundles.
+\<close>
+
+primrec u_send_clean_par :: "par \<Rightarrow> atom \<Rightarrow> bool" where
+  "u_send_clean_par Nil u = True"
+| "u_send_clean_par (PPar p q) u = (u_send_clean_par p u \<and> u_send_clean_par q u)"
+| "u_send_clean_par (Send c d _) u =
+     (u \<notin> atoms_of_par d \<and> u_send_clean_par d u)"
+     \<comment> \<open>send channel may carry u; payload must be u-free anywhere\<close>
+| "u_send_clean_par (Recv pat c body _ _ guard) u =
+     (u \<notin> atoms_of_name c \<and> u \<notin> atoms_of_par pat \<and> u \<notin> atoms_of_par guard
+      \<and> u_send_clean_par body u)"
+| "u_send_clean_par (NewN _ body) u = u_send_clean_par body u"
+| "u_send_clean_par (MatchOne tgt pat gd body fall) u =
+     (u \<notin> atoms_of_par tgt \<and> u \<notin> atoms_of_par pat \<and> u \<notin> atoms_of_par gd
+      \<and> u_send_clean_par body u \<and> u_send_clean_par fall u)"
+| "u_send_clean_par (IfThenElse c t e) u =
+     (u \<notin> atoms_of_par c \<and> u_send_clean_par t u \<and> u_send_clean_par e u)"
+| "u_send_clean_par (EvalQuote n) u = (u \<notin> atoms_of_name n \<and> u \<notin> bn_new_name n)"
+| "u_send_clean_par (EExpr ps ns) u =
+     ((\<forall>p \<in> set ps. u \<notin> atoms_of_par p \<and> u \<notin> bn_new_par p)
+      \<and> (\<forall>n \<in> set ns. u \<notin> atoms_of_name n \<and> u \<notin> bn_new_name n))"
+
+primrec u_recv_clean_par :: "par \<Rightarrow> atom \<Rightarrow> bool" where
+  "u_recv_clean_par Nil u = True"
+| "u_recv_clean_par (PPar p q) u = (u_recv_clean_par p u \<and> u_recv_clean_par q u)"
+| "u_recv_clean_par (Send c d _) u =
+     (u \<notin> atoms_of_name c \<and> u \<notin> atoms_of_par d \<and> u_recv_clean_par d u)"
+     \<comment> \<open>send channel must be u-free (recv-only); payload must be u-free\<close>
+| "u_recv_clean_par (Recv pat c body _ _ guard) u =
+     (u \<notin> atoms_of_par pat \<and> u \<notin> atoms_of_par guard
+      \<and> u_recv_clean_par body u)"
+     \<comment> \<open>recv channel c may carry u\<close>
+| "u_recv_clean_par (NewN _ body) u = u_recv_clean_par body u"
+| "u_recv_clean_par (MatchOne tgt pat gd body fall) u =
+     (u \<notin> atoms_of_par tgt \<and> u \<notin> atoms_of_par pat \<and> u \<notin> atoms_of_par gd
+      \<and> u_recv_clean_par body u \<and> u_recv_clean_par fall u)"
+| "u_recv_clean_par (IfThenElse c t e) u =
+     (u \<notin> atoms_of_par c \<and> u_recv_clean_par t u \<and> u_recv_clean_par e u)"
+| "u_recv_clean_par (EvalQuote n) u = (u \<notin> atoms_of_name n \<and> u \<notin> bn_new_name n)"
+| "u_recv_clean_par (EExpr ps ns) u =
+     ((\<forall>p \<in> set ps. u \<notin> atoms_of_par p \<and> u \<notin> bn_new_par p)
+      \<and> (\<forall>n \<in> set ns. u \<notin> atoms_of_name n \<and> u \<notin> bn_new_name n))"
 
 definition only_send_side :: "par \<Rightarrow> atom \<Rightarrow> bool" where
-  "only_send_side P u \<longleftrightarrow>
-     (\<forall>n \<in> sync_chans_recv P. u \<notin> atoms_of_name n)"
+  "only_send_side P u \<longleftrightarrow> u_send_clean_par P u"
 
 definition only_recv_side :: "par \<Rightarrow> atom \<Rightarrow> bool" where
-  "only_recv_side P u \<longleftrightarrow>
-     (\<forall>n \<in> sync_chans_send P. u \<notin> atoms_of_name n)"
+  "only_recv_side P u \<longleftrightarrow> u_recv_clean_par P u"
 
 text \<open>
   Bundle-aware refinement: if every occurrence of \<open>u\<close> in a sync-channel
