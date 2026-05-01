@@ -39,20 +39,23 @@ text \<open>
 consts subst_binding :: "free_map \<Rightarrow> par \<Rightarrow> par"
 
 text \<open>
-  The atom-conservation property required of \<open>subst_binding\<close>: substituting
-  a free_map into a process can only introduce atoms that already appear
-  in the body or in some value bound by the map.
+  Atom-conservation properties required of \<open>subst_binding\<close>: substituting
+  a free_map into a process can only introduce atoms (resp.\ \<open>new\<close>-bound
+  atoms) that already appear in the body or in some bound value.  See
+  \<^file>\<open>Patterns.thy\<close> for the auxiliaries \<open>fm_atoms\<close> and \<open>fm_bn_new\<close>.
 \<close>
 
 definition subst_atom_safe :: bool where
   "subst_atom_safe \<longleftrightarrow>
      (\<forall>fm body.
         atoms_of_par (subst_binding fm body)
-        \<subseteq> atoms_of_par body
-          \<union> (\<Union>i \<in> dom fm.
-               case the (fm i) of
-                  BVPar p \<Rightarrow> atoms_of_par p
-                | BVName n \<Rightarrow> atoms_of_name n))"
+        \<subseteq> atoms_of_par body \<union> fm_atoms fm)"
+
+definition subst_bn_new_safe :: bool where
+  "subst_bn_new_safe \<longleftrightarrow>
+     (\<forall>fm body.
+        bn_new_par (subst_binding fm body)
+        \<subseteq> bn_new_par body \<union> fm_bn_new fm)"
 
 text \<open>
   The set of atoms occurring anywhere in a configuration: in the active

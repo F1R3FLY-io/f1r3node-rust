@@ -41,21 +41,9 @@ where
 | "free_names_name (Quote p)      = free_names_par p"
 | "free_names_name (Bundle _ n)   = {n} \<union> free_names_name n"
 
-text \<open>Bound atoms introduced by all \<open>new\<close> binders in \<open>P\<close>.\<close>
-
-primrec bn_new_par :: "par \<Rightarrow> atom set" where
-  "bn_new_par Nil = {}"
-| "bn_new_par (PPar p q) = bn_new_par p \<union> bn_new_par q"
-| "bn_new_par (Send _ d _) = bn_new_par d"
-| "bn_new_par (Recv pat _ body _ _ guard) =
-     bn_new_par pat \<union> bn_new_par body \<union> bn_new_par guard"
-| "bn_new_par (NewN bound body) = set bound \<union> bn_new_par body"
-| "bn_new_par (MatchOne tgt pat gd body fall) =
-     bn_new_par tgt \<union> bn_new_par pat \<union> bn_new_par gd
-     \<union> bn_new_par body \<union> bn_new_par fall"
-| "bn_new_par (IfThenElse c t e) = bn_new_par c \<union> bn_new_par t \<union> bn_new_par e"
-| "bn_new_par (EvalQuote _) = {}"
-| "bn_new_par (EExpr ps _) = \<Union> (set (map bn_new_par ps))"
+text \<open>
+  \<open>bn_new_par\<close> is defined in \<^file>\<open>Names.thy\<close> for use in matcher safety axioms.
+\<close>
 
 text \<open>
   Names appearing in send-channel position.  Used by GC1's one-sided

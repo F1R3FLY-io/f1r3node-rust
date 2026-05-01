@@ -54,19 +54,42 @@ definition guard_holds :: "par \<Rightarrow> free_map \<Rightarrow> bool" where
   "guard_holds g fm \<longleftrightarrow> g = Nil \<or> pure_eval_bool g fm True"
 
 text \<open>
-  A property the abstract \<open>matches\<close> oracle should satisfy: a successful
-  match cannot synthesize atoms that are not present in either the pattern
-  or the target.  This is what the actual spatial matcher does (it can
-  only bind variables to subterms that appear in the target), and it is
-  the lemma we need for the SoundnessGC1 preservation argument.
+  Properties the abstract \<open>matches\<close> oracle should satisfy: a successful
+  match cannot synthesize atoms or bound atoms that are not present in
+  either the pattern or the target.  These reflect what the actual
+  spatial matcher does (it binds variables only to subterms that appear
+  in the target), and are needed for the soundness arguments.
 \<close>
+
+primrec bv_atoms :: "binding_value \<Rightarrow> atom set" where
+  "bv_atoms (BVPar p) = atoms_of_par p"
+| "bv_atoms (BVName n) = atoms_of_name n"
+
+primrec bv_bn_new :: "binding_value \<Rightarrow> atom set" where
+  "bv_bn_new (BVPar p) = bn_new_par p"
+| "bv_bn_new (BVName _) = {}"
+
+definition fm_atoms :: "free_map \<Rightarrow> atom set" where
+  "fm_atoms fm = (\<Union>v \<in> ran fm. bv_atoms v)"
+
+definition fm_bn_new :: "free_map \<Rightarrow> atom set" where
+  "fm_bn_new fm = (\<Union>v \<in> ran fm. bv_bn_new v)"
 
 definition matches_atom_safe :: bool where
   "matches_atom_safe \<longleftrightarrow>
      (\<forall>pat tgt fm i v.
         matches pat tgt fm \<longrightarrow> fm i = Some v \<longrightarrow>
-        (case v of
-            BVPar p \<Rightarrow> atoms_of_par p \<subseteq> atoms_of_par pat \<union> atoms_of_par tgt
-          | BVName n \<Rightarrow> atoms_of_name n \<subseteq> atoms_of_par pat \<union> atoms_of_par tgt))"
+        bv_atoms v \<subseteq> atoms_of_par pat \<union> atoms_of_par tgt)"
+
+text \<open>
+  Bound-atom safety: matched values do not introduce \<open>new\<close>-binders beyond
+  those in pattern or target.
+\<close>
+
+definition matches_bn_new_safe :: bool where
+  "matches_bn_new_safe \<longleftrightarrow>
+     (\<forall>pat tgt fm i v.
+        matches pat tgt fm \<longrightarrow> fm i = Some v \<longrightarrow>
+        bv_bn_new v \<subseteq> bn_new_par pat \<union> bn_new_par tgt)"
 
 end

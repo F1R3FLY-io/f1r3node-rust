@@ -49,7 +49,7 @@ text \<open>Each witness atom yields a distinct \<open>GPrivate\<close> in \<ope
 lemma GPrivate_witness_in_gc0:
   assumes "a \<notin> atoms_of_par P" and "a \<notin> bn_new_par P" and "a \<notin> pub"
   shows "GPrivate a \<in> gc0 P"
-  using assms by (simp add: gc0_def)
+  using assms by (auto simp: gc0_def)
 
 theorem nontriviality_gc0:
   shows "infinite (gc0 P)"

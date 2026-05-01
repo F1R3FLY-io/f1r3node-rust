@@ -72,4 +72,50 @@ primrec strip_bundle :: "name \<Rightarrow> name" where
 | "strip_bundle (Quote p)       = Quote p"
 | "strip_bundle (Bundle _ n)    = strip_bundle n"
 
+text \<open>Bundle stripping preserves the atom set.\<close>
+
+lemma atoms_of_strip_bundle: "atoms_of_name (strip_bundle n) = atoms_of_name n"
+  by (induction n) auto
+
+lemma strip_bundle_atoms_eq:
+  assumes "strip_bundle n1 = strip_bundle n2"
+  shows "atoms_of_name n1 = atoms_of_name n2"
+  using assms atoms_of_strip_bundle by metis
+
+text \<open>
+  Bound atoms introduced by all \<open>new\<close> binders in a process or in any
+  process reachable through quotations carried by a name.  We use a mutual
+  primrec to recurse through \<open>Quote\<close> and \<open>Bundle\<close>.
+
+  Defined here (rather than alongside the free-name analyses in
+  FreeNames.thy) so that \<^file>\<open>Patterns.thy\<close> can refer to it in matcher
+  safety axioms.
+\<close>
+
+primrec
+  bn_new_name :: "name \<Rightarrow> atom set" and
+  bn_new_par  :: "par \<Rightarrow> atom set"
+where
+  "bn_new_name (GPrivate _)    = {}"
+| "bn_new_name (GDeployId _)   = {}"
+| "bn_new_name (GDeployerId _) = {}"
+| "bn_new_name GSysAuthToken   = {}"
+| "bn_new_name (GUri _)        = {}"
+| "bn_new_name (Quote p)       = bn_new_par p"
+| "bn_new_name (Bundle _ n)    = bn_new_name n"
+
+| "bn_new_par Nil = {}"
+| "bn_new_par (PPar p q) = bn_new_par p \<union> bn_new_par q"
+| "bn_new_par (Send c d _) = bn_new_name c \<union> bn_new_par d"
+| "bn_new_par (Recv pat c body _ _ guard) =
+     bn_new_par pat \<union> bn_new_name c \<union> bn_new_par body \<union> bn_new_par guard"
+| "bn_new_par (NewN bound body) = set bound \<union> bn_new_par body"
+| "bn_new_par (MatchOne tgt pat gd body fall) =
+     bn_new_par tgt \<union> bn_new_par pat \<union> bn_new_par gd
+     \<union> bn_new_par body \<union> bn_new_par fall"
+| "bn_new_par (IfThenElse c t e) = bn_new_par c \<union> bn_new_par t \<union> bn_new_par e"
+| "bn_new_par (EvalQuote n) = bn_new_name n"
+| "bn_new_par (EExpr ps ns) =
+     \<Union> (set (map bn_new_par ps)) \<union> \<Union> (set (map bn_new_name ns))"
+
 end

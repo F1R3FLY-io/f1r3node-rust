@@ -15,38 +15,64 @@ theory Garbage
 begin
 
 text \<open>
-  Contexts are processes with a single hole.  Plugging substitutes the hole
-  for the plugged process.  We capture the standard \<open>\<alpha>\<close>-convention by
-  requiring that contexts are well-formed in Nominal2's sense; a refinement
-  may switch to a Honda--Yoshida-style cofinite quantification later.
+  Contexts are processes with a single hole.  We model contexts directly as
+  processes -- the plug operation is parallel composition with the hole's
+  contents -- and characterize a context by the syntactic atoms it carries.
+  Standard alpha-convention applies: when plugging, P's bound atoms are
+  renamed to be fresh w.r.t.\ K.
+
+  We expose two atom sets per context K:
+
+  \<^item> \<open>ctx_free_atoms K\<close>: atoms occurring free in K's syntax.  These are the
+    atoms K can mention.
+  \<^item> \<open>ctx_bound_atoms K\<close>: atoms K may allocate via its own \<open>new\<close> binders.
+
+  A name c is K-private (cannot interact with K) iff none of c's atoms is
+  in \<open>ctx_free_atoms K\<close> beyond what is publicly known.  This is the formal
+  expression of the Rholang unforgeability principle.
 \<close>
 
 typedecl ctx
-consts ctx_plug :: "ctx \<Rightarrow> par \<Rightarrow> par"
-consts ctx_atoms :: "ctx \<Rightarrow> atom set"
-  \<comment> \<open>The atoms occurring free in the context, after \<open>\<alpha>\<close>-renaming the
-      plugged process so its bound atoms are fresh w.r.t.\ \<open>K\<close>.\<close>
+consts ctx_plug        :: "ctx \<Rightarrow> par \<Rightarrow> par"
+consts ctx_free_atoms  :: "ctx \<Rightarrow> atom set"
+consts ctx_bound_atoms :: "ctx \<Rightarrow> atom set"
 
 text \<open>
-  The K-forgeability of a name relative to a context.
+  Adequacy properties relating a context to the plugged process.  These
+  are stated as well-formedness predicates and used in the soundness
+  theorems to constrain the abstract \<open>ctx\<close> sort.  Concrete contexts
+  satisfy them by construction (alpha-conversion).
 \<close>
 
-definition ctx_forgeable :: "ctx \<Rightarrow> name \<Rightarrow> bool" where
-  "ctx_forgeable K c \<longleftrightarrow> forgeable_by c (ctx_atoms K)"
+definition ctx_wf :: "ctx \<Rightarrow> par \<Rightarrow> bool" where
+  "ctx_wf K P \<longleftrightarrow>
+     atoms_of_par (ctx_plug K P)
+       \<subseteq> ctx_free_atoms K \<union> atoms_of_par P
+   \<and> bn_new_par (ctx_plug K P)
+       \<subseteq> ctx_bound_atoms K \<union> bn_new_par P
+   \<and> ctx_bound_atoms K \<inter> bn_new_par P = {}
+   \<and> ctx_bound_atoms K \<inter> atoms_of_par P = {}"
+
+text \<open>
+  K-privacy: every private atom of \<open>c\<close> --- atoms that are not public --- is
+  unknown to K, i.e.\ outside both K's free and bound atoms.
+\<close>
+
+definition ctx_private :: "ctx \<Rightarrow> name \<Rightarrow> bool" where
+  "ctx_private K c \<longleftrightarrow>
+     (atoms_of_name c - pub) \<inter> (ctx_free_atoms K \<union> ctx_bound_atoms K) = {}"
 
 text \<open>
   The garbage relation.  A name \<open>c\<close> is garbage with respect to \<open>P\<close> iff for
-  every context \<open>K\<close> that cannot forge \<open>c\<close>, no future of \<open>K[P]\<close> records a
-  COMM event on \<open>c\<close>.  ``Future'' is captured by the multi-step relation
-  \<^const>\<open>steps\<close>; ``records a COMM on c'' is the existence of an
-  \<^const>\<open>EvtComm\<close> label whose name (after stripping bundles) equals
-  \<^term>\<open>strip_bundle c\<close>.
+  every well-formed context \<open>K\<close> that keeps \<open>c\<close> private, no future of \<open>K[P]\<close>
+  records a COMM event on a name with the same stripped form as \<open>c\<close>.
 \<close>
 
 definition is_garbage :: "par \<Rightarrow> name \<Rightarrow> bool" where
   "is_garbage P c \<longleftrightarrow>
      (\<forall>K cfg' es.
-        \<not> ctx_forgeable K c \<longrightarrow>
+        ctx_wf K P \<longrightarrow>
+        ctx_private K c \<longrightarrow>
         (init_config (ctx_plug K P)) \<rightarrow>*\<langle>es\<rangle> cfg' \<longrightarrow>
         (\<forall>e \<in> set es.
            case e of
@@ -64,10 +90,8 @@ text \<open>
 
 definition gc0 :: "par \<Rightarrow> name set" where
   "gc0 P =
-     {c. \<exists>a \<in> atoms_of_name c.
-            a \<notin> atoms_of_par P
-          \<and> a \<notin> pub
-          \<and> a \<notin> bn_new_par P}"
+     {c. atoms_of_name c \<inter> (atoms_of_par P \<union> bn_new_par P \<union> pub) = {}
+       \<and> atoms_of_name c \<noteq> {}}"
 
 subsection \<open>GC1: escape and one-sided analysis.\<close>
 
