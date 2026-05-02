@@ -134,6 +134,11 @@ message ReceiveBind {
 }
 
 message BindPattern {
+  // Tag 4 was the per-bind `condition` in Phase 7; dropped in Phase 9
+  // when the cross-channel guard moved onto TaggedContinuation. Reserved
+  // so future code can't reuse the tag with different semantics.
+  reserved 4;
+  reserved "condition";
   repeated Par patterns = 1;
   Var remainder = 2;
   int32 freeCount = 3;

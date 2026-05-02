@@ -176,6 +176,13 @@ fn par_is_pure_bool_expr(par: &Par) -> bool {
     {
         return false;
     }
+    // EVarBody and EMethodBody are deliberately excluded: their result
+    // type can't be known from syntax alone (a bound var or method call
+    // may or may not yield a bool). Excluding is conservative-correct —
+    // such a `match` emits process-level Match, not EMatchExpr; the user
+    // can wrap with an explicit comparison (e.g. `y == true`) to get
+    // expression form. Adding either variant here would require runtime
+    // type checking the result.
     matches!(
         par.exprs[0].expr_instance,
         Some(ExprInstance::GBool(_))

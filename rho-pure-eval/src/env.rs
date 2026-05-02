@@ -1,9 +1,10 @@
 //! De Bruijn lookup environment.
 //!
-//! Mirrors the original `coop.rchain.rholang.interpreter.Env` from Scala.
-//! Variables resolve by `(level + shift) - index - 1` so that pushing a new
-//! binding extends the environment to the right while a `shift` lets a
-//! sub-evaluator see all prior bindings without rebinding indices.
+//! `Env<A>` is a HashMap-backed stack of bindings keyed by absolute
+//! position. `put` extends to the right (level+1); `get` resolves a de
+//! Bruijn index `k` via `(level + shift) - k - 1` so that the most
+//! recently pushed binding is `k=0`. `shift` lets a sub-evaluator see
+//! all prior bindings without rebinding indices.
 
 use std::collections::HashMap;
 

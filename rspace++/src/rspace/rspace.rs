@@ -633,7 +633,7 @@ where
             // the spatial match itself had failed (plan §7.12).
             Some(data_candidates) => {
                 let matched: Vec<A> = data_candidates.iter().map(|c| c.datum.a.clone()).collect();
-                self.matcher.check_commit(&continuation, &matched)
+                self.matcher.check_commit(continuation, &matched)
             }
             None => false,
         };
