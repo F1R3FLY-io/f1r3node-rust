@@ -4880,6 +4880,34 @@ fn guard_cross_bind_sum_gt_ten() -> Par {
     }])
 }
 
+/// Build a non-commutative guard `BoundVar(1) > 100 && BoundVar(0) < 100`,
+/// which reads as `x > 100 && y < 100` for `for(@x <- a & @y <- b)`. If the
+/// matcher ever swapped the bind order on the env stack (so x and y were
+/// resolved from each other's slots), this guard would fire on the wrong
+/// data, which the commutative `x + y > 10` guard cannot detect.
+fn guard_cross_bind_x_gt_100_and_y_lt_100() -> Par {
+    let x = new_boundvar_par(1, models::create_bit_vector(&vec![1]), false);
+    let y = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let x_gt_100 = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(x),
+            p2: Some(new_gint_par(100, Vec::new(), false)),
+        })),
+    }]);
+    let y_lt_100 = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ELtBody(models::rhoapi::ELt {
+            p1: Some(y),
+            p2: Some(new_gint_par(100, Vec::new(), false)),
+        })),
+    }]);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EAndBody(models::rhoapi::EAnd {
+            p1: Some(x_gt_100),
+            p2: Some(y_lt_100),
+        })),
+    }])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
     let (space, reducer) =
@@ -5135,4 +5163,154 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
     );
     let final_b = final_state.get(&vec![chan_b]).expect("chan b state");
     assert_eq!(final_b.data.len(), 1, "the rejected b=5 still sits there");
+}
+
+// Non-commutative cross-bind guard: would catch a swap of bind 0 / bind 1
+// indices on the env stack — a regression the commutative `x + y > 10`
+// guard above can't detect because addition is order-insensitive.
+//
+// Receive: `for (@x <- a & @y <- b where x > 100 && y < 100) { ... }`
+//   x = BoundVar(1), y = BoundVar(0).
+// Data: a=200, b=50 → x=200, y=50 → x>100 ∧ y<100 → true → fires.
+// If indices were swapped: x=50, y=200 → false ∧ false → would NOT fire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(200, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(50, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space empty: guard with correct index→bind mapping fires; got {result:?}"
+    );
+}
+
+// Mirror test: same guard, swapped data values. Would-be-true if and only
+// if the index→bind mapping were reversed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_bind_order() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // Reversed values: a=50, b=200 → x=50, y=200 → x>100 is false →
+    // guard fails → both data stay in their channels.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(50, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(200, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    let row_a = result.get(&vec![chan_a]).expect("chan a state present");
+    assert_eq!(row_a.data.len(), 1, "rejected a=50 stays");
+    let row_b = result.get(&vec![chan_b]).expect("chan b state present");
+    assert_eq!(row_b.data.len(), 1, "rejected b=200 stays");
 }

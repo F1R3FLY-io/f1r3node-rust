@@ -73,3 +73,30 @@ async fn where_multi_bind_atomic_join_evaluates() {
     })
     .await;
 }
+
+// Non-commutative end-to-end: `x - y > 0` is order-sensitive, so it would
+// fire on the wrong data if the parser/normalizer ever swapped which bind
+// contributes which de Bruijn index. With `x` from channel `a` and `y`
+// from channel `b` and data `a!(200), b!(50)` the guard yields
+// 200 - 50 = 150 > 0 → fires. Index swap would give 50 - 200 = -150 → no
+// fire. This catches a regression the commutative `x + y > 10` test can't.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn where_multi_bind_non_commutative_guard_fires_with_correct_index_assignment() {
+    with_runtime("where-multibind-noncomm-", |mut runtime| async move {
+        let src = r#"
+            new a, b, stdout(`rho:io:stdout`) in {
+                a!(200) | b!(50) |
+                for (@x <- a & @y <- b where x - y > 0) {
+                    stdout!(("ok", x, y))
+                }
+            }
+        "#;
+        let result = runtime.evaluate_with_term(src).await.unwrap();
+        assert!(
+            result.errors.is_empty(),
+            "no eval errors expected, got: {:?}",
+            result.errors
+        );
+    })
+    .await;
+}
