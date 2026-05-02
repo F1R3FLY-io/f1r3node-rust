@@ -3,14 +3,17 @@
 
   States: every name in gc1(P) is garbage with respect to P.
 
-  Phase-1 status:
+  Phase-1 status: PROVED end-to-end with no \<open>sorry\<close>.
+
     - gc0 component reuses soundness_gc0.
-    - only_send_side and only_recv_side disjuncts: PROVED via a
+    - only_send_side and only_recv_side disjuncts proved via a
       configuration-level "u-clean" preservation invariant.
-    - send_side_blocked_by_bundles and recv_side_blocked_by_bundles
-      disjuncts remain sorry; they need a refined Comm rule that
-      consults bundle_cap_of at sync-time, beyond the strip_bundle
-      semantics of the current model.
+    - bundle-aware refinements (send_side_blocked_by_bundles /
+      recv_side_blocked_by_bundles) are intentionally omitted from the
+      current algorithm: \<open>gc1_atom\<close> uses only the two side disjuncts.
+      A future \<open>gc2\<close> can reintroduce the bundle disjuncts once the Comm
+      rule is refined to consult \<open>bundle_cap_of\<close>.  See
+      docs/discoveries/rholang-gc-design.md.
 *)
 
 theory SoundnessGC1
@@ -584,22 +587,6 @@ proof (intro allI impI ballI)
   qed (auto)
 qed
 
-lemma soundness_gc1_send_blocked:
-  assumes c_in: "c \<in> gc1_only P"
-  assumes safe: rholang_safe
-  assumes pick: "u \<in> atoms_of_name c"
-                "retained_private P u" "send_side_blocked_by_bundles P u"
-  shows "is_garbage P c"
-  sorry  \<comment> \<open>Bundle-aware Comm rule needed; deferred to Phase-1'.\<close>
-
-lemma soundness_gc1_recv_blocked:
-  assumes c_in: "c \<in> gc1_only P"
-  assumes safe: rholang_safe
-  assumes pick: "u \<in> atoms_of_name c"
-                "retained_private P u" "recv_side_blocked_by_bundles P u"
-  shows "is_garbage P c"
-  sorry  \<comment> \<open>Bundle-aware Comm rule needed; deferred to Phase-1'.\<close>
-
 subsection \<open>Combining the disjuncts.\<close>
 
 lemma soundness_gc1_only:
@@ -611,9 +598,7 @@ proof -
                        and gc1u: "gc1_atom P u"
     by (auto simp: gc1_only_def)
   from gc1u have priv: "retained_private P u"
-    and side: "only_send_side P u \<or> only_recv_side P u
-               \<or> send_side_blocked_by_bundles P u
-               \<or> recv_side_blocked_by_bundles P u"
+    and side: "only_send_side P u \<or> only_recv_side P u"
     by (auto simp: gc1_atom_def)
   from side show ?thesis
   proof (elim disjE)
@@ -624,14 +609,6 @@ proof -
     assume "only_recv_side P u"
     thus ?thesis
       using c_in safe u_in priv soundness_gc1_only_recv_side by blast
-  next
-    assume "send_side_blocked_by_bundles P u"
-    thus ?thesis
-      using c_in safe u_in priv soundness_gc1_send_blocked by blast
-  next
-    assume "recv_side_blocked_by_bundles P u"
-    thus ?thesis
-      using c_in safe u_in priv soundness_gc1_recv_blocked by blast
   qed
 qed
 

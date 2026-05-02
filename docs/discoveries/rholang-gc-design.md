@@ -129,14 +129,14 @@ GC₁ also collects `new`-bound atoms `u` of `P` that satisfy:
 
 - **(escape)** `u` does not occur as a sub-term of any payload of any
   `Send` reachable in `P`, where reachability includes traversal through
-  `@`-quotations and through bundles whose write capability is open;
-- **(one-sided)** `u` appears in `P` either only in send-channel
-  positions, only in receive-channel positions, or not at all as a
-  sync-channel; and
-- **(bundle-aware refinement)** if every occurrence of `u` as a
-  sync-channel is wrapped under `bundle+ ·` (read-only by holders) then
-  `u` is garbage when `P` has no internal send on `u`; symmetrically for
-  `bundle-` and missing receives. `bundle0` rules out both sides.
+  `@`-quotations; and
+- **(one-sided, structural)** `u` appears in `P` only in send-channel
+  positions, or only in receive-channel positions — formalized as a
+  structural predicate (`u_send_clean_par` / `u_recv_clean_par`) that
+  also forbids `u` from appearing in payloads, match-targets,
+  if-conditions, patterns, guards, or eval-quote names. The structural
+  form closes the matcher-rebinding gap that a bare position check
+  (`u ∉ sync_chans_recv P`) would leave open.
 
 Examples GC₁ catches:
 
@@ -145,11 +145,19 @@ Examples GC₁ catches:
 | `new x in { x!(0) }` | `x` doesn't escape; only sends on `x` |
 | `new x in { for(_ <- x){ 0 } }` | `x` doesn't escape; only receives on `x` |
 | `new x in { @{*x \| "tag"}!(0) }` | `x` does not appear as a sync-channel |
-| `new x in { bundle+{x}!(0) }` | `bundle+` makes `x` read-only outside; no internal send via `bundle+` ⇒ no sync |
 
-GC₁ can be tightened further with may/must analysis of `Match`, `If`, and
-persistent receives, but the three rules above are sufficient for the
-soundness theorem we state below.
+**Bundle-aware refinements omitted (conservative).** A natural extension
+would catch atoms whose every sync-channel occurrence is wrapped under a
+restrictive bundle (`bundle+ ·`, `bundle- ·`, `bundle0 ·`), under the
+intuition that holders cannot supply the missing side. Discharging the
+soundness of that extension requires a Comm rule that consults
+`bundle_cap_of` at sync-time — a refinement of the operational model
+that interacts with several existing proof scripts. We leave the bundle
+disjuncts out of the current GC₁ so its soundness theorem holds without
+that refinement: bundle-blocked names that *would* be garbage under a
+capability-aware Comm rule are not reported by the current GC₁ (a
+precision loss, not a soundness hole). A future GC₂ can reintroduce
+them once the model is refined.
 
 ### 3.3 Treatment of patterns and `where` guards
 

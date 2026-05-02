@@ -170,29 +170,21 @@ definition only_recv_side :: "par \<Rightarrow> atom \<Rightarrow> bool" where
   "only_recv_side P u \<longleftrightarrow> u_recv_clean_par P u"
 
 text \<open>
-  Bundle-aware refinement: if every occurrence of \<open>u\<close> in a sync-channel
-  position is wrapped under \<open>bundle+\<close>, the holders cannot send to it; etc.
-  We capture this with two predicates expressing the negation of the
-  forbidden side after bundle effects.
+  Bundle-aware refinements (\<open>send_side_blocked_by_bundles\<close>,
+  \<open>recv_side_blocked_by_bundles\<close>) are intentionally not part of the
+  current algorithm.  Discharging their soundness requires a Comm rule
+  that consults \<open>bundle_cap_of\<close> at sync-time, which is a future
+  refinement.  Until that lands, we conservatively under-approximate:
+  bundle-blocked names that *would* be garbage under a capability-aware
+  Comm rule are not reported as garbage by \<open>gc1\<close>.  This keeps the
+  algorithm sound at the cost of some precision; the unreported names
+  remain candidates for a future \<open>gc2\<close> extension.
 \<close>
-
-definition send_side_blocked_by_bundles :: "par \<Rightarrow> atom \<Rightarrow> bool" where
-  "send_side_blocked_by_bundles P u \<longleftrightarrow>
-     (\<forall>n \<in> sync_chans_send P. u \<in> atoms_of_name n
-        \<longrightarrow> bundle_cap_of n \<in> {CapR, CapNone})"
-
-definition recv_side_blocked_by_bundles :: "par \<Rightarrow> atom \<Rightarrow> bool" where
-  "recv_side_blocked_by_bundles P u \<longleftrightarrow>
-     (\<forall>n \<in> sync_chans_recv P. u \<in> atoms_of_name n
-        \<longrightarrow> bundle_cap_of n \<in> {CapW, CapNone})"
 
 definition gc1_atom :: "par \<Rightarrow> atom \<Rightarrow> bool" where
   "gc1_atom P u \<longleftrightarrow>
      retained_private P u
-     \<and> ( only_send_side P u
-       \<or> only_recv_side P u
-       \<or> send_side_blocked_by_bundles P u
-       \<or> recv_side_blocked_by_bundles P u )"
+     \<and> (only_send_side P u \<or> only_recv_side P u)"
 
 definition gc1 :: "par \<Rightarrow> name set" where
   "gc1 P = gc0 P
