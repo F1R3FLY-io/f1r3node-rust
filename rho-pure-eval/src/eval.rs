@@ -110,7 +110,10 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
             let evaled = eval(&inner, env)?;
             let v = single_expr_instance(&evaled)?;
             match v {
-                ExprInstance::GInt(i) => Ok(par_with_int(-i)),
+                ExprInstance::GInt(i) => i
+                    .checked_neg()
+                    .map(par_with_int)
+                    .ok_or(EvalError::ArithmeticOverflow { op: "-" }),
                 other => Err(operator_mismatch_unary("-", &other)),
             }
         }
@@ -139,19 +142,19 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         }
 
         ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-            int_binop("+", p1.as_ref(), p2.as_ref(), env, i64::wrapping_add)
+            int_binop_checked("+", p1.as_ref(), p2.as_ref(), env, i64::checked_add)
         }
         ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-            int_binop("-", p1.as_ref(), p2.as_ref(), env, i64::wrapping_sub)
+            int_binop_checked("-", p1.as_ref(), p2.as_ref(), env, i64::checked_sub)
         }
         ExprInstance::EMultBody(EMult { p1, p2 }) => {
-            int_binop("*", p1.as_ref(), p2.as_ref(), env, i64::wrapping_mul)
+            int_binop_checked("*", p1.as_ref(), p2.as_ref(), env, i64::checked_mul)
         }
         ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => {
-            int_div_or_mod("/", p1.as_ref(), p2.as_ref(), env, |a, b| a / b)
+            int_div_or_mod("/", p1.as_ref(), p2.as_ref(), env, i64::checked_div)
         }
         ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => {
-            int_div_or_mod("%", p1.as_ref(), p2.as_ref(), env, |a, b| a % b)
+            int_div_or_mod("%", p1.as_ref(), p2.as_ref(), env, i64::checked_rem)
         }
 
         // Stubs — supported in the full reducer but not here yet.
@@ -185,8 +188,7 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
 /// reachable from this crate; for now we handle only the minimal subset
 /// of patterns that doesn't require it: ground-value equality and
 /// wildcard. Anything richer (free-var binding, structural destructure)
-/// returns `UnsupportedExpression { kind: "EMatchExprBody" }`. Phase 7
-/// will move spatial matching into a place this crate can call.
+/// returns `UnsupportedExpression { kind: "EMatchExprBody" }`.
 fn eval_match_expr(em: &models::rhoapi::EMatchExpr, env: &Env<Par>) -> Result<Par, EvalError> {
     let target = em.target.as_ref().ok_or(EvalError::MissingExprInstance)?;
     let evaled_target = eval(target, env)?;
@@ -362,8 +364,29 @@ fn eq_binop(
 ) -> Result<Par, EvalError> {
     let lhs = eval(&require_par(p1)?, env)?;
     let rhs = eval(&require_par(p2)?, env)?;
-    let eq = lhs == rhs;
+    // IEEE 754: any comparison involving NaN is false (so == is false and
+    // != is true). Mirrors `par_contains_nan_double` in the full reducer.
+    let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
+        false
+    } else {
+        lhs == rhs
+    };
     Ok(par_with_bool(if expect_eq { eq } else { !eq }))
+}
+
+fn par_contains_nan_double(par: &Par) -> bool {
+    use models::rhoapi::expr::ExprInstance::{EListBody, EMapBody, ESetBody, ETupleBody, GDouble};
+    par.exprs.iter().any(|e| match &e.expr_instance {
+        Some(GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
+        Some(ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
+        Some(ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
+        Some(EMapBody(map)) => map.kvs.iter().any(|kv| {
+            kv.key.as_ref().is_some_and(par_contains_nan_double)
+                || kv.value.as_ref().is_some_and(par_contains_nan_double)
+        }),
+        _ => false,
+    })
 }
 
 fn cmp_binop<F>(
@@ -387,7 +410,7 @@ where
     Ok(par_with_bool(interpret(order)))
 }
 
-fn int_binop<F>(
+fn int_binop_checked<F>(
     op: &'static str,
     p1: Option<&Par>,
     p2: Option<&Par>,
@@ -395,12 +418,14 @@ fn int_binop<F>(
     f: F,
 ) -> Result<Par, EvalError>
 where
-    F: Fn(i64, i64) -> i64,
+    F: Fn(i64, i64) -> Option<i64>,
 {
     let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
     let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
     match (&v1, &v2) {
-        (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => Ok(par_with_int(f(*i1, *i2))),
+        (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)
+            .map(par_with_int)
+            .ok_or(EvalError::ArithmeticOverflow { op }),
         _ => Err(operator_mismatch_binary(op, &v1, &v2)),
     }
 }
@@ -413,13 +438,15 @@ fn int_div_or_mod<F>(
     f: F,
 ) -> Result<Par, EvalError>
 where
-    F: Fn(i64, i64) -> i64,
+    F: Fn(i64, i64) -> Option<i64>,
 {
     let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
     let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
     match (&v1, &v2) {
         (ExprInstance::GInt(_), ExprInstance::GInt(0)) => Err(EvalError::DivisionByZero),
-        (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => Ok(par_with_int(f(*i1, *i2))),
+        (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)
+            .map(par_with_int)
+            .ok_or(EvalError::ArithmeticOverflow { op }),
         _ => Err(operator_mismatch_binary(op, &v1, &v2)),
     }
 }

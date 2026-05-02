@@ -21,6 +21,11 @@ pub enum EvalError {
     /// Division or modulo by zero.
     DivisionByZero,
 
+    /// Integer arithmetic overflowed (e.g. `i64::MAX + 1`, `-i64::MIN`,
+    /// `i64::MIN / -1`). Mirrors the reducer's "Arithmetic overflow in
+    /// {op}" errors so guards behave the same in both evaluators.
+    ArithmeticOverflow { op: &'static str },
+
     /// A method call or `EMatchExpr` was reached. These are not yet
     /// supported in this crate; callers that need them must fall back
     /// to the full reducer in `rholang`. See the plan at
@@ -51,6 +56,9 @@ impl std::fmt::Display for EvalError {
                 None => write!(f, "operator `{op}` not defined on `{left}`"),
             },
             EvalError::DivisionByZero => write!(f, "division by zero"),
+            EvalError::ArithmeticOverflow { op } => {
+                write!(f, "arithmetic overflow in `{op}`")
+            }
             EvalError::UnsupportedExpression { kind } => {
                 write!(
                     f,

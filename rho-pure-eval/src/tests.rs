@@ -22,6 +22,8 @@ fn gbool(b: bool) -> Par { par_of(ExprInstance::GBool(b)) }
 
 fn gint(i: i64) -> Par { par_of(ExprInstance::GInt(i)) }
 
+fn gdouble(f: f64) -> Par { par_of(ExprInstance::GDouble(f.to_bits())) }
+
 fn gstr(s: &str) -> Par { par_of(ExprInstance::GString(s.to_string())) }
 
 fn evar(idx: i32) -> Par {
@@ -340,6 +342,130 @@ fn unsupported_method_call_errors() {
             kind: "EMethodBody"
         })
     ));
+}
+
+#[test]
+fn ediv_i64_min_by_neg_one_is_overflow() {
+    // i64::MIN / -1 overflows i64; native `/` would panic. The reducer
+    // raises "Arithmetic overflow in division" — pure-eval mirrors that
+    // via ArithmeticOverflow.
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EDivBody(EDiv {
+        p1: Some(gint(i64::MIN)),
+        p2: Some(gint(-1)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "/" })
+    );
+}
+
+#[test]
+fn emod_i64_min_by_neg_one_is_overflow() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EModBody(EMod {
+        p1: Some(gint(i64::MIN)),
+        p2: Some(gint(-1)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "%" })
+    );
+}
+
+#[test]
+fn eneg_i64_min_is_overflow() {
+    // -i64::MIN can't be represented in i64; native `-` would panic.
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::ENegBody(ENeg {
+        p: Some(gint(i64::MIN)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "-" })
+    );
+}
+
+#[test]
+fn eplus_overflow_at_i64_max() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EPlusBody(EPlus {
+        p1: Some(gint(i64::MAX)),
+        p2: Some(gint(1)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "+" })
+    );
+}
+
+#[test]
+fn eminus_overflow_at_i64_min() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EMinusBody(EMinus {
+        p1: Some(gint(i64::MIN)),
+        p2: Some(gint(1)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "-" })
+    );
+}
+
+#[test]
+fn emult_overflow() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EMultBody(EMult {
+        p1: Some(gint(i64::MAX)),
+        p2: Some(gint(2)),
+    }));
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::ArithmeticOverflow { op: "*" })
+    );
+}
+
+#[test]
+fn eeq_nan_with_nan_is_false() {
+    // IEEE 754: NaN == NaN is always false. Reducer enforces this; pure-eval
+    // must match so guard semantics agree across Match / EMatchExpr contexts.
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(gdouble(f64::NAN)),
+        p2: Some(gdouble(f64::NAN)),
+    }));
+    assert_bool(&eval(&expr, &env).unwrap(), false);
+}
+
+#[test]
+fn eeq_nan_with_number_is_false() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(gdouble(f64::NAN)),
+        p2: Some(gdouble(1.0)),
+    }));
+    assert_bool(&eval(&expr, &env).unwrap(), false);
+}
+
+#[test]
+fn eneq_nan_with_nan_is_true() {
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::ENeqBody(ENeq {
+        p1: Some(gdouble(f64::NAN)),
+        p2: Some(gdouble(f64::NAN)),
+    }));
+    assert_bool(&eval(&expr, &env).unwrap(), true);
+}
+
+#[test]
+fn eeq_double_normal_equality() {
+    // Sanity: NaN handling didn't break ordinary double equality.
+    let env = Env::<Par>::new();
+    let expr = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(gdouble(1.5)),
+        p2: Some(gdouble(1.5)),
+    }));
+    assert_bool(&eval(&expr, &env).unwrap(), true);
 }
 
 #[test]
