@@ -1098,13 +1098,17 @@ impl DebruijnInterpreter {
                                     // GBool(true). Anything else (false,
                                     // non-bool, eval-error) falls through to
                                     // the next case — matching the plan §3.4
-                                    // fall-through rule.
+                                    // fall-through rule. `Some(empty Par)` is
+                                    // treated as "no guard" so we agree with
+                                    // eval_receive and Matcher::check_commit.
                                     let guard_passes = match &single_case.guard {
-                                        Some(g) => match rho_pure_eval::eval(g, &case_env) {
-                                            Ok(result) => extract_bool(&result) == Some(true),
-                                            Err(_) => false,
-                                        },
-                                        None => true,
+                                        Some(g) if g != &Par::default() => {
+                                            match rho_pure_eval::eval(g, &case_env) {
+                                                Ok(result) => extract_bool(&result) == Some(true),
+                                                Err(_) => false,
+                                            }
+                                        }
+                                        _ => true,
                                     };
 
                                     if !guard_passes {
@@ -1112,8 +1116,15 @@ impl DebruijnInterpreter {
                                         continue;
                                     }
 
-                                    self.eval(single_case.source.clone().unwrap(), &case_env, rand)
-                                        .await?;
+                                    self.eval(
+                                        single_case
+                                            .source
+                                            .clone()
+                                            .expect("MatchCase.source: protobuf no_box invariant"),
+                                        &case_env,
+                                        rand,
+                                    )
+                                    .await?;
 
                                     return Ok(());
                                 }
@@ -1125,7 +1136,12 @@ impl DebruijnInterpreter {
         );
 
         self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
+        let evaled_target = self.eval_expr(
+            mat.target
+                .as_ref()
+                .expect("Match.target: normalizer post-condition"),
+            env,
+        )?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
@@ -1140,19 +1156,39 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(match_eval_cost())?;
-        let evaled_cond = self.eval_expr(conditional.condition.as_ref().unwrap(), env)?;
+        let evaled_cond = self.eval_expr(
+            conditional
+                .condition
+                .as_ref()
+                .expect("If.condition: normalizer post-condition"),
+            env,
+        )?;
         let subst_cond = self
             .substitute
             .substitute_and_charge(&evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
-                self.eval(conditional.if_true.clone().unwrap(), env, rand)
-                    .await
+                self.eval(
+                    conditional
+                        .if_true
+                        .clone()
+                        .expect("If.if_true: normalizer post-condition"),
+                    env,
+                    rand,
+                )
+                .await
             }
             Some(false) => {
-                self.eval(conditional.if_false.clone().unwrap(), env, rand)
-                    .await
+                self.eval(
+                    conditional
+                        .if_false
+                        .clone()
+                        .expect("If.if_false: normalizer post-condition"),
+                    env,
+                    rand,
+                )
+                .await
             }
             None => Err(InterpreterError::IfConditionTypeError {
                 actual_type: describe_par_type(&subst_cond),
@@ -1323,7 +1359,12 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(em.target.as_ref().unwrap(), env)?;
+        let evaled_target = self.eval_expr(
+            em.target
+                .as_ref()
+                .expect("EMatchExpr.target: normalizer post-condition"),
+            env,
+        )?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
@@ -1344,14 +1385,19 @@ impl DebruijnInterpreter {
                     acc.put(value)
                 });
 
-                if let Some(g) = single_case.guard.as_ref() {
+                // `Some(empty Par)` = no guard, mirroring eval_receive and
+                // Matcher::check_commit so all four guard sites agree.
+                if let Some(g) = single_case.guard.as_ref().filter(|p| *p != &Par::default()) {
                     let guard_val = self.eval_expr(g, &case_env)?;
                     if extract_bool(&guard_val) != Some(true) {
                         continue;
                     }
                 }
 
-                let body = single_case.source.clone().unwrap();
+                let body = single_case
+                    .source
+                    .clone()
+                    .expect("MatchCase.source: protobuf no_box invariant");
                 return self.eval_expr(&body, &case_env);
             }
         }

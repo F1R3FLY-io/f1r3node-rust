@@ -77,9 +77,16 @@ impl Sortable<Receive> for ReceiveSortMatcher {
         );
 
         // Optional `where`-clause condition. Empty Par when absent so the
-        // score is stable.
+        // score is stable. Collapse `Some(empty Par)` to `None` on the
+        // output term so the wire format doesn't preserve a distinction
+        // the runtime treats as identical (eval_receive ignores empty).
         let condition_par = r.condition.clone().unwrap_or_default();
         let sorted_condition = ParSortMatcher::sort_match(&condition_par);
+        let condition_term = r
+            .condition
+            .as_ref()
+            .filter(|p| *p != &Par::default())
+            .map(|_| sorted_condition.term.clone());
 
         ScoredTerm {
             term: Receive {
@@ -90,7 +97,7 @@ impl Sortable<Receive> for ReceiveSortMatcher {
                 bind_count: r.bind_count,
                 locally_free: r.locally_free.clone(),
                 connective_used: r.connective_used,
-                condition: r.condition.as_ref().map(|_| sorted_condition.term.clone()),
+                condition: condition_term,
             },
             score: Tree::<ScoreAtom>::create_node_from_i32(
                 Score::RECEIVE,

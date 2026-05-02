@@ -762,14 +762,23 @@ impl Sortable<Expr> for ExprSortMatcher {
                             let sorted_source = ParSortMatcher::sort_match(
                                 c.source.as_ref().expect("MatchCase.source was None"),
                             );
+                            // Collapse `Some(empty Par)` to `None`: the
+                            // four guard-evaluation sites already treat the
+                            // two as equivalent, so the wire format mustn't
+                            // preserve the distinction.
                             let guard_par = c.guard.clone().unwrap_or_default();
                             let sorted_guard = ParSortMatcher::sort_match(&guard_par);
+                            let guard_term = c
+                                .guard
+                                .as_ref()
+                                .filter(|p| *p != &Par::default())
+                                .map(|_| sorted_guard.term.clone());
                             ScoredTerm {
                                 term: MatchCase {
                                     pattern: Some(sorted_pattern.term),
                                     source: Some(sorted_source.term),
                                     free_count: c.free_count,
-                                    guard: c.guard.as_ref().map(|_| sorted_guard.term.clone()),
+                                    guard: guard_term,
                                 },
                                 score: Tree::Node(vec![
                                     sorted_pattern.score,
