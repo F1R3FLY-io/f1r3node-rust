@@ -1715,12 +1715,6 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
                 .unwrap_or(-1);
             RhoExpr::ExprVar { index }
         }
-
-        // Match-as-expression — surface as ExprUnknown for the web API
-        // for now; richer projection can be added later if needed.
-        ExprInstance::EMatchExprBody(_) => RhoExpr::ExprUnknown {
-            type_name: "EMatchExpr".to_string(),
-        },
     })
 }
 

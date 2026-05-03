@@ -1,5 +1,5 @@
 ---
-title: Rholang `where` clauses on receives, `where` guards on match cases, and match-as-boolean-expression
+title: Rholang `where` clauses on receives and `where` guards on match cases
 status: draft
 author: claude-session
 date: 2026-04-29
@@ -7,6 +7,15 @@ related-docs:
   - docs/rholang/rholangtut.md
   - docs/rholang-language-analysis.md
 ---
+
+> **2026-05-03 update:** the third feature originally in this plan —
+> match-as-boolean-expression (`EMatchExpr`) — was dropped in review
+> before merge to avoid the asymmetric-evaluator problem (M1 in the
+> first review round). The proto type, IR, and classifier were
+> removed; the docs and plan sections referring to `EMatchExpr` below
+> describe what was attempted and is no longer present in the code.
+> The two surviving features (receive guards and match-case `where`
+> guards with fall-through) are unchanged.
 
 # Rholang language extension: `where` clauses and match-as-bool-expr
 

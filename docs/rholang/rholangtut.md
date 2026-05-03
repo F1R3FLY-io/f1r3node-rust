@@ -456,20 +456,6 @@ Attach a `where` clause between a case's pattern and `=>`. If the pattern matche
 
 This is a clean way to express overlapping patterns differentiated by a runtime predicate.
 
-### Match as a boolean expression
-
-A `match` block whose every right-hand side is a boolean expression is itself a boolean expression — it can be used as the condition of `if`, inside another `where` clause, or anywhere a boolean is expected:
-
-    new ok in {
-      for (@x <- ok) {
-        if (match x { i where i % 2 == 0 => i > 0   _ => false }) {
-          // x is a positive even number
-        }
-      }
-    }
-
-The compiler picks this up structurally: when every case's body is a single bool-yielding expression (`true`/`false`/comparisons/`&&`/`||`/`!`/`matches`/recursive bool-match), the match compiles to an `EMatchExpr` Expr, not a process-level `Match`. If even one case body is a process (a `Send`, a `New`, etc.), it stays as a regular match.
-
 ## Mutable state
 
      1 new MakeCell in {

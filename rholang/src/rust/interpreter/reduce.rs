@@ -1344,67 +1344,8 @@ impl DebruijnInterpreter {
 
                 Ok(result_par)
             }
-            ExprInstance::EMatchExprBody(em) => self.eval_match_expr(&em, env),
             _ => Ok(Par::default().with_exprs(vec![self.eval_expr_to_expr(expr, env)?])),
         }
-    }
-
-    /// Evaluates an `EMatchExpr` to a value Par. Mirrors the spatial
-    /// matching used by `eval_match`, but returns the matched case's
-    /// body evaluated as an expression (via `eval_expr`) rather than
-    /// running it as a process.
-    fn eval_match_expr(
-        &self,
-        em: &models::rhoapi::EMatchExpr,
-        env: &Env<Par>,
-    ) -> Result<Par, InterpreterError> {
-        self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(
-            em.target
-                .as_ref()
-                .expect("EMatchExpr.target: normalizer post-condition"),
-            env,
-        )?;
-        let subst_target = self
-            .substitute
-            .substitute_and_charge(&evaled_target, 0, env)?;
-
-        for single_case in &em.cases {
-            let pattern = self.substitute.substitute_and_charge(
-                &unwrap_option_safe(single_case.pattern.clone())?,
-                1,
-                env,
-            )?;
-
-            let mut spatial_matcher = SpatialMatcherContext::new();
-            let match_result = spatial_matcher.spatial_match_result(subst_target.clone(), pattern);
-
-            if let Some(free_map) = match_result {
-                let case_env = (0..single_case.free_count).fold(env.clone(), |mut acc, e| {
-                    let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
-                    acc.put(value)
-                });
-
-                // `Some(empty Par)` = no guard, mirroring eval_receive and
-                // Matcher::check_commit so all four guard sites agree.
-                if let Some(g) = single_case.guard.as_ref().filter(|p| *p != &Par::default()) {
-                    let guard_val = self.eval_expr(g, &case_env)?;
-                    if extract_bool(&guard_val) != Some(true) {
-                        continue;
-                    }
-                }
-
-                let body = single_case
-                    .source
-                    .clone()
-                    .expect("MatchCase.source: protobuf no_box invariant");
-                return self.eval_expr(&body, &case_env);
-            }
-        }
-
-        Err(InterpreterError::ReduceError(
-            "EMatchExpr: no case matched the target".to_string(),
-        ))
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
@@ -2572,11 +2513,6 @@ impl DebruijnInterpreter {
 
                     let result_expr = self.eval_single_expr(&result_par, env)?;
                     Ok(result_expr)
-                }
-
-                ExprInstance::EMatchExprBody(em) => {
-                    let result_par = self.eval_match_expr(em, env)?;
-                    self.eval_single_expr(&result_par, env)
                 }
             },
             None => Err(InterpreterError::ReduceError(format!(
@@ -7117,7 +7053,6 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EPlusPlusBody(_) => String::from("plus plus"),
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
-        ExprInstance::EMatchExprBody(_) => String::from("ematchexpr"),
     }
 }
 

@@ -428,7 +428,7 @@ fn emult_overflow() {
 #[test]
 fn eeq_nan_with_nan_is_false() {
     // IEEE 754: NaN == NaN is always false. Reducer enforces this; pure-eval
-    // must match so guard semantics agree across Match / EMatchExpr contexts.
+    // must match so guard semantics agree with the reducer.
     let env = Env::<Par>::new();
     let expr = par_of(ExprInstance::EEqBody(EEq {
         p1: Some(gdouble(f64::NAN)),

@@ -27,11 +27,6 @@ fn where_match_fallthrough_example_compiles() {
     assert_compiles("../examples/where_match_fallthrough.rho");
 }
 
-#[test]
-fn where_match_as_expression_example_compiles() {
-    assert_compiles("../examples/where_match_as_expression.rho");
-}
-
 // Inline source: verifies the multi-bind cross-channel `where` syntax
 // `for (@x <- a & @y <- b where x + y > 10)` parses and normalizes
 // (Phase 9). The `where` clause attaches to the receipt, not to a

@@ -26,10 +26,11 @@ pub enum EvalError {
     /// {op}" errors so guards behave the same in both evaluators.
     ArithmeticOverflow { op: &'static str },
 
-    /// A method call or `EMatchExpr` was reached. These are not yet
-    /// supported in this crate; callers that need them must fall back
-    /// to the full reducer in `rholang`. See the plan at
-    /// docs/plans/where-clauses-and-match-guards-2026-04-29.md §3.9.
+    /// A method call or other unsupported Expr variant was reached.
+    /// These are not yet supported in this crate; callers that need
+    /// them must fall back to the full reducer in `rholang`. See the
+    /// plan at docs/plans/where-clauses-and-match-guards-2026-04-29.md
+    /// §3.9.
     UnsupportedExpression { kind: &'static str },
 
     /// An Expr's `expr_instance` field was None. Indicates a malformed
@@ -40,9 +41,6 @@ pub enum EvalError {
     /// for the operands of `==`) but reduced to something more complex.
     /// Boxed so that the rest of the EvalError variants stay small.
     NotASingleValue { actual: Box<Par> },
-
-    /// An EMatchExpr's target didn't match any of its cases.
-    NoMatch,
 }
 
 impl std::fmt::Display for EvalError {
@@ -69,7 +67,6 @@ impl std::fmt::Display for EvalError {
             EvalError::NotASingleValue { .. } => {
                 write!(f, "expected a single ground value")
             }
-            EvalError::NoMatch => write!(f, "no case in EMatchExpr matched the target"),
         }
     }
 }

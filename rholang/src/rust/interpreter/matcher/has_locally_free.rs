@@ -149,8 +149,6 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
                 p1.unwrap().connective_used | p2.unwrap().connective_used
             }
 
-            Some(EMatchExprBody(em)) => em.connective_used,
-
             None => false,
         }
     }
@@ -230,8 +228,6 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => {
                 union(p1.unwrap().locally_free, p2.unwrap().locally_free)
             }
-
-            Some(EMatchExprBody(em)) => em.locally_free,
 
             None => Default::default(),
         }
@@ -460,8 +456,6 @@ impl HasLocallyFree<Expr> for Expr {
                 p1.unwrap().connective_used | p2.unwrap().connective_used
             }
 
-            Some(EMatchExprBody(em)) => em.connective_used,
-
             None => false,
         }
     }
@@ -541,8 +535,6 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => {
                 union(p1.unwrap().locally_free, p2.unwrap().locally_free)
             }
-
-            Some(EMatchExprBody(em)) => em.locally_free,
 
             None => Default::default(),
         }

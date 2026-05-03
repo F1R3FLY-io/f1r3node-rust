@@ -17,11 +17,8 @@
 //! calls (`EMethodBody`) and the special-form Expr variants `EMatches`,
 //! `EPercentPercent`, `EPlusPlus`, `EMinusMinus`, `EPathmap`, `EZipper`
 //! are not supported and return `EvalError::UnsupportedExpression`.
-//! `EMatchExpr` is supported only for the simple-pattern subset (ground
-//! values and wildcard); richer patterns return
-//! `UnsupportedExpression { kind: "EMatchExprBody" }`. See the plan at
-//! docs/plans/where-clauses-and-match-guards-2026-04-29.md §3.9 for the
-//! longer-term roadmap.
+//! See the plan at docs/plans/where-clauses-and-match-guards-2026-04-29.md
+//! §3.9 for the longer-term roadmap.
 
 mod env;
 mod error;
