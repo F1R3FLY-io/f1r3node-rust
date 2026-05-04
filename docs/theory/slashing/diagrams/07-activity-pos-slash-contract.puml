@@ -1,0 +1,115 @@
+' Activity Diagram 07 — PoS.slash() Rholang execution.
+'
+' Steps inside the @PoS!("slash", …) Rholang contract at
+' casper/src/main/resources/PoS.rhox:432-495.
+'
+' Diamond branches show the auth-token check, the invalid-block lookup,
+' and the transfer-failure FIXME (which currently has no error path back —
+' bug fix #4 / T-9.4 closes this).
+'
+' Source of truth for Figure 5.1 in slashing-specification.md.
+'
+' Color palette:
+'   blue   (#BBDEFB) = read / setup steps (input destructure, lookups)
+'   gray   (#ECEFF1) = predicate / decision computation
+'   orange (#FFE0B2) = state mutation (bond zero, active-set delete, etc.)
+'   purple (#D1C4E9) = Rholang sub-invocation (e.g., posVault transfer)
+'   green  (#C8E6C9) = success exit (returnCh writes Nil)
+'   red    (#FFCDD2) = failure exit (returnCh writes error or hang)
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/07-activity-pos-slash-contract.puml
+
+@startuml 07-activity-pos-slash-contract
+!theme plain
+
+skinparam activity {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+  ArrowColor      #444444
+  DiamondBackgroundColor #FFF8E1
+  DiamondBorderColor     #E65100
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title PoS.slash() — activity flow
+
+start
+:receive (deployerId, blockHash, sysAuthToken, returnCh); <<#BBDEFB>>
+
+if (sysAuthTokenOps.check(sysAuthToken)) then (valid)
+  note right
+    Auth-token check at PoS.rhox:437-439:
+      sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh)
+      for (@isValid <- isValidTokenCh) { if (isValid) ... }
+    The auth token is unforgeable; only system deploys
+    carry a valid one.
+  end note
+  fork
+    :getInvalidBlocks → invalidBlocks; <<#BBDEFB>>
+  fork again
+    :getUser(deployerId) → userPk; <<#BBDEFB>>
+  end fork
+  note right
+    The two reads are independent
+    (parallel composition `|`
+    in PoS.rhox:443-445); they
+    join before runMVar.
+  end note
+  :runMVar(stateCh, stateProcessCh, returnCh); <<#ECEFF1>>
+
+  if (blockHash ∈ invalidBlocks) then (yes)
+    :validator ← invalidBlocks[blockHash]; <<#BBDEFB>>
+  else (no)
+    :validator ← userPk; <<#FFE0B2>>
+    note right
+      No invalid-block evidence —
+      slash whoever submitted it
+      (degraded path)
+    end note
+  endif
+
+  :valBond ← state.allBonds[validator]; <<#BBDEFB>>
+
+  partition "Transfer to Coop vault" {
+    :@posVault!("transfer",
+      coopMultiVaultAddr, valBond,
+      posAuthKey, transferDoneCh); <<#D1C4E9>>
+    if (transferDoneCh receives ok?) then (yes)
+      :atomic stateUpdate(state', (true, Nil)) where
+        state'.allBonds          := state.allBonds[validator := 0]
+        state'.activeValidators  := state.activeValidators \ {validator}
+        state'.committedRewards  := state.committedRewards \ {validator}
+      ; <<#FFE0B2>>
+      note right
+        Single map-construction step
+        in PoS.rhox:473-482 — the
+        three field updates are one
+        atomic stateUpdateCh write,
+        not three sequential writes.
+      end note
+      :returnCh!((true, Nil)); <<#C8E6C9>>
+    else (no — current FIXME)
+      :hang forever; <<#FFCDD2>>
+      note right
+        ⚠ PoS.rhox:469 "FIXME handle
+        transfer failing case".
+        No error path. The deploy
+        never returns.
+        Bug fix #4 (T-9.4) replaces
+        this with a deterministic
+        (false, "transfer failed")
+        return on returnCh.
+      end note
+      stop
+    endif
+  }
+
+else (invalid)
+  :returnCh!((false, "Invalid system auth token")); <<#FFCDD2>>
+endif
+
+stop
+
+@enduml

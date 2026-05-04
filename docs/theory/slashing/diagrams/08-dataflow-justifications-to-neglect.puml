@@ -1,0 +1,82 @@
+' Data-flow Diagram 08 — Justifications → neglect detection.
+'
+' Shows how block.justifications traverse the DAG to compute
+' neglectedInvalidJustification.  This is the data-flow underlying
+' the Level-2 (neglected-equivocation) and the NeglectedInvalidBlock
+' validation paths.
+'
+' Source of truth for Figure 8.2 in slashing-specification.md.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/08-dataflow-justifications-to-neglect.puml
+
+@startuml 08-dataflow-justifications-to-neglect
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam database {
+  BackgroundColor #BBDEFB
+  BorderColor     #1565C0
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title Data-flow: justifications → neglected-invalid-block detection
+
+' Edge color legend:
+'   blue   (#1565C0) = read / extract from inputs
+'   gray   (#546E7A) = predicate computation
+'   green  (#2E7D32) = accept (block admitted)
+'   red    (#C62828) = reject (block rejected as invalid)
+
+artifact "block b\n(under validation)"             as B    #FFE0B2
+artifact "b.justifications\n(input field of b;\nseq of {validator,\n latestBlockHash})" as J    #FFF8E1
+database "CasperSnapshot.dag\n(pre-loaded DAG view\npassed alongside b)" as S    #BBDEFB
+
+component "filter:\nlookup(j.latestBlockHash)\nexists ∧ block.invalid"  as F1   #FFECB3
+component "exists:\nbonds(b).find(_.validator\n  == j.validator).stake > 0" as F2 #FFECB3
+component "scan b.body.system_deploys\nfor SystemDeployData::Slash\n(post-fix only)"  as F3   #FFECB3
+
+artifact "invalidJustifications"        as IJ   #FFF8E1
+artifact "neglectedInvalidJustification\n: Bool"  as N    #FFE0B2
+artifact "has_slash_system_deploys\n: Bool (post-fix)"  as HS   #FFE0B2
+
+component "decision:\nif neglected ∧ ¬hasSlash\nthen Reject\nelse Accept"  as DEC  #D1C4E9
+
+artifact "Right(ValidBlock::Valid)"                       as OK   #C8E6C9
+artifact "Left(InvalidBlock::\nNeglectedInvalidBlock)"     as REJ  #FFCDD2
+
+B  -[#1565C0]-> J  : input field access
+J  -[#1565C0]-> F1
+S  -[#1565C0]-> F1 : s.dag.lookup(j.latestBlockHash)
+F1 -[#546E7A]-> IJ
+IJ -[#546E7A]-> F2
+F2 -[#546E7A]-> N
+B  -[#1565C0]-> F3
+F3 -[#546E7A]-> HS
+N  -[#546E7A]-> DEC
+HS -[#546E7A]-> DEC
+DEC -[#2E7D32]-> OK    : Accept
+DEC -[#C62828]-> REJ   : Reject
+
+note right of DEC
+  Pre-fix Scala: rejection fires
+  whenever neglected = TRUE,
+  even if b carries a SlashDeploy
+  for the offender.
+
+  Post-fix Rust + bug fix #9 (T-9.9):
+  rejection requires
+    neglected ∧ ¬has_slash_system_deploys
+  i.e. self-correcting blocks pass.
+
+  Source: validate.rs:1025-1027
+  ("if neglected_invalid_justification &&
+    !has_slash_system_deploys").
+end note
+
+@enduml

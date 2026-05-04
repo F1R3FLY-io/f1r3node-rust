@@ -1,0 +1,143 @@
+' Sequence Diagram 03 — Ignorable equivocation slash flow (post-fix).
+'
+' Variant of diagram 02 where Equivocator A's second block b1' arrives
+' UNSOLICITED (not pulled in as a dependency of any block). Under
+' current behavior this is silently dropped — a documented DOS vector.
+' Bug fix #1 (T-9.1) treats IgnorableEquivocation as slashable and
+' creates an EquivocationRecord, allowing the standard slash path.
+'
+' Source of truth for Figure 10.1 in slashing-specification.md.
+'
+' Color palette: see Diagram 02 header for the legend.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/03-seq-ignorable-equivocation-fixed.puml
+
+@startuml 03-seq-ignorable-equivocation-fixed
+!theme plain
+
+title Ignorable equivocation slash flow (post-fix #1)
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+autonumber
+
+actor       "Equivocator A"        as A   #F8C3B8
+actor       "Honest Proposer P"    as P   #C8E6C9
+participant "Validate"             as V   #FFECB3
+participant "EquivocationDetector" as D   #FFECB3
+participant "MultiParentCasperImpl" as C  #FFECB3
+participant "BlockDagStorage"      as DS  #C8E6C9
+participant "EquivocationTrackerStore" as T #C8E6C9
+participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
+participant "BlockCreator"         as BC  #B2DFDB
+participant "PoS Rholang"          as PoS #D1C4E9
+database    "Bond map\n(on-chain state)" as B   #D1C4E9
+
+note over A, B #ECEFF1
+  **Preconditions** (same as Diagram 02 unless noted)
+  • Validator A is bonded with stake s > 0.
+  • A has previously signed b1 @ seqN (already in the DAG).
+  • A now signs b1' @ seqN with b1' ≠ b1.
+  • **Distinguishing feature**: b1' is **NOT** referenced in
+    any other block's justifications — it arrived unsolicited.
+  • The base sequence number for the EquivocationRecord is seqN − 1.
+
+  **Color legend**
+  red = adversarial / regression  ·  orange = detection verdict / slash effect
+  green = honest write / Valid    ·  blue = read query
+  purple = Rholang invocation     ·  teal = block gossip   ·  gray = internal
+end note
+
+== Pre-fix behavior — current Rust ==
+
+A -[#C62828]> V ++ : signed block b1' @ seqN  (unsolicited)
+V -[#1565C0]> D ++ : check_equivocations(b1')
+D -[#1565C0]> DS  : creator_justification(b1)
+D -[#1565C0]> DS  : requested_as_dependency(b1') = FALSE\n(no descendant cites b1')
+D -[#E65100]-> V  : InvalidBlock::IgnorableEquivocation
+deactivate D
+V -[#E65100]> C ++ : InvalidBlock::IgnorableEquivocation
+deactivate V
+
+C -[#C62828]> C   : tracing::info!\n("Did not add block {} as that would\n  add an equivocation to the BlockDAG", b1')\n(no EquivocationRecord, no DAG mutation,\n no SlashDeploy)
+note right of C #FFCDD2
+  ⚠ multi_parent_casper_impl.rs:1077-1088
+  returns Ok(dag.clone()) without any state
+  change. The behavior is documented as a
+  DOS vector by the TODO at
+  block_status.rs:36-39:
+  "IgnorableEquivocation slashable again
+   ... will become a DOS vector if not fixed."
+  Equivocator A pays nothing under pre-fix.
+end note
+deactivate C
+
+== Post-fix behavior (T-9.1) ==
+
+|||
+== Same input, after applying bug fix #1 ==
+|||
+
+A -[#C62828]> V ++ : signed block b1' @ seqN  (unsolicited, same as above)
+V -[#1565C0]> D ++ : check_equivocations(b1')
+D -[#1565C0]> DS  : creator_justification(b1)
+D -[#1565C0]> DS  : requested_as_dependency(b1') = FALSE
+D -[#E65100]-> V  : InvalidBlock::IgnorableEquivocation
+deactivate D
+V -[#E65100]> C ++ : InvalidBlock::IgnorableEquivocation
+deactivate V
+
+' Fix: treat as slashable, create record (mirror of AdmissibleEquivocation path)
+C -[#1565C0]> T   : equivocation_records()
+T -[#1565C0]-> C  : current set (empty for (A, seqN − 1))
+C -[#E65100]> T   : insert_equivocation_record(A, seqN − 1, ∅)
+C -[#E65100]> DS  : insert(b1', invalid = true)
+deactivate C
+
+== Standard slash path now activates ==
+
+P -[#00838F]> BC ++ : propose new block at seqM (seqM > seqN)
+note over BC, CS
+  prepare_slashing_deploys reads from the
+  CasperSnapshot pre-loaded by the
+  block-processor — NOT live DS calls.
+end note
+BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_latest_messages()
+CS -[#1565C0]-> BC : { (A, b1') }
+BC -[#1565C0]> T   : equivocation_records()
+T -[#1565C0]-> BC  : { (A, seqN − 1, ∅) }
+BC -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
+CS -[#1565C0]-> BC : bonds_map
+BC -[#546E7A]> BC  : filter where bonds_map[A] > 0  → keep A
+note right of BC
+  Same prepare_slashing_deploys as
+  Diagram 02; only the *origin* of
+  the EquivocationRecord differs.
+end note
+BC -[#6A1B9A]> PoS ++ : SlashDeploy(b1', …)\nrouted via @PoS!("slash", …)
+PoS -[#546E7A]> PoS  : auth-token check\n+ Coop-vault transfer\n(see Diagram 07 for full activity)
+PoS -[#E65100]> B    : state.allBonds[A] := 0
+PoS -[#E65100]> B    : state.activeValidators := \\ {A}
+PoS -[#2E7D32]-> BC -- : (true, Nil)
+deactivate BC
+
+note over A, B #C8E6C9
+  Result of fix: ignorable equivocations carry
+  the same economic cost as admissible ones.
+  DOS vector closed. Honest validators are still
+  not at risk because the underlying equivocation
+  predicate (two distinct blocks at same seqN by
+  same sender) is unchanged — see T-9.1 proof.
+end note
+
+@enduml

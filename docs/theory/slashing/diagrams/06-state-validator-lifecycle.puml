@@ -1,0 +1,95 @@
+' State Diagram 06 — Validator lifecycle.
+'
+' Tracks a single validator's state across the slashing protocol:
+'   Bonded → Equivocator-Suspect → Equivocator-Recorded →
+'   Slash-Pending → Slashed → Removed
+'
+' Each transition is labeled with the detector output or PoS event that
+' fires it. This is the canonical state machine the EquivocationDetector
+' and PoS contract jointly implement.
+'
+' Source of truth for Figure 6.1 in slashing-specification.md.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/06-state-validator-lifecycle.puml
+
+@startuml 06-state-validator-lifecycle
+!theme plain
+
+skinparam state {
+  BackgroundColor<<bonded>>     #C8E6C9
+  BackgroundColor<<suspect>>    #FFF7EE
+  BackgroundColor<<recorded>>   #FFE0B2
+  BackgroundColor<<pending>>    #FFCDD2
+  BackgroundColor<<slashed>>    #D7CCC8
+  BackgroundColor<<removed>>    #B0BEC5
+  BorderColor #444444
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title Validator lifecycle in the slashing protocol
+
+' Edge color legend:
+'   green  (#2E7D32) = honest progression / bond entry
+'   red    (#C62828) = adversarial action triggers transition
+'   orange (#E65100) = detection / record-creation effect
+'   amber  (#FF6F00) = recovery from failed slash
+'   purple (#6A1B9A) = PoS Rholang slash invocation
+'   gray   (#37474F) = terminal exit
+
+[*] --> Unbonded
+
+state Unbonded
+state Bonded            <<bonded>>
+state EquivocatorSuspect <<suspect>>    : "(documentation-only) Detector\nsaw 1 of 2 conflicting blocks.\nIn Rust, code transitions Bonded\n→ EquivocatorRecorded directly\nin one atomic step."
+state EquivocatorRecorded <<recorded>>  : "EquivocationRecord persisted\nin tracker store"
+state SlashPending      <<pending>>     : "SlashDeploy emitted\nby a proposer; not yet executed"
+state Slashed           <<slashed>>     : "Bond zeroed (allBonds[v] := 0).\nProjection of the atomic\nstateUpdateCh! at PoS.rhox:473-482."
+state Removed           <<removed>>     : "Removed from activeValidators\n(same atomic stateUpdate as Slashed;\nthe two are not separately\nobservable in the implementation\nbut are listed separately to\nmatch spec §6)."
+
+Unbonded -[#2E7D32]-> Bonded : Bond deploy succeeds\n(@PoS!("bond", …))
+Bonded   -[#2E7D32]-> Bonded : honest activity\n(propose, validate, etc.)
+
+Bonded            -[#C62828]-> EquivocatorSuspect : detector observes\nconflicting block_2 by self
+EquivocatorSuspect -[#E65100]-> EquivocatorRecorded : insert_equivocation_record\n(seqN-1, ∅)
+
+EquivocatorRecorded -[#E65100]-> SlashPending : next proposer's\nprepare_slashing_deploys
+
+SlashPending -[#6A1B9A]-> Slashed : PoS @"slash" succeeds\n(allBonds[v]:=0;\nstart of atomic stateUpdate)
+Slashed      -[#6A1B9A]-> Removed : same atomic stateUpdate\nremoves v from activeValidators\nand purges committedRewards
+SlashPending -[#FF6F00]-> EquivocatorRecorded : slash deploy fails\n(transfer FIXME, fix #4)
+
+Removed -[#37474F]-> [*] : terminal state (cannot rejoin\nwithout new bond)
+
+note right of EquivocatorRecorded
+  Bug fix #2 (T-9.2) ensures the
+  transition into this state is
+  atomic under concurrent insertions.
+end note
+
+note right of SlashPending
+  Bug fix #4 (T-9.4) ensures a deterministic
+  failure path back to EquivocatorRecorded
+  if the Coop-vault transfer fails.
+end note
+
+note bottom of Bonded
+  Bug fix #5 (T-9.5): a stake-0 bonded
+  validator should be impossible —
+  enforced by assert(stake > 0) in PoS.
+end note
+
+note bottom of Slashed
+  Slashed and Removed are retained as
+  distinct lifecycle states matching
+  spec §6, but in the implementation
+  they are projections of the same
+  atomic Rholang stateUpdate at
+  PoS.rhox:473-482. They are not
+  separately observable; the
+  Slashed → Removed transition is
+  conceptually instantaneous.
+end note
+
+@enduml

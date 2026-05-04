@@ -72,3 +72,40 @@ scripts/remote/testbed.pem.pub
 # story-manager.sh backup artifacts
 docs/*.md.bak
 .claude/
+
+# Rocq / Coq
+##############
+*.vo
+*.vok
+*.vos
+*.glob
+*.aux
+.*.aux
+*.v.d
+*.crashcoqide
+.coqdeps.d
+.coq-native/
+.coq-cache/
+.lia.cache
+.nia.cache
+.csdp.cache
+CoqMakefile
+CoqMakefile.conf
+Makefile.coq
+Makefile.coq.conf
+Makefile.coq.local
+
+# TLA+ / TLC
+##############
+*.toolbox/
+states/
+*.tla.old
+*.tla.tex
+*.tla.dvi
+*.tla.pdf
+*.pcal.tla
+*.cfg.old
+MC_TE.tla
+MC_TE.cfg
+MC_TE.out
+*.st

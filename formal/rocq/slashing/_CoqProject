@@ -1,0 +1,79 @@
+# Slashing — Formal Verification
+#
+# Establishes observational bisimilarity at the process level between
+# the Rust slashing logic in this repository and the Scala original,
+# with explicit, proven bug-fix deltas where the Scala source is faulty.
+#
+# Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
+#         multi_parent_casper_impl,blocks/proposer/block_creator,
+#         util/rholang/costacc/slash_deploy}.rs
+# Companion docs:
+#   docs/theory/slashing/slashing-specification.md  (normative spec)
+#   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
+#
+# 21 modules. Zero `Admitted`. Four classical lemmas cited inline:
+#   (a) Sangiorgi's bisimulation up-to expansion
+#       [San98] DOI 10.1017/S0960129598002527
+#   (b) Newman's lemma (confluence + termination ⇒ Church-Rosser)
+#   (c) König's lemma (finitely-branching infinite tree has infinite branch)
+#   (d) f < n/3 BFT bound
+#       [LSP82] DOI 10.1145/357172.357176
+#
+# Module dependency graph (→ = "depends on"):
+#
+#   Validator              (standalone)
+#   Block                  → Validator
+#   InvalidBlock           → Block
+#   EquivocationRecord     → Validator, Block
+#   DAGState               → Block, EquivocationRecord
+#   EquivocationDetector   → DAGState, InvalidBlock
+#   PoSContract            → Validator
+#   SlashDeploy            → Block, PoSContract, InvalidBlock
+#   BlockCreator           → DAGState, SlashDeploy, EquivocationRecord
+#   ForkChoice             → DAGState, PoSContract
+#   TwoLevelSlashing       → EquivocationDetector, SlashDeploy, ForkChoice
+#   BugFixIgnorable        → EquivocationDetector, EquivocationRecord
+#   BugFixAtomicTracker    → EquivocationRecord, DAGState
+#   BugFixDispatcher       → InvalidBlock, EquivocationDetector, SlashDeploy
+#   BugFixTransferFailure  → PoSContract, SlashDeploy
+#   BugFixStakeZero        → EquivocationDetector, PoSContract
+#   BugFixSelfRegression   → DAGState, Block
+#   BugFixSeqNumDensity    → EquivocationDetector, Block
+#   BugFixUnbondedProposer → BlockCreator, PoSContract
+#   Bisimulation           → all of the above (the headline relation)
+#   MainTheorem            → Bisimulation, all BugFix*
+#
+# The development assumes the on-chain Rholang `slash` contract at
+# `casper/src/main/resources/PoS.rhox:432-495` as a shared implementation
+# between Scala and Rust — the contract is loaded into the Rust interpreter
+# unmodified. Bug fix #4 (PoS.rhox:469 transfer-failure FIXME) therefore
+# applies to both sides equally.
+#
+# Bisimilarity is defined modulo:
+#   - α-equivalence on Rholang names
+#   - iteration order on BTreeSet (Rust) vs Set (Scala) — value-level only,
+#     not byte-level on-disk
+
+-Q theories Slashing
+
+theories/Validator.v
+theories/Block.v
+theories/InvalidBlock.v
+theories/EquivocationRecord.v
+theories/DAGState.v
+theories/EquivocationDetector.v
+theories/PoSContract.v
+theories/SlashDeploy.v
+theories/BlockCreator.v
+theories/ForkChoice.v
+theories/TwoLevelSlashing.v
+theories/BugFixIgnorable.v
+theories/BugFixAtomicTracker.v
+theories/BugFixDispatcher.v
+theories/BugFixTransferFailure.v
+theories/BugFixStakeZero.v
+theories/BugFixSelfRegression.v
+theories/BugFixSeqNumDensity.v
+theories/BugFixUnbondedProposer.v
+theories/Bisimulation.v
+theories/MainTheorem.v

@@ -1,0 +1,161 @@
+' Sequence Diagram 04 — Two-level slashing.
+'
+' Level 1: Equivocator A is detected and recorded.
+' Level 2: Validator B *also* misbehaves by citing A's equivocating
+'          block in its own justifications WITHOUT attaching a
+'          SlashDeploy. B is detected as NeglectedInvalidBlock and
+'          slashed in the same proposer round as A.
+'
+' This makes collusion mutually destructive: if B tries to cover for A,
+' B goes down with A.
+'
+' Source of truth for Figure 8.1 in slashing-specification.md.
+'
+' Color palette: see Diagram 02 header for the legend.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/04-seq-two-level-slashing.puml
+
+@startuml 04-seq-two-level-slashing
+!theme plain
+
+title Two-level slashing — collusion is mutually destructive
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  GroupBorderColor        #333333
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+autonumber
+
+actor       "Equivocator A"          as A    #F8C3B8
+actor       "Colluder B"             as Bact #F8C3B8
+actor       "Honest Proposer P"      as P    #C8E6C9
+participant "Validate"               as V    #FFECB3
+participant "EquivocationDetector"   as D    #FFECB3
+participant "MultiParentCasperImpl"  as C    #FFECB3
+participant "BlockDagStorage"        as DS   #C8E6C9
+participant "EquivocationTrackerStore" as T  #C8E6C9
+participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
+participant "BlockCreator"           as BC   #B2DFDB
+participant "PoS Rholang"            as PoS  #D1C4E9
+database    "Bond map\n(on-chain state)" as Bm  #D1C4E9
+
+note over A, Bm #ECEFF1
+  **Preconditions**
+  • Validators A, B, P all bonded with stake > 0.
+  • A signs b @ seqN, then b' @ seqN with b' ≠ b
+    (b' becomes a dependency of some later block).
+  • B is **aware** of A's equivocation (b' is in B's view of the DAG).
+  • B will choose to cite b' in its own block b_B's justifications
+    WITHOUT attaching a SlashDeploy targeting A — that is the
+    "neglect" act that triggers Level 2.
+
+  **Color legend**
+  red = adversarial / regression  ·  orange = detection verdict / slash effect
+  green = honest write / Valid    ·  blue = read query
+  purple = Rholang invocation     ·  teal = block gossip   ·  gray = internal
+end note
+
+== Level 1 — A equivocates and is recorded ==
+
+A -[#C62828]> V ++ : signed b' @ seqN\n(b @ seqN was signed earlier; both in DAG)
+note over V
+  requested_as_dependency = ⊤ is computed
+  upstream by the block-processor and passed
+  in as a parameter to check_equivocations —
+  it is not queried from DS by the detector.
+end note
+V -[#1565C0]> D ++ : check_equivocations(b',\n  requested_as_dependency = ⊤, snapshot)
+D -[#546E7A]> D   : extract creator_justification\nfrom b' (proto_util)
+D -[#1565C0]> DS  : latest_message_hash(b'.sender) → hash(b)
+D -[#546E7A]> D   : creator_justification(b') ≠ b.hash\n→ equivocation detected
+D -[#E65100]-> V  : InvalidBlock::AdmissibleEquivocation
+deactivate D
+V -[#E65100]> C ++ : InvalidBlock::AdmissibleEquivocation
+deactivate V
+C -[#E65100]> T   : insert_equivocation_record(A, seqN − 1, ∅)
+C -[#E65100]> DS  : insert(b', invalid = true)
+deactivate C
+note right of T
+  Level 1 done: an EquivocationRecord
+  for A exists. Anyone who now cites b'
+  must accompany it with a SlashDeploy
+  targeting A, or be slashed themselves.
+end note
+
+== Level 2 setup — B cites A's invalid block WITHOUT slashing ==
+
+Bact -[#C62828]> V ++ : signed block b_B @ seqN_B\nwith b' ∈ b_B.justifications,\nNO SlashDeploy attached
+V -[#1565C0]> CS  : casper_snapshot.dag.lookup(j.latestBlockHash)\nfor each j ∈ b_B.justifications;\nfilter where lookup.invalid = TRUE
+CS -[#1565C0]-> V : invalidJustifications = { b' }
+V -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
+CS -[#1565C0]-> V : bonds_map (A still has bond > 0\nfrom b_B's view of the chain)
+V -[#546E7A]> V   : neglectedInvalidJustification\n  := exists j ∈ invalidJustifications\n     where bonds_map[j.validator] > 0\n  → TRUE (j.validator = A, bond > 0)
+V -[#546E7A]> V   : has_slash_system_deploys(b_B)\n  := scan b_B.body.system_deploys (input field of b_B)\n     for SystemDeployData::Slash variant\n  → FALSE (B did not attach one)
+V -[#546E7A]> V   : reject ⟺ neglected ∧ ¬has_slash\n  → REJECT (post-fix branch, see Diagram 08)
+V -[#E65100]-> C ++ : InvalidBlock::NeglectedInvalidBlock
+deactivate V
+note right of V
+  Source: validate.rs:989-1030
+  (the post-fix Rust widening admits
+  blocks that DO attach a slash; B
+  did not, so b_B is rejected.)
+end note
+
+C -[#E65100]> T   : insert_equivocation_record(B, seqN_B − 1, ∅)
+C -[#E65100]> DS  : insert(b_B, invalid = true)
+deactivate C
+
+== Honest proposer P slashes BOTH offenders in one round ==
+
+P -[#00838F]> BC ++ : propose new block at seqM (seqM > max(seqN, seqN_B))
+note over BC, CS
+  prepare_slashing_deploys reads from the
+  CasperSnapshot pre-loaded by the
+  block-processor — NOT live DS calls.
+end note
+BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_latest_messages()
+CS -[#1565C0]-> BC : { (A, b'), (B, b_B) }
+BC -[#1565C0]> T   : equivocation_records()
+T -[#1565C0]-> BC  : { (A, seqN − 1, ∅), (B, seqN_B − 1, ∅) }
+BC -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
+CS -[#1565C0]-> BC : bonds_map (both A and B still bonded)
+BC -[#546E7A]> BC  : filter where bonds_map[*] > 0\n→ keep both A and B
+note right of BC
+  prepare_slashing_deploys
+  emits ONE SlashDeploy per
+  offender; both are bundled
+  into the SAME block bP as
+  separate system_deploys.
+  They execute sequentially
+  during local block evaluation
+  but produce ONE post-state
+  hash gossiped to the network.
+end note
+BC -[#6A1B9A]> PoS ++ : SlashDeploy(blockHash = b'.hash,\n  target = A) — system_deploys[0]
+PoS -[#E65100]> Bm   : atomic stateUpdateCh!{\n  allBonds := allBonds[A := 0],\n  activeValidators := \\ {A},\n  committedRewards := \\ {A}\n} ; (true, Nil)\n(single map-construction step,\n PoS.rhox:473-482;\n A's bond transferred to Coop vault)
+PoS -[#2E7D32]-> BC  : (true, Nil) on returnCh
+BC -[#6A1B9A]> PoS   : SlashDeploy(blockHash = b_B.hash,\n  target = B) — system_deploys[1]
+PoS -[#E65100]> Bm   : atomic stateUpdateCh!{\n  allBonds := allBonds[B := 0],\n  activeValidators := \\ {B},\n  committedRewards := \\ {B}\n} ; (true, Nil)\n(B's bond transferred to Coop vault)
+PoS -[#2E7D32]-> BC -- : (true, Nil) on returnCh
+deactivate BC
+
+note over A, Bm #C8E6C9
+  **Outcome**
+  A and B are **both** slashed in the same block bP.
+  Collusion is mutually destructive: if B had attached
+  a SlashDeploy(b', A) to b_B, then b_B would have been
+  ADMITTED (post-fix Rust widening, T-9.9), and only A
+  would have been slashed. By neglecting, B incurs the
+  same economic cost as the equivocator.
+end note
+
+@enduml
