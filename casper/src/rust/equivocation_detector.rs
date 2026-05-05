@@ -100,59 +100,41 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
     ) -> Result<bool, KvStoreError> {
-        let equivocations = block_dag_storage.equivocation_records()?;
-
-        for equivocation_record in equivocations {
-            let neglected = Self::update_equivocations_tracker(
-                block,
-                dag,
-                block_store,
-                &equivocation_record,
-                genesis,
-                block_dag_storage,
-            )?;
-
-            if neglected {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    fn update_equivocations_tracker(
-        block: &BlockMessage,
-        dag: &KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        equivocation_record: &EquivocationRecord,
-        genesis: &BlockMessage,
-        block_dag_storage: &BlockDagKeyValueStorage,
-    ) -> Result<bool, KvStoreError> {
-        let equivocation_discovery_status = Self::get_equivocation_discovery_status(
-            block,
-            dag,
-            block_store,
-            equivocation_record,
-            genesis,
-        )?;
-
-        let neglected_equivocation_detected = match equivocation_discovery_status {
-            EquivocationDiscoveryStatus::EquivocationNeglected => true,
-            EquivocationDiscoveryStatus::EquivocationDetected => {
-                block_dag_storage.update_equivocation_record(
-                    equivocation_record.clone(),
-                    block.block_hash.clone(),
+        // Atomic read-modify-write on the equivocation tracker: read all
+        // records, classify each against the new block, and update any
+        // records whose witness set should grow — all under the global
+        // lock so concurrent detectors do not interleave their updates.
+        // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+        block_dag_storage.access_equivocations_tracker(|tracker| {
+            let equivocations = tracker.data()?;
+            for equivocation_record in equivocations {
+                let status = Self::get_equivocation_discovery_status(
+                    block,
+                    dag,
+                    block_store,
+                    &equivocation_record,
+                    genesis,
                 )?;
-                tracing::info!(
-                    "Equivocation detected and tracker updated for block {}",
-                    PrettyPrinter::build_string_no_limit(&block.block_hash)
-                );
-                false
+                match status {
+                    EquivocationDiscoveryStatus::EquivocationNeglected => {
+                        return Ok(true);
+                    }
+                    EquivocationDiscoveryStatus::EquivocationDetected => {
+                        let mut updated = equivocation_record.clone();
+                        updated
+                            .equivocation_detected_block_hashes
+                            .insert(block.block_hash.clone());
+                        tracker.add(updated)?;
+                        tracing::info!(
+                            "Equivocation detected and tracker updated for block {}",
+                            PrettyPrinter::build_string_no_limit(&block.block_hash)
+                        );
+                    }
+                    EquivocationDiscoveryStatus::EquivocationOblivious => {}
+                }
             }
-            EquivocationDiscoveryStatus::EquivocationOblivious => false,
-        };
-
-        Ok(neglected_equivocation_detected)
+            Ok(false)
+        })
     }
 
     fn get_equivocation_discovery_status(
