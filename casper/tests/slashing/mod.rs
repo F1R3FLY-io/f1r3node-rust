@@ -25,6 +25,7 @@
 mod generators;
 mod harness;
 mod loom_t_9_2_atomic_record;
+mod loom_t_9_2_n_threads_3;
 mod observer;
 mod oracle;
 mod oracle_adapter;
