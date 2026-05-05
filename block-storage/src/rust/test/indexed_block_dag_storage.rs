@@ -104,7 +104,7 @@ impl IndexedBlockDagStorage {
 
     pub fn access_equivocations_tracker<A>(
         &self,
-        f: impl Fn(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         // Use underlying's access_equivocations_tracker which has its own lock
         self.underlying.access_equivocations_tracker(f)
@@ -133,5 +133,20 @@ impl IndexedBlockDagStorage {
     pub fn lookup_by_id_unsafe(&self, id: i64) -> BlockMessage {
         // DashMap is already thread-safe, so no additional lock needed
         self.id_to_blocks.get(&id).unwrap().clone()
+    }
+}
+
+// EquivocationsAccess trait impl — delegates to the inherent method
+// which itself delegates to the underlying BlockDagKeyValueStorage's
+// global_lock. See `crate::rust::dag::equivocations_access` for the
+// trait contract (T-9.2 anchor, atomic-RMW guarantee).
+impl crate::rust::dag::equivocations_access::EquivocationsAccess
+    for IndexedBlockDagStorage
+{
+    fn access_equivocations_tracker<A>(
+        &self,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+    ) -> Result<A, KvStoreError> {
+        IndexedBlockDagStorage::access_equivocations_tracker(self, f)
     }
 }

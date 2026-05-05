@@ -27,6 +27,19 @@
 //   (locked RMW preserves all witnesses; lock-free RMW does not),
 //   not to instrument the production `Mutex<()>`.
 //
+// Trait-level contract:
+//   The production type (`BlockDagKeyValueStorage`) implements
+//   `block_storage::rust::dag::equivocations_access::EquivocationsAccess`.
+//   The trait demands that the closure run inside a critical
+//   section; the `record_evidence_locked` shadow below is a
+//   faithful expression of that contract using `loom::sync::Mutex`
+//   (so the loom executor enumerates every interleaving where the
+//   closure body runs while holding the lock). The
+//   `record_evidence_lockfree` shadow is the contract violation:
+//   it splits the read and write into two independent lock
+//   acquisitions, which the trait's `FnOnce(&...) -> Result<...>`
+//   shape forbids by construction in production code.
+//
 // Run with the rest of the suite:
 //   cargo test -p casper -- slashing::loom_t_9_2
 // (loom enumerates interleavings whenever its API is invoked; no

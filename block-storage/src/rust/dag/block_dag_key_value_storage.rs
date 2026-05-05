@@ -765,9 +765,15 @@ impl BlockDagKeyValueStorage {
 
     pub fn access_equivocations_tracker<A>(
         &self,
-        f: impl Fn(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
-        // Acquire global lock for consistent equivocation tracker access
+        // Acquire global lock for consistent equivocation tracker access.
+        // The bound is `FnOnce` (more permissive than `Fn`, accepts
+        // strictly more closures); this aligns with the
+        // `EquivocationsAccess` trait at
+        // `crate::rust::dag::equivocations_access`. The trait impl for
+        // this type delegates to this method, so both surfaces
+        // (inherent + trait) share one implementation.
         let _lock_guard = self.global_lock.lock().unwrap();
         f(&self.equivocation_tracker_index)
     }
@@ -873,5 +879,19 @@ impl BlockDagKeyValueStorage {
         let mut block_metadata_index_guard = self.block_metadata_index.write().unwrap();
         let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
         block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)
+    }
+}
+
+// EquivocationsAccess trait impl — delegates to the inherent method.
+// The inherent method remains the canonical implementation; the trait
+// gives callers a type-level dispatch contract for atomic-RMW access
+// to the equivocation tracker. See `equivocations_access.rs` for the
+// full design rationale (T-9.2 anchor, atomic-RMW contract).
+impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorage {
+    fn access_equivocations_tracker<A>(
+        &self,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+    ) -> Result<A, KvStoreError> {
+        BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
     }
 }
