@@ -24,10 +24,13 @@
 
 mod generators;
 mod harness;
+#[allow(unused)]
+mod loom_t_9_2_atomic_record;
 mod oracle;
 mod types;
 
 mod pre_fix_bug_1;
+mod pre_fix_bug_2;
 mod pre_fix_bug_3;
 mod pre_fix_bug_4;
 mod pre_fix_bug_5;

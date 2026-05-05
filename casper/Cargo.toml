@@ -53,6 +53,10 @@ k256 = { version = "0.13.4", features = ["ecdsa"] }
 serial_test = "3.1"
 env_logger = "0.11.8"
 tempfile = "3.24.0"
+# Exhaustive thread-interleaving model checker for the slashing
+# atomic-RMW property (T-9.2). See
+# docs/theory/slashing/design/14-test-plan.md §14.5.
+loom = "=0.7.2"
 
 
 
