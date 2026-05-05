@@ -29,6 +29,7 @@ mod types;
 
 mod pre_fix_bug_1;
 mod pre_fix_bug_3;
+mod pre_fix_bug_4;
 mod pre_fix_bug_6;
 mod pre_fix_bug_8;
 mod prop_t_1_detection_sound;
@@ -59,4 +60,6 @@ mod uc_26_quorum_drop;
 mod uc_27_neglected_invalid_block;
 mod uc_28_36_tier_b_variants;
 mod uc_39_cross_impl_bisim;
+mod uc_44_operational_halt;
 mod uc_50_multi_slash_in_one_block;
+mod uc_54_record_invariants;

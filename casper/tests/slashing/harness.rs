@@ -312,6 +312,26 @@ impl SlashingTestHarness {
         SlashResult { success: true, error: None }
     }
 
+    /// Mirrors `PoSContract.slash` post-fix #4 with a forced
+    /// transfer-failure outcome. When `transfer_succeeded` is true,
+    /// behaves identically to `execute_slash`; when false, returns
+    /// `(false, "transfer failed")` and leaves the entire PoS state
+    /// unchanged (validator stays in EquivocatorRecorded for retry).
+    /// Mirrors the post-fix branch of PoS.rhox lines 461-490.
+    pub fn execute_slash_with_transfer_outcome(
+        &mut self,
+        target: &str,
+        transfer_succeeded: bool,
+    ) -> SlashResult {
+        if !transfer_succeeded {
+            return SlashResult {
+                success: false,
+                error: Some("transfer failed".to_string()),
+            };
+        }
+        self.execute_slash(target)
+    }
+
     /// Returns validators counted in the GHOST estimator: active set
     /// minus those whose latest message is invalid (`filterFC` from
     /// spec §3.5 / estimator.rs:65-70). For the simple harness this
