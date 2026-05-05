@@ -397,12 +397,17 @@ impl EquivocationDetector {
         equivocation_base_block_seq_num: i64,
         equivocation_children: &Vec<BlockMessage>,
     ) -> Result<Vec<BlockMessage>, KvStoreError> {
-        let target_seq_num = equivocation_base_block_seq_num + 1;
-
-        match Self::find_creator_justification_ancestor_with_seq_num(
+        // Walk the creator-justification chain looking for any block whose
+        // sequence number is *strictly greater* than the equivocation base.
+        // The earlier `baseSeqNum + 1` exact-match assumed seq numbers are
+        // dense (never skipped); under partition recovery a validator may
+        // legitimately skip a number, breaking that assumption.
+        // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7
+        // (theorem t_9_7_finds_descendant_with_gap).
+        match Self::find_creator_justification_descendant_above_seq(
             dag,
             justification_block,
-            target_seq_num,
+            equivocation_base_block_seq_num,
         )? {
             Some(equivocation_child_hash) => {
                 let equivocation_child = block_store.get_unsafe(&equivocation_child_hash);
@@ -412,18 +417,18 @@ impl EquivocationDetector {
             }
             None => {
                 Err(KvStoreError::KeyNotFound(
-                    "creator justification ancestor with lower sequence number hasn't been added to the blockDAG yet.".to_string()
+                    "creator-justification descendant with sequence number above equivocation base hasn't been added to the blockDAG yet.".to_string()
                 ))
             }
         }
     }
 
-    fn find_creator_justification_ancestor_with_seq_num(
+    fn find_creator_justification_descendant_above_seq(
         dag: &KeyValueDagRepresentation,
         block: &BlockMessage,
-        seq_num: i64,
+        base_seq_num: i64,
     ) -> Result<Option<BlockHash>, KvStoreError> {
-        if i64::from(block.seq_num) == seq_num {
+        if i64::from(block.seq_num) > base_seq_num {
             return Ok(Some(block.block_hash.clone()));
         }
 
@@ -444,7 +449,7 @@ impl EquivocationDetector {
         for candidate_hash in traversal_result {
             match dag.lookup_unsafe(&candidate_hash) {
                 Ok(candidate_metadata) => {
-                    if i64::from(candidate_metadata.sequence_number) == seq_num
+                    if i64::from(candidate_metadata.sequence_number) > base_seq_num
                         && candidate_metadata.sender == *target_validator
                     {
                         return Ok(Some(candidate_hash));

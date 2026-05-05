@@ -568,58 +568,55 @@ A TLC violation immediately fails CI.
 
 ## 14.7 Pre-fix regression tests (one per bug, #1–#9)
 
-These tests are the **backstop**: they run the **pre-fix code**
-and assert the bug is observable. If a future PR accidentally
-re-introduces the pre-fix behavior, the regression test fires.
+These tests are the **backstop**: they reproduce the pre-fix
+counter-example for each bug. If a future PR accidentally
+re-introduces the pre-fix behaviour, the regression test fires.
 
-**Test-file naming convention.** Each `pre-fix-bug-N` feature flag
-gates exactly one integration-test file at the canonical path
-`casper/tests/slashing/pre_fix_bug_<N>.rs` (where `<N>` ∈ 1..9).
-Each file contains the pre-fix counter-example for that bug
-(`#[cfg(feature = "pre-fix-bug-N")]`-gated `#[test]` functions).
-Three of the nine pre-fix tests have a corresponding UC entry in
-§14.3.2 (UC-41 = bug #1, UC-42 = bug #3, UC-43 = bug #7); the other
-six (bugs #2, #4, #5, #6, #8, #9) have *no* UC-numbered positive
-counterpart but are still required as pre-fix counter-examples
-under the §14.8 coverage criteria (`Pre-fix counter-example test
-count: 9`). The shared file naming `pre_fix_bug_<N>.rs` is what the
-§14.9 CI matrix's `--test pre_fix_bug_${{ matrix.bug }}` argument
-matches.
+**Out-of-band approach.** The bug-fix commits land sequentially —
+one bug per commit (or one bundle per logically-paired bugs, e.g.
+#1 + #3) — so each pre-fix counter-example is observable by
+checking out the parent of the fix commit and re-running the
+post-fix UC test. We do **not** carry pre-fix code paths into the
+production build (no Cargo feature gating, no `#[cfg(...)]` shims)
+because:
 
-The pre-fix code path is selected via a feature flag:
+- The pre-fix code is the bug itself; keeping it compiled is dead
+  weight that drifts as the surrounding code evolves.
+- Two parallel paths gated by features double the test surface
+  for every fix and obscure which behaviour is the canonical one.
+- `git log` plus `cargo test` against a parent commit is the same
+  verification with zero source-tree clutter.
 
-```toml
-[features]
-pre-fix-bug-1 = []   # restore the IgnorableEquivocation drop
-pre-fix-bug-2 = []   # restore the lock-free tracker access
-pre-fix-bug-3 = []   # restore the bare handle_invalid_block_effect
-pre-fix-bug-4 = []   # restore the transfer-failure FIXME hang
-pre-fix-bug-5 = []   # restore the silent stake-0 classification
-pre-fix-bug-6 = []   # restore the self-regression filter-out
-pre-fix-bug-7 = []   # restore the +1-only seq-num density assumption
-pre-fix-bug-8 = []   # restore the unbonded-proposer slash emission
-pre-fix-bug-9 = []   # restore the Scala-style unconditional rejection
-```
+**File-naming convention.** When a regression test is needed,
+place it at `casper/tests/slashing/pre_fix_bug_<N>.rs`. Each file
+contains a single `#[test]` that:
 
-> **Implementation note.** None of these `pre-fix-bug-N` features
-> currently exist in `casper/Cargo.toml [features]`. Adding the
-> nine flags is part of the test-suite implementation work; this
-> design document specifies them normatively for whoever
-> implements the harness.
+1. Constructs the smallest counter-example trace for the bug.
+2. Asserts the *post-fix* invariant that the bug violated (the
+   test would have failed on the parent commit).
+
+Three of the nine pre-fix tests share their counter-example trace
+with a UC entry in §14.3.2 (UC-41 = bug #1, UC-42 = bug #3, UC-43
+= bug #7); for those, the `pre_fix_bug_<N>.rs` file simply imports
+and runs the same trace as a sanity backstop. The other six
+(bugs #2, #4, #5, #6, #8, #9) have no UC-numbered positive
+counterpart and exist only as bug-specific regression tests.
 
 ```rust
-#[cfg(feature = "pre-fix-bug-1")]
+// casper/tests/slashing/pre_fix_bug_1.rs
 #[test]
-fn uc_41_ignorable_pre_fix_dos() {
+fn pre_fix_bug_1_ignorable_dos() {
     let mut harness = SlashingTestHarness::new(3, 100);
     let _b1 = harness.sign_block("A", 5);
     let b1p = harness.sign_block_distinct("A", 5);
     // No other block cites b1p (unsolicited).
     assert_eq!(harness.detect(b1p), Status::IgnorableEquivocation);
-    // Pre-fix: the dispatcher silently drops; no record is created.
-    assert!(!harness.has_record("A", 4));
-    // The DOS vector: A's bond is unchanged.
-    assert_eq!(harness.bond("A"), 100);
+    // Post-fix invariant: the dispatcher mints an EquivocationRecord
+    // so the proposer can issue a SlashDeploy. (Pre-fix this assert
+    // failed because the variant was non-slashable and the dispatcher
+    // returned Ok(dag.clone()) with no record; running this test
+    // against the parent commit reproduces the bug.)
+    assert!(harness.has_record("A", 4));
 }
 ```
 
@@ -643,8 +640,10 @@ The test suite is considered **exhaustive** when:
 4. **TLA+ invariant coverage:** All **13 cited invariants** have a
    passing model-check run.
 5. **Pre-fix counter-example coverage:** Every documented bug
-   (#1–#9) has a `pre-fix-bug-N` feature-flagged test that
-   reproduces the bug.
+   (#1–#9) has a regression test at
+   `casper/tests/slashing/pre_fix_bug_<N>.rs` whose assertions
+   would fail against the parent of the fix commit (out-of-band
+   verification per §14.7).
 6. **Concurrency coverage:** The atomic-tracker property test
    (T-9.2) runs over schedules of length 1, 2, 4, 8, 16 with
    thread counts 2, 4, 8.
@@ -671,7 +670,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test --release -p casper --features property-tests
+      - run: cargo test --release -p casper -- prop_t_
         env:
           PROPTEST_CASES: 10000
   pre-fix-regressions:
@@ -681,7 +680,7 @@ jobs:
         bug: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test --features pre-fix-bug-${{ matrix.bug }} --test pre_fix_bug_${{ matrix.bug }}
+      - run: cargo test -p casper -- pre_fix_bug_${{ matrix.bug }}
   tla-model-check:
     runs-on: ubuntu-latest
     steps:
