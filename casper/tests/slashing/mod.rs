@@ -41,6 +41,7 @@ mod prop_t_7_slash_zeros_bond;
 mod prop_t_9_3_catchall_records;
 mod prop_t_9_5_active_has_positive_bond;
 mod prop_t_idem_slash_idempotence;
+mod prop_t_invariants_under_workload;
 mod uc_01_admissible_single;
 mod uc_03_ignorable_unrequested;
 mod uc_04_multiple_equivocations;
