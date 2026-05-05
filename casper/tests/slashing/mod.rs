@@ -112,3 +112,15 @@ mod uc_49_genesis_edge_cases;
 mod uc_50_multi_slash_in_one_block;
 mod uc_51_53_dag_topologies;
 mod uc_54_record_invariants;
+
+// UC-55 through UC-61: Sage-finding-derived tests. Per
+// formal/sage/slashing/FINDINGS.md and design §14.3.3 the canonical
+// paths are short (no `uc_NN_` prefix), matching the spec's §12
+// table.
+mod bounded_arithmetic_projection;
+mod disconnected_neglect_cycle;
+mod duplicate_neglect_edges;
+mod evidence_visibility_gap;
+mod stale_evidence_filtered;
+mod weighted_neglect_chain;
+mod zero_stake_direct_offender;
