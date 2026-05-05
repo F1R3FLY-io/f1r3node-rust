@@ -57,6 +57,10 @@ tempfile = "3.24.0"
 # atomic-RMW property (T-9.2). See
 # docs/theory/slashing/design/14-test-plan.md §14.5.
 loom = "=0.7.2"
+# JSON parsing for the TLA+ trace-replay harness. See
+# casper/tests/slashing/tla_trace_replay.rs (Item 4 / Track 7).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 
 

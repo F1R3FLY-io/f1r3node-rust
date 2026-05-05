@@ -1,12 +1,12 @@
 # 14 · Test Plan
 
-**Exhaustive test plan covering every use case (54 scenarios) and
+**Exhaustive test plan covering every use case (75 scenarios) and
 every change documented in the design and verification doc set
 (across the spec, verification, design, and diagrams).** This
 document specifies
 both **example-based** (concrete-trace) tests and **property-based**
 (invariant) tests, organized by component layer and theorem family.
-Implementing the harness and the 54 + N tests is out of scope for
+Implementing the harness and the 75 + N tests is out of scope for
 this document; the test specifications below are normative for
 whoever implements them.
 
@@ -144,9 +144,9 @@ See `docs/theory/slashing/design/14a-tier-architecture.md` for
 the full tier-model documentation and the rationale for the
 hybrid C+D+E architecture.
 
-## 14.3 Example-based tests (54 use cases)
+## 14.3 Example-based tests (75 use cases)
 
-The 54 use cases from spec §12 are mapped to Rust integration
+The 75 use cases from spec §12 are mapped to Rust integration
 tests. Each test follows this pattern (UC-01 shown as the canonical
 example):
 
@@ -179,7 +179,7 @@ fn uc_01_admissible_single() {
 }
 ```
 
-The complete mapping of all 54 use cases:
+The complete mapping of all 75 use cases:
 
 ### 14.3.1 Core scenarios (UC-01 through UC-25)
 
@@ -240,7 +240,7 @@ verdict through the standard slash pipeline. Test stubs at:
   `casper/tests/slashing/invalid_block_hash.rs`
   `casper/tests/slashing/future_deploy.rs`
 
-### 14.3.4 Tier C — Operational and adversarial (12 tests)
+### 14.3.4 Tier C — Operational and adversarial (33 tests)
 
 | #     | Test stub                                                | Asserts                                                                                      |
 |-------|----------------------------------------------------------|----------------------------------------------------------------------------------------------|
@@ -256,6 +256,27 @@ verdict through the standard slash pipeline. Test stubs at:
 | UC-52 | `casper/tests/slashing/wide_dag_admissible.rs`           | Wide DAG (high parent-fanout): detection unaffected by parent count (T-1, T-15).             |
 | UC-53 | `casper/tests/slashing/single_chain_eq.rs`               | Single-chain (no forks) equivocation: still detected (T-1, T-9.6).                           |
 | UC-54 | `casper/tests/slashing/record_invariants.rs`             | Record monotonicity + uniqueness invariants (T-4, T-5).                                      |
+| UC-55 | `casper/tests/slashing/weighted_neglect_chain.rs`        | Stake-weighted neglect chain: closure stake bound is required for weighted quorum (T-12W).   |
+| UC-56 | `casper/tests/slashing/zero_stake_direct_offender.rs`    | Zero-stake/stale direct offender cannot seed closure after current bonded filtering.         |
+| UC-57 | `casper/tests/slashing/stale_evidence_filtered.rs`       | Off-era evidence is filtered before current validator closure propagates.                    |
+| UC-58 | `casper/tests/slashing/evidence_visibility_gap.rs`       | Partial evidence visibility does not create neglect edges absent visible unreported evidence.|
+| UC-59 | `casper/tests/slashing/duplicate_neglect_edges.rs`       | Duplicate neglect edges are idempotent and produce the same closure.                         |
+| UC-60 | `casper/tests/slashing/disconnected_neglect_cycle.rs`    | A neglect cycle with no path to a direct offender is not slashed.                            |
+| UC-61 | `casper/tests/slashing/bounded_arithmetic_projection.rs` | Slash accounting uses checked arithmetic or rejects fixed-width overflow projections.        |
+| UC-62 | `casper/tests/slashing/quorum_intersection_after_slash.rs` | Any two active quorums intersect after slashing under the strict BFT bound.                |
+| UC-63 | `casper/tests/slashing/closure_fixed_point_certificate.rs` | Closure is stable at `|V|` and each slashed validator has a path certificate.              |
+| UC-64 | `casper/tests/slashing/epoch_evidence_rollover.rs`       | Stale or off-era evidence cannot seed current-epoch closure.                                 |
+| UC-65 | `casper/tests/slashing/record_normalization.rs`          | Record equality is modulo hash order and duplicate witnesses.                                |
+| UC-66 | `casper/tests/slashing/evidence_view_divergence.rs`      | Different active evidence views can compute different closure; equal active views agree.      |
+| UC-67 | `casper/tests/slashing/report_time_closure_shrinkage.rs` | Reports remove active neglect edges; closure need not be monotone over report time.           |
+| UC-68 | `casper/tests/slashing/rebonded_identity_boundary.rs`    | Rebonded/stale evidence is filtered unless an explicit carryover policy maps it current.      |
+| UC-69 | `casper/tests/slashing/theorem_assumption_counterexamples.rs` | Each key theorem hypothesis has a minimal counterexample when removed.                  |
+| UC-70 | `casper/tests/slashing/weighted_amplification_boundary.rs` | Weighted amplification is possible outside the bounded-closure precondition.               |
+| UC-71 | `casper/tests/slashing/partial_batch_failure_atomicity.rs` | Abort-on-first-failure batch slashing is order-dependent unless atomic.                    |
+| UC-72 | `casper/tests/slashing/projection_risk_regressions.rs`   | Canonical record keys, evidence retention, duplicate normalization, and arithmetic envelopes. |
+| UC-73 | `casper/tests/slashing/hypothesis_reduced_scenarios.rs`  | Hypothesis-minimized witnesses replay deterministically and stay in classified buckets.     |
+| UC-74 | `casper/tests/slashing/proposer_fairness_boundary.rs`    | Observed evidence is not bounded-live without proposer evidence-inclusion fairness.         |
+| UC-75 | `casper/tests/slashing/delimiter_free_record_key_collision.rs` | Delimiter-free record keys collide; canonical pair encoding does not.              |
 
 ## 14.4 Property-based tests
 
@@ -345,6 +366,28 @@ proptest! {
         prop_assert_eq!(count, 1);
     }
 
+    /// T-5N — Record equivalence ignores hash order and duplicate witnesses.
+    #[test]
+    fn prop_record_normalization(
+        records in gen_equivocation_records_with_duplicates(),
+    ) {
+        let normalized = normalize_records(&records);
+        prop_assert!(records_equiv_mod_hash_order_and_duplicates(&records, &normalized));
+    }
+
+    /// T-5K — Canonical record-key encoding is injective.
+    #[test]
+    fn prop_record_key_canonical_injective(
+        k1 in gen_eq_key(),
+        k2 in gen_eq_key(),
+    ) {
+        if canonical_record_key(&k1) == canonical_record_key(&k2) {
+            prop_assert_eq!(k1, k2);
+        }
+        prop_assume!(k1 != k2);
+        prop_assert_ne!(naive_record_key_projection(&k1), canonical_record_key(&k1));
+    }
+
     /// T-9.2 — Atomic no-overwrite under arbitrary thread schedules.
     #[test]
     fn prop_atomic_no_overwrite(
@@ -394,6 +437,19 @@ proptest! {
         prop_assert_eq!(ps1, ps2);
     }
 
+    /// T-IdemFail — Partial batch failure must be atomic or explicitly order-dependent.
+    #[test]
+    fn prop_batch_slash_failure_atomicity(
+        ps in gen_pos_state(),
+        slash_set in gen_slash_set(),
+        failing in gen_validator(),
+    ) {
+        let outcomes = all_batch_orders(&slash_set)
+            .map(|order| slash_batch_abort_on_failure(ps.clone(), &order, failing.clone()))
+            .collect::<BTreeSet<_>>();
+        prop_assert!(outcomes.len() == 1 || batch_slash_is_atomic_policy());
+    }
+
     /// T-AuthCheck — Spoofed auth token rejected.
     #[test]
     fn prop_auth_check(
@@ -438,6 +494,112 @@ proptest! {
         let active = universe.difference(&closure);
         let bft_quorum_lower_bound = n - (n - 1) / 3;
         prop_assert!(active.count() >= bft_quorum_lower_bound);
+    }
+
+    /// T-12W — Under weighted closure stake ≤ F_stake, weighted quorum is preserved.
+    #[test]
+    fn prop_t12_weighted_preserves_quorum(
+        stakes in gen_stake_map(4..=10),
+        graph_seed in any::<u64>(),
+    ) {
+        let universe = stakes.keys().cloned().collect();
+        let graph = gen_weighted_bounded_neglect_graph(&universe, &stakes);
+        let initial = direct_equivocators(&universe, &graph);
+        let closure = slash_iter(&universe, &graph, &initial, universe.len());
+        let total: u128 = stakes.values().sum();
+        let fault = (total.saturating_sub(1)) / 3;
+        let slashed: u128 = closure.iter().map(|v| stakes[v]).sum();
+        prop_assume!(slashed <= fault);
+        prop_assert!(total - slashed >= total - fault);
+    }
+
+    /// T-12F — Stale/off-era offenders are filtered before closure.
+    #[test]
+    fn prop_current_validator_filtering(
+        current in gen_validator_set(3..=10),
+        evidence in gen_evidence_domain_with_stale(&current),
+        graph in gen_neglect_graph_over_evidence(&evidence),
+    ) {
+        let closure = slash_iter_current_filtered(&current, &evidence, &graph);
+        prop_assert!(closure.is_subset(&current));
+    }
+
+    /// T-12G — Closure depends on reachability, not duplicate edge multiplicity.
+    #[test]
+    fn prop_duplicate_edges_do_not_change_closure(
+        universe in gen_validator_set(3..=10),
+        graph in gen_neglect_graph(&universe),
+    ) {
+        let duplicated = duplicate_some_edges(&graph);
+        let initial = direct_equivocators(&universe, &graph);
+        prop_assert_eq!(
+            slash_iter(&universe, &graph, &initial, universe.len()),
+            slash_iter(&universe, &duplicated, &initial, universe.len())
+        );
+    }
+
+    /// T-12I — Count and weighted active quorums intersect under the strict bounds.
+    #[test]
+    fn prop_active_quorums_intersect(
+        stakes in gen_stake_map(4..=10),
+        closure in gen_bounded_slash_closure(&stakes),
+    ) {
+        let active = active_after_closure(&stakes, &closure);
+        for (q1, q2) in active_quorums(&active) {
+            prop_assert!(!q1.is_disjoint(&q2));
+        }
+        for (q1, q2) in active_weighted_quorums(&active, &stakes) {
+            prop_assert!(!q1.is_disjoint(&q2));
+        }
+    }
+
+    /// T-12C/T-12D — Closure stabilizes and quorum drops have certificates.
+    #[test]
+    fn prop_closure_fixed_point_and_drop_certificate(
+        universe in gen_validator_set(3..=10),
+        graph in gen_neglect_graph(&universe),
+    ) {
+        let initial = direct_equivocators(&universe, &graph);
+        let closure = slash_iter(&universe, &graph, &initial, universe.len());
+        prop_assert_eq!(closure, slash_iter(&universe, &graph, &closure, 1));
+        if active_below_quorum(&universe, &closure) {
+            prop_assert!(quorum_drop_certificate(&universe, &closure).is_some());
+        }
+    }
+
+    /// T-12E/T-12A — Epoch filtering and arithmetic envelopes constrain implementation projections.
+    #[test]
+    fn prop_epoch_filter_and_arithmetic_envelope(
+        evidence in gen_epoch_tagged_evidence(),
+        bonds in gen_bonds_map(),
+    ) {
+        prop_assert!(epoch_filtered_closure(&evidence).iter().all(|v| v.epoch == current_epoch()));
+        prop_assume!(vault_plus_all_bonds_fits(&bonds, u128::MAX));
+        prop_assert!(slash_accounting_projection_safe(&bonds, u128::MAX));
+    }
+
+    /// T-12V/T-12RPT/T-12EID/T-12RET — Views, reports, epoch identity, and retention are explicit.
+    #[test]
+    fn prop_view_report_epoch_retention_boundaries(
+        view_a in gen_evidence_view(),
+        view_b in gen_evidence_view_equivalent_or_divergent(),
+        reports in gen_report_set(),
+        epoch_evidence in gen_epoch_tagged_evidence(),
+    ) {
+        if active_edges(&view_a) == active_edges(&view_b) {
+            prop_assert_eq!(closure_for_view(&view_a), closure_for_view(&view_b));
+        }
+        prop_assert!(active_edges_after_reports(&view_a, &reports).is_disjoint(&reports));
+        prop_assert!(stale_epoch_evidence(&epoch_evidence).iter().all(|e| !eligible_current(e)));
+        prop_assert!(retained_direct_evidence_precondition(&epoch_evidence));
+    }
+
+    /// T-12HYP/T-12AMP — Each theorem assumption has a documented counterexample when removed.
+    #[test]
+    fn prop_assumption_counterexamples_are_reproducible(
+        witness in gen_slashing_assumption_counterexample(),
+    ) {
+        prop_assert!(witness.violates_claim_when_assumption_removed());
     }
 }
 ```
@@ -577,10 +739,10 @@ proptest! {
 ## 14.6 TLA+ model-check integration
 
 The verification doc §10 enumerates the named TLA+ invariants used
-to model-check the slashing subsystem; §14 references **13** of
-them (§10.6 of the verification doc lists 12 plus
-the rewrite-introduced `Inv_RecordHasWitness`). Each is re-checked
-via `tlc` as part of CI:
+to model-check the slashing subsystem; §14 references **35** of
+them, including the Sage-promoted two-level invariants and the
+rewrite-introduced `Inv_RecordHasWitness`. Each is re-checked via
+`tlc` as part of CI:
 
 ```bash
 # CI script: scripts/ci/check-tla-invariants.sh
@@ -599,9 +761,65 @@ Specifically:
   `Inv_ForfeitedToCoopVault`, `Inv_StakeConservation`,
   `Inv_SlashedExcludedFromFC`, `Inv_SlashedRemoved`.
 - `MC_TwoLevelSlashing.cfg` — `Inv_LevelClosureTerminates`,
-  `Inv_ActiveSetAboveQuorum` (under BFT precondition).
+  `Inv_ActiveSetAboveQuorum`, `Inv_ActiveStakeAboveWeightedQuorum`,
+  `Inv_FilteredClosureInCurrentValidators`,
+  `Inv_NeglectEdgesVisibleUnreported`,
+  `Inv_NoUnexpectedDifferentialDivergence`,
+  `Inv_ActiveQuorumsIntersect`,
+  `Inv_ActiveStakeQuorumsIntersect`,
+  `Inv_ClosureStableAtMaxLevel`,
+  `Inv_EpochEligibleInCurrent`,
+  `Inv_StaleEvidenceNotEligible`,
+  `Inv_ReportsSuppressNeglectEdges`,
+  `Inv_ArithmeticSafeEnvelope`,
+  `Inv_ViewEdgesVisibleUnreported`,
+  `Inv_SameViewSameClosure`,
+  `Inv_CarryoverPolicyCurrent`,
+  `Inv_NoCarryoverNoMappedDirect`,
+  `Inv_EvidenceRetentionForDirectOffenders`,
+  `Inv_CanonicalRecordKeyInjective`,
+  `Inv_BatchNoFailureOrderIndependent`,
+  `Inv_PartialBatchFailureRequiresAtomicPolicy`,
+  `Inv_ProposerFairnessForBoundedLiveness`,
+  `Inv_UnsignedArithmeticBoundary`, and
+  `Inv_SignedArithmeticBoundary`.
 
 A TLC violation immediately fails CI.
+
+### 14.6.1 Trace replay against the Rust harness
+
+In addition to running TLC against each `MC_*.cfg`, the suite drives
+hand-curated TLC schedules through the Rust `SlashingTestHarness`
+via the trace-replay infrastructure at:
+- `casper/tests/slashing/tla_projection.rs` — projection from each
+  TLA+ Action symbol (e.g. `SignHonest`, `SignEquivocating`,
+  `ExecuteSlash`, `WithdrawSucceeds`) to the corresponding harness
+  operation.
+- `casper/tests/slashing/tla_trace_replay.rs` — five `#[test]`s,
+  one per spec, each loading a JSON trace from
+  `casper/tests/slashing/tla_traces/*.json` and asserting the
+  harness's projected final state matches the TLA+ model's
+  expected post-state for that schedule.
+- `scripts/ci/dump-tla-traces.sh` — sanity check + workflow doc
+  for regenerating traces from TLC counter-examples.
+
+Five spec-trace pairs are checked in:
+- `MC_EquivocationDetector` ↔ `mc_equivocation_detector.json`
+- `MC_ConcurrentTracker`    ↔ `mc_concurrent_tracker.json`
+- `MC_SlashFlow`            ↔ `mc_slash_flow.json`
+- `MC_TwoLevelSlashing`     ↔ `mc_two_level_slashing.json`
+- `MC_WithdrawFlow`         ↔ `mc_withdraw_flow.json`
+
+Run via `cargo test -p casper --test mod -- slashing::tla_trace_replay`.
+
+This complements the property-based triple-bisim tests
+(`prop_t_triple_bisim_*`) by pinning specific TLC-exercisable
+schedules so a regression that only surfaces along that exact
+schedule is caught deterministically. The two layers are
+complementary:
+- Property tests sample a random region of the trace space.
+- TLA+ trace replay locks in the canonical schedules a model
+  checker would explore exhaustively at small scales.
 
 ## 14.7 Pre-fix regression tests (one per bug, #1–#9)
 
@@ -662,19 +880,22 @@ fn pre_fix_bug_1_ignorable_dos() {
 The test suite is considered **exhaustive** when:
 
 1. **Use-case coverage:** Every UC-NN in spec §12 has a passing
-   integration test (54 tests).
+   integration test (75 tests).
 2. **Theorem coverage:** Every theorem in spec/verification has at
    least one property-based test that fails on a property violation.
-   §14.4 covers **27 distinct theorem labels**: T-1, T-2, T-3, T-4,
+   §14.4 covers **49 distinct theorem labels**: T-1, T-2, T-3, T-4,
    T-5, T-6, T-7, T-8, T-Idem, T-11, T-12, T-13a, T-13b, T-13c,
    T-14, T-15a, T-15b, T-AuthCheck, T-9.1, T-9.2, T-9.3, T-9.4,
-   T-9.5, T-9.6, T-9.7, T-9.8, T-9.9. T-10 (`fork_choice_exclusion`)
-   is exercised by example test UC-01 rather than a dedicated
-   property test.
+   T-9.5, T-9.6, T-9.7, T-9.8, T-9.9, T-12R, T-12W, T-12F, T-12G,
+   T-12I, T-12C, T-12D, T-12E, T-12A, T-12V, T-12RPT,
+   T-12EID, T-12HYP, T-12AMP, T-12RET, T-12PF, T-5N, T-5K, T-5DF,
+   T-IdemMany, T-IdemFail, T-15D.
+   T-10 (`fork_choice_exclusion`) is exercised by example test UC-01
+   rather than a dedicated property test.
 3. **InvalidBlock variant coverage:** All 17 pre-fix slashable +
    1 post-fix slashable = 18 slashable variants are exercised
    (Tier B + Core + Tier A tests).
-4. **TLA+ invariant coverage:** All **13 cited invariants** have a
+4. **TLA+ invariant coverage:** All **35 cited invariants** have a
    passing model-check run.
 5. **Pre-fix counter-example coverage:** Every documented bug
    (#1–#9) has a regression test at
@@ -757,11 +978,14 @@ When implementing the suite, the recommended order is:
    verification-doc findings.
 
 5. **Phase E (week 5):** Implement Tier C operational/adversarial
-   tests UC-40, UC-44–UC-54 (12 tests).
+   tests UC-40, UC-44–UC-75 (33 tests).
 
 6. **Phase F (weeks 6–7):** Implement property-based tests for
    theorems T-1 through T-15a/b, T-Idem, T-AuthCheck, T-9.1–T-9.9
-   (27 properties; T-10 is example-tested in UC-01).
+   plus T-12R/T-12W/T-12F/T-12G/T-12I/T-12C/T-12D/T-12E/T-12A,
+   T-5N, T-5K, T-5DF, T-IdemMany, T-IdemFail, T-12V/T-12RPT/T-12EID,
+   T-12HYP/T-12AMP/T-12RET/T-12PF, and T-15D (49 properties; T-10 is
+   example-tested in UC-01).
 
 7. **Phase G (week 8):** Integrate cross-implementation
    bisimilarity tests (Rust ↔ extracted Rocq oracle) and TLA+
@@ -774,11 +998,11 @@ proceed in parallel after Phase A.
 
 | Metric                                    | Target                                           |
 |-------------------------------------------|--------------------------------------------------|
-| Example-based test count                  | 54 (one per use case)                            |
-| Property-based test count                 | 27 (one per theorem; T-10 by example test UC-01) |
+| Example-based test count                  | 75 (one per use case)                            |
+| Property-based test count                 | 49 (one per theorem; T-10 by example test UC-01) |
 | Pre-fix counter-example test count        | 9 (one per bug)                                  |
 | Cross-implementation bisim test count     | 1 (parameterized)                                |
-| TLA+ invariant model-check coverage       | 13 (all enumerated in §14.6)                     |
+| TLA+ invariant model-check coverage       | 35 (all enumerated in §14.6)                     |
 | Mutation-test surviving-mutants threshold | < 5 % of mutants survive                         |
 | Property-test cases per property          | 10,000 (CI run)                                  |
 | End-to-end CI runtime                     | < 30 minutes                                     |

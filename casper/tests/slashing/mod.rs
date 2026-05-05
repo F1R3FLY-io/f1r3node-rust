@@ -46,6 +46,8 @@ mod observer;
 mod oracle;
 mod oracle_adapter;
 mod production_adapter;
+mod tla_projection;
+mod tla_trace_replay;
 mod triple_bisim_driver;
 mod types;
 
