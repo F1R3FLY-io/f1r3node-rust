@@ -24,7 +24,6 @@
 
 mod generators;
 mod harness;
-#[allow(unused)]
 mod loom_t_9_2_atomic_record;
 mod oracle;
 mod types;

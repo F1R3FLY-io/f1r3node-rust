@@ -27,45 +27,17 @@
 //   (locked RMW preserves all witnesses; lock-free RMW does not),
 //   not to instrument the production `Mutex<()>`.
 //
-// Run constraints:
-//   The shadow uses `loom::sync::*` types directly. Setting
-//   `RUSTFLAGS="--cfg loom"` for the casper crate is incompatible
-//   with its transitive `tokio-tungstenite` dependency (which
-//   gates `tokio::net` on `cfg(not(loom))` and breaks compilation
-//   when loom is enabled workspace-wide). To run this test:
-//
-//     1. Move the contents of this file (the AbstractTracker and
-//        the two shadow functions plus both #[test] fns) into a
-//        standalone workspace-isolated crate that depends only on
-//        `loom`. A skeleton:
-//
-//          slashing-loom-tests/Cargo.toml:
-//            [dependencies]   # empty
-//            [dev-dependencies]
-//            loom = "=0.7.2"
-//
-//          slashing-loom-tests/tests/atomic_rmw.rs:
-//            (paste the body of this file, drop the `#![cfg(loom)]`)
-//
-//     2. Run:
-//        RUSTFLAGS="-C target-feature=+aes,+sse2 --cfg loom" \
-//          LOOM_MAX_PREEMPTIONS=3 \
-//          cargo test --release -p slashing-loom-tests --test atomic_rmw
-//
-// This file is preserved here as the *normative test specification*
-// for T-9.2: the shadow implementations document what the production
-// code's atomic-RMW property is supposed to be. The sequential
-// counterpart in `pre_fix_bug_2.rs` is the working backstop that
-// runs in the regular test suite. The known cargo/loom workspace-
-// interaction issue is the only reason this file is gated by
-// `#![cfg(loom)]`; the shadow code itself is correct as written.
+// Run with the rest of the suite:
+//   cargo test -p casper -- slashing::loom_t_9_2
+// (loom enumerates interleavings whenever its API is invoked; no
+// `--cfg loom` flag is needed because we use `loom::sync::*`
+// types directly rather than swapping `std::sync::*` for them.)
 
-#![cfg(loom)]
-
-use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc as StdArc;
 
 /// Abstract tracker — a (validator, base_seq) → witness-set map.
 /// Mirrors the production `EquivocationTrackerStore` to the level of
@@ -170,9 +142,13 @@ fn t_9_2_pre_fix_lockfree_loses_a_witness() {
     // produces a final state with fewer than two witnesses for the
     // lockfree shadow. If this test passes, the bug is real (in
     // the lockfree variant); if it fails, our pre-fix shadow does
-    // not exhibit the race we claim it does (meaning either our
-    // shadow is wrong or the bug doesn't actually exist).
-    let bug_observed = Arc::new(AtomicBool::new(false));
+    // not exhibit the race we claim it does.
+    //
+    // The bug-observed flag uses `std::sync::atomic` (not loom's)
+    // because it lives *outside* loom's execution model — it is
+    // observed across the entire enumeration of interleavings, not
+    // within any single one.
+    let bug_observed = StdArc::new(AtomicBool::new(false));
     let bug_observed_outer = bug_observed.clone();
 
     loom::model(move || {
