@@ -1,12 +1,12 @@
 # 14 · Test Plan
 
-**Exhaustive test plan covering every use case (75 scenarios) and
+**Exhaustive test plan covering every use case (80 scenarios) and
 every change documented in the design and verification doc set
 (across the spec, verification, design, and diagrams).** This
 document specifies
 both **example-based** (concrete-trace) tests and **property-based**
 (invariant) tests, organized by component layer and theorem family.
-Implementing the harness and the 75 + N tests is out of scope for
+Implementing the harness and the 80 + N tests is out of scope for
 this document; the test specifications below are normative for
 whoever implements them.
 
@@ -28,11 +28,11 @@ whoever implements them.
 The test plan **must catch regressions before they reach production**.
 Concretely:
 - Every Rocq-mechanized theorem (T-1 through T-15a/b, T-Idem,
-  T-AuthCheck, T-9.1–T-9.9) maps to **at least one** Rust property
+  T-AuthCheck, T-9.1–T-9.10) maps to **at least one** Rust property
   test that fails if the property is violated at runtime.
 - Every TLA+ invariant (`Inv_*`) maps to a Rust integration test
   that asserts the same invariant on a small randomized trace.
-- Every documented bug (#1–#9) has a **pre-fix counter-example**
+- Every documented bug (#1–#10) has a **pre-fix counter-example**
   test that fails on the pre-fix code path (proving the bug was
   real) and a **post-fix passing** test (proving the fix closes it).
 
@@ -144,9 +144,9 @@ See `docs/theory/slashing/design/14a-tier-architecture.md` for
 the full tier-model documentation and the rationale for the
 hybrid C+D+E architecture.
 
-## 14.3 Example-based tests (75 use cases)
+## 14.3 Example-based tests (80 use cases)
 
-The 75 use cases from spec §12 are mapped to Rust integration
+The 80 use cases from spec §12 are mapped to Rust integration
 tests. Each test follows this pattern (UC-01 shown as the canonical
 example):
 
@@ -179,7 +179,7 @@ fn uc_01_admissible_single() {
 }
 ```
 
-The complete mapping of all 75 use cases:
+The complete mapping of all 80 use cases:
 
 ### 14.3.1 Core scenarios (UC-01 through UC-25)
 
@@ -277,6 +277,11 @@ verdict through the standard slash pipeline. Test stubs at:
 | UC-73 | `casper/tests/slashing/hypothesis_reduced_scenarios.rs`  | Hypothesis-minimized witnesses replay deterministically and stay in classified buckets.     |
 | UC-74 | `casper/tests/slashing/proposer_fairness_boundary.rs`    | Observed evidence is not bounded-live without proposer evidence-inclusion fairness.         |
 | UC-75 | `casper/tests/slashing/delimiter_free_record_key_collision.rs` | Delimiter-free record keys collide; canonical pair encoding does not.              |
+| UC-76 | `casper/tests/slashing/hypothesis_multi_epoch_state_machine.rs` | Rule-based multi-epoch state machine keeps churn/evidence traces classified.       |
+| UC-77 | `casper/tests/slashing/semantic_attack_campaign_classification.rs` | Semantic campaign traces stay in documented boundary/projection/assumption buckets. |
+| UC-78 | `casper/tests/slashing/metamorphic_graph_record_frontier.rs` | Edge order, duplicate edges, report suppression, and record normalization remain metamorphic-safe. |
+| UC-79 | `casper/tests/slashing/hypothesis_assumption_minimization.rs` | Minimized assumption witnesses remain reproducible.                                |
+| UC-80 | `casper/tests/slashing/hypothesis_rust_differential_corpus.rs` | JSON frontier traces replay in Rust with the expected classification.              |
 
 ## 14.4 Property-based tests
 
@@ -286,9 +291,13 @@ property below corresponds to a Rocq theorem.
 
 The Sage/Hypothesis frontier suite also runs less-directed searches for
 novelty/coverage, generated multi-epoch traces, exact-vs-projection
-differentials, and automatic trace classification. Any new failure from
-that suite must be reduced to a deterministic Sage witness before it is
-promoted to a Rocq theorem, TLA+ invariant, or normative use case.
+differentials, semantic attack campaigns, attack objectives,
+metamorphic properties, assumption minimization, Rust differential
+corpus generation, and automatic trace classification. Mutable
+evidence, multi-epoch, and campaign checks use Hypothesis rule-based
+state machines. Any new failure from that suite must be reduced to a
+deterministic Sage witness before it is promoted to a Rocq theorem,
+TLA+ invariant, or normative use case.
 
 ### 14.4.1 Detection properties (T-1, T-2, T-3, T-6)
 
@@ -886,7 +895,7 @@ fn pre_fix_bug_1_ignorable_dos() {
 The test suite is considered **exhaustive** when:
 
 1. **Use-case coverage:** Every UC-NN in spec §12 has a passing
-   integration test (75 tests).
+   integration test (80 tests).
 2. **Theorem coverage:** Every theorem in spec/verification has at
    least one property-based test that fails on a property violation.
    §14.4 covers **49 distinct theorem labels**: T-1, T-2, T-3, T-4,
@@ -984,11 +993,12 @@ When implementing the suite, the recommended order is:
    verification-doc findings.
 
 5. **Phase E (week 5):** Implement Tier C operational/adversarial
-   tests UC-40, UC-44–UC-75 (33 tests).
+   tests UC-40, UC-44–UC-80 (38 tests).
 
 6. **Phase F (weeks 6–7):** Implement property-based tests for
-   theorems T-1 through T-15a/b, T-Idem, T-AuthCheck, T-9.1–T-9.9
-   plus T-12R/T-12W/T-12F/T-12G/T-12I/T-12C/T-12D/T-12E/T-12A,
+   theorems T-1 through T-15a/b, T-Idem, T-AuthCheck, T-9.1–T-9.10
+   (incl. T-9.10' and T-9.10″) plus
+   T-12R/T-12W/T-12F/T-12G/T-12I/T-12C/T-12D/T-12E/T-12A,
    T-5N, T-5K, T-5DF, T-IdemMany, T-IdemFail, T-12V/T-12RPT/T-12EID,
    T-12HYP/T-12AMP/T-12RET/T-12PF, and T-15D (49 properties; T-10 is
    example-tested in UC-01).
@@ -1004,7 +1014,7 @@ proceed in parallel after Phase A.
 
 | Metric                                    | Target                                           |
 |-------------------------------------------|--------------------------------------------------|
-| Example-based test count                  | 75 (one per use case)                            |
+| Example-based test count                  | 80 (one per use case)                            |
 | Property-based test count                 | 49 (one per theorem; T-10 by example test UC-01) |
 | Pre-fix counter-example test count        | 9 (one per bug)                                  |
 | Cross-implementation bisim test count     | 1 (parameterized)                                |

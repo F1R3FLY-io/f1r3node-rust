@@ -1,0 +1,112 @@
+' Sequence Diagram 11 — Bug #10 withdrawal-flow fix.
+'
+' Mirrors design/§11.11 worked-example trace. Shows the post-fix
+' `removeQuarantinedWithdrawers` path at PoS.rhox:608-637 with the
+' `payWithdraw` pattern-match on transferResult and the
+' success-gated `computeRemove` fold.
+'
+' Pre-fix: failed transfer still removes V from withdrawers map →
+' funds silently lost, total_funds invariant violated.
+' Post-fix: failed transfer leaves V's entry intact for retry →
+' total_funds invariant preserved (T-9.10').
+'
+' Source of truth for Figure 11.1 in design/11-worked-examples.md
+' §11.11. Companion Rocq theorem set:
+' BugFixWithdrawTransferFailure.v (T-9.10 / T-9.10' / T-9.10").
+' Companion TLA+ model: WithdrawFlow.tla + MC_WithdrawFlow.cfg.
+'
+' Color palette: matches diagram 07 conventions.
+'   blue   (#BBDEFB) = read / setup steps
+'   orange (#FFE0B2) = state mutation
+'   purple (#D1C4E9) = posVault sub-invocation
+'   green  (#C8E6C9) = success exit
+'   red    (#FFCDD2) = failure exit (post-fix: state intact for retry)
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/11-seq-withdrawal-flow-fix.puml
+
+@startuml 11-seq-withdrawal-flow-fix
+!theme plain
+
+skinparam sequence {
+  ArrowColor       #444444
+  LifeLineBorderColor #555555
+  LifeLineBackgroundColor #FAFAFA
+  ParticipantBorderColor  #555555
+  ParticipantBackgroundColor #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title Bug #10 — post-fix withdrawal-flow with transfer-failure handling
+
+participant "removeQuarantinedWithdrawers" as RQW
+participant "payWithdraw" as PW
+participant "posVault.transfer" as PVT
+participant "computeRemove" as CR
+participant "state" as STATE
+
+[-> RQW : block_number ≥ k\n(quarantine elapsed for V)
+
+RQW -> RQW : ListOps.filter(\n  state.withdrawers.toList(),\n  isQuarantineFinished\n) → [V]
+RQW -> PW : unorderedParMap [V] payWithdraw payRet
+
+PW -> PVT : posVault!("transfer",\n  V_vault, 60, posAuthKey,\n  transferResultCh)
+
+note over PVT #FFCDD2
+  TRANSFER FAILS
+  (e.g., insufficient balance,
+  vault deploy quota exhausted)
+end note
+
+PVT --> PW : transferResultCh!\n  (false, "balance-low")
+
+note over PW #BBDEFB
+  POST-FIX: pattern-match on
+  transferResult
+end note
+
+alt transferResult = (true, _)
+  PW -> RQW : resultCh!((V, true))
+else transferResult = (_, _)  ' failure path
+  PW -> RQW : resultCh!((V, false))
+end
+
+RQW -> CR : ListOps.fold(\n  payResults, state, computeRemove,\n  returnCh\n)
+
+alt success = true
+  CR -> STATE : state.withdrawers.delete(V)
+  CR -> STATE : state.committedRewards.delete(V)
+  STATE -> CR : updatedState' (V removed)
+else success = false
+  note over CR #FFCDD2
+    NO MUTATION:
+    V stays in state.withdrawers
+    with (50, k); rewards intact.
+    total_funds invariant preserved.
+  end note
+  CR -> STATE : updatedState (no change)
+end
+
+CR --> RQW : returnCh!(updatedState)
+
+note over RQW, STATE #C8E6C9
+  Per-validator safety (T-9.10):
+    success ⇒ V removed
+    failure ⇒ state unchanged for V
+
+  Total-funds preservation (T-9.10'):
+    failed withdrawal ⇒ total_funds invariant
+    held; bug-#10 fund-loss precluded.
+
+  Parallel order-independence (T-9.10″):
+    unorderedParMap distinct-V withdrawals
+    commute on (withdrawers, rewards) maps.
+end note
+
+note over RQW
+  Post-fix: retry on next block
+  if V still in withdrawers
+end note
+
+@enduml

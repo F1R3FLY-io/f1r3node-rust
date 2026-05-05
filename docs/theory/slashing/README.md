@@ -27,7 +27,7 @@ Scala source is faulty.
    formal-methods reviewer or certifier. Contains theorem statements, prose
    proofs translated from Rocq, the TLA+ model summary, the Rocq↔TLA+
    correspondence table, and the trust base.
-4. **`diagrams/`** — PlantUML sources and rendered SVGs for the 10 diagrams
+4. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
    referenced in the spec. Each is embedded inline at its first relevant
    mention in the spec/verification docs; the visuals and the LTS rules
    are designed to stay 1:1.

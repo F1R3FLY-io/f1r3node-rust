@@ -1,6 +1,6 @@
 # Slashing — TLA+ Specifications and Model Checking
 
-This directory contains four TLA+ specifications and their TLC model-checking
+This directory contains five TLA+ specifications and their TLC model-checking
 instances for the slashing subsystem. The verification model complements the
 Rocq proofs at `formal/rocq/slashing/` by exhaustively model-checking finite
 configurations of the protocol.
@@ -12,7 +12,8 @@ configurations of the protocol.
 | `EquivocationDetector.tla` | Pure detector state machine: validator equivocates → detection → status (admissible / ignorable / neglected). |
 | `ConcurrentTracker.tla` | Models the lock-free vs. locked equivocation-tracker access. The lock-free version *demonstrates* the Rust-introduced race condition (Bug #2); the locked version proves the fix restores monotonicity. |
 | `SlashFlow.tla` | End-to-end pipeline: detection → record → propose → SlashDeploy → PoS bond zeroing → fork-choice exclusion. |
-| `TwoLevelSlashing.tla` | Level 1 + Level 2 slashing closure; proves termination and that the active validator set never falls below `n − ⌊(n−1)/3⌋`. |
+| `TwoLevelSlashing.tla` | Level 1 + Level 2 slashing closure; proves termination, fixed-point stabilization, count-weighted quorum under the closure bound, stake-weighted quorum under the weighted closure bound, active-quorum intersection, current-validator and epoch filtering, visibility/report admissibility, bounded arithmetic envelopes, and differential-divergence classification. |
+| `WithdrawFlow.tla` | Post-quarantine withdrawal flow modelling Bug #10 (T-9.10). Verifies that a failed `posVault.transfer` leaves the validator's `withdrawers` entry intact, the `total_funds` invariant is preserved across success and failure, every removed validator was paid in full, and every withdrawer is eventually paid under fair retry scheduling. Companion Rocq theorem set: `BugFixWithdrawTransferFailure.v` (T-9.10 / T-9.10' / T-9.10″). |
 
 Each `*.tla` has a corresponding `MC_*.tla` instance with TLC parameters
 (validator count, max DAG depth, max equivocations) calibrated to keep the
@@ -21,11 +22,12 @@ state space ≤ 10⁵.
 ## Running
 
 ```sh
-# All four model-check passes
+# All five model-check passes
 tlc -workers 12 MC_EquivocationDetector.tla
 tlc -workers 12 MC_ConcurrentTracker.tla     # NB: must FAIL pre-fix, PASS post-fix
 tlc -workers 12 MC_SlashFlow.tla
 tlc -workers 12 MC_TwoLevelSlashing.tla
+tlc -workers 12 MC_WithdrawFlow.tla
 ```
 
 `MC_ConcurrentTracker.tla` is parameterized by `Locked ∈ BOOLEAN`. With
@@ -47,7 +49,32 @@ tlc -workers 12 MC_TwoLevelSlashing.tla
 | SlashFlow | `Inv_ForfeitedToCoopVault` | `coopVaultBalance` increases by exactly the offender's pre-slash bond. |
 | SlashFlow (temporal) | `<>SlashedEventually` | Every detected equivocation eventually results in a slash, given a live proposer schedule. |
 | TwoLevelSlashing | `Inv_ActiveSetAboveQuorum` | `|activeValidators| ≥ n − ⌊(n−1)/3⌋` at every reachable state. |
+| TwoLevelSlashing | `Inv_ActiveStakeAboveWeightedQuorum` | Active stake remains above the weighted quorum bound when the weighted closure bound is enforced. |
+| TwoLevelSlashing | `Inv_ActiveQuorumsIntersect` | Any two active count quorums intersect under the active-size bound. |
+| TwoLevelSlashing | `Inv_ActiveStakeQuorumsIntersect` | Any two active stake quorums intersect under the active-stake bound. |
+| TwoLevelSlashing | `Inv_ClosureStableAtMaxLevel` | The closure computed for `MaxLevel` is stable under one more closure step. |
+| TwoLevelSlashing | `Inv_FilteredClosureInCurrentValidators` | Current-validator filtering prevents stale/off-era evidence from escaping the current validator universe. |
+| TwoLevelSlashing | `Inv_EpochEligibleInCurrent` | Epoch-eligible direct equivocators belong to the current epoch's active validator set. |
+| TwoLevelSlashing | `Inv_StaleEvidenceNotEligible` | Stale evidence cannot seed the current-epoch closure. |
+| TwoLevelSlashing | `Inv_NeglectEdgesVisibleUnreported` | Every neglect edge is backed by visible evidence that was not already reported by the citing validator. |
+| TwoLevelSlashing | `Inv_ReportsSuppressNeglectEdges` | A reported offender is not treated as neglected for that reporter's edge. |
+| TwoLevelSlashing | `Inv_NoUnexpectedDifferentialDivergence` | Differential classifications are limited to bisimilar or candidate-boundary classes in this model. |
+| TwoLevelSlashing | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary` | Fixed-width arithmetic boundaries agree with the exact `max + 1` Rocq facts. |
+| TwoLevelSlashing | `Inv_ArithmeticSafeEnvelope` | Slash accounting fits the configured arithmetic limit whenever the vault plus all bonds fits. |
+| TwoLevelSlashing | `Inv_ViewEdgesVisibleUnreported` | View-indexed active evidence edges are visible and unreported. |
+| TwoLevelSlashing | `Inv_SameViewSameClosure` | Equal active evidence views compute equal closure. |
+| TwoLevelSlashing | `Inv_CarryoverPolicyCurrent` / `Inv_NoCarryoverNoMappedDirect` | Epoch carryover is explicit and current-validator bounded. |
+| TwoLevelSlashing | `Inv_EvidenceRetentionForDirectOffenders` | Direct offender evidence is retained when retention enforcement is enabled. |
+| TwoLevelSlashing | `Inv_CanonicalRecordKeyInjective` | Canonical record keys are injective pairs. |
+| TwoLevelSlashing | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | Successful batch slashing is order-independent; partial failure requires atomic policy. |
+| TwoLevelSlashing | `Inv_ProposerFairnessForBoundedLiveness` | Bounded slash liveness requires an observed scheduled proposer to include the evidence when proposer fairness is enforced. |
+| TwoLevelSlashing | `AssumptionDivergenceClass` / `SemanticCampaignDivergenceClass` | Combined frontier campaign classifications stay in documented bisimilar, candidate-boundary, projection-risk, or assumption-counterexample buckets. |
 | TwoLevelSlashing | `Inv_LevelClosureTerminates` | Iterated Level-2 slashing reaches a fixed point. |
+| WithdrawFlow | `Inv_NoFundsLost` | A failed `posVault.transfer` does not remove the validator from `withdrawers`; equivalently, every removed validator was paid in full (T-9.10). |
+| WithdrawFlow | `Inv_TotalFundsConst` | `posBalance + Σ paidOut = InitialTotal` invariant across all reachable states (T-9.10'). |
+| WithdrawFlow | `Inv_RemovedImpliesPaid` | Every validator removed from `withdrawers` was paid `bond + reward`. |
+| WithdrawFlow | `Inv_RewardsConsistent` | No validator gets paid more than once or beyond their entitled amount. |
+| WithdrawFlow (temporal) | `Live_AllEventuallyPaid` | Every withdrawer is eventually paid out under fair scheduling of `WithdrawSucceeds` and `RetryFromFailed`. |
 
 ## Correspondence to Rocq
 
@@ -63,6 +90,26 @@ table. In summary:
 | `Inv_SlashedExcludedFromFC` | T-10 (`fork_choice_exclusion` in `ForkChoice.v`) |
 | `Inv_StakeConservation` | T-7 + T-8 corollary (combination of `slash_zeros_bond` and `slash_transfers_stake`) |
 | `Inv_LevelClosureTerminates` | T-11 (`t_11_level_2_termination` in `TwoLevelSlashing.v`) |
+| `Inv_ActiveStakeAboveWeightedQuorum` | `weighted_slash_iter_quorum_preservation` in `TwoLevelSlashing.v` |
+| `Inv_ActiveQuorumsIntersect` | `quorum_intersection_by_size` in `TwoLevelSlashing.v` |
+| `Inv_ActiveStakeQuorumsIntersect` | `weighted_quorum_intersection_from_disjoint_bound` in `TwoLevelSlashing.v` |
+| `Inv_ClosureStableAtMaxLevel` | `slash_iter_fixed_point_after_universe_bound` in `TwoLevelSlashing.v` |
+| `Inv_FilteredClosureInCurrentValidators` | `restricted_closure_only_from_current_direct_offenders` in `TwoLevelSlashing.v` |
+| `Inv_EpochEligibleInCurrent` / `Inv_StaleEvidenceNotEligible` | `epoch_filter_in` in `TwoLevelSlashing.v` |
+| `Inv_NeglectEdgesVisibleUnreported` | `visible_unreported_graph_in` in `TwoLevelSlashing.v` |
+| `Inv_ReportsSuppressNeglectEdges` | `visible_unreported_graph_in` in `TwoLevelSlashing.v` |
+| `Inv_NoUnexpectedDifferentialDivergence` | `DivergenceClass` / `divergence_allowed` in `Bisimulation.v` |
+| `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary` | `unsigned_overflow_boundary_exact` / `signed_overflow_boundary_exact` in `TwoLevelSlashing.v` |
+| `Inv_ArithmeticSafeEnvelope` | `arithmetic_safe_envelope` in `TwoLevelSlashing.v` |
+| `Inv_ViewEdgesVisibleUnreported` | `visible_unreported_graph_in` / `reported_edge_not_active` in `TwoLevelSlashing.v` |
+| `Inv_SameViewSameClosure` | `view_closure_equiv_by_active_edges` in `TwoLevelSlashing.v` |
+| `Inv_CarryoverPolicyCurrent` / `Inv_NoCarryoverNoMappedDirect` | `carryover_policy_sound` in `TwoLevelSlashing.v` |
+| `Inv_EvidenceRetentionForDirectOffenders` | `restricted_closure_only_from_current_direct_offenders` precondition in `TwoLevelSlashing.v` |
+| `Inv_CanonicalRecordKeyInjective` | `canonical_key_pair_injective` in `EquivocationRecord.v` |
+| `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` in `Validator.v` |
+| `Inv_ProposerFairnessForBoundedLiveness` | `proposer_fairness_boundary_requires_review` in `Bisimulation.v` |
+| `SemanticCampaignDivergenceClass` | `semantic_campaign_boundary_reasons_require_review` in `Bisimulation.v` |
+| `AssumptionDivergenceClass` | minimized assumption examples in `TwoLevelSlashing.v` |
 | `Inv_LivenessAsSafety` (Eager) | T-2 (`detection_complete` in `EquivocationDetector.v`) |
 
 Note: `Inv_DetectionComplete` is the temporal property `Live_DetectionComplete`
@@ -72,9 +119,9 @@ in `EquivocationDetector.tla`; under the eager rewrite
 `Inv_NoOverwrite` is defined in `ConcurrentTracker.tla` for documentation
 but the actually-checked invariant in both `MC_ConcurrentTracker.cfg` and
 `MC_ConcurrentTracker_pre_fix.cfg` is the stronger `Inv_RecordMonotone`.
-`Inv_ActiveSetAboveQuorum` is defined in `TwoLevelSlashing.tla` but is a
-hypothesis-bearing property; the BFT-style claim is mechanized in Rocq as
-`t_12_bft_quorum_preservation`.
+`Inv_ActiveSetAboveQuorum` is checked in `MC_TwoLevelSlashing.cfg` with
+`EnforceClosureBound = TRUE`; the corresponding universal BFT-style claim is
+mechanized in Rocq as `t_12_bft_quorum_preservation`.
 
 ## What TLA+ proves and does not
 

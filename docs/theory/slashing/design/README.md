@@ -15,12 +15,12 @@ mental model, or jump to the layer you care about.
 | 06 | [Proposing & effect](06-proposing-and-effect.md)                     | How a `SlashDeploy` is assembled, signed, and executed in the PoS Rholang contract (Diagram 07).               |
 | 07 | [Fork-choice & validator lifecycle](07-fork-choice-and-lifecycle.md) | How a slashed validator loses influence; the seven-state lifecycle (Diagram 06).                               |
 | 08 | [Two-level slashing](08-two-level-and-collusion.md)                  | Why colluders are mutually destroyed; the BFT bound (Diagram 04).                                              |
-| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The nine fixes, what each one was, why it was wrong, and how the post-fix code is correct.                     |
+| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The ten fixes (nine Scala-inherited, one Rust regression), what each one was, why it was wrong, and how the post-fix code is correct. |
 | 10 | [Bisimilarity (Rust ↔ Scala)](10-bisimilarity.md)                    | The headline observational-equivalence claim, and what "modulo" means (Diagram 10).                            |
 | 11 | [Worked examples](11-worked-examples.md)                             | Ten end-to-end traces that exercise each component path (Diagrams 02, 03, 05, 09).                             |
 | 12 | [Failure modes & recovery](12-failure-modes.md)                      | What goes wrong, why, and how the system recovers (transfer FIXME, lock race, stake-0, off-by-one density).    |
 | 13 | [References](13-references.md)                                       | Citations with DOIs verified.                                                                                  |
-| 14 | [Test plan](14-test-plan.md)                                         | Exhaustive example-based + property-based test plan covering all 75 use cases and 49 theorem labels; CI integration. |
+| 14 | [Test plan](14-test-plan.md)                                         | Exhaustive example-based + property-based test plan covering all 80 use cases and 49 theorem labels; CI integration. |
 
 ## How to use this document
 

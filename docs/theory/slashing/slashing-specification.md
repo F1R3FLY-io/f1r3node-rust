@@ -82,7 +82,7 @@ This work contributes:
 3. A **bug-fix manifest** of ten numbered defects, each with a stated
    cause, a proven-correct fix, and a TLA+ counter-example that fires
    pre-fix and passes post-fix.
-4. A **use-case catalog** of 75 scenarios across four tiers (core,
+4. A **use-case catalog** of 80 scenarios across four tiers (core,
    audit blockers, slashable-variant completion, operational and
    adversarial), each tagged for automated regression-test generation
    against the bug fixes.
@@ -1021,7 +1021,10 @@ bisimilarity deltas.
 `delimiter_free_record_key_projection_hypothesis_collision`,
 `view_closure_equiv_by_active_edges`,
 `bm_slash_many_abort_order_dependent`, and
-`weighted_closure_bound_assumption_needed`.)* Hypothesis-backed Sage
+`weighted_closure_bound_assumption_needed`,
+`semantic_campaign_boundary_reasons_require_review`,
+`duplicate_edge_slash_iter_equiv_hypothesis_minimized`, and the
+minimized assumption examples in `TwoLevelSlashing.v`.)* Hypothesis-backed Sage
 search is an optional witness generator, not proof authority. Its
 promoted findings are first reduced to deterministic Sage witnesses.
 The current reduced corpus confirms: active evidence edges remain
@@ -1033,7 +1036,15 @@ collide; and weighted amplification witnesses live outside the weighted
 closure-bound precondition. The frontier mode extends this from fixed
 target predicates to novelty/coverage scoring, less-directed
 multi-epoch traces, exact-vs-projection differential checks, and
-automatic trace classification.
+automatic trace classification. The deeper frontier additionally uses
+Hypothesis rule-based state machines for multi-epoch churn and semantic
+attack campaigns, objective search for stake damage and projection
+risks, metamorphic checks for graph/record invariants, minimized
+assumption counterexamples, and a Rust-facing differential corpus. These
+extensions produced no unexpected divergences in the configured quick
+or deep runs; they strengthen regression coverage and theorem
+precondition documentation rather than adding a new permitted
+bisimilarity delta.
 
 ---
 
@@ -1787,7 +1798,7 @@ verification-doc findings,
 unmapped headline theorems, and high-priority pre-fix regressions;
 **Tier B variant catalog completion (UC-28–UC-36)** — one entry per
 remaining slashable `InvalidBlock` variant; **Tier C operational and
-adversarial (UC-40, UC-44–UC-75)** — distributed-systems, lifecycle,
+adversarial (UC-40, UC-44–UC-80)** — distributed-systems, lifecycle,
 and Sage-derived edge-case scenarios. UC numbering reflects the order in
 which each scenario was proposed; tiers do not partition the numeric
 range.
@@ -1879,7 +1890,7 @@ Brings slashable-variant coverage to 18/18 (100%).
 | UC-35 | InvalidBlockHash                          | T-9.3        | slashed | 05      | `casper/tests/slashing/invalid_block_hash.rs`      |
 | UC-36 | ContainsFutureDeploy                      | T-9.3        | slashed | 05      | `casper/tests/slashing/future_deploy.rs`           |
 
-### Tier C — Operational and adversarial (UC-40, UC-44–UC-75)
+### Tier C — Operational and adversarial (UC-40, UC-44–UC-80)
 
 Distributed-systems classics, lifecycle transitions during a pending
 slash, DAG-shape variations, and record-invariant exercises.
@@ -1919,6 +1930,11 @@ slash, DAG-shape variations, and record-invariant exercises.
 | UC-73 | Hypothesis-reduced scenario corpus                        | T-12HYP, T-15D | behavioral | 04, 09 | `casper/tests/slashing/hypothesis_reduced_scenarios.rs`   |
 | UC-74 | Proposer evidence-inclusion fairness boundary             | T-12PF | behavioral | 07      | `casper/tests/slashing/proposer_fairness_boundary.rs`     |
 | UC-75 | Delimiter-free record-key collision regression            | T-5DF | behavioral | 09      | `casper/tests/slashing/delimiter_free_record_key_collision.rs` |
+| UC-76 | Rule-based multi-epoch frontier state machine             | T-12EID, T-12HYP | behavioral | 06   | `casper/tests/slashing/hypothesis_multi_epoch_state_machine.rs` |
+| UC-77 | Semantic attack campaign classification                   | T-15D, T-12PF | behavioral | 04, 07 | `casper/tests/slashing/semantic_attack_campaign_classification.rs` |
+| UC-78 | Metamorphic graph and record frontier                     | T-12 graph equiv, T-5 record equivalence | behavioral | 04, 09 | `casper/tests/slashing/metamorphic_graph_record_frontier.rs` |
+| UC-79 | Hypothesis assumption-minimization corpus                 | T-12 hypotheses | behavioral | 04      | `casper/tests/slashing/hypothesis_assumption_minimization.rs` |
+| UC-80 | Rust-facing differential frontier corpus                  | T-15D | behavioral | 09, 10  | `casper/tests/slashing/hypothesis_rust_differential_corpus.rs` |
 
 Each test stub follows the pattern:
 

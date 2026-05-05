@@ -244,7 +244,7 @@ The principled architecture is verified against the constraints:
 * [§14 Test Plan](./14-test-plan.md) — the test catalogue and
   the §14.2.4 tier-model summary.
 * [§09 Bug Fixes and Rationale](./09-bug-fixes-and-rationale.md)
-  — the 9 production bug fixes the tests are pinning.
+  — the 10 production bug fixes the tests are pinning.
 * [§10 Bisimilarity](./10-bisimilarity.md) — the formal
   bisimulation theorem the triple-bisim tests are runtime-
   checking.

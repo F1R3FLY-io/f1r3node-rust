@@ -3,8 +3,10 @@
 The slashing subsystem ships with **ten documented defects**, each
 accompanied by a Rocq-mechanized fix. **Nine are inherited from the
 Scala upstream**; **one is a Rust-introduced regression** (bug #2).
-**One** of the nine Scala-inherited bugs (#9) is a *deliberate Rust
-widening* — Rust admits more blocks than Scala, by design.
+**One** of the Scala-inherited bugs — #9 — is a *deliberate Rust
+widening* (Rust admits more blocks than Scala, by design); the
+remaining eight Scala-inherited bugs (#1, #3–#8, #10) are
+convergence fixes that restore Rust↔Scala bisimilarity.
 
 ## 9.1 At a glance
 

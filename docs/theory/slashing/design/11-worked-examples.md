@@ -360,6 +360,8 @@ preserved across every retry (T-9.10').
 **Theorems exercised.** T-9.10, T-9.10', T-9.10″.
 **Diagram 11.**
 
+[![Diagram 11 — Bug #10 withdrawal-flow fix (post-fix `payWithdraw` pattern-match + success-gated `computeRemove`)](../diagrams/11-seq-withdrawal-flow-fix.svg)](../diagrams/11-seq-withdrawal-flow-fix.svg)
+
 ```
 ┌──────────────────┐
 │ Block at #N+1    │   removeQuarantinedWithdrawers
