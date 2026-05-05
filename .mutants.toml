@@ -1,0 +1,47 @@
+# cargo-mutants configuration for the slashing subsystem.
+#
+# Reference: docs/theory/slashing/design/14-test-plan.md §14.8.8
+# (mutation coverage). Survival rate threshold is 5 %; the nightly
+# CI job at .github/workflows/slashing-tests.yml fails if any mutant
+# survives.
+#
+# Scope is limited to the slashing modules — running cargo-mutants
+# over the entire workspace would generate tens of thousands of
+# mutants, the vast majority unrelated to the bug-fix invariants
+# we care about. The include-list pins the scope to:
+#
+#   • casper/src/rust/equivocation_detector.rs   (bugs #5, #7)
+#   • casper/src/rust/multi_parent_casper_impl.rs (bugs #1, #2, #3 dispatcher)
+#   • casper/src/rust/blocks/proposer/block_creator.rs (bug #8)
+#   • casper/src/rust/block_status.rs            (bug #1 is_slashable)
+#   • casper/src/rust/validate.rs                (bug #6)
+#   • block-storage/src/rust/dag/equivocation_tracker_store.rs (bug #2 store)
+#
+# Running just the slashing tests as the verification command
+# (`cargo test -p casper -- slashing`) keeps each mutant evaluation
+# under ~30 seconds and the whole nightly run under 4 hours on
+# GitHub-hosted runners.
+
+# Files in scope (mutants generated only for these).
+examine_globs = [
+    "casper/src/rust/equivocation_detector.rs",
+    "casper/src/rust/multi_parent_casper_impl.rs",
+    "casper/src/rust/blocks/proposer/block_creator.rs",
+    "casper/src/rust/block_status.rs",
+    "casper/src/rust/validate.rs",
+    "block-storage/src/rust/dag/equivocation_tracker_store.rs",
+]
+
+# Verification command per mutant.
+test_tool = "cargo"
+
+# Use the slashing test suite to detect mutants. If a mutant survives
+# this filter, it represents a gap in the slashing-test coverage.
+additional_cargo_test_args = [
+    "-p", "casper",
+    "--", "slashing",
+]
+
+# Per-mutant timeout. Slashing tests run in <30s normally; 120s
+# accounts for occasional LMDB warm-up and proptest shrinking.
+timeout = 120

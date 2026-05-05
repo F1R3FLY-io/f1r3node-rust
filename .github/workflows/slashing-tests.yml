@@ -1,18 +1,27 @@
 name: Slashing test suite
 
-# Reference: docs/theory/slashing/design/14-test-plan.md §14.9.
+# Reference: docs/theory/slashing/design/14-test-plan.md §14.9
+# (post-Track-8 architecture).
 #
-# Five parallel jobs cover the test catalogue:
-#   • example-based  — UC-01..UC-54 example tests (filter: not prop_t_)
-#   • property-based — T-1..T-15, T-Idem, T-9.M proptests (filter: prop_t_)
-#   • pre-fix-regressions — out-of-band per-bug counter-examples (matrix)
-#   • tla-model-check     — TLC against every MC_*.cfg under formal/tlaplus/
-#   • rocq-build          — re-verify the Rocq mechanization closes
+# Eight jobs cover the test catalogue:
+#   PR-gate (must pass to merge):
+#     • example-based  — UC-01..UC-54 example + integration tests
+#     • property-based — T-1..T-15, T-Idem, T-9.M, T-AuthCheck proptests
+#     • pre-fix-regressions — out-of-band per-bug counter-examples (matrix 1..9)
+#     • loom-interleavings  — exhaustive 2-thread T-9.2 atomic-RMW model check
+#     • tla-model-check     — TLC against every MC_*.cfg under formal/tlaplus/
+#     • rocq-build          — re-verify the Rocq mechanization closes
+#   Nightly only:
+#     • mutation-coverage   — cargo-mutants survival rate (Track 6)
+#     • nightly-extended-proptest — PROPTEST_CASES=100000
 #
-# A PR cannot merge unless all five pass.
+# A PR cannot merge unless all six PR-gate jobs pass.
 
 on:
   workflow_dispatch:
+  schedule:
+    # Nightly run at 06:30 UTC for mutation-coverage and extended proptests.
+    - cron: "30 6 * * *"
   push:
     branches: [dev, master, "feature/**"]
   pull_request:
@@ -126,3 +135,73 @@ jobs:
           eval $(opam env)
           ! grep -rn "Axiom\|Admitted\|Parameter\|Conjecture" \
             formal/rocq/slashing/theories/
+
+  loom-interleavings:
+    name: Loom exhaustive interleaving (T-9.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: loom
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run loom T-9.2 atomic-RMW interleaving tests
+        env:
+          LOOM_MAX_PREEMPTIONS: "3"
+          LOOM_LOG: "off"
+        run: cargo test --release -p casper -- slashing::loom_t_9_2
+
+  mutation-coverage:
+    name: Mutation coverage (cargo-mutants, nightly only)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+      - name: Run cargo-mutants on slashing modules
+        # Per design §14.8.8 the survival-rate threshold is 5 %.
+        # cargo-mutants exits non-zero if any mutant survives; we
+        # use --in-place plus --no-shuffle for reproducibility and
+        # rely on the .mutants.toml include-list to scope to the
+        # slashing modules only.
+        run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
+
+  nightly-extended-proptest:
+    name: Nightly extended proptest (PROPTEST_CASES=100000)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run extended-budget property tests
+        env:
+          PROPTEST_CASES: 100000
+        run: cargo test --release -p casper -- slashing::prop_t_
