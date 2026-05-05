@@ -14,21 +14,15 @@
 // feature gating is used.
 //
 // Submodules:
-//   • `harness`     — SlashingTestHarness API (spec §14.2.1)
-//   • `generators`  — proptest strategies (spec §14.2.2)
-//   • `oracle`      — Rust mirror of the Rocq definitions (spec §14.2.3)
 //   • `types`       — local DagState / PoSState / Status enums
+//   • `harness`     — SlashingTestHarness state-machine API (spec §14.2.1)
+//   • `generators`  — proptest strategies (spec §14.2.2)         [pending]
+//   • `oracle`      — Rust mirror of the Rocq definitions (§14.2.3) [pending]
 //
-// Sub-module files are added incrementally as each phase lands.
+// Per-bug regression tests and per-UC example tests are added as
+// `pre_fix_bug_<N>.rs` / `uc_<NN>_*.rs` siblings as each lands.
 
-#[cfg(test)]
-mod self_check {
-    /// Compile-time sanity check that the slashing test scaffold is
-    /// wired into the casper integration-test tree. No runtime work yet —
-    /// the real harness lands with Phase 1.
-    #[test]
-    fn slashing_module_registered() {
-        // Trivially-true assertion proves the module compiles and runs.
-        assert!(true, "slashing module compiles");
-    }
-}
+mod harness;
+mod types;
+
+mod uc_03_ignorable_unrequested;
