@@ -321,6 +321,29 @@ impl SlashingTestHarness {
         out.sort();
         out
     }
+
+    /// Mirrors `BlockCreator::prepare_slashing_deploys` post-fix:
+    /// returns the list of validators the proposer would target with
+    /// a SlashDeploy. Empty when the proposer's own bond is zero or
+    /// absent (bug fix #8: an unbonded proposer cannot effect a slash,
+    /// so the call short-circuits to avoid wasted work). When the
+    /// proposer is bonded, returns every validator with an outstanding
+    /// EquivocationRecord.
+    pub fn simulate_slash_proposal(&self, proposer: &str) -> Vec<ValidatorId> {
+        // Bug #8 post-fix: skip emission entirely for unbonded proposers.
+        if self.pos_state.bond(proposer) <= 0 {
+            return Vec::new();
+        }
+        let mut targets: Vec<ValidatorId> = self
+            .tracker
+            .records
+            .keys()
+            .map(|(v, _)| v.clone())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
+    }
 }
 
 #[cfg(test)]
