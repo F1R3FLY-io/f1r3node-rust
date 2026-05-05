@@ -197,7 +197,15 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            // TODO: This case is not necessary if assert(stake > 0) in the PoS contract - OLD
+            // Bug #5 (post-fix): the PoS bond contract enforces
+            // `amount > 0` (PoS.rhox `bond` arm), so this branch is
+            // unreachable from a correctly-bonded validator. We
+            // retain the conservative `EquivocationDetected`
+            // classification as a defense-in-depth check; the
+            // post-fix invariant `active_implies_bonded`
+            // (formal/rocq/slashing/theories/BugFixStakeZero.v:36)
+            // makes the branch dead code in practice. See
+            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
             Ok(EquivocationDiscoveryStatus::EquivocationDetected)
         }
     }
@@ -323,7 +331,35 @@ impl EquivocationDetector {
         equivocation_children: &Vec<BlockMessage>,
         genesis: &BlockMessage,
     ) -> Result<Vec<BlockMessage>, KvStoreError> {
-        // TODO: Is this a safe check? Or should I just check block hash? - OLD
+        // Genesis termination: `block_hash` equality is the canonical
+        // genesis-detection predicate, and it is the SAFEST check
+        // available. Three reasons:
+        //
+        // (1) Hash uniqueness. Block hashes are
+        //     `BLAKE2b-512(canonicalize(BlockMessage))`. Two distinct
+        //     blocks have equal hashes only via cryptographic
+        //     collision (negligible). Any field-based predicate
+        //     (e.g. `seq_num == 0`, `parents.is_empty()`) is either
+        //     implied by hash equality (so equivalent) or admits
+        //     spoofing under partition recovery.
+        //
+        // (2) Genesis singularity. Exactly one `genesis: &BlockMessage`
+        //     reference flows into this function from
+        //     `MultiParentCasperImpl::genesis_block()`. The block
+        //     store is the single source of truth.
+        //
+        // (3) Equivalence with the BFS termination at
+        //     `find_creator_justification_descendant_above_seq`
+        //     (lines 416-455). That BFS terminates when
+        //     `proto_util::get_creator_justification_as_list_until_goal_in_memory`
+        //     returns an empty list — which happens exactly at
+        //     genesis (no creator-justification). Both paths terminate
+        //     equivalently per Theorem T-9.7
+        //     (`t_9_7_finds_descendant_with_gap`,
+        //     formal/rocq/slashing/theories/BugFixSeqNumDensity.v:84).
+        //
+        // See docs/theory/slashing/design/04-detection-and-pipeline.md
+        // §4.7 (genesis-termination invariant) for the full proof.
         if justification_block.block_hash == genesis.block_hash {
             return Ok(equivocation_children.clone());
         }

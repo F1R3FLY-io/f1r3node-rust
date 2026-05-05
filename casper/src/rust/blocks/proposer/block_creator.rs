@@ -321,7 +321,42 @@ async fn prepare_slashing_deploys(
         })
         .collect();
 
-    // TODO: Add `slashingDeploys` to DeployStorage - OLD
+    // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
+    // this is correct by design (not a TODO).
+    //
+    // (1) Structural reason: `KeyValueDeployStorage` is keyed on the
+    //     user-deploy signature `(sig → Signed<DeployData>)`. Slash
+    //     deploys are unsigned `SystemDeployEnum::Slash(SlashDeploy
+    //     { invalid_block_hash, pk, initial_rand })` — they have no
+    //     `Signed<DeployData>` shape and cannot be inserted.
+    //
+    // (2) Determinism reason: slash deploys are pure functions of
+    //     `(invalid_latest_messages, validator_identity, seq_num,
+    //      generate_slash_deploy_random_seed)`. The only non-
+    //     deterministic input — the invalid-latest-message set — is
+    //     already persisted via `BlockMetadataStore`. On node
+    //     restart, `prepare_slashing_deploys` deterministically
+    //     reconstructs the same slash-deploy set.
+    //
+    // (3) Theorem citations: T-4 (record monotonicity) +
+    //     T-9.3 (catch-all dispatcher mints record per slashable
+    //     block) jointly guarantee that the set of bonded-invalid-
+    //     latest-message tuples is exactly the input domain of
+    //     `prepare_slashing_deploys`. See
+    //     formal/rocq/slashing/theories/EquivocationRecord.v
+    //     (`record_monotone`) and
+    //     formal/rocq/slashing/theories/BugFixDispatcher.v
+    //     (`t_9_3_catchall_mints_record`).
+    //
+    // (4) Symmetric reasoning: `CloseBlockDeploy` is also a system
+    //     deploy and is not persisted in `KeyValueDeployStorage`
+    //     for the same reason. The asymmetry is intentional: user
+    //     deploys are crash-recovery state; system deploys are
+    //     deterministically replayable from the persisted DAG.
+    //
+    // See docs/theory/slashing/design/06-proposing-and-effect.md for
+    // the full rationale.
+
     // Create SlashDeploy objects
     let mut slashing_deploys = Vec::new();
     for (_, invalid_block_hash) in bonded_invalid_messages {

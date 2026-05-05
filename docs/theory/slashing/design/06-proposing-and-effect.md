@@ -253,7 +253,50 @@ PoS contract's namespace; the contract dispenses references to it
 to system-deploy generators only; user-level deploys cannot
 synthesize it.
 
-## 6.8 Why a separate Coop vault contract?
+## 6.8 Slash deploys are not persisted in `KeyValueDeployStorage`
+
+This is a deliberate design decision, not an oversight (the
+prior `// TODO: Add slashingDeploys to DeployStorage` comment in
+`block_creator.rs::prepare_slashing_deploys` is now a proof-citing
+reference to this section).
+
+**Structural reason.** `KeyValueDeployStorage` is keyed on
+user-deploy signatures: `(sig: ByteString → Signed<DeployData>)`.
+Slash deploys are unsigned `SystemDeployEnum::Slash(SlashDeploy {
+invalid_block_hash, pk, initial_rand })` — they have no
+`Signed<DeployData>` representation and cannot be inserted.
+
+**Determinism reason.** Slash deploys are pure functions of:
+* `invalid_latest_messages` from the DAG (already persisted in
+  `BlockMetadataStore`).
+* `validator_identity` from the proposer's config.
+* `seq_num` from the proposer's casper-snapshot (computed
+  deterministically from the DAG).
+* `generate_slash_deploy_random_seed(self_id, seq_num)` (a pure
+  function).
+
+On node restart, `prepare_slashing_deploys` reconstructs
+deterministically from these inputs. No persistence is required —
+all non-deterministic inputs are persisted elsewhere.
+
+**Theorem citations.**
+* T-4 (record monotonicity, `EquivocationRecord.v::record_monotone`):
+  `EquivocationRecord` set never shrinks under dispatch.
+* T-9.3 (catch-all dispatcher, `BugFixDispatcher.v::t_9_3_catchall_mints_record`):
+  every slashable block produces a record.
+
+Together they establish that the set of bonded-invalid-latest-message
+tuples on restart equals the set at the last persisted snapshot — so
+the reconstructed slash deploys equal the pre-restart set up to
+bond-filtering.
+
+**Symmetric reasoning.** `CloseBlockDeploy` is also a system deploy
+and is also not persisted in `KeyValueDeployStorage` for the same
+reason. The asymmetry between user and system deploys is
+intentional: user deploys are crash-recovery state; system deploys
+are deterministically replayable from the persisted DAG.
+
+## 6.9 Why a separate Coop vault contract?
 
 The forfeited stake must go *somewhere* — leaving it in `allBonds`
 under the offender's key would be morally wrong (the offender
