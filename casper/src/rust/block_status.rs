@@ -188,6 +188,12 @@ impl InvalidBlock {
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
             | InvalidBlock::ContainsFutureDeploy => true,
+            // Bug #1 fix: IgnorableEquivocation is slashable post-fix so
+            // the dispatcher mints an EquivocationRecord and downstream
+            // proposers can issue a SlashDeploy. See
+            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+            #[cfg(not(feature = "pre-fix-bug-1"))]
+            InvalidBlock::IgnorableEquivocation => true,
             _ => false,
         }
     }
