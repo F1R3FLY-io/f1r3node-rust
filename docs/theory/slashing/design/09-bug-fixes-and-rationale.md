@@ -36,17 +36,26 @@ withdrawal arm (line 619). Bug #10's theorem set
 `BugFixWithdrawTransferFailure.v`, model-checked in
 `MC_WithdrawFlow.cfg`, and applied in PoS.rhox lines 615-651.
 
-> **Implementation status (as of writing).** Of the ten fixes,
-> **#9 and #10 are currently applied in the Rust / Rholang source**:
-> #9 as the `has_slash_system_deploys` widening at
-> `validate.rs:1018-1029`, and #10 as the post-fix `payWithdraw`
-> pattern-match in `PoS.rhox:615-651`. Fixes #1, #2, #3, #4, #5,
-> #6, #7, and #8 are **mechanized in Rocq** with their respective
-> T-9.M proofs but are **not yet applied in the Rust port** —
-> pending separate PRs that align the code with the spec. The
-> "Post-fix behavior" subsections below describe what the Rust /
-> Rholang *will* do once each fix lands; the "Cause" subsections
-> describe the *current* state.
+> **Implementation status (current).** All ten fixes are applied
+> in the Rust / Rholang source and mechanized in Rocq:
+>
+> | Bug | Theorem | Production location                                                  |
+> |-----|---------|----------------------------------------------------------------------|
+> | #1  | T-9.1   | `block_status.rs:191` — `IgnorableEquivocation` in `is_slashable()`  |
+> | #2  | T-9.2   | `multi_parent_casper_impl.rs:1056` — RMW via `access_equivocations_tracker` |
+> | #3  | T-9.3   | `multi_parent_casper_impl.rs:1105` — `status if status.is_slashable()` catch-all |
+> | #4  | T-9.4   | `PoS.rhox:487-509` — `match transferResult` with deterministic failure |
+> | #5  | T-9.5   | `equivocation_detector.rs:184` — `if stake > 0` guard                |
+> | #6  | T-9.6   | `validate.rs:875-898` — self-regression filter dropped               |
+> | #7  | T-9.7   | `equivocation_detector.rs` — BFS over creator-justification chain    |
+> | #8  | T-9.8   | `block_creator.rs:298-306` — proposer-bond early-return              |
+> | #9  | T-9.9   | `validate.rs:1018-1029` — `has_slash_system_deploys` widening        |
+> | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
+>
+> The "Cause" subsections below describe the *pre-fix* state
+> (matching the documented Scala / pre-fix Rust code path); the
+> "Post-fix behavior" subsections describe the *current* Rust /
+> Rholang behaviour after each fix landed.
 
 ## 9.2 Bug #1 — `IgnorableEquivocation` non-slashable (DOS vector)
 
