@@ -30,6 +30,8 @@ mod pre_fix_bug_1;
 mod pre_fix_bug_3;
 mod pre_fix_bug_6;
 mod prop_t_1_detection_sound;
+mod prop_t_2_detection_complete;
+mod prop_t_3_slashable_taxonomy;
 mod prop_t_7_slash_zeros_bond;
 mod prop_t_9_5_active_has_positive_bond;
 mod prop_t_idem_slash_idempotence;
