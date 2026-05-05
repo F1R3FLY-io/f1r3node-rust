@@ -394,6 +394,180 @@ pub async fn propose_with_explicit_justifications(
     Ok(signed)
 }
 
+/// Process a block bypassing `check_if_of_interest` (the upstream
+/// shard / version / age filter on
+/// `BlockProcessor::check_if_of_interest`). Used for UC-32
+/// InvalidShardId where the upstream filter would otherwise reject
+/// the block as `NotOfInterest` BEFORE reaching the
+/// `Validate::shard_identifier` validator inside `block_summary`.
+///
+/// The deeper-layer `InvalidShardId` is defence-in-depth — the same
+/// check at a different layer of the pipeline. The dispatcher's
+/// catch-all routes it through `is_slashable()` (block_status.rs:181)
+/// so we still want to verify the catch-all minted a record when
+/// it fires; we just have to bypass the upstream early-rejection.
+///
+/// Reference: `casper/tests/helper/test_node.rs::process_block_through_pipe`
+/// for the full pipeline.
+pub async fn process_block_bypassing_of_interest_filter(
+    node: &mut TestNode,
+    block: models::rust::casper::protocol::casper_message::BlockMessage,
+) -> Result<rspace_plus_plus::rspace::history::Either<
+    casper::rust::block_status::BlockError,
+    casper::rust::block_status::ValidBlock,
+>, CasperError> {
+    use casper::rust::block_status::BlockStatus;
+    let is_well_formed = node
+        .block_processor
+        .check_if_well_formed_and_store(&block)
+        .await?;
+    if !is_well_formed {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            BlockStatus::invalid_format(),
+        ));
+    }
+    let dependencies_ready = node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &block)
+        .await?;
+    if !dependencies_ready {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            BlockStatus::missing_blocks(),
+        ));
+    }
+    node.block_processor
+        .validate_with_effects(node.casper.clone(), &block, None)
+        .await
+}
+
+/// Build a normally-proposed block, then apply `mutator` to the
+/// unsigned block before signing. The signing step recomputes the
+/// block_hash for the mutated body, so the resulting block is
+/// correctly-signed but semantically invalid in whatever way the
+/// mutator dictates.
+///
+/// Use case: drive each non-equivocation slashable `InvalidBlock`
+/// variant from production validators (Item 6 of the principled-
+/// resolution session). Each Tier-1 production-driven variant test
+/// passes a different `mutator` that sabotages the field its
+/// targeted validator inspects, while keeping all earlier validators
+/// happy. For the validator order see
+/// `casper/src/rust/validate.rs::block_summary` and
+/// `multi_parent_casper_impl.rs::validate_block_checkpoint` flow.
+pub async fn propose_with_block_mutation(
+    producing_node: &mut TestNode,
+    alt_deploys: Vec<Signed<DeployData>>,
+    mutator: impl FnOnce(&mut models::rust::casper::protocol::casper_message::BlockMessage),
+) -> Result<BlockMessage, CasperError> {
+    let validator_identity = producing_node
+        .validator_id_opt
+        .as_ref()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "producing_node has no validator identity".to_string(),
+            )
+        })?
+        .clone();
+
+    let snapshot = producing_node.casper.get_snapshot().await?;
+
+    let next_seq_num = snapshot
+        .max_seq_nums
+        .get(&validator_identity.public_key.bytes)
+        .map(|seq| (*seq + 1) as i32)
+        .unwrap_or(1);
+    let next_block_num = snapshot.max_block_num + 1;
+    let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
+
+    let parents = snapshot.parents.clone();
+    let justifications: Vec<_> =
+        snapshot.justifications.iter().map(|j| j.clone()).collect();
+
+    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let block_data = BlockData {
+        time_stamp: parent_max_ts + 1,
+        block_number: next_block_num,
+        sender: validator_identity.public_key.clone(),
+        seq_num: next_seq_num,
+    };
+
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
+        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            validator_identity.public_key.clone(),
+            next_seq_num,
+        ),
+    })];
+
+    let invalid_blocks = snapshot.invalid_blocks.clone();
+
+    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+        &mut producing_node.block_store,
+        parents.clone(),
+        alt_deploys,
+        system_deploys,
+        &snapshot,
+        &mut producing_node.runtime_manager,
+        block_data.clone(),
+        invalid_blocks,
+    )
+    .await?;
+
+    let (
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        new_bonds,
+    ) = checkpoint;
+
+    let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, RejectedDeploy,
+    };
+
+    let state = F1r3flyState {
+        pre_state_hash,
+        post_state_hash,
+        bonds: new_bonds,
+        block_number: block_data.block_number,
+    };
+    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
+        .into_iter()
+        .map(|sig| RejectedDeploy { sig })
+        .collect();
+    let body = Body {
+        state,
+        deploys: processed_deploys,
+        rejected_deploys: rejected_deploys_wrapped,
+        system_deploys: processed_system_deploys,
+        extra_bytes: Bytes::new(),
+    };
+    let header = Header {
+        parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
+        timestamp: block_data.time_stamp,
+        version: casper_version,
+        extra_bytes: Bytes::new(),
+    };
+    let mut unsigned = proto_util::unsigned_block_proto(
+        body,
+        header,
+        justifications,
+        shard_id,
+        Some(block_data.seq_num),
+    );
+
+    // Apply the caller's mutation BEFORE signing. The signing step
+    // recomputes the block_hash, so the mutated block is correctly
+    // signed but its body deliberately violates the validator the
+    // test targets.
+    mutator(&mut unsigned);
+
+    let signed = validator_identity.sign_block(&unsigned);
+    Ok(signed)
+}
+
 /// Construct an honest "neglecting" block by `producing_node`'s
 /// validator: the block cites the receiver's view (which contains
 /// the equivocator's bad block) in justifications but EXPLICITLY
