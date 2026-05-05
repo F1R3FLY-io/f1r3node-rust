@@ -313,6 +313,17 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
+                    } else if (amount <= 0) {
+                      // Bug #5 fix: explicit positive-stake assertion. The
+                      // Rocq invariant `active_implies_bonded` (T-9.5,
+                      // BugFixStakeZero.v:36) requires every active
+                      // validator to have a strictly positive bond. The
+                      // earlier `amount < minimumBond` check covers this
+                      // when minimumBond ≥ 1, but a defensive zero-stake
+                      // gate makes the invariant explicit and independent
+                      // of genesis configuration. See
+                      // design/09-bug-fixes-and-rationale.md §9.6 (option a).
+                      resultCh!(state, (false, "Bond amount must be positive."))
                     } else if (amount < $$minimumBond$$) {
                       resultCh!(state, (false, "Bond is less than minimum!"))
                     } else if (amount > $$maximumBond$$) {
@@ -458,6 +469,13 @@ in {
                                     valBondCh!(state.get("allBonds").get(validator)) |
                                     for (@valBond <- valBondCh) {
                                       // Transfers slashed funds from PoS vault to Coop vault, then updates state.
+                                      // Bug #4 fix: pattern-match on the transfer result to provide a
+                                      // deterministic failure path. The pre-fix `for (_ <- transferDoneCh)`
+                                      // accepted any value and unconditionally committed the slash, hanging
+                                      // the deploy if `posVault.transfer` produced a `(false, errMsg)` and
+                                      // breaking replay determinism across nodes that happened to observe
+                                      // the failure. See design/09-bug-fixes-and-rationale.md §9.5
+                                      // (theorem t_9_4_transfer_failure_safety).
                                       new transferDoneCh in {
                                         @posVault!(
                                           "transfer",
@@ -466,20 +484,31 @@ in {
                                           posAuthKey,
                                           *transferDoneCh
                                         ) |
-                                        // FIXME handle transfer failing case
-                                        for (_ <- transferDoneCh) {
-                                          // Sets slashed validator's committed rewards and bond to 0 in state.
-                                          // Moves slashed validator to withdrawers map with no quarantine period.
-                                          stateUpdateCh!({
-                                            "allBonds"        : state.get("allBonds").set(validator, 0),
-                                            "activeValidators": state.get("activeValidators").delete(validator),
-                                            "committedRewards" : state.get("committedRewards").delete(validator),
-                                            "withdrawers"     : state.get("withdrawers"),
-                                            "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                            "randomImages"    : state.get("randomImages"),
-                                            "randomNumbers"   : state.get("randomNumbers")
-                                          },
-                                          (true, Nil))
+                                        for (@transferResult <- transferDoneCh) {
+                                          match transferResult {
+                                            (true, _) => {
+                                              // Sets slashed validator's committed rewards and bond to 0 in state.
+                                              // Moves slashed validator to withdrawers map with no quarantine period.
+                                              stateUpdateCh!({
+                                                "allBonds"        : state.get("allBonds").set(validator, 0),
+                                                "activeValidators": state.get("activeValidators").delete(validator),
+                                                "committedRewards" : state.get("committedRewards").delete(validator),
+                                                "withdrawers"     : state.get("withdrawers"),
+                                                "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                                "randomImages"    : state.get("randomImages"),
+                                                "randomNumbers"   : state.get("randomNumbers")
+                                              },
+                                              (true, Nil))
+                                            }
+                                            (_, errorMessage) => {
+                                              // Failure path: leave state unchanged so the validator
+                                              // stays in EquivocatorRecorded; the next proposer can
+                                              // retry the slash on the next round. The outcome is
+                                              // deterministic in (state, deploy), preserving replay
+                                              // determinism across nodes.
+                                              stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                            }
+                                          }
                                         }
                                       }
                                     }
