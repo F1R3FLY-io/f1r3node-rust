@@ -291,21 +291,18 @@ async fn prepare_slashing_deploys(
 ) -> Result<Vec<SlashDeploy>, CasperError> {
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
 
-    // Bug #8 fix: an unbonded proposer cannot effect a slash (the PoS contract
-    // rejects the deploy at replay time). Skip emission to avoid wasted work
-    // and to satisfy the proven-correct theorem T-9.8 — see
-    // design/09-bug-fixes-and-rationale.md §9.8.
-    #[cfg(not(feature = "pre-fix-bug-8"))]
-    {
-        let proposer_bond = casper_snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&self_id)
-            .copied()
-            .unwrap_or(0);
-        if proposer_bond <= 0 {
-            return Ok(Vec::new());
-        }
+    // An unbonded proposer cannot effect a slash (the PoS contract rejects
+    // the deploy at replay time). Skip emission to avoid wasted work and to
+    // satisfy the proven-correct theorem T-9.8 — see
+    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+    let proposer_bond = casper_snapshot
+        .on_chain_state
+        .bonds_map
+        .get(&self_id)
+        .copied()
+        .unwrap_or(0);
+    if proposer_bond <= 0 {
+        return Ok(Vec::new());
     }
 
     // Get invalid latest messages from DAG

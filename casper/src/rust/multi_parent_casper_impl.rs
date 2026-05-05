@@ -1042,27 +1042,41 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 Ok(updated_dag)
             };
 
+        // Atomic read-modify-write on the equivocation tracker. Two threads
+        // concurrently processing the same `(validator, baseSeqNum)` could
+        // both observe absence and both insert without holding the global
+        // lock; routing through `access_equivocations_tracker(...)` makes
+        // the RMW atomic under `BlockDagKeyValueStorage::global_lock`.
+        // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+        let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
+                               block: &BlockMessage|
+                               -> Result<(), CasperError> {
+            let base_equivocation_block_seq_num = block.seq_num - 1;
+            block_dag_storage
+                .access_equivocations_tracker(|tracker| {
+                    let equivocation_records = tracker.data()?;
+                    let record_exists = equivocation_records.iter().any(|record| {
+                        record.equivocator == block.sender
+                            && record.equivocation_base_block_seq_num
+                                == base_equivocation_block_seq_num
+                    });
+                    if !record_exists {
+                        let new_equivocation_record = EquivocationRecord::new(
+                            block.sender.clone(),
+                            base_equivocation_block_seq_num,
+                            BTreeSet::new(),
+                        );
+                        tracker.add(new_equivocation_record)?;
+                    }
+                    Ok(())
+                })
+                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+            Ok(())
+        };
+
         match status {
             InvalidBlock::AdmissibleEquivocation => {
-                let base_equivocation_block_seq_num = block.seq_num - 1;
-
-                // Check if equivocation record already exists for this validator and sequence number
-                let equivocation_records = self.block_dag_storage.equivocation_records()?;
-                let record_exists = equivocation_records.iter().any(|record| {
-                    record.equivocator == block.sender
-                        && record.equivocation_base_block_seq_num == base_equivocation_block_seq_num
-                });
-
-                if !record_exists {
-                    // Create and insert new equivocation record
-                    let new_equivocation_record = EquivocationRecord::new(
-                        block.sender.clone(),
-                        base_equivocation_block_seq_num,
-                        BTreeSet::new(),
-                    );
-                    self.block_dag_storage
-                        .insert_equivocation_record(new_equivocation_record)?;
-                }
+                record_evidence(&self.block_dag_storage, block)?;
 
                 // We can only treat admissible equivocations as invalid blocks if
                 // casper is single threaded.
@@ -1075,79 +1089,26 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             }
 
             InvalidBlock::IgnorableEquivocation => {
-                // Bug #1 fix (post-fix): record evidence and apply the standard
-                // invalid-block effect, mirroring AdmissibleEquivocation. The
-                // pre-fix path silently dropped these blocks — a documented DOS
-                // vector. See design/09-bug-fixes-and-rationale.md §9.1.
-                #[cfg(not(feature = "pre-fix-bug-1"))]
-                {
-                    let base_equivocation_block_seq_num = block.seq_num - 1;
-                    let equivocation_records =
-                        self.block_dag_storage.equivocation_records()?;
-                    let record_exists = equivocation_records.iter().any(|record| {
-                        record.equivocator == block.sender
-                            && record.equivocation_base_block_seq_num
-                                == base_equivocation_block_seq_num
-                    });
-                    if !record_exists {
-                        let new_equivocation_record = EquivocationRecord::new(
-                            block.sender.clone(),
-                            base_equivocation_block_seq_num,
-                            BTreeSet::new(),
-                        );
-                        self.block_dag_storage
-                            .insert_equivocation_record(new_equivocation_record)?;
-                    }
-                    return handle_invalid_block_effect(
-                        &self.block_dag_storage,
-                        &self.casper_buffer_storage,
-                        status,
-                        block,
-                    );
-                }
-
-                #[cfg(feature = "pre-fix-bug-1")]
-                {
-                    /*
-                     * Pre-fix: We don't have to include these blocks to the equivocation tracker because if any validator
-                     * will build off this side of the equivocation, we will get another attempt to add this block
-                     * through the admissible equivocations.
-                     */
-                    tracing::info!(
-                        "Did not add block {} as that would add an equivocation to the BlockDAG",
-                        PrettyPrinter::build_string_bytes(&block.block_hash)
-                    );
-                    Ok(dag.clone())
-                }
+                // Record evidence and apply the standard invalid-block effect,
+                // mirroring AdmissibleEquivocation. Silently dropping these
+                // blocks (the prior behaviour) was a documented DOS vector.
+                // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+                record_evidence(&self.block_dag_storage, block)?;
+                handle_invalid_block_effect(
+                    &self.block_dag_storage,
+                    &self.casper_buffer_storage,
+                    status,
+                    block,
+                )
             }
 
             status if status.is_slashable() => {
-                // Bug #3 fix (post-fix): every slashable status mints an
-                // EquivocationRecord so the proposing layer can issue a
-                // SlashDeploy. The pre-fix dispatcher only minted records
-                // for AdmissibleEquivocation, leaving 15 of 17 slashable
-                // variants without on-chain evidence. See
-                // design/09-bug-fixes-and-rationale.md §9.3.
-                #[cfg(not(feature = "pre-fix-bug-3"))]
-                {
-                    let base_equivocation_block_seq_num = block.seq_num - 1;
-                    let equivocation_records =
-                        self.block_dag_storage.equivocation_records()?;
-                    let record_exists = equivocation_records.iter().any(|record| {
-                        record.equivocator == block.sender
-                            && record.equivocation_base_block_seq_num
-                                == base_equivocation_block_seq_num
-                    });
-                    if !record_exists {
-                        let new_equivocation_record = EquivocationRecord::new(
-                            block.sender.clone(),
-                            base_equivocation_block_seq_num,
-                            BTreeSet::new(),
-                        );
-                        self.block_dag_storage
-                            .insert_equivocation_record(new_equivocation_record)?;
-                    }
-                }
+                // Every slashable status mints an EquivocationRecord so the
+                // proposing layer can issue a SlashDeploy. The prior dispatcher
+                // only minted records for AdmissibleEquivocation, leaving 15
+                // of 17 slashable variants without on-chain evidence. See
+                // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
+                record_evidence(&self.block_dag_storage, block)?;
 
                 handle_invalid_block_effect(
                     &self.block_dag_storage,

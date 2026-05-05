@@ -892,21 +892,13 @@ impl Validate {
                 let cur_lms =
                     proto_util::to_latest_message_hashes(cur_senders_block.justifications.clone());
 
-                // Bug #6 fix: include the sender's self-justification so the
-                // regression check catches sender-against-self sequence regressions
-                // (otherwise self-regression with an unchanged hash slips through —
-                // see design/09-bug-fixes-and-rationale.md §9.6).
-                #[cfg(feature = "pre-fix-bug-6")]
-                let new_lms_no_self: HashMap<Validator, BlockHash> = new_lms
-                    .into_iter()
-                    .filter(|(validator, _)| validator != &b.sender)
-                    .collect();
-                #[cfg(not(feature = "pre-fix-bug-6"))]
-                let new_lms_no_self: HashMap<Validator, BlockHash> = new_lms;
+                // Self-regression is checked here too: include the sender's
+                // self-justification so a block that points back to its own
+                // earlier sequence number is detected as JustificationRegression.
+                // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 
                 // Check each Latest Message for regression (block seq num goes backwards)
-                let mut remaining_lms: Vec<(Validator, BlockHash)> =
-                    new_lms_no_self.into_iter().collect();
+                let mut remaining_lms: Vec<(Validator, BlockHash)> = new_lms.into_iter().collect();
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {

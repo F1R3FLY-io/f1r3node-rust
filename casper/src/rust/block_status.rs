@@ -33,10 +33,10 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // TODO: Make IgnorableEquivocation slashable again and remember to add an entry to the equivocation record.
-    // For now we won't eagerly slash equivocations that we can just ignore,
-    // as we aren't forced to add it to our view as a dependency.
-    // TODO: The above will become a DOS vector if we don't fix.
+    // IgnorableEquivocation: an equivocating block we observe via someone
+    // else's justification but did not pull in as a dependency. Slashable —
+    // the dispatcher mints an EquivocationRecord so the proposer can issue a
+    // SlashDeploy. See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
     IgnorableEquivocation,
 
     InvalidFormat,
@@ -187,13 +187,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidBlockHash
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
-            | InvalidBlock::ContainsFutureDeploy => true,
-            // Bug #1 fix: IgnorableEquivocation is slashable post-fix so
-            // the dispatcher mints an EquivocationRecord and downstream
-            // proposers can issue a SlashDeploy. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
-            #[cfg(not(feature = "pre-fix-bug-1"))]
-            InvalidBlock::IgnorableEquivocation => true,
+            | InvalidBlock::ContainsFutureDeploy
+            | InvalidBlock::IgnorableEquivocation => true,
             _ => false,
         }
     }
