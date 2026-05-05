@@ -332,6 +332,27 @@ impl SlashingTestHarness {
         self.execute_slash(target)
     }
 
+    /// Mirrors the system auth-token guard at PoS.rhox:437-439:
+    /// `sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh)`.
+    /// When `valid_token` is false (spoofed token), the slash is
+    /// rejected with `(false, "Invalid system auth token")` and no
+    /// state changes. The harness threads this through
+    /// `execute_slash` so tests for T-AuthCheck can exercise the
+    /// validation path without a full Rholang interpreter.
+    pub fn execute_slash_with_auth(
+        &mut self,
+        target: &str,
+        valid_token: bool,
+    ) -> SlashResult {
+        if !valid_token {
+            return SlashResult {
+                success: false,
+                error: Some("Invalid system auth token".to_string()),
+            };
+        }
+        self.execute_slash(target)
+    }
+
     /// Returns validators counted in the GHOST estimator: active set
     /// minus those whose latest message is invalid (`filterFC` from
     /// spec §3.5 / estimator.rs:65-70). For the simple harness this

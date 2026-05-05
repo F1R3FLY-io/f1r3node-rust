@@ -47,6 +47,7 @@ mod prop_t_9_5_active_has_positive_bond;
 mod prop_t_9_6_self_regression;
 mod prop_t_9_8_unbonded_proposer;
 mod prop_t_15_bisim_under_workload;
+mod prop_t_auth_check;
 mod prop_t_idem_slash_idempotence;
 mod prop_t_invariants_under_workload;
 mod uc_01_admissible_single;
