@@ -120,13 +120,24 @@ mod uc_50_multi_slash_in_one_block;
 mod uc_51_53_dag_topologies;
 mod uc_54_record_invariants;
 
-// UC-55 through UC-61: Sage-finding-derived tests. Per
+// UC-55 through UC-72: Sage-finding-derived tests. Per
 // formal/sage/slashing/FINDINGS.md and design §14.3.3 the canonical
 // paths are short (no `uc_NN_` prefix), matching the spec's §12
 // table.
 mod bounded_arithmetic_projection;
+mod closure_fixed_point_certificate;
 mod disconnected_neglect_cycle;
 mod duplicate_neglect_edges;
+mod epoch_evidence_rollover;
+mod evidence_view_divergence;
+mod partial_batch_failure_atomicity;
+mod projection_risk_regressions;
+mod quorum_intersection_after_slash;
+mod rebonded_identity_boundary;
+mod record_normalization;
+mod report_time_closure_shrinkage;
+mod theorem_assumption_counterexamples;
+mod weighted_amplification_boundary;
 mod evidence_visibility_gap;
 mod stale_evidence_filtered;
 mod weighted_neglect_chain;
