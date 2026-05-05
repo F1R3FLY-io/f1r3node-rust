@@ -892,11 +892,17 @@ impl Validate {
                 let cur_lms =
                     proto_util::to_latest_message_hashes(cur_senders_block.justifications.clone());
 
-                // We let checkEquivocations handle when sender uses old self-justification
+                // Bug #6 fix: include the sender's self-justification so the
+                // regression check catches sender-against-self sequence regressions
+                // (otherwise self-regression with an unchanged hash slips through —
+                // see design/09-bug-fixes-and-rationale.md §9.6).
+                #[cfg(feature = "pre-fix-bug-6")]
                 let new_lms_no_self: HashMap<Validator, BlockHash> = new_lms
                     .into_iter()
                     .filter(|(validator, _)| validator != &b.sender)
                     .collect();
+                #[cfg(not(feature = "pre-fix-bug-6"))]
+                let new_lms_no_self: HashMap<Validator, BlockHash> = new_lms;
 
                 // Check each Latest Message for regression (block seq num goes backwards)
                 let mut remaining_lms: Vec<(Validator, BlockHash)> =

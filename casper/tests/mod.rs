@@ -14,6 +14,7 @@ mod engine;
 mod genesis;
 mod helper;
 mod merging;
+mod slashing;
 mod sync;
 mod util;
 
