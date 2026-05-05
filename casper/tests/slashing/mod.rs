@@ -25,4 +25,6 @@
 mod harness;
 mod types;
 
+mod prop_t_idem_slash_idempotence;
 mod uc_03_ignorable_unrequested;
+mod uc_06_self_regression;

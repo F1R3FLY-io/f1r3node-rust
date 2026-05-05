@@ -1,0 +1,128 @@
+name: Slashing test suite
+
+# Reference: docs/theory/slashing/design/14-test-plan.md §14.9.
+#
+# Five parallel jobs cover the test catalogue:
+#   • example-based  — UC-01..UC-54 example tests (filter: not prop_t_)
+#   • property-based — T-1..T-15, T-Idem, T-9.M proptests (filter: prop_t_)
+#   • pre-fix-regressions — out-of-band per-bug counter-examples (matrix)
+#   • tla-model-check     — TLC against every MC_*.cfg under formal/tlaplus/
+#   • rocq-build          — re-verify the Rocq mechanization closes
+#
+# A PR cannot merge unless all five pass.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev, master, "feature/**"]
+  pull_request:
+    branches: [dev, master, "feature/**"]
+
+concurrency:
+  group: slashing-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
+
+jobs:
+  example-based:
+    name: Example-based UC tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run example-based tests
+        run: cargo test -p casper -- slashing::uc_
+
+  property-based:
+    name: Property-based theorem tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run property-based tests
+        env:
+          PROPTEST_CASES: 10000
+        run: cargo test --release -p casper -- slashing::prop_t_
+
+  pre-fix-regressions:
+    name: Pre-fix regression backstops
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        bug: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run pre_fix_bug_${{ matrix.bug }}
+        run: cargo test -p casper -- slashing::pre_fix_bug_${{ matrix.bug }}
+
+  tla-model-check:
+    name: TLA+ invariant check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Java + TLC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jre wget
+          mkdir -p ~/.tla
+          wget -qO ~/.tla/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+      - name: Run TLA+ invariant suite
+        env:
+          TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
+        run: bash scripts/ci/check-tla-invariants.sh
+
+  rocq-build:
+    name: Rocq mechanization rebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rocq / Coq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y opam
+          opam init --disable-sandboxing -y
+          eval $(opam env)
+          opam install -y coq
+      - name: Build Rocq slashing theories
+        run: |
+          eval $(opam env)
+          make -C formal/rocq/slashing -j1
+      - name: Verify no axioms or admits
+        run: |
+          eval $(opam env)
+          ! grep -rn "Axiom\|Admitted\|Parameter\|Conjecture" \
+            formal/rocq/slashing/theories/
