@@ -155,6 +155,21 @@ impl SlashingTestHarness {
     /// to the invalid index. Returns the classification.
     pub fn dispatch(&mut self, hash: BlockHash) -> Status {
         let status = self.detect(hash);
+        self.apply_dispatch_effect(hash, &status);
+        status
+    }
+
+    /// Mirrors the dispatcher with a *forced* classification — useful
+    /// for testing the catch-all arm against the 14 non-equivocation
+    /// slashable variants (UC-28..UC-36) without simulating each
+    /// validation rule. The provided `status` plays the role of the
+    /// upstream validator's verdict.
+    pub fn dispatch_with_status(&mut self, hash: BlockHash, status: Status) -> Status {
+        self.apply_dispatch_effect(hash, &status);
+        status
+    }
+
+    fn apply_dispatch_effect(&mut self, hash: BlockHash, status: &Status) {
         match status {
             Status::AdmissibleEquivocation
             | Status::IgnorableEquivocation
@@ -174,7 +189,6 @@ impl SlashingTestHarness {
             }
             Status::Valid => {}
         }
-        status
     }
 
     pub fn has_record(&self, validator: &str, base_seq: SeqNum) -> bool {
