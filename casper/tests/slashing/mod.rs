@@ -36,6 +36,7 @@ mod pre_fix_bug_5;
 mod pre_fix_bug_6;
 mod pre_fix_bug_7;
 mod pre_fix_bug_8;
+mod pre_fix_bug_9;
 mod prop_t_1_detection_sound;
 mod prop_t_11_neglect_closure;
 mod prop_t_12_quorum_preservation;
