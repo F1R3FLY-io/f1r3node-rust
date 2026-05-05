@@ -342,6 +342,25 @@ impl SlashingTestHarness {
         out
     }
 
+    /// Mirrors `PoS(@"bond", deployerId, amount, returnCh)` post-fix #5:
+    /// a bond request with `amount <= 0` is rejected; otherwise the
+    /// validator is added to the bonds map at `amount` and (if not
+    /// already slashed) joins the active set.
+    pub fn try_bond(&mut self, validator: &str, amount: i64) -> Result<(), String> {
+        if amount <= 0 {
+            return Err("Bond amount must be positive.".to_string());
+        }
+        if self.pos_state.bonds.contains_key(validator) {
+            return Err("Public key is already bonded.".to_string());
+        }
+        if self.pos_state.slashed.contains(validator) {
+            return Err("Validator is slashed; cannot re-bond.".to_string());
+        }
+        self.pos_state.bonds.insert(validator.to_string(), amount);
+        self.pos_state.active.insert(validator.to_string());
+        Ok(())
+    }
+
     /// Mirrors `BlockCreator::prepare_slashing_deploys` post-fix:
     /// returns the list of validators the proposer would target with
     /// a SlashDeploy. Empty when the proposer's own bond is zero or
