@@ -260,3 +260,276 @@ pub async fn equivocate_block(
     let signed = validator_identity.sign_block(&unsigned);
     Ok(signed)
 }
+
+/// Like `propose_neglecting_block` but with caller-supplied
+/// `Justification` entries — used when the producing node's
+/// natural snapshot does NOT contain a justification we need (for
+/// example, because the latest-messages-index does not promote
+/// invalid blocks). The caller-supplied justifications MERGE with
+/// snapshot's natural justifications, with caller's overriding
+/// for any (validator) key collision.
+///
+/// Use case: NeglectedEquivocation production-tier integration
+/// test — the seeder must produce a block whose justifications
+/// explicitly cite b1p (an invalid block), but the natural
+/// snapshot only carries valid latest messages.
+pub async fn propose_with_explicit_justifications(
+    producing_node: &mut TestNode,
+    alt_deploys: Vec<Signed<DeployData>>,
+    extra_justifications: Vec<
+        models::rust::casper::protocol::casper_message::Justification,
+    >,
+) -> Result<BlockMessage, CasperError> {
+    let validator_identity = producing_node
+        .validator_id_opt
+        .as_ref()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "producing_node has no validator identity".to_string(),
+            )
+        })?
+        .clone();
+
+    let snapshot = producing_node.casper.get_snapshot().await?;
+
+    let next_seq_num = snapshot
+        .max_seq_nums
+        .get(&validator_identity.public_key.bytes)
+        .map(|seq| (*seq + 1) as i32)
+        .unwrap_or(1);
+    let next_block_num = snapshot.max_block_num + 1;
+    let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
+
+    let parents = snapshot.parents.clone();
+
+    use std::collections::HashMap;
+    let mut merged: HashMap<
+        prost::bytes::Bytes,
+        models::rust::casper::protocol::casper_message::Justification,
+    > = HashMap::new();
+    for j in snapshot.justifications.iter() {
+        merged.insert(j.validator.clone(), j.clone());
+    }
+    for j in extra_justifications {
+        merged.insert(j.validator.clone(), j);
+    }
+    let justifications: Vec<_> = merged.into_values().collect();
+
+    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let block_data = BlockData {
+        time_stamp: parent_max_ts + 1,
+        block_number: next_block_num,
+        sender: validator_identity.public_key.clone(),
+        seq_num: next_seq_num,
+    };
+
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
+        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            validator_identity.public_key.clone(),
+            next_seq_num,
+        ),
+    })];
+
+    let invalid_blocks = snapshot.invalid_blocks.clone();
+
+    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+        &mut producing_node.block_store,
+        parents.clone(),
+        alt_deploys,
+        system_deploys,
+        &snapshot,
+        &mut producing_node.runtime_manager,
+        block_data.clone(),
+        invalid_blocks,
+    )
+    .await?;
+
+    let (
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        new_bonds,
+    ) = checkpoint;
+
+    let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, RejectedDeploy,
+    };
+
+    let state = F1r3flyState {
+        pre_state_hash,
+        post_state_hash,
+        bonds: new_bonds,
+        block_number: block_data.block_number,
+    };
+    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
+        .into_iter()
+        .map(|sig| RejectedDeploy { sig })
+        .collect();
+    let body = Body {
+        state,
+        deploys: processed_deploys,
+        rejected_deploys: rejected_deploys_wrapped,
+        system_deploys: processed_system_deploys,
+        extra_bytes: Bytes::new(),
+    };
+    let header = Header {
+        parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
+        timestamp: block_data.time_stamp,
+        version: casper_version,
+        extra_bytes: Bytes::new(),
+    };
+    let unsigned = proto_util::unsigned_block_proto(
+        body,
+        header,
+        justifications,
+        shard_id,
+        Some(block_data.seq_num),
+    );
+
+    let signed = validator_identity.sign_block(&unsigned);
+    Ok(signed)
+}
+
+/// Construct an honest "neglecting" block by `producing_node`'s
+/// validator: the block cites the receiver's view (which contains
+/// the equivocator's bad block) in justifications but EXPLICITLY
+/// omits any SlashDeploy. When processed on a node whose tracker
+/// already holds the equivocator's record, the receiver's
+/// `is_neglected_equivocation_detected_with_update` fires and
+/// classifies as `InvalidBlock::NeglectedEquivocation`.
+///
+/// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+/// (production-path integration). Plan-agent designed Item 5 of
+/// the principled-resolution session.
+///
+/// Why this helper exists: the production proposer's
+/// `prepare_slashing_deploys` would auto-emit a SlashDeploy for
+/// any validator with an outstanding `EquivocationRecord` in the
+/// proposer's tracker view. To produce a NEGLECTING block — one
+/// that ignores the offence — we bypass `prepare_slashing_deploys`
+/// entirely by going through `compute_deploys_checkpoint` with
+/// `system_deploys = [CloseBlockDeploy]` only.
+pub async fn propose_neglecting_block(
+    producing_node: &mut TestNode,
+    alt_deploys: Vec<Signed<DeployData>>,
+) -> Result<BlockMessage, CasperError> {
+    let validator_identity = producing_node
+        .validator_id_opt
+        .as_ref()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "producing_node has no validator identity".to_string(),
+            )
+        })?
+        .clone();
+
+    let snapshot = producing_node.casper.get_snapshot().await?;
+
+    // Compute the proposer's natural seq + block_num from snapshot.
+    let next_seq_num = snapshot
+        .max_seq_nums
+        .get(&validator_identity.public_key.bytes)
+        .map(|seq| (*seq + 1) as i32)
+        .unwrap_or(1);
+    let next_block_num = snapshot.max_block_num + 1;
+    let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
+
+    // Use the snapshot's natural parents and justifications. The
+    // CRITICAL property: producing_node's snapshot must already
+    // contain the equivocator's invalid block in its DAG (so the
+    // receiver's check_neglected_equivocations_with_update
+    // recognises that this block "saw" the equivocation).
+    let parents = snapshot.parents.clone();
+    let justifications: Vec<_> =
+        snapshot.justifications.iter().map(|j| j.clone()).collect();
+
+    // Honest block timestamp: pick "now" matching production
+    // semantics. Use the max parent timestamp + 1 so we satisfy
+    // the parent-timestamp ordering.
+    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let block_data = BlockData {
+        time_stamp: parent_max_ts + 1,
+        block_number: next_block_num,
+        sender: validator_identity.public_key.clone(),
+        seq_num: next_seq_num,
+    };
+
+    // System deploys: ONLY CloseBlock. NO SlashDeploys — this is
+    // the structural difference from production
+    // `prepare_slashing_deploys`. The receiver's
+    // `is_neglected_equivocation_detected_with_update` will see
+    // the missing slash and classify NeglectedEquivocation.
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
+        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            validator_identity.public_key.clone(),
+            next_seq_num,
+        ),
+    })];
+
+    let invalid_blocks = snapshot.invalid_blocks.clone();
+
+    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+        &mut producing_node.block_store,
+        parents.clone(),
+        alt_deploys,
+        system_deploys,
+        &snapshot,
+        &mut producing_node.runtime_manager,
+        block_data.clone(),
+        invalid_blocks,
+    )
+    .await?;
+
+    let (
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        new_bonds,
+    ) = checkpoint;
+
+    let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
+
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, RejectedDeploy,
+    };
+
+    let state = F1r3flyState {
+        pre_state_hash,
+        post_state_hash,
+        bonds: new_bonds,
+        block_number: block_data.block_number,
+    };
+    let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
+        .into_iter()
+        .map(|sig| RejectedDeploy { sig })
+        .collect();
+    let body = Body {
+        state,
+        deploys: processed_deploys,
+        rejected_deploys: rejected_deploys_wrapped,
+        system_deploys: processed_system_deploys,
+        extra_bytes: Bytes::new(),
+    };
+    let header = Header {
+        parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
+        timestamp: block_data.time_stamp,
+        version: casper_version,
+        extra_bytes: Bytes::new(),
+    };
+    let unsigned = proto_util::unsigned_block_proto(
+        body,
+        header,
+        justifications,
+        shard_id,
+        Some(block_data.seq_num),
+    );
+
+    let signed = validator_identity.sign_block(&unsigned);
+    Ok(signed)
+}

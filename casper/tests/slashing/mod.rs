@@ -28,6 +28,7 @@ mod integration_helpers;
 mod integration_t_admissible_equivocation;
 mod integration_t_ignorable_equivocation;
 mod integration_t_invalid_block_hash_records;
+mod integration_t_neglected_invalid_block;
 mod integration_t_valid_no_record;
 mod loom_t_9_2_atomic_record;
 mod loom_t_9_2_n_threads_3;
