@@ -27,8 +27,12 @@ mod harness;
 mod types;
 
 mod pre_fix_bug_1;
+mod pre_fix_bug_6;
+mod prop_t_1_detection_sound;
 mod prop_t_7_slash_zeros_bond;
+mod prop_t_9_5_active_has_positive_bond;
 mod prop_t_idem_slash_idempotence;
+mod uc_01_admissible_single;
 mod uc_03_ignorable_unrequested;
 mod uc_04_multiple_equivocations;
 mod uc_06_self_regression;
