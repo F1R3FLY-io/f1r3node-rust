@@ -22,9 +22,13 @@
 // Per-bug regression tests and per-UC example tests are added as
 // `pre_fix_bug_<N>.rs` / `uc_<NN>_*.rs` siblings as each lands.
 
+mod generators;
 mod harness;
 mod types;
 
+mod pre_fix_bug_1;
+mod prop_t_7_slash_zeros_bond;
 mod prop_t_idem_slash_idempotence;
 mod uc_03_ignorable_unrequested;
+mod uc_04_multiple_equivocations;
 mod uc_06_self_regression;
