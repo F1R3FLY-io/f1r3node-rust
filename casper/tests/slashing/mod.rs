@@ -24,6 +24,8 @@
 
 mod generators;
 mod harness;
+mod integration_helpers;
+mod integration_t_valid_no_record;
 mod loom_t_9_2_atomic_record;
 mod loom_t_9_2_n_threads_3;
 mod loom_t_9_2_n_threads_4;
