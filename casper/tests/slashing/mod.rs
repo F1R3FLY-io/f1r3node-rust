@@ -25,7 +25,10 @@
 mod generators;
 mod harness;
 mod loom_t_9_2_atomic_record;
+mod observer;
 mod oracle;
+mod oracle_adapter;
+mod production_adapter;
 mod types;
 
 mod pre_fix_bug_1;

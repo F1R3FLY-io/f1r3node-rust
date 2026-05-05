@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use super::observer::SlashingObserver;
 use super::types::{
     BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum, SlashResult, Status,
     ValidatorId,
@@ -363,6 +364,34 @@ impl SlashingTestHarness {
         out
     }
 
+    /// Bond the specified validator (test-setup helper, not part of the
+    /// SlashingObserver contract).
+    fn _separator() {}
+}
+
+/// Tier 3: harness implements `SlashingObserver` directly.
+impl SlashingObserver for SlashingTestHarness {
+    fn bond(&self, validator: &str) -> i64 {
+        SlashingTestHarness::bond(self, validator)
+    }
+    fn coop_vault(&self) -> i64 {
+        SlashingTestHarness::coop_vault(self)
+    }
+    fn is_active(&self, validator: &str) -> bool {
+        SlashingTestHarness::is_active(self, validator)
+    }
+    fn has_record(&self, validator: &str, base_seq: SeqNum) -> bool {
+        SlashingTestHarness::has_record(self, validator, base_seq)
+    }
+    fn record_witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash> {
+        SlashingTestHarness::record_witnesses(self, validator, base_seq)
+    }
+    fn fork_choice(&self) -> Vec<ValidatorId> {
+        SlashingTestHarness::fork_choice(self)
+    }
+}
+
+impl SlashingTestHarness {
     /// Mirrors `PoS(@"bond", deployerId, amount, returnCh)` post-fix #5:
     /// a bond request with `amount <= 0` is rejected; otherwise the
     /// validator is added to the bonds map at `amount` and (if not
