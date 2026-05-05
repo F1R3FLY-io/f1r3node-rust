@@ -36,6 +36,7 @@ mod observer;
 mod oracle;
 mod oracle_adapter;
 mod production_adapter;
+mod triple_bisim_driver;
 mod types;
 
 mod pre_fix_bug_1;
@@ -72,6 +73,9 @@ mod prop_t_9_9_self_correcting;
 mod prop_t_auth_check;
 mod prop_t_idem_slash_idempotence;
 mod prop_t_invariants_under_workload;
+mod prop_t_triple_bisim_dispatch;
+mod prop_t_triple_bisim_forkchoice;
+mod prop_t_triple_bisim_records;
 mod uc_01_admissible_single;
 mod uc_02_concurrent_admissible;
 mod uc_03_ignorable_unrequested;
