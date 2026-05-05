@@ -615,17 +615,44 @@ in {
                                     @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedValidatorsCh) |
                                     for (@quarantinedValidators <- quarantinedValidatorsCh) {
                                       @ListOps!("unorderedParMap", quarantinedValidators, *payWithdraw, *payRet) |
+                                      // Bug #10 fix: pattern-match on the transfer outcome and emit
+                                      // (pk, success_bool) on resultCh. The downstream `computeRemove`
+                                      // fold then removes ONLY successful withdrawers from the maps;
+                                      // failed transfers leave the per-validator state intact for
+                                      // retry on a later block. Pre-fix the resultCh just forwarded
+                                      // posVault.transfer's (true, _) | (false, errMsg) pair, and the
+                                      // surrounding `for (@_ <- payRet)` accepted any value, so a
+                                      // failed transfer would still drop the validator from
+                                      // `withdrawers` and `committedRewards` — losing funds. See
+                                      // design/09-bug-fixes-and-rationale.md §9.13
+                                      // (theorem t_9_10_withdraw_transfer_failure_safety,
+                                      // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
-                                        // FIXME fix transfer in failure case
-                                        payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *resultCh)
+                                        new transferResultCh in {
+                                          payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *transferResultCh) |
+                                          for (@transferResult <- transferResultCh) {
+                                            match transferResult {
+                                              (true, _) => { resultCh!((pk, true)) }
+                                              (_, _)    => { resultCh!((pk, false)) }
+                                            }
+                                          }
+                                        }
                                       } |
-                                      for (@_ <- payRet) {
-                                        @ListOps!("fold", quarantinedValidators, state, *computeRemove, *returnCh) |
-                                        contract computeRemove(@(pk, (bonds, quantine)), @updatedState, resultCh) = {
-                                          resultCh!(updatedState
-                                                    .set("committedRewards", updatedState.get("committedRewards").delete(pk))
-                                                    .set("withdrawers", updatedState.get("withdrawers").delete(pk))
-                                                    )
+                                      for (@payResults <- payRet) {
+                                        @ListOps!("fold", payResults, state, *computeRemove, *returnCh) |
+                                        contract computeRemove(@(pk, success), @updatedState, resultCh) = {
+                                          if (success) {
+                                            resultCh!(updatedState
+                                                      .set("committedRewards", updatedState.get("committedRewards").delete(pk))
+                                                      .set("withdrawers", updatedState.get("withdrawers").delete(pk))
+                                                      )
+                                          } else {
+                                            // Failure path: leave per-validator state intact so the
+                                            // outer scheduler retries on a later block. The validator
+                                            // remains in `withdrawers` with their original (bond,
+                                            // quarantine) entry and unchanged `committedRewards`.
+                                            resultCh!(updatedState)
+                                          }
                                         }
                                       }
                                     } |

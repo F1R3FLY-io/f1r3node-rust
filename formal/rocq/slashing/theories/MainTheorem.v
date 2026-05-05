@@ -6,7 +6,7 @@
      - T-4 .. T-5 (record persistence)
      - T-7 .. T-10 (slash effect)
      - T-11 .. T-12 (two-level closure)
-     - T-9.1 .. T-9.9 (bug-fix correctness)
+     - T-9.1 .. T-9.10 (bug-fix correctness)
      - T-13 .. T-15 (bisimilarity)
 
    The headline statement: under the nine bug fixes, the Rust slashing
@@ -25,6 +25,7 @@ From Slashing Require Import
   BugFixIgnorable BugFixAtomicTracker BugFixDispatcher
   BugFixTransferFailure BugFixStakeZero BugFixSelfRegression
   BugFixSeqNumDensity BugFixUnbondedProposer
+  BugFixWithdrawTransferFailure
   Bisimulation.
 
 Import ListNotations.
@@ -156,6 +157,29 @@ Theorem main_T9_9_self_correcting :
     rejects_neglected_post_fix hn hs = true <-> (hn = true /\ hs = false).
 Proof. exact t_9_9_post_fix_rejection_iff. Qed.
 
+Theorem main_T9_10_withdraw_transfer_failure :
+  forall psw v transfer_ok,
+    let psw' := withdraw_with_transfer_oracle psw v transfer_ok in
+    (transfer_ok = true /\ wm_contains (psw_withdrawers psw') v = false)
+    \/ (transfer_ok = false /\ psw' = psw).
+Proof. exact t_9_10_withdraw_transfer_failure_safety. Qed.
+
+Theorem main_T9_10_failure_preserves_total_funds :
+  forall psw v,
+    total_funds (withdraw_with_transfer_oracle psw v false) = total_funds psw.
+Proof. exact t_9_10_failure_preserves_total_funds. Qed.
+
+Theorem main_T9_10_withdraw_independence :
+  forall psw v u ok_v ok_u,
+    v <> u ->
+    let psw1 := withdraw_with_transfer_oracle
+                  (withdraw_with_transfer_oracle psw v ok_v) u ok_u in
+    let psw2 := withdraw_with_transfer_oracle
+                  (withdraw_with_transfer_oracle psw u ok_u) v ok_v in
+    psw_withdrawers psw1 = psw_withdrawers psw2
+    /\ psw_rewards psw1 = psw_rewards psw2.
+Proof. exact t_9_10_withdraw_independence. Qed.
+
 (* ═══════════════════════════════════════════════════════════════════════════
    §5 — Bisimilarity summary (T-13, T-15 components)
    ═══════════════════════════════════════════════════════════════════════════ *)
@@ -185,6 +209,13 @@ Theorem main_T14_weak_barbed_equiv_sym :
     weak_barbed_equiv b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 ->
     weak_barbed_equiv b2 b1 rs2 rs1 sl2 sl1 v2 v1 lm2 lm1.
 Proof. exact weak_barbed_equiv_sym. Qed.
+
+Theorem main_T14_weak_barbed_equiv_trans :
+  forall b1 b2 b3 rs1 rs2 rs3 sl1 sl2 sl3 v1 v2 v3 lm1 lm2 lm3,
+    weak_barbed_equiv b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 ->
+    weak_barbed_equiv b2 b3 rs2 rs3 sl2 sl3 v2 v3 lm2 lm3 ->
+    weak_barbed_equiv b1 b3 rs1 rs3 sl1 sl3 v1 v3 lm1 lm3.
+Proof. exact weak_barbed_equiv_trans. Qed.
 
 Theorem main_T12_bft_quorum :
   forall (universe : list Validator) (closure : list Validator) (F : nat),
@@ -262,12 +293,9 @@ Qed.
    the same slash, record-update, and filter operations on both sides
    preserves all five components of R. *)
 
-(* The five-component bisimilarity theorem: applies slash, *records-monotone
-   update*, and fork-choice filter consistently on both sides. The records
-   conclusion is the directional `records_bisim_monotone_update` (every
-   pre-update s1-hash is in post-update s2-hashes), which is the load-
-   bearing direction for the "no honest validator wrongly slashed"
-   argument. The reverse direction follows by symmetry of the relation. *)
+(* The five-component bisimilarity theorem: applies slash, record update,
+   slashed-set update, vault increment, and fork-choice filter consistently
+   on both sides, preserving the full strong record relation. *)
 
 Theorem main_bisimilarity_strong :
   forall (b1 b2 : BondMap) (rs1 rs2 : EqStore) (sl1 sl2 : list Validator)
@@ -289,24 +317,22 @@ Theorem main_bisimilarity_strong :
     let lm1' := filter_slashed lm1 b1' in
     let lm2' := filter_slashed lm2 b2' in
     bonds_bisim b1' b2'
-    /\ (forall k', incl (hashes_at_key rs1 k') (hashes_at_key rs2' k'))
-    /\ (forall k', has_key rs1' k' = has_key rs2' k')
+    /\ records_bisim_strong rs1' rs2'
     /\ slashed_bisim sl1' sl2'
     /\ vault_bisim v1' v2'
-    /\ (forall vv, fc_lookup lm1' vv = fc_lookup lm2' vv).
+    /\ forkchoice_bisim lm1' lm2'.
 Proof.
-  intros. simpl. repeat split.
+  intros b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 offender k h
+         Hb Hr Hsl Hv Hfc.
+  simpl.
+  split; [|split; [|split; [|split]]].
   - apply t_13_bm_slash_preserves_bonds_bisim. assumption.
-  - intros k' x Hin.
-    apply (@records_bisim_monotone_update rs1 rs2 k h H0 k' x Hin).
-  - apply records_bisim_strong_keys_preserved. assumption.
-  - pose proof (@t_15_slashed_append_consistent sl1 sl2 offender H1) as [Hf _].
-    assumption.
-  - pose proof (@t_15_slashed_append_consistent sl1 sl2 offender H1) as [_ Hb].
-    assumption.
-  - unfold vault_bisim in *. unfold v1', v2'.
-    rewrite H2. f_equal. apply H.
-  - apply forkchoice_bisim_preserves_filter; [assumption|].
+  - apply records_bisim_strong_preserved_update. assumption.
+  - apply t_15_slashed_append_consistent. assumption.
+  - unfold vault_bisim in *.
+    rewrite Hv. f_equal. apply Hb.
+  - unfold forkchoice_bisim.
+    apply forkchoice_bisim_preserves_filter; [assumption|].
     apply t_13_bm_slash_preserves_bonds_bisim. assumption.
 Qed.
 
@@ -332,6 +358,26 @@ Definition pipeline_step
   let lm' := filter_slashed lm b' in
   (b', rs', sl', v', lm').
 
+Definition pipeline_bonds
+  (r : BondMap * EqStore * list Validator * nat * LatestMessages) : BondMap :=
+  fst (fst (fst (fst r))).
+
+Definition pipeline_records
+  (r : BondMap * EqStore * list Validator * nat * LatestMessages) : EqStore :=
+  snd (fst (fst (fst r))).
+
+Definition pipeline_slashed
+  (r : BondMap * EqStore * list Validator * nat * LatestMessages) : list Validator :=
+  snd (fst (fst r)).
+
+Definition pipeline_vault
+  (r : BondMap * EqStore * list Validator * nat * LatestMessages) : nat :=
+  snd (fst r).
+
+Definition pipeline_forkchoice
+  (r : BondMap * EqStore * list Validator * nat * LatestMessages) : LatestMessages :=
+  snd r.
+
 Theorem t_15_pipeline_step_preserves_R :
   forall b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 offender baseSeq h,
     bonds_bisim b1 b2 ->
@@ -341,21 +387,23 @@ Theorem t_15_pipeline_step_preserves_R :
     forkchoice_bisim lm1 lm2 ->
     let r1 := pipeline_step b1 rs1 sl1 v1 lm1 offender baseSeq h in
     let r2 := pipeline_step b2 rs2 sl2 v2 lm2 offender baseSeq h in
-    bonds_bisim (fst (fst (fst (fst r1)))) (fst (fst (fst (fst r2))))
-    /\ (forall k', incl (hashes_at_key rs1 k')
-                        (hashes_at_key (snd (fst (fst (fst r2)))) k'))
-    /\ slashed_bisim (snd (fst (fst r1))) (snd (fst (fst r2)))
-    /\ vault_bisim (snd (fst r1)) (snd (fst r2))
-    /\ (forall v, fc_lookup (snd r1) v = fc_lookup (snd r2) v).
+    weak_barbed_equiv
+      (pipeline_bonds r1) (pipeline_bonds r2)
+      (pipeline_records r1) (pipeline_records r2)
+      (pipeline_slashed r1) (pipeline_slashed r2)
+      (pipeline_vault r1) (pipeline_vault r2)
+      (pipeline_forkchoice r1) (pipeline_forkchoice r2).
 Proof.
   intros. simpl. unfold pipeline_step. simpl.
   pose proof (@main_bisimilarity_strong b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2
     offender (offender, baseSeq) h H H0 H1 H2 H3) as Hbisim.
   simpl in Hbisim.
-  destruct Hbisim as [Hb [Hrs_mono [Hrs_keys [Hsl [Hv Hfc]]]]].
-  repeat split; try assumption.
-  - destruct Hsl as [Hsl _]. assumption.
-  - destruct Hsl as [_ Hsl]. assumption.
+  destruct Hbisim as [Hb [Hrs [Hsl [Hv Hfc]]]].
+  unfold weak_barbed_equiv. simpl.
+  split; [assumption|].
+  split; [assumption|].
+  split; [assumption|].
+  split; assumption.
 Qed.
 
 Theorem main_T15_pipeline_step :
@@ -367,10 +415,38 @@ Theorem main_T15_pipeline_step :
     forkchoice_bisim lm1 lm2 ->
     let r1 := pipeline_step b1 rs1 sl1 v1 lm1 offender baseSeq h in
     let r2 := pipeline_step b2 rs2 sl2 v2 lm2 offender baseSeq h in
-    bonds_bisim (fst (fst (fst (fst r1)))) (fst (fst (fst (fst r2))))
-    /\ (forall k', incl (hashes_at_key rs1 k')
-                        (hashes_at_key (snd (fst (fst (fst r2)))) k'))
-    /\ slashed_bisim (snd (fst (fst r1))) (snd (fst (fst r2)))
-    /\ vault_bisim (snd (fst r1)) (snd (fst r2))
-    /\ (forall v, fc_lookup (snd r1) v = fc_lookup (snd r2) v).
+    weak_barbed_equiv
+      (pipeline_bonds r1) (pipeline_bonds r2)
+      (pipeline_records r1) (pipeline_records r2)
+      (pipeline_slashed r1) (pipeline_slashed r2)
+      (pipeline_vault r1) (pipeline_vault r2)
+      (pipeline_forkchoice r1) (pipeline_forkchoice r2).
 Proof. exact t_15_pipeline_step_preserves_R. Qed.
+
+Theorem main_slashing_algorithm_correct :
+  forall st v n d status ps lm records witness,
+    detect st v n d = status ->
+    status = DSAdmissible \/ status = DSIgnorable ->
+    let result := slash ps v in
+    let ps' := fst result in
+    let records' := atomic_record_or_update records (v, pred n) witness in
+    equivocates st v n
+    /\ In witness (hashes_at_key records' (v, pred n))
+    /\ bm_lookup (ps_allBonds ps') v = 0
+    /\ fc_lookup (filter_slashed lm (ps_allBonds ps')) v = None
+    /\ (bm_lookup (ps_allBonds ps) v > 0 ->
+        ps_coopVault ps' = ps_coopVault ps + bm_lookup (ps_allBonds ps) v).
+Proof.
+  intros st v n d status ps lm records witness Hd Hstatus.
+  pose proof (@detection_sound st v n d status Hd Hstatus) as Heq.
+  pose proof (slash_zeros_bond ps v) as Hzero.
+  pose proof (slash_transfers_stake ps v) as Htransfer.
+  destruct (slash ps v) as [ps' ok] eqn:Hslash.
+  simpl in Hzero, Htransfer |- *.
+  repeat split.
+  - assumption.
+  - apply t_9_2_atomic_records_hash.
+  - assumption.
+  - apply fork_choice_exclusion. assumption.
+  - intro Hbond. apply Htransfer. assumption.
+Qed.

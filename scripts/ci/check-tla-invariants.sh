@@ -67,6 +67,7 @@ POST_FIX_CONFIGS=(
     MC_ConcurrentTracker
     MC_SlashFlow
     MC_TwoLevelSlashing
+    MC_WithdrawFlow
 )
 
 cd "$TLA_DIR"

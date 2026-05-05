@@ -11,13 +11,7 @@
 #   docs/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 21 modules. Zero `Admitted`. Four classical lemmas cited inline:
-#   (a) Sangiorgi's bisimulation up-to expansion
-#       [San98] DOI 10.1017/S0960129598002527
-#   (b) Newman's lemma (confluence + termination ⇒ Church-Rosser)
-#   (c) König's lemma (finitely-branching infinite tree has infinite branch)
-#   (d) f < n/3 BFT bound
-#       [LSP82] DOI 10.1145/357172.357176
+# 22 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
@@ -40,6 +34,10 @@
 #   BugFixSelfRegression   → DAGState, Block
 #   BugFixSeqNumDensity    → EquivocationDetector, Block
 #   BugFixUnbondedProposer → BlockCreator, PoSContract
+#   BugFixWithdrawTransferFailure → PoSContract (T-9.10; PoSStateW additive
+#                                  embedding of PoSState; withdrawer/reward
+#                                  maps; safety + total-funds preservation
+#                                  + parallel-fold order-independence)
 #   Bisimulation           → all of the above (the headline relation)
 #   MainTheorem            → Bisimulation, all BugFix*
 #
@@ -75,5 +73,6 @@ theories/BugFixStakeZero.v
 theories/BugFixSelfRegression.v
 theories/BugFixSeqNumDensity.v
 theories/BugFixUnbondedProposer.v
+theories/BugFixWithdrawTransferFailure.v
 theories/Bisimulation.v
 theories/MainTheorem.v

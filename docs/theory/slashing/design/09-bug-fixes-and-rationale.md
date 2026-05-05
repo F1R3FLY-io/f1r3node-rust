@@ -382,18 +382,94 @@ The nine fixes interact in three notable ways:
    *always* terminates in finite time with a deterministic outcome,
    even when the block is self-correcting.
 
-## 9.12 Summary
+## 9.13 Bug #10 — PoS withdrawal transfer-failure FIXME
 
-The nine fixes restore the slashing subsystem to audit-grade
+**Origin.** Scala-inherited.
+
+**Cause.** `casper/src/main/resources/PoS.rhox:619` carries the
+comment *"FIXME fix transfer in failure case"* inside
+`removeQuarantinedWithdrawers`. The pre-fix `payWithdraw` contract
+calls `payWithdrawer!(...)` and the surrounding flow proceeds to
+remove the validator from `withdrawers` and `committedRewards`
+regardless of whether the underlying `posVault.transfer` succeeded.
+If the transfer fails the validator is removed from state without
+receiving funds — a fund-loss bug that breaks vault conservation.
+
+This is the **withdrawal-flow analog** of Bug #4 (which already fixed
+the slash arm). The same `posVault.transfer` failure-handling pattern
+applies to both code paths; only the slash arm had been fixed before.
+
+**Pre-fix behavior.** A failed `posVault.transfer` results in:
+1. Validator removed from `state.withdrawers` (line 627).
+2. Validator's `committedRewards` cleared (line 626).
+3. PoS vault balance unchanged (transfer rolled back at the vault
+   layer).
+
+The validator's bond + accumulated rewards are silently lost: the
+contract no longer tracks the obligation, so the validator has no
+recourse. Vault conservation
+(`pos_balance + Σ payouts_for_withdrawers = constant`) is violated.
+
+**Post-fix behavior.** `payWithdraw` pattern-matches on the transfer
+result and emits `(pk, success_bool)` on its `resultCh`. The
+downstream `computeRemove` fold is rewritten to remove **only**
+successful withdrawers from the maps; failed transfers leave the
+per-validator state intact for retry on a later block. Mirrors the
+Bug #4 fix already applied to the slash arm
+(PoS.rhox:472-510).
+
+**Theorem T-9.10.** *(`t_9_10_withdraw_transfer_failure_safety`,
+`BugFixWithdrawTransferFailure.v:225`.)* Under the fix, the
+per-validator withdraw transition either succeeds AND removes the
+validator from `withdrawers`, or fails AND leaves the entire
+state unchanged:
+
+```
+∀ psw v ok, let psw' := withdraw_with_transfer_oracle(psw, v, ok) in
+  (ok = ⊤ ∧ wm_contains(psw'.withdrawers, v) = ⊥)
+∨ (ok = ⊥ ∧ psw' = psw)
+```
+
+**Theorem T-9.10' (failure preserves total funds).**
+*(`t_9_10_failure_preserves_total_funds`,
+`BugFixWithdrawTransferFailure.v:262`.)* A failed withdrawal does
+NOT lose funds — the post-fix state is identical, so the
+total-funds invariant is trivially preserved.
+
+**Theorem T-9.10″ (parallel order-independence).**
+*(`t_9_10_withdraw_independence`,
+`BugFixWithdrawTransferFailure.v:286`.)* The Rholang flow uses
+`unorderedParMap` to drive withdrawals in parallel. Withdrawing v
+then u produces the same withdrawer/reward maps as withdrawing u
+then v, when v ≠ u. Parallel-fold safety at the formal-model
+abstraction level.
+
+**Why this matters.** Without the fix, a transient `posVault`
+failure (network delay, balance race with concurrent slash) silently
+forfeits a validator's stake. The validator has no on-chain record
+of the obligation and cannot retry. Post-fix, the validator stays in
+`withdrawers` until a successful transfer, with the per-validator
+state intact across block boundaries.
+
+**Companion TLA+ model.** `formal/tlaplus/slashing/WithdrawFlow.tla`
++ `MC_WithdrawFlow.cfg` model the withdrawal pipeline with
+explicit success / fail / retry actions and verify
+`Inv_NoFundsLost`, `Inv_TotalFundsConst`, `Inv_RemovedImpliesPaid`,
+`Inv_RewardsConsistent`, and `Live_AllEventuallyPaid`.
+
+## 9.14 Summary
+
+The ten fixes restore the slashing subsystem to audit-grade
 correctness:
 
-- Eight Scala-inherited bugs are documented with proven fixes.
+- Nine Scala-inherited bugs are documented with proven fixes.
 - One Rust regression (#2) is documented with a proven fix.
 - One deliberate widening (#9) is documented as a *Rust improvement*
   over Scala, with a soundness proof.
 
-The bisimilarity claim (T-15, §10) holds modulo these nine
-deltas — eight convergence fixes and one widening.
+The bisimilarity claim (T-15, §10) holds modulo these ten
+deltas — nine convergence fixes (or vault-conservation fixes for
+#10) and one widening.
 
 ---
 
