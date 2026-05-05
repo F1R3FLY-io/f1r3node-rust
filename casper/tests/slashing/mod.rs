@@ -81,6 +81,7 @@ mod prop_t_9_5_active_has_positive_bond;
 mod prop_t_9_6_self_regression;
 mod prop_t_9_7_seqnum_density;
 mod prop_t_9_8_unbonded_proposer;
+mod prop_t_9_10_withdraw_safety;
 mod prop_t_9_9_self_correcting;
 mod prop_t_auth_check;
 mod prop_t_idem_slash_idempotence;

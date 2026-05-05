@@ -30,9 +30,8 @@ coqtop -batch -load-vernac-source theories/MainTheorem.v \
        -e 'Print Assumptions main_bisimilarity_theorem.'
 ```
 
-The output must reference only the four cited classical axioms (see
-`_CoqProject` header) and nothing else. Any other axiom or `Admitted` is a
-verification failure.
+The output must be `Closed under the global context`. Any custom axiom,
+parameter, or `Admitted` in the trust base is a verification failure.
 
 ## Module dependency graph
 
@@ -80,7 +79,8 @@ cost-accounting precedent:
 - **(b) Verifications of paper algorithms** — `EquivocationDetector` soundness
   and completeness (T-1, T-2), `slash` zeros bond (T-7).
 - **(c) Proof-original extensions** — bisimilarity Rust ~~ Scala (T-13–T-15);
-  proven bug-fix deltas (T-9.1–T-9.9).
+  proven bug-fix deltas (T-9.1–T-9.10, including T-9.10' / T-9.10″ for the
+  withdrawal flow).
 - **(d) Citable-axiom-gated** — none in the consensus-critical path; all
   classical lemmas appear in the trust base only.
 

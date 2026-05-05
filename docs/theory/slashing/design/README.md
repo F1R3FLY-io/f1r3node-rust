@@ -20,7 +20,7 @@ mental model, or jump to the layer you care about.
 | 11 | [Worked examples](11-worked-examples.md)                             | Ten end-to-end traces that exercise each component path (Diagrams 02, 03, 05, 09).                             |
 | 12 | [Failure modes & recovery](12-failure-modes.md)                      | What goes wrong, why, and how the system recovers (transfer FIXME, lock race, stake-0, off-by-one density).    |
 | 13 | [References](13-references.md)                                       | Citations with DOIs verified.                                                                                  |
-| 14 | [Test plan](14-test-plan.md)                                         | Exhaustive example-based + property-based test plan covering all 54 use cases and 27 theorems; CI integration. |
+| 14 | [Test plan](14-test-plan.md)                                         | Exhaustive example-based + property-based test plan covering all 75 use cases and 49 theorem labels; CI integration. |
 
 ## How to use this document
 

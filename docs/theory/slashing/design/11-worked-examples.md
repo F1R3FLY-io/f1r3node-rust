@@ -308,22 +308,138 @@ proposer's block.
 
 **Theorems exercised.** T-9.8, T-AuthCheck. **Diagram 01.**
 
-## 11.11 Cross-example summary
+## 11.11 Withdrawal transfer failure (bug #10 demo)
+
+**Setup.** Validator V is in `state.withdrawers` with
+`(bond=50, quarantine=k)`, accumulated rewards 10. The current
+block number reaches `k`, so V is now eligible for payout. The
+post-quarantine `removeQuarantinedWithdrawers` flow runs:
+
+1. `ListOps!("filter", state.withdrawers.toList(), *isQuarantineFinished, *quarantinedValidatorsCh)`
+   produces `[V]`.
+2. `ListOps!("unorderedParMap", [V], *payWithdraw, *payRet)` invokes
+   `payWithdraw((V, (50, k)), resultCh)`.
+3. `payWithdraw` calls `payWithdrawer!((V, 60), *transferResultCh)`,
+   which forwards to
+   `posVault!("transfer", V_vault, 60, posAuthKey, *transferResultCh)`.
+4. **The transfer fails.** `posVault.transfer` emits
+   `(false, "insufficient balance")` on `transferResultCh`.
+
+**Pre-fix trace.** `payWithdraw` forwards the
+`(false, "insufficient balance")` pair on `resultCh` (the
+result-channel naming is the only thing it does — no pattern
+match). `for (@_ <- payRet)` accepts any value. `computeRemove`
+runs for V unconditionally:
+- `state.withdrawers.delete(V)` — V removed from the map.
+- `state.committedRewards.delete(V)` — rewards cleared.
+- `posBalance` unchanged (the underlying vault rolled back the
+  failed transfer at the vault layer).
+
+V has now lost 60 funds. The contract no longer tracks V's
+withdrawal entry, so V cannot retry. `total_funds` invariant
+violated: `posBalance + Σ payouts_for_withdrawers` decreased by
+60.
+
+**Post-fix trace.** `payWithdraw` pattern-matches on
+`transferResult`:
+- `(true, _) => resultCh!((V, true))` — success
+- `(_,    _) => resultCh!((V, false))` — failure
+
+`payRet` collects `[(V, false)]`. `computeRemove` then folds:
+- `(V, false) => updatedState` (no mutation)
+
+V remains in `state.withdrawers` with `(50, k)`; rewards intact.
+Next block can retry: `removeQuarantinedWithdrawers` runs again,
+calls `payWithdraw((V, (50, k)))`, the underlying vault may now
+succeed (e.g. balance restored, deploy quota refreshed). On
+success the post-fix path removes V correctly with payout. On
+persistent failure V stays in `withdrawers` indefinitely until
+operator intervention; the `total_funds` invariant remains
+preserved across every retry (T-9.10').
+
+**Theorems exercised.** T-9.10, T-9.10', T-9.10″.
+**Diagram 11.**
+
+```
+┌──────────────────┐
+│ Block at #N+1    │   removeQuarantinedWithdrawers
+│ block_number=N+1 │   triggers (N+1 >= k)
+└────────┬─────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────┐
+│ ListOps!("filter", withdrawers.toList(), …) →   │
+│   quarantinedValidators = [V]                   │
+└────────┬────────────────────────────────────────┘
+         │ unorderedParMap [V] payWithdraw payRet
+         ▼
+┌─────────────────────────────────────────────────┐
+│ payWithdraw((V, (50, k)), resultCh)             │
+│   → payWithdrawer!((V, 60), transferResultCh)   │
+│   → posVault!("transfer", V_vault, 60, …)       │
+│   ← transferResultCh: (false, "balance-low")    │
+└────────┬────────────────────────────────────────┘
+         │
+   ┌─────┴─────┐
+   │           │
+   ▼           ▼
+ PRE-FIX     POST-FIX
+   │           │
+   │  ┌────────┴────────────────────────────────┐
+   │  │ match transferResult                    │
+   │  │   (true, _) → resultCh!((V, true))      │
+   │  │   ( _,  _ ) → resultCh!((V, false)) ←── │
+   │  └────────┬────────────────────────────────┘
+   │           │
+   │           ▼
+   │  payRet  ←  [(V, false)]
+   │           │
+   │           │ fold computeRemove
+   │           ▼
+   │  ┌─────────────────────────────────────────┐
+   │  │ (V, false) → updatedState (NO MUTATION) │
+   │  │                                         │
+   │  │ V STAYS in withdrawers map with (50, k);│
+   │  │ rewards intact; total_funds preserved.  │
+   │  └────────┬────────────────────────────────┘
+   │           │
+   │           │ (next block retries)
+   │           ▼
+   │     ┌─────────────┐
+   │     │ T-9.10 + T- │
+   │     │ 9.10' hold. │
+   │     └─────────────┘
+   ▼
+ ┌────────────────────────────────────────────┐
+ │ payRet ← [(false, "balance-low")]          │
+ │ for (@_ <- payRet) — accepts ANY value     │
+ │   fold computeRemove [V]                   │
+ │     → state.withdrawers.delete(V)          │
+ │     → state.committedRewards.delete(V)     │
+ │                                            │
+ │ posBalance unchanged (vault rolled back).  │
+ │ V has LOST 60 funds. No on-chain record.   │
+ │ total_funds invariant VIOLATED.            │
+ └────────────────────────────────────────────┘
+```
+
+## 11.12 Cross-example summary
 
 | Example | Bug exercised             | Bisimilarity impact           | Diagram(s) |
 |---------|---------------------------|-------------------------------|------------|
 | 11.1    | None (baseline)           | Preserving                    | 02         |
 | 11.2    | None (boundary)           | Preserving (BFT bound exited) | 04         |
 | 11.3    | #2 (race)                 | Preserving                    | 09         |
-| 11.4    | #4 (transfer)             | Preserving                    | 07         |
+| 11.4    | #4 (slash transfer)       | Preserving                    | 07         |
 | 11.5    | #9 (widening)             | **Deliberate widening**       | 08         |
 | 11.6    | #5 (stake-0)              | Preserving                    | 06         |
 | 11.7    | #7 (off-by-one)           | Preserving                    | 02         |
 | 11.8    | #3 (dispatcher)           | Preserving                    | 05         |
 | 11.9    | #6 (self-regression) + #3 | Preserving                    | 08         |
 | 11.10   | #8 (unbonded proposer)    | Preserving                    | 01         |
+| 11.11   | #10 (withdraw transfer)   | Preserving                    | 11         |
 
-Of the ten worked examples, nine are *bisimilarity-preserving* and
+Of the eleven worked examples, ten are *bisimilarity-preserving* and
 one (11.5) is the *deliberate widening* documented in §10.
 
 ---

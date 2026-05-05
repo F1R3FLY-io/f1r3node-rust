@@ -284,6 +284,12 @@ Property-based tests run thousands of randomized inputs per
 property and shrink failures to minimal counter-examples. Each
 property below corresponds to a Rocq theorem.
 
+The Sage/Hypothesis frontier suite also runs less-directed searches for
+novelty/coverage, generated multi-epoch traces, exact-vs-projection
+differentials, and automatic trace classification. Any new failure from
+that suite must be reduced to a deterministic Sage witness before it is
+promoted to a Rocq theorem, TLA+ invariant, or normative use case.
+
 ### 14.4.1 Detection properties (T-1, T-2, T-3, T-6)
 
 ```rust
@@ -850,11 +856,11 @@ contains a single `#[test]` that:
 2. Asserts the *post-fix* invariant that the bug violated (the
    test would have failed on the parent commit).
 
-Three of the nine pre-fix tests share their counter-example trace
+Three of the ten pre-fix tests share their counter-example trace
 with a UC entry in §14.3.2 (UC-41 = bug #1, UC-42 = bug #3, UC-43
 = bug #7); for those, the `pre_fix_bug_<N>.rs` file simply imports
-and runs the same trace as a sanity backstop. The other six
-(bugs #2, #4, #5, #6, #8, #9) have no UC-numbered positive
+and runs the same trace as a sanity backstop. The other seven
+(bugs #2, #4, #5, #6, #8, #9, #10) have no UC-numbered positive
 counterpart and exist only as bug-specific regression tests.
 
 ```rust

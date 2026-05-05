@@ -9,7 +9,7 @@
      - T-9.1 .. T-9.10 (bug-fix correctness)
      - T-13 .. T-15 (bisimilarity)
 
-   The headline statement: under the nine bug fixes, the Rust slashing
+   The headline statement: under the ten bug fixes, the Rust slashing
    layer is observationally bisimilar to the Scala original on every
    pipeline transition.
 
@@ -256,7 +256,7 @@ Proof. exact detect_neglected_complete. Qed.
    §6 — Headline composition
    ═══════════════════════════════════════════════════════════════════════════
 
-   The headline composition: under the nine bug fixes, every pipeline
+   The headline composition: under the ten bug fixes, every pipeline
    transition preserves the bonds, records, slashed-set, and Coop-vault
    bisimulation relations. *)
 

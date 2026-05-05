@@ -60,7 +60,7 @@ Scala source is faulty.
 | Two-level slashing (Level 1 + Level 2)                        | Rewriting `test_slash.py` (see `system-integration#51`)                |
 | Fork-choice exclusion of slashed validators                   | Replacing PoS multi-sig keys (operations concern)                      |
 | Bisimilarity between Rust and Scala (modulo proven bug fixes) | Graduated/proportional slashing penalties (future protocol design)     |
-| Nine identified bug fixes with proofs of correctness          | End-to-end shard reproduction                                          |
+| Ten identified bug fixes with proofs of correctness           | End-to-end shard reproduction                                          |
 
 ## Source-of-truth correspondence
 
@@ -83,9 +83,20 @@ Scala source is faulty.
 - **T-7.** A successful `SlashDeploy` zeros the offender's bond and reward,
   removes them from the active validator set, and transfers the forfeited stake
   to the Coop vault.
-- **T-11 / T-12.** Two-level slashing terminates and is collusion-resistant
-  against any coalition smaller than `⌈n/3⌉`.
-- **T-15.** Under the nine documented bug fixes, the Rust implementation is
+- **T-11 / T-12.** Two-level slashing terminates, has exact
+  reverse-reachability closure semantics, and preserves count-weighted and
+  stake-weighted quorum under the stated closure bounds.
+- **T-12C / T-12I / T-12F / T-12G / T-12A / T-12V.** Fixed-point
+  closure certificates, active-quorum intersection, current-validator
+  and epoch filtering, evidence visibility/report suppression,
+  view-indexed closure, duplicate-edge idempotence, cycle edge cases,
+  projection-risk witnesses, and safe arithmetic envelopes are
+  mechanized in Rocq and mirrored in TLA+ where finite checking applies.
+- **T-12PF / T-5DF.** Hypothesis-backed Sage search reduces proposer
+  evidence-inclusion fairness and delimiter-free record-key collisions
+  to deterministic witnesses before they are promoted to Rocq, TLA+,
+  and specification use cases.
+- **T-15.** Under the ten documented bug fixes, the Rust implementation is
   observationally bisimilar to the Scala original — i.e., no observable
   divergence remains.
 
@@ -102,6 +113,7 @@ Scala source is faulty.
 | 7 | Off-by-one seq-number density                                | T-9.7   |
 | 8 | `prepare_slashing_deploys` doesn't check proposer is bonded  | T-9.8   |
 | 9 | Scala rejects self-correcting blocks (Scala bug, Rust-fixed) | T-9.9   |
+| 10 | PoS withdrawal transfer-failure FIXME (analog of #4)        | T-9.10  |
 
 See `slashing-specification.md` §10 for the full bug-fix manifest and
 `slashing-verification.md` §9 for the proofs.

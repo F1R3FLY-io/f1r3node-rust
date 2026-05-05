@@ -56,12 +56,12 @@ The contribution split:
 |-------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_b`, `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update` |
 | **(b)** Verifications of paper algorithms | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                                                                                |
-| **(c)** Proof-original extensions         | T-11, T-12, T-13, T-14, T-15, T-9.1–T-9.9                                                                                                                          |
+| **(c)** Proof-original extensions         | T-11, T-12, T-13, T-14, T-15, T-9.1–T-9.10 (including T-9.10' and T-9.10″)                                                                                          |
 | **(d)** Citable-axiom-gated               | None — all theorems are closed under the global context                                                                                                            |
 
 ### 1.3 Scale and module DAG
 
-21 Rocq modules, ~3,500 lines total. The dependency DAG matches the one
+22 Rocq modules, ~3,800 lines total. The dependency DAG matches the one
 in `_CoqProject` (see also `slashing-specification.md` §1.7):
 
 ```
@@ -558,6 +558,163 @@ about ≤ F Byzantine validators. ∎
 This closes the prior gap where T-12 was only a trivial list-length
 statement disconnected from the BFT framing.
 
+### 7.4 Theorem 7.4 (Reachability characterization)
+
+**Statement.** *(`slash_iter_reachability_characterization`,
+`TwoLevelSlashing.v`.)*
+
+```
+  v ∈ slash_iter(universe, g, s₀, n)
+  ⇔ v ∈ s₀ ∨
+    ∃ offender k.
+      offender ∈ s₀ ∧ k ≤ n ∧
+      neglect_reaches_in(universe, g, k, v, offender)
+```
+
+**Proof.** The sound direction follows by induction on `n`: a newly
+slashed validator must have a neglect edge into the previous slashed set,
+which either names a direct offender or extends an existing path. The
+complete direction follows by induction on the path length and the
+time-monotonicity lemma `slash_iter_time_monotone`. ∎
+
+### 7.5 Theorem 7.5 (Weighted active-stake quorum)
+
+**Statement.** *(`weighted_slash_iter_quorum_preservation`,
+`TwoLevelSlashing.v`.)* For any stake function,
+
+```
+  slashed_stake(universe, stake, slash_iter(...)) ≤ F
+  ∧ F ≤ total_stake(universe, stake)
+  ⟹ active_stake(universe, stake, slash_iter(...))
+      ≥ total_stake(universe, stake) − F
+```
+
+**Proof.** By unfolding `active_stake` and `stake_quorum_bound`; the
+claim is linear arithmetic over natural numbers. The theorem deliberately
+takes the weighted closure bound as a hypothesis, matching T-12's
+counting-style precondition. ∎
+
+The companion theorem
+`zero_stake_not_direct_offender_under_bonded_precondition` records the
+eligibility precondition found by Sage: a zero-stake validator cannot be a
+direct offender when all direct offenders are required to be current
+bonded validators.
+
+### 7.6 Theorem 7.6 (Current-validator and visibility filters)
+
+**Statements.**
+
+- `restricted_closure_only_from_current_direct_offenders`: after filtering
+  direct offenders and neglect edges to the current validator universe,
+  every slashed validator is justified by a current direct offender.
+- `visible_unreported_graph_in`: an edge in the induced neglect graph is
+  equivalent to visible evidence minus already-reported evidence.
+- `visible_reachability_first_edge`: the first edge of any visibility-
+  induced reachability path is visible and unreported.
+
+**Proof.** The current-validator result specializes the reachability
+characterization to `filter_validators` and `restrict_neglect_graph`.
+The visibility result is a direct `filter_In` proof with
+`validator_in_true`; the path statement follows by inversion on
+`neglect_reaches_in`. ∎
+
+### 7.7 Theorem 7.7 (Graph edge cases and arithmetic boundaries)
+
+`slash_iter_graph_equiv` proves that graph-equivalent neglect functions
+produce membership-equivalent closures at every iteration; duplicate
+edges and edge ordering are therefore irrelevant. The theorem
+`no_reachability_no_level2_slash` proves the contrapositive edge case:
+if a validator is not a direct offender and has no neglect path to a
+direct offender, it is not slashed. This covers disconnected cycles and
+self-edge-only cases.
+
+The arithmetic theorems `unsigned_overflow_boundary_exact` and
+`signed_overflow_boundary_exact` prove the exact `max + 1` boundary for
+fixed-width projections. Rocq still reasons over exact naturals; any
+implementation using bounded machine integers must either use checked
+arithmetic or prove that its values never reach these boundaries.
+
+### 7.8 Theorem 7.8 (Quorum intersection, certificates, and envelopes)
+
+**Quorum intersection.** `quorum_intersection_by_size` proves the
+counting form: if two duplicate-free active quorums both have size at
+least `Q`, and `|active| < 2Q`, then they intersect. The weighted theorem
+`weighted_quorum_intersection_from_disjoint_bound` states the
+corresponding arithmetic form: if disjoint quorum weights would have to
+sum to at most active stake, but their actual sum exceeds active stake,
+then the quorums cannot be disjoint.
+
+**Closure certificates.** `slash_iter_fixed_point_after_universe_bound`
+proves that, from a duplicate-free starting set contained in a
+duplicate-free universe, the closure at `|V|` iterations is a fixed point
+of `slash_step`. The companion `slash_iter_fixed_point_stable` proves
+that once a slash set is a fixed point, all future `slash_iter` rounds
+are membership-equivalent to it. Combined with
+`slash_iter_reachability_characterization`, Sage can emit shortest-path
+certificates for the first slash round and Rocq proves those certificates
+are sound reachability witnesses.
+
+**Quorum-drop certificates.** `quorum_drop_certificate` and
+`weighted_quorum_drop_certificate` formalize the negative witnesses:
+when closure count or stake exceeds the configured fault bound, the
+active count or active stake falls below the corresponding quorum bound.
+
+**Arithmetic envelopes.** `total_stake_at_most` and
+`arithmetic_safe_envelope` prove the sufficient implementation condition
+used by the Sage safe-envelope model:
+
+```
+  (∀v∈V. stake(v) ≤ maxStake)
+  ∧ vault + |V| * maxStake ≤ limit
+  ⟹ vault + totalStake(V) ≤ limit
+```
+
+**Epoch filtering.** `epoch_filter_in` proves that the epoch-filtered
+validator set contains exactly validators in the input universe whose
+evidence epoch equals the current epoch.
+
+**Batch slash order and record normalization.** The supporting modules
+prove `bm_slash_many_order_independent` in `Validator.v` and
+`hashes_equiv_*` in `EquivocationRecord.v`, covering batch slash
+permutation independence and record meaning modulo insertion order /
+duplicate hashes.
+
+### 7.9 Theorem 7.9 (View evidence, policy boundaries, and projection risks)
+
+**View-indexed evidence.** `view_closure_monotone_by_active_edges` proves
+that a closure computed from fewer active evidence edges is contained in
+the closure computed from more active evidence edges.
+`view_closure_equiv_by_active_edges` proves that two observers with the
+same active evidence graph compute the same closure. This is the Rocq
+mirror of the Sage local-view divergence witness: divergent views are a
+candidate boundary unless the protocol defines which view is canonical.
+
+**Report suppression.** `reports_growth_shrinks_edges` and
+`reported_edge_not_active` prove that reports remove active neglect
+edges. Consequently, report-time closure monotonicity is not a valid
+global invariant; the correct invariant is that every active neglect
+edge is visible and unreported.
+
+**Epoch identity and carryover.** `stale_epoch_not_eligible` proves that
+stale evidence does not pass the current-epoch filter.
+`carryover_policy_sound` isolates the alternative: stale evidence can
+seed current slashing only through an explicit carryover mapping.
+
+**Assumption counterexamples.** `closure_bound_assumption_needed`,
+`quorum_intersection_strictness_needed`,
+`quorum_nodup_assumption_needed`, and
+`weighted_closure_bound_assumption_needed` are finite Rocq witnesses
+showing that the theorem hypotheses are necessary, not proof clutter.
+
+**Projection risks.** `bm_slash_many_abort_order_dependent` proves that
+abort-on-first-failure batch slash execution is order-dependent, unlike
+successful `bm_slash_many`. `er_key_injective` and
+`canonical_key_pair_injective` prove the canonical record-key encoding;
+`naive_record_key_projection_collision` records a non-injective
+projection witness. `classify_divergence_reason` in `Bisimulation.v`
+classifies evidence-view, epoch-carryover, and projection divergences as
+candidate boundaries requiring review.
+
 ---
 
 ## 8 · Bisimilarity Rust ~~ Scala (modulo bug fixes)
@@ -923,6 +1080,24 @@ Live_* == (* temporal properties *)
 | `SlashFlow`            | `Inv_SlashedExcludedFromFC`  | T-10            |
 | `SlashFlow`            | `Inv_SlashedRemoved`         | (corollary T-7) |
 | `TwoLevelSlashing`     | `Inv_LevelClosureTerminates` | T-11            |
+| `TwoLevelSlashing`     | `Inv_ActiveSetAboveQuorum`   | T-12            |
+| `TwoLevelSlashing`     | `Inv_ActiveStakeAboveWeightedQuorum` | T-12W |
+| `TwoLevelSlashing`     | `Inv_FilteredClosureInCurrentValidators` | T-12F |
+| `TwoLevelSlashing`     | `Inv_NeglectEdgesVisibleUnreported` | T-12F |
+| `TwoLevelSlashing`     | `Inv_NoUnexpectedDifferentialDivergence` | T-15 class |
+| `TwoLevelSlashing`     | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary` | arithmetic boundary |
+| `TwoLevelSlashing`     | `Inv_ActiveQuorumsIntersect` | quorum intersection |
+| `TwoLevelSlashing`     | `Inv_ActiveStakeQuorumsIntersect` | weighted quorum intersection |
+| `TwoLevelSlashing`     | `Inv_ClosureStableAtMaxLevel` | fixed-point stability |
+| `TwoLevelSlashing`     | `Inv_EpochEligibleInCurrent` / `Inv_StaleEvidenceNotEligible` | epoch filtering |
+| `TwoLevelSlashing`     | `Inv_ReportsSuppressNeglectEdges` | visibility/report suppression |
+| `TwoLevelSlashing`     | `Inv_ArithmeticSafeEnvelope` | arithmetic safe envelope |
+| `TwoLevelSlashing`     | `Inv_ViewEdgesVisibleUnreported` | view-indexed active evidence |
+| `TwoLevelSlashing`     | `Inv_SameViewSameClosure` | equal active views imply equal closure |
+| `TwoLevelSlashing`     | `Inv_CarryoverPolicyCurrent` / `Inv_NoCarryoverNoMappedDirect` | epoch carryover policy |
+| `TwoLevelSlashing`     | `Inv_EvidenceRetentionForDirectOffenders` | evidence-retention precondition |
+| `TwoLevelSlashing`     | `Inv_CanonicalRecordKeyInjective` | canonical record key injectivity |
+| `TwoLevelSlashing`     | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | batch slash projection boundary |
 
 ### 10.4 Memory-efficient rewrite: `EquivocationDetectorEager`
 
@@ -975,13 +1150,13 @@ The rewrite is observationally bisimilar to the original (every reachable
 state of the original maps to one in the rewrite via the natural
 projection that classifies pending blocks).
 
-### 10.5 Model-checking results (verified, 2026-05-01 run)
+### 10.5 Model-checking results (verified through 2026-05-05 run)
 
 Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`.
 
 | Spec                                                                                                                    | Result                                                                                                     | States explored                                                      |
 |-------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
-| `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, includes `Inv_ActiveSetAboveQuorum`)                                 | ✅ Exhausted, 0 violations                                                                                 | 73,728 generated; **30,720 distinct**                                |
+| `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, weighted closure bound, quorum-intersection, fixed-point, epoch, visibility/report, evidence-view, carryover, retention, canonical-key, batch-projection, proposer-fairness, and arithmetic-envelope invariants) | ✅ Exhausted, 0 violations on 2026-05-05 with `tlc -workers 1`                                             | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
 | `MC_SlashFlow` (full invariants incl. `Inv_ForfeitedToCoopVault` and `Inv_StakeConservation` via `RECURSIVE` operators) | ✅ Exhausted, 0 violations                                                                                 | 2,365,633 generated; **405,224 distinct**; depth 22                  |
@@ -1012,9 +1187,27 @@ confirming the fix.
 | `Inv_BondsZeroAfterSlash`       | `slash_zeros_bond`                   | yes            |
 | `Inv_SlashedExcludedFromFC`     | `fork_choice_exclusion`              | yes            |
 | `Inv_LevelClosureTerminates`    | `t_11_level_2_termination`           | yes            |
+| `Inv_ActiveStakeAboveWeightedQuorum` | `weighted_slash_iter_quorum_preservation` | yes      |
+| `Inv_FilteredClosureInCurrentValidators` | `restricted_closure_only_from_current_direct_offenders` | yes |
+| `Inv_NeglectEdgesVisibleUnreported` | `visible_unreported_graph_in`    | yes            |
+| `Inv_NoUnexpectedDifferentialDivergence` | `divergence_allowed` classification in `Bisimulation.v` | yes |
+| `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary` | `unsigned_overflow_boundary_exact` / `signed_overflow_boundary_exact` | yes |
+| `Inv_ActiveQuorumsIntersect` | `quorum_intersection_by_size` | yes |
+| `Inv_ActiveStakeQuorumsIntersect` | `weighted_quorum_intersection_from_disjoint_bound` | yes |
+| `Inv_ClosureStableAtMaxLevel` | `slash_iter_fixed_point_after_universe_bound` | yes |
+| `Inv_EpochEligibleInCurrent` / `Inv_StaleEvidenceNotEligible` | `epoch_filter_in` | yes |
+| `Inv_ReportsSuppressNeglectEdges` | `visible_unreported_graph_in` | yes |
+| `Inv_ArithmeticSafeEnvelope` | `arithmetic_safe_envelope` | yes |
+| `Inv_ViewEdgesVisibleUnreported` | `visible_unreported_graph_in` / `reported_edge_not_active` | yes |
+| `Inv_SameViewSameClosure` | `view_closure_equiv_by_active_edges` | yes |
+| `Inv_CarryoverPolicyCurrent` / `Inv_NoCarryoverNoMappedDirect` | `carryover_policy_sound` | yes |
+| `Inv_EvidenceRetentionForDirectOffenders` | `restricted_closure_only_from_current_direct_offenders` precondition | yes |
+| `Inv_CanonicalRecordKeyInjective` | `canonical_key_pair_injective` | yes |
+| `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` | yes |
+| `Inv_ProposerFairnessForBoundedLiveness` | `proposer_fairness_boundary_requires_review` | yes |
 
 The table lists the safety invariants with the closest 1:1 Rocq
-counterparts. Seven additional TLA+ invariants —
+counterparts. Additional TLA+ invariants —
 `Inv_NoOverwrite` (`ConcurrentTracker.tla`),
 `Inv_LivenessAsSafety` (`EquivocationDetectorEager.tla`, the
 rewrite-introduced shadow of `Live_DetectionComplete`),
@@ -1029,8 +1222,9 @@ record contains its witness hash),
 `Inv_StakeConservation` (`SlashFlow.tla`, corollary of T-7 + T-8),
 and `Inv_SlashedRemoved` (`SlashFlow.tla`, projection of T-7
 `slash_zeros_bond` onto the active-set difference) — are
-corollaries / weakenings of the listed Rocq theorems and are
-discharged by the same proofs.
+corollaries / weakenings of the listed Rocq theorems and are discharged
+by the same proofs. The new two-level invariants are direct TLA+ mirrors
+of the Sage-promoted Rocq theorems in §7.4-§7.9.
 
 ### 10.7 What TLA+ proves and does not
 
@@ -1117,7 +1311,26 @@ an equivocation, (b) cap the neglect-closure size in the proposer's
 deploy-construction logic, or (c) a combination of social and
 economic disincentives that keep `|neglect-closure|` below F.
 
-#### 10.8.3 Combined safety+liveness OOM at 2v×2s×2b — and how the rewrite handles it
+#### 10.8.3 Sage-guided edge cases promoted to Rocq/TLA+
+
+The Sage models in `formal/sage/slashing/` found seven additional
+finite witnesses. They have been promoted as Rocq theorem targets and
+TLA+ invariants rather than accepted as proof authority.
+
+| Finding | Finite witness | Formal response |
+|---------|----------------|-----------------|
+| Weighted stake amplification | equal-stake chain `0 -> 1 -> 2 -> 3` slashes all four validators from one direct offender | `weighted_slash_iter_quorum_preservation` and `Inv_ActiveStakeAboveWeightedQuorum` |
+| Zero-stake direct offender | `stakes=[0,2,2]`, offender `0`, edge `1 -> 0` | `zero_stake_not_direct_offender_under_bonded_precondition`; tests must reject/filter zero-stake direct offenders |
+| Stale/off-era evidence | evidence validator outside current set seeds current slash under unfiltered projection | `restricted_closure_only_from_current_direct_offenders`; `Inv_FilteredClosureInCurrentValidators` |
+| Evidence withholding | partial visibility closure smaller than full-visibility accountability closure | `visible_unreported_graph_in`; `Inv_NeglectEdgesVisibleUnreported` |
+| Duplicate/self/cyclic graph cases | duplicates idempotent; disconnected cycles not slashed; cycles reaching offenders slashed | `slash_iter_graph_equiv`; `no_reachability_no_level2_slash` |
+| Bounded arithmetic projection | signed 64-bit and unsigned 128-bit `max + 1` diverge from exact arithmetic | `unsigned_overflow_boundary_exact`; `signed_overflow_boundary_exact` |
+| Differential bisimilarity | no unexpected divergence in bounded search; tracker race is permitted bug fix; boundary divergence is candidate | `DivergenceClass` and `divergence_allowed` in `Bisimulation.v` |
+| Hypothesis-reduced proposer fairness | one bonded proposer observes evidence and withholds it; appending one fair including proposer gives the first slash slot | `proposer_fairness_boundary_requires_review`; `Inv_ProposerFairnessForBoundedLiveness` |
+| Hypothesis-reduced projection risks | delimiter-free key `(1,10)/(11,0)`, two-validator partial abort, one-slot pruning, all-unit weighted closure-bound violation | `delimiter_free_record_key_projection_hypothesis_collision`; existing batch, retention, and weighted-bound theorems |
+| Hypothesis frontier exploration | novelty/coverage scoring, less-directed multi-epoch traces, exact-vs-projection checks, and generated-trace classification found no unexpected divergence in the configured quick run | Sage witness generator; existing divergence and projection classifications |
+
+#### 10.8.4 Combined safety+liveness OOM at 2v×2s×2b — and how the rewrite handles it
 
 **Run.** Original `MC_EquivocationDetector.cfg` with both
 `INVARIANT Inv_DetectionSound` and `PROPERTY Live_DetectionComplete`.
@@ -1143,7 +1356,7 @@ liveness) is general and can apply to any classification-style
 protocol where classification can fire atomically with the action that
 creates the classifiable event.
 
-#### 10.8.4 `Inv_NoOverwrite` is weaker than `Inv_RecordMonotone`
+#### 10.8.5 `Inv_NoOverwrite` is weaker than `Inv_RecordMonotone`
 
 **Observation.** `ConcurrentTracker.tla` defines two separate
 invariants:
@@ -1164,7 +1377,7 @@ race at a less-precise abstraction. Together they form a triangulation:
 if the implementation passed one and failed the other, that would
 indicate a deeper modeling issue.
 
-#### 10.8.5 Rocq vs TLA+ scope of `t_9_6` self-regression
+#### 10.8.6 Rocq vs TLA+ scope of `t_9_6` self-regression
 
 **Discrepancy.** The Boolean-predicate version `t_9_6_self_regression_detected`
 is essentially a `Nat.ltb_lt` reflection wrapper (proved in 1 line).
@@ -1211,6 +1424,7 @@ formal/rocq/slashing/theories/
 ├── BugFixSelfRegression.v         (T-9.6, T-9.9)
 ├── BugFixSeqNumDensity.v          (T-9.7)
 ├── BugFixUnbondedProposer.v       (T-9.8)
+├── BugFixWithdrawTransferFailure.v (T-9.10, T-9.10', T-9.10″)
 ├── Bisimulation.v                 (T-13, T-15 components)
 └── MainTheorem.v                  (composition; main_bisimilarity_theorem)
 ```
@@ -1241,6 +1455,7 @@ formal/rocq/slashing/theories/
 | §10.7 Bug fix #7                | `BugFixSeqNumDensity.v`                                   |
 | §10.8 Bug fix #8                | `BugFixUnbondedProposer.v`                                |
 | §10.9 Bug fix #9                | `BugFixSelfRegression.v` (T-9.9)                          |
+| §10.10 Bug fix #10              | `BugFixWithdrawTransferFailure.v` (T-9.10, T-9.10', T-9.10″) |
 
 ---
 
@@ -1257,6 +1472,8 @@ Running
 
 ```
 echo 'From Slashing Require Import MainTheorem.
+From Slashing Require Import TwoLevelSlashing.
+From Slashing Require Import Bisimulation.
 Print Assumptions main_bisimilarity_theorem.
 Print Assumptions main_bisimilarity_strong.
 Print Assumptions main_T14_weak_barbed_equiv_refl.
@@ -1266,7 +1483,17 @@ Print Assumptions main_T9_2_n_threads.
 Print Assumptions main_T15_pipeline_step.
 Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T6_detect_neglected_sound.
-Print Assumptions main_T9_6_dag.' \
+Print Assumptions main_T9_6_dag.
+Print Assumptions slash_iter_reachability_characterization.
+Print Assumptions weighted_slash_iter_quorum_preservation.
+Print Assumptions restricted_closure_only_from_current_direct_offenders.
+Print Assumptions visible_unreported_graph_in.
+Print Assumptions slash_iter_graph_equiv.
+Print Assumptions no_reachability_no_level2_slash.
+Print Assumptions unsigned_overflow_boundary_exact.
+Print Assumptions signed_overflow_boundary_exact.
+Print Assumptions candidate_boundary_divergence_requires_review.
+Print Assumptions unexpected_divergence_forbidden.' \
   | coqtop -Q theories Slashing
 ```
 
@@ -1281,17 +1508,21 @@ Rocq's standard library and the slashing theories — no `Admitted`, no
 custom `Axiom`, no `Parameter`, no extracted assumption. Reproducible
 with the exact command above.
 
-The complete theorem set (after all nine audit-gap closures) covers:
+The complete theorem set (after all ten audit-gap closures) covers:
 
 - **Detection layer** (T-1, T-2, T-3, T-4 via `detect_neglected_*`)
 - **Record persistence** (T-4, T-5)
 - **Slash effect** (T-7, T-8, T-Idem — including `ps_active`, T-10)
-- **Two-level slashing** (T-11, T-12 list-length, T-12 BFT-style)
+- **Two-level slashing** (T-11, T-12 list-length, T-12 BFT-style,
+  reachability characterization, weighted quorum, current-validator
+  filtering, evidence visibility, graph edge cases, arithmetic boundaries)
 - **Bisimilarity** (T-13 strong baseline, T-13 records monotonicity,
   T-13 forkchoice filter, T-14 weak barbed equivalence reflexivity,
   symmetry, and transitivity, T-15 pipeline composition)
-- **Bug fixes** (T-9.1 through T-9.9 — including the strengthened
-  T-9.2 n-thread schedule and T-9.6 DAG-level)
+- **Bug fixes** (T-9.1 through T-9.10 — including the strengthened
+  T-9.2 n-thread schedule, T-9.6 DAG-level, and the
+  `BugFixWithdrawTransferFailure.v` triple T-9.10 / T-9.10' / T-9.10″
+  for the post-quarantine withdrawal flow)
 
 All return "Closed under the global context".
 

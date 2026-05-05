@@ -52,12 +52,13 @@ The system is designed so that:
 
 ### 12.2.4 Effect layer
 
-| Failure mode                                  | Effect                                                         | Resolution                                                             |
-|-----------------------------------------------|----------------------------------------------------------------|------------------------------------------------------------------------|
-| **Spoofed system auth token**                 | Deploy rejected at first guard.                                | T-AuthCheck (Rholang-level observation; verified at PoS.rhox:437-439). |
-| **Invalid block hash not in `invalidBlocks`** | Degraded path: `validator ← userPk` (slash whoever submitted). | Documented; spec §3.4.1.                                               |
-| **Coop-vault transfer fails**                 | Pre-fix: hangs forever. **Bug #4.**                            | Post-fix #4: deterministic `(false, "transfer failed")` return.        |
-| **Slash twice on same validator**             | Second slash is a no-op (T-Idem).                              | Designed-in idempotence; T-Idem at `PoSContract.v:117`.                |
+| Failure mode                                       | Effect                                                                                              | Resolution                                                                            |
+|----------------------------------------------------|-----------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| **Spoofed system auth token**                      | Deploy rejected at first guard.                                                                     | T-AuthCheck (Rholang-level observation; verified at PoS.rhox:437-439).                |
+| **Invalid block hash not in `invalidBlocks`**      | Degraded path: `validator ← userPk` (slash whoever submitted).                                      | Documented; spec §3.4.1.                                                              |
+| **Coop-vault slash transfer fails**                | Pre-fix: hangs forever. **Bug #4.**                                                                 | Post-fix #4: deterministic `(false, "transfer failed")` return.                       |
+| **Withdrawal `posVault.transfer` fails**           | Pre-fix: validator removed from `withdrawers` without payout — funds silently lost. **Bug #10.**    | Post-fix #10: validator stays in `withdrawers` for retry; `total_funds` invariant preserved. |
+| **Slash twice on same validator**                  | Second slash is a no-op (T-Idem).                                                                   | Designed-in idempotence; T-Idem at `PoSContract.v:117`.                               |
 
 ### 12.2.5 Fork-choice layer
 
@@ -146,22 +147,24 @@ failure modes are likely:
 | Inconsistent `equivocation_records()` views across nodes | Bug #2 (race) — pre-fix only.                                                                        |
 | `JustificationRegression` blocks not surfacing slashes   | Bug #3 (dispatcher stub) — pre-fix only.                                                             |
 | Repeated rejected proposer-block submissions             | Bug #8 (unbonded proposer) — pre-fix only.                                                           |
-| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the nine fixes; if seen, investigate as a regression. |
+| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the ten fixes; if seen, investigate as a regression.  |
+| Validator stuck in `withdrawers` map for > N rounds      | Bug #10 (post-fix retry path). If `posVault.transfer` keeps failing, the validator's withdrawal entry remains intact across blocks; investigate the underlying vault failure cause. |
 | Validator set size drops below `n − F`                   | F-neglectful quorum-drop (§12.3.1). Manual intervention required.                                    |
 
 ## 12.7 Test coverage
 
-Spec §12 enumerates 54 use cases across four tiers:
+Spec §12 enumerates 75 use cases across four tiers:
 
 - **Core (UC-01–UC-25):** baseline scenarios.
 - **Tier A (UC-26, 27, 37, 38, 39, 41, 42, 43):** audit blockers.
 - **Tier B (UC-28–UC-36):** one entry per remaining slashable
   `InvalidBlock` variant.
-- **Tier C (UC-40, UC-44–UC-54):** operational and adversarial.
+- **Tier C (UC-40, UC-44–UC-75):** operational, adversarial, and
+  Sage-derived closure edge cases.
 
 Each use case has an Outcome column (slashed / not-slashed /
 rejected / admitted / error / behavioral) and a test stub path.
-Implementing the harness and 54 tests is out of scope for the
+Implementing the harness and 75 tests is out of scope for the
 spec/verification/design documents; the stubs are normative for
 whoever implements them.
 

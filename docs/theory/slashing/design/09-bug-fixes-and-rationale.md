@@ -1,39 +1,50 @@
 # 09 · Bug-Fix Manifest & Rationale
 
-The slashing subsystem ships with **nine documented defects**, each
-accompanied by a Rocq-mechanized fix. **Eight are inherited from the
+The slashing subsystem ships with **ten documented defects**, each
+accompanied by a Rocq-mechanized fix. **Nine are inherited from the
 Scala upstream**; **one is a Rust-introduced regression** (bug #2).
-**One** of the eight Scala-inherited bugs (#9) is a *deliberate Rust
+**One** of the nine Scala-inherited bugs (#9) is a *deliberate Rust
 widening* — Rust admits more blocks than Scala, by design.
 
 ## 9.1 At a glance
 
-| # | Theorem | Origin                         | Bisimilarity impact     | Worked example          | Diagram |
-|---|---------|--------------------------------|-------------------------|-------------------------|---------|
-| 1 | T-9.1   | Scala-inherited                | Preserving              | (none — see spec §10.1) | 03      |
-| 2 | T-9.2   | **Rust-introduced regression** | Preserving              | §11.3                   | 09      |
-| 3 | T-9.3   | Scala-inherited                | Preserving              | §11.8                   | 05      |
-| 4 | T-9.4   | Scala-inherited                | Preserving              | §11.4                   | 07      |
-| 5 | T-9.5   | Scala-inherited                | Preserving              | §11.6                   | 06      |
-| 6 | T-9.6   | Scala-inherited                | Preserving              | §11.9                   | 08      |
-| 7 | T-9.7   | Scala-inherited                | Preserving              | §11.7                   | 02      |
-| 8 | T-9.8   | Scala-inherited                | Preserving              | §11.10                  | 01      |
-| 9 | T-9.9   | Scala bug, Rust-fixed          | **Deliberate widening** | §11.5                   | 08      |
+| #  | Theorem | Origin                         | Bisimilarity impact     | Worked example          | Diagram |
+|----|---------|--------------------------------|-------------------------|-------------------------|---------|
+| 1  | T-9.1   | Scala-inherited                | Preserving              | (none — see spec §10.1) | 03      |
+| 2  | T-9.2   | **Rust-introduced regression** | Preserving              | §11.3                   | 09      |
+| 3  | T-9.3   | Scala-inherited                | Preserving              | §11.8                   | 05      |
+| 4  | T-9.4   | Scala-inherited                | Preserving              | §11.4                   | 07      |
+| 5  | T-9.5   | Scala-inherited                | Preserving              | §11.6                   | 06      |
+| 6  | T-9.6   | Scala-inherited                | Preserving              | §11.9                   | 08      |
+| 7  | T-9.7   | Scala-inherited                | Preserving              | §11.7                   | 02      |
+| 8  | T-9.8   | Scala-inherited                | Preserving              | §11.10                  | 01      |
+| 9  | T-9.9   | Scala bug, Rust-fixed          | **Deliberate widening** | §11.5                   | 08      |
+| 10 | T-9.10  | Scala-inherited                | Preserving              | §11.11                  | 11      |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
 documented Rust-side improvement that breaks strict bisimilarity by
 design; T-9.9 establishes that the widening is sound.
 
-> **Implementation status (as of writing).** Of the nine fixes,
-> **only #9 is currently applied in the Rust source** (the
-> `has_slash_system_deploys` widening at `validate.rs:1018-1029`).
-> Fixes #1, #2, #3, #4, #5, #6, #7, and #8 are **mechanized in Rocq**
-> with their respective T-9.M proofs but are **not yet applied in
-> the Rust port** — pending separate PRs that align the code with
-> the spec. The "Post-fix behavior" subsections below describe what
-> the Rust *will* do once each fix lands; the "Cause" subsections
-> describe the *current* Rust state.
+Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
+`posVault.transfer`-failure FIXMEs in `PoS.rhox`. Bug #4 fixed the
+slash arm (line 469); Bug #10 fixes the post-quarantine
+withdrawal arm (line 619). Bug #10's theorem set
+(T-9.10 / T-9.10' / T-9.10″) is mechanised in
+`BugFixWithdrawTransferFailure.v`, model-checked in
+`MC_WithdrawFlow.cfg`, and applied in PoS.rhox lines 615-651.
+
+> **Implementation status (as of writing).** Of the ten fixes,
+> **#9 and #10 are currently applied in the Rust / Rholang source**:
+> #9 as the `has_slash_system_deploys` widening at
+> `validate.rs:1018-1029`, and #10 as the post-fix `payWithdraw`
+> pattern-match in `PoS.rhox:615-651`. Fixes #1, #2, #3, #4, #5,
+> #6, #7, and #8 are **mechanized in Rocq** with their respective
+> T-9.M proofs but are **not yet applied in the Rust port** —
+> pending separate PRs that align the code with the spec. The
+> "Post-fix behavior" subsections below describe what the Rust /
+> Rholang *will* do once each fix lands; the "Cause" subsections
+> describe the *current* state.
 
 ## 9.2 Bug #1 — `IgnorableEquivocation` non-slashable (DOS vector)
 
@@ -73,7 +84,7 @@ the offender their entire bond.
 
 ## 9.3 Bug #2 — Lock-free tracker access (Rust regression)
 
-**Origin.** Rust-introduced regression (the only one of the nine).
+**Origin.** Rust-introduced regression (the only one of the ten).
 
 **Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
 the equivocation tracker without a lock, allowing two threads
@@ -318,7 +329,7 @@ When bonds[proposer] > 0, post-fix is pointwise equal to pre-fix.
 **Origin.** Scala bug; Rust-fixed by deliberate widening.
 
 **Bisimulation impact.** **Deliberate widening** (the only one of
-the nine) — the Rust port admits self-correcting blocks Scala
+the ten) — the Rust port admits self-correcting blocks Scala
 rejects.
 
 **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
@@ -364,7 +375,7 @@ claim T-15 holds *modulo* this widening (see §10).
 
 ## 9.11 Cross-fix interactions
 
-The nine fixes interact in three notable ways:
+The ten fixes interact in four notable ways:
 
 1. **Fix #3 + Fix #6**: Bug #6 (self-regression) feeds bug #3
    (dispatcher). Without #3, the `JustificationRegression` verdict
@@ -381,6 +392,18 @@ The nine fixes interact in three notable ways:
    end-to-end semantics. Together they ensure that a slash deploy
    *always* terminates in finite time with a deterministic outcome,
    even when the block is self-correcting.
+
+4. **Fix #4 + Fix #10**: Bug #4 fixed the slash arm's
+   `posVault.transfer` failure path (PoS.rhox:469); Bug #10 fixes
+   the *withdrawal* arm's analogous failure path (PoS.rhox:619).
+   Together they close every `posVault.transfer` callsite in
+   `PoS.rhox` against fund-loss / hung-deploy regressions. The two
+   fixes do not interact dynamically — slashing and withdrawal are
+   disjoint state transitions in the PoS contract — but the fix
+   *pattern* is shared (pattern-match on `(true, _)` vs
+   `(false, _)`, leave per-validator state intact on failure for
+   retry on a later block). Future `posVault.transfer` callsites,
+   if added, must follow the same template.
 
 ## 9.13 Bug #10 — PoS withdrawal transfer-failure FIXME
 

@@ -3,7 +3,7 @@
 ## 10.1 The headline claim
 
 The F1R3FLY Rust port of the slashing subsystem is **observationally
-equivalent** to the Scala original *modulo* the nine documented
+equivalent** to the Scala original *modulo* the ten documented
 bug-fix deltas (§09) and a small set of structural conventions
 (α-equivalence on rho-calculus names, iteration order on `BTreeSet`
 vs `Set`).
@@ -42,7 +42,7 @@ With it:
 
 - Every property the Scala port satisfies, the Rust port satisfies
   (modulo the documented widening at #9).
-- The eight Scala-inherited bugs and their fixes are common to both
+- The nine Scala-inherited bugs and their fixes are common to both
   implementations; fixing them in the spec automatically fixes them
   in both ports.
 - The Rust regression at #2 is the *only* place we need to worry
@@ -172,9 +172,12 @@ The bisimilarity claim is **modulo**:
   orders but agree on element membership. The bisimilarity is
   *value-level*, not byte-level on-disk equality.
 
-- **Seven Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8) and
-  one Rust-introduced regression fix (T-9.2)** — all of which restore
-  Rust↔Scala convergence (§09).
+- **Eight Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8,
+  T-9.10) and one Rust-introduced regression fix (T-9.2)** — all of
+  which restore Rust↔Scala convergence (§09). T-9.10 closes the
+  withdrawal-flow analog of T-9.4's slash-arm transfer-failure FIXME;
+  both are common-source fixes that apply to Rust and Scala equally
+  via the shared `casper/src/main/resources/PoS.rhox`.
 
 - **The deliberate Rust-side widening at bug #9 (T-9.9)** which
   admits self-correcting blocks Scala rejects. This is the **only
@@ -228,24 +231,41 @@ The full chain is mechanically checked in `MainTheorem.v` with zero
 
 ## 10.12 What if a new bug is found?
 
-If a tenth bug is discovered (post-fix), the maintenance procedure is:
+Bug #10 was discovered after the initial nine and incorporated by
+following the procedure below. If an eleventh bug is found, repeat:
 
-1. **Document it** as bug #10 in spec §10 with the same structure
-   as #1–#9: cause, pre-fix behavior, post-fix behavior, theorem
-   T-9.10, bisimilarity impact, worked example, diagram.
+1. **Document it** as bug #N in spec §10 with the same structure
+   as #1–#10: cause, pre-fix behavior, post-fix behavior, theorem
+   T-9.N, bisimilarity impact, worked example, diagram.
 2. **Mechanize the fix** in a new `BugFix*.v` module under
-   `formal/rocq/slashing/theories/`.
-3. **Add the bug to the §10.0 bug-class table** with origin
+   `formal/rocq/slashing/theories/` (and add it to `_CoqProject`).
+3. **Add the bug to the spec §10 bug-class table** with origin
    classification (Scala-inherited / Rust-introduced / deliberate
    widening).
 4. **Update T-15's "modulo" clause** in spec §13 to reflect the
-   tenth delta.
-5. **Re-run TLA+ model-checking** for any TLA+ invariant the new
-   fix touches.
+   new delta.
+5. **Compose the new theorem** into `MainTheorem.v` as
+   `main_T9_N_*` so the headline `main_bisimilarity_theorem` chain
+   transitively depends on it.
+6. **Add an MC config** under `formal/tlaplus/slashing/` if the
+   fix introduces new state-machine behaviour, and register it in
+   `scripts/ci/check-tla-invariants.sh`. Re-run TLA+
+   model-checking for any existing invariant the new fix touches.
+7. **Add a worked-example trace** in design §11 with a sequence
+   diagram (and add the diagram to `docs/theory/slashing/diagrams/`).
+8. **Add a failure-mode entry** in design §12 mapping the bug's
+   failure surface to its detection / recovery story.
+9. **Add a test-replay trace** under
+   `casper/tests/slashing/tla_traces/` and a `replay_mc_*` test
+   in `tla_trace_replay.rs`.
+10. **Apply the fix** in the relevant production source location
+    only after every formal artefact above type-checks /
+    TLC-cleans.
 
 The procedure is *additive*: existing proofs remain valid; the new
 bug-fix module attaches to the existing pipeline at the right
-component layer.
+component layer. The Bug #10 propagation followed steps 1-10
+verbatim and is the working example of this procedure.
 
 ---
 

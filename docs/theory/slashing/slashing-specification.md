@@ -7,7 +7,7 @@
 > formalizes the eleven components of the slashing subsystem, the labeled
 > transition system that connects them, the validator lifecycle, and the
 > bisimilarity claim between the Rust port and the Scala original. It
-> enumerates nine identified bug-fix deltas — eight inherited from the
+> enumerates ten identified bug-fix deltas — nine inherited from the
 > Scala upstream, one introduced by the Rust port — and specifies their
 > corrected behavior. Every claim is anchored to a Rocq theorem in
 > `formal/rocq/slashing/` and a TLA+ invariant in `formal/tlaplus/slashing/`,
@@ -73,16 +73,16 @@ This work contributes:
    The semantics is realized as a Rocq inductive in
    `formal/rocq/slashing/theories/EquivocationDetector.v` and as a TLA+
    transition relation in `formal/tlaplus/slashing/SlashFlow.tla`.
-2. A **bisimilarity proof**: under the nine documented bug-fix deltas, the
+2. A **bisimilarity proof**: under the ten documented bug-fix deltas, the
    Rust implementation is observationally bisimilar to the Scala original
    with respect to all observable barbs (block/state changes, fork-choice
    outcomes, vault balances). The proof lives in
    `Bisimulation.v` and `MainTheorem.v` and is summarized as Theorem 9.1
    in this document.
-3. A **bug-fix manifest** of nine numbered defects, each with a stated
+3. A **bug-fix manifest** of ten numbered defects, each with a stated
    cause, a proven-correct fix, and a TLA+ counter-example that fires
    pre-fix and passes post-fix.
-4. A **use-case catalog** of 54 scenarios across four tiers (core,
+4. A **use-case catalog** of 75 scenarios across four tiers (core,
    audit blockers, slashable-variant completion, operational and
    adversarial), each tagged for automated regression-test generation
    against the bug fixes.
@@ -969,6 +969,72 @@ the standard fixed-width boundary at `max + 1`. Implementations using
 bounded integer types must use checked arithmetic or prove the projection
 from exact arithmetic safe.
 
+**Theorem 8.8 (Quorum intersection, closure certificates, and safe envelopes).**
+*(`quorum_intersection_by_size`,
+`weighted_quorum_intersection_from_disjoint_bound`,
+`slash_iter_fixed_point_after_universe_bound`,
+`slash_iter_fixed_point_stable`, `quorum_drop_certificate`,
+`weighted_quorum_drop_certificate`, `arithmetic_safe_envelope`,
+`epoch_filter_in`, `bm_slash_many_order_independent`, and
+`hashes_equiv_*`.)* The Sage-promoted second pass strengthens the
+two-level model with theorem-shaped certificates. Active count quorums
+and weighted active stake quorums intersect under the stated strict
+BFT-style bounds; closure reaches a stable fixed point by `|V|`
+iterations; any quorum drop has an explicit slashed-size or slashed-stake
+certificate; exact slash accounting is safe whenever the vault balance
+plus all slashable bonds fits the chosen arithmetic bound; epoch filters
+keep stale evidence out of current closure; multi-slash order does not
+change final bonds or vault balance; and equivocation-record equality is
+modulo hash order and duplicate witnesses.
+
+**Theorem 8.9 (View-indexed evidence, policy boundaries, and projection risks).**
+*(`view_closure_monotone_by_active_edges`,
+`view_closure_equiv_by_active_edges`, `reports_growth_shrinks_edges`,
+`reported_edge_not_active`, `stale_epoch_not_eligible`,
+`carryover_policy_sound`, `closure_bound_assumption_needed`,
+`quorum_intersection_strictness_needed`,
+`quorum_nodup_assumption_needed`,
+`weighted_closure_bound_assumption_needed`,
+`bm_slash_many_abort_order_dependent`, `er_key_injective`,
+`canonical_key_pair_injective`, `naive_record_key_projection_collision`,
+`delimiter_free_record_key_projection_collision`,
+`delimiter_free_record_key_projection_hypothesis_collision`, and
+`classify_divergence_reason`.)* The Sage adversarial pass promoted
+the design-risk findings into formal obligations and bounded witnesses.
+Closures are monotone in active evidence edges, and equal active evidence
+views produce equal closure. Growing reports can only remove active
+neglect edges, so report-time closure monotonicity is not a valid design
+invariant. Stale epoch evidence is ineligible unless an explicit
+carryover policy maps it into the current validator identity. The BFT,
+quorum-intersection, duplicate-free quorum, current-filter, report
+suppression, and arithmetic-envelope hypotheses are necessary: removing
+them has finite counterexamples. Successful batch slashing is
+order-independent, but abort-on-first-failure batch execution is
+order-dependent unless the batch is atomic. Record keys must be encoded
+canonically as pairs; non-injective projections can collide. These
+boundary divergences are candidate-review classes, not permitted
+bisimilarity deltas.
+
+**Theorem 8.10 (Hypothesis-reduced liveness and projection witnesses).**
+*(`proposer_fairness_boundary_requires_review`,
+`delimiter_free_record_key_projection_collision`,
+`delimiter_free_record_key_projection_hypothesis_collision`,
+`view_closure_equiv_by_active_edges`,
+`bm_slash_many_abort_order_dependent`, and
+`weighted_closure_bound_assumption_needed`.)* Hypothesis-backed Sage
+search is an optional witness generator, not proof authority. Its
+promoted findings are first reduced to deterministic Sage witnesses.
+The current reduced corpus confirms: active evidence edges remain
+visible and unreported under state-machine exploration; local views may
+diverge before evidence convergence but equal active views agree;
+bounded slash liveness requires proposer evidence-inclusion fairness;
+partial batch abort is order-dependent; delimiter-free record keys can
+collide; and weighted amplification witnesses live outside the weighted
+closure-bound precondition. The frontier mode extends this from fixed
+target predicates to novelty/coverage scoring, less-directed
+multi-epoch traces, exact-vs-projection differential checks, and
+automatic trace classification.
+
 ---
 
 ## 9 · Bisimilarity statement
@@ -1014,7 +1080,7 @@ deliberate widening at `neglected_invalid_block` (bug fix #9).
 
 **Theorem 9.3 (T-15, Bisimilarity restoration).**
 *(`main_bisimilarity_theorem` and `main_bisimilarity_strong`,
-`MainTheorem.v`.)* Under the nine bug fixes specified in §10, the
+`MainTheorem.v`.)* Under the ten bug fixes specified in §10, the
 preservation of all five `R`-components across one slash + record-update
 + filter step is mechanized by `main_bisimilarity_strong`. The
 end-to-end pipeline composition is `t_15_pipeline_step_preserves_R`
@@ -1029,8 +1095,8 @@ The Rocq relation also classifies divergence candidates through
 requires review and `UnexpectedDivergence` is forbidden. This matches the
 Sage differential search: ordinary states must stay bisimilar; the
 tracker atomicity fix is a permitted bug-fix divergence; current-validator
-boundary differences remain candidate findings until implementation
-intent is confirmed.
+and proposer-fairness boundary differences remain candidate findings
+until implementation intent is confirmed.
 
 ### 9.3 Why bisimilarity matters
 
@@ -1039,14 +1105,14 @@ operator querying state, a smart-contract reading on-chain bonds, or a
 network peer following fork-choice — cannot distinguish a Rust-port node
 from a Scala node by any sequence of observations. Combined with the
 bug-fix proofs, this is the audit-grade certification for the migration:
-no behavioral regression, eight Scala-inherited defects identified and
+no behavioral regression, nine Scala-inherited defects identified and
 fixed, one Rust-introduced regression identified and fixed.
 
 ---
 
 ## 10 · Bug-fix manifest
 
-Nine numbered bug fixes. Each carries: origin, cause, location, corrected
+Ten numbered bug fixes. Each carries: origin, cause, location, corrected
 behavior, theorem name, bisimulation impact, and worked-example /
 diagram pointers. The corresponding TLC counter-example, where
 applicable, fires under the pre-fix configuration and passes under the
@@ -1054,17 +1120,18 @@ post-fix one.
 
 ### 10.0 Bug-class summary
 
-| Bug | Theorem | Origin                                                    | Bisimilarity impact                                                        |
-|-----|---------|-----------------------------------------------------------|----------------------------------------------------------------------------|
-| #1  | T-9.1   | Scala-inherited                                           | Preserving (both sides converge once fixed)                                |
-| #2  | T-9.2   | **Rust-introduced regression** (the only one of the nine) | Preserving (closing Rust-only gap)                                         |
-| #3  | T-9.3   | Scala-inherited                                           | Preserving                                                                 |
-| #4  | T-9.4   | Scala-inherited                                           | Preserving                                                                 |
-| #5  | T-9.5   | Scala-inherited                                           | Preserving                                                                 |
-| #6  | T-9.6   | Scala-inherited                                           | Preserving                                                                 |
-| #7  | T-9.7   | Scala-inherited                                           | Preserving                                                                 |
-| #8  | T-9.8   | Scala-inherited                                           | Preserving                                                                 |
-| #9  | T-9.9   | Scala bug, Rust-fixed                                     | **Deliberate widening** (Rust admits self-correcting blocks Scala rejects) |
+| Bug | Theorem | Origin                                                   | Bisimilarity impact                                                        |
+|-----|---------|----------------------------------------------------------|----------------------------------------------------------------------------|
+| #1  | T-9.1   | Scala-inherited                                          | Preserving (both sides converge once fixed)                                |
+| #2  | T-9.2   | **Rust-introduced regression** (the only one of the ten) | Preserving (closing Rust-only gap)                                         |
+| #3  | T-9.3   | Scala-inherited                                          | Preserving                                                                 |
+| #4  | T-9.4   | Scala-inherited                                          | Preserving                                                                 |
+| #5  | T-9.5   | Scala-inherited                                          | Preserving                                                                 |
+| #6  | T-9.6   | Scala-inherited                                          | Preserving                                                                 |
+| #7  | T-9.7   | Scala-inherited                                          | Preserving                                                                 |
+| #8  | T-9.8   | Scala-inherited                                          | Preserving                                                                 |
+| #9  | T-9.9   | Scala bug, Rust-fixed                                    | **Deliberate widening** (Rust admits self-correcting blocks Scala rejects) |
+| #10 | T-9.10  | Scala-inherited                                          | Preserving (withdrawal-flow analog of #4; closes fund-loss bug)            |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
@@ -1104,7 +1171,7 @@ design*; T-9.9 establishes that the widening is sound.
 
 ### 10.2 Bug #2 — Lock-free tracker access (Rust regression)
 
-- **Origin.** Rust-introduced regression (the only one of the nine).
+- **Origin.** Rust-introduced regression (the only one of the ten).
 - **Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
   the equivocation tracker without a lock, allowing two threads
   processing `AdmissibleEquivocation` for the same `(validator,
@@ -1380,6 +1447,57 @@ design*; T-9.9 establishes that the widening is sound.
   fires whenever no slash accompanies a neglected justification) and
   strictly more live. See §9.9 of `slashing-verification.md` for the
   full proof.
+
+### 10.10 Bug #10 — PoS withdrawal transfer-failure FIXME
+
+- **Origin.** Scala-inherited.
+- **Cause.** `casper/src/main/resources/PoS.rhox:619` carries the
+  comment *"FIXME fix transfer in failure case"* inside the
+  `removeQuarantinedWithdrawers` flow. Pre-fix, `payWithdraw` calls
+  `payWithdrawer!(...)` without pattern-matching on the
+  `posVault.transfer` outcome; the surrounding `for (@_ <- payRet)`
+  accepts any value; `computeRemove` then deletes the validator from
+  `state.withdrawers` and `state.committedRewards` regardless of
+  whether the underlying transfer succeeded. A failed transfer leaves
+  the validator with no on-chain record of their pending withdrawal
+  and the funds silently lost — the PoS vault rolled back the
+  transfer at the vault layer, but the validator's
+  `withdrawers` entry was already deleted.
+- **Fix.** Pattern-match on the `posVault.transfer` result: emit
+  `(pk, true)` on success, `(pk, false)` on failure; rewrite
+  `computeRemove` to remove only successful withdrawers (failures
+  leave per-validator state intact for retry on a later block).
+  Mirrors the Bug #4 fix already applied to the slash arm.
+- **Theorems.** T-9.10 — `t_9_10_withdraw_transfer_failure_safety`
+  in `BugFixWithdrawTransferFailure.v`. Companions T-9.10' and
+  T-9.10″ in the same module establish, respectively, the
+  failure-preserves-`total_funds` invariant and the
+  parallel-fold (`unorderedParMap`) order-independence safety.
+- **Statement.** *(`t_9_10_withdraw_transfer_failure_safety`,
+  `BugFixWithdrawTransferFailure.v:225`.)* ∀ `psw v ok`, let
+  `psw' := withdraw_with_transfer_oracle(psw, v, ok)` in
+  `(ok = ⊤ ∧ wm_contains(psw'.withdrawers, v) = ⊥) ∨ (ok = ⊥ ∧ psw' = psw)`.
+  T-9.10' (line 262):
+  `total_funds(withdraw_with_transfer_oracle(psw, v, ⊥)) = total_funds(psw)`.
+  T-9.10″ (line 286): for `v ≠ u`, the post-state withdrawer/reward
+  maps after `(v then u)` equal those after `(u then v)`.
+- **Sketch.** T-9.10: unfold `withdraw_with_transfer_oracle` and
+  case on the Boolean. The `true` branch follows from
+  `wm_lookup_remove_self`; the `false` branch is reflexivity.
+  T-9.10': unfold `withdraw_with_transfer_oracle ⊥` to `psw` and
+  apply `reflexivity`. T-9.10″: unfold both nested calls and
+  conclude using `wm_remove_commutative` / `rm_remove_commutative`
+  (per-validator removal commutes across distinct keys).
+- **TLA+ companion.** `formal/tlaplus/slashing/WithdrawFlow.tla`
+  with `MC_WithdrawFlow.cfg` model-checks five invariants
+  (`Inv_NoFundsLost`, `Inv_TotalFundsConst`,
+  `Inv_RemovedImpliesPaid`, `Inv_RewardsConsistent`,
+  `Inv_TypeOK`) and the liveness property
+  `Live_AllEventuallyPaid` under fair retry scheduling.
+- **Production application.** Applied at PoS.rhox:615-651
+  (the post-fix `payWithdraw` + `computeRemove` rewrite). See
+  design §11.11 for the worked-example trace and design §9.13
+  for the rationale.
 
 ---
 
@@ -1658,7 +1776,7 @@ and the bonded-equivalence companion
 
 ## 12 · Use-case catalog
 
-Fifty-four scenarios. Each row gives: name, theorem(s) exercised, related
+Seventy-two scenarios. Each row gives: name, theorem(s) exercised, related
 diagram, and a stub path for the automated test (the test files are not
 implemented in this work; they are the deliverable for issue #25 fix 3d).
 
@@ -1669,9 +1787,10 @@ verification-doc findings,
 unmapped headline theorems, and high-priority pre-fix regressions;
 **Tier B variant catalog completion (UC-28–UC-36)** — one entry per
 remaining slashable `InvalidBlock` variant; **Tier C operational and
-adversarial (UC-40, UC-44–UC-54)** — distributed-systems and lifecycle
-scenarios. UC numbering reflects the order in which each scenario was
-proposed; tiers do not partition the numeric range.
+adversarial (UC-40, UC-44–UC-75)** — distributed-systems, lifecycle,
+and Sage-derived edge-case scenarios. UC numbering reflects the order in
+which each scenario was proposed; tiers do not partition the numeric
+range.
 
 ### Core scenarios (UC-01–UC-25)
 
@@ -1760,7 +1879,7 @@ Brings slashable-variant coverage to 18/18 (100%).
 | UC-35 | InvalidBlockHash                          | T-9.3        | slashed | 05      | `casper/tests/slashing/invalid_block_hash.rs`      |
 | UC-36 | ContainsFutureDeploy                      | T-9.3        | slashed | 05      | `casper/tests/slashing/future_deploy.rs`           |
 
-### Tier C — Operational and adversarial (UC-40, UC-44–UC-54)
+### Tier C — Operational and adversarial (UC-40, UC-44–UC-75)
 
 Distributed-systems classics, lifecycle transitions during a pending
 slash, DAG-shape variations, and record-invariant exercises.
@@ -1786,6 +1905,20 @@ slash, DAG-shape variations, and record-invariant exercises.
 | UC-59 | Duplicate neglect edges are idempotent                    | T-12 graph equiv | behavioral | 04      | `casper/tests/slashing/duplicate_neglect_edges.rs`       |
 | UC-60 | Neglect cycle without path to offender is not slashed     | T-12 reachability | not-slashed | 04     | `casper/tests/slashing/disconnected_neglect_cycle.rs`    |
 | UC-61 | Bounded arithmetic projection around slash accounting     | T-8, T-12 arithmetic | error   | 07      | `casper/tests/slashing/bounded_arithmetic_projection.rs` |
+| UC-62 | Active quorum intersection after slashing                 | T-12 quorum intersection | behavioral | 04 | `casper/tests/slashing/quorum_intersection_after_slash.rs` |
+| UC-63 | Closure fixed-point certificate                           | T-11 fixed point | behavioral | 04      | `casper/tests/slashing/closure_fixed_point_certificate.rs` |
+| UC-64 | Epoch evidence rollover filtering                         | T-12 epoch filter | behavioral | 06     | `casper/tests/slashing/epoch_evidence_rollover.rs`       |
+| UC-65 | Equivocation-record normalization                         | T-5 record equivalence | behavioral | 09   | `casper/tests/slashing/record_normalization.rs`          |
+| UC-66 | Evidence-view divergence                                  | T-12 view closure | behavioral | 04     | `casper/tests/slashing/evidence_view_divergence.rs`      |
+| UC-67 | Report-time closure shrinkage                             | T-12 report suppression | behavioral | 04 | `casper/tests/slashing/report_time_closure_shrinkage.rs` |
+| UC-68 | Rebonded validator identity boundary                      | T-12 epoch carryover | behavioral | 06   | `casper/tests/slashing/rebonded_identity_boundary.rs`    |
+| UC-69 | Theorem-assumption counterexample catalog                 | T-12 hypotheses | behavioral | 04      | `casper/tests/slashing/theorem_assumption_counterexamples.rs` |
+| UC-70 | Weighted amplification outside closure bound              | T-12 weighted boundary | behavioral | 04 | `casper/tests/slashing/weighted_amplification_boundary.rs` |
+| UC-71 | Partial batch slash failure atomicity                     | T-IdemMany boundary | error | 07        | `casper/tests/slashing/partial_batch_failure_atomicity.rs` |
+| UC-72 | Projection-risk regression catalog                        | T-5 key, T-8 arithmetic, T-12 retention | behavioral | 09 | `casper/tests/slashing/projection_risk_regressions.rs`   |
+| UC-73 | Hypothesis-reduced scenario corpus                        | T-12HYP, T-15D | behavioral | 04, 09 | `casper/tests/slashing/hypothesis_reduced_scenarios.rs`   |
+| UC-74 | Proposer evidence-inclusion fairness boundary             | T-12PF | behavioral | 07      | `casper/tests/slashing/proposer_fairness_boundary.rs`     |
+| UC-75 | Delimiter-free record-key collision regression            | T-5DF | behavioral | 09      | `casper/tests/slashing/delimiter_free_record_key_collision.rs` |
 
 Each test stub follows the pattern:
 
@@ -1841,7 +1974,7 @@ likely objections by stating what is in and out of scope.
 | Bond-deposit / bond-withdrawal protocol                      | Out               | The spec assumes bonds exist; mutation paths other than slashing are out of scope.                                                                                                                                           |
 | Z3 / SMT-based bond arithmetic verification                  | Out               | TLA+ + Rocq sufficient; Z3 may be added if a specific bond invariant proves intractable but no such instance was identified.                                                                                                 |
 | Economic finality                                            | Out               | Covered separately under `docs/theory/finality/`; the slashing layer enforces accountability, not finality.                                                                                                                  |
-| Liveness under partition                                     | Out               | TLA+ liveness was model-checked but has scale caveats — see verification §10.5 / §10.8.3.                                                                                                                                    |
+| Liveness under partition                                     | Out               | TLA+ liveness was model-checked but has scale caveats — see verification §10.5 / §10.8.4.                                                                                                                                    |
 | Gossip-layer Sybil resistance                                | Out               | Adjacent topic; handled in `comm/` (Kademlia + TLS layers).                                                                                                                                                                  |
 | Proposer-crash recovery                                      | Out               | Behavioral concern (UC-15); no formal theorem yet covers the proposer-crash → next-proposer-takeover transition. Future work.                                                                                                |
 | Rocq mechanization of `T-AuthCheck`                          | Out (future work) | Currently a Rholang-level observation only (§5.5). The Rocq `slash` definition assumes the auth-token check has already passed; extending it with an auth-oracle (mirroring `BugFixTransferFailure.v`) would close this gap. |
@@ -1851,12 +1984,14 @@ The bisimilarity claim (T-15) is **modulo**:
   rho-calculus terms, justified in [MR05a]).
 - Iteration order on `BTreeSet` (Rust) vs `Set` (Scala) — value-level
   equality, not byte-level on-disk equality.
-- Seven Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8) and one
-  Rust-introduced regression fix (T-9.2, the only one of the nine), all of
-  which restore Rust↔Scala convergence; **and** the deliberate
-  Rust-side widening at bug #9 (T-9.9) which admits self-correcting
-  blocks Scala rejects. (See §10.0 for the per-bug origin
-  classification.)
+- Eight Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8, T-9.10)
+  and one Rust-introduced regression fix (T-9.2, the only one of the
+  ten), all of which restore Rust↔Scala convergence; **and** the
+  deliberate Rust-side widening at bug #9 (T-9.9) which admits
+  self-correcting blocks Scala rejects. (See §10.0 for the per-bug
+  origin classification.) T-9.10 closes the withdrawal-flow analog
+  of T-9.4's slash-arm transfer-failure FIXME; both apply equally to
+  Rust and Scala via the shared `casper/src/main/resources/PoS.rhox`.
 - An authenticated PKI identity layer (out of scope; T-15 holds
   modulo this assumption).
 
