@@ -77,19 +77,14 @@ Each component projection has its own sub-bisimulation in
 | Sub-bisimulation       | File:line              | Reflexive | Symmetric | Transitive              |
 |------------------------|------------------------|-----------|-----------|-------------------------|
 | `bonds_bisim`          | `Bisimulation.v:30`    | ✓         | ✓         | ✓ (`Bisimulation.v:55`) |
-| `records_bisim_strong` | `Bisimulation.v` §7    | ✓         | ✓         | ✗ (future work)         |
-| `slashed_bisim`        | `Bisimulation.v:39-40` | ✓         | ✓         | ✗ (future work)         |
+| `records_bisim_strong` | `Bisimulation.v` §7    | ✓         | ✓         | ✓                       |
+| `slashed_bisim`        | `Bisimulation.v:39-40` | ✓         | ✓         | ✓                       |
 | `vault_bisim`          | (definitional `=`)     | ✓         | ✓         | ✓ (`eq_trans`)          |
-| `forkchoice_bisim`     | `Bisimulation.v` §9    | ✓         | ✓         | ✗ (future work)         |
+| `forkchoice_bisim`     | `Bisimulation.v` §9    | ✓         | ✓         | ✓                       |
 
-Two of the five (`bonds_bisim`, `vault_bisim`) currently carry
-transitivity proofs; the other three await analogous lemmas. T-14
-is therefore properly a **weak barbed bisimulation** (reflexive,
-symmetric) rather than a full equivalence — the missing transitivity
-is documented as future work in spec §13. This does not affect
-the consensus-critical correctness; transitivity becomes relevant
-only when chaining bisimilarity proofs across multiple
-implementation transitions.
+All five component relations carry reflexivity, symmetry, and
+transitivity proofs. T-14 is therefore a full weak-barbed equivalence
+over the five observable projections.
 
 ## 10.5 Theorem T-13 (split into a/b/c)
 
@@ -100,22 +95,23 @@ sub-theorems, one per projection:
   `Bisimulation.v:77`.)* If `bonds_bisim(b₁, b₂)`, then
   `bonds_bisim(bm_slash(b₁, v), bm_slash(b₂, v))`.
 
-- **T-13b (Records projection).** *(`records_bisim_monotone_update`,
-  `Bisimulation.v:263` (§8).)* If `records_bisim_strong(s₁, s₂)`,
-  then for every key `k` and hash `h`, monotone update preserves
-  containment.
+- **T-13b (Records projection).** *(`records_bisim_strong_preserved_update`,
+  `Bisimulation.v` §8.)* If `records_bisim_strong(s₁, s₂)`, then for
+  every key `k` and hash `h`, applying the same update to both stores
+  preserves the full strong record bisimulation.
 
 - **T-13c (Fork-choice projection).** *(`forkchoice_bisim_preserves_filter`,
   `Bisimulation.v` §9.)* If `forkchoice_bisim(lm₁, lm₂)` and
   `bonds_bisim(b₁, b₂)`, then per-bond filtering preserves the
   bisimulation.
 
-## 10.6 Theorem T-14 (Weak barbed bisimulation)
+## 10.6 Theorem T-14 (Weak barbed equivalence)
 
 **Statement.** *(`weak_barbed_equiv` (relation, `Bisimulation.v:367`),
 `weak_barbed_equiv_refl` (`Bisimulation.v:376`),
-`weak_barbed_equiv_sym` (`Bisimulation.v:388`).)* The five-component
-relation `weak_barbed_equiv` is reflexive and symmetric.
+`weak_barbed_equiv_sym` (`Bisimulation.v:388`), and
+`weak_barbed_equiv_trans`.)* The five-component relation
+`weak_barbed_equiv` is reflexive, symmetric, and transitive.
 
 ```
 weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)

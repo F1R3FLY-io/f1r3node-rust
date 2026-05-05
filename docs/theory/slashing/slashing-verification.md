@@ -648,7 +648,7 @@ the filter result as the per-bond conditional. ∎
 This adds the fifth `R`-component (`forkChoiceLatestMessages`) to the
 bisimilarity claim, closing Audit Gap 2.
 
-### 8.6 Theorem 8.5 (T-14, Weak barbed bisimulation — refl + sym, Audit Gap 3 closure)
+### 8.6 Theorem 8.5 (T-14, Weak barbed equivalence, Audit Gap 3 closure)
 
 **Statement.** *(`weak_barbed_equiv` and `weak_barbed_equiv_refl`,
 `Bisimulation.v` §10.)* The full observational equivalence over the five
@@ -663,10 +663,11 @@ components is
      ∧ forkchoice_bisim(lm₁,lm₂)
 ```
 
-Companion theorems `weak_barbed_equiv_refl` and `weak_barbed_equiv_sym`
-establish reflexivity and symmetry.
+Companion theorems `weak_barbed_equiv_refl`, `weak_barbed_equiv_sym`,
+and `weak_barbed_equiv_trans` establish reflexivity, symmetry, and
+transitivity.
 
-**Proof.** Conjunction of per-component reflexivity / symmetry
+**Proof.** Conjunction of per-component equivalence
 properties. ∎
 
 ### 8.7 Theorem 8.6 (T-15a, Pipeline composition, Audit Gap 8 closure)
@@ -686,7 +687,8 @@ Define a pipeline step as the composition
 Then under the strong bisimulation `R`, applying `pipeline_step`
 consistently on both sides preserves all five components.
 
-**Proof.** Composition of T-13, the records-monotone update, the
+**Proof.** Composition of T-13, the full
+`records_bisim_strong_preserved_update` theorem, the
 slashed-append-consistent lemma, the vault-increment consistency lemma,
 and the forkchoice-bisim filter preservation. ∎
 
@@ -979,7 +981,7 @@ Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`.
 
 | Spec                                                                                                                    | Result                                                                                                     | States explored                                                      |
 |-------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
-| `MC_TwoLevelSlashing`                                                                                                   | ✅ Exhausted, 0 violations                                                                                 | 198,720 generated; **102,400 distinct**                              |
+| `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, includes `Inv_ActiveSetAboveQuorum`)                                 | ✅ Exhausted, 0 violations                                                                                 | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
 | `MC_SlashFlow` (full invariants incl. `Inv_ForfeitedToCoopVault` and `Inv_StakeConservation` via `RECURSIVE` operators) | ✅ Exhausted, 0 violations                                                                                 | 2,365,633 generated; **405,224 distinct**; depth 22                  |
@@ -1019,8 +1021,9 @@ rewrite-introduced shadow of `Live_DetectionComplete`),
 `Inv_RecordHasWitness` (`EquivocationDetector.tla:207` /
 `EquivocationDetectorEager.tla:195`, asserts every equivocation
 record contains its witness hash),
-`Inv_ActiveSetAboveQuorum` (`TwoLevelSlashing.tla`, corollary of
-T-12 `t_12_bft_quorum_preservation`),
+`Inv_ActiveSetAboveQuorum` (`TwoLevelSlashing.tla`, checked under
+`EnforceClosureBound=TRUE` and mirrored by T-12
+`t_12_bft_quorum_preservation`),
 `Inv_ForfeitedToCoopVault` (`SlashFlow.tla`, corollary of T-8
 `slash_transfers_stake`),
 `Inv_StakeConservation` (`SlashFlow.tla`, corollary of T-7 + T-8),
@@ -1257,9 +1260,11 @@ echo 'From Slashing Require Import MainTheorem.
 Print Assumptions main_bisimilarity_theorem.
 Print Assumptions main_bisimilarity_strong.
 Print Assumptions main_T14_weak_barbed_equiv_refl.
+Print Assumptions main_T14_weak_barbed_equiv_trans.
 Print Assumptions main_T12_bft_quorum.
 Print Assumptions main_T9_2_n_threads.
 Print Assumptions main_T15_pipeline_step.
+Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T6_detect_neglected_sound.
 Print Assumptions main_T9_6_dag.' \
   | coqtop -Q theories Slashing
@@ -1283,8 +1288,8 @@ The complete theorem set (after all nine audit-gap closures) covers:
 - **Slash effect** (T-7, T-8, T-Idem — including `ps_active`, T-10)
 - **Two-level slashing** (T-11, T-12 list-length, T-12 BFT-style)
 - **Bisimilarity** (T-13 strong baseline, T-13 records monotonicity,
-  T-13 forkchoice filter, T-14 weak barbed equivalence reflexivity and
-  symmetry, T-15 pipeline composition)
+  T-13 forkchoice filter, T-14 weak barbed equivalence reflexivity,
+  symmetry, and transitivity, T-15 pipeline composition)
 - **Bug fixes** (T-9.1 through T-9.9 — including the strengthened
   T-9.2 n-thread schedule and T-9.6 DAG-level)
 

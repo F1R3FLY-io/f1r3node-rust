@@ -126,7 +126,7 @@ result is classified into one of four pedigree classes:
 | **(a)** Direct mechanization            | Rocq encoding of an existing Scala/Rust algorithm                    | `EquivocationDetector.detect`, `prepare_slashing_deploys`, `is_slashable`                                      |
 | **(b)** Verification of paper algorithm | Soundness/completeness of an algorithm we did not invent             | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                            |
 | **(c)** Proof-original extension        | New theorem whose statement is an original contribution of this work | T-13, T-14, T-15 (bisimilarity); T-9.1–T-9.9 (bug-fix correctness)                                             |
-| **(d)** Citable-axiom-gated             | Result that depends on a cited classical lemma we do not re-prove    | None in the consensus-critical path; the four classical lemmas are listed in §12 of `slashing-verification.md` |
+| **(d)** Citable-axiom-gated             | Result that depends on a cited classical lemma we do not re-prove    | None in the consensus-critical path; no Rocq theorem currently introduces a custom axiom |
 
 **Theorem-naming convention.** Headline theorems are labeled `T-N`
 where `N` is a small non-negative integer, plus three named theorems:
@@ -934,6 +934,41 @@ cited BFT bound `f < n/3` from [LSP82] (cited in the trust base, §12 of
 `slashing-verification.md`); `t_12_quorum_preservation` (the structural
 list-length form) is the direct corollary used by the BFT-style proof.
 
+**Theorem 8.3 (Reachability characterization).**
+*(`slash_iter_reachability_characterization`, `TwoLevelSlashing.v`.)*
+The level-2 closure is exactly reverse reachability in the neglect graph:
+a validator is slashed after `n` iterations iff it is either a direct
+offender or has a directed neglect path of length at most `n` to a direct
+offender.
+
+**Theorem 8.4 (Weighted quorum preservation).**
+*(`weighted_slash_iter_quorum_preservation`, `TwoLevelSlashing.v`.)*
+For a stake function `stake : Validator -> nat`, if the total stake in
+the slash closure is at most the stake fault bound `F`, then active stake
+remains at least `totalStake - F`. This is the stake-weighted analogue of
+T-12.
+
+**Theorem 8.5 (Current-validator and evidence admissibility filters).**
+*(`restricted_closure_only_from_current_direct_offenders`,
+`visible_unreported_graph_in`, `TwoLevelSlashing.v`.)* Filtering direct
+offenders and neglect edges to the current validator universe prevents
+stale/off-era evidence from seeding the current slash closure. A neglect
+edge is valid only when the offender's evidence was visible to the block
+creator and not already reported by that block.
+
+**Theorem 8.6 (Graph edge-case invariance).**
+*(`slash_iter_graph_equiv`, `no_reachability_no_level2_slash`,
+`TwoLevelSlashing.v`.)* Duplicate edges, edge ordering, self-edges, and
+cycles do not change the closure except through directed reachability to
+a direct offender.
+
+**Theorem 8.7 (Exact arithmetic boundary).**
+*(`unsigned_overflow_boundary_exact`, `signed_overflow_boundary_exact`,
+`TwoLevelSlashing.v`.)* Rocq's exact natural-number arithmetic reaches
+the standard fixed-width boundary at `max + 1`. Implementations using
+bounded integer types must use checked arithmetic or prove the projection
+from exact arithmetic safe.
+
 ---
 
 ## 9 · Bisimilarity statement
@@ -962,26 +997,20 @@ R = { (sR, sS) | sR.BondMap = sS.BondMap
 bisimulation `bonds_bisim b1 b2` is preserved by `bm_slash`, meaning
 the `AdmissibleEquivocation → record → slash` happy path keeps the
 bond-component of `R` consistent across implementations. Companion
-theorems `records_bisim_monotone_update` and
+theorems `records_bisim_strong_preserved_update` and
 `forkchoice_bisim_preserves_filter` establish the records and fork-choice
 components.
 
 **Theorem 9.2 (T-14, Weak barbed bisimulation, full pipeline).**
 *(`weak_barbed_equiv` (relation, `Bisimulation.v:367`),
 `weak_barbed_equiv_refl` (`Bisimulation.v:376`), and
-`weak_barbed_equiv_sym` (`Bisimulation.v:388`).)* Over all observable
-barbs `x = {bonds, records, slashedSet, coopVault, forkChoice}`, the
-`weak_barbed_equiv` relation is **reflexive and symmetric**.
-Transitivity is left as future work (see §13): of the five
-sub-relations, only `bonds_bisim` (defined at `Bisimulation.v:30`;
-transitivity at `bonds_bisim_trans`, line 55) and
-`vault_bisim` (definitional `=`) currently carry transitivity proofs;
-`records_bisim_strong`, `slashed_bisim`, and `forkchoice_bisim` await
-analogous lemmas. Until transitivity is mechanized, T-14 is a *weak
-barbed bisimulation*, not a full equivalence — but the per-component
-preservation theorems combined with `t_15_pipeline_step_preserves_R`
-still give `Rust ≈ₓ Scala` modulo the deliberate widening at
-`neglected_invalid_block` (bug fix #9).
+`weak_barbed_equiv_sym` (`Bisimulation.v:388`), and
+`weak_barbed_equiv_trans`.)* Over all observable barbs
+`x = {bonds, records, slashedSet, coopVault, forkChoice}`, the
+`weak_barbed_equiv` relation is reflexive, symmetric, and transitive.
+The per-component preservation theorems combined with
+`t_15_pipeline_step_preserves_R` give `Rust ≈ₓ Scala` modulo the
+deliberate widening at `neglected_invalid_block` (bug fix #9).
 
 **Theorem 9.3 (T-15, Bisimilarity restoration).**
 *(`main_bisimilarity_theorem` and `main_bisimilarity_strong`,
@@ -993,6 +1022,15 @@ end-to-end pipeline composition is `t_15_pipeline_step_preserves_R`
 `neglected_invalid_block` is captured as fix #9 with its own correctness
 proof T-9.9; once that fix is recognized as the *intended* semantics,
 no remaining divergence exists.
+
+The Rocq relation also classifies divergence candidates through
+`DivergenceClass` in `Bisimulation.v`: `Bisimilar` and
+`PermittedBugFix` are allowed, while `CandidateBoundaryDivergence`
+requires review and `UnexpectedDivergence` is forbidden. This matches the
+Sage differential search: ordinary states must stay bisimilar; the
+tracker atomicity fix is a permitted bug-fix divergence; current-validator
+boundary differences remain candidate findings until implementation
+intent is confirmed.
 
 ### 9.3 Why bisimilarity matters
 
@@ -1741,6 +1779,13 @@ slash, DAG-shape variations, and record-invariant exercises.
 | UC-52 | Wide DAG (high parent-fanout) AdmissibleEquivocation      | T-1, T-15        | slashed    | 02      | `casper/tests/slashing/wide_dag_admissible.rs`           |
 | UC-53 | Single-chain (no forks) Equivocation                      | T-1, T-9.6       | slashed    | 02      | `casper/tests/slashing/single_chain_eq.rs`               |
 | UC-54 | Record monotonicity + uniqueness invariants               | T-4, T-5         | behavioral | 09      | `casper/tests/slashing/record_invariants.rs`             |
+| UC-55 | Weighted neglect-chain stake amplification                | T-12 weighted    | behavioral | 04      | `casper/tests/slashing/weighted_neglect_chain.rs`        |
+| UC-56 | Zero-stake direct offender cannot seed closure            | T-9.5, T-12 weighted | not-slashed | 06  | `casper/tests/slashing/zero_stake_direct_offender.rs`    |
+| UC-57 | Stale/off-era evidence filtered from current closure      | T-12 filter      | behavioral | 04      | `casper/tests/slashing/stale_evidence_filtered.rs`       |
+| UC-58 | Evidence withheld from validator view                     | T-12 visibility  | behavioral | 04      | `casper/tests/slashing/evidence_visibility_gap.rs`       |
+| UC-59 | Duplicate neglect edges are idempotent                    | T-12 graph equiv | behavioral | 04      | `casper/tests/slashing/duplicate_neglect_edges.rs`       |
+| UC-60 | Neglect cycle without path to offender is not slashed     | T-12 reachability | not-slashed | 04     | `casper/tests/slashing/disconnected_neglect_cycle.rs`    |
+| UC-61 | Bounded arithmetic projection around slash accounting     | T-8, T-12 arithmetic | error   | 07      | `casper/tests/slashing/bounded_arithmetic_projection.rs` |
 
 Each test stub follows the pattern:
 
@@ -1799,7 +1844,6 @@ likely objections by stating what is in and out of scope.
 | Liveness under partition                                     | Out               | TLA+ liveness was model-checked but has scale caveats — see verification §10.5 / §10.8.3.                                                                                                                                    |
 | Gossip-layer Sybil resistance                                | Out               | Adjacent topic; handled in `comm/` (Kademlia + TLS layers).                                                                                                                                                                  |
 | Proposer-crash recovery                                      | Out               | Behavioral concern (UC-15); no formal theorem yet covers the proposer-crash → next-proposer-takeover transition. Future work.                                                                                                |
-| Transitivity of `weak_barbed_equiv`                          | Out (future work) | Of the five sub-relations, only `bonds_bisim` and `vault_bisim` carry transitivity proofs today. T-14 holds as a *bisimulation* (refl + sym), not a full equivalence.                                                        |
 | Rocq mechanization of `T-AuthCheck`                          | Out (future work) | Currently a Rholang-level observation only (§5.5). The Rocq `slash` definition assumes the auth-token check has already passed; extending it with an auth-oracle (mirroring `BugFixTransferFailure.v`) would close this gap. |
 
 The bisimilarity claim (T-15) is **modulo**:

@@ -83,6 +83,5 @@ The slashing subsystem is **specified, mechanized, and audited**. Eight
 Scala-inherited bugs are documented with proven-correct fixes; one
 Rust-introduced regression is documented and fixed; one deliberate
 Rust-side widening is documented and proven sound. The remaining
-out-of-scope items (transitivity of `weak_barbed_equiv`,
-proposer-crash recovery, mechanization of `T-AuthCheck`) are listed
-in the specification §13 future-work table.
+out-of-scope items (proposer-crash recovery, mechanization of
+`T-AuthCheck`) are listed in the specification §13 future-work table.

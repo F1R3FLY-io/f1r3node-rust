@@ -136,6 +136,29 @@ bound: `|universe| − ⌊(n − 1)/3⌋ ≥ ⌈2(n − 1)/3⌉ + 1 = ⌈(2n + 1
 which is the classical BFT quorum size for `n` total validators
 [LSP82]. ∎
 
+**Strengthened closure facts.** The Rocq proof now also states the exact
+shape of closure and the edge cases surfaced by Sage:
+
+- `slash_iter_reachability_characterization`: closure is exactly reverse
+  reachability to direct offenders in the neglect graph.
+- `weighted_slash_iter_quorum_preservation`: if the stake weight of the
+  whole closure is bounded by the stake fault bound, active stake remains
+  above weighted quorum.
+- `restricted_closure_only_from_current_direct_offenders`: stale/off-era
+  evidence cannot seed the current closure when direct offenders and
+  neglect edges are filtered to the current validator universe.
+- `visible_unreported_graph_in`: a neglect edge requires visible evidence
+  and absence of a matching report/slash in that validator's block.
+- `slash_iter_graph_equiv` and `no_reachability_no_level2_slash`:
+  duplicate edges, edge ordering, self-edges, and cycles matter only when
+  they create directed reachability to a direct offender.
+
+The weighted Sage witness `stakes=[0,2,2]`, direct offender `0`, and edge
+`1 -> 0` shows why the direct-offender eligibility precondition matters:
+if zero-stake or stale validators can seed evidence, they can trigger
+slashing of bonded current validators. The formal model handles this by
+making current bonded eligibility an explicit precondition/filter.
+
 ## 8.5 What happens *outside* T-12's precondition?
 
 T-12's hypothesis `|closure| ≤ F` is essential. If the closure
@@ -205,6 +228,10 @@ The diagram shows:
 | T-6     | `detect_neglected` is sound and complete (verification §4.5 / §4.6).                                           | `EquivocationDetector.v` (sound at §4.5) |
 | T-11    | Level-2 closure terminates in at most `|V|` iterations.                                                        | `TwoLevelSlashing.v:126`                 |
 | T-12    | Under `|closure| ≤ F`, slash closure preserves quorum.                                                         | `TwoLevelSlashing.v:174`                 |
+| T-12R   | Slash closure equals reverse reachability to direct offenders.                                                 | `TwoLevelSlashing.v`                     |
+| T-12W   | Stake-weighted closure preserves weighted quorum under a weighted closure bound.                               | `TwoLevelSlashing.v`                     |
+| T-12F   | Current-validator filtering and visibility admissibility constrain the neglect graph.                          | `TwoLevelSlashing.v`                     |
+| T-12G   | Duplicate edges, edge ordering, self-edges, and cycles are governed only by reachability.                      | `TwoLevelSlashing.v`                     |
 | T-9.9   | The Rust widening (admit self-correcting blocks) is sound: rejection-iff post-fix is `neglected ∧ ¬has_slash`. | `BugFixSelfRegression.v:107`             |
 
 ## 8.9 Why two levels and not three?

@@ -22,6 +22,8 @@ whoever implements them.
 | **Mutual destruction.** Neglecters slashed.                    | Example-based + property-based test of T-11 + T-12.                                                               |
 | **BFT-quorum preservation.** Under `|closure| ≤ F`.            | Property-based test of T-12 with bounded `|closure|` generator; counter-example test (UC-26) for `|closure| > F`. |
 | **Bug-fix correctness.** Each T-9.M proven property holds.     | Property-based test per T-9.M, plus example-based pre-fix counter-example traces (UC-41/42/43).                   |
+| **Three-tier execution agreement.** Harness, oracle, and production agree on every observable under arbitrary event sequences. | Triple-bisimilarity property tests over `SlashingObserver` (§14.2.4). |
+| **Mutation coverage.** Every test-suite weakness surfaces as a surviving mutant.                            | Nightly `cargo-mutants` run with survival-rate threshold ≤ 5 % (§14.8.8). |
 
 The test plan **must catch regressions before they reach production**.
 Concretely:
@@ -106,6 +108,41 @@ and the oracle indicate either:
 The oracle for `slash` is `PoSContract.slash : PoSState → Validator
 → PoSState × bool`; the oracle for `detect` is
 `EquivocationDetector.detect : DAGState → Block → DetectionStatus`.
+
+### 14.2.4 Tier model
+
+The principled architecture defines **three tiers**, each
+implementing the read-only `SlashingObserver` trait (`bond`,
+`coop_vault`, `is_active`, `has_record`, `record_witnesses`,
+`fork_choice`):
+
+| Tier | Implementation | Cardinality | Speed | Role |
+|------|----------------|-------------|-------|------|
+| 1    | `SlashingProductionAdapter` wraps `TestNode`+`BlockDagKeyValueStorage`+Rholang | 5–8 example + 3 triple-bisim | Slow (LMDB+RSpace) | Source of truth |
+| 2    | `RocqOracleAdapter` wraps `oracle.rs` over `(DagState, EqRecordSet, PoSState)` | 30+ proptest cases | Fast (pure) | Formal-mechanization mirror |
+| 3    | `SlashingTestHarness` — in-memory LTS state machine | 50+ UC + proptest cases | Fastest (in-memory) | Refinement of (2) + adapter for (1) |
+
+The **triple-bisimilarity proptests** (Track 3 / §14.5
+generalized) drive the same generated event sequence through
+all three tiers and assert that every `SlashingObserver` method
+returns identical values across all three. Disagreement on any
+observable points to drift in whichever tier is the outlier;
+without disagreement, all three are observationally equivalent
+on the operations exercised.
+
+The harness exists *because it is not the production*: a fast
+in-memory state machine enables 10,000-case proptests to run in
+seconds and shrinks failures to minimal counter-examples. The
+oracle exists *because it is not the harness*: it is a faithful
+hand-translation of the Rocq theorems, so a harness↔oracle
+disagreement diagnoses harness drift away from the formal model.
+The production adapter exists *because it is the production*:
+disagreement vs. either tier diagnoses production drift away
+from the spec.
+
+See `docs/theory/slashing/design/14a-tier-architecture.md` for
+the full tier-model documentation and the rationale for the
+hybrid C+D+E architecture.
 
 ## 14.3 Example-based tests (54 use cases)
 
@@ -446,7 +483,7 @@ proptest! {
         }
     }
 
-    /// T-14 — Weak barbed bisimulation refl + sym.
+    /// T-14 — Weak barbed equivalence.
     #[test]
     fn prop_t14_refl(s in gen_5_component_state()) {
         prop_assert!(weak_barbed_equiv(&s, &s));
