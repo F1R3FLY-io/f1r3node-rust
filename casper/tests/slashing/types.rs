@@ -33,6 +33,12 @@ pub struct BlockMeta {
     pub seq: SeqNum,
     /// (validator, latest-block-hash) pairs cited by this block.
     pub justifications: Vec<(ValidatorId, BlockHash)>,
+    /// Validators this block targets with a SlashDeploy. Used to
+    /// detect Level-2 neglect: a block that cites an equivocator
+    /// without slashing them is itself slashable. Mirrors the
+    /// `slash_deploys` field of the production BlockMessage's
+    /// system_deploys.
+    pub slash_targets: Vec<ValidatorId>,
 }
 
 /// Local projection of the DAG store (`D`) and the invalid-block index

@@ -43,6 +43,7 @@ fn uc_06_self_regression_caught() {
             sender: "v0".into(),
             seq: 5,
             justifications: vec![("v0".into(), b_high)],
+            slash_targets: vec![],
         },
     );
 

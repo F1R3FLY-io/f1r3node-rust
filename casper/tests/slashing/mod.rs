@@ -40,4 +40,5 @@ mod uc_01_admissible_single;
 mod uc_03_ignorable_unrequested;
 mod uc_04_multiple_equivocations;
 mod uc_06_self_regression;
+mod uc_15_neglect_two_level;
 mod uc_39_cross_impl_bisim;

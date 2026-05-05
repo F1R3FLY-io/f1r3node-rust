@@ -146,6 +146,7 @@ mod oracle_smoke {
             sender: sender.to_string(),
             seq,
             justifications: vec![],
+            slash_targets: vec![],
         }
     }
 

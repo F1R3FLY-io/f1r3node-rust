@@ -78,6 +78,77 @@ impl SlashingTestHarness {
                 sender: validator.to_string(),
                 seq,
                 justifications,
+                slash_targets: vec![],
+            },
+        );
+        hash
+    }
+
+    /// Signs a block that cites `cited_block` in its justifications —
+    /// useful for constructing the level-2 neglect scenario where the
+    /// signer "sees" an equivocator's block but does not slash.
+    pub fn sign_block_citing(
+        &mut self,
+        validator: &str,
+        seq: SeqNum,
+        cited_block: BlockHash,
+    ) -> BlockHash {
+        let hash = self.next_hash;
+        self.next_hash += 1;
+        let cited_sender = self
+            .dag
+            .blocks
+            .get(&cited_block)
+            .map(|b| b.sender.clone())
+            .unwrap_or_default();
+        let mut justifications = vec![];
+        if !cited_sender.is_empty() {
+            justifications.push((cited_sender, cited_block));
+        }
+        self.dag.blocks.insert(
+            hash,
+            BlockMeta {
+                hash,
+                sender: validator.to_string(),
+                seq,
+                justifications,
+                slash_targets: vec![],
+            },
+        );
+        hash
+    }
+
+    /// Signs a block that both cites `cited_block` AND issues a
+    /// SlashDeploy against the cited validator. Used to test the
+    /// honest-neglecter path: when an honest signer slashes the
+    /// equivocator they cite, no Level-2 fires.
+    pub fn sign_block_citing_with_slash(
+        &mut self,
+        validator: &str,
+        seq: SeqNum,
+        cited_block: BlockHash,
+        slash_target: &str,
+    ) -> BlockHash {
+        let hash = self.next_hash;
+        self.next_hash += 1;
+        let cited_sender = self
+            .dag
+            .blocks
+            .get(&cited_block)
+            .map(|b| b.sender.clone())
+            .unwrap_or_default();
+        let mut justifications = vec![];
+        if !cited_sender.is_empty() {
+            justifications.push((cited_sender, cited_block));
+        }
+        self.dag.blocks.insert(
+            hash,
+            BlockMeta {
+                hash,
+                sender: validator.to_string(),
+                seq,
+                justifications,
+                slash_targets: vec![slash_target.to_string()],
             },
         );
         hash
@@ -130,6 +201,21 @@ impl SlashingTestHarness {
             });
         if self_regress {
             return Status::JustificationRegression;
+        }
+        // Level-2 neglect: the block cites a validator who has an
+        // EquivocationRecord, but does not include a SlashDeploy for
+        // that validator. Mirrors design §08 and Rocq theorem T-11.
+        let neglected = block.justifications.iter().any(|(v, _h)| {
+            // The cited validator has an outstanding record, AND
+            // this block did not slash them.
+            self.tracker
+                .records
+                .keys()
+                .any(|(rec_v, _)| rec_v == v)
+                && !block.slash_targets.iter().any(|t| t == v)
+        });
+        if neglected {
+            return Status::NeglectedEquivocation;
         }
         Status::Valid
     }

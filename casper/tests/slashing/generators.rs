@@ -98,6 +98,7 @@ pub fn gen_linear_dag(
                         sender: sender.clone(),
                         seq,
                         justifications,
+                        slash_targets: vec![],
                     },
                 );
                 prev.insert(sender, hash);
