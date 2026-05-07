@@ -42,8 +42,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 

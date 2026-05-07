@@ -105,5 +105,4 @@ async fn validator_on_minority_fork_should_rejoin_majority_chain_after_stale_det
         "Recovery should request ApprovedBlock from majority peers, got queue types: {:?}",
         request_type_ids
     );
-
 }

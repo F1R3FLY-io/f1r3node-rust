@@ -60,7 +60,10 @@ mod tests {
 
         async fn block_dag(
             &self,
-        ) -> Result<block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation, CasperError> {
+        ) -> Result<
+            block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+            CasperError,
+        > {
             self.inner.block_dag().await
         }
 
@@ -144,7 +147,10 @@ mod tests {
         async fn handle_valid_block(
             &self,
             block: &BlockMessage,
-        ) -> Result<block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation, CasperError> {
+        ) -> Result<
+            block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+            CasperError,
+        > {
             self.inner.handle_valid_block(block).await
         }
 
@@ -153,7 +159,10 @@ mod tests {
             block: &BlockMessage,
             status: &InvalidBlock,
             dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-        ) -> Result<block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation, CasperError> {
+        ) -> Result<
+            block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+            CasperError,
+        > {
             self.inner.handle_invalid_block(block, status, dag)
         }
 

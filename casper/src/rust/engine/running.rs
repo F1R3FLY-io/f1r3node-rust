@@ -34,8 +34,8 @@ use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
-use crate::rust::estimator::Estimator;
 use crate::rust::errors::CasperError;
+use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
@@ -316,7 +316,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
 
     /// Running always contains casper; enables `EngineDynExt::with_casper(...)`
     /// to mirror Scala `Engine.withCasper` behavior.
-    async fn recover_stuck_validator(&self, delay_threshold: Duration) -> Result<bool, CasperError> {
+    async fn recover_stuck_validator(
+        &self,
+        delay_threshold: Duration,
+    ) -> Result<bool, CasperError> {
         self.recover_stuck_validator_inner(delay_threshold).await
     }
 
@@ -465,8 +468,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                     )
                     .await?;
                 Ok(())
-            })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+            }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
         tracing::warn!(
