@@ -48,7 +48,10 @@ pub trait Engine: Send + Sync {
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
 
-    async fn recover_stuck_validator(&self, _delay_threshold: Duration) -> Result<bool, CasperError> {
+    async fn recover_stuck_validator(
+        &self,
+        _delay_threshold: Duration,
+    ) -> Result<bool, CasperError> {
         Ok(false)
     }
 

@@ -42,8 +42,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
@@ -66,8 +66,6 @@ pub struct TestNode {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
-    pub last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
-    pub rspace_state_manager: RSpaceStateManager,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
@@ -1096,8 +1094,6 @@ impl TestNode {
             block_store,
             block_dag_storage,
             deploy_storage,
-            last_approved_block,
-            rspace_state_manager,
             runtime_manager,
             requested_blocks,
             connections_cell,
