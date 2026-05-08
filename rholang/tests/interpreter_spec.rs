@@ -210,7 +210,7 @@ async fn interpreter_should_capture_the_current_outer_value_in_nested_contracts(
             })
         }
 
-        let tuple_space = runtime.get_hot_changes();
+        let tuple_space = runtime.get_hot_changes().await;
         let results_channel = rho_string("results");
         let results_row = tuple_space.get(&results_channel).expect("results row");
         let results: HashSet<Par> = results_row
