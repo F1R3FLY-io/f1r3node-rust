@@ -15,6 +15,8 @@ fn uc_42_dispatcher_pre_fix_drop() {
 
     let status = harness.dispatch_with_status(hash, Status::SlashableOther);
     assert_eq!(status, Status::SlashableOther);
-    assert!(harness.has_record("v0", 6),
-        "post-fix #3: catch-all mints record; pre-fix this fails");
+    assert!(
+        harness.has_record("v0", 6),
+        "post-fix #3: catch-all mints record; pre-fix this fails"
+    );
 }

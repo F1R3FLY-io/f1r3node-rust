@@ -55,8 +55,14 @@ fn uc_55_weighted_neglect_chain_amplification() {
     let _ = harness.execute_slash("v1");
     let _ = harness.execute_slash("v0");
 
-    assert_eq!(harness.coop_vault(), 12,
-        "Sage witness: total slashed stake = sum of all four bonds");
-    assert_eq!(harness.fork_choice().len(), 0,
-        "every validator slashed → empty active set");
+    assert_eq!(
+        harness.coop_vault(),
+        12,
+        "Sage witness: total slashed stake = sum of all four bonds"
+    );
+    assert_eq!(
+        harness.fork_choice().len(),
+        0,
+        "every validator slashed → empty active set"
+    );
 }

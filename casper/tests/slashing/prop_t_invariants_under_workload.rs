@@ -20,8 +20,14 @@ enum Op {
 
 fn gen_op(n: usize) -> impl Strategy<Value = Op> {
     prop_oneof![
-        (0..n, 0u64..16).prop_map(|(v, s)| Op::SignHonest { validator_idx: v, seq: s }),
-        (0..n, 0u64..16).prop_map(|(v, s)| Op::Equivocate { validator_idx: v, seq: s }),
+        (0..n, 0u64..16).prop_map(|(v, s)| Op::SignHonest {
+            validator_idx: v,
+            seq: s
+        }),
+        (0..n, 0u64..16).prop_map(|(v, s)| Op::Equivocate {
+            validator_idx: v,
+            seq: s
+        }),
         (0..n).prop_map(|t| Op::Slash { target_idx: t }),
     ]
 }
@@ -31,7 +37,11 @@ fn check_invariants(h: &SlashingTestHarness, n: usize) -> Result<(), String> {
     for i in 0..n {
         let v = format!("v{}", i);
         if h.is_active(&v) && h.bond(&v) <= 0 {
-            return Err(format!("T-9.5: active {} has non-positive bond {}", v, h.bond(&v)));
+            return Err(format!(
+                "T-9.5: active {} has non-positive bond {}",
+                v,
+                h.bond(&v)
+            ));
         }
     }
     // Slashed bond is exactly 0.

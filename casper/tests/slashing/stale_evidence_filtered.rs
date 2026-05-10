@@ -42,8 +42,10 @@ fn uc_57_stale_evidence_does_not_propagate() {
 
     // T-12 filter: v0 is not in any closure because v4's evidence
     // is filtered.
-    assert!(!harness.has_record("v0", 6),
-        "T-12 filter: stale evidence does not slash a current validator");
+    assert!(
+        !harness.has_record("v0", 6),
+        "T-12 filter: stale evidence does not slash a current validator"
+    );
 
     // All current bonded validators remain active.
     for i in 0..4 {

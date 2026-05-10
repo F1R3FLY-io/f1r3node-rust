@@ -64,8 +64,8 @@ fn total_funds(psw: &PoSStateW) -> u64 {
 }
 
 fn arb_psw() -> impl Strategy<Value = PoSStateW> {
-    proptest::collection::btree_map(0u32..8, (0u64..1000, 0u64..100), 0..6)
-        .prop_flat_map(|withdrawers| {
+    proptest::collection::btree_map(0u32..8, (0u64..1000, 0u64..100), 0..6).prop_flat_map(
+        |withdrawers| {
             let validators: Vec<Validator> = withdrawers.keys().copied().collect();
             let withdrawers_clone = withdrawers.clone();
             (
@@ -85,7 +85,8 @@ fn arb_psw() -> impl Strategy<Value = PoSStateW> {
                         pos_balance: balance,
                     }
                 })
-        })
+        },
+    )
 }
 
 proptest! {

@@ -52,8 +52,8 @@ fn classify_bundle(b: &Bundle) -> DivergenceClass {
 fn uc_81_filtered_bundle_is_boundary() {
     let b = Bundle {
         validators: [1u8, 2, 3].iter().copied().collect(),
-        edges:      [(1u8, 2u8), (2, 3)].iter().copied().collect(),
-        filtered:   true,
+        edges: [(1u8, 2u8), (2, 3)].iter().copied().collect(),
+        filtered: true,
     };
     assert_eq!(
         classify_bundle(&b),
@@ -66,8 +66,8 @@ fn uc_81_filtered_bundle_is_boundary() {
 fn uc_81_admissible_bundle_is_bisimilar() {
     let b = Bundle {
         validators: [1u8, 2, 3].iter().copied().collect(),
-        edges:      [(1u8, 2u8), (2, 3)].iter().copied().collect(),
-        filtered:   false,
+        edges: [(1u8, 2u8), (2, 3)].iter().copied().collect(),
+        filtered: false,
     };
     assert_eq!(classify_bundle(&b), DivergenceClass::Bisimilar);
 }
@@ -76,8 +76,8 @@ fn uc_81_admissible_bundle_is_bisimilar() {
 fn uc_81_non_admissible_edge_is_evidence_view_boundary() {
     let b = Bundle {
         validators: [1u8, 2].iter().copied().collect(),
-        edges:      [(1u8, 99u8)].iter().copied().collect(), // 99 not in V
-        filtered:   false,
+        edges: [(1u8, 99u8)].iter().copied().collect(), // 99 not in V
+        filtered: false,
     };
     let class = classify_bundle(&b);
     assert_eq!(class, DivergenceClass::CandidateBoundaryDivergence);

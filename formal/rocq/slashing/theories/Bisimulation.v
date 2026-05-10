@@ -63,12 +63,51 @@ Theorem records_bisim_sym :
   forall s1 s2, records_bisim s1 s2 -> records_bisim s2 s1.
 Proof. intros s1 s2 H k. destruct (H k) as [H1 H2]. split; assumption. Qed.
 
+Theorem records_bisim_trans :
+  forall s1 s2 s3,
+    records_bisim s1 s2 ->
+    records_bisim s2 s3 ->
+    records_bisim s1 s3.
+Proof.
+  intros s1 s2 s3 H12 H23 k.
+  destruct (H12 k) as [H12f H12b].
+  destruct (H23 k) as [H23f H23b].
+  split.
+  - intros x Hx. apply H23f. apply H12f. assumption.
+  - intros x Hx. apply H12b. apply H23b. assumption.
+Qed.
+
 Theorem slashed_bisim_refl : forall s, slashed_bisim s s.
 Proof. intros s. split; intros x H; assumption. Qed.
 
 Theorem slashed_bisim_sym :
   forall s1 s2, slashed_bisim s1 s2 -> slashed_bisim s2 s1.
 Proof. intros s1 s2 [H1 H2]. split; assumption. Qed.
+
+Theorem slashed_bisim_trans :
+  forall s1 s2 s3,
+    slashed_bisim s1 s2 ->
+    slashed_bisim s2 s3 ->
+    slashed_bisim s1 s3.
+Proof.
+  intros s1 s2 s3 [H12f H12b] [H23f H23b].
+  split.
+  - intros x Hx. apply H23f. apply H12f. assumption.
+  - intros x Hx. apply H12b. apply H23b. assumption.
+Qed.
+
+Theorem vault_bisim_refl : forall n, vault_bisim n n.
+Proof. intro n. reflexivity. Qed.
+
+Theorem vault_bisim_sym : forall n1 n2, vault_bisim n1 n2 -> vault_bisim n2 n1.
+Proof. intros n1 n2 H. symmetry. assumption. Qed.
+
+Theorem vault_bisim_trans :
+  forall n1 n2 n3,
+    vault_bisim n1 n2 ->
+    vault_bisim n2 n3 ->
+    vault_bisim n1 n3.
+Proof. intros n1 n2 n3 H12 H23. transitivity n2; assumption. Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §3 — T-13 (component): bm_slash preserves bonds_bisim
@@ -194,6 +233,18 @@ Proof.
   - intro k. symmetry. apply Hk.
 Qed.
 
+Theorem records_bisim_strong_trans :
+  forall s1 s2 s3,
+    records_bisim_strong s1 s2 ->
+    records_bisim_strong s2 s3 ->
+    records_bisim_strong s1 s3.
+Proof.
+  intros s1 s2 s3 [H12r H12k] [H23r H23k].
+  split.
+  - apply (@records_bisim_trans s1 s2 s3); assumption.
+  - intro k. rewrite H12k. apply H23k.
+Qed.
+
 (* ═══════════════════════════════════════════════════════════════════════════
    §8 — Records bisimulation preservation under update_record (strong form)
    ═══════════════════════════════════════════════════════════════════════════
@@ -284,12 +335,50 @@ Proof.
   - rewrite !has_key_update_other; [apply Hkey | assumption | assumption].
 Qed.
 
-(* The full bidirectional preservation of records_bisim_strong under
-   update_record requires deep structural reasoning about update's effect
-   at the same key. We instead provide a CONSTRUCTIVE alternative that
-   uses the atomic_record_or_update wrapper from BugFixAtomicTracker,
-   which always inserts an empty record before update and thus preserves
-   key alignment trivially. *)
+Theorem records_bisim_strong_preserved_update :
+  forall s1 s2 k h,
+    records_bisim_strong s1 s2 ->
+    records_bisim_strong (update_record s1 k h) (update_record s2 k h).
+Proof.
+  intros s1 s2 k h Hstrong.
+  destruct Hstrong as [Hbisim Hkeys].
+  split.
+  - intro k'. split; intros x Hin.
+    + destruct (key_eq_dec k' k) as [Heq | Hne].
+      * subst k'.
+        pose proof (@update_record_hashes_subset s1 k h x Hin) as Hx.
+        destruct Hx as [Hx | Hx].
+        -- subst x.
+           apply update_record_contains_hash.
+           rewrite <- (Hkeys k).
+           rewrite <- (@has_key_update_same s1 k h).
+           apply hashes_at_key_in_has_key with (h := h). assumption.
+        -- destruct (Hbisim k) as [H12 _].
+           apply (@t_4_record_monotone_update s2 k h k).
+           apply H12. assumption.
+      * rewrite update_other_hashes_unchanged in Hin by assumption.
+        rewrite update_other_hashes_unchanged by assumption.
+        destruct (Hbisim k') as [H12 _].
+        apply H12. assumption.
+    + destruct (key_eq_dec k' k) as [Heq | Hne].
+      * subst k'.
+        pose proof (@update_record_hashes_subset s2 k h x Hin) as Hx.
+        destruct Hx as [Hx | Hx].
+        -- subst x.
+           apply update_record_contains_hash.
+           rewrite (Hkeys k).
+           rewrite <- (@has_key_update_same s2 k h).
+           apply hashes_at_key_in_has_key with (h := h). assumption.
+        -- destruct (Hbisim k) as [_ H21].
+           apply (@t_4_record_monotone_update s1 k h k).
+           apply H21. assumption.
+      * rewrite update_other_hashes_unchanged in Hin by assumption.
+        rewrite update_other_hashes_unchanged by assumption.
+        destruct (Hbisim k') as [_ H21].
+        apply H21. assumption.
+  - apply records_bisim_strong_keys_preserved.
+    split; assumption.
+Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §9 — Fork-choice bisimulation (Gap 2)
@@ -309,6 +398,16 @@ Proof. intros lm v. reflexivity. Qed.
 Theorem forkchoice_bisim_sym :
   forall lm1 lm2, forkchoice_bisim lm1 lm2 -> forkchoice_bisim lm2 lm1.
 Proof. intros lm1 lm2 H v. symmetry. apply H. Qed.
+
+Theorem forkchoice_bisim_trans :
+  forall lm1 lm2 lm3,
+    forkchoice_bisim lm1 lm2 ->
+    forkchoice_bisim lm2 lm3 ->
+    forkchoice_bisim lm1 lm3.
+Proof.
+  intros lm1 lm2 lm3 H12 H23 v.
+  rewrite H12. apply H23.
+Qed.
 
 (* Helper: lookup-after-filter is None when bond is 0; else equals lookup
    on the original list. *)
@@ -398,4 +497,190 @@ Proof.
   - apply slashed_bisim_sym. assumption.
   - unfold vault_bisim in *. symmetry. assumption.
   - apply forkchoice_bisim_sym. assumption.
+Qed.
+
+Theorem weak_barbed_equiv_trans :
+  forall b1 b2 b3 rs1 rs2 rs3 sl1 sl2 sl3 v1 v2 v3 lm1 lm2 lm3,
+    weak_barbed_equiv b1 b2 rs1 rs2 sl1 sl2 v1 v2 lm1 lm2 ->
+    weak_barbed_equiv b2 b3 rs2 rs3 sl2 sl3 v2 v3 lm2 lm3 ->
+    weak_barbed_equiv b1 b3 rs1 rs3 sl1 sl3 v1 v3 lm1 lm3.
+Proof.
+  intros b1 b2 b3 rs1 rs2 rs3 sl1 sl2 sl3 v1 v2 v3 lm1 lm2 lm3
+         [Hb12 [Hr12 [Hsl12 [Hv12 Hfc12]]]]
+         [Hb23 [Hr23 [Hsl23 [Hv23 Hfc23]]]].
+  unfold weak_barbed_equiv.
+  split; [|split; [|split; [|split]]].
+  - apply (@bonds_bisim_trans b1 b2 b3); assumption.
+  - apply (@records_bisim_strong_trans rs1 rs2 rs3); assumption.
+  - apply (@slashed_bisim_trans sl1 sl2 sl3); assumption.
+  - apply (@vault_bisim_trans v1 v2 v3); assumption.
+  - apply (@forkchoice_bisim_trans lm1 lm2 lm3); assumption.
+Qed.
+
+Inductive DivergenceClass : Type :=
+| Bisimilar
+| PermittedBugFix
+| CandidateBoundaryDivergence
+| UnexpectedDivergence.
+
+Inductive DivergenceReason : Type :=
+| DRTrackerAtomicity
+| DRDetectorTotalityDistinctChildren
+| DRCurrentValidatorBoundary
+| DREvidenceViewBoundary
+| DREpochCarryoverBoundary
+| DRProposerFairnessBoundary
+| DRProjectionBoundary
+| DRPreconditionFuzzingBoundary
+| DRPartitionGossipBoundary
+| DRObjectiveGuidedBoundary
+| DRRustReplayProjectionBoundary
+| DRRustViewProjectionBoundary
+| DRDeepThreatModelBoundary
+| DRDagTraceBoundary
+| DRAdversarialCampaignBoundary
+| DRDifferentialOraclePipelineBoundary
+| DRHorizonCampaignBoundary
+| DRHorizonV2Boundary
+| DRUnexpected.
+
+Definition classify_divergence_reason (r : DivergenceReason) : DivergenceClass :=
+  match r with
+  | DRTrackerAtomicity => PermittedBugFix
+  | DRDetectorTotalityDistinctChildren => PermittedBugFix
+  | DRCurrentValidatorBoundary => CandidateBoundaryDivergence
+  | DREvidenceViewBoundary => CandidateBoundaryDivergence
+  | DREpochCarryoverBoundary => CandidateBoundaryDivergence
+  | DRProposerFairnessBoundary => CandidateBoundaryDivergence
+  | DRProjectionBoundary => CandidateBoundaryDivergence
+  | DRPreconditionFuzzingBoundary => CandidateBoundaryDivergence
+  | DRPartitionGossipBoundary => CandidateBoundaryDivergence
+  | DRObjectiveGuidedBoundary => CandidateBoundaryDivergence
+  | DRRustReplayProjectionBoundary => CandidateBoundaryDivergence
+  | DRRustViewProjectionBoundary => CandidateBoundaryDivergence
+  | DRDeepThreatModelBoundary => CandidateBoundaryDivergence
+  | DRDagTraceBoundary => CandidateBoundaryDivergence
+  | DRAdversarialCampaignBoundary => CandidateBoundaryDivergence
+  | DRDifferentialOraclePipelineBoundary => CandidateBoundaryDivergence
+  | DRHorizonCampaignBoundary => CandidateBoundaryDivergence
+  | DRHorizonV2Boundary => CandidateBoundaryDivergence
+  | DRUnexpected => UnexpectedDivergence
+  end.
+
+Definition divergence_allowed (c : DivergenceClass) : Prop :=
+  c = Bisimilar \/ c = PermittedBugFix.
+
+Theorem bisimilar_divergence_allowed :
+  divergence_allowed Bisimilar.
+Proof.
+  left. reflexivity.
+Qed.
+
+Theorem permitted_bug_fix_divergence_allowed :
+  divergence_allowed PermittedBugFix.
+Proof.
+  right. reflexivity.
+Qed.
+
+Theorem candidate_boundary_divergence_requires_review :
+  ~ divergence_allowed CandidateBoundaryDivergence.
+Proof.
+  intros [H | H]; discriminate.
+Qed.
+
+Theorem unexpected_divergence_forbidden :
+  ~ divergence_allowed UnexpectedDivergence.
+Proof.
+  intros [H | H]; discriminate.
+Qed.
+
+Theorem tracker_atomicity_reason_allowed :
+  divergence_allowed (classify_divergence_reason DRTrackerAtomicity).
+Proof.
+  apply permitted_bug_fix_divergence_allowed.
+Qed.
+
+Theorem detector_totality_distinct_children_reason_allowed :
+  divergence_allowed (classify_divergence_reason DRDetectorTotalityDistinctChildren).
+Proof.
+  apply permitted_bug_fix_divergence_allowed.
+Qed.
+
+Theorem current_validator_boundary_requires_review :
+  ~ divergence_allowed (classify_divergence_reason DRCurrentValidatorBoundary).
+Proof.
+  apply candidate_boundary_divergence_requires_review.
+Qed.
+
+Theorem evidence_view_boundary_requires_review :
+  ~ divergence_allowed (classify_divergence_reason DREvidenceViewBoundary).
+Proof.
+  apply candidate_boundary_divergence_requires_review.
+Qed.
+
+Theorem epoch_carryover_boundary_requires_review :
+  ~ divergence_allowed (classify_divergence_reason DREpochCarryoverBoundary).
+Proof.
+  apply candidate_boundary_divergence_requires_review.
+Qed.
+
+Theorem proposer_fairness_boundary_requires_review :
+  ~ divergence_allowed (classify_divergence_reason DRProposerFairnessBoundary).
+Proof.
+  apply candidate_boundary_divergence_requires_review.
+Qed.
+
+Theorem projection_boundary_requires_review :
+  ~ divergence_allowed (classify_divergence_reason DRProjectionBoundary).
+Proof.
+  apply candidate_boundary_divergence_requires_review.
+Qed.
+
+Theorem semantic_campaign_boundary_reasons_require_review :
+  forall r,
+    r = DRCurrentValidatorBoundary \/
+    r = DREvidenceViewBoundary \/
+    r = DREpochCarryoverBoundary \/
+    r = DRProposerFairnessBoundary \/
+    r = DRProjectionBoundary ->
+    ~ divergence_allowed (classify_divergence_reason r).
+Proof.
+  intros r [H | [H | [H | [H | H]]]]; subst.
+  - apply current_validator_boundary_requires_review.
+  - apply evidence_view_boundary_requires_review.
+  - apply epoch_carryover_boundary_requires_review.
+  - apply proposer_fairness_boundary_requires_review.
+  - apply projection_boundary_requires_review.
+Qed.
+
+Theorem adversarial_scheduler_boundary_reasons_require_review :
+  forall r,
+    r = DREvidenceViewBoundary \/
+    r = DRProposerFairnessBoundary \/
+    r = DRProjectionBoundary ->
+    ~ divergence_allowed (classify_divergence_reason r).
+Proof.
+  intros r [H | [H | H]]; subst.
+  - apply evidence_view_boundary_requires_review.
+  - apply proposer_fairness_boundary_requires_review.
+  - apply projection_boundary_requires_review.
+Qed.
+
+Theorem frontier_expansion_reasons_require_review :
+  forall r,
+    r = DRPreconditionFuzzingBoundary \/
+    r = DRPartitionGossipBoundary \/
+    r = DRObjectiveGuidedBoundary \/
+    r = DRRustReplayProjectionBoundary \/
+    r = DRRustViewProjectionBoundary \/
+    r = DRDeepThreatModelBoundary \/
+    r = DRDagTraceBoundary \/
+    r = DRAdversarialCampaignBoundary \/
+    r = DRDifferentialOraclePipelineBoundary \/
+    r = DRHorizonCampaignBoundary \/
+    r = DRHorizonV2Boundary ->
+    ~ divergence_allowed (classify_divergence_reason r).
+Proof.
+  intros r H; repeat destruct H as [H | H]; subst;
+    apply candidate_boundary_divergence_requires_review.
 Qed.

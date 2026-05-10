@@ -37,12 +37,19 @@ fn uc_46_partition_merge_both_witnesses_preserved() {
     // witness could be lost.
     assert!(harness.has_record("v0", 4));
     let witnesses = harness.record_witnesses("v0", 4);
-    assert!(witnesses.contains(&partition_a),
-        "partition-A witness preserved across merge");
-    assert!(witnesses.contains(&partition_b),
-        "partition-B witness preserved across merge");
-    assert_eq!(witnesses.len(), 2,
-        "exactly two witnesses (one per partition)");
+    assert!(
+        witnesses.contains(&partition_a),
+        "partition-A witness preserved across merge"
+    );
+    assert!(
+        witnesses.contains(&partition_b),
+        "partition-B witness preserved across merge"
+    );
+    assert_eq!(
+        witnesses.len(),
+        2,
+        "exactly two witnesses (one per partition)"
+    );
 
     // Slash applies normally; both partitions converge on the same
     // post-state.

@@ -25,10 +25,16 @@ fn uc_45_slash_replay_is_no_op() {
     for _ in 0..3 {
         let result = harness.execute_slash("v0");
         assert!(result.success, "replay still returns success (T-Idem)");
-        assert_eq!(harness.bond("v0"), 0,
-            "bond stays at 0 across replay attempts");
-        assert_eq!(harness.coop_vault(), 100,
-            "T-Idem: vault never double-charged");
+        assert_eq!(
+            harness.bond("v0"),
+            0,
+            "bond stays at 0 across replay attempts"
+        );
+        assert_eq!(
+            harness.coop_vault(),
+            100,
+            "T-Idem: vault never double-charged"
+        );
     }
 
     // Other validators unaffected.

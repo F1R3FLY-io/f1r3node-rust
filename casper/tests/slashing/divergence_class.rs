@@ -31,29 +31,55 @@ pub enum DivergenceClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DivergenceReason {
     TrackerAtomicity,
+    DetectorTotalityDistinctChildren,
     CurrentValidatorBoundary,
     EvidenceViewBoundary,
     EpochCarryoverBoundary,
     ProposerFairnessBoundary,
     ProjectionBoundary,
+    PreconditionFuzzingBoundary,
+    PartitionGossipBoundary,
+    ObjectiveGuidedBoundary,
+    RustReplayProjectionBoundary,
+    RustViewProjectionBoundary,
+    DeepThreatModelBoundary,
+    DagTraceBoundary,
+    AdversarialCampaignBoundary,
+    DifferentialOraclePipelineBoundary,
+    HorizonCampaignBoundary,
+    HorizonV2Boundary,
     Unexpected,
 }
 
 pub fn classify(reason: DivergenceReason) -> DivergenceClass {
     use DivergenceReason::*;
     match reason {
-        TrackerAtomicity => DivergenceClass::PermittedBugFix,
+        TrackerAtomicity | DetectorTotalityDistinctChildren => DivergenceClass::PermittedBugFix,
         CurrentValidatorBoundary
         | EvidenceViewBoundary
         | EpochCarryoverBoundary
         | ProposerFairnessBoundary
-        | ProjectionBoundary => DivergenceClass::CandidateBoundaryDivergence,
+        | ProjectionBoundary
+        | PreconditionFuzzingBoundary
+        | PartitionGossipBoundary
+        | ObjectiveGuidedBoundary
+        | RustReplayProjectionBoundary
+        | RustViewProjectionBoundary
+        | DeepThreatModelBoundary
+        | DagTraceBoundary
+        | AdversarialCampaignBoundary
+        | DifferentialOraclePipelineBoundary
+        | HorizonCampaignBoundary
+        | HorizonV2Boundary => DivergenceClass::CandidateBoundaryDivergence,
         Unexpected => DivergenceClass::UnexpectedDivergence,
     }
 }
 
 pub fn divergence_allowed(class: DivergenceClass) -> bool {
-    matches!(class, DivergenceClass::Bisimilar | DivergenceClass::PermittedBugFix)
+    matches!(
+        class,
+        DivergenceClass::Bisimilar | DivergenceClass::PermittedBugFix
+    )
 }
 
 /// Combined frontier-classification policy used by the

@@ -17,7 +17,7 @@
 // impossible (the dependency-check / tracker-state cycle: a block
 // whose justifications cite an invalid block becomes itself
 // invalid the moment the receiver has the equivocator's record).
-// The harness UC-15 + Rocq T-9.7 (TwoLevelSlashing.v) carry the
+// The harness UC-04 + Rocq T-9.7 (TwoLevelSlashing.v) carry the
 // multi-block-closure NeglectedEquivocation coverage at the
 // formal-model abstraction level. This integration test pins the
 // production-tier behaviour for the SINGLE-BLOCK direct-cite
@@ -47,14 +47,13 @@ use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::Justification;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, equivocate_block, production_snapshot_at,
     propose_with_explicit_justifications,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -72,16 +71,14 @@ async fn integration_t_neglected_invalid_block() {
     let validators = canonical_validator_order(&genesis);
 
     // Step 1: v0 creates b1.
-    let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone()))
-        .expect("d1");
+    let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     let b1 = nodes[0]
         .create_block_unsafe(&[d1])
         .await
         .expect("create b1");
 
     // Step 2: v0 creates b1p (Byzantine sibling).
-    let d2 = construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone()))
-        .expect("d2");
+    let d2 = construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone())).expect("d2");
     let b1p = equivocate_block(&mut nodes[0], &b1, vec![d2])
         .await
         .expect("equivocate_block");
@@ -109,8 +106,7 @@ async fn integration_t_neglected_invalid_block() {
 
     // Step 4: nodes[1] proposes b3 with explicit (v0, b1p)
     // justification — directly citing the invalid block.
-    let d3 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone()))
-        .expect("d3");
+    let d3 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d3");
     let mut b3_justifs: Vec<Justification> = Vec::new();
     b3_justifs.push(Justification {
         validator: nodes[0]
@@ -127,19 +123,17 @@ async fn integration_t_neglected_invalid_block() {
         .expect("propose b3");
 
     // Confirm b3 has no SlashDeploy.
-    use models::rust::casper::protocol::casper_message::{
-        ProcessedSystemDeploy, SystemDeployData,
-    };
+    use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
     let has_slash_deploy = b3.body.system_deploys.iter().any(|sd| {
-        matches!(
-            sd,
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
-                ..
-            }
-        )
+        matches!(sd, ProcessedSystemDeploy::Succeeded {
+            system_deploy: SystemDeployData::Slash { .. },
+            ..
+        })
     });
-    assert!(!has_slash_deploy, "neglecting b3 must not contain SlashDeploy");
+    assert!(
+        !has_slash_deploy,
+        "neglecting b3 must not contain SlashDeploy"
+    );
 
     // Step 5: nodes[2] processes b1 + b1p (so v0's record exists
     // and b1p is stored as invalid), then b3. Without the
@@ -169,16 +163,16 @@ async fn integration_t_neglected_invalid_block() {
     // Step 6: Snapshot — post-fix #3 catch-all minted records for
     // both v0 (equivocator) and v1 (neglecter who cited the
     // invalid block without slashing).
-    let snapshot =
-        production_snapshot_at(&nodes[2], &b1p, &genesis.genesis_block, validators)
-            .await
-            .expect("snapshot");
+    let snapshot = production_snapshot_at(&nodes[2], &b1p, &genesis.genesis_block, validators)
+        .await
+        .expect("snapshot");
 
-    let has_v0 = (0..=10)
-        .any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
-    let has_v1 = (0..=10)
-        .any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v1", b));
-    assert!(has_v0, "v0's equivocation record persists in nodes[2]'s tracker");
+    let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
+    let has_v1 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v1", b));
+    assert!(
+        has_v0,
+        "v0's equivocation record persists in nodes[2]'s tracker"
+    );
     assert!(
         has_v1,
         "post-fix #3 catch-all: dispatcher mints record for v1 \

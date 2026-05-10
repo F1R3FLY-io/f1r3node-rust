@@ -25,7 +25,9 @@ fn uc_26_two_of_four_breaks_quorum() {
 
     let mut harness = SlashingTestHarness::new(n, 100);
     assert_eq!(
-        (0..n).filter(|i| harness.is_active(&format!("v{}", i))).count(),
+        (0..n)
+            .filter(|i| harness.is_active(&format!("v{}", i)))
+            .count(),
         n,
         "all four validators active initially"
     );
@@ -39,7 +41,12 @@ fn uc_26_two_of_four_breaks_quorum() {
     assert_eq!(active, 2, "only v2 and v3 remain active");
 
     // The BFT precondition is violated: active < n - F = 3.
-    assert!(active < n - f, "quorum is lost (active={} < n-F={})", active, n - f);
+    assert!(
+        active < n - f,
+        "quorum is lost (active={} < n-F={})",
+        active,
+        n - f
+    );
 
     // The two slashed validators carry the documented after-effects.
     assert!(!harness.is_active("v0"));

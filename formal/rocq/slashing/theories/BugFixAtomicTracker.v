@@ -62,6 +62,25 @@ Proof.
     apply Hu. apply Hi. assumption.
 Qed.
 
+Theorem t_9_2_atomic_records_hash :
+  forall s k h,
+    In h (hashes_at_key (atomic_record_or_update s k h) k).
+Proof.
+  intros s k h.
+  unfold atomic_record_or_update.
+  destruct (has_key s k) eqn:E.
+  - apply update_record_contains_hash. assumption.
+  - set (r := mkEqRec (fst k) (snd k) []).
+    assert (Hr : er_key r = k).
+    { destruct k as [v n]. reflexivity. }
+    apply update_record_contains_hash.
+    unfold has_key.
+    assert (Eold : has_key s (er_key r) = false).
+    { rewrite Hr. assumption. }
+    pose proof (find_insert_cond_same_absent s r Eold) as Hf.
+    rewrite Hr in Hf. rewrite Hf. reflexivity.
+Qed.
+
 (* Generalization: atomic update preserves hashes at ANY key, not just the
    one being updated. This is needed for the n-thread arbitrary-schedule
    theorem (Gap 7). *)

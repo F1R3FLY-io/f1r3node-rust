@@ -11,9 +11,10 @@
 // `RUN_NIGHTLY_LOOM` environment variable so PR-gate runs skip
 // it; the nightly extended-proptest CI job sets the env var.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use loom::sync::{Arc, Mutex};
 use loom::thread;
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 struct AbstractTracker {
@@ -73,7 +74,10 @@ fn t_9_2_four_thread_atomic_rmw_preserves_all_witnesses() {
         assert!(witnesses.contains(&200));
         assert!(witnesses.contains(&300));
         assert!(witnesses.contains(&400));
-        assert_eq!(witnesses.len(), 4,
-            "T-9.2 (4-thread): all witnesses preserved across every interleaving");
+        assert_eq!(
+            witnesses.len(),
+            4,
+            "T-9.2 (4-thread): all witnesses preserved across every interleaving"
+        );
     });
 }

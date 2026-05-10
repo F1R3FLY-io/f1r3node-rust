@@ -83,7 +83,7 @@ package "Fork-choice layer" <<ForkChoice>> {
 }
 
 package "Bug-fix proofs" <<BugFix>> {
-  component "BugFix #1–#9\n────────────────────────────\nspec  §10\nRocq  BugFix*.v (8 modules covering 9 theorems;\n      BugFixSelfRegression.v carries both\n      T-9.6 and T-9.9)\nTLA+  ConcurrentTracker.tla (#2),\n      SlashFlow.tla (#3, #4, #8)\nRust  to be patched per separate PR"  as BF #FFCDD2
+  component "BugFix #1–#11\n────────────────────────────\nspec  §10\nRocq  BugFix*.v + EquivocationDetector.v;\n      Bisimulation.v classifies permitted deltas\nTLA+  ConcurrentTracker.tla (#2),\n      SlashFlow.tla (#3, #4, #8),\n      EquivocationDetector.tla (#11)\nRust  patched per detector and helper regressions"  as BF #FFCDD2
 }
 
 package "Top-level theorem" <<Theorem>> {

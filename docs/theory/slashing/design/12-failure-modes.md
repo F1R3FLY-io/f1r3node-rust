@@ -33,7 +33,7 @@ The system is designed so that:
 | **Unsolicited equivocation** (no other block cites the bad block) | Pre-fix: silently dropped. **Bug #1.**                   | Post-fix #1: classified `IgnorableEquivocation`, recorded. |
 | **Stake-0 bonded validator equivocates**                          | Pre-fix: silent classification, no slash. **Bug #5.**    | Post-fix #5: PoS bond contract enforces `stake > 0`.       |
 | **Self-regression with no equivocation**                          | Pre-fix: passes `justification_regressions`. **Bug #6.** | Post-fix #6: drop `filterNot(_._1 == sender)`.             |
-| **Skipped sequence number under partition recovery**              | Pre-fix: BFS misses the equivocation. **Bug #7.**        | Post-fix #7: BFS over creator-justification chain.         |
+| **Skipped sequence number under partition recovery**              | Pre-fix: exact `baseSeqNum + 1` lookup misses the equivocation. **Bug #7.** | Post-fix #7: canonical visible self-chain child above `baseSeq`, with same-branch collapse. |
 
 ### 12.2.2 Storage layer
 
@@ -47,14 +47,14 @@ The system is designed so that:
 | Failure mode                                    | Effect                                                                                                    | Resolution                                                                                                       |
 |-------------------------------------------------|-----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
 | **Non-equivocation slashable variant detected** | Pre-fix: not recorded; relies on later proposer surfacing. **Bug #3.**                                    | Post-fix #3: dispatcher creates record uniformly.                                                                |
-| **Unbonded proposer emits doomed slashes**      | Pre-fix: wasted CPU; the offending block is rejected at replay-time proposer-bond validation. **Bug #8.** | Post-fix #8 (mechanized in Rocq; not yet applied in Rust): short-circuit to `Vec::new()` if proposer's bond = 0. |
+| **Unbonded proposer emits doomed slashes**      | Pre-fix: wasted CPU; the offending block is rejected at replay-time proposer-bond validation. **Bug #8.** | Post-fix #8: short-circuit to `Vec::new()` if proposer's bond = 0. |
 | **Replay determinism break**                    | Block evaluation diverges; consensus splits.                                                              | Bisimilarity / replay determinism (T-15) is a design invariant.                                                  |
 
 ### 12.2.4 Effect layer
 
 | Failure mode                                       | Effect                                                                                              | Resolution                                                                            |
 |----------------------------------------------------|-----------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------|
-| **Spoofed system auth token**                      | Deploy rejected at first guard.                                                                     | T-AuthCheck (Rholang-level observation; verified at PoS.rhox:437-439).                |
+| **Spoofed system auth token**                      | Deploy rejected at first guard.                                                                     | T-AuthCheck (`execute_invalid_auth_token_noop`; `Inv_InvalidAuthSlashNoPending`; UC-21). |
 | **Invalid block hash not in `invalidBlocks`**      | Degraded path: `validator ← userPk` (slash whoever submitted).                                      | Documented; spec §3.4.1.                                                              |
 | **Coop-vault slash transfer fails**                | Pre-fix: hangs forever. **Bug #4.**                                                                 | Post-fix #4: deterministic `(false, "transfer failed")` return.                       |
 | **Withdrawal `posVault.transfer` fails**           | Pre-fix: validator removed from `withdrawers` without payout — funds silently lost. **Bug #10.**    | Post-fix #10: validator stays in `withdrawers` for retry; `total_funds` invariant preserved. |
@@ -147,26 +147,33 @@ failure modes are likely:
 | Inconsistent `equivocation_records()` views across nodes | Bug #2 (race) — pre-fix only.                                                                        |
 | `JustificationRegression` blocks not surfacing slashes   | Bug #3 (dispatcher stub) — pre-fix only.                                                             |
 | Repeated rejected proposer-block submissions             | Bug #8 (unbonded proposer) — pre-fix only.                                                           |
-| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the ten fixes; if seen, investigate as a regression.  |
+| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the eleven fixes; if seen, investigate as a regression. |
 | Validator stuck in `withdrawers` map for > N rounds      | Bug #10 (post-fix retry path). If `posVault.transfer` keeps failing, the validator's withdrawal entry remains intact across blocks; investigate the underlying vault failure cause. |
 | Validator set size drops below `n − F`                   | F-neglectful quorum-drop (§12.3.1). Manual intervention required.                                    |
+| Detector emits storage `KeyNotFound` for a block view     | Bug #11 pre-fix only. Post-fix, missing latest-message pointers contribute `∅` and traversal continues. |
+| Neglect fires from two citations of the same child        | Bug #11 pre-fix only. Post-fix, distinct offender-child hashes are counted before applying `≥ 2`.       |
 
 ## 12.7 Test coverage
 
-Spec §12 enumerates 75 use cases across four tiers:
+Spec §12 enumerates 112 use cases across four tiers:
 
 - **Core (UC-01–UC-25):** baseline scenarios.
 - **Tier A (UC-26, 27, 37, 38, 39, 41, 42, 43):** audit blockers.
 - **Tier B (UC-28–UC-36):** one entry per remaining slashable
   `InvalidBlock` variant.
-- **Tier C (UC-40, UC-44–UC-75):** operational, adversarial, and
+- **Tier C (UC-40, UC-44–UC-112):** operational, adversarial, and
   Sage-derived closure edge cases.
 
 Each use case has an Outcome column (slashed / not-slashed /
-rejected / admitted / error / behavioral) and a test stub path.
-Implementing the harness and 75 tests is out of scope for the
-spec/verification/design documents; the stubs are normative for
-whoever implements them.
+rejected / admitted / error / behavioral) and a current Rust test module.
+The documented harness and integration tests are implemented under
+`casper/tests/slashing/`; UC-101 through UC-108 exercise the detector
+threats from Sage findings 86 and 87 against the Rust production
+detector path, UC-110 exercises the cross-coupled horizon campaign
+fixtures from Sage Finding 116, UC-111 exercises the Rust-aligned
+horizon-v2 lifecycle and detector-DAG fixtures from Sage Finding 117, and
+UC-112 checks the current Rust detector path that retains existing
+detected hashes during a record update.
 
 ---
 

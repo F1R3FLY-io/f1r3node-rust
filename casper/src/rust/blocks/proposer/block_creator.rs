@@ -20,6 +20,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -305,21 +306,7 @@ async fn prepare_slashing_deploys(
         return Ok(Vec::new());
     }
 
-    // Get invalid latest messages from DAG
-    let invalid_latest_messages = casper_snapshot.dag.invalid_latest_messages()?;
-
-    // Filter to only include bonded validators
-    let bonded_invalid_messages: Vec<_> = invalid_latest_messages
-        .into_iter()
-        .filter(|(validator, _)| {
-            casper_snapshot
-                .on_chain_state
-                .bonds_map
-                .get(validator)
-                .map(|stake| *stake > 0)
-                .unwrap_or(false)
-        })
-        .collect();
+    let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
 
     // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
     // this is correct by design (not a TODO).
@@ -327,21 +314,21 @@ async fn prepare_slashing_deploys(
     // (1) Structural reason: `KeyValueDeployStorage` is keyed on the
     //     user-deploy signature `(sig → Signed<DeployData>)`. Slash
     //     deploys are unsigned `SystemDeployEnum::Slash(SlashDeploy
-    //     { invalid_block_hash, pk, initial_rand })` — they have no
+    //     { invalid_block_hash, pk, target_activation_epoch, initial_rand })` — they have no
     //     `Signed<DeployData>` shape and cannot be inserted.
     //
     // (2) Determinism reason: slash deploys are pure functions of
-    //     `(invalid_latest_messages, validator_identity, seq_num,
-    //      generate_slash_deploy_random_seed)`. The only non-
-    //     deterministic input — the invalid-latest-message set — is
-    //     already persisted via `BlockMetadataStore`. On node
+    //     `(authorized invalid-block evidence, validator_identity,
+    //      target_activation_epoch, seq_num,
+    //      generate_slash_deploy_random_seed)`. The invalid-block
+    //     evidence is persisted via `BlockMetadataStore`. On node
     //     restart, `prepare_slashing_deploys` deterministically
     //     reconstructs the same slash-deploy set.
     //
     // (3) Theorem citations: T-4 (record monotonicity) +
     //     T-9.3 (catch-all dispatcher mints record per slashable
-    //     block) jointly guarantee that the set of bonded-invalid-
-    //     latest-message tuples is exactly the input domain of
+    //     block) jointly guarantee that the set of bonded current-epoch
+    //     invalid-block evidence is exactly the input domain of
     //     `prepare_slashing_deploys`. See
     //     formal/rocq/slashing/theories/EquivocationRecord.v
     //     (`record_monotone`) and
@@ -359,10 +346,11 @@ async fn prepare_slashing_deploys(
 
     // Create SlashDeploy objects
     let mut slashing_deploys = Vec::new();
-    for (_, invalid_block_hash) in bonded_invalid_messages {
+    for slash_candidate in slash_candidates {
         let slash_deploy = SlashDeploy {
-            invalid_block_hash: invalid_block_hash.clone(),
+            invalid_block_hash: slash_candidate.invalid_block_hash.clone(),
             pk: validator_identity.public_key.clone(),
+            target_activation_epoch: slash_candidate.target_activation_epoch,
             initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                 self_id.clone(),
                 seq_num,
@@ -371,7 +359,7 @@ async fn prepare_slashing_deploys(
 
         tracing::info!(
             "Issuing slashing deploy justified by block {}",
-            pretty_printer::PrettyPrinter::build_string_bytes(&invalid_block_hash)
+            pretty_printer::PrettyPrinter::build_string_bytes(&slash_candidate.invalid_block_hash)
         );
 
         slashing_deploys.push(slash_deploy);
@@ -451,8 +439,13 @@ pub async fn create(
     let next_seq_num = casper_snapshot
         .max_seq_nums
         .get(&validator_identity.public_key.bytes)
-        .map(|seq| *seq + 1)
-        .unwrap_or(1) as i32;
+        .map(|seq| {
+            checked_next_seq(*seq).ok_or_else(|| {
+                CasperError::RuntimeError(format!("next sequence number overflows i32: {}", *seq))
+            })
+        })
+        .transpose()?
+        .unwrap_or(1);
     let next_block_num = casper_snapshot.max_block_num + 1;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;

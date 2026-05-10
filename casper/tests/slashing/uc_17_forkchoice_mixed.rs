@@ -29,8 +29,11 @@ fn uc_17_forkchoice_excludes_slashed_includes_active() {
     let _ = harness.execute_slash("v3");
 
     let fc1 = harness.fork_choice();
-    assert_eq!(fc1.len(), 3,
-        "fork-choice excludes the two slashed validators");
+    assert_eq!(
+        fc1.len(),
+        3,
+        "fork-choice excludes the two slashed validators"
+    );
     assert!(!fc1.contains(&"v0".to_string()));
     assert!(!fc1.contains(&"v3".to_string()));
     assert!(fc1.contains(&"v1".to_string()));

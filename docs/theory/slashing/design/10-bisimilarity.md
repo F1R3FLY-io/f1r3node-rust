@@ -3,7 +3,7 @@
 ## 10.1 The headline claim
 
 The F1R3FLY Rust port of the slashing subsystem is **observationally
-equivalent** to the Scala original *modulo* the ten documented
+equivalent** to the Scala original *modulo* the sixteen documented
 bug-fix deltas (§09) and a small set of structural conventions
 (α-equivalence on rho-calculus names, iteration order on `BTreeSet`
 vs `Set`).
@@ -173,15 +173,19 @@ The bisimilarity claim is **modulo**:
   *value-level*, not byte-level on-disk equality.
 
 - **Eight Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8,
-  T-9.10) and one Rust-introduced regression fix (T-9.2)** — all of
-  which restore Rust↔Scala convergence (§09). T-9.10 closes the
-  withdrawal-flow analog of T-9.4's slash-arm transfer-failure FIXME;
-  both are common-source fixes that apply to Rust and Scala equally
-  via the shared `casper/src/main/resources/PoS.rhox`.
+  T-9.10) and two Rust-introduced regression fixes (T-9.2, T-9.11)**.
+  T-9.2 restores Rust↔Scala convergence for tracker atomicity. T-9.11
+  preserves the old verdict for complete latest-message views and
+  intentionally diverges only from the buggy pre-fix behavior where
+  missing pointers aborted traversal or duplicate child paths were
+  over-counted. T-9.10 closes the withdrawal-flow analog of T-9.4's
+  slash-arm transfer-failure FIXME; both are common-source fixes that
+  apply to Rust and Scala equally via the shared
+  `casper/src/main/resources/PoS.rhox`.
 
 - **The deliberate Rust-side widening at bug #9 (T-9.9)** which
   admits self-correcting blocks Scala rejects. This is the **only
-  intentional divergence** in the bisimilarity claim.
+   intentional divergence** in the bisimilarity claim.
 
 - **An authenticated PKI identity layer** (out of scope; T-15 holds
   modulo this assumption).
@@ -231,11 +235,12 @@ The full chain is mechanically checked in `MainTheorem.v` with zero
 
 ## 10.12 What if a new bug is found?
 
-Bug #10 was discovered after the initial nine and incorporated by
-following the procedure below. If an eleventh bug is found, repeat:
+Bug #10 and Bug #11 were discovered after the initial nine and
+incorporated by following the procedure below. If a twelfth bug is
+found, repeat:
 
 1. **Document it** as bug #N in spec §10 with the same structure
-   as #1–#10: cause, pre-fix behavior, post-fix behavior, theorem
+   as #1–#11: cause, pre-fix behavior, post-fix behavior, theorem
    T-9.N, bisimilarity impact, worked example, diagram.
 2. **Mechanize the fix** in a new `BugFix*.v` module under
    `formal/rocq/slashing/theories/` (and add it to `_CoqProject`).

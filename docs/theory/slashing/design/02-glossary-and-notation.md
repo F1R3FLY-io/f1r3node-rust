@@ -21,7 +21,7 @@ a term you do not recognize while reading later sections, return here.
 | **FFG** | Friendly Finality Gadget (Casper) | Ethereum 2.0 slashing comparison anchor (§01.5; [BG19]).          |
 | **DOS** | Denial of Service                | The vector closed by bug fix #1 (§09.1, §10.1, §12.2.1).           |
 | **KV**  | Key-Value                        | Store abstraction underlying the equivocation tracker (§05).       |
-| **BFS** | Breadth-First Search             | Traversal algorithm in post-fix #7 (§09.7, T-9.7).                 |
+| **BFS** | Breadth-First Search             | Generic graph traversal; post-fix #7 uses a canonical self-chain walk (§09.8, T-9.7). |
 | **TLA+** | Temporal Logic of Actions       | Lamport's specification language; checked by TLC (§10).            |
 | **Rocq** | Proof assistant (formerly Coq)  | The mechanization target for proofs in `formal/rocq/`.             |
 
@@ -69,7 +69,7 @@ bisimilarity discussion (§10).
 | `C ∈ ℕ`           | Coop vault balance  | Accumulated forfeited stake.                                                                                      |
 | `creator-justification` | Self-justification entry | The justification entry naming the block's *own* creator's prior block; pre-fix #6 it was the only check in `justification_regressions` for self-regression detection (§09.6). |
 | `quorum`          | Active-set BFT quorum | Under `f ≤ ⌊(n−1)/3⌋`, the maximum tolerable Byzantine fraction; T-12 proves the slash closure preserves quorum.                                                                |
-| `ilm`             | Invalid latest messages | The DAG-side index `dag.invalid_latest_messages` (§04, §06).                                                                                                                  |
+| `ilm`             | Invalid latest messages | The legacy DAG-side index `dag.invalid_latest_messages`; retained for historical bug-fix examples. Current slash-candidate generation uses authorized invalid-block evidence (§04, §06). |
 | `Equivocation`    | Term of art         | A validator signing two distinct blocks at the same sequence number; formalized as Definition 4.1 in spec; cf. taxonomy §2.6.                                                   |
 
 ## 2.4 Sequence-number convention
@@ -136,8 +136,8 @@ slashable variants** referenced in §09 and bug-fix #3.
 |-------------------------|------------------------|-----------------------------------------------------------------------------------------------|
 | Headline theorems       | `T-N`                  | T-1 (detection soundness), T-3, T-7, T-8, T-10, T-11.                                         |
 | Headline split labels   | `T-Na`, `T-Nb`, `T-Nc` | T-13a / T-13b / T-13c (bonds, records, fork-choice).  T-15a / T-15b (pipeline, composition).  |
-| Named headline theorems | Mnemonic               | **T-Idem** (slash idempotence; alias T-9), **T-AuthCheck** (auth-token guard; Rholang-level). |
-| Bug-fix theorems        | `T-9.M`                | T-9.1 through T-9.9.                                                                          |
+| Named headline theorems | Mnemonic               | **T-Idem** (slash idempotence; alias T-9), **T-AuthCheck** (auth-token guard modeled by Rocq/TLA+ auth oracle). |
+| Bug-fix theorems        | `T-9.M`                | T-9.1 through T-9.15.                                                                         |
 
 `T-Idem` was historically named `T-9` but was renamed to avoid
 collision with the bug-fix family `T-9.M`. The alias is preserved

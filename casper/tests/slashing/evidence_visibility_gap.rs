@@ -35,8 +35,11 @@ fn uc_58_no_neglect_without_visible_evidence() {
     // should be classified as neglecting.
     let v1_unrelated = harness.sign_block("v1", 6);
     let s1 = harness.dispatch(v1_unrelated);
-    assert_eq!(s1, Status::Valid,
-        "T-12 visibility: v1 has not cited the equivocator → no neglect");
+    assert_eq!(
+        s1,
+        Status::Valid,
+        "T-12 visibility: v1 has not cited the equivocator → no neglect"
+    );
 
     let v2_unrelated = harness.sign_block("v2", 6);
     let s2 = harness.dispatch(v2_unrelated);
@@ -64,14 +67,20 @@ fn uc_58_neglect_fires_only_when_evidence_visible_and_unreported() {
     // v1 cites v0's bad block AND issues a SlashDeploy → reported.
     let v1_honest = harness.sign_block_citing_with_slash("v1", 6, bad, "v0");
     let s = harness.dispatch(v1_honest);
-    assert_eq!(s, Status::Valid,
-        "T-12 visibility: visible AND reported = no neglect");
+    assert_eq!(
+        s,
+        Status::Valid,
+        "T-12 visibility: visible AND reported = no neglect"
+    );
     assert!(!harness.has_record("v1", 5));
 
     // v2 cites v0's bad block but does NOT slash → visible-unreported.
     let v2_neg = harness.sign_block_citing("v2", 7, bad);
     let s = harness.dispatch(v2_neg);
-    assert_eq!(s, Status::NeglectedEquivocation,
-        "T-12 visibility: visible AND unreported = neglect fires");
+    assert_eq!(
+        s,
+        Status::NeglectedEquivocation,
+        "T-12 visibility: visible AND unreported = neglect fires"
+    );
     assert!(harness.has_record("v2", 6));
 }

@@ -15,12 +15,14 @@ mental model, or jump to the layer you care about.
 | 06 | [Proposing & effect](06-proposing-and-effect.md)                     | How a `SlashDeploy` is assembled, signed, and executed in the PoS Rholang contract (Diagram 07).               |
 | 07 | [Fork-choice & validator lifecycle](07-fork-choice-and-lifecycle.md) | How a slashed validator loses influence; the seven-state lifecycle (Diagram 06).                               |
 | 08 | [Two-level slashing](08-two-level-and-collusion.md)                  | Why colluders are mutually destroyed; the BFT bound (Diagram 04).                                              |
-| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The ten fixes (nine Scala-inherited, one Rust regression), what each one was, why it was wrong, and how the post-fix code is correct. |
+| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The documented fixes and permitted Rust/Scala deltas, what each one was, why it was wrong, and how the post-fix code is correct. |
 | 10 | [Bisimilarity (Rust ↔ Scala)](10-bisimilarity.md)                    | The headline observational-equivalence claim, and what "modulo" means (Diagram 10).                            |
 | 11 | [Worked examples](11-worked-examples.md)                             | Ten end-to-end traces that exercise each component path (Diagrams 02, 03, 05, 09).                             |
 | 12 | [Failure modes & recovery](12-failure-modes.md)                      | What goes wrong, why, and how the system recovers (transfer FIXME, lock race, stake-0, off-by-one density).    |
 | 13 | [References](13-references.md)                                       | Citations with DOIs verified.                                                                                  |
-| 14 | [Test plan](14-test-plan.md)                                         | Exhaustive example-based + property-based test plan covering all 80 use cases and 49 theorem labels; CI integration. |
+| 14 | [Test plan](14-test-plan.md)                                         | Example-based, integration, and property-based test plan covering the documented use cases, theorem labels, and threat-model regressions. |
+| 14a | [Tier architecture](14a-tier-architecture.md)                       | How the harness, Rocq oracle, and production adapter are kept observationally aligned.                          |
+| 15 | [Decision records](15-decision-records.md)                           | Decisions and rejected alternatives for epoch-scoped authorization, slash candidate sources, duplicate justifications, and checked arithmetic. |
 
 ## How to use this document
 
@@ -60,7 +62,7 @@ check §02 first.
 
 ## Diagrams
 
-All ten PlantUML source diagrams live at
+All PlantUML source diagrams live at
 [`../diagrams/`](../diagrams/). Click any rendered SVG in this
 document to open the standalone image.
 
@@ -76,12 +78,13 @@ document to open the standalone image.
 | 08 | [Justifications → neglect data flow](../diagrams/08-dataflow-justifications-to-neglect.svg)             | §04, §08 |
 | 09 | [Tracker race & locking fix](../diagrams/09-seq-tracker-race-and-fix.svg)                               | §05, §11 |
 | 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](../diagrams/10-component-formal-correspondence.svg) | §10      |
+| 11 | [Withdrawal transfer-failure fix](../diagrams/11-seq-withdrawal-flow-fix.svg)                           | §09, §11 |
 
 ## Status
 
-The slashing subsystem is **specified, mechanized, and audited**. Eight
-Scala-inherited bugs are documented with proven-correct fixes; one
-Rust-introduced regression is documented and fixed; one deliberate
-Rust-side widening is documented and proven sound. The remaining
-out-of-scope items (proposer-crash recovery, mechanization of
-`T-AuthCheck`) are listed in the specification §13 future-work table.
+The slashing subsystem is **specified, mechanized, and audited**. The
+Scala-inherited bugs, Rust-introduced regressions, and deliberate
+Rust-side widening are documented with proven-correct fixes or explicit
+formal boundaries. Current-epoch slash authorization, received slash-deploy
+authorization, checked sequence arithmetic, and duplicate-justification
+validation are included in the formal and integration-test coverage.

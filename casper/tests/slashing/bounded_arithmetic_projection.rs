@@ -32,10 +32,14 @@ fn uc_61_large_stake_does_not_overflow_coop_vault() {
         let _ = harness.execute_slash(&format!("v{}", i));
     }
 
-    let expected_total = (n as i64).checked_mul(stake_per)
+    let expected_total = (n as i64)
+        .checked_mul(stake_per)
         .expect("test parameters fit in i64 (sanity)");
-    assert_eq!(harness.coop_vault(), expected_total,
-        "T-8 + bounded-arithmetic: coop vault matches exact arithmetic up to i64 limit");
+    assert_eq!(
+        harness.coop_vault(),
+        expected_total,
+        "T-8 + bounded-arithmetic: coop vault matches exact arithmetic up to i64 limit"
+    );
     assert!(harness.coop_vault() > 0, "no wrap to negative");
 }
 
@@ -48,8 +52,11 @@ fn uc_61_individual_slash_uses_checked_arithmetic() {
 
     let _ = harness.execute_slash("v0");
     assert_eq!(harness.bond("v0"), 0);
-    assert_eq!(harness.coop_vault(), stake,
-        "exact arithmetic: vault = transferred stake, no saturation/wrap");
+    assert_eq!(
+        harness.coop_vault(),
+        stake,
+        "exact arithmetic: vault = transferred stake, no saturation/wrap"
+    );
 
     // Slash the second validator.
     let _ = harness.execute_slash("v1");
@@ -69,6 +76,9 @@ fn uc_61_zero_bond_validator_no_arithmetic_anomaly() {
 
     // Re-slash v0 — bond is already 0; vault must not move.
     let _ = harness.execute_slash("v0");
-    assert_eq!(harness.coop_vault(), pre_vault,
-        "T-Idem + bounded-arithmetic: 0-bond re-slash adds 0 (not panic)");
+    assert_eq!(
+        harness.coop_vault(),
+        pre_vault,
+        "T-Idem + bounded-arithmetic: 0-bond re-slash adds 0 (not panic)"
+    );
 }

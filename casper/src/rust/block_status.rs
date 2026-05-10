@@ -58,6 +58,7 @@ pub enum InvalidBlock {
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
+    UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     ContainsExpiredDeploy,
     ContainsTimeExpiredDeploy,
@@ -139,6 +140,10 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::InvalidBlockHash)
     }
 
+    pub fn unauthorized_slash_deploy() -> BlockError {
+        BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy)
+    }
+
     pub fn invalid_rejected_deploy() -> BlockError {
         BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)
     }
@@ -185,6 +190,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
             | InvalidBlock::InvalidBlockHash
+            | InvalidBlock::UnauthorizedSlashDeploy
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
             | InvalidBlock::ContainsFutureDeploy

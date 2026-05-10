@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# scripts/ci/check-tla-invariants.sh — run TLC against every MC_*.cfg
-# under formal/tlaplus/slashing/ and assert clean.
+# scripts/ci/check-tla-invariants.sh — run TLC against the bounded
+# post-fix MC configs under formal/tlaplus/slashing/ and assert clean.
 #
 # Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
-#   • MC_EquivocationDetector{,_safety,_liveness}.tla / .cfg
+#   • MC_EquivocationDetector{,_liveness}.tla / .cfg
 #   • MC_EquivocationDetectorEager{,_3v}.tla / .cfg
 #   • MC_ConcurrentTracker{,_pre_fix}.tla / .cfg
 #   • MC_SlashFlow.tla / .cfg
 #   • MC_TwoLevelSlashing.tla / .cfg
+#   • MC_AuthorizedSlashFlow.tla / .cfg
+#   • MC_JustificationProjection.tla / .cfg
+#   • MC_WithdrawFlow.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
 # are *expected* to violate their invariants and are skipped here (they
 # are the formal-side counter-examples, run manually for validation).
+#
+# MC_EquivocationDetector_safety is the exhaustive detector safety check.
+# It is intentionally opt-in because it can run for many hours; run it
+# with RUN_EXHAUSTIVE_TLA=1 after the shorter frontier has stabilized.
 
 set -euo pipefail
 
@@ -60,15 +67,20 @@ fi
 # Post-fix configs: each must TLC-clean.
 POST_FIX_CONFIGS=(
     MC_EquivocationDetector
-    MC_EquivocationDetector_safety
     MC_EquivocationDetector_liveness
     MC_EquivocationDetectorEager
     MC_EquivocationDetectorEager_3v
     MC_ConcurrentTracker
     MC_SlashFlow
     MC_TwoLevelSlashing
+    MC_AuthorizedSlashFlow
+    MC_JustificationProjection
     MC_WithdrawFlow
 )
+
+if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
+    POST_FIX_CONFIGS+=(MC_EquivocationDetector_safety)
+fi
 
 cd "$TLA_DIR"
 

@@ -22,7 +22,9 @@ fn uc_27_neglected_invalid_block_dispatches_record() {
     let status = harness.dispatch_with_status(hash, Status::SlashableOther);
     assert_eq!(status, Status::SlashableOther);
 
-    assert!(harness.has_record("v1", 8),
-        "post-fix #3: dispatcher mints record for NeglectedInvalidBlock");
+    assert!(
+        harness.has_record("v1", 8),
+        "post-fix #3: dispatcher mints record for NeglectedInvalidBlock"
+    );
     assert!(harness.dag.invalid.contains(&hash));
 }

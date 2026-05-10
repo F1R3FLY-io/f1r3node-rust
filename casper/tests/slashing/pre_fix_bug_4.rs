@@ -25,7 +25,10 @@ fn pre_fix_bug_4_transfer_failure_leaves_state_unchanged() {
 
     // Force the PoS transfer to fail.
     let result = harness.execute_slash_with_transfer_outcome("v0", false);
-    assert!(!result.success, "post-fix #4: failed transfer returns (false, ...)");
+    assert!(
+        !result.success,
+        "post-fix #4: failed transfer returns (false, ...)"
+    );
     assert_eq!(
         result.error.as_deref(),
         Some("transfer failed"),
@@ -36,14 +39,25 @@ fn pre_fix_bug_4_transfer_failure_leaves_state_unchanged() {
     // assertion FAILS because the bare `for (_ <- transferDoneCh)`
     // unconditionally committed `stateUpdateCh!(...)` even on
     // failure, mutating the bonds map and active set non-deterministically.
-    assert_eq!(harness.bond("v0"), initial_bond,
-        "post-fix #4: bond unchanged after failed transfer");
-    assert_eq!(harness.is_active("v0"), initial_active,
-        "post-fix #4: active-set membership unchanged");
-    assert_eq!(harness.coop_vault(), initial_coop,
-        "post-fix #4: coop vault unchanged");
-    assert!(!harness.pos_state.slashed.contains("v0"),
-        "post-fix #4: validator is NOT marked slashed (retry is possible)");
+    assert_eq!(
+        harness.bond("v0"),
+        initial_bond,
+        "post-fix #4: bond unchanged after failed transfer"
+    );
+    assert_eq!(
+        harness.is_active("v0"),
+        initial_active,
+        "post-fix #4: active-set membership unchanged"
+    );
+    assert_eq!(
+        harness.coop_vault(),
+        initial_coop,
+        "post-fix #4: coop vault unchanged"
+    );
+    assert!(
+        !harness.pos_state.slashed.contains("v0"),
+        "post-fix #4: validator is NOT marked slashed (retry is possible)"
+    );
 }
 
 #[test]

@@ -45,15 +45,23 @@ pub fn trace_path(filename: &str) -> PathBuf {
 
 pub fn load_trace(filename: &str) -> Trace {
     let p = trace_path(filename);
-    let bytes = std::fs::read(&p)
-        .unwrap_or_else(|e| panic!("failed to read trace {}: {}", p.display(), e));
+    let bytes =
+        std::fs::read(&p).unwrap_or_else(|e| panic!("failed to read trace {}: {}", p.display(), e));
     serde_json::from_slice::<Trace>(&bytes)
         .unwrap_or_else(|e| panic!("failed to parse trace {}: {}", p.display(), e))
 }
 
 pub fn replay_trace(trace: &Trace) -> SlashingTestHarness {
-    let validators = if trace.validators == 0 { 3 } else { trace.validators };
-    let stake = if trace.stake_per_validator == 0 { 100 } else { trace.stake_per_validator };
+    let validators = if trace.validators == 0 {
+        3
+    } else {
+        trace.validators
+    };
+    let stake = if trace.stake_per_validator == 0 {
+        100
+    } else {
+        trace.stake_per_validator
+    };
     let mut harness = SlashingTestHarness::new(validators, stake);
 
     for (idx, step) in trace.schedule.iter().enumerate() {

@@ -28,6 +28,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::slashing_authorization::validate_received_slash_deploys;
 use crate::rust::system_deploy::is_system_deploy_id;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -272,6 +273,11 @@ impl Validate {
         }
         tracing::debug!(target: "f1r3fly.casper", "before-block-number-validation");
         match Self::block_number(block, s) {
+            Either::Left(err) => return Either::Left(err),
+            Either::Right(_) => {}
+        }
+        tracing::debug!(target: "f1r3fly.casper", "before-slash-deploy-authorization-validation");
+        match Self::slash_deploy_authorization(block, s) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
@@ -821,6 +827,18 @@ impl Validate {
         b: &BlockMessage,
         block_store: &KeyValueBlockStore,
     ) -> ValidBlockProcessing {
+        let mut seen = HashSet::new();
+        if b.justifications
+            .iter()
+            .any(|justification| !seen.insert(justification.validator.clone()))
+        {
+            tracing::warn!(
+                "{}",
+                Self::ignore(b, "block contains duplicate justifications.")
+            );
+            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows));
+        }
+
         let justified_validators: HashSet<Bytes> = b
             .justifications
             .iter()
@@ -858,6 +876,22 @@ impl Validate {
 
             tracing::warn!("{}", Self::ignore(b, &message));
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows))
+        }
+    }
+
+    pub fn slash_deploy_authorization(
+        block: &BlockMessage,
+        s: &CasperSnapshot,
+    ) -> ValidBlockProcessing {
+        match validate_received_slash_deploys(block, s) {
+            Ok(()) => Either::Right(ValidBlock::Valid),
+            Err(e) => {
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(block, &format!("unauthorized slash deploy: {}", e))
+                );
+                Either::Left(BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy))
+            }
         }
     }
 

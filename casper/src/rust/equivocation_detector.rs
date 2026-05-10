@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
@@ -10,7 +10,6 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord};
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -19,6 +18,8 @@ use crate::rust::ValidBlockProcessing;
 
 /// Equivocation detection logic for blockchain consensus
 pub struct EquivocationDetector;
+
+type CanonicalChildCache = HashMap<(BlockHash, Validator, i64), Option<BlockHash>>;
 
 impl EquivocationDetector {
     pub async fn check_equivocations(
@@ -100,13 +101,9 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
     ) -> Result<bool, KvStoreError> {
-        // Atomic read-modify-write on the equivocation tracker: read all
-        // records, classify each against the new block, and update any
-        // records whose witness set should grow — all under the global
-        // lock so concurrent detectors do not interleave their updates.
-        // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
+            let mut canonical_child_cache = CanonicalChildCache::new();
             for equivocation_record in equivocations {
                 let status = Self::get_equivocation_discovery_status(
                     block,
@@ -114,6 +111,7 @@ impl EquivocationDetector {
                     block_store,
                     &equivocation_record,
                     genesis,
+                    &mut canonical_child_cache,
                 )?;
                 match status {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
@@ -143,12 +141,12 @@ impl EquivocationDetector {
         block_store: &KeyValueBlockStore,
         equivocation_record: &EquivocationRecord,
         genesis: &BlockMessage,
+        canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<EquivocationDiscoveryStatus, KvStoreError> {
         let equivocating_validator = &equivocation_record.equivocator;
         let latest_messages = Self::to_latest_message_hashes(&block.justifications);
         let bonds = proto_util::bonds(block);
 
-        // Find the bond for the equivocating validator
         let maybe_equivocating_validator_bond = bonds
             .iter()
             .find(|bond| bond.validator == equivocating_validator);
@@ -161,15 +159,9 @@ impl EquivocationDetector {
                 &latest_messages,
                 bond.stake,
                 genesis,
+                canonical_child_cache,
             ),
-            None => {
-                /*
-                 * Since block has dropped equivocatingValidator from the bonds, it has acknowledged the equivocation.
-                 * The combination of Validate.transactions and Validate.bondsCache ensure that you can only drop
-                 * validators through transactions to the proof of stake contract.
-                 */
-                Ok(EquivocationDiscoveryStatus::EquivocationDetected)
-            }
+            None => Ok(EquivocationDiscoveryStatus::EquivocationDetected),
         }
     }
 
@@ -177,9 +169,10 @@ impl EquivocationDetector {
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         equivocation_record: &EquivocationRecord,
-        latest_messages: &HashMap<Validator, BlockHash>,
+        latest_messages: &BTreeMap<Validator, BlockHash>,
         stake: i64,
         genesis: &BlockMessage,
+        canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<EquivocationDiscoveryStatus, KvStoreError> {
         if stake > 0 {
             let equivocation_detectable = Self::is_equivocation_detectable(
@@ -187,8 +180,9 @@ impl EquivocationDetector {
                 block_store,
                 latest_messages,
                 equivocation_record,
-                &Vec::new(),
+                &[],
                 genesis,
+                canonical_child_cache,
             )?;
 
             if equivocation_detectable {
@@ -197,22 +191,13 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            // Bug #5 (post-fix): the PoS bond contract enforces
-            // `amount > 0` (PoS.rhox `bond` arm), so this branch is
-            // unreachable from a correctly-bonded validator. We
-            // retain the conservative `EquivocationDetected`
-            // classification as a defense-in-depth check; the
-            // post-fix invariant `active_implies_bonded`
-            // (formal/rocq/slashing/theories/BugFixStakeZero.v:36)
-            // makes the branch dead code in practice. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
             Ok(EquivocationDiscoveryStatus::EquivocationDetected)
         }
     }
 
     fn to_latest_message_hashes(
         justifications: &[models::rust::casper::protocol::casper_message::Justification],
-    ) -> HashMap<Validator, BlockHash> {
+    ) -> BTreeMap<Validator, BlockHash> {
         justifications
             .iter()
             .map(|justification| {
@@ -227,99 +212,45 @@ impl EquivocationDetector {
     fn is_equivocation_detectable(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
-        latest_messages: &HashMap<Validator, BlockHash>,
+        latest_messages: &BTreeMap<Validator, BlockHash>,
         equivocation_record: &EquivocationRecord,
-        equivocation_children: &Vec<BlockMessage>,
+        equivocation_children: &[BlockMessage],
         genesis: &BlockMessage,
+        canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<bool, KvStoreError> {
-        let latest_messages_vec: Vec<(Validator, BlockHash)> = latest_messages
-            .iter()
-            .map(|(v, h)| (v.clone(), h.clone()))
-            .collect();
-
-        match latest_messages_vec.split_first() {
-            None => Ok(false),
-            Some(((_, justification_block_hash), remainder)) => {
-                Self::is_equivocation_detectable_after_viewing_block(
-                    dag,
-                    block_store,
-                    justification_block_hash,
-                    equivocation_record,
-                    equivocation_children,
-                    remainder,
-                    genesis,
-                )
-            }
-        }
-    }
-
-    fn is_equivocation_detectable_after_viewing_block(
-        dag: &KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        justification_block_hash: &BlockHash,
-        equivocation_record: &EquivocationRecord,
-        equivocation_children: &Vec<BlockMessage>,
-        remainder: &[(Validator, BlockHash)],
-        genesis: &BlockMessage,
-    ) -> Result<bool, KvStoreError> {
-        if equivocation_record
-            .equivocation_detected_block_hashes
-            .contains(justification_block_hash)
-        {
-            Ok(true)
-        } else {
-            let justification_block = block_store.get_unsafe(justification_block_hash);
-            Self::is_equivocation_detectable_through_children(
-                dag,
-                block_store,
-                equivocation_record,
-                equivocation_children,
-                remainder,
-                &justification_block,
-                genesis,
-            )
-        }
-    }
-
-    fn is_equivocation_detectable_through_children(
-        dag: &KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        equivocation_record: &EquivocationRecord,
-        equivocation_children: &Vec<BlockMessage>,
-        remainder: &[(Validator, BlockHash)],
-        justification_block: &BlockMessage,
-        genesis: &BlockMessage,
-    ) -> Result<bool, KvStoreError> {
+        let mut updated_equivocation_children = equivocation_children.to_vec();
         let equivocating_validator = &equivocation_record.equivocator;
         let equivocation_base_block_seq_num = equivocation_record.equivocation_base_block_seq_num;
 
-        let updated_equivocation_children = Self::maybe_add_equivocation_child(
-            dag,
-            block_store,
-            justification_block,
-            equivocating_validator,
-            equivocation_base_block_seq_num.into(),
-            equivocation_children,
-            genesis,
-        )?;
+        for justification_block_hash in latest_messages.values() {
+            if equivocation_record
+                .equivocation_detected_block_hashes
+                .contains(justification_block_hash)
+            {
+                return Ok(true);
+            }
 
-        if updated_equivocation_children.len() > 1 {
-            Ok(true)
-        } else {
-            let remainder_map: HashMap<Validator, BlockHash> = remainder
-                .iter()
-                .map(|(v, h)| (v.clone(), h.clone()))
-                .collect();
+            let Some(justification_block) = block_store.get(justification_block_hash)? else {
+                continue;
+            };
 
-            Self::is_equivocation_detectable(
+            updated_equivocation_children = Self::maybe_add_equivocation_child(
                 dag,
                 block_store,
-                &remainder_map,
-                equivocation_record,
+                &justification_block,
+                equivocating_validator,
+                equivocation_base_block_seq_num.into(),
                 &updated_equivocation_children,
                 genesis,
-            )
+                canonical_child_cache,
+            )?;
+
+            if updated_equivocation_children.len() > 1 {
+                return Ok(true);
+            }
         }
+
+        Ok(false)
     }
 
     fn maybe_add_equivocation_child(
@@ -328,40 +259,12 @@ impl EquivocationDetector {
         justification_block: &BlockMessage,
         equivocating_validator: &Validator,
         equivocation_base_block_seq_num: i64,
-        equivocation_children: &Vec<BlockMessage>,
+        equivocation_children: &[BlockMessage],
         genesis: &BlockMessage,
+        canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<Vec<BlockMessage>, KvStoreError> {
-        // Genesis termination: `block_hash` equality is the canonical
-        // genesis-detection predicate, and it is the SAFEST check
-        // available. Three reasons:
-        //
-        // (1) Hash uniqueness. Block hashes are
-        //     `BLAKE2b-512(canonicalize(BlockMessage))`. Two distinct
-        //     blocks have equal hashes only via cryptographic
-        //     collision (negligible). Any field-based predicate
-        //     (e.g. `seq_num == 0`, `parents.is_empty()`) is either
-        //     implied by hash equality (so equivalent) or admits
-        //     spoofing under partition recovery.
-        //
-        // (2) Genesis singularity. Exactly one `genesis: &BlockMessage`
-        //     reference flows into this function from
-        //     `MultiParentCasperImpl::genesis_block()`. The block
-        //     store is the single source of truth.
-        //
-        // (3) Equivalence with the BFS termination at
-        //     `find_creator_justification_descendant_above_seq`
-        //     (lines 416-455). That BFS terminates when
-        //     `proto_util::get_creator_justification_as_list_until_goal_in_memory`
-        //     returns an empty list — which happens exactly at
-        //     genesis (no creator-justification). Both paths terminate
-        //     equivalently per Theorem T-9.7
-        //     (`t_9_7_finds_descendant_with_gap`,
-        //     formal/rocq/slashing/theories/BugFixSeqNumDensity.v:84).
-        //
-        // See docs/theory/slashing/design/04-detection-and-pipeline.md
-        // §4.7 (genesis-termination invariant) for the full proof.
         if justification_block.block_hash == genesis.block_hash {
-            return Ok(equivocation_children.clone());
+            return Ok(equivocation_children.to_vec());
         }
 
         if justification_block.sender == *equivocating_validator {
@@ -371,11 +274,13 @@ impl EquivocationDetector {
                     dag,
                     block_store,
                     justification_block,
+                    equivocating_validator,
                     equivocation_base_block_seq_num,
                     equivocation_children,
+                    canonical_child_cache,
                 )
             } else {
-                Ok(equivocation_children.clone())
+                Ok(equivocation_children.to_vec())
             }
         } else {
             let latest_messages =
@@ -383,27 +288,28 @@ impl EquivocationDetector {
 
             match latest_messages.get(equivocating_validator) {
                 Some(latest_equivocating_validator_block_hash) => {
-                    let latest_equivocating_validator_block =
-                        block_store.get_unsafe(latest_equivocating_validator_block_hash);
-
-                    let latest_seq_num = i64::from(latest_equivocating_validator_block.seq_num);
-                    if latest_seq_num > equivocation_base_block_seq_num {
-                        Self::add_equivocation_child(
-                            dag,
-                            block_store,
-                            &latest_equivocating_validator_block,
-                            equivocation_base_block_seq_num,
-                            equivocation_children,
-                        )
-                    } else {
-                        Ok(equivocation_children.clone())
+                    match block_store.get(latest_equivocating_validator_block_hash)? {
+                        Some(latest_equivocating_validator_block) => {
+                            let latest_seq_num =
+                                i64::from(latest_equivocating_validator_block.seq_num);
+                            if latest_seq_num > equivocation_base_block_seq_num {
+                                Self::add_equivocation_child(
+                                    dag,
+                                    block_store,
+                                    &latest_equivocating_validator_block,
+                                    equivocating_validator,
+                                    equivocation_base_block_seq_num,
+                                    equivocation_children,
+                                    canonical_child_cache,
+                                )
+                            } else {
+                                Ok(equivocation_children.to_vec())
+                            }
+                        }
+                        None => Ok(equivocation_children.to_vec()),
                     }
                 }
-                None => {
-                    Err(KvStoreError::KeyNotFound(
-                        "justificationBlock is missing justification pointers to equivocatingValidator even though justificationBlock isn't a part of equivocationDetectedBlockHashes for this equivocation record.".to_string()
-                    ))
-                }
+                None => Ok(equivocation_children.to_vec()),
             }
         }
     }
@@ -412,73 +318,392 @@ impl EquivocationDetector {
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         justification_block: &BlockMessage,
+        equivocating_validator: &Validator,
         equivocation_base_block_seq_num: i64,
-        equivocation_children: &Vec<BlockMessage>,
+        equivocation_children: &[BlockMessage],
+        canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<Vec<BlockMessage>, KvStoreError> {
-        // Walk the creator-justification chain looking for any block whose
-        // sequence number is *strictly greater* than the equivocation base.
-        // The earlier `baseSeqNum + 1` exact-match assumed seq numbers are
-        // dense (never skipped); under partition recovery a validator may
-        // legitimately skip a number, breaking that assumption.
-        // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7
-        // (theorem t_9_7_finds_descendant_with_gap).
-        match Self::find_creator_justification_descendant_above_seq(
-            dag,
-            justification_block,
+        let key = (
+            justification_block.block_hash.clone(),
+            equivocating_validator.clone(),
             equivocation_base_block_seq_num,
-        )? {
-            Some(equivocation_child_hash) => {
-                let equivocation_child = block_store.get_unsafe(&equivocation_child_hash);
-                let mut updated_children = equivocation_children.clone();
-                updated_children.push(equivocation_child);
-                Ok(updated_children)
-            }
+        );
+        let maybe_equivocation_child_hash = match canonical_child_cache.get(&key) {
+            Some(cached) => cached.clone(),
             None => {
-                Err(KvStoreError::KeyNotFound(
-                    "creator-justification descendant with sequence number above equivocation base hasn't been added to the blockDAG yet.".to_string()
-                ))
+                let computed = Self::find_canonical_creator_justification_child_above_seq(
+                    dag,
+                    justification_block,
+                    equivocating_validator,
+                    equivocation_base_block_seq_num,
+                )?;
+                canonical_child_cache.insert(key, computed.clone());
+                computed
             }
+        };
+
+        match maybe_equivocation_child_hash {
+            Some(equivocation_child_hash) => match block_store.get(&equivocation_child_hash)? {
+                Some(equivocation_child) => {
+                    let mut updated_children = equivocation_children.to_vec();
+                    if !updated_children
+                        .iter()
+                        .any(|child| child.block_hash == equivocation_child.block_hash)
+                    {
+                        updated_children.push(equivocation_child);
+                    }
+                    Ok(updated_children)
+                }
+                None => Ok(equivocation_children.to_vec()),
+            },
+            None => Ok(equivocation_children.to_vec()),
         }
     }
 
-    fn find_creator_justification_descendant_above_seq(
+    fn find_canonical_creator_justification_child_above_seq(
         dag: &KeyValueDagRepresentation,
         block: &BlockMessage,
+        target_validator: &Validator,
         base_seq_num: i64,
     ) -> Result<Option<BlockHash>, KvStoreError> {
-        if i64::from(block.seq_num) > base_seq_num {
-            return Ok(Some(block.block_hash.clone()));
+        if block.sender != *target_validator || i64::from(block.seq_num) <= base_seq_num {
+            return Ok(None);
         }
 
-        let start_nodes = vec![block.block_hash.clone()];
+        let mut candidate_hash = block.block_hash.clone();
+        let mut current_hash = block.block_hash.clone();
+        let mut visited = HashSet::new();
 
-        let neighbors = |block_hash: &BlockHash| -> Vec<BlockHash> {
-            proto_util::get_creator_justification_as_list_until_goal_in_memory(
-                dag,
-                block_hash,
-                |_| false,
-            )
-            .unwrap_or_else(|_| Vec::new())
-        };
+        loop {
+            if !visited.insert(current_hash.clone()) {
+                break;
+            }
 
-        let traversal_result = dag_ops::bf_traverse(start_nodes, neighbors);
-        let target_validator = &block.sender;
+            let Some(parent_hash) = dag.self_justification(&current_hash)? else {
+                break;
+            };
 
-        for candidate_hash in traversal_result {
-            match dag.lookup_unsafe(&candidate_hash) {
-                Ok(candidate_metadata) => {
-                    if i64::from(candidate_metadata.sequence_number) > base_seq_num
-                        && candidate_metadata.sender == *target_validator
-                    {
-                        return Ok(Some(candidate_hash));
-                    }
+            match dag.lookup_unsafe(&parent_hash) {
+                Ok(parent_metadata)
+                    if parent_metadata.sender == *target_validator
+                        && i64::from(parent_metadata.sequence_number) > base_seq_num =>
+                {
+                    candidate_hash = parent_hash.clone();
+                    current_hash = parent_hash;
                 }
-                Err(_) => {
-                    continue;
-                }
+                _ => break,
             }
         }
 
-        Ok(None)
+        Ok(Some(candidate_hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{Arc, RwLock};
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use models::rust::block_hash;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, Justification,
+    };
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
+
+    fn validator(id: u8) -> Validator { Bytes::from(vec![id]) }
+
+    fn hash(id: u8) -> BlockHash { Bytes::from(vec![id; block_hash::LENGTH]) }
+
+    fn block(
+        sender: &Validator,
+        seq_num: i32,
+        block_hash: BlockHash,
+        self_parent: Option<BlockHash>,
+    ) -> BlockMessage {
+        let justifications = self_parent
+            .map(|latest_block_hash| {
+                vec![Justification {
+                    validator: sender.clone(),
+                    latest_block_hash,
+                }]
+            })
+            .unwrap_or_default();
+
+        BlockMessage {
+            block_hash,
+            header: Header {
+                parents_hash_list: Vec::new(),
+                timestamp: 0,
+                version: 0,
+                extra_bytes: Bytes::new(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::new(),
+                    post_state_hash: Bytes::new(),
+                    bonds: Vec::new(),
+                    block_number: i64::from(seq_num),
+                },
+                deploys: Vec::new(),
+                rejected_deploys: Vec::new(),
+                system_deploys: Vec::new(),
+                extra_bytes: Bytes::new(),
+            },
+            justifications,
+            sender: sender.clone(),
+            seq_num,
+            sig: Bytes::new(),
+            sig_algorithm: String::new(),
+            shard_id: String::new(),
+            extra_bytes: Bytes::new(),
+        }
+    }
+
+    fn metadata(block: &BlockMessage, block_number: i64) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: block.block_hash.clone(),
+            parents: Vec::new(),
+            sender: block.sender.clone(),
+            justifications: block.justifications.clone(),
+            weight_map: BTreeMap::new(),
+            block_number,
+            sequence_number: block.seq_num,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+        }
+    }
+
+    fn dag_with(blocks: &[BlockMessage]) -> KeyValueDagRepresentation {
+        let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
+        let deploy_index = Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+            InMemoryKeyValueStore::new(),
+        ))));
+
+        let mut dag = KeyValueDagRepresentation {
+            dag_set: imbl::HashSet::new(),
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: imbl::HashMap::new(),
+            main_parent_map: imbl::HashMap::new(),
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: BlockHash::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index,
+            deploy_index,
+        };
+
+        for (index, block) in blocks.iter().enumerate() {
+            let block_number = index as i64;
+            dag.dag_set.insert(block.block_hash.clone());
+            dag.block_number_map
+                .insert(block.block_hash.clone(), block_number);
+            dag.height_map
+                .entry(block_number)
+                .or_insert_with(imbl::HashSet::new)
+                .insert(block.block_hash.clone());
+            if let Some(self_parent) = EquivocationDetector::creator_justification_hash(block) {
+                dag.self_justification_map
+                    .insert(block.block_hash.clone(), self_parent);
+            }
+            dag.block_metadata_index
+                .write()
+                .unwrap()
+                .add(metadata(block, block_number))
+                .unwrap();
+        }
+
+        dag
+    }
+
+    fn block_store_with(blocks: &[BlockMessage]) -> KeyValueBlockStore {
+        let store = KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
+        for block in blocks {
+            store.put_block_message(block).unwrap();
+        }
+        store
+    }
+
+    #[test]
+    fn latest_messages_are_projected_in_validator_order() {
+        let justifications = vec![
+            Justification {
+                validator: validator(3),
+                latest_block_hash: hash(30),
+            },
+            Justification {
+                validator: validator(1),
+                latest_block_hash: hash(10),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: hash(20),
+            },
+        ];
+
+        let latest_messages = EquivocationDetector::to_latest_message_hashes(&justifications);
+        let validators: Vec<_> = latest_messages.keys().cloned().collect();
+
+        assert_eq!(validators, vec![validator(1), validator(2), validator(3)]);
+    }
+
+    #[test]
+    fn iterative_detection_skips_missing_latest_pointer_and_continues() {
+        let sender = validator(1);
+        let observer = validator(2);
+        let missing = validator(3);
+        let b0 = block(&sender, 0, hash(10), None);
+        let left = block(&sender, 10, hash(20), Some(b0.block_hash.clone()));
+        let right = block(&sender, 10, hash(30), Some(b0.block_hash.clone()));
+        let mut observer_block = block(&observer, 1, hash(40), None);
+        observer_block.justifications = vec![Justification {
+            validator: sender.clone(),
+            latest_block_hash: right.block_hash.clone(),
+        }];
+
+        let dag = dag_with(&[
+            b0.clone(),
+            left.clone(),
+            right.clone(),
+            observer_block.clone(),
+        ]);
+        let block_store = block_store_with(&[left.clone(), right.clone(), observer_block.clone()]);
+        let latest_messages = BTreeMap::from([
+            (missing, hash(99)),
+            (observer, observer_block.block_hash.clone()),
+        ]);
+        let record = EquivocationRecord::new(sender.clone(), 0, BTreeSet::new());
+        let mut cache = CanonicalChildCache::new();
+
+        let detected = EquivocationDetector::is_equivocation_detectable(
+            &dag,
+            &block_store,
+            &latest_messages,
+            &record,
+            &[left],
+            &b0,
+            &mut cache,
+        )
+        .unwrap();
+
+        assert!(detected);
+    }
+
+    #[test]
+    fn canonical_child_returns_oldest_visible_block_above_base() {
+        let sender = validator(1);
+        let b0 = block(&sender, 0, hash(10), None);
+        let b2 = block(&sender, 2, hash(20), Some(b0.block_hash.clone()));
+        let b100 = block(&sender, 100, hash(30), Some(b2.block_hash.clone()));
+        let dag = dag_with(&[b0, b2.clone(), b100.clone()]);
+
+        let found = EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+            &dag, &b100, &sender, 0,
+        )
+        .unwrap();
+
+        assert_eq!(found, Some(b2.block_hash));
+    }
+
+    #[test]
+    fn canonical_child_collapses_same_branch_latest_messages() {
+        let sender = validator(1);
+        let b0 = block(&sender, 0, hash(10), None);
+        let b10 = block(&sender, 10, hash(20), Some(b0.block_hash.clone()));
+        let b11 = block(&sender, 11, hash(30), Some(b10.block_hash.clone()));
+        let dag = dag_with(&[b0, b10.clone(), b11.clone()]);
+
+        let from_10 = EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+            &dag, &b10, &sender, 0,
+        )
+        .unwrap();
+        let from_11 = EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+            &dag, &b11, &sender, 0,
+        )
+        .unwrap();
+
+        assert_eq!(from_10, Some(b10.block_hash.clone()));
+        assert_eq!(from_11, Some(b10.block_hash));
+    }
+
+    #[test]
+    fn canonical_child_distinguishes_two_visible_branches() {
+        let sender = validator(1);
+        let b0 = block(&sender, 0, hash(10), None);
+        let left = block(&sender, 10, hash(20), Some(b0.block_hash.clone()));
+        let right = block(&sender, 10, hash(30), Some(b0.block_hash.clone()));
+        let dag = dag_with(&[b0, left.clone(), right.clone()]);
+
+        let left_found =
+            EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+                &dag, &left, &sender, 0,
+            )
+            .unwrap();
+        let right_found =
+            EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+                &dag, &right, &sender, 0,
+            )
+            .unwrap();
+
+        assert_eq!(left_found, Some(left.block_hash));
+        assert_eq!(right_found, Some(right.block_hash));
+        assert_ne!(left_found, right_found);
+    }
+
+    #[test]
+    fn canonical_child_cycle_guard_terminates() {
+        let sender = validator(1);
+        let b2 = block(&sender, 2, hash(20), Some(hash(30)));
+        let b3 = block(&sender, 3, hash(30), Some(hash(20)));
+        let dag = dag_with(&[b2.clone(), b3.clone()]);
+
+        let found = EquivocationDetector::find_canonical_creator_justification_child_above_seq(
+            &dag, &b3, &sender, 0,
+        )
+        .unwrap();
+
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn canonical_child_cache_is_transparent_for_add_child() {
+        let sender = validator(1);
+        let b0 = block(&sender, 0, hash(10), None);
+        let b10 = block(&sender, 10, hash(20), Some(b0.block_hash.clone()));
+        let b11 = block(&sender, 11, hash(30), Some(b10.block_hash.clone()));
+        let dag = dag_with(&[b0, b10.clone(), b11.clone()]);
+        let block_store = block_store_with(&[b10.clone(), b11.clone()]);
+        let mut cache = CanonicalChildCache::new();
+
+        let children = EquivocationDetector::add_equivocation_child(
+            &dag,
+            &block_store,
+            &b11,
+            &sender,
+            0,
+            &Vec::new(),
+            &mut cache,
+        )
+        .unwrap();
+
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].block_hash, b10.block_hash);
+        assert_eq!(
+            cache.get(&(b11.block_hash, sender, 0)).cloned(),
+            Some(Some(children[0].block_hash.clone()))
+        );
     }
 }

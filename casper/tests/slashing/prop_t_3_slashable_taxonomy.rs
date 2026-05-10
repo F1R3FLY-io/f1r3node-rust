@@ -40,13 +40,13 @@ fn t_3_post_fix_slashable_set_is_18_elements() {
         InvalidBlock::ContainsTimeExpiredDeploy,
         InvalidBlock::ContainsFutureDeploy,
     ];
-    assert_eq!(slashable.len(), 18, "post-fix slashable set has 18 variants");
+    assert_eq!(
+        slashable.len(),
+        18,
+        "post-fix slashable set has 18 variants"
+    );
     for v in &slashable {
-        assert!(
-            v.is_slashable(),
-            "post-fix: {:?} must be slashable",
-            v
-        );
+        assert!(v.is_slashable(), "post-fix: {:?} must be slashable", v);
     }
 }
 

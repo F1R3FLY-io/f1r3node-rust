@@ -11,7 +11,7 @@
 #   docs/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 22 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 26 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
@@ -33,6 +33,9 @@
 #   BugFixStakeZero        → EquivocationDetector, PoSContract
 #   BugFixSelfRegression   → DAGState, Block
 #   BugFixSeqNumDensity    → EquivocationDetector, Block
+#   BugFixSeqArithmetic    → arithmetic boundary helpers
+#   BugFixDuplicateJustifications → Block justification uniqueness
+#   BugFixSlashAuthorization → SlashDeploy, ValidatorLifetime
 #   BugFixUnbondedProposer → BlockCreator, PoSContract
 #   BugFixWithdrawTransferFailure → PoSContract (T-9.10; PoSStateW additive
 #                                  embedding of PoSState; withdrawer/reward
@@ -41,11 +44,10 @@
 #   Bisimulation           → all of the above (the headline relation)
 #   MainTheorem            → Bisimulation, all BugFix*
 #
-# The development assumes the on-chain Rholang `slash` contract at
-# `casper/src/main/resources/PoS.rhox:432-495` as a shared implementation
-# between Scala and Rust — the contract is loaded into the Rust interpreter
-# unmodified. Bug fix #4 (PoS.rhox:469 transfer-failure FIXME) therefore
-# applies to both sides equally.
+# The development models the on-chain Rholang `slash` contract at
+# `casper/src/main/resources/PoS.rhox:432-495`. Bisimilarity is maintained
+# except at the documented bug-fix deltas, including the authorization/no-op
+# behavior for unknown slash evidence.
 #
 # Bisimilarity is defined modulo:
 #   - α-equivalence on Rholang names
@@ -55,6 +57,7 @@
 -Q theories Slashing
 
 theories/Validator.v
+theories/ValidatorLifetime.v
 theories/Block.v
 theories/InvalidBlock.v
 theories/EquivocationRecord.v
@@ -72,6 +75,9 @@ theories/BugFixTransferFailure.v
 theories/BugFixStakeZero.v
 theories/BugFixSelfRegression.v
 theories/BugFixSeqNumDensity.v
+theories/BugFixSeqArithmetic.v
+theories/BugFixDuplicateJustifications.v
+theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
 theories/Bisimulation.v

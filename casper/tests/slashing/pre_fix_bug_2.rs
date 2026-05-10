@@ -54,8 +54,11 @@ fn pre_fix_bug_2_atomic_rmw_preserves_all_witnesses() {
         .keys()
         .filter(|(v, _)| v == "v0")
         .collect();
-    assert_eq!(v0_keys.len(), 1,
-        "T-4: at most one record per (validator, base_seq)");
+    assert_eq!(
+        v0_keys.len(),
+        1,
+        "T-4: at most one record per (validator, base_seq)"
+    );
 
     let witnesses = harness.record_witnesses("v0", 4);
     assert!(witnesses.contains(&bad_a));

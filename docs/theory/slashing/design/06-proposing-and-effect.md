@@ -16,16 +16,25 @@ The slashing-relevant work happens in step 2: the proposer asks the
 slashing subsystem *"is there anyone bonded I should slash?"* and
 attaches one `SlashDeploy` system deploy per offender.
 
+The safety proof does not require every proposer to include every
+observed slash immediately. Bounded slash liveness does require a
+fairness assumption: once evidence is visible to scheduled bonded
+proposers, some scheduled bonded proposer must include the corresponding
+slash deploy, or the protocol must enforce an equivalent inclusion rule.
+The Hypothesis-backed Sage search reduces the withholding boundary to a
+single-slot witness, and TLA+ records it as
+`Inv_ProposerFairnessForBoundedLiveness`.
+
 ## 6.2 `prepare_slashing_deploys` — the entry point
 
 The Rust source is at
 `casper/src/rust/blocks/proposer/block_creator.rs:287-332`. The
 algorithm in literate pseudocode:
 
-We start by reading two indices from the `CasperSnapshot`. The
-*invalid latest messages* index gives every validator whose latest
-message is flagged invalid; the *equivocation records* index gives
-every `(V, baseSeq)` pair we have evidence on.
+We start from the authorized invalid-block evidence index in the
+`CasperSnapshot`. The old implementation used `invalid_latest_messages`;
+that missed slashable invalid blocks that were recorded as invalid but did
+not become latest messages.
 
 ```
 function prepare_slashing_deploys(snapshot: CasperSnapshot,
@@ -34,33 +43,34 @@ function prepare_slashing_deploys(snapshot: CasperSnapshot,
                                   seed_fn: Validator → SeqNum → Seed)
                                 → Vec<SlashDeploy>:
 
-    -- (Bug #8 post-fix would insert a proposer-bond short-circuit
-    --  HERE: `if snapshot.on_chain_state.bonds_map[proposer] = 0:
-    --        return Vec::new()`. Mechanized in Rocq
-    --  (`BugFixUnbondedProposer.v:44`); not yet applied in Rust
-    --  at `block_creator.rs:287-332` — pending PR. The current
-    --  Rust falls through to the unconditional read below.)
+    if snapshot.on_chain_state.bonds_map[proposer] ≤ 0:
+        return Vec::new()        -- Bug #8 / T-9.8
 
-    let ilm     ← snapshot.dag.invalid_latest_messages()    -- {(v, b_v) : ...}
-    let records ← snapshot.equivocation_records             -- not consulted in core path
-                                                            -- (used by §08 closure)
+    let currentEpoch ← epoch(snapshot.max_block_num + 1)
+    let evidence     ← snapshot.dag.invalid_blocks()
 ```
 
-We filter the invalid-latest-messages index to keep only validators
-that are *still bonded* (a validator whose bond is already 0 cannot
-be slashed again — see T-Idem in §06.5).
+We keep only invalid-block evidence whose offender is still bonded and whose
+evidence epoch matches the block being proposed.
 
 ```
-    let ilm_from_bonded ← {(v, b_v) ∈ ilm : snapshot.on_chain_state.bonds_map[v] > 0}
+    let candidates ← {}
+    for m ∈ evidence:
+        e ← epoch(m.blockNumber)
+        if e = currentEpoch ∧ snapshot.on_chain_state.bonds_map[m.sender] > 0:
+            candidates[m.sender] ← minHash(candidates[m.sender], m.blockHash)
 ```
 
-For each remaining offender, we construct one `SlashDeploy` and
-return the list.
+For each remaining offender, we construct one `SlashDeploy` carrying the
+authorized target epoch and return the list in deterministic key order.
+If one offender has multiple current-epoch invalid blocks, `minHash` selects
+the canonical minimum byte string so set iteration order cannot affect block
+construction.
 
 ```
     return [
-        SlashDeploy(b_v, proposer, seed_fn(proposer, seqNum))
-        for (v, b_v) ∈ ilm_from_bonded
+        SlashDeploy(hash, proposer, currentEpoch, seed_fn(proposer, seqNum))
+        for (v, hash) ∈ candidates
     ]
 ```
 
@@ -75,9 +85,15 @@ return the list.
 ## 6.3 The `SlashDeploy` Rholang body
 
 A `SlashDeploy` is a *system deploy*: it is not user-authenticated
-and carries no fee. The body (faithful to
-`coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala:40-51`,
-with `sys:casper:*` unforgeable bindings elided for readability):
+and carries no fee. The Rust/protobuf payload is
+`SlashDeploy { invalid_block_hash, pk, target_activation_epoch, initial_rand }`.
+The target activation epoch is checked during block validation before the
+deploy is replayed; the Rholang body below receives only the authorized
+system bindings needed to invoke PoS.
+
+The body is faithful to
+`coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala:40-51`, with
+`sys:casper:*` unforgeable bindings elided for readability:
 
 ```
 new rl, poSCh, deployerId, invalidBlockHash, sysAuthToken, return in {
@@ -152,14 +168,16 @@ The activity flow:
 > **Auth-token observation (T-AuthCheck).** A spoofed deploy with
 > the wrong system auth token is rejected at the very first guard
 > with `returnCh!((false, "Invalid system auth token"))`. This is
-> a Rholang-level guarantee; it is not currently mechanized in
-> Rocq because the Rocq `slash` definition assumes the auth check
-> has already passed (see verification §13 future-work row).
+> modeled in Rocq by `execute_authenticated_slash_deploy` and in
+> TLA+ by `ReceiveBadAuthSlash` /
+> `Inv_InvalidAuthSlashNoPending`.
 
 ## 6.5 The slash transition — formal semantics
 
-In the Rocq abstraction (which omits the auth-token check; see
-verification §6.0 for the mechanization note):
+In the Rocq abstraction, the core `slash` transition is factored from the
+auth-token guard. The wrapper `execute_authenticated_slash_deploy` proves
+that invalid auth is a no-op and valid auth is equivalent to the core slash
+deploy semantics:
 
 ```
 slash(ps, v) =
@@ -197,11 +215,11 @@ Theorems:
   Proven via the `bm_slash_idempotent_lookup` foundation lemma
   (`Validator.v:160`).
 
-- **T-AuthCheck (System auth-token guard).** Rholang-level
-  observation: deploys with `sysAuthToken ≠ system_auth_token` are
-  rejected before any state mutation. Not currently mechanized in
-  Rocq (verification §13 future work); use case UC-21 in spec §12
-  cites it.
+- **T-AuthCheck (System auth-token guard).** Deploys with
+  `sysAuthToken ≠ system_auth_token` are rejected before any state mutation.
+  Rocq proves the invalid-auth no-op and valid-auth equivalence wrappers;
+  TLA+ checks that bad-auth receipt cannot create pending slash
+  authorization without independent evidence.
 
 ## 6.6 Component interaction — proposer + effect layer
 
@@ -263,12 +281,12 @@ reference to this section).
 **Structural reason.** `KeyValueDeployStorage` is keyed on
 user-deploy signatures: `(sig: ByteString → Signed<DeployData>)`.
 Slash deploys are unsigned `SystemDeployEnum::Slash(SlashDeploy {
-invalid_block_hash, pk, initial_rand })` — they have no
+invalid_block_hash, pk, target_activation_epoch, initial_rand })` — they have no
 `Signed<DeployData>` representation and cannot be inserted.
 
 **Determinism reason.** Slash deploys are pure functions of:
-* `invalid_latest_messages` from the DAG (already persisted in
-  `BlockMetadataStore`).
+* authorized invalid-block metadata from the DAG.
+* the current epoch derived from `blockNumber / epochLength`.
 * `validator_identity` from the proposer's config.
 * `seq_num` from the proposer's casper-snapshot (computed
   deterministically from the DAG).

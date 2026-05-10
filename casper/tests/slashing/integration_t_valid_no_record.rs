@@ -17,11 +17,10 @@ use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{canonical_validator_order, production_snapshot_at};
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -63,9 +62,10 @@ async fn integration_t_valid_no_record() {
 
     // Snapshot the production tier and assert no record was minted
     // and the block is NOT in the invalid index.
-    let snapshot = production_snapshot_at(&nodes[1], &signed_block, &genesis.genesis_block, validators)
-        .await
-        .expect("snapshot");
+    let snapshot =
+        production_snapshot_at(&nodes[1], &signed_block, &genesis.genesis_block, validators)
+            .await
+            .expect("snapshot");
 
     // No equivocation record at any (validator, base_seq) for v0.
     for base in 0..=20 {
@@ -77,15 +77,24 @@ async fn integration_t_valid_no_record() {
     }
 
     // Coop vault remains at 0 (no slashing occurred).
-    assert_eq!(<_ as SlashingObserver>::coop_vault(&snapshot), 0,
-        "Valid arm: no stake forfeited");
+    assert_eq!(
+        <_ as SlashingObserver>::coop_vault(&snapshot),
+        0,
+        "Valid arm: no stake forfeited"
+    );
 
     // All validators still active, all positively bonded.
     for i in 0..3 {
         let v = format!("v{}", i);
-        assert!(<_ as SlashingObserver>::is_active(&snapshot, &v),
-            "Valid arm: {} stays active", v);
-        assert!(<_ as SlashingObserver>::bond(&snapshot, &v) > 0,
-            "Valid arm: {} stays bonded", v);
+        assert!(
+            <_ as SlashingObserver>::is_active(&snapshot, &v),
+            "Valid arm: {} stays active",
+            v
+        );
+        assert!(
+            <_ as SlashingObserver>::bond(&snapshot, &v) > 0,
+            "Valid arm: {} stays bonded",
+            v
+        );
     }
 }

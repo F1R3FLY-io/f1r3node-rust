@@ -32,8 +32,11 @@ fn uc_19_two_level_with_bond_zero_neglecter() {
     // v1 (bond 0) cites v0 without slashing — second-level neglect.
     let b_negligent = harness.sign_block_citing("v1", 7, a1_prime);
     let s = harness.dispatch(b_negligent);
-    assert_eq!(s, Status::NeglectedEquivocation,
-        "T-11 still fires even when the neglecter is already bond-zero");
+    assert_eq!(
+        s,
+        Status::NeglectedEquivocation,
+        "T-11 still fires even when the neglecter is already bond-zero"
+    );
 
     // Slash transition against bond-zero v1 is a no-op (T-Idem) but
     // the active_implies_bonded invariant (T-9.5) holds: v1 is not
@@ -46,8 +49,11 @@ fn uc_19_two_level_with_bond_zero_neglecter() {
     for i in 0..3 {
         let v = format!("v{}", i);
         if harness.is_active(&v) {
-            assert!(harness.bond(&v) > 0,
-                "active_implies_bonded: validator {} active and positive bond", v);
+            assert!(
+                harness.bond(&v) > 0,
+                "active_implies_bonded: validator {} active and positive bond",
+                v
+            );
         }
     }
 }

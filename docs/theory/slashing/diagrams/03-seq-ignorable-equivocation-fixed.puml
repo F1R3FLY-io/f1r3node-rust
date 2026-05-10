@@ -112,13 +112,11 @@ note over BC, CS
   CasperSnapshot pre-loaded by the
   block-processor — NOT live DS calls.
 end note
-BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_latest_messages()
-CS -[#1565C0]-> BC : { (A, b1') }
-BC -[#1565C0]> T   : equivocation_records()
-T -[#1565C0]-> BC  : { (A, seqN − 1, ∅) }
+BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_blocks()
+CS -[#1565C0]-> BC : { (A, b1', epoch e) }
 BC -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
 CS -[#1565C0]-> BC : bonds_map
-BC -[#546E7A]> BC  : filter where bonds_map[A] > 0  → keep A
+BC -[#546E7A]> BC  : filter current epoch and bonds_map[A] > 0  → keep A
 note right of BC
   Same prepare_slashing_deploys as
   Diagram 02; only the *origin* of

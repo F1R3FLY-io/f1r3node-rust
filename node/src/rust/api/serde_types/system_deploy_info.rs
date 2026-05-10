@@ -81,6 +81,8 @@ pub struct SlashSystemDeployDataSerde {
     pub invalid_block_hash: Vec<u8>,
     #[serde(rename = "issuerPublicKey", with = "base64_bytes")]
     pub issuer_public_key: Vec<u8>,
+    #[serde(rename = "targetActivationEpoch", default)]
+    pub target_activation_epoch: i64,
 }
 
 impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
@@ -88,6 +90,7 @@ impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
         Self {
             invalid_block_hash: data.invalid_block_hash.to_vec(),
             issuer_public_key: data.issuer_public_key.to_vec(),
+            target_activation_epoch: data.target_activation_epoch,
         }
     }
 }
@@ -97,6 +100,7 @@ impl From<SlashSystemDeployDataSerde> for SlashSystemDeployDataProto {
         Self {
             invalid_block_hash: data.invalid_block_hash.into(),
             issuer_public_key: data.issuer_public_key.into(),
+            target_activation_epoch: data.target_activation_epoch,
         }
     }
 }
@@ -334,5 +338,35 @@ impl From<SystemDeployInfoWithEventSerde> for SystemDeployInfoWithEventData {
             system_deploy: data.system_deploy.map(|s| s.into()),
             report: data.report.into_iter().map(|r| r.into()).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slash_system_deploy_preserves_target_activation_epoch() {
+        let proto = SlashSystemDeployDataProto {
+            invalid_block_hash: vec![1, 2, 3].into(),
+            issuer_public_key: vec![4, 5, 6].into(),
+            target_activation_epoch: 42,
+        };
+
+        let serde: SlashSystemDeployDataSerde = proto.clone().into();
+        assert_eq!(serde.target_activation_epoch, 42);
+
+        let roundtrip: SlashSystemDeployDataProto = serde.into();
+        assert_eq!(roundtrip, proto);
+    }
+
+    #[test]
+    fn slash_system_deploy_json_defaults_missing_target_activation_epoch() {
+        let json = r#"{"invalidBlockHash":"AQID","issuerPublicKey":"BAUG"}"#;
+        let serde: SlashSystemDeployDataSerde = serde_json::from_str(json).unwrap();
+
+        assert_eq!(serde.invalid_block_hash, vec![1, 2, 3]);
+        assert_eq!(serde.issuer_public_key, vec![4, 5, 6]);
+        assert_eq!(serde.target_activation_epoch, 0);
     }
 }

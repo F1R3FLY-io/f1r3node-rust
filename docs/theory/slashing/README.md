@@ -9,7 +9,7 @@ Scala source is faulty.
 
 ## Reading order
 
-1. **`design/`** — *Pedagogical design document set* (14 files in
+1. **`design/`** — *Pedagogical design document set* (16 files in
    intuitively-named subsections). Read first if you are an engineer
    or auditor approaching the slashing subsystem for the first time
    and want to understand *what each component is, what it does, how
@@ -27,7 +27,16 @@ Scala source is faulty.
    formal-methods reviewer or certifier. Contains theorem statements, prose
    proofs translated from Rocq, the TLA+ model summary, the Rocq↔TLA+
    correspondence table, and the trust base.
-4. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
+4. **`slashing-threat-model.md`** — *Defensive threat catalog.* Read alongside
+   the verification doc to see every modeled attack surface, the protection
+   mechanism, and the Rust/Rocq/TLA+/Sage artifact that covers it.
+5. **`slashing-traceability.md`** — *Finding ledger.* Read when deciding
+   whether a Sage/Hypothesis finding is a Rust source bug, a confirmed fixed
+   bug, a model boundary, a projection risk, or a proof-strengthening item.
+6. **`slashing-search-horizon.md`** — *Defensive search program.* Read when
+   expanding bug hunting beyond the current proofs and regression tests with
+   fuzzing, symbolic Rust checks, symbolic TLA+, and adversarial system tests.
+7. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
    referenced in the spec. Each is embedded inline at its first relevant
    mention in the spec/verification docs; the visuals and the LTS rules
    are designed to stay 1:1.
@@ -44,10 +53,11 @@ Scala source is faulty.
    | 08 | [Justifications → neglect detection data-flow](./diagrams/08-dataflow-justifications-to-neglect.svg)   | spec §8                          |
    | 09 | [Tracker race and locking fix](./diagrams/09-seq-tracker-race-and-fix.svg)                             | spec §10.2; verification §10.8.1 |
    | 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](./diagrams/10-component-formal-correspondence.svg) | spec §3; verification §11        |
-5. **`../../formal/rocq/slashing/`** — Mechanized Rocq proofs. The verification
+   | 11 | [Withdrawal transfer-failure fix](./diagrams/11-seq-withdrawal-flow-fix.svg)                          | spec §10.10; design §11          |
+8. **`../../formal/rocq/slashing/`** — Mechanized Rocq proofs. The verification
    doc translates these to mathematical prose; this is where the kernel-checked
    evidence lives.
-6. **`../../formal/tlaplus/slashing/`** — TLA+ specs and TLC model-checking
+9. **`../../formal/tlaplus/slashing/`** — TLA+ specs and TLC model-checking
    instances. Run with `tlc` to verify the invariants.
 
 ## Scope
@@ -56,11 +66,11 @@ Scala source is faulty.
 |---------------------------------------------------------------|------------------------------------------------------------------------|
 | Equivocation detection (admissible, ignorable, neglected)     | Cordial Miners / RGB PSSM / Casanova consensus paths (Casper CBC only) |
 | `EquivocationRecord` persistence and monotonicity             | Replay protocol details                                                |
-| `SlashDeploy` system deploy and `@PoS!("slash", …)` Rholang   | Implementing bug fixes in Rust (separate PRs, cross-referenced)        |
+| `SlashDeploy` system deploy and `@PoS!("slash", …)` Rholang   | Unconfirmed Rust-source changes from model-only findings               |
 | Two-level slashing (Level 1 + Level 2)                        | Rewriting `test_slash.py` (see `system-integration#51`)                |
 | Fork-choice exclusion of slashed validators                   | Replacing PoS multi-sig keys (operations concern)                      |
 | Bisimilarity between Rust and Scala (modulo proven bug fixes) | Graduated/proportional slashing penalties (future protocol design)     |
-| Ten identified bug fixes with proofs of correctness           | End-to-end shard reproduction                                          |
+| Sixteen identified bug fixes with proofs of correctness       | End-to-end shard reproduction                                          |
 
 ## Source-of-truth correspondence
 
@@ -96,7 +106,20 @@ Scala source is faulty.
   evidence-inclusion fairness and delimiter-free record-key collisions
   to deterministic witnesses before they are promoted to Rocq, TLA+,
   and specification use cases.
-- **T-15.** Under the ten documented bug fixes, the Rust implementation is
+- **T-12HYP / deep Sage threat modeling.** Hypothesis frontier and Sage
+  threat-ranking scripts explore partition/gossip schedules,
+  objective-guided campaigns, production-shaped DAG traces,
+  defensive adversarial vulnerability campaigns, precondition fuzzing,
+  Rust replay fixtures, graph attack paths, stake damage,
+  retention/pruning, epoch/churn, arithmetic envelopes, exact-vs-runtime
+  projection matrices, differential-oracle rows, mutation/metamorphic
+  variants, and objective-frontier fixture selection; all findings must classify as documented
+  boundary, projection-risk, or assumption-counterexample witnesses before
+  promotion.
+- **T-9.12–T-9.15.** Current-epoch slash authorization, unknown/stale slash
+  evidence no-op behavior, checked sequence arithmetic, and duplicate
+  justification rejection are mechanized in Rocq and mirrored in TLA+.
+- **T-15.** Under the documented bug fixes, the Rust implementation is
   observationally bisimilar to the Scala original — i.e., no observable
   divergence remains.
 
@@ -111,9 +134,15 @@ Scala source is faulty.
 | 5 | Stake-0 silent classification                                | T-9.5   |
 | 6 | Self-regression slips through `justification_regressions`    | T-9.6   |
 | 7 | Off-by-one seq-number density                                | T-9.7   |
-| 8 | `prepare_slashing_deploys` doesn't check proposer is bonded  | T-9.8   |
+| 8 | `prepare_slashing_deploys` did not check proposer is bonded  | T-9.8   |
 | 9 | Scala rejects self-correcting blocks (Scala bug, Rust-fixed) | T-9.9   |
 | 10 | PoS withdrawal transfer-failure FIXME (analog of #4)        | T-9.10  |
+| 11 | Detector missing-pointer abort and duplicate-child over-count | T-9.11 |
+| 12 | Unauthorized received slash deploys                         | T-9.12  |
+| 13 | Same-key rebond stale-evidence slash                        | T-9.12  |
+| 14 | Slash liveness depended on invalid-latest messages          | T-9.12  |
+| 15 | Unchecked sequence arithmetic at fixed-width boundaries     | T-9.14  |
+| 16 | Duplicate justification projection                          | T-9.15  |
 
 See `slashing-specification.md` §10 for the full bug-fix manifest and
 `slashing-verification.md` §9 for the proofs.
@@ -132,6 +161,7 @@ tlc -workers 12 MC_EquivocationDetector.tla
 tlc -workers 12 MC_ConcurrentTracker.tla
 tlc -workers 12 MC_SlashFlow.tla
 tlc -workers 12 MC_TwoLevelSlashing.tla
+tlc -workers 12 MC_AuthorizedSlashFlow.tla
 
 # PlantUML rendering (SVGs are committed; this regenerates them)
 for puml in docs/theory/slashing/diagrams/*.puml; do

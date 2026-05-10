@@ -22,6 +22,7 @@ pub mod reporting_proto_transformer;
 pub mod rholang;
 pub mod safety;
 pub mod safety_oracle;
+pub mod slashing_authorization;
 pub mod state;
 pub mod storage;
 pub mod synchrony_constraint_checker;

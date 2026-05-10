@@ -1,23 +1,36 @@
-// Property-based test for T-9.7 (BFS seq-number density).
+// Property-based test for T-9.7 (canonical seq-number density).
 //
-// Theorem: T-9.7 (`t_9_7_finds_descendant_with_gap`,
-// formal/rocq/slashing/theories/BugFixSeqNumDensity.v:84).
+// Theorem: T-9.7 (`t_9_7_canonical_finds_visible_descendant_with_gap`,
+// formal/rocq/slashing/theories/BugFixSeqNumDensity.v).
 // Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
 //
 // Property: an equivocation is detected even when the validator
 // has skipped sequence numbers (under partition recovery). The
-// post-fix detector walks the creator-justification chain looking
-// for any block with seq > base, not exact-match base+1.
+// post-fix detector walks the visible self-justification chain and
+// returns the canonical branch root with seq > base, not an exact
+// base+1 match and not an arbitrary later block on the same branch.
 //
 // The harness's `detect` operates on (sender, seq) pairs directly,
-// so it does not exercise the BFS code path — but it does verify
+// so it does not exercise the production self-chain path — but it does verify
 // that detection holds for any seq pair, including those with
-// gaps. The full BFS-density proof is in Rocq.
+// gaps. The full canonical-chain proof is in Rocq.
 
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
+
+fn canonical_visible_child(chain_latest_to_oldest: &[u64], base_seq: u64) -> Option<u64> {
+    let mut candidate = None;
+    for seq in chain_latest_to_oldest {
+        if *seq > base_seq {
+            candidate = Some(*seq);
+        } else {
+            break;
+        }
+    }
+    candidate
+}
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -46,5 +59,40 @@ proptest! {
             "T-9.7: equivocation at gapped seq still detected");
         prop_assert!(harness.has_record("v0", later_seq.saturating_sub(1)),
             "T-9.7: dispatcher records the equivocation at base = later_seq - 1");
+    }
+
+    #[test]
+    fn t_9_7_canonical_child_is_oldest_visible_above_base(
+        base_seq in 0u64..20,
+        root_gap in 1u64..20,
+        later_gap in 0u64..20,
+    ) {
+        let root = base_seq + root_gap;
+        let latest = root + later_gap;
+        let chain = if latest == root {
+            vec![root, base_seq]
+        } else {
+            vec![latest, root, base_seq]
+        };
+
+        prop_assert_eq!(canonical_visible_child(&chain, base_seq), Some(root));
+    }
+
+    #[test]
+    fn t_9_7_same_branch_latest_messages_do_not_overcount(
+        base_seq in 0u64..20,
+        root_gap in 1u64..20,
+        later_gap in 1u64..20,
+    ) {
+        let root = base_seq + root_gap;
+        let latest = root + later_gap;
+        let root_view = vec![root, base_seq];
+        let latest_view = vec![latest, root, base_seq];
+
+        prop_assert_eq!(
+            canonical_visible_child(&latest_view, base_seq),
+            canonical_visible_child(&root_view, base_seq)
+        );
+        prop_assert_eq!(canonical_visible_child(&latest_view, base_seq), Some(root));
     }
 }

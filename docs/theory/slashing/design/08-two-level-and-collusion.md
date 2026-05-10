@@ -23,9 +23,12 @@ deploy.
 ## 8.2 The neglect rule (T-3, T-6)
 
 The detection layer adds a second classification verdict —
-`NeglectedEquivocation` — that fires when a block's justifications
-include any block flagged invalid in the DAG, *and* the block does
-not carry a `SlashDeploy` for the offending validator.
+`NeglectedEquivocation` — that fires when an existing
+`EquivocationRecord` is detectable from a block's latest-message
+justification view while the recorded offender remains bonded. Directly
+citing an invalid block is a common harness witness, but production Rust
+also follows detected hashes and nested latest-message pointers in
+`is_equivocation_detectable`.
 
 [![Diagram 08 — Justifications → neglect detection data flow](../diagrams/08-dataflow-justifications-to-neglect.svg)](../diagrams/08-dataflow-justifications-to-neglect.svg)
 
@@ -92,7 +95,7 @@ starting from the direct equivocators, where `neglect(v)` is the
 set of validators whose invalid blocks `v` cited as justifications
 without a corresponding `SlashDeploy`.
 
-**Theorem T-11 (Level-2 termination, weak form).**
+**Theorem T-11 (Level-2 termination and bounded stabilization).**
 *(`t_11_level_2_termination`, `TwoLevelSlashing.v:126`.)* After
 `|V|` iterations of the slash closure, the slashed set is still
 contained in `V`:
@@ -103,14 +106,11 @@ contained in `V`:
   incl (slash_iter universe g s0 (length universe)) universe
 ```
 
-**Note on stronger forms.** The full fixed-point stabilization
-(closure stops growing after `|V|` iterations) is acknowledged as
-future work in the Rocq source comment at
-`TwoLevelSlashing.v:121-124` (*"Stronger: it stabilizes; we prove
-the weaker but useful form here."*). For the BFT-quorum
-preservation argument (T-12), the weak form suffices because
-`incl ... universe` together with `|closure| ≤ F` is enough to
-bound the active set.
+The stronger Rocq theorem `slash_iter_fixed_point_after_universe_bound`
+proves the certificate-shaped fact used by the Sage models: after `|V|`
+iterations the closure is stable under another step. The companion
+`slash_iter_fixed_point_stable` theorem proves that any already-fixed
+closure remains fixed under further iterations.
 
 **Proof of the weak form.** By induction on the iteration count.
 Each iteration applies `slash_iter_step` which only adds elements
@@ -141,6 +141,16 @@ shape of closure and the edge cases surfaced by Sage:
 
 - `slash_iter_reachability_characterization`: closure is exactly reverse
   reachability to direct offenders in the neglect graph.
+- `slash_iter_fixed_point_after_universe_bound`: closure has reached a
+  fixed point by `|V|` iterations.
+- `slash_iter_fixed_point_stable`: already-fixed closures remain fixed.
+- `quorum_intersection_by_size` and
+  `weighted_quorum_intersection_from_disjoint_bound`: count and
+  stake-weighted active quorums intersect under the strict active-size
+  and active-stake bounds.
+- `quorum_drop_certificate` and `weighted_quorum_drop_certificate`: if
+  slashing drops below a quorum bound, the closure itself contains the
+  count or stake certificate explaining the drop.
 - `weighted_slash_iter_quorum_preservation`: if the stake weight of the
   whole closure is bounded by the stake fault bound, active stake remains
   above weighted quorum.
@@ -149,9 +159,11 @@ shape of closure and the edge cases surfaced by Sage:
   neglect edges are filtered to the current validator universe.
 - `visible_unreported_graph_in`: a neglect edge requires visible evidence
   and absence of a matching report/slash in that validator's block.
-- `slash_iter_graph_equiv` and `no_reachability_no_level2_slash`:
+- `slash_iter_graph_equiv`, `slash_iter_validator_renaming_equiv`, and
+  `no_reachability_no_level2_slash`:
   duplicate edges, edge ordering, self-edges, and cycles matter only when
-  they create directed reachability to a direct offender.
+  they create directed reachability to a direct offender. Bijective
+  validator renaming preserves closure modulo the same renaming.
 
 The weighted Sage witness `stakes=[0,2,2]`, direct offender `0`, and edge
 `1 -> 0` shows why the direct-offender eligibility precondition matters:
@@ -214,8 +226,8 @@ The diagram shows:
 - **Phase 3**: validate.rs:989-1030 fires `NeglectedInvalidBlock`;
   tracker records `(B, seqN_B − 1, ∅)`.
 - **Phase 4**: Honest proposer P proposes block `bP` at seqM; reads
-  `invalid_latest_messages` → `{(A, b'), (B, b_B)}`; emits two
-  `SlashDeploy`s in `bP`.
+  authorized current-epoch invalid-block evidence → `{(A, b'), (B, b_B)}`;
+  emits two `SlashDeploy`s in `bP`.
 - **Phase 5**: PoS contract executes `slash(A)` (atomic state
   update) then `slash(B)` (atomic state update).
 - **Phase 6**: `bP` gossips; ForkChoice excludes A and B.
@@ -232,6 +244,16 @@ The diagram shows:
 | T-12W   | Stake-weighted closure preserves weighted quorum under a weighted closure bound.                               | `TwoLevelSlashing.v`                     |
 | T-12F   | Current-validator filtering and visibility admissibility constrain the neglect graph.                          | `TwoLevelSlashing.v`                     |
 | T-12G   | Duplicate edges, edge ordering, self-edges, and cycles are governed only by reachability.                      | `TwoLevelSlashing.v`                     |
+| T-12I   | Count and stake-weighted active quorums intersect under the strict active bounds.                              | `TwoLevelSlashing.v`                     |
+| T-12C   | Level-2 closure is stable by `|V|` iterations and has path certificates.                                       | `TwoLevelSlashing.v`                     |
+| T-12D   | Any count or stake quorum drop has an explicit closure-size or closure-stake certificate.                      | `TwoLevelSlashing.v`                     |
+| T-12V   | Equal active evidence views compute equal closure; more active edges can only increase closure.                | `TwoLevelSlashing.v`                     |
+| T-12RPT | Reports suppress neglect edges; closure need not be monotone over report time.                                | `TwoLevelSlashing.v`                     |
+| T-12EID | Stale epoch evidence is ineligible unless explicit carryover maps it current.                                 | `TwoLevelSlashing.v`                     |
+| T-12HYP | The main quorum/closure hypotheses have finite counterexamples when removed.                                  | `TwoLevelSlashing.v`                     |
+| T-12AMP | Weighted amplification witnesses live outside the bounded-closure theorem precondition.                       | `TwoLevelSlashing.v`                     |
+| T-12PF  | Bounded slash liveness requires proposer evidence-inclusion fairness or an explicit inclusion rule.           | `Bisimulation.v`, `TwoLevelSlashing.tla` |
+| T-5DF   | Delimiter-free record-key projection is non-injective; canonical pair keys are required.                     | `EquivocationRecord.v`                  |
 | T-9.9   | The Rust widening (admit self-correcting blocks) is sound: rejection-iff post-fix is `neglected ∧ ¬has_slash`. | `BugFixSelfRegression.v:107`             |
 
 ## 8.9 Why two levels and not three?

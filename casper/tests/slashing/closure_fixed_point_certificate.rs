@@ -47,6 +47,10 @@ fn uc_63_chain_neglect_closure_stabilizes_at_n() {
     for i in 0..n {
         let v = format!("v{}", i);
         let has_record = (0..15).any(|b| harness.has_record(&v, b));
-        assert!(has_record, "T-11 fixed-point: {} reachable to direct offender", v);
+        assert!(
+            has_record,
+            "T-11 fixed-point: {} reachable to direct offender",
+            v
+        );
     }
 }

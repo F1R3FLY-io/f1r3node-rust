@@ -38,7 +38,10 @@ fn classify_arith(t: ArithmeticTrace) -> DivergenceClass {
 
 #[test]
 fn uc_85_in_range_arithmetic_is_bisimilar() {
-    let t = ArithmeticTrace { exact: 100, fixed_width: 100 };
+    let t = ArithmeticTrace {
+        exact: 100,
+        fixed_width: 100,
+    };
     assert_eq!(classify_arith(t), DivergenceClass::Bisimilar);
 }
 
@@ -47,12 +50,18 @@ fn uc_85_overflow_is_projection_boundary() {
     // exact = i64::MAX + 1 cannot fit in i64; the i64-projection
     // either saturates (i64::MAX) or wraps (i64::MIN). Both are
     // ProjectionBoundary divergences, not Unexpected.
-    let t = ArithmeticTrace { exact: (i64::MAX as i128) + 1, fixed_width: i64::MAX };
+    let t = ArithmeticTrace {
+        exact: (i64::MAX as i128) + 1,
+        fixed_width: i64::MAX,
+    };
     let class = classify_arith(t);
     assert_eq!(class, DivergenceClass::CandidateBoundaryDivergence);
     assert!(frontier_classification_ok(class));
 
-    let t = ArithmeticTrace { exact: (i64::MAX as i128) + 1, fixed_width: i64::MIN };
+    let t = ArithmeticTrace {
+        exact: (i64::MAX as i128) + 1,
+        fixed_width: i64::MIN,
+    };
     let class = classify_arith(t);
     assert_eq!(class, DivergenceClass::CandidateBoundaryDivergence);
     assert!(frontier_classification_ok(class));
@@ -60,7 +69,10 @@ fn uc_85_overflow_is_projection_boundary() {
 
 #[test]
 fn uc_85_underflow_is_projection_boundary() {
-    let t = ArithmeticTrace { exact: (i64::MIN as i128) - 1, fixed_width: i64::MIN };
+    let t = ArithmeticTrace {
+        exact: (i64::MIN as i128) - 1,
+        fixed_width: i64::MIN,
+    };
     let class = classify_arith(t);
     assert_eq!(class, DivergenceClass::CandidateBoundaryDivergence);
 }

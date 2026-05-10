@@ -24,11 +24,15 @@ fn bounded_liveness_holds(fairness_enforced: bool, k_rounds: u32) -> bool {
 
 #[test]
 fn uc_84_liveness_holds_iff_fairness_enforced() {
-    assert!(bounded_liveness_holds(true, 4),
-        "UC-84: liveness must hold under fairness (T-12PF)");
-    assert!(!bounded_liveness_holds(false, 4),
-        "UC-84: liveness must FAIL when fairness is dropped");
-    let class_with    = DivergenceClass::Bisimilar;
+    assert!(
+        bounded_liveness_holds(true, 4),
+        "UC-84: liveness must hold under fairness (T-12PF)"
+    );
+    assert!(
+        !bounded_liveness_holds(false, 4),
+        "UC-84: liveness must FAIL when fairness is dropped"
+    );
+    let class_with = DivergenceClass::Bisimilar;
     let class_without = classify(DivergenceReason::ProposerFairnessBoundary);
     assert!(frontier_classification_ok(class_with));
     assert!(frontier_classification_ok(class_without));
@@ -37,6 +41,8 @@ fn uc_84_liveness_holds_iff_fairness_enforced() {
 #[test]
 fn uc_84_zero_rounds_never_bounded_live() {
     // Even under fairness, k_rounds=0 cannot witness inclusion.
-    assert!(!bounded_liveness_holds(true, 0),
-        "UC-84: zero-round budget cannot witness slash");
+    assert!(
+        !bounded_liveness_holds(true, 0),
+        "UC-84: zero-round budget cannot witness slash"
+    );
 }

@@ -24,7 +24,6 @@
 use std::collections::BTreeSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use models::rust::block_hash::BlockHash as ProdBlockHash;
 use prost::bytes::Bytes;
 
@@ -55,10 +54,7 @@ pub struct SlashingProductionAdapter {
     /// equality checks because the harness uses `u64`.
     records: Vec<(ValidatorId, SeqNum, BTreeSet<HarnessBlockHash>)>,
 
-    /// Coop-vault balance — TODO: not all production tiers expose
-    /// this without a Rholang call. For now we store 0 and let
-    /// triple-bisim tests skip vault assertions when comparing
-    /// against tier 1; tier 2/3 retain full vault tracking.
+    /// Coop-vault balance supplied by the snapshot caller.
     coop_vault: i64,
 }
 
@@ -166,9 +162,7 @@ impl SlashingObserver for SlashingProductionAdapter {
             .unwrap_or(0)
     }
 
-    fn coop_vault(&self) -> i64 {
-        self.coop_vault
-    }
+    fn coop_vault(&self) -> i64 { self.coop_vault }
 
     fn is_active(&self, validator: &str) -> bool {
         self.label_index(validator)

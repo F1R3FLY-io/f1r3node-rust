@@ -57,9 +57,7 @@ impl RocqOracleAdapter {
 
     /// Insert a synthetic block into the DAG. Mirrors a tier-3
     /// `sign_block` after the harness has computed the hash.
-    pub fn insert_block(&mut self, block: BlockMeta) {
-        self.dag.blocks.insert(block.hash, block);
-    }
+    pub fn insert_block(&mut self, block: BlockMeta) { self.dag.blocks.insert(block.hash, block); }
 
     /// Apply the oracle's dispatch transition: classifies via the
     /// pure `oracle_dispatch` and folds the result into adapter state.
@@ -78,15 +76,9 @@ impl RocqOracleAdapter {
 }
 
 impl SlashingObserver for RocqOracleAdapter {
-    fn bond(&self, validator: &str) -> i64 {
-        self.pos_state.bond(validator)
-    }
-    fn coop_vault(&self) -> i64 {
-        self.pos_state.coop_vault
-    }
-    fn is_active(&self, validator: &str) -> bool {
-        self.pos_state.is_active(validator)
-    }
+    fn bond(&self, validator: &str) -> i64 { self.pos_state.bond(validator) }
+    fn coop_vault(&self) -> i64 { self.pos_state.coop_vault }
+    fn is_active(&self, validator: &str) -> bool { self.pos_state.is_active(validator) }
     fn has_record(&self, validator: &str, base_seq: SeqNum) -> bool {
         self.tracker.contains(validator, base_seq)
     }

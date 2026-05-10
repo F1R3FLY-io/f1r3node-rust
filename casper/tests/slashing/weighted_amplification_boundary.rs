@@ -45,8 +45,11 @@ fn uc_70_amplification_outside_closure_bound() {
     let _ = harness.execute_slash("v0");
     let _ = harness.execute_slash("v1");
     let _ = harness.execute_slash("v2");
-    assert_eq!(harness.coop_vault(), 7,
-        "Sage witness: amplification factor 7 = direct 1 + extra 6");
+    assert_eq!(
+        harness.coop_vault(),
+        7,
+        "Sage witness: amplification factor 7 = direct 1 + extra 6"
+    );
 
     // T-12 weighted-bound precondition is violated here (closure
     // stake 7 > stake fault bound 1), which is precisely why the

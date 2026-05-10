@@ -31,18 +31,25 @@ fn uc_67_report_removes_neglect_edge() {
     let v1_neg = harness.sign_block_citing("v1", 6, bad);
     let s_neg = harness.dispatch(v1_neg);
     assert_eq!(s_neg, Status::NeglectedEquivocation);
-    assert!(harness.has_record("v1", 5),
-        "active neglect edge produces a v1 record");
+    assert!(
+        harness.has_record("v1", 5),
+        "active neglect edge produces a v1 record"
+    );
 
     // v2 publishes an HONEST SLASHER block (cite + slash) —
     // suppresses the same evidence at report time. v2's edge
     // is reported; v2 stays Valid.
     let v2_honest = harness.sign_block_citing_with_slash("v2", 7, bad, "v0");
     let s_honest = harness.dispatch(v2_honest);
-    assert_eq!(s_honest, Status::Valid,
-        "honest slasher (cite + slash) is reported, not Neglected");
-    assert!(!harness.has_record("v2", 6),
-        "report suppression: honest slasher's edge produces NO record");
+    assert_eq!(
+        s_honest,
+        Status::Valid,
+        "honest slasher (cite + slash) is reported, not Neglected"
+    );
+    assert!(
+        !harness.has_record("v2", 6),
+        "report suppression: honest slasher's edge produces NO record"
+    );
 
     // v1's record (the unreported edge) is still present —
     // shrinkage applies only to the reported edge, not retroactively

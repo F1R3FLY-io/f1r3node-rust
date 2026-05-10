@@ -48,6 +48,9 @@ fn uc_14_different_seed_yields_different_projection() {
     // that into the coop vault.
     let h1 = run(0);
     let h2 = run(50);
-    assert_ne!(h1.coop_vault(), h2.coop_vault(),
-        "different stake must yield different coop_vault observable");
+    assert_ne!(
+        h1.coop_vault(),
+        h2.coop_vault(),
+        "different stake must yield different coop_vault observable"
+    );
 }

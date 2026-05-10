@@ -45,12 +45,18 @@ fn pre_fix_bug_5_active_implies_bonded_holds() {
 
     // Try to make a stake-0 bonded validator: rejected.
     let _ = harness.try_bond("v_zero", 0);
-    assert!(!harness.is_active("v_zero"),
-        "post-fix #5: zero-stake validator never enters active set");
+    assert!(
+        !harness.is_active("v_zero"),
+        "post-fix #5: zero-stake validator never enters active set"
+    );
 
     // The active set contains only bonded validators.
     for v in &harness.pos_state.active {
-        assert!(harness.bond(v) > 0,
-            "active_implies_bonded: {} has bond {}", v, harness.bond(v));
+        assert!(
+            harness.bond(v) > 0,
+            "active_implies_bonded: {} has bond {}",
+            v,
+            harness.bond(v)
+        );
     }
 }

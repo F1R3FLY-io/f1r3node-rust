@@ -20,13 +20,12 @@ use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -56,12 +55,11 @@ async fn integration_t_contains_future_deploy() {
     )
     .expect("future_deploy");
 
-    let mutated =
-        propose_with_block_mutation(&mut nodes[0], vec![future_deploy], |_b| {
-            // No mutator needed — the deploy itself is the mutation.
-        })
-        .await
-        .expect("propose_with_block_mutation");
+    let mutated = propose_with_block_mutation(&mut nodes[0], vec![future_deploy], |_b| {
+        // No mutator needed — the deploy itself is the mutation.
+    })
+    .await
+    .expect("propose_with_block_mutation");
 
     let status = nodes[1]
         .process_block(mutated.clone())

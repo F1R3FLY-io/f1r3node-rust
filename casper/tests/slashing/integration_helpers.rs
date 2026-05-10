@@ -13,19 +13,17 @@ use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
 use casper::rust::util::proto_util;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
-use casper::rust::util::rholang::system_deploy_util;
+use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 
+use super::production_adapter::SlashingProductionAdapter;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisContext;
-
-use super::production_adapter::SlashingProductionAdapter;
 
 /// Capture a production-tier snapshot at the post-state hash of
 /// `block`. Reads bonds and active set from the node's
@@ -43,10 +41,7 @@ pub async fn production_snapshot_at(
 ) -> Result<SlashingProductionAdapter, CasperError> {
     let post_state_hash = proto_util::post_state_hash(block);
 
-    let bonds = node
-        .runtime_manager
-        .compute_bonds(&post_state_hash)
-        .await?;
+    let bonds = node.runtime_manager.compute_bonds(&post_state_hash).await?;
     let active_set = node
         .runtime_manager
         .get_active_validators(&post_state_hash)
@@ -105,10 +100,7 @@ pub fn label_for(validator_bytes: &Bytes, validators: &[Bytes]) -> Option<String
 
 /// Build a label → bond mapping from the production tier's bonds
 /// list, indexed by the canonical order.
-pub fn bonds_by_label(
-    bonds: &[(Bytes, i64)],
-    validators: &[Bytes],
-) -> HashMap<String, i64> {
+pub fn bonds_by_label(bonds: &[(Bytes, i64)], validators: &[Bytes]) -> HashMap<String, i64> {
     let mut out = HashMap::new();
     for (b, stake) in bonds {
         if let Some(label) = label_for(b, validators) {
@@ -148,9 +140,7 @@ pub async fn equivocate_block(
         .validator_id_opt
         .as_ref()
         .ok_or_else(|| {
-            CasperError::RuntimeError(
-                "producing_node has no validator identity".to_string(),
-            )
+            CasperError::RuntimeError("producing_node has no validator identity".to_string())
         })?
         .clone();
 
@@ -276,17 +266,13 @@ pub async fn equivocate_block(
 pub async fn propose_with_explicit_justifications(
     producing_node: &mut TestNode,
     alt_deploys: Vec<Signed<DeployData>>,
-    extra_justifications: Vec<
-        models::rust::casper::protocol::casper_message::Justification,
-    >,
+    extra_justifications: Vec<models::rust::casper::protocol::casper_message::Justification>,
 ) -> Result<BlockMessage, CasperError> {
     let validator_identity = producing_node
         .validator_id_opt
         .as_ref()
         .ok_or_else(|| {
-            CasperError::RuntimeError(
-                "producing_node has no validator identity".to_string(),
-            )
+            CasperError::RuntimeError("producing_node has no validator identity".to_string())
         })?
         .clone();
 
@@ -315,7 +301,11 @@ pub async fn propose_with_explicit_justifications(
     }
     let justifications: Vec<_> = merged.into_values().collect();
 
-    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let parent_max_ts = parents
+        .iter()
+        .map(|p| p.header.timestamp)
+        .max()
+        .unwrap_or(0);
     let block_data = BlockData {
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,
@@ -412,10 +402,13 @@ pub async fn propose_with_explicit_justifications(
 pub async fn process_block_bypassing_of_interest_filter(
     node: &mut TestNode,
     block: models::rust::casper::protocol::casper_message::BlockMessage,
-) -> Result<rspace_plus_plus::rspace::history::Either<
-    casper::rust::block_status::BlockError,
-    casper::rust::block_status::ValidBlock,
->, CasperError> {
+) -> Result<
+    rspace_plus_plus::rspace::history::Either<
+        casper::rust::block_status::BlockError,
+        casper::rust::block_status::ValidBlock,
+    >,
+    CasperError,
+> {
     use casper::rust::block_status::BlockStatus;
     let is_well_formed = node
         .block_processor
@@ -463,9 +456,7 @@ pub async fn propose_with_block_mutation(
         .validator_id_opt
         .as_ref()
         .ok_or_else(|| {
-            CasperError::RuntimeError(
-                "producing_node has no validator identity".to_string(),
-            )
+            CasperError::RuntimeError("producing_node has no validator identity".to_string())
         })?
         .clone();
 
@@ -480,10 +471,13 @@ pub async fn propose_with_block_mutation(
     let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> =
-        snapshot.justifications.iter().map(|j| j.clone()).collect();
+    let justifications: Vec<_> = snapshot.justifications.iter().map(|j| j.clone()).collect();
 
-    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let parent_max_ts = parents
+        .iter()
+        .map(|p| p.header.timestamp)
+        .max()
+        .unwrap_or(0);
     let block_data = BlockData {
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,
@@ -595,9 +589,7 @@ pub async fn propose_neglecting_block(
         .validator_id_opt
         .as_ref()
         .ok_or_else(|| {
-            CasperError::RuntimeError(
-                "producing_node has no validator identity".to_string(),
-            )
+            CasperError::RuntimeError("producing_node has no validator identity".to_string())
         })?
         .clone();
 
@@ -618,13 +610,16 @@ pub async fn propose_neglecting_block(
     // receiver's check_neglected_equivocations_with_update
     // recognises that this block "saw" the equivocation).
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> =
-        snapshot.justifications.iter().map(|j| j.clone()).collect();
+    let justifications: Vec<_> = snapshot.justifications.iter().map(|j| j.clone()).collect();
 
     // Honest block timestamp: pick "now" matching production
     // semantics. Use the max parent timestamp + 1 so we satisfy
     // the parent-timestamp ordering.
-    let parent_max_ts = parents.iter().map(|p| p.header.timestamp).max().unwrap_or(0);
+    let parent_max_ts = parents
+        .iter()
+        .map(|p| p.header.timestamp)
+        .max()
+        .unwrap_or(0);
     let block_data = BlockData {
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,

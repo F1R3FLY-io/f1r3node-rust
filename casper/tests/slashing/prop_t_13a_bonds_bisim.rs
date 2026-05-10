@@ -13,8 +13,8 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::oracle_adapter::RocqOracleAdapter;
 use super::observer::SlashingObserver;
+use super::oracle_adapter::RocqOracleAdapter;
 
 proptest! {
     #![proptest_config(ProptestConfig {

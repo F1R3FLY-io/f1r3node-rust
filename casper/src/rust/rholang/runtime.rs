@@ -669,13 +669,18 @@ impl RuntimeOps {
                 if let Some(SlashDeploy {
                     invalid_block_hash,
                     pk,
+                    target_activation_epoch,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
                         final_state_hash,
                         event_log,
-                        SystemDeployData::create_slash(invalid_block_hash.clone(), pk.clone()),
+                        SystemDeployData::create_slash(
+                            invalid_block_hash.clone(),
+                            pk.clone(),
+                            *target_activation_epoch,
+                        ),
                         mcl,
                         system_deploy_result,
                     ))

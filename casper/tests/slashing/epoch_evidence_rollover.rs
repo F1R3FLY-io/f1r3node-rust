@@ -28,8 +28,10 @@ fn uc_64_stale_evidence_does_not_propagate() {
     // for v4 means no neglect — v0's block is Valid.
     let v0_block = harness.sign_block("v0", 5);
     let _ = harness.dispatch(v0_block);
-    assert!(!harness.has_record("v0", 4),
-        "T-12 epoch filter: stale evidence does not propagate");
+    assert!(
+        !harness.has_record("v0", 4),
+        "T-12 epoch filter: stale evidence does not propagate"
+    );
 }
 
 #[test]

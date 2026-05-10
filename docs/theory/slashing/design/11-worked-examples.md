@@ -1,6 +1,6 @@
 # 11 · Worked Examples
 
-This file walks ten end-to-end traces through the slashing pipeline.
+This file walks eleven end-to-end traces through the slashing pipeline.
 Each example is a small, concrete scenario you can replay mentally.
 Each cites the diagram(s) and theorems it exercises.
 
@@ -168,12 +168,14 @@ unreachable. Option (b) — the detector returns an explicit
 **Setup.** A produces blocks at seq 5, 7, 8 (skips seq 6 due to a
 partition recovery). Then A equivocates at seq 9.
 
-**Pre-fix.** The detector's BFS uses `baseSeqNum + 1 = 8`; finds
+**Pre-fix.** The detector's lookup uses `baseSeqNum + 1 = 8`; finds
 A's block at seq 8 OK; expects to find A's seq 9 block by following
 the creator-justification, but the chain has a gap. Detection fails.
 
-**Post-fix.** BFS over the full creator-justification chain (rather
-than single-step `+1`) handles the gap; detection succeeds.
+**Post-fix.** The canonical visible creator/self-justification walk
+handles the gap; detection succeeds. If a later view contains both
+seq 9 and seq 10 on the same A-branch, they canonicalize to the same
+child root and count once.
 
 **Theorems exercised.** T-9.7. **Diagram 02.**
 
@@ -292,8 +294,8 @@ before the active-set update propagates).
 8. bA is rejected at the block layer; A's CPU and gossip bandwidth
    are wasted preparing it.
 
-   Post-fix #8 (mechanized in Rocq at `BugFixUnbondedProposer.v:44`;
-   not yet applied in Rust):
+   Post-fix #8 (mechanized in Rocq at `BugFixUnbondedProposer.v:44`
+   and implemented in Rust):
 3'. Guard: if bonds_map[A] = 0 then return Vec::new() ; halt early
 4'. A emits no slash-deploys; bA carries no system_deploys
 5'. Other validators replay bA cleanly; bA is admitted (or proposer

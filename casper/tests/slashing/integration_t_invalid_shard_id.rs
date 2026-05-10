@@ -2,7 +2,7 @@
 // `InvalidShardId` arm of the dispatcher's `is_slashable()` catch-
 // all (Bug #3 fix).
 //
-// UC-32 from docs/theory/slashing/slashing-specification.md §12.
+// UC-31 from docs/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher records every
 // slashable variant), formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
@@ -17,14 +17,13 @@ use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
-    canonical_validator_order, process_block_bypassing_of_interest_filter,
-    production_snapshot_at, propose_with_block_mutation,
+    canonical_validator_order, process_block_bypassing_of_interest_filter, production_snapshot_at,
+    propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]

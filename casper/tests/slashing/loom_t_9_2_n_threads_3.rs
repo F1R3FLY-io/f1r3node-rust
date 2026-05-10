@@ -15,9 +15,10 @@
 // Run with the rest of the suite:
 //   cargo test -p casper -- slashing::loom_t_9_2_n_threads_3
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use loom::sync::{Arc, Mutex};
 use loom::thread;
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 struct AbstractTracker {
@@ -66,7 +67,10 @@ fn t_9_2_three_thread_atomic_rmw_preserves_all_witnesses() {
         assert!(witnesses.contains(&100));
         assert!(witnesses.contains(&200));
         assert!(witnesses.contains(&300));
-        assert_eq!(witnesses.len(), 3,
-            "T-9.2 (3-thread): all witnesses preserved across every interleaving");
+        assert_eq!(
+            witnesses.len(),
+            3,
+            "T-9.2 (3-thread): all witnesses preserved across every interleaving"
+        );
     });
 }

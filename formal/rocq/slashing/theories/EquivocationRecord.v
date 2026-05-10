@@ -52,6 +52,59 @@ Record EqRec : Type := mkEqRec {
 Definition er_key (r : EqRec) : Validator * nat :=
   (er_validator r, er_baseSeq r).
 
+Theorem er_key_injective :
+  forall r1 r2,
+    er_key r1 = er_key r2 ->
+    er_validator r1 = er_validator r2 /\ er_baseSeq r1 = er_baseSeq r2.
+Proof.
+  intros r1 r2 H.
+  unfold er_key in H.
+  inversion H. split; reflexivity.
+Qed.
+
+Theorem canonical_key_pair_injective :
+  forall (v1 v2 : Validator) (s1 s2 : nat),
+    (v1, s1) = (v2, s2) ->
+    v1 = v2 /\ s1 = s2.
+Proof.
+  intros v1 v2 s1 s2 H. inversion H. split; reflexivity.
+Qed.
+
+Definition naive_record_key_projection (v : Validator) (seq : nat) : nat :=
+  v + seq.
+
+Example naive_record_key_projection_collision :
+  (1, 23) <> (12, 12) /\
+  naive_record_key_projection 1 23 =
+  naive_record_key_projection 12 12.
+Proof.
+  split; [intro H; inversion H; lia | reflexivity].
+Qed.
+
+Definition delimiter_free_record_key_projection
+  (validator_digits seq_digits : list nat) : list nat :=
+  validator_digits ++ seq_digits.
+
+Example delimiter_free_record_key_projection_collision :
+  ([1], [2; 3]) <> ([1; 2], [3]) /\
+  delimiter_free_record_key_projection [1] [2; 3] =
+  delimiter_free_record_key_projection [1; 2] [3].
+Proof.
+  split.
+  - intro H. injection H as Hdigits _. discriminate Hdigits.
+  - reflexivity.
+Qed.
+
+Example delimiter_free_record_key_projection_hypothesis_collision :
+  ([1], [1; 0]) <> ([1; 1], [0]) /\
+  delimiter_free_record_key_projection [1] [1; 0] =
+  delimiter_free_record_key_projection [1; 1] [0].
+Proof.
+  split.
+  - intro H. injection H as Hdigits _. discriminate Hdigits.
+  - reflexivity.
+Qed.
+
 Definition key_eq_dec :
   forall (k1 k2 : Validator * nat), {k1 = k2} + {k1 <> k2}.
 Proof.
@@ -102,11 +155,84 @@ Fixpoint update_record (s : EqStore) (k : Validator * nat) (h : BlockHash) : EqS
       else r :: update_record rest k h
   end.
 
+Fixpoint delete_record (s : EqStore) (k : Validator * nat) : EqStore :=
+  match s with
+  | [] => []
+  | r :: rest =>
+      if same_key r k then delete_record rest k else r :: delete_record rest k
+  end.
+
 Definition hashes_at_key (s : EqStore) (k : Validator * nat) : list BlockHash :=
   match find_by_key s k with
   | Some r => er_hashes r
   | None   => []
   end.
+
+Definition hashes_equiv (xs ys : list BlockHash) : Prop :=
+  forall h, In h xs <-> In h ys.
+
+Theorem hashes_equiv_refl :
+  forall xs, hashes_equiv xs xs.
+Proof.
+  intros xs h. split; intro H; assumption.
+Qed.
+
+Theorem hashes_equiv_sym :
+  forall xs ys, hashes_equiv xs ys -> hashes_equiv ys xs.
+Proof.
+  intros xs ys H h. destruct (H h) as [Hxy Hyx]. split; assumption.
+Qed.
+
+Theorem hashes_equiv_trans :
+  forall xs ys zs,
+    hashes_equiv xs ys ->
+    hashes_equiv ys zs ->
+    hashes_equiv xs zs.
+Proof.
+  intros xs ys zs Hxy Hyz h.
+  destruct (Hxy h) as [Hxy1 Hxy2].
+  destruct (Hyz h) as [Hyz1 Hyz2].
+  split; intro H.
+  - apply Hyz1. apply Hxy1. assumption.
+  - apply Hxy2. apply Hyz2. assumption.
+Qed.
+
+Theorem hashes_equiv_from_incl :
+  forall xs ys,
+    incl xs ys ->
+    incl ys xs ->
+    hashes_equiv xs ys.
+Proof.
+  intros xs ys Hxy Hyx h. split; intro H.
+  - apply Hxy. assumption.
+  - apply Hyx. assumption.
+Qed.
+
+Theorem hashes_equiv_duplicate_cons :
+  forall h xs,
+    hashes_equiv (h :: h :: xs) (h :: xs).
+Proof.
+  intros h xs x. split; intro H.
+  - destruct H as [H | [H | H]].
+    + left. assumption.
+    + left. assumption.
+    + right. assumption.
+  - destruct H as [H | H].
+    + left. assumption.
+    + right. right. assumption.
+Qed.
+
+Theorem hashes_at_key_in_has_key :
+  forall s k h,
+    In h (hashes_at_key s k) ->
+    has_key s k = true.
+Proof.
+  intros s k h Hin.
+  unfold hashes_at_key, has_key in *.
+  destruct (find_by_key s k); simpl in *.
+  - reflexivity.
+  - inversion Hin.
+Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §3 — find_by_key, hashes_at_key on insert_cond and update_record
@@ -264,6 +390,91 @@ Proof.
   - assert (Hf : find_by_key (update_record s k h) k' = find_by_key s k')
       by (apply find_update_other_record; assumption).
     rewrite Hf. assumption.
+Qed.
+
+Theorem record_lifecycle_update_retains_detected_hash :
+  forall s k h_old h_new,
+    In h_old (hashes_at_key s k) ->
+    In h_old (hashes_at_key (update_record s k h_new) k).
+Proof.
+  intros s k h_old h_new Hin.
+  apply t_4_record_monotone_update. assumption.
+Qed.
+
+Theorem current_rust_record_update_retains_all_detected_hashes :
+  forall s k h_new,
+    incl (hashes_at_key s k) (hashes_at_key (update_record s k h_new) k).
+Proof.
+  intros s k h_new x Hin.
+  apply (t_4_record_monotone_update s k h_new k). assumption.
+Qed.
+
+Example record_lifecycle_early_delete_loses_detected_hash :
+  forall v seq h,
+    hashes_at_key
+      (delete_record [mkEqRec v seq [h]] (v, seq))
+      (v, seq) = [].
+Proof.
+  intros v seq h.
+  unfold hashes_at_key, find_by_key. simpl.
+  destruct (same_key (mkEqRec v seq [h]) (v, seq)) eqn:E.
+  - reflexivity.
+  - assert (Htrue : same_key (mkEqRec v seq [h]) (v, seq) = true).
+    { apply same_key_true_iff. reflexivity. }
+    congruence.
+Qed.
+
+Theorem update_record_contains_hash :
+  forall s k h,
+    has_key s k = true ->
+    In h (hashes_at_key (update_record s k h) k).
+Proof.
+  intros s k h Hkey.
+  unfold has_key in Hkey.
+  unfold hashes_at_key.
+  unfold find_by_key in Hkey |- *.
+  induction s as [| r rest IH]; simpl in Hkey |- *.
+  - discriminate.
+  - destruct (same_key r k) eqn:Esk.
+    + destruct (existsb (Nat.eqb h) (er_hashes r)) eqn:Eh.
+      * simpl. rewrite Esk.
+        apply existsb_exists in Eh.
+        destruct Eh as [h' [Hin Heq]].
+        apply Nat.eqb_eq in Heq. subst h'. assumption.
+      * simpl. rewrite same_key_mkEqRec_eq. rewrite Esk.
+        simpl. left. reflexivity.
+    + simpl. rewrite Esk. apply IH. assumption.
+Qed.
+
+Theorem update_record_hashes_subset :
+  forall s k h,
+    incl (hashes_at_key (update_record s k h) k) (h :: hashes_at_key s k).
+Proof.
+  intros s k h x Hin.
+  induction s as [| r rest IH].
+  - simpl in Hin. inversion Hin.
+  - destruct (same_key r k) eqn:Esk.
+    + assert (Hold : hashes_at_key (r :: rest) k = er_hashes r).
+      { unfold hashes_at_key, find_by_key. cbn [find]. rewrite Esk. reflexivity. }
+      destruct (existsb (Nat.eqb h) (er_hashes r)) eqn:Eh.
+      * assert (Hnew : hashes_at_key (update_record (r :: rest) k h) k = er_hashes r).
+        { unfold hashes_at_key, find_by_key. cbn [update_record find].
+          rewrite Esk. rewrite Eh. cbn [find]. rewrite Esk. reflexivity. }
+        rewrite Hnew in Hin. rewrite Hold. right. assumption.
+      * assert (Hnew :
+          hashes_at_key (update_record (r :: rest) k h) k = h :: er_hashes r).
+        { unfold hashes_at_key, find_by_key. cbn [update_record find].
+          rewrite Esk. rewrite Eh. cbn [find].
+          rewrite same_key_mkEqRec_eq. rewrite Esk. reflexivity. }
+        rewrite Hnew in Hin. rewrite Hold. assumption.
+    + assert (Hold : hashes_at_key (r :: rest) k = hashes_at_key rest k).
+      { unfold hashes_at_key, find_by_key. cbn [find]. rewrite Esk. reflexivity. }
+      assert (Hnew :
+        hashes_at_key (update_record (r :: rest) k h) k =
+        hashes_at_key (update_record rest k h) k).
+      { unfold hashes_at_key, find_by_key. cbn [update_record].
+        rewrite Esk. cbn [find]. rewrite Esk. reflexivity. }
+      rewrite Hnew in Hin. rewrite Hold. apply IH. assumption.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

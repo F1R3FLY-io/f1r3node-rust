@@ -19,7 +19,9 @@ fn uc_43_seqnum_pre_fix_miss() {
 
     let s = harness.dispatch(bad);
     assert_eq!(s, Status::IgnorableEquivocation);
-    assert!(harness.has_record("v0", 1),
-        "post-fix #7: BFS-style descendant search handles seq-skip; \
-         pre-fix this misses the equivocation");
+    assert!(
+        harness.has_record("v0", 1),
+        "post-fix #7: canonical self-chain search handles seq-skip; \
+         pre-fix this misses the equivocation"
+    );
 }

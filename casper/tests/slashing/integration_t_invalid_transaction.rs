@@ -22,13 +22,12 @@ use casper::rust::util::construct_deploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]

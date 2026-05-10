@@ -48,6 +48,7 @@ use crate::rust::metrics_constants::{
     DAG_HEIGHTS_SIZE_METRIC, DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
     DEPLOYS_IN_SCOPE_SIZE_METRIC,
 };
+use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::{self, validate_block_checkpoint};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -1050,8 +1051,10 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
         let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
                                block: &BlockMessage|
-                               -> Result<(), CasperError> {
-            let base_equivocation_block_seq_num = block.seq_num - 1;
+         -> Result<(), CasperError> {
+            let Some(base_equivocation_block_seq_num) = checked_base_seq(block.seq_num) else {
+                return Ok(());
+            };
             block_dag_storage
                 .access_equivocations_tracker(|tracker| {
                     let equivocation_records = tracker.data()?;

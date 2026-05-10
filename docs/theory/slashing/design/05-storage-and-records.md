@@ -70,11 +70,16 @@ function update_equivocation_record(v: Validator, base: SeqNum, h: Hash):
     store[(v, base)] := current ∪ {h}
 ```
 
-The `insert` operation is **idempotent** when called with the same
-empty set (just adds an empty record if absent). The `update`
-operation is **monotone** under set union: it only ever *adds*
-hashes, never removes (theorem T-4, `EquivocationRecord.v`
-`record_monotone_update`).
+The `insert` operation is **idempotent** when routed through the
+dispatcher guard: if `(v, base)` already exists, production code does not
+overwrite it with `∅`. The `update` operation is **monotone** under set
+union: it only ever *adds* hashes, never removes (theorem T-4,
+`EquivocationRecord.v` `t_4_record_monotone_update`; Rust-source hook
+`current_rust_record_update_retains_all_detected_hashes`).
+
+The current Rust tracker has no delete/prune operation. Early deletion is
+therefore a projection risk to guard against in future finality-retention
+work, not a reproduced current Rust behavior.
 
 ### 5.3.3 Why two operations?
 
@@ -84,6 +89,12 @@ adds the *witness hashes* lazily (when they are surfaced by later
 verification passes). This separation lets the dispatcher commit
 the record key under the lock without needing to enumerate witnesses
 upfront.
+
+The key must be encoded as a canonical pair, not by delimiter-free
+concatenation. Rocq proves pair injectivity and records concrete
+delimiter-free collisions: `(1,23)` versus `(12,3)` share token stream
+`123`, and the Hypothesis-reduced witness `(1,10)` versus `(11,0)`
+shares token stream `110`.
 
 ## 5.4 The race condition (bug #2 / T-9.2)
 

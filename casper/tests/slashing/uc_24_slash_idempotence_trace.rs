@@ -3,12 +3,6 @@
 // Maps to: docs/theory/slashing/slashing-specification.md §12 UC-24.
 // Theorem: T-Idem.
 //
-// Companion to `uc_25_slash_idempotent.rs`; UC-24 in the spec
-// table is also tagged T-Idem. The two UCs differ in framing:
-// UC-24 emphasizes the operational semantics (k-th slash is no-op),
-// UC-25 emphasizes the equivalence semantics (post-state at k+1
-// equals post-state at k). Both are required by the §14 catalogue.
-
 use super::harness::SlashingTestHarness;
 
 #[test]
@@ -26,10 +20,20 @@ fn uc_24_kth_slash_is_no_op_for_all_k() {
     for k in 2..=10 {
         let rk = harness.execute_slash("v0");
         assert!(rk.success, "T-Idem: slash #{k} returns success");
-        assert_eq!(harness.bond("v0"), bond_1, "T-Idem: bond stable at slash #{k}");
-        assert_eq!(harness.coop_vault(), coop_1,
-            "T-Idem: coop vault stable at slash #{k}");
-        assert_eq!(harness.is_active("v0"), active_1,
-            "T-Idem: is_active stable at slash #{k}");
+        assert_eq!(
+            harness.bond("v0"),
+            bond_1,
+            "T-Idem: bond stable at slash #{k}"
+        );
+        assert_eq!(
+            harness.coop_vault(),
+            coop_1,
+            "T-Idem: coop vault stable at slash #{k}"
+        );
+        assert_eq!(
+            harness.is_active("v0"),
+            active_1,
+            "T-Idem: is_active stable at slash #{k}"
+        );
     }
 }

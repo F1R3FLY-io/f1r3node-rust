@@ -34,8 +34,10 @@ fn uc_62_quorum_intersection_post_slash() {
     let q2: std::collections::BTreeSet<String> =
         ["v3", "v4", "v5"].iter().map(|s| s.to_string()).collect();
     let intersection: std::collections::BTreeSet<_> = q1.intersection(&q2).cloned().collect();
-    assert!(!intersection.is_empty(),
-        "T-12 quorum intersection: |Q1|+|Q2| > |active| ⇒ Q1 ∩ Q2 ≠ ∅");
+    assert!(
+        !intersection.is_empty(),
+        "T-12 quorum intersection: |Q1|+|Q2| > |active| ⇒ Q1 ∩ Q2 ≠ ∅"
+    );
     // Both quorums must be subsets of the active set.
     let active_set: std::collections::BTreeSet<_> = active.into_iter().collect();
     assert!(q1.is_subset(&active_set));

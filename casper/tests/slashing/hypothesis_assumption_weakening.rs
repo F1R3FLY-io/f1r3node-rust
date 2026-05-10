@@ -12,9 +12,7 @@
 // preserves the expected witness even after random schedule
 // perturbations.
 
-use super::divergence_class::{
-    frontier_classification_ok, DivergenceClass,
-};
+use super::divergence_class::{frontier_classification_ok, DivergenceClass};
 
 #[derive(Debug, Clone)]
 struct WeakeningCase {
@@ -87,6 +85,8 @@ fn uc_86_full_assumption_set_holds() {
         .into_iter()
         .find(|c| c.name == "all_assumptions_held")
         .expect("'all_assumptions_held' case present");
-    assert!(!all_held.produces_witness,
-        "UC-86: with every precondition held, the theorem must hold without counterexample");
+    assert!(
+        !all_held.produces_witness,
+        "UC-86: with every precondition held, the theorem must hold without counterexample"
+    );
 }

@@ -25,16 +25,13 @@ fn uc_37_self_regression_dag_with_witness() {
     // Step 2: v0 publishes a regressing block at seq=5 whose
     // creator-justification points to b_high.
     let regressing = b_high.wrapping_add(50_000);
-    harness.dag.blocks.insert(
-        regressing,
-        BlockMeta {
-            hash: regressing,
-            sender: "v0".into(),
-            seq: 5,
-            justifications: vec![("v0".into(), b_high)],
-            slash_targets: vec![],
-        },
-    );
+    harness.dag.blocks.insert(regressing, BlockMeta {
+        hash: regressing,
+        sender: "v0".into(),
+        seq: 5,
+        justifications: vec![("v0".into(), b_high)],
+        slash_targets: vec![],
+    });
 
     // Dispatch the regressing block — JustificationRegression
     // classification (post-fix #6) and record minted (post-fix #3).
@@ -48,10 +45,15 @@ fn uc_37_self_regression_dag_with_witness() {
     // v0 → v1 is NeglectedEquivocation.
     let witness = harness.sign_block_citing("v1", 12, regressing);
     let ws = harness.dispatch(witness);
-    assert_eq!(ws, Status::NeglectedEquivocation,
-        "witness that observed but didn't slash v0 is itself slashable");
-    assert!(harness.has_record("v1", 11),
-        "the witness's neglect is recorded");
+    assert_eq!(
+        ws,
+        Status::NeglectedEquivocation,
+        "witness that observed but didn't slash v0 is itself slashable"
+    );
+    assert!(
+        harness.has_record("v1", 11),
+        "the witness's neglect is recorded"
+    );
 
     // Confirm the records partition correctly.
     let v0_records: Vec<_> = harness

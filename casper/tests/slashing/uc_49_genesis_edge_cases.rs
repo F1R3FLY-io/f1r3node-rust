@@ -23,8 +23,10 @@ fn uc_49_genesis_seq_zero_equivocation() {
     assert_eq!(s, Status::IgnorableEquivocation);
     // base_seq computation uses saturating_sub, so seq=0 → base=0
     // (no underflow).
-    assert!(harness.has_record("v0", 0),
-        "genesis-adjacent equivocation records at base=0");
+    assert!(
+        harness.has_record("v0", 0),
+        "genesis-adjacent equivocation records at base=0"
+    );
 }
 
 #[test]
@@ -38,6 +40,8 @@ fn uc_49_seq_one_boundary() {
     let s = harness.dispatch(bad);
 
     assert_eq!(s, Status::IgnorableEquivocation);
-    assert!(harness.has_record("v0", 0),
-        "seq=1 equivocation records at base=0");
+    assert!(
+        harness.has_record("v0", 0),
+        "seq=1 equivocation records at base=0"
+    );
 }

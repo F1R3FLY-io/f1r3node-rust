@@ -23,14 +23,10 @@ pub fn gen_validator_id(max_idx: usize) -> impl Strategy<Value = ValidatorId> {
 /// Block hashes are 64-bit ints in `[1, max]`. `1` is reserved as the
 /// first allocated hash, so generators that interleave with the
 /// harness's auto-allocation should pass `max = u64::MAX`.
-pub fn gen_block_hash() -> impl Strategy<Value = BlockHash> {
-    1u64..=u64::MAX
-}
+pub fn gen_block_hash() -> impl Strategy<Value = BlockHash> { 1u64..=u64::MAX }
 
 /// Sequence numbers in `[0, max]`.
-pub fn gen_seq_num(max: SeqNum) -> impl Strategy<Value = SeqNum> {
-    0u64..=max
-}
+pub fn gen_seq_num(max: SeqNum) -> impl Strategy<Value = SeqNum> { 0u64..=max }
 
 /// Bonds map: every validator gets a positive stake in
 /// `[1, max_stake]`. Mirrors the post-fix #5 invariant
@@ -55,10 +51,7 @@ pub fn gen_bonds_map(
 
 /// PoS state with random bonds and matching active set (every bonded
 /// validator is active). Coop vault starts at 0, slashed set empty.
-pub fn gen_pos_state(
-    validator_count: usize,
-    max_stake: i64,
-) -> impl Strategy<Value = PoSState> {
+pub fn gen_pos_state(validator_count: usize, max_stake: i64) -> impl Strategy<Value = PoSState> {
     gen_bonds_map(validator_count, max_stake).prop_map(|bonds| {
         let active = bonds.keys().cloned().collect();
         PoSState {
@@ -74,10 +67,7 @@ pub fn gen_pos_state(
 /// block per sequence number from `0..depth`. Each block's only
 /// justification is its own creator-justification (the validator's
 /// previous block).
-pub fn gen_linear_dag(
-    validator_count: usize,
-    depth: SeqNum,
-) -> impl Strategy<Value = DagState> {
+pub fn gen_linear_dag(validator_count: usize, depth: SeqNum) -> impl Strategy<Value = DagState> {
     Just((validator_count, depth)).prop_map(|(v, d)| {
         let mut dag = DagState::default();
         let mut prev: HashMap<ValidatorId, BlockHash> = HashMap::new();
@@ -91,16 +81,13 @@ pub fn gen_linear_dag(
                     Some(&prev_hash) => vec![(sender.clone(), prev_hash)],
                     None => vec![],
                 };
-                dag.blocks.insert(
+                dag.blocks.insert(hash, BlockMeta {
                     hash,
-                    BlockMeta {
-                        hash,
-                        sender: sender.clone(),
-                        seq,
-                        justifications,
-                        slash_targets: vec![],
-                    },
-                );
+                    sender: sender.clone(),
+                    seq,
+                    justifications,
+                    slash_targets: vec![],
+                });
                 prev.insert(sender, hash);
             }
         }
@@ -135,18 +122,21 @@ pub fn gen_5_component_state(
     max_stake: i64,
     max_depth: SeqNum,
 ) -> impl Strategy<Value = (usize, i64, DagState, PoSState)> {
-    (1usize..=max_validator_count, 1i64..=max_stake, 1u64..=max_depth).prop_flat_map(
-        move |(v, s, d)| {
-            (gen_linear_dag(v, d), gen_pos_state(v, s))
-                .prop_map(move |(dag, pos)| (v, s, dag, pos))
-        },
+    (
+        1usize..=max_validator_count,
+        1i64..=max_stake,
+        1u64..=max_depth,
     )
+        .prop_flat_map(move |(v, s, d)| {
+            (gen_linear_dag(v, d), gen_pos_state(v, s)).prop_map(move |(dag, pos)| (v, s, dag, pos))
+        })
 }
 
 #[cfg(test)]
 mod generators_smoke {
-    use super::*;
     use proptest::strategy::ValueTree;
+
+    use super::*;
 
     proptest! {
         #![proptest_config(ProptestConfig {

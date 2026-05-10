@@ -37,13 +37,12 @@ use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, equivocate_block, production_snapshot_at,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -64,8 +63,7 @@ async fn integration_t_ignorable_equivocation() {
     // `create_block_unsafe` returns the block but does NOT add it
     // to nodes[0]'s DAG, so the snapshot taken inside
     // `equivocate_block` is still at genesis.
-    let d1 =
-        construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
+    let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     let b1 = nodes[0]
         .create_block_unsafe(&[d1])
         .await
@@ -105,7 +103,10 @@ async fn integration_t_ignorable_equivocation() {
     // Process b1p on node 1. Equivocation detected; no other node
     // has cited b1p as a dependency, so `requested_as_dependency`
     // returns false → IgnorableEquivocation.
-    let s2 = nodes[1].process_block(b1p.clone()).await.expect("process b1p");
+    let s2 = nodes[1]
+        .process_block(b1p.clone())
+        .await
+        .expect("process b1p");
     assert!(
         matches!(
             s2,
@@ -120,15 +121,13 @@ async fn integration_t_ignorable_equivocation() {
     // (v0, some base_seq) for v0. The exact base seq depends on
     // genesis-block sequence numbering; we assert presence rather
     // than a specific base value.
-    let snapshot =
-        production_snapshot_at(&nodes[1], &b1, &genesis.genesis_block, validators)
-            .await
-            .expect("snapshot");
+    let snapshot = production_snapshot_at(&nodes[1], &b1, &genesis.genesis_block, validators)
+        .await
+        .expect("snapshot");
 
     let v0_label = "v0";
-    let has_any_record = (0..=10).any(|base| {
-        <_ as SlashingObserver>::has_record(&snapshot, v0_label, base)
-    });
+    let has_any_record =
+        (0..=10).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
         has_any_record,
         "post-fix #1: dispatcher mints EquivocationRecord for the \

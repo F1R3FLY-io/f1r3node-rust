@@ -94,8 +94,7 @@ DagStore  -[#546E7A]down-> Tracker    : delegates equivocation\n             rec
 DagStore  -[#546E7A]down-> DeployStore : (slash deploys NOT persisted —\n              fix #8 ; T-9.8)
 
 ' === Proposing edges ===
-Creator     -[#1565C0]-> DagStore     : invalid_latest_messages
-Creator     -[#1565C0]-> Tracker      : equivocation_records
+Creator     -[#1565C0]-> DagStore     : authorized invalid-block\n             evidence
 Creator     -[#00838F]-> SlashDep     : 1 SlashDeploy per offender
 SlashDep    -[#546E7A]-> SysDepUtil   : generate slash random seed
 Creator     -[#546E7A,dashed]-> DeployStore  : (TODO: persist slash deploys)

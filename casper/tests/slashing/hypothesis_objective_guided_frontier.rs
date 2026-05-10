@@ -1,0 +1,67 @@
+use super::divergence_class::{
+    classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObjectiveRow {
+    name: &'static str,
+    class: DivergenceClass,
+    extra_stake: i64,
+    slash_delay: i64,
+}
+
+fn objective_score(row: ObjectiveRow) -> i64 {
+    let class_score = match row.class {
+        DivergenceClass::UnexpectedDivergence => 1_000,
+        DivergenceClass::CandidateBoundaryDivergence => 100,
+        DivergenceClass::PermittedBugFix => 20,
+        DivergenceClass::Bisimilar => 0,
+    };
+    class_score + row.extra_stake + row.slash_delay
+}
+
+#[test]
+fn uc_88_objective_guided_frontier_excludes_unexpected_rows() {
+    let rows = [
+        ObjectiveRow {
+            name: "weighted_damage",
+            class: classify(DivergenceReason::PreconditionFuzzingBoundary),
+            extra_stake: 8,
+            slash_delay: 0,
+        },
+        ObjectiveRow {
+            name: "retention_delay",
+            class: classify(DivergenceReason::ProjectionBoundary),
+            extra_stake: 0,
+            slash_delay: 5,
+        },
+        ObjectiveRow {
+            name: "direct_detection",
+            class: DivergenceClass::Bisimilar,
+            extra_stake: 0,
+            slash_delay: 0,
+        },
+    ];
+
+    assert!(rows.iter().all(|row| frontier_classification_ok(row.class)));
+    assert!(rows
+        .iter()
+        .all(|row| row.class != DivergenceClass::UnexpectedDivergence));
+}
+
+#[test]
+fn uc_88_objective_ranking_prioritizes_boundary_review() {
+    let boundary = ObjectiveRow {
+        name: "boundary",
+        class: classify(DivergenceReason::ProjectionBoundary),
+        extra_stake: 0,
+        slash_delay: 0,
+    };
+    let bisimilar = ObjectiveRow {
+        name: "bisimilar",
+        class: DivergenceClass::Bisimilar,
+        extra_stake: 99,
+        slash_delay: 0,
+    };
+    assert!(objective_score(boundary) > objective_score(bisimilar));
+}

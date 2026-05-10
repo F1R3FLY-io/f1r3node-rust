@@ -74,4 +74,7 @@ schnorr_secp256k1_experimental = [
     "models/schnorr_secp256k1_experimental",
 ]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [build-dependencies]

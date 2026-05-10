@@ -16,11 +16,12 @@
 
 #![allow(dead_code)]
 
+use std::collections::BTreeSet;
+
 use super::types::{
     BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum, SlashResult, Status,
     ValidatorId,
 };
-use std::collections::BTreeSet;
 
 /// Mirrors `EquivocationDetector.equivocates` plus the validation-time
 /// `JustificationRegression` check. Pure: no side effects.
@@ -104,14 +105,20 @@ pub fn oracle_dispatch(
 pub fn oracle_slash(pos_state: &PoSState, validator: &str) -> (PoSState, SlashResult) {
     let mut new_state = pos_state.clone();
     if pos_state.slashed.contains(validator) {
-        return (new_state, SlashResult { success: true, error: None });
+        return (new_state, SlashResult {
+            success: true,
+            error: None,
+        });
     }
     let bond = pos_state.bond(validator);
     new_state.bonds.insert(validator.to_string(), 0);
     new_state.active.remove(validator);
     new_state.slashed.insert(validator.to_string());
     new_state.coop_vault += bond;
-    (new_state, SlashResult { success: true, error: None })
+    (new_state, SlashResult {
+        success: true,
+        error: None,
+    })
 }
 
 /// Mirrors `TwoLevelSlashing.neglect`: computes the closure of
@@ -125,20 +132,17 @@ pub fn oracle_slash(pos_state: &PoSState, validator: &str) -> (PoSState, SlashRe
 ///
 /// The harness does not currently track the slash-deploy column, so
 /// this function captures only level-1 (direct) closure here. Level-2
-/// is exercised through `uc_15_neglect_two_level.rs` which extends
+/// is exercised through `uc_04_neglect_two_level.rs` which extends
 /// the harness with explicit `record_neglect(...)` calls.
 pub fn oracle_neglect_closure_level_1(tracker: &EqRecordSet) -> BTreeSet<ValidatorId> {
-    tracker
-        .records
-        .keys()
-        .map(|(v, _)| v.clone())
-        .collect()
+    tracker.records.keys().map(|(v, _)| v.clone()).collect()
 }
 
 #[cfg(test)]
 mod oracle_smoke {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn mk_block(hash: BlockHash, sender: &str, seq: SeqNum) -> BlockMeta {
         BlockMeta {
@@ -181,7 +185,8 @@ mod oracle_smoke {
         dag.blocks.insert(1, mk_block(1, "v0", 5));
         dag.blocks.insert(2, mk_block(2, "v0", 5));
         let tracker = EqRecordSet::default();
-        let (new_dag, new_tracker) = oracle_dispatch(&dag, &tracker, 2, &Status::IgnorableEquivocation);
+        let (new_dag, new_tracker) =
+            oracle_dispatch(&dag, &tracker, 2, &Status::IgnorableEquivocation);
         assert!(new_tracker.contains("v0", 4), "record minted at base_seq=4");
         assert!(new_dag.invalid.contains(&2), "block marked invalid");
     }

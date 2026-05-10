@@ -22,8 +22,11 @@ fn uc_38_soundness_no_false_positive_neglect() {
     // No outstanding records — no validator can be neglected.
     let block = harness.sign_block("v1", 6);
     let s = harness.dispatch(block);
-    assert_eq!(s, Status::Valid,
-        "soundness: a block citing nobody-with-records is Valid");
+    assert_eq!(
+        s,
+        Status::Valid,
+        "soundness: a block citing nobody-with-records is Valid"
+    );
 }
 
 #[test]
@@ -38,8 +41,11 @@ fn uc_38_completeness_neglect_fired_when_record_unslashed() {
     // v1 cites v0's invalid block without slashing → NeglectedEquivocation.
     let citing_no_slash = harness.sign_block_citing("v1", 6, bad);
     let s = harness.dispatch(citing_no_slash);
-    assert_eq!(s, Status::NeglectedEquivocation,
-        "completeness: cite-without-slash triggers NeglectedEquivocation");
+    assert_eq!(
+        s,
+        Status::NeglectedEquivocation,
+        "completeness: cite-without-slash triggers NeglectedEquivocation"
+    );
 }
 
 #[test]
@@ -54,8 +60,11 @@ fn uc_38_honest_slasher_not_flagged() {
     // v2 cites v0 AND issues a SlashDeploy targeting v0 → Valid.
     let honest = harness.sign_block_citing_with_slash("v2", 7, bad, "v0");
     let s = harness.dispatch(honest);
-    assert_eq!(s, Status::Valid,
-        "soundness: honest slasher (cite + slash) is not classified Neglected");
+    assert_eq!(
+        s,
+        Status::Valid,
+        "soundness: honest slasher (cite + slash) is not classified Neglected"
+    );
 }
 
 #[test]
@@ -72,6 +81,9 @@ fn uc_38_validator_not_in_justifications_does_not_trigger() {
     // it, so v2 is not Neglected.
     let unrelated = harness.sign_block("v2", 8);
     let s = harness.dispatch(unrelated);
-    assert_eq!(s, Status::Valid,
-        "soundness: only blocks citing the equivocator can be Neglected");
+    assert_eq!(
+        s,
+        Status::Valid,
+        "soundness: only blocks citing the equivocator can be Neglected"
+    );
 }

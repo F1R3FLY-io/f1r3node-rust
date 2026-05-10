@@ -169,6 +169,105 @@ Proof.
   intros. unfold bm_slash. apply bm_lookup_update_diff. assumption.
 Qed.
 
+Fixpoint bm_slash_many (bm : BondMap) (vs : list Validator) : BondMap :=
+  match vs with
+  | [] => bm
+  | v :: rest => bm_slash_many (bm_slash bm v) rest
+  end.
+
+Theorem bm_lookup_slash_many_notin :
+  forall bm vs v,
+    ~ In v vs ->
+    bm_lookup (bm_slash_many bm vs) v = bm_lookup bm v.
+Proof.
+  intros bm vs.
+  revert bm.
+  induction vs as [| x xs IH]; intros bm v Hnot; simpl.
+  - reflexivity.
+  - rewrite IH.
+    + apply bm_slash_other. intro Heq. apply Hnot. left. assumption.
+    + intro Hin. apply Hnot. right. assumption.
+Qed.
+
+Theorem bm_lookup_slash_many_in :
+  forall bm vs v,
+    In v vs ->
+    bm_lookup (bm_slash_many bm vs) v = 0.
+Proof.
+  intros bm vs.
+  revert bm.
+  induction vs as [| x xs IH]; intros bm v Hin; simpl in *.
+  - contradiction.
+  - destruct Hin as [Heq | Hinxs].
+    + subst v.
+      destruct (in_dec validator_eq_dec x xs) as [Hin_tail | Hnot_tail].
+      * apply IH. assumption.
+      * rewrite bm_lookup_slash_many_notin.
+        -- apply bm_slash_lookup.
+        -- assumption.
+    + apply IH. assumption.
+Qed.
+
+Theorem bm_slash_many_order_independent :
+  forall bm xs ys,
+    (forall v, In v xs <-> In v ys) ->
+    forall v,
+      bm_lookup (bm_slash_many bm xs) v =
+      bm_lookup (bm_slash_many bm ys) v.
+Proof.
+  intros bm xs ys Hsame v.
+  destruct (in_dec validator_eq_dec v xs) as [Hinx | Hnotx];
+  destruct (in_dec validator_eq_dec v ys) as [Hiny | Hnoty]; try reflexivity.
+  - rewrite (bm_lookup_slash_many_in bm xs v Hinx).
+    rewrite (bm_lookup_slash_many_in bm ys v Hiny). reflexivity.
+  - exfalso. apply Hnoty. apply Hsame. assumption.
+  - exfalso. apply Hnotx. apply Hsame. assumption.
+  - rewrite (bm_lookup_slash_many_notin bm xs v Hnotx).
+    rewrite (bm_lookup_slash_many_notin bm ys v Hnoty). reflexivity.
+Qed.
+
+Definition validator_in_list (v : Validator) (xs : list Validator) : bool :=
+  if in_dec validator_eq_dec v xs then true else false.
+
+Record BatchSlashState : Type := mkBatchSlashState {
+  bs_bonds : BondMap;
+  bs_vault : nat;
+  bs_failed : option Validator
+}.
+
+Definition batch_slash_step
+  (failures : list Validator) (st : BatchSlashState) (v : Validator)
+  : BatchSlashState :=
+  match bs_failed st with
+  | Some _ => st
+  | None =>
+      if validator_in_list v failures
+      then mkBatchSlashState (bs_bonds st) (bs_vault st) (Some v)
+      else mkBatchSlashState
+             (bm_slash (bs_bonds st) v)
+             (bs_vault st + bm_lookup (bs_bonds st) v)
+             None
+  end.
+
+Fixpoint bm_slash_many_abort
+  (failures : list Validator) (st : BatchSlashState) (vs : list Validator)
+  : BatchSlashState :=
+  match vs with
+  | [] => st
+  | v :: rest => bm_slash_many_abort failures (batch_slash_step failures st v) rest
+  end.
+
+Example bm_slash_many_abort_order_dependent :
+  let bm := [(0, 5); (1, 7)] in
+  let st := mkBatchSlashState bm 0 None in
+    bs_vault (bm_slash_many_abort [1] st [0; 1]) = 5 /\
+    bs_vault (bm_slash_many_abort [1] st [1; 0]) = 0 /\
+    bm_lookup (bs_bonds (bm_slash_many_abort [1] st [0; 1])) 0 = 0 /\
+    bm_lookup (bs_bonds (bm_slash_many_abort [1] st [1; 0])) 0 = 5.
+Proof.
+  simpl. repeat split; reflexivity.
+Qed.
+
 (* ═══════════════════════════════════════════════════════════════════════════
    §5 — Bonded validator predicate
    ═══════════════════════════════════════════════════════════════════════════ *)

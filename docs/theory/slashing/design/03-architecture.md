@@ -67,20 +67,20 @@ the next block's `SlashDeploy`s.
 
 | Sub-component      | Role                                                                                | Rust source                                            | Scala upstream                                              |
 |--------------------|-------------------------------------------------------------------------------------|--------------------------------------------------------|-------------------------------------------------------------|
-| `BlockCreator`     | Reads invalid latest messages + equivocation records → emits `SlashDeploy`s.        | `casper/src/rust/blocks/proposer/block_creator.rs`     | `coop.rchain.casper.blocks.proposer.BlockCreator.scala`     |
+| `BlockCreator`     | Reads authorized current-epoch invalid-block evidence → emits `SlashDeploy`s.       | `casper/src/rust/blocks/proposer/block_creator.rs`     | `coop.rchain.casper.blocks.proposer.BlockCreator.scala`     |
 | `SlashDeploy`      | A *system deploy* (no user-fee) that invokes `@PoS!("slash", …)` on-chain.          | `casper/src/rust/util/rholang/costacc/slash_deploy.rs` | `coop.rchain.casper.util.rholang.costacc.SlashDeploy.scala` |
 | `SystemDeployUtil` | Generates deterministic random seeds for system deploys (`splitByte(1)` for slash). | `casper/src/rust/util/rholang/system_deploy_util.rs`   | `coop.rchain.casper.util.rholang.SystemDeployUtil.scala`    |
 
 **Intuition.** When the next proposer's turn arrives, that proposer
 asks: *"Is there anyone bonded I should slash?"* `BlockCreator`
 answers by reading the on-chain `bonds_map` from the
-`CasperSnapshot` and intersecting it with the validators that have
-an entry in either `invalid_latest_messages` (the DAG-side index)
-or the `EquivocationTrackerStore` (the record-side index). For each
-offender still bonded, it constructs a `SlashDeploy` and attaches
-it to the block. The proposer's signature on the block also signs
-the deploy (it's a *system deploy* — no user authentication required;
-the system auth-token guards it instead, see §06).
+`CasperSnapshot` and intersecting it with the DAG's invalid-block
+evidence whose evidence epoch equals the block's target activation
+epoch. For each still-bonded offender, it constructs a `SlashDeploy`
+and attaches it to the block. The proposer's signature on the block
+also signs the deploy (it's a *system deploy* — no user authentication
+required; the system auth-token and the received-deploy authorization
+gate guard it instead, see §06).
 
 ### 3.2.4 Effect layer — *"what changes when a slash fires?"*
 

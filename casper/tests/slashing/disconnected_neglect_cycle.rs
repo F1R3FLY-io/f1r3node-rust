@@ -43,8 +43,12 @@ fn uc_60_disconnected_cycle_not_slashed() {
     for i in 0..4 {
         let v = format!("v{}", i);
         for base in 0..10 {
-            assert!(!harness.has_record(&v, base),
-                "T-12 reachability: {} has no record at base={}", v, base);
+            assert!(
+                !harness.has_record(&v, base),
+                "T-12 reachability: {} has no record at base={}",
+                v,
+                base
+            );
         }
     }
 
@@ -70,7 +74,10 @@ fn uc_60_connected_cycle_slashed_via_offender() {
     // v1 cites v0's bad block (path from v1 to direct offender).
     let v1_b = harness.sign_block_citing("v1", 6, bad);
     let s1 = harness.dispatch(v1_b);
-    assert_eq!(s1, Status::NeglectedEquivocation,
-        "v1 reachable to v0 → neglect");
+    assert_eq!(
+        s1,
+        Status::NeglectedEquivocation,
+        "v1 reachable to v0 → neglect"
+    );
     assert!(harness.has_record("v1", 5));
 }

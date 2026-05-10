@@ -34,10 +34,17 @@ fn uc_23_self_correcting_admitted() {
     // Post-fix #9: validation admits this block (Status::Valid).
     // Pre-fix: it was rejected as "Neglected" because the rejection
     // path didn't recognize the slash-system-deploy.
-    assert_eq!(s, Status::Valid,
-        "post-fix #9: validation admits self-correcting blocks");
-    assert!(!harness.has_record("v1", 6),
-        "honest slasher does NOT get a record minted");
-    assert!(!harness.dag.invalid.contains(&correcting),
-        "self-correcting block is not in the invalid index");
+    assert_eq!(
+        s,
+        Status::Valid,
+        "post-fix #9: validation admits self-correcting blocks"
+    );
+    assert!(
+        !harness.has_record("v1", 6),
+        "honest slasher does NOT get a record minted"
+    );
+    assert!(
+        !harness.dag.invalid.contains(&correcting),
+        "self-correcting block is not in the invalid index"
+    );
 }

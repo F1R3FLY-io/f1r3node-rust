@@ -122,13 +122,11 @@ note over BC, CS
   CasperSnapshot pre-loaded by the
   block-processor — NOT live DS calls.
 end note
-BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_latest_messages()
-CS -[#1565C0]-> BC : { (V*, bX) }
-BC -[#1565C0]> T   : equivocation_records()
-T -[#1565C0]-> BC  : { (V*, bX.seqNum − 1, {bX.hash}) }
+BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_blocks()
+CS -[#1565C0]-> BC : { (V*, bX, epoch e) }
 BC -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
 CS -[#1565C0]-> BC : bonds_map
-BC -[#546E7A]> BC  : filter where bonds_map[V*] > 0 → keep V*
+BC -[#546E7A]> BC  : filter current epoch and bonds_map[V*] > 0 → keep V*
 BC -[#6A1B9A]> PoS ++ : SlashDeploy(blockHash = bX.hash,\n  deployerId = P, sysAuthToken, returnCh)
 PoS -[#546E7A]> PoS  : auth-token check + Coop-vault transfer\n(see Diagram 07 for full activity)
 PoS -[#E65100]> Bm   : atomic stateUpdateCh!{\n  allBonds := allBonds[V* := 0],\n  activeValidators := \\ {V*},\n  committedRewards := \\ {V*}\n} ; (true, Nil)\n(single map-construction step,\n PoS.rhox:473-482)

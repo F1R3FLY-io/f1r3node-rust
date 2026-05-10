@@ -27,7 +27,10 @@ fn uc_68_rebonded_validator_does_not_inherit_record() {
 
     // v0 attempts to rebond — REJECTED (already slashed).
     let r = harness.try_bond("v0", 100);
-    assert!(r.is_err(), "T-12 epoch boundary: slashed identity cannot rebond");
+    assert!(
+        r.is_err(),
+        "T-12 epoch boundary: slashed identity cannot rebond"
+    );
 
     // A fresh identity v0_epoch2 bonds successfully.
     assert!(harness.try_bond("v0_epoch2", 100).is_ok());
@@ -37,7 +40,9 @@ fn uc_68_rebonded_validator_does_not_inherit_record() {
     // T-12 epoch carryover: the fresh identity has no inherited
     // record from v0's prior slashing.
     for base in 0..5 {
-        assert!(!harness.has_record("v0_epoch2", base),
-            "rebonded identity inherits no record from prior epoch");
+        assert!(
+            !harness.has_record("v0_epoch2", base),
+            "rebonded identity inherits no record from prior epoch"
+        );
     }
 }

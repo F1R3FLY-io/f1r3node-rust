@@ -124,9 +124,7 @@ pub fn apply_step(harness: &mut SlashingTestHarness, step: &TraceStep) -> StepRe
             if result.success {
                 StepResult::Ok
             } else {
-                StepResult::Skipped(format!(
-                    "ExecuteSlash on {offender} returned {result:?}"
-                ))
+                StepResult::Skipped(format!("ExecuteSlash on {offender} returned {result:?}"))
             }
         }
         "SignNeglecting" => {

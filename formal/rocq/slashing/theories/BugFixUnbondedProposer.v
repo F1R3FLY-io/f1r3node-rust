@@ -27,24 +27,25 @@ Set Implicit Arguments.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Definition prepare_slashing_deploys_post_fix
-  (ilm : list (Validator * BlockHash))
+  (candidates : list AuthorizedCandidate)
   (bonds : BondMap)
   (proposer : Validator)
   (seqNum : nat)
+  (currentEpoch : nat)
   (seed_fn : Validator -> nat -> nat)
   : list SlashDeploy :=
   if Nat.eqb (bm_lookup bonds proposer) 0
   then []
-  else prepare_slashing_deploys ilm bonds proposer seqNum seed_fn.
+  else prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — T-9.8: Unbonded proposer never emits a slash deploy
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem t_9_8_unbonded_proposer_no_slash :
-  forall ilm bonds proposer seqNum seed_fn,
+  forall candidates bonds proposer seqNum currentEpoch seed_fn,
     bm_lookup bonds proposer = 0 ->
-    prepare_slashing_deploys_post_fix ilm bonds proposer seqNum seed_fn = [].
+    prepare_slashing_deploys_post_fix candidates bonds proposer seqNum currentEpoch seed_fn = [].
 Proof.
   intros. unfold prepare_slashing_deploys_post_fix.
   rewrite H. simpl. reflexivity.
@@ -53,10 +54,10 @@ Qed.
 (* Under the post-fix predicate, behavior is identical to pre-fix when the
    proposer is bonded. *)
 Theorem t_9_8_post_fix_equivalent_when_bonded :
-  forall ilm bonds proposer seqNum seed_fn,
+  forall candidates bonds proposer seqNum currentEpoch seed_fn,
     bm_lookup bonds proposer > 0 ->
-    prepare_slashing_deploys_post_fix ilm bonds proposer seqNum seed_fn
-    = prepare_slashing_deploys ilm bonds proposer seqNum seed_fn.
+    prepare_slashing_deploys_post_fix candidates bonds proposer seqNum currentEpoch seed_fn
+    = prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn.
 Proof.
   intros. unfold prepare_slashing_deploys_post_fix.
   destruct (bm_lookup bonds proposer) eqn:E.

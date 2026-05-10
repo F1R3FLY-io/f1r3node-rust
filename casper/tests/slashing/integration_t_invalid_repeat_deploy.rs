@@ -2,7 +2,7 @@
 // `InvalidRepeatDeploy` arm of the dispatcher's `is_slashable()`
 // catch-all (Bug #3 fix).
 //
-// UC-33 from docs/theory/slashing/slashing-specification.md §12.
+// UC-32 from docs/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
@@ -24,13 +24,12 @@ use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -50,18 +49,21 @@ async fn integration_t_invalid_repeat_deploy() {
     // Step 1: nodes[0] proposes b1 normally with d1.
     let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     nodes[0].casper.deploy(d1.clone()).expect("deploy d1");
-    let b1 = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("create b1");
+    let b1 = nodes[0].create_block_unsafe(&[]).await.expect("create b1");
     // nodes[0] processes b1 back into its own DAG so the snapshot
     // for proposing b2 sees b1 as the parent (not genesis). Without
     // this, b1's tuple-space effects exist but the DAG doesn't know
     // about b1, leading to "Unable to consume results of system
     // deploy" during checkpoint computation for b2.
-    let _ = nodes[0].process_block(b1.clone()).await.expect("nodes[0] process b1");
+    let _ = nodes[0]
+        .process_block(b1.clone())
+        .await
+        .expect("nodes[0] process b1");
     // nodes[1] receives b1 so it's in their DAG when checking b2.
-    let _ = nodes[1].process_block(b1.clone()).await.expect("nodes[1] process b1");
+    let _ = nodes[1]
+        .process_block(b1.clone())
+        .await
+        .expect("nodes[1] process b1");
 
     // Step 2: nodes[0] proposes b2 with a fresh deploy d2 for
     // checkpoint-computation; then mutator REPLACES body.deploys
@@ -95,14 +97,9 @@ async fn integration_t_invalid_repeat_deploy() {
         status
     );
 
-    let snapshot = production_snapshot_at(
-        &nodes[1],
-        &b1,
-        &genesis.genesis_block,
-        validators,
-    )
-    .await
-    .expect("snapshot");
+    let snapshot = production_snapshot_at(&nodes[1], &b1, &genesis.genesis_block, validators)
+        .await
+        .expect("snapshot");
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(

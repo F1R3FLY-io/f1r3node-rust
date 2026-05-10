@@ -169,10 +169,12 @@ impl RuntimeManager {
                         SystemDeployData::Slash {
                             invalid_block_hash,
                             issuer_public_key,
+                            target_activation_epoch,
                         } => {
                             bytes.push(0);
                             push_len_prefixed(&mut bytes, invalid_block_hash);
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
+                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);

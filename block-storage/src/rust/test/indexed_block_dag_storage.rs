@@ -140,9 +140,7 @@ impl IndexedBlockDagStorage {
 // which itself delegates to the underlying BlockDagKeyValueStorage's
 // global_lock. See `crate::rust::dag::equivocations_access` for the
 // trait contract (T-9.2 anchor, atomic-RMW guarantee).
-impl crate::rust::dag::equivocations_access::EquivocationsAccess
-    for IndexedBlockDagStorage
-{
+impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBlockDagStorage {
     fn access_equivocations_tracker<A>(
         &self,
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,

@@ -22,9 +22,6 @@ use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
-
 use super::harness::SlashingTestHarness;
 use super::integration_helpers::{
     canonical_validator_order, equivocate_block, production_snapshot_at,
@@ -33,6 +30,8 @@ use super::observer::SlashingObserver;
 use super::oracle_adapter::RocqOracleAdapter;
 use super::production_adapter::SlashingProductionAdapter;
 use super::types::{BlockMeta, SeqNum, Status};
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 /// Event types that can be applied through all three tiers
 /// in lock-step.
@@ -80,10 +79,9 @@ impl TripleBisimDriver {
             .build_genesis_with_parameters(None)
             .await
             .expect("Failed to build genesis");
-        let nodes =
-            TestNode::create_network(genesis.clone(), n, None, None, None, None)
-                .await
-                .expect("Failed to create network");
+        let nodes = TestNode::create_network(genesis.clone(), n, None, None, None, None)
+            .await
+            .expect("Failed to create network");
         // Truncate the canonical validator order to the first `n`
         // entries — this aligns Tier 1's view (validators in
         // bonds map) with Tier 2/3's view (n labelled validators).
@@ -223,21 +221,9 @@ impl TripleBisimDriver {
         for v_idx in 0..self.n {
             let label = format!("v{}", v_idx);
             for base_seq in 0..=5_u64 {
-                let h = <_ as SlashingObserver>::has_record(
-                    &self.harness,
-                    &label,
-                    base_seq,
-                );
-                let o = <_ as SlashingObserver>::has_record(
-                    &self.oracle,
-                    &label,
-                    base_seq,
-                );
-                let p = <_ as SlashingObserver>::has_record(
-                    &production,
-                    &label,
-                    base_seq,
-                );
+                let h = <_ as SlashingObserver>::has_record(&self.harness, &label, base_seq);
+                let o = <_ as SlashingObserver>::has_record(&self.oracle, &label, base_seq);
+                let p = <_ as SlashingObserver>::has_record(&production, &label, base_seq);
                 // Pointwise: all three should agree on existence
                 // of a record at this (label, base_seq). Since
                 // base_seq mapping differs across tiers (harness
@@ -252,15 +238,12 @@ impl TripleBisimDriver {
             // Stronger pointwise assertion: if the harness has any
             // record for v_idx, both oracle and production also
             // have some record for v_idx.
-            let h_any = (0..=5).any(|b| {
-                <_ as SlashingObserver>::has_record(&self.harness, &label, b)
-            });
-            let o_any = (0..=5).any(|b| {
-                <_ as SlashingObserver>::has_record(&self.oracle, &label, b)
-            });
-            let p_any = (0..=10).any(|b| {
-                <_ as SlashingObserver>::has_record(&production, &label, b)
-            });
+            let h_any =
+                (0..=5).any(|b| <_ as SlashingObserver>::has_record(&self.harness, &label, b));
+            let o_any =
+                (0..=5).any(|b| <_ as SlashingObserver>::has_record(&self.oracle, &label, b));
+            let p_any =
+                (0..=10).any(|b| <_ as SlashingObserver>::has_record(&production, &label, b));
             assert_eq!(
                 h_any, o_any,
                 "harness↔oracle disagreement on {} record presence",

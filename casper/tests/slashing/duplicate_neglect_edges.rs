@@ -56,7 +56,10 @@ fn uc_59_duplicate_neglect_edges_same_closure() {
     for _ in 0..4 {
         let _ = harness.execute_slash("v1");
     }
-    assert_eq!(harness.coop_vault(), coop_after_first,
-        "T-12 graph equiv: duplicate edges do not change closure stake");
+    assert_eq!(
+        harness.coop_vault(),
+        coop_after_first,
+        "T-12 graph equiv: duplicate edges do not change closure stake"
+    );
     assert_eq!(harness.bond("v1"), 0);
 }

@@ -35,7 +35,11 @@ fn uc_50_multi_slash_in_succession() {
     assert_eq!(harness.bond("v1"), 0);
     assert!(!harness.is_active("v0"));
     assert!(!harness.is_active("v1"));
-    assert_eq!(harness.coop_vault(), 100, "both bonds in the vault (50 + 50)");
+    assert_eq!(
+        harness.coop_vault(),
+        100,
+        "both bonds in the vault (50 + 50)"
+    );
 
     // Active set drops by 2: v2 and v3 remain.
     let active = harness.fork_choice();

@@ -26,8 +26,11 @@ fn uc_22_unbonded_proposer_emits_empty_slash_list() {
 
     // A bonded proposer (v1) would issue the slash.
     let bonded_proposal = harness.simulate_slash_proposal("v1");
-    assert_eq!(bonded_proposal, vec!["v0".to_string()],
-        "bonded proposer issues slash deploy for the equivocator");
+    assert_eq!(
+        bonded_proposal,
+        vec!["v0".to_string()],
+        "bonded proposer issues slash deploy for the equivocator"
+    );
 
     // Slash v2 to make it unbonded.
     let _ = harness.execute_slash("v2");
@@ -35,12 +38,16 @@ fn uc_22_unbonded_proposer_emits_empty_slash_list() {
 
     // Post-fix #8: unbonded v2 emits an empty list — no SlashDeploys.
     let unbonded_proposal = harness.simulate_slash_proposal("v2");
-    assert!(unbonded_proposal.is_empty(),
-        "post-fix #8: unbonded proposer skips slash emission");
+    assert!(
+        unbonded_proposal.is_empty(),
+        "post-fix #8: unbonded proposer skips slash emission"
+    );
 
     // An entirely-unknown validator (bond = 0 by default) also emits
     // empty.
     let unknown_proposal = harness.simulate_slash_proposal("v999");
-    assert!(unknown_proposal.is_empty(),
-        "post-fix #8: unknown/unbonded proposer skips slash emission");
+    assert!(
+        unknown_proposal.is_empty(),
+        "post-fix #8: unknown/unbonded proposer skips slash emission"
+    );
 }

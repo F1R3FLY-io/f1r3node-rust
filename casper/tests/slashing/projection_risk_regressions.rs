@@ -67,8 +67,10 @@ fn uc_72_evidence_retained_until_slash_applied() {
     // Slash transition consumes the record's evidence implicitly,
     // but the record itself is RETAINED (T-5 monotonicity).
     let _ = harness.execute_slash("v0");
-    assert!(harness.has_record("v0", 4),
-        "T-12 retention: record persists even after slash");
+    assert!(
+        harness.has_record("v0", 4),
+        "T-12 retention: record persists even after slash"
+    );
 
     // The slashed-set membership reflects the slash transition.
     assert!(harness.pos_state.slashed.contains("v0"));

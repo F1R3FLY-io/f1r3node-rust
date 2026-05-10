@@ -26,12 +26,20 @@ fn uc_40_vault_accounting_under_mixed_outcomes() {
     // has its bond.
     let r2 = harness.execute_slash_with_transfer_outcome("v1", false);
     assert!(!r2.success);
-    assert_eq!(harness.coop_vault(), 250,
-        "post-fix #4: failed transfer does NOT add to coop vault");
-    assert_eq!(harness.bond("v1"), 250,
-        "post-fix #4: failed transfer leaves bond intact");
-    assert!(harness.is_active("v1"),
-        "post-fix #4: validator stays in active set after failed transfer");
+    assert_eq!(
+        harness.coop_vault(),
+        250,
+        "post-fix #4: failed transfer does NOT add to coop vault"
+    );
+    assert_eq!(
+        harness.bond("v1"),
+        250,
+        "post-fix #4: failed transfer leaves bond intact"
+    );
+    assert!(
+        harness.is_active("v1"),
+        "post-fix #4: validator stays in active set after failed transfer"
+    );
 
     // Third slash: v1 retried with success → vault gains 250 → 500.
     let r3 = harness.execute_slash_with_transfer_outcome("v1", true);
@@ -48,6 +56,9 @@ fn uc_40_vault_accounting_under_mixed_outcomes() {
     // pretend the transfer succeeded.
     let r5 = harness.execute_slash_with_transfer_outcome("v0", true);
     assert!(r5.success);
-    assert_eq!(harness.coop_vault(), 750,
-        "T-Idem: re-slashing already-slashed validator does not double-charge");
+    assert_eq!(
+        harness.coop_vault(),
+        750,
+        "T-Idem: re-slashing already-slashed validator does not double-charge"
+    );
 }

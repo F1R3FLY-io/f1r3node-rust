@@ -32,6 +32,11 @@ coqtop -batch -load-vernac-source theories/MainTheorem.v \
 
 The output must be `Closed under the global context`. Any custom axiom,
 parameter, or `Admitted` in the trust base is a verification failure.
+Search-horizon witnesses from Sage, Hypothesis, fuzzing, Kani, or TLA+
+do not change the Rocq trust base by themselves. They become Rocq work only
+after Rust traceability promotes them to a stable theorem, counterexample,
+or permitted bug-fix delta; no admissions or uncited axioms may be used for
+that promotion.
 
 ## Module dependency graph
 
@@ -59,7 +64,8 @@ parameter, or `Admitted` in the trust base is a verification failure.
                               └──────────────────────────┘
 
 (See _CoqProject for the full graph including SlashDeploy, BlockCreator,
- ForkChoice, TwoLevelSlashing, BugFix*, Bisimulation, MainTheorem.)
+ ForkChoice, TwoLevelSlashing, ValidatorLifetime, BugFix*, Bisimulation,
+ MainTheorem.)
 ```
 
 ## Mapping to the verification document
@@ -79,8 +85,10 @@ cost-accounting precedent:
 - **(b) Verifications of paper algorithms** — `EquivocationDetector` soundness
   and completeness (T-1, T-2), `slash` zeros bond (T-7).
 - **(c) Proof-original extensions** — bisimilarity Rust ~~ Scala (T-13–T-15);
-  proven bug-fix deltas (T-9.1–T-9.10, including T-9.10' / T-9.10″ for the
-  withdrawal flow).
+  proven bug-fix deltas (T-9.1–T-9.15, including T-9.10' / T-9.10″ for the
+  withdrawal flow), plus current-epoch slash authorization, checked sequence
+  arithmetic, duplicate-justification rejection, and auth-token no-op
+  wrappers.
 - **(d) Citable-axiom-gated** — none in the consensus-critical path; all
   classical lemmas appear in the trust base only.
 

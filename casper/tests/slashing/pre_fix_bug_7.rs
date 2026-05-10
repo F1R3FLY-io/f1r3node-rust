@@ -7,14 +7,15 @@
 // is still detected. Pre-fix, `add_equivocation_child` used
 // `target_seq_num = baseSeqNum + 1` and an exact-seq match,
 // failing if the validator legitimately skipped a number under
-// partition recovery.
+// partition recovery. Post-fix, the production detector uses the
+// canonical visible self-chain child above `baseSeq`.
 //
 // The harness's `detect` operates on (sender, seq) pairs and is
-// independent of the production code's creator-justification BFS
+// independent of the production code's creator/self-justification
 // search; the harness can construct synthetic seq-skip scenarios
 // to document the post-fix invariant. The full DAG-level proof
 // of T-9.7 is exercised by the Rocq theorem at
-// formal/rocq/slashing/theories/BugFixSeqNumDensity.v:84.
+// formal/rocq/slashing/theories/BugFixSeqNumDensity.v.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
@@ -57,6 +58,8 @@ fn pre_fix_bug_7_far_seq_jump_equivocation_detected() {
     let bad = harness.sign_block_distinct("v0", 100);
     let s = harness.dispatch(bad);
     assert_eq!(s, Status::IgnorableEquivocation);
-    assert!(harness.has_record("v0", 99),
-        "post-fix #7: BFS-style descendant search handles arbitrary gaps");
+    assert!(
+        harness.has_record("v0", 99),
+        "post-fix #7: canonical self-chain search handles arbitrary gaps"
+    );
 }

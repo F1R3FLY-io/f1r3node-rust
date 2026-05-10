@@ -33,13 +33,12 @@ use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, equivocate_block, production_snapshot_at,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -57,8 +56,7 @@ async fn integration_t_admissible_equivocation() {
     let validators = canonical_validator_order(&genesis);
 
     // v0 produces b1 with deploy d1.
-    let d1 =
-        construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
+    let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
     let b1 = nodes[0]
         .create_block_unsafe(&[d1])
         .await
@@ -117,15 +115,13 @@ async fn integration_t_admissible_equivocation() {
 
     // Snapshot and assert post-fix #1+#3: dispatcher minted a record
     // at the production tier.
-    let snapshot =
-        production_snapshot_at(&nodes[1], &b1, &genesis.genesis_block, validators)
-            .await
-            .expect("snapshot");
+    let snapshot = production_snapshot_at(&nodes[1], &b1, &genesis.genesis_block, validators)
+        .await
+        .expect("snapshot");
 
     let v0_label = "v0";
-    let has_any_record = (0..=10).any(|base| {
-        <_ as SlashingObserver>::has_record(&snapshot, v0_label, base)
-    });
+    let has_any_record =
+        (0..=10).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
         has_any_record,
         "post-fix #1+#3 invariant: dispatcher mints EquivocationRecord \

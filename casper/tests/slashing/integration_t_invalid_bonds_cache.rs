@@ -2,7 +2,7 @@
 // `InvalidBondsCache` arm of the dispatcher's `is_slashable()`
 // catch-all (Bug #3 fix).
 //
-// UC-35 from docs/theory/slashing/slashing-specification.md §12.
+// UC-07 from docs/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
@@ -23,13 +23,12 @@ use models::rust::casper::protocol::casper_message::Bond;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]

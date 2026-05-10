@@ -29,8 +29,11 @@ fn uc_02_two_admissible_at_same_base_merge_into_one_record() {
     // Second equivocation at (v0, seq=5) (re-racing the same base).
     let bad_b = harness.sign_block_distinct("v0", 5);
     let s2 = harness.dispatch(bad_b);
-    assert_eq!(s2, Status::AdmissibleEquivocation,
-        "second observation has a pre-existing record → Admissible");
+    assert_eq!(
+        s2,
+        Status::AdmissibleEquivocation,
+        "second observation has a pre-existing record → Admissible"
+    );
 
     // Third equivocation at (v0, seq=5).
     let bad_c = harness.sign_block_distinct("v0", 5);
@@ -44,7 +47,11 @@ fn uc_02_two_admissible_at_same_base_merge_into_one_record() {
         .keys()
         .filter(|(v, _)| v == "v0")
         .collect();
-    assert_eq!(v0_records.len(), 1, "T-4: one record per (validator, base_seq)");
+    assert_eq!(
+        v0_records.len(),
+        1,
+        "T-4: one record per (validator, base_seq)"
+    );
 
     // T-5: all three witnesses preserved (no overwrites — would have
     // happened pre-fix #2 if the RMW were lock-free under racing
@@ -53,6 +60,9 @@ fn uc_02_two_admissible_at_same_base_merge_into_one_record() {
     assert!(witnesses.contains(&bad_a));
     assert!(witnesses.contains(&bad_b));
     assert!(witnesses.contains(&bad_c));
-    assert_eq!(witnesses.len(), 3,
-        "T-5: all dispatched witnesses survived (atomic RMW)");
+    assert_eq!(
+        witnesses.len(),
+        3,
+        "T-5: all dispatched witnesses survived (atomic RMW)"
+    );
 }

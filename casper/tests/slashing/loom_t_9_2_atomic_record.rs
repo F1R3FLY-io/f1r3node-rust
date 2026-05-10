@@ -46,11 +46,12 @@
 // `--cfg loom` flag is needed because we use `loom::sync::*`
 // types directly rather than swapping `std::sync::*` for them.)
 
-use loom::sync::{Arc, Mutex};
-use loom::thread;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
+
+use loom::sync::{Arc, Mutex};
+use loom::thread;
 
 /// Abstract tracker — a (validator, base_seq) → witness-set map.
 /// Mirrors the production `EquivocationTrackerStore` to the level of
@@ -73,9 +74,7 @@ impl AbstractTracker {
         self.inner.get(key).cloned().unwrap_or_default()
     }
 
-    fn len_at(&self, key: &(u8, u64)) -> usize {
-        self.inner.get(key).map(|s| s.len()).unwrap_or(0)
-    }
+    fn len_at(&self, key: &(u8, u64)) -> usize { self.inner.get(key).map(|s| s.len()).unwrap_or(0) }
 }
 
 /// Post-fix `record_evidence`: the entire read-modify-write runs
@@ -140,12 +139,19 @@ fn t_9_2_post_fix_atomic_rmw_preserves_all_witnesses() {
         // For EVERY interleaving, both witnesses survive.
         let final_tracker = tracker.lock().unwrap();
         let witnesses = final_tracker.get_clone(&(0, 4));
-        assert!(witnesses.contains(&100),
-            "T-9.2: post-fix locked RMW preserves witness 100");
-        assert!(witnesses.contains(&200),
-            "T-9.2: post-fix locked RMW preserves witness 200");
-        assert_eq!(witnesses.len(), 2,
-            "T-9.2 + T-5: exactly two witnesses, no overwrite");
+        assert!(
+            witnesses.contains(&100),
+            "T-9.2: post-fix locked RMW preserves witness 100"
+        );
+        assert!(
+            witnesses.contains(&200),
+            "T-9.2: post-fix locked RMW preserves witness 200"
+        );
+        assert_eq!(
+            witnesses.len(),
+            2,
+            "T-9.2 + T-5: exactly two witnesses, no overwrite"
+        );
     });
 }
 

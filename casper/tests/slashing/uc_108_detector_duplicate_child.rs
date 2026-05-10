@@ -1,0 +1,29 @@
+use super::detector_totality_helpers::{assert_valid, block, justification, DetectorFixture};
+
+#[tokio::test]
+async fn uc_108_duplicate_child_paths_do_not_create_two_child_evidence() {
+    let fixture = DetectorFixture::new().await;
+    fixture.add_record(0, 0, &[]);
+
+    let child = block(
+        10,
+        fixture.validators[0].clone(),
+        1,
+        vec![],
+        fixture.validators.clone(),
+    );
+    fixture.add_block(&child);
+
+    let current = block(
+        20,
+        fixture.validators[3].clone(),
+        2,
+        vec![
+            justification(fixture.validators[1].clone(), child.block_hash.clone()),
+            justification(fixture.validators[2].clone(), child.block_hash.clone()),
+        ],
+        fixture.validators.clone(),
+    );
+
+    assert_valid(fixture.check(&current).await);
+}

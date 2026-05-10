@@ -62,7 +62,8 @@ detect(S, b) =
   | otherwise                              ⟹ IgnorableEquivocation
 
 detectNeglected(S, b) =
-  | (v, s-1) ∈ E ∧ requestedAsDep(S, b)    ⟹ NeglectedEquivocation
+  | (v, s-1) ∈ E ∧ detectableInView(S, b, v, s-1)
+      ∧ bondedIn(b, v)                     ⟹ NeglectedEquivocation
   | otherwise                              ⟹ unchanged
 ```
 
@@ -84,11 +85,48 @@ The detector is **sound** and **complete**:
   `IgnorableEquivocation`).
 - **T-6 (Neglect detection sound + complete).** *(`detect_neglected_sound`,
   `EquivocationDetector.v` §4.5; `detect_neglected_complete` §4.6.)*
-  Verdict `NeglectedEquivocation` fires iff there exists a
-  justification `j ∈ b.justifications` whose latest-block-hash is
-  in the DAG's invalid set *and* `bonds_map[j.validator] > 0`
-  *and* `b` does not carry a `Slash` system deploy targeting
-  `j.validator`.
+  Verdict `NeglectedEquivocation` fires iff an existing
+  `EquivocationRecord` is detectable from `b`'s latest-message
+  justification view, the recorded offender remains bonded in `b`'s
+  bonds cache, and the block has not already acknowledged the offender
+  by removing/slashing it. A direct citation to one offending block is
+  only a special case of the Rust `is_equivocation_detectable` search;
+  the production rule can also use detected hashes and nested
+  latest-message pointers.
+
+The fixed detector's latest-message contribution rule is:
+
+```
+function detectable_from_view(view, record):
+    distinct_children ← ∅
+
+    for each latest_message in deterministic_order(view):
+        if latest_message.hash ∈ record.detected_hashes:
+            return true
+
+        contribution ← reachable_offender_child(latest_message, record)
+        if contribution = missing_pointer:
+            continue
+
+        if contribution = child(h):
+            distinct_children ← distinct_children ∪ {h}
+
+        if |distinct_children| ≥ 2:
+            return true
+
+    return false
+```
+
+Mathematically:
+
+```
+detectable(view) ≜ detected_hash_seen(view) ∨ |distinct_child_hashes(view)| ≥ 2
+```
+
+This is the T-9.11 rule. It preserves the old verdict for complete
+latest-message views while fixing two Rust-only bugs: missing pointers
+are non-contributing rather than fatal, and duplicate paths to one child
+count once.
 
 ## 4.3 The pipeline — sequence diagram
 
@@ -100,7 +138,7 @@ The end-to-end flow for an admissible equivocation:
 > 1. Validator A signs block `b₁` honestly → admitted.
 > 2. Validator A signs `b₁'` at the same seq → equivocation detected.
 > 3. The orchestrator inserts an `EquivocationRecord(A, seqN − 1, ∅)`.
-> 4. The next proposer P reads `invalid_latest_messages` + the tracker → emits `SlashDeploy(b₁', P, …)`.
+> 4. The next proposer P reads authorized current-epoch invalid-block evidence → emits `SlashDeploy(b₁', P, targetEpoch, …)`.
 > 5. PoS Rholang executes the slash atomically → bond → 0.
 > 6. The block is gossiped; ForkChoice re-reads the bonds map → A's latest message is filtered.
 
@@ -190,10 +228,13 @@ the offender's invalid latest message.
 ## 4.6 Two-level detection: the neglected-equivocation path
 
 Once `(A, baseSeq) ∈ E` (the tracker has a record for A), any
-*future* block `b_B` that cites A's invalid block in its justifications
-*without* attaching a `SlashDeploy(b, A)` is itself slashable. This
-is the **two-level** closure: B's neglect of A is itself a form of
-collusion, and is itself slashed.
+*future* block `b_B` whose latest-message view makes A's equivocation
+detectable while A remains bonded is itself slashable unless the block
+acknowledges/slashes A. A direct citation to A's invalid block is a
+common test witness, but production Rust also accepts nested
+latest-message evidence and previously detected hashes. This is the
+**two-level** closure: B's neglect of A is itself a form of collusion,
+and is itself slashed.
 
 The data flow that powers neglect detection:
 

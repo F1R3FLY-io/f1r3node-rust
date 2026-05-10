@@ -33,11 +33,17 @@ fn uc_47_new_validator_joins_during_pending_slash() {
     let _ = harness.execute_slash("v0");
     assert_eq!(harness.bond("v0"), 0);
     assert!(!harness.is_active("v0"));
-    assert_eq!(harness.bond("v_new"), 50,
-        "newly-bonded validator unaffected by v0's slash");
+    assert_eq!(
+        harness.bond("v_new"),
+        50,
+        "newly-bonded validator unaffected by v0's slash"
+    );
     assert!(harness.is_active("v_new"));
-    assert_eq!(harness.coop_vault(), 100,
-        "vault gains exactly v0's prior bond, not v_new's");
+    assert_eq!(
+        harness.coop_vault(),
+        100,
+        "vault gains exactly v0's prior bond, not v_new's"
+    );
 }
 
 #[test]

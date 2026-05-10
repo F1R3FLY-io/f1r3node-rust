@@ -12,9 +12,7 @@
 // disagreement between the JSON-stored expected class and the Rust
 // observation is a CI failure.
 
-use super::divergence_class::{
-    frontier_classification_ok, DivergenceClass,
-};
+use super::divergence_class::{frontier_classification_ok, DivergenceClass};
 
 #[derive(Debug, Clone)]
 struct DifferentialTrace {

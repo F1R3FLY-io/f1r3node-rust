@@ -20,6 +20,8 @@ fn uc_41_ignorable_pre_fix_dos() {
 
     let s = harness.dispatch(bad);
     assert_eq!(s, Status::IgnorableEquivocation);
-    assert!(harness.has_record("v0", 4),
-        "post-fix #1: dispatcher mints record for Ignorable; pre-fix this fails");
+    assert!(
+        harness.has_record("v0", 4),
+        "post-fix #1: dispatcher mints record for Ignorable; pre-fix this fails"
+    );
 }

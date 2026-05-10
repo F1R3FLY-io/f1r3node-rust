@@ -29,22 +29,30 @@ fn witness_corpus() -> Vec<AssumptionWitness> {
     vec![
         AssumptionWitness {
             name: "closure_bound_at_F",
-            n: 4, f: 1, closure: 1,
+            n: 4,
+            f: 1,
+            closure: 1,
             expected_quorum_violation: false,
         },
         AssumptionWitness {
             name: "closure_bound_F_plus_one",
-            n: 4, f: 1, closure: 2,
+            n: 4,
+            f: 1,
+            closure: 2,
             expected_quorum_violation: true,
         },
         AssumptionWitness {
             name: "closure_bound_n7_F2_at_boundary",
-            n: 7, f: 2, closure: 2,
+            n: 7,
+            f: 2,
+            closure: 2,
             expected_quorum_violation: false,
         },
         AssumptionWitness {
             name: "closure_bound_n7_F2_past_boundary",
-            n: 7, f: 2, closure: 3,
+            n: 7,
+            f: 2,
+            closure: 3,
             expected_quorum_violation: true,
         },
     ]

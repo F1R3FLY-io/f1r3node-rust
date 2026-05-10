@@ -458,60 +458,43 @@ in {
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
                                 new toBeSlashed, valBondCh, valRewardCh in {
-                                  // Flow of logic:
-                                  // 0. check if blockHash is the hash of an invalid block
-                                  // 1. transfer stake of slashed validator from PoS to Coop vault
-                                  // 2. update state
-                                  // Retrieves either public key of sender of invalid block or the deployer public key.
-                                  toBeSlashed!(invalidBlocks.getOrElse(blockHash, userPk)) |
-                                  for (@validator <- toBeSlashed) {
-                                    // Takes the stake of slashed validator
-                                    valBondCh!(state.get("allBonds").get(validator)) |
-                                    for (@valBond <- valBondCh) {
-                                      // Transfers slashed funds from PoS vault to Coop vault, then updates state.
-                                      // Bug #4 fix: pattern-match on the transfer result to provide a
-                                      // deterministic failure path. The pre-fix `for (_ <- transferDoneCh)`
-                                      // accepted any value and unconditionally committed the slash, hanging
-                                      // the deploy if `posVault.transfer` produced a `(false, errMsg)` and
-                                      // breaking replay determinism across nodes that happened to observe
-                                      // the failure. See design/09-bug-fixes-and-rationale.md §9.5
-                                      // (theorem t_9_4_transfer_failure_safety).
-                                      new transferDoneCh in {
-                                        @posVault!(
-                                          "transfer",
-                                          coopMultiVaultAddr,
-                                          valBond,
-                                          posAuthKey,
-                                          *transferDoneCh
-                                        ) |
-                                        for (@transferResult <- transferDoneCh) {
-                                          match transferResult {
-                                            (true, _) => {
-                                              // Sets slashed validator's committed rewards and bond to 0 in state.
-                                              // Moves slashed validator to withdrawers map with no quarantine period.
-                                              stateUpdateCh!({
-                                                "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                "activeValidators": state.get("activeValidators").delete(validator),
-                                                "committedRewards" : state.get("committedRewards").delete(validator),
-                                                "withdrawers"     : state.get("withdrawers"),
-                                                "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                "randomImages"    : state.get("randomImages"),
-                                                "randomNumbers"   : state.get("randomNumbers")
-                                              },
-                                              (true, Nil))
-                                            }
-                                            (_, errorMessage) => {
-                                              // Failure path: leave state unchanged so the validator
-                                              // stays in EquivocatorRecorded; the next proposer can
-                                              // retry the slash on the next round. The outcome is
-                                              // deterministic in (state, deploy), preserving replay
-                                              // determinism across nodes.
-                                              stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                  if (invalidBlocks.contains(blockHash)) {
+                                    toBeSlashed!(invalidBlocks.get(blockHash)) |
+                                    for (@validator <- toBeSlashed) {
+                                      valBondCh!(state.get("allBonds").get(validator)) |
+                                      for (@valBond <- valBondCh) {
+                                        new transferDoneCh in {
+                                          @posVault!(
+                                            "transfer",
+                                            coopMultiVaultAddr,
+                                            valBond,
+                                            posAuthKey,
+                                            *transferDoneCh
+                                          ) |
+                                          for (@transferResult <- transferDoneCh) {
+                                            match transferResult {
+                                              (true, _) => {
+                                                stateUpdateCh!({
+                                                  "allBonds"        : state.get("allBonds").set(validator, 0),
+                                                  "activeValidators": state.get("activeValidators").delete(validator),
+                                                  "committedRewards" : state.get("committedRewards").delete(validator),
+                                                  "withdrawers"     : state.get("withdrawers"),
+                                                  "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                                  "randomImages"    : state.get("randomImages"),
+                                                  "randomNumbers"   : state.get("randomNumbers")
+                                                },
+                                                (true, Nil))
+                                              }
+                                              (_, errorMessage) => {
+                                                stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                              }
                                             }
                                           }
                                         }
                                       }
                                     }
+                                  } else {
+                                    stateUpdateCh!(state, (false, "invalid slash evidence"))
                                   }
                                 }
                           }

@@ -31,10 +31,14 @@ fn uc_66_different_views_produce_different_closures() {
     let _v0b = observer_b.sign_block("v0", 5);
 
     // Closure divergence: A has a record for v0, B does not.
-    assert!(observer_a.has_record("v0", 4),
-        "Observer A's view shows v0 equivocated");
-    assert!(!observer_b.has_record("v0", 4),
-        "Observer B's view does NOT show the equivocation");
+    assert!(
+        observer_a.has_record("v0", 4),
+        "Observer A's view shows v0 equivocated"
+    );
+    assert!(
+        !observer_b.has_record("v0", 4),
+        "Observer B's view does NOT show the equivocation"
+    );
 }
 
 #[test]
@@ -52,6 +56,9 @@ fn uc_66_identical_views_produce_identical_closures() {
     let _ = observer_b.dispatch(bad_b);
 
     // Identical closures.
-    assert_eq!(observer_a.has_record("v0", 4), observer_b.has_record("v0", 4));
+    assert_eq!(
+        observer_a.has_record("v0", 4),
+        observer_b.has_record("v0", 4)
+    );
     assert!(observer_a.has_record("v0", 4));
 }

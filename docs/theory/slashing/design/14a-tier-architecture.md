@@ -192,14 +192,14 @@ document's triple-bisim), not *structural identity*.
 ## 6. CI Architecture
 
 Per [§14.9](./14-test-plan.md#149-ci-integration), the slashing
-test suite runs as eight jobs in
+test suite runs as nine jobs in
 `.github/workflows/slashing-tests.yml`:
 
 | Job                        | Tier  | Trigger    | Time    |
 |----------------------------|-------|------------|---------|
 | example-based              | 3     | PR-gate    | <30 min |
 | property-based             | 2 + 3 | PR-gate    | <30 min |
-| pre-fix-regressions (×9)   | 3     | PR-gate    | <15 min |
+| pre-fix-regressions (×11)  | 3     | PR-gate    | <15 min |
 | loom-interleavings         | 3     | PR-gate    | <30 min |
 | tla-model-check            | (TLA+) | PR-gate   | <30 min |
 | rocq-build                 | (Rocq) | PR-gate   | <60 min |
@@ -210,6 +210,11 @@ test suite runs as eight jobs in
 A PR cannot merge unless all PR-gate jobs pass. Nightly jobs
 surface coverage gaps and high-confidence proptest results that
 would consume too much time on every PR.
+
+`MC_EquivocationDetector_safety` is the exhaustive detector safety
+TLC model. It is not part of the default PR-gate script because it
+can run for many hours; run it explicitly with `RUN_EXHAUSTIVE_TLA=1`
+after the bounded frontier and Rust regression suite are stable.
 
 ## 7. Failure-Mode Catalogue
 
@@ -236,15 +241,16 @@ The principled architecture is verified against the constraints:
   destructive.
 * **No fabricated tests.** ✓ Every test traces to a §14 line
   or a Rocq theorem in `formal/rocq/slashing/theories/`.
-* **Every assertion traceable.** ✓ Each test file's lead
-  comment cites the §14 anchor and Rocq theorem name.
+* **Every assertion traceable.** ✓ Each test module is listed in
+  §14, the specification use-case table, or the traceability
+  ledger with the theorem or finding it protects.
 
 ## 9. Companion Documents
 
 * [§14 Test Plan](./14-test-plan.md) — the test catalogue and
   the §14.2.4 tier-model summary.
 * [§09 Bug Fixes and Rationale](./09-bug-fixes-and-rationale.md)
-  — the 10 production bug fixes the tests are pinning.
+  — the 16 documented bug fixes the tests are pinning.
 * [§10 Bisimilarity](./10-bisimilarity.md) — the formal
   bisimulation theorem the triple-bisim tests are runtime-
   checking.
@@ -254,7 +260,6 @@ The principled architecture is verified against the constraints:
 ---
 
 **Authoritative status.** The architecture in this document is
-normative for the slashing test suite as of commit fa29d33+ (post-
-Track-9 documentation update). Any deviation from the tier model
-or the triple-bisim closure pattern requires updating this
+normative for the slashing test suite. Any deviation from the tier
+model or the triple-bisim closure pattern requires updating this
 document in the same PR.

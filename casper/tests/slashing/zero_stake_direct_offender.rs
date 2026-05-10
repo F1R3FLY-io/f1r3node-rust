@@ -28,8 +28,11 @@ fn uc_56_zero_stake_cannot_become_direct_offender() {
     // active_implies_bonded invariant).
     assert!(!harness.is_active("v_zero"));
     for v in &harness.pos_state.active {
-        assert!(harness.bond(v) > 0,
-            "active_implies_bonded: {} has positive bond", v);
+        assert!(
+            harness.bond(v) > 0,
+            "active_implies_bonded: {} has positive bond",
+            v
+        );
     }
 }
 

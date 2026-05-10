@@ -32,8 +32,10 @@ fn uc_51_deep_linear_chain_admissible() {
     // observation of the (v0, 100) twin pair.
     let s = harness.dispatch(bad);
     assert_eq!(s, Status::IgnorableEquivocation);
-    assert!(harness.has_record("v0", 99),
-        "deep linear chain: equivocation at seq=100 records at base=99");
+    assert!(
+        harness.has_record("v0", 99),
+        "deep linear chain: equivocation at seq=100 records at base=99"
+    );
 }
 
 #[test]
@@ -68,8 +70,11 @@ fn uc_53_single_chain_equivocation() {
     // v0 equivocates at seq=25.
     let bad = harness.sign_block_distinct("v0", 25);
     let s = harness.dispatch(bad);
-    assert_eq!(s, Status::IgnorableEquivocation,
-        "single-validator chain: equivocation still detected");
+    assert_eq!(
+        s,
+        Status::IgnorableEquivocation,
+        "single-validator chain: equivocation still detected"
+    );
     assert!(harness.has_record("v0", 24));
 
     // Slashing the only validator empties the active set.

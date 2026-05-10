@@ -34,7 +34,10 @@ fn arb_step() -> impl Strategy<Value = Step> {
         (0u8..6).prop_map(Step::Bond),
         (0u8..6).prop_map(Step::Unbond),
         (0u8..6).prop_map(Step::Slash),
-        (0u8..6, 0u8..4).prop_map(|(o, e)| Step::AccrueEvidence { offender: o, epoch: e }),
+        (0u8..6, 0u8..4).prop_map(|(o, e)| Step::AccrueEvidence {
+            offender: o,
+            epoch: e
+        }),
         Just(Step::EpochRoll),
     ]
 }

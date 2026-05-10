@@ -68,7 +68,8 @@ pub struct EqRecordSet {
 
 impl EqRecordSet {
     pub fn contains(&self, validator: &str, base_seq: SeqNum) -> bool {
-        self.records.contains_key(&(validator.to_string(), base_seq))
+        self.records
+            .contains_key(&(validator.to_string(), base_seq))
     }
 
     pub fn witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash> {
@@ -103,13 +104,9 @@ pub struct PoSState {
 }
 
 impl PoSState {
-    pub fn bond(&self, validator: &str) -> i64 {
-        self.bonds.get(validator).copied().unwrap_or(0)
-    }
+    pub fn bond(&self, validator: &str) -> i64 { self.bonds.get(validator).copied().unwrap_or(0) }
 
-    pub fn is_active(&self, validator: &str) -> bool {
-        self.active.contains(validator)
-    }
+    pub fn is_active(&self, validator: &str) -> bool { self.active.contains(validator) }
 }
 
 /// Detection-status enum exposed by `harness.detect(...)`. Mirrors

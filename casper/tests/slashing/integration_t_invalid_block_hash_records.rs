@@ -18,17 +18,18 @@
 // + persisted the invalid block without minting a record.
 // Running this test against the parent of the bug-#3 fix commit
 // reproduces the bug.
+//
+// UC-35 from docs/theory/slashing/slashing-specification.md §12.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
-
 use super::integration_helpers::{canonical_validator_order, production_snapshot_at};
 use super::observer::SlashingObserver;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
@@ -99,9 +100,8 @@ async fn integration_t_invalid_block_hash_records() {
     // `invalid.seq_num - 1`. We assert presence of *some* record
     // for v0 — the post-fix #3 invariant.)
     let v0_label = "v0";
-    let has_any_record = (0..=50).any(|base| {
-        <_ as SlashingObserver>::has_record(&snapshot, v0_label, base)
-    });
+    let has_any_record =
+        (0..=50).any(|base| <_ as SlashingObserver>::has_record(&snapshot, v0_label, base));
     assert!(
         has_any_record,
         "post-fix #3 catch-all: dispatcher must mint a record for v0 \

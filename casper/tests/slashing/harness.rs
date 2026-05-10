@@ -72,16 +72,13 @@ impl SlashingTestHarness {
             .max_by_key(|b| b.seq)
             .map(|b| (b.sender.clone(), b.hash));
         let justifications = creator_just.into_iter().collect();
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![],
+        });
         hash
     }
 
@@ -106,16 +103,13 @@ impl SlashingTestHarness {
         if !cited_sender.is_empty() {
             justifications.push((cited_sender, cited_block));
         }
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![],
+        });
         hash
     }
 
@@ -142,16 +136,13 @@ impl SlashingTestHarness {
         if !cited_sender.is_empty() {
             justifications.push((cited_sender, cited_block));
         }
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![slash_target.to_string()],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![slash_target.to_string()],
+        });
         hash
     }
 
@@ -173,11 +164,9 @@ impl SlashingTestHarness {
             None => return Status::Valid,
         };
         // Equivocation: any other block by the same sender at the same seq.
-        let twin_exists = self
-            .dag
-            .blocks
-            .values()
-            .any(|other| other.hash != block.hash && other.sender == block.sender && other.seq == block.seq);
+        let twin_exists = self.dag.blocks.values().any(|other| {
+            other.hash != block.hash && other.sender == block.sender && other.seq == block.seq
+        });
         if twin_exists {
             // Whether it's Admissible or Ignorable depends on whether
             // some other block cites this hash. The test driver controls
@@ -193,13 +182,15 @@ impl SlashingTestHarness {
         }
         // Self-regression: this block's own justification points to a
         // sender-block whose seq is >= this block's seq.
-        let self_regress = block
-            .justifications
-            .iter()
-            .any(|(v, h)| {
-                v == &block.sender
-                    && self.dag.blocks.get(h).map(|b| b.seq >= block.seq).unwrap_or(false)
-            });
+        let self_regress = block.justifications.iter().any(|(v, h)| {
+            v == &block.sender
+                && self
+                    .dag
+                    .blocks
+                    .get(h)
+                    .map(|b| b.seq >= block.seq)
+                    .unwrap_or(false)
+        });
         if self_regress {
             return Status::JustificationRegression;
         }
@@ -209,10 +200,7 @@ impl SlashingTestHarness {
         let neglected = block.justifications.iter().any(|(v, _h)| {
             // The cited validator has an outstanding record, AND
             // this block did not slash them.
-            self.tracker
-                .records
-                .keys()
-                .any(|(rec_v, _)| rec_v == v)
+            self.tracker.records.keys().any(|(rec_v, _)| rec_v == v)
                 && !block.slash_targets.iter().any(|t| t == v)
         });
         if neglected {
@@ -286,31 +274,31 @@ impl SlashingTestHarness {
         self.tracker.witnesses(validator, base_seq)
     }
 
-    pub fn bond(&self, validator: &str) -> i64 {
-        self.pos_state.bond(validator)
-    }
+    pub fn bond(&self, validator: &str) -> i64 { self.pos_state.bond(validator) }
 
-    pub fn coop_vault(&self) -> i64 {
-        self.pos_state.coop_vault
-    }
+    pub fn coop_vault(&self) -> i64 { self.pos_state.coop_vault }
 
-    pub fn is_active(&self, validator: &str) -> bool {
-        self.pos_state.is_active(validator)
-    }
+    pub fn is_active(&self, validator: &str) -> bool { self.pos_state.is_active(validator) }
 
     /// Mirrors `PoSContract.slash`: zeroes bonds, removes from active,
     /// adds to slashed, transfers bond into Coop vault. Idempotent
     /// (T-Idem): a second call is a no-op.
     pub fn execute_slash(&mut self, target: &str) -> SlashResult {
         if self.pos_state.slashed.contains(target) {
-            return SlashResult { success: true, error: None }; // T-Idem no-op
+            return SlashResult {
+                success: true,
+                error: None,
+            }; // T-Idem no-op
         }
         let bond = self.pos_state.bond(target);
         self.pos_state.bonds.insert(target.to_string(), 0);
         self.pos_state.active.remove(target);
         self.pos_state.slashed.insert(target.to_string());
         self.pos_state.coop_vault += bond;
-        SlashResult { success: true, error: None }
+        SlashResult {
+            success: true,
+            error: None,
+        }
     }
 
     /// Mirrors `PoSContract.slash` post-fix #4 with a forced
@@ -340,11 +328,7 @@ impl SlashingTestHarness {
     /// state changes. The harness threads this through
     /// `execute_slash` so tests for T-AuthCheck can exercise the
     /// validation path without a full Rholang interpreter.
-    pub fn execute_slash_with_auth(
-        &mut self,
-        target: &str,
-        valid_token: bool,
-    ) -> SlashResult {
+    pub fn execute_slash_with_auth(&mut self, target: &str, valid_token: bool) -> SlashResult {
         if !valid_token {
             return SlashResult {
                 success: false,
@@ -371,24 +355,16 @@ impl SlashingTestHarness {
 
 /// Tier 3: harness implements `SlashingObserver` directly.
 impl SlashingObserver for SlashingTestHarness {
-    fn bond(&self, validator: &str) -> i64 {
-        SlashingTestHarness::bond(self, validator)
-    }
-    fn coop_vault(&self) -> i64 {
-        SlashingTestHarness::coop_vault(self)
-    }
-    fn is_active(&self, validator: &str) -> bool {
-        SlashingTestHarness::is_active(self, validator)
-    }
+    fn bond(&self, validator: &str) -> i64 { SlashingTestHarness::bond(self, validator) }
+    fn coop_vault(&self) -> i64 { SlashingTestHarness::coop_vault(self) }
+    fn is_active(&self, validator: &str) -> bool { SlashingTestHarness::is_active(self, validator) }
     fn has_record(&self, validator: &str, base_seq: SeqNum) -> bool {
         SlashingTestHarness::has_record(self, validator, base_seq)
     }
     fn record_witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash> {
         SlashingTestHarness::record_witnesses(self, validator, base_seq)
     }
-    fn fork_choice(&self) -> Vec<ValidatorId> {
-        SlashingTestHarness::fork_choice(self)
-    }
+    fn fork_choice(&self) -> Vec<ValidatorId> { SlashingTestHarness::fork_choice(self) }
 }
 
 impl SlashingTestHarness {

@@ -1,8 +1,11 @@
 # 09 · Bug-Fix Manifest & Rationale
 
-The slashing subsystem ships with **ten documented defects**, each
-accompanied by a Rocq-mechanized fix. **Nine are inherited from the
-Scala upstream**; **one is a Rust-introduced regression** (bug #2).
+The slashing subsystem ships with **sixteen documented defects**, each
+accompanied by a Rocq-mechanized fix or boundary theorem. **Nine are
+inherited from the Scala upstream**, **two are Rust-introduced regressions**
+(bug #2 and bug #11), and **five are Rust-source-confirmed
+authorization/projection gaps** found by the later Sage/Hypothesis
+traceability work.
 **One** of the Scala-inherited bugs — #9 — is a *deliberate Rust
 widening* (Rust admits more blocks than Scala, by design); the
 remaining eight Scala-inherited bugs (#1, #3–#8, #10) are
@@ -18,10 +21,16 @@ convergence fixes that restore Rust↔Scala bisimilarity.
 | 4  | T-9.4   | Scala-inherited                | Preserving              | §11.4                   | 07      |
 | 5  | T-9.5   | Scala-inherited                | Preserving              | §11.6                   | 06      |
 | 6  | T-9.6   | Scala-inherited                | Preserving              | §11.9                   | 08      |
-| 7  | T-9.7   | Scala-inherited                | Preserving              | §11.7                   | 02      |
+| 7  | T-9.7   | Scala-inherited                | Permitted bug-fix delta | §11.7                   | 02      |
 | 8  | T-9.8   | Scala-inherited                | Preserving              | §11.10                  | 01      |
 | 9  | T-9.9   | Scala bug, Rust-fixed          | **Deliberate widening** | §11.5                   | 08      |
 | 10 | T-9.10  | Scala-inherited                | Preserving              | §11.11                  | 11      |
+| 11 | T-9.11  | **Rust-introduced regression** | **Permitted bug fix**   | UC-101–UC-108           | n/a     |
+| 12 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
+| 13 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
+| 14 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
+| 15 | T-9.14  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
+| 16 | T-9.15  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
@@ -36,7 +45,7 @@ withdrawal arm (line 619). Bug #10's theorem set
 `BugFixWithdrawTransferFailure.v`, model-checked in
 `MC_WithdrawFlow.cfg`, and applied in PoS.rhox lines 615-651.
 
-> **Implementation status (current).** All ten fixes are applied
+> **Implementation status (current).** All eleven fixes are applied
 > in the Rust / Rholang source and mechanized in Rocq:
 >
 > | Bug | Theorem | Production location                                                  |
@@ -47,10 +56,11 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | #4  | T-9.4   | `PoS.rhox:487-509` — `match transferResult` with deterministic failure |
 > | #5  | T-9.5   | `equivocation_detector.rs:184` — `if stake > 0` guard                |
 > | #6  | T-9.6   | `validate.rs:875-898` — self-regression filter dropped               |
-> | #7  | T-9.7   | `equivocation_detector.rs` — BFS over creator-justification chain    |
+> | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
 > | #8  | T-9.8   | `block_creator.rs:298-306` — proposer-bond early-return              |
 > | #9  | T-9.9   | `validate.rs:1018-1029` — `has_slash_system_deploys` widening        |
 > | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
+> | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 >
 > The "Cause" subsections below describe the *pre-fix* state
 > (matching the documented Scala / pre-fix Rust code path); the
@@ -95,7 +105,7 @@ the offender their entire bond.
 
 ## 9.3 Bug #2 — Lock-free tracker access (Rust regression)
 
-**Origin.** Rust-introduced regression (the only one of the ten).
+**Origin.** Rust-introduced regression.
 
 **Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
 the equivocation tracker without a lock, allowing two threads
@@ -281,26 +291,44 @@ DAG-level: ∀ blocks sender cited b,
 `EquivocationDetector.scala:336`) uses `baseSeqNum + 1` to find a
 validator's child block. This assumes per-sender seq numbers are
 *dense* (never skipped). If a validator skips a sequence number
-(a rare but possible edge case under partition recovery), the BFS
-fails.
+(a rare but possible edge case under partition recovery), the lookup
+misses the visible child.
 
 **Pre-fix behavior.** Detector misses some equivocations under
 partition recovery.
 
-**Post-fix behavior.** Replace `baseSeqNum + 1` with a BFS over the
-creator-justification chain.
+**Post-fix behavior.** Replace `baseSeqNum + 1` with a canonical walk
+over the visible creator/self-justification chain. Given a latest
+message `h`, offender `v`, and base sequence `β`, the detector returns
+the oldest visible block `c` on that self-chain such that
+`sender(c) = v ∧ seq(c) > β`; equivalently, `c` is immediately above
+the first self-parent whose sequence is `≤ β`, or the chain boundary.
+This fixes skipped sequence numbers and prevents two latest messages
+on the same branch, for example `seq = 10` and `seq = 11`, from being
+counted as two distinct equivocation children. The Rust implementation
+memoizes `(h, v, β) ↦ c?` within one detector pass; the Rocq theorem
+proves this cache is observationally equivalent to recomputing the
+canonical walk.
 
-**Theorem T-9.7.** *(`t_9_7_finds_descendant_with_gap`,
-`BugFixSeqNumDensity.v:84`; subsumption
-`t_9_7_post_fix_subsumes_pre_fix` at line 56.)*
+**Theorem T-9.7.** *(`t_9_7_canonical_finds_visible_descendant_with_gap`,
+`t_9_7_canonical_dense_subsumes_pre_fix`,
+`t_9_7_canonical_prefix_stability`, and
+`t_9_7_canonical_memoized_equivalent` in
+`BugFixSeqNumDensity.v`; legacy subsumption
+`t_9_7_post_fix_subsumes_pre_fix` is retained.)*
 
 ```
-∀ blocks sender baseSeq b,
-   b ∈ blocks ∧ block_sender(b) = sender ∧ block_seq(b) > baseSeq
- ⟹ ∃ b', find_descendant_post_fix(blocks, sender, baseSeq) = Some b'
+∀ chain sender β b,
+   b ∈ chain ∧ Forall (λx. sender(x)=sender ∧ seq(x)>β) chain
+ ⟹ ∃ c, canonical_child_post_fix(chain, sender, β) = Some c
+
+∀ prefix chain sender β c,
+   Forall (λx. sender(x)=sender ∧ seq(x)>β) prefix
+ ∧ canonical_child_post_fix(chain, sender, β) = Some c
+ ⟹ canonical_child_post_fix(prefix ++ chain, sender, β) = Some c
 ```
 
-## 9.9 Bug #8 — `prepare_slashing_deploys` doesn't check proposer is bonded
+## 9.9 Bug #8 — `prepare_slashing_deploys` did not check proposer is bonded
 
 **Origin.** Scala-inherited. The Scala counterpart at
 `BlockCreator.scala:129-153` (`prepareSlashingDeploys`) also omits
@@ -308,20 +336,19 @@ the proposer-bonded check — it filters `ilm` by *target* validator
 bond (`bondsMap.getOrElse(validator, 0L) > 0L`, line 134) but
 never checks the proposer itself.
 
-**Cause.** `block_creator.rs:287-332` doesn't verify that the
+**Pre-fix cause.** `block_creator.rs:287-332` did not verify that the
 *proposer itself* is bonded. An unbonded proposer running the
 proposer thread will still build slash deploys; the `slash`
 contract rejects them at `sysAuthTokenOps!("check", ...)`. This is
 wasted network work.
 
 **Pre-fix behavior.** Unbonded proposer emits doomed slash deploys.
-**(This is the current Rust behavior at `block_creator.rs:287-332`.)**
 
-**Post-fix behavior (mechanized in Rocq; not yet applied in Rust — pending PR).**
+**Post-fix behavior (mechanized in Rocq and implemented in Rust).**
 Skip `prepare_slashing_deploys` entirely when `bonds_map[proposer] = 0`.
 The Rocq mechanization at `BugFixUnbondedProposer.v:44` proves the
-property; the Rust source has not yet been updated to insert the
-short-circuit.
+property; the Rust source implements the short-circuit before reading
+`invalid_latest_messages`.
 
 **Theorem T-9.8.** *(`t_9_8_unbonded_proposer_no_slash`,
 `BugFixUnbondedProposer.v:44`; equivalence
@@ -340,7 +367,7 @@ When bonds[proposer] > 0, post-fix is pointwise equal to pre-fix.
 **Origin.** Scala bug; Rust-fixed by deliberate widening.
 
 **Bisimulation impact.** **Deliberate widening** (the only one of
-the ten) — the Rust port admits self-correcting blocks Scala
+the original ten) — the Rust port admits self-correcting blocks Scala
 rejects.
 
 **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
@@ -386,7 +413,7 @@ claim T-15 holds *modulo* this widening (see §10).
 
 ## 9.11 Cross-fix interactions
 
-The ten fixes interact in four notable ways:
+The eleven fixes interact in four notable ways:
 
 1. **Fix #3 + Fix #6**: Bug #6 (self-regression) feeds bug #3
    (dispatcher). Without #3, the `JustificationRegression` verdict
@@ -491,19 +518,151 @@ explicit success / fail / retry actions and verify
 `Inv_NoFundsLost`, `Inv_TotalFundsConst`, `Inv_RemovedImpliesPaid`,
 `Inv_RewardsConsistent`, and `Live_AllEventuallyPaid`.
 
-## 9.14 Summary
+## 9.14 Bug #11 — Detector traversal was partial and duplicate-child sensitive
 
-The ten fixes restore the slashing subsystem to audit-grade
+**Origin.** Rust-introduced regression. The Scala/Rust bisimilarity
+target is maintained for complete latest-message views, but the fixed
+Rust behavior intentionally diverges from the pre-fix behavior where
+that behavior was a bug.
+
+**Cause.** The pre-fix Rust detector folded a `HashMap` of latest
+messages recursively and used unsafe/must-exist lookups for direct and
+nested justification pointers. If the traversal encountered a missing
+nested offender pointer before later decisive evidence, it could abort
+with `KeyNotFound`; if it encountered two paths to the same offender
+child, it counted the two `Vec` entries as two children.
+
+**Pre-fix behavior.** The same evidence set could be classified
+differently depending on iteration order. Missing pointers could stop
+the search before later decisive children were considered, and duplicate
+paths to one child could produce a false
+`NeglectedEquivocation`.
+
+**Post-fix behavior.** The detector projects latest-message entries into
+deterministic validator order and scans them iteratively. Missing direct
+or nested pointers contribute `∅`, and only distinct child block hashes
+count. The abstract rule is:
+
+```
+detectable(view) ≜ detected_hash_seen(view) ∨ |distinct_child_hashes(view)| ≥ 2
+```
+
+**Theorem T-9.11.** The Rocq lemmas
+`fixed_detectable_missing_pointer_prefix`,
+`fixed_detectable_detected_hash_true`,
+`fixed_detectable_duplicate_single_child_false`, and
+`fixed_detectable_two_distinct_children_true` prove the fixed detector
+facts without admissions or axioms. TLA+ mirrors them with
+`Inv_FixedDetectorTotal`, `Inv_MissingPointerNonContributing`,
+`Inv_DuplicateChildNeedsDistinctChildren`,
+`Inv_TwoDistinctChildrenDetect`, and `Inv_DetectedHashDetects`.
+
+**Why this matters.** Without the fix, a Byzantine validator can shape a
+latest-message view that either hides decisive evidence behind a missing
+pointer or makes one child look like two. Post-fix, neither shape is an
+executable exploit: missing pointers do not abort the detector, and only
+two distinct offender children or a known detected hash can trigger
+neglect.
+
+## 9.15 Bug #12 — Received slash deploys were not locally authorized
+
+**Origin.** Rust-source confirmed vulnerability.
+
+**Cause.** Received blocks could carry a `SlashDeploy` whose invalid hash,
+issuer, target epoch, or target bond state was not checked against local
+slashing policy before replay.
+
+**Post-fix behavior.** Validation rejects unauthorized slash deploys before
+Rholang replay. The issuer must equal the block sender, the invalid hash must
+name a locally known invalid block, the target epoch must match both evidence
+and current epoch, the target must be currently bonded, and a block may target
+each `(validator, epoch)` at most once.
+
+**Proofs and tests.** Rocq: `execute_unknown_evidence_noop`,
+`main_T9_13_unknown_slash_evidence_noop`. TLA+:
+`Inv_RejectedSlashWithoutEvidenceNoPending`. Rust:
+`slash_authorization_regressions`.
+
+## 9.16 Bug #13 — Same-key rebond could inherit stale evidence
+
+**Origin.** Rust-source confirmed vulnerability.
+
+**Cause.** Raw public-key identity does not distinguish an old validator
+lifetime from a later same-key rebond.
+
+**Post-fix behavior.** Slash evidence is epoch-scoped. Evidence for `(v, e₁)`
+does not authorize a slash for `(v, e₂)` when `e₁ ≠ e₂`.
+
+**Proofs and tests.** Rocq: `stale_evidence_not_authorized`,
+`main_T9_12_stale_evidence_not_authorized`. TLA+:
+`Inv_StaleEvidenceCannotSlashRebondedKey`. Rust:
+`stale_invalid_evidence_is_not_an_authorized_slash_candidate` and
+`received_stale_slash_deploy_is_rejected_before_replay`.
+
+## 9.17 Bug #14 — Slash liveness depended on invalid latest messages
+
+**Origin.** Rust-source confirmed liveness gap.
+
+**Cause.** The proposer generated slash deploys from
+`invalid_latest_messages()`, but invalid blocks are inserted as invalid and
+do not necessarily update latest-message state.
+
+**Post-fix behavior.** The proposer derives candidates from the authorized
+invalid-block evidence index, sorts deterministically, and emits at most one
+slash deploy per current offender epoch.
+
+**Proofs and tests.** Rocq: `deploy_epoch_matches_target`. TLA+:
+`Inv_NoInvalidLatestLivenessGap`. Rust:
+`current_epoch_invalid_evidence_is_authorized_once_per_offender`.
+
+## 9.18 Bug #15 — Sequence arithmetic used unchecked boundaries
+
+**Origin.** Rust-source confirmed hardening issue.
+
+**Cause.** `seq − 1` in evidence recording and proposer `seq + 1` could
+panic in debug builds or wrap/cast incorrectly in release-shaped paths.
+
+**Post-fix behavior.** The legacy record key uses checked predecessor logic;
+the invalid evidence index still records the slashable block. Proposer sequence
+numbers use checked addition and `i32` conversion.
+
+**Proofs and tests.** Rocq: `checked_pred_total_positive`,
+`checked_succ_bounded_sound`, `main_T9_14_checked_pred_positive`. Rust:
+`checked_sequence_arithmetic_rejects_boundaries`.
+
+## 9.19 Bug #16 — Duplicate justifications made detector projection ambiguous
+
+**Origin.** Rust-source confirmed validation gap.
+
+**Cause.** Validation compared justification validators as a set, while the
+detector projected justifications into a validator-keyed map.
+
+**Post-fix behavior.** Duplicate justification validators are invalid before
+detector projection.
+
+**Proofs and tests.** Rocq: `duplicate_head_rejected`,
+`main_T9_15_duplicate_justifications_rejected`. TLA+:
+`Inv_DuplicateJustificationsRejected`,
+`Inv_AcceptedProjectionCardinality`. Rust:
+`duplicate_justification_validators_are_invalid`.
+
+## 9.20 Summary
+
+The sixteen fixes restore the slashing subsystem to audit-grade
 correctness:
 
 - Nine Scala-inherited bugs are documented with proven fixes.
-- One Rust regression (#2) is documented with a proven fix.
+- Two Rust regressions (#2 and #11) are documented with proven fixes.
 - One deliberate widening (#9) is documented as a *Rust improvement*
   over Scala, with a soundness proof.
+- Five Rust-source confirmed vulnerabilities or hardening gaps (#12–#16)
+  are fixed by authorized slash evidence, epoch-scoped evidence, checked
+  arithmetic, and duplicate-justification rejection.
 
-The bisimilarity claim (T-15, §10) holds modulo these ten
-deltas — nine convergence fixes (or vault-conservation fixes for
-#10) and one widening.
+The bisimilarity claim (T-15, §10) holds modulo these sixteen
+deltas: convergence fixes, vault-conservation fixes, Rust-only
+regression fixes, one deliberate widening, and the authorization fixes that
+intentionally reject unsafe legacy behavior.
 
 ---
 
