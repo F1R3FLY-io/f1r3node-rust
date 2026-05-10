@@ -26,9 +26,7 @@
 //   5. SlashingProductionAdapter snapshot confirms post-fix #1+#3
 //      record-mint at the production tier.
 
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::history::Either;

@@ -100,7 +100,10 @@ fn uc_110_horizon_campaign_cross_axis_guards_hold() {
     assert_eq!(closure(&direct, &visible), BTreeSet::from([0, 1, 2]));
     assert_eq!(active_edges(&visible, &reports), BTreeSet::from([(2, 0)]));
     assert_eq!(first_slash_slot(&schedule), Some(1));
-    assert!(detector_detectable(&[Contribution::Child(7), Contribution::Child(8)]));
+    assert!(detector_detectable(&[
+        Contribution::Child(7),
+        Contribution::Child(8)
+    ]));
     assert_eq!(checked_total(u8::MAX as u128, &[u8::MAX as u128, 1]), None);
 }
 

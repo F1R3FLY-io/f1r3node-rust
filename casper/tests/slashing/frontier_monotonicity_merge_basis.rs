@@ -160,8 +160,14 @@ fn uc_109_frontier_monotonicity_merge_basis_guards_hold() {
     let reports = BTreeSet::from([(1, 0)]);
 
     assert!(closure(&direct, &base).is_subset(&closure(&direct, &expanded)));
-    assert_eq!(closure(&direct, &active_edges(&expanded, &reports)), BTreeSet::from([0]));
-    assert!(detector_detectable(&[Contribution::Child(7), Contribution::Child(8)]));
+    assert_eq!(
+        closure(&direct, &active_edges(&expanded, &reports)),
+        BTreeSet::from([0])
+    );
+    assert!(detector_detectable(&[
+        Contribution::Child(7),
+        Contribution::Child(8)
+    ]));
     assert_eq!(minimal_denial_size(&direct, &expanded, 2), Some(1));
 }
 

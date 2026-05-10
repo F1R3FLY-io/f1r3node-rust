@@ -25,9 +25,9 @@ enum SchedulerAction {
     Partition,
     Heal,
     GossipDelay,
-    Report(u8),
+    Report,
     Prune,
-    Propose(u8),
+    Propose,
 }
 
 fn arb_action() -> impl Strategy<Value = SchedulerAction> {
@@ -35,9 +35,9 @@ fn arb_action() -> impl Strategy<Value = SchedulerAction> {
         Just(SchedulerAction::Partition),
         Just(SchedulerAction::Heal),
         Just(SchedulerAction::GossipDelay),
-        (0u8..6).prop_map(SchedulerAction::Report),
+        Just(SchedulerAction::Report),
         Just(SchedulerAction::Prune),
-        (0u8..6).prop_map(SchedulerAction::Propose),
+        Just(SchedulerAction::Propose),
     ]
 }
 
@@ -49,8 +49,8 @@ struct Sched {
 
 fn classify_action(s: &Sched, a: &SchedulerAction) -> DivergenceClass {
     match a {
-        SchedulerAction::Propose(_) => DivergenceClass::Bisimilar,
-        SchedulerAction::Report(_) | SchedulerAction::GossipDelay => {
+        SchedulerAction::Propose => DivergenceClass::Bisimilar,
+        SchedulerAction::Report | SchedulerAction::GossipDelay => {
             classify(DivergenceReason::EvidenceViewBoundary)
         }
         SchedulerAction::Prune => classify(DivergenceReason::EpochCarryoverBoundary),
@@ -71,7 +71,7 @@ fn step(s: &mut Sched, a: &SchedulerAction) {
     match a {
         SchedulerAction::Partition => s.partitioned = true,
         SchedulerAction::Heal => s.partitioned = false,
-        SchedulerAction::Propose(_) => s.fair_proposer_seen = true,
+        SchedulerAction::Propose => s.fair_proposer_seen = true,
         _ => {}
     }
 }

@@ -15,7 +15,6 @@ use casper::rust::util::proto_util;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
-use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use prost::bytes::Bytes;

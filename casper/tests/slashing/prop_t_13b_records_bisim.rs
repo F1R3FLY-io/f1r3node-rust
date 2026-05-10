@@ -16,7 +16,7 @@ use proptest::prelude::*;
 use super::harness::SlashingTestHarness;
 use super::observer::SlashingObserver;
 use super::oracle_adapter::RocqOracleAdapter;
-use super::types::{BlockMeta, Status};
+use super::types::BlockMeta;
 
 proptest! {
     #![proptest_config(ProptestConfig {

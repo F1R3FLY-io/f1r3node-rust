@@ -16,7 +16,6 @@
 // processes every deploy passed in alt_deploys.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 

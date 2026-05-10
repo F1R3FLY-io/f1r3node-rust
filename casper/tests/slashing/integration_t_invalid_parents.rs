@@ -18,7 +18,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 

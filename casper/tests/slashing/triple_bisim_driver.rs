@@ -14,13 +14,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
-
-use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
-use models::rust::block_hash::BlockHashSerde;
-use rspace_plus_plus::rspace::history::Either;
 
 use super::harness::SlashingTestHarness;
 use super::integration_helpers::{
@@ -29,7 +23,7 @@ use super::integration_helpers::{
 use super::observer::SlashingObserver;
 use super::oracle_adapter::RocqOracleAdapter;
 use super::production_adapter::SlashingProductionAdapter;
-use super::types::{BlockMeta, SeqNum, Status};
+use super::types::{BlockMeta, Status};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 

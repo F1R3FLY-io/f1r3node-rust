@@ -17,7 +17,6 @@ use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
 use super::oracle::{oracle_detect, oracle_dispatch, oracle_slash};
-use super::types::{DagState, EqRecordSet, PoSState, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {

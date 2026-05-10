@@ -15,7 +15,7 @@ use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
 use super::oracle::{oracle_dispatch, oracle_slash};
-use super::types::{DagState, EqRecordSet, PoSState};
+use super::types::EqRecordSet;
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -45,7 +45,6 @@ proptest! {
         ops in proptest::collection::vec(gen_op(6), 0..20),
     ) {
         let mut harness = SlashingTestHarness::new(n, 100);
-        let mut oracle_dag = DagState::default();
         let mut oracle_tracker = EqRecordSet::default();
         let mut oracle_pos = harness.pos_state.clone();
 
@@ -58,16 +57,15 @@ proptest! {
 
                     // Mirror the sign_block sequence in the oracle's DAG by
                     // copying the harness's pre-dispatch DAG state.
-                    oracle_dag = harness.dag.clone();
+                    let oracle_dag = harness.dag.clone();
 
                     // Both run dispatch on the same hash with the same
                     // forced classification (taken from the harness's
                     // detect for fairness).
                     let h_status = harness.detect(bad);
-                    let (new_dag, new_tracker) = oracle_dispatch(
+                    let (_, new_tracker) = oracle_dispatch(
                         &oracle_dag, &oracle_tracker, bad, &h_status,
                     );
-                    oracle_dag = new_dag;
                     oracle_tracker = new_tracker;
                     let _ = harness.dispatch_with_status(bad, h_status);
                 }

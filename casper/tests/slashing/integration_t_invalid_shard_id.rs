@@ -13,7 +13,6 @@
 // `Validate::shard_identifier` (validate.rs:259) fires next.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 

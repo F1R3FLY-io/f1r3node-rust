@@ -15,7 +15,6 @@
 // "missing main parent" arm at line 833 does NOT fire.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 

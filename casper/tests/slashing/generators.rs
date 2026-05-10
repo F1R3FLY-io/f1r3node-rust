@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use proptest::collection::{hash_map, vec};
+use proptest::collection::vec;
 use proptest::prelude::*;
 
 use super::types::{BlockHash, BlockMeta, DagState, PoSState, SeqNum, ValidatorId};
