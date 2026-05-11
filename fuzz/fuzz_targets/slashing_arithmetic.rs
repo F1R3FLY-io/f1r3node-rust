@@ -1,3 +1,22 @@
+//! `slashing_arithmetic` — boundary fuzz for the three sequence/epoch helpers.
+//!
+//! Reference: docs/theory/slashing/slashing-specification.md §9.7 + §9.8.
+//! Production code under test: `checked_base_seq`, `checked_next_seq`,
+//! `epoch_for_block_number` in `slashing_authorization.rs`.
+//!
+//! Boundary classes probed (each one is a bug class that has previously
+//! shipped in slashing implementations):
+//!
+//!   1. `checked_base_seq` — i32 subtraction underflow at `seq <= 0`.
+//!      Must saturate to `None` rather than wrapping to i32::MAX.
+//!   2. `checked_next_seq` — u64 successor narrowed to i32 wire type.
+//!      Two-step saturation: u64 overflow OR i32 truncation produces `None`.
+//!   3. `epoch_for_block_number` — division by zero or negative epoch
+//!      length. Must return `None` instead of panicking on `% 0`.
+//!
+//! The asserts compare against re-derived expressions in the harness so
+//! a regression that introduces wrapping arithmetic surfaces immediately.
+
 #![no_main]
 
 use casper::rust::slashing_authorization::{

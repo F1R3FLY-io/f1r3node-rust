@@ -1,3 +1,18 @@
+//! Shared fixture builders for the slashing fuzz harnesses.
+//!
+//! Provides:
+//!   * Deterministic synthetic identities (`validator`, `block_hash`) at the
+//!     correct widths for production code to accept.
+//!   * `ProcessedSystemDeploy` builders for the three relevant variants.
+//!   * `BlockMessage` builders pre-wired with a synthetic header / body.
+//!   * `empty_dag` + `snapshot` for building an in-memory `CasperSnapshot`
+//!     against `InMemoryKeyValueStore` — no LMDB I/O, deterministic per
+//!     iteration.
+//!
+//! `#[allow(dead_code)]` is at the module level because each `fuzz_target`
+//! is a separate binary and uses a different subset of these helpers; the
+//! unused ones in any given binary must not produce warnings.
+
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -27,12 +42,28 @@ pub struct Evidence {
     pub invalid: bool,
 }
 
+/// Build a `Bytes` value of `len` copies of `seed`. Distinct seeds produce
+/// distinct values (the byte repetition is the identity function on seed
+/// space), so this is a deterministic, collision-resistant key generator
+/// for synthetic DAGs without dragging in a hashing pass.
 pub fn repeated(seed: u8, len: usize) -> Bytes { Bytes::from(vec![seed; len]) }
 
+/// Synthetic validator identity. Width = 65 because that is the
+/// uncompressed Secp256k1 public-key length (1-byte prefix + 32-byte X +
+/// 32-byte Y). Production validation rejects other widths, so generating
+/// validators at 65 bytes is mandatory for the snapshot to be accepted.
 pub fn validator(seed: u8) -> Validator { repeated(seed, 65) }
 
+/// Synthetic block hash. Width = 32 because production block hashes are
+/// Blake2b-256 digests. Other widths fail equality comparison against the
+/// hashes the DAG layer computes for real blocks.
 pub fn block_hash(seed: u8) -> BlockHash { repeated(seed, 32) }
 
+/// Builder for a successful Slash system deploy. Together with
+/// [`close_deploy`] and [`failed_deploy`], this is a tagged-union
+/// constructor kit for `ProcessedSystemDeploy` — the three are
+/// mutually exclusive and a block body's `system_deploys` vector
+/// typically holds a small mixed set of these.
 pub fn slash_deploy(
     invalid_block_hash: BlockHash,
     issuer: Validator,
@@ -48,6 +79,7 @@ pub fn slash_deploy(
     }
 }
 
+/// Builder for a CloseBlock system deploy (the per-block terminator).
 pub fn close_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Succeeded {
         event_list: vec![],
@@ -55,6 +87,9 @@ pub fn close_deploy() -> ProcessedSystemDeploy {
     }
 }
 
+/// Builder for the Failed variant. Sibling to `slash_deploy` and
+/// `close_deploy` — these three together exhaust the variant space the
+/// production validator inspects.
 pub fn failed_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Failed {
         event_list: vec![],
@@ -62,6 +97,14 @@ pub fn failed_deploy() -> ProcessedSystemDeploy {
     }
 }
 
+/// Build a `BlockMessage` whose header timestamp, state.block_number,
+/// and seq_num all equal `block_number`. The triple-coupling is
+/// deliberate: it lets the harnesses parametrize a synthetic block by a
+/// single integer and have all three slots stay consistent (the
+/// production block-number / timestamp / seq drift relations are
+/// covered by integration tests, not by these fuzzers). Pre-state and
+/// post-state hashes are derived from `hash_seed` so they are distinct
+/// from the block hash itself.
 pub fn block_with_system_deploys(
     hash_seed: u8,
     sender: Validator,
@@ -98,6 +141,11 @@ pub fn block_with_system_deploys(
     }
 }
 
+/// Build a fully-zeroed `KeyValueDagRepresentation` against
+/// `InMemoryKeyValueStore`. The `InMemory` choice is load-bearing here —
+/// fuzz iterations must not hit disk, must not share state across
+/// iterations, and must complete in microseconds. No LMDB, no global
+/// lock, no per-iteration cleanup.
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let deploy_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
@@ -133,6 +181,13 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
     }
 }
 
+/// Build a `CasperSnapshot` whose DAG and on-chain state are populated
+/// from `evidences` + `bonds`. The four DAG collections —
+/// `dag_set`, `height_map`, `block_metadata_index`, and (conditionally)
+/// `invalid_blocks_set` — are populated in lockstep for each evidence;
+/// production code assumes them consistent and panics or returns
+/// `KeyNotFound` if they aren't. Any future change to those collections
+/// must update this builder in the same atomic step.
 pub fn snapshot(
     evidences: &[Evidence],
     max_block_num: i64,

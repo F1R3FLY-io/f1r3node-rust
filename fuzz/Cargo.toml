@@ -7,6 +7,11 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+# Empty [workspace] is intentional: this crate is deliberately *not* part of
+# the main f1r3node-rust workspace. cargo-fuzz needs its own lockfile and
+# its own nightly toolchain flags, and including this crate in the parent
+# workspace would force `cargo build` at the repo root to pull in
+# libfuzzer-sys + arbitrary on stable, which neither tool supports.
 [workspace]
 
 [dependencies]

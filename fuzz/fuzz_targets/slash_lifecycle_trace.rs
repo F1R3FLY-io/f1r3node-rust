@@ -1,3 +1,23 @@
+//! `slash_lifecycle_trace` — end-to-end fuzz of the slashing lifecycle.
+//!
+//! Reference: docs/theory/slashing/slashing-specification.md §6 (proposing),
+//! §9.8 (authorization).
+//!
+//! Two phases per iteration:
+//!
+//!   **Phase 1 (happy path).** Build a synthetic snapshot, enumerate the
+//!   authorized candidate set with `authorized_slash_candidates`, then
+//!   feed those candidates back through `validate_received_slash_deploys`
+//!   in a block whose sender is the proposer. The receive-side validation
+//!   must accept — if it rejects its own author's candidate set, the
+//!   two functions are out of sync.
+//!
+//!   **Phase 2 (adversary).** Take the first candidate and construct a
+//!   block that issues *two* slashes for the same (offender, epoch).
+//!   This models a malicious proposer attempting double-slashing within
+//!   one block. The receive-side validation must reject — duplicate
+//!   target-key is rule #7 in `validate_received_slash_deploys`.
+
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -68,6 +88,11 @@ fuzz_target!(|input: Input| {
         bonds,
     );
 
+    // Inputs that fail authorization at the candidate-enumeration stage
+    // (e.g. invalid epoch_length) carry no useful signal for *this*
+    // harness — the lifecycle test wants snapshots where at least the
+    // proposer-side path succeeded. `slash_authorization_paths` covers
+    // the candidate-side rejection rules directly.
     let Ok(candidates) = authorized_slash_candidates(&snapshot) else {
         return;
     };

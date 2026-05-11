@@ -1,3 +1,18 @@
+//! `block_message_roundtrip` — proto idempotency for the full `BlockMessage`.
+//!
+//! Invariant asserted: `from_proto ∘ to_proto ∘ from_proto = from_proto`.
+//! That is, once arbitrary bytes successfully decode into a `BlockMessage`,
+//! re-encoding and re-decoding must produce the same in-memory value. A
+//! failure here indicates a non-canonical proto encoding (a field that
+//! round-trips under one ordering but not another) — exactly the class of
+//! bug that silently forks consensus.
+//!
+//! The two early `return`s filter out malformed bytes: libFuzzer's
+//! coverage-guided search steers around these returns toward bytes that
+//! successfully decode, so the body downstream runs only on well-formed
+//! inputs. We do not assert on malformed bytes — that's the job of
+//! `slash_authorization_paths` and the property tests.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

@@ -1,3 +1,25 @@
+//! `slash_authorization_paths` — differential testing of slash authorization.
+//!
+//! Reference: docs/theory/slashing/slashing-specification.md §9 + §10.
+//! Production code under test: `slashing_authorization::authorized_slash_candidates`
+//! and `validate_received_slash_deploys`.
+//!
+//! Premise: this file contains an *independent re-implementation* of the
+//! authorization predicate (`expected_validation_ok` and the
+//! candidate-set construction below). Each fuzz iteration runs both the
+//! production code and this oracle against the same synthetic snapshot
+//! and asserts agreement on six properties:
+//!
+//!   1. The issuer's public key equals the block sender.
+//!   2. `target_activation_epoch == current_epoch` for the block.
+//!   3. The evidence block resolves in the snapshot DAG.
+//!   4. The evidence block is flagged `invalid = true`.
+//!   5. The offender currently carries a positive bond.
+//!   6. No two slashes in the same block share (offender, target_epoch).
+//!
+//! A divergence between oracle and production means the production code
+//! drifted from the spec — exactly the regression class T-9.8 forbids.
+
 #![no_main]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,8 +68,17 @@ fn validator_at(validators: &[Validator], index: u8) -> Validator {
     validators[usize::from(index) % validators.len()].clone()
 }
 
+/// Cap synthetic DAG height at 16. The bound is purely a search-space
+/// cap — i16 inputs are wrapped to `[0, 16)` so libFuzzer doesn't waste
+/// iterations on unreachable epoch arithmetic (epochs at i64::MAX
+/// height never appear in production), while still covering the
+/// epoch-boundary cases (heights 0, 1, 15 within one epoch_length=16).
 fn bounded_height(value: i16) -> i64 { i64::from(value.rem_euclid(16)) }
 
+/// Oracle predicate: enumerate the six authorization rules from §9.8
+/// independently and return whether the block should validate. This is
+/// the differential-testing counterpart of `validate_received_slash_deploys`
+/// — every disagreement is a candidate bug.
 fn expected_validation_ok(
     block: &models::rust::casper::protocol::casper_message::BlockMessage,
     snapshot: &casper::rust::casper::CasperSnapshot,
@@ -184,6 +215,10 @@ fuzz_target!(|input: Input| {
                 if bond <= 0 {
                     continue;
                 }
+                // Lex-smallest-hash tie-breaker mirrors the production rule
+                // in `authorized_slash_candidates` — see the BTreeMap
+                // dedup loop there. The oracle must use the *same* rule
+                // or the differential check would fire on every tie.
                 expected
                     .entry(metadata.sender.clone())
                     .and_modify(|(hash, _)| {

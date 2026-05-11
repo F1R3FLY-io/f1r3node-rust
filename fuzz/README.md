@@ -29,6 +29,27 @@ ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS="-C target-feature=+aes,+sse2" cargo fuzz 
 ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS="-C target-feature=+aes,+sse2" cargo fuzz run slash_lifecycle_trace -- -max_len=4096
 ```
 
+`slashing_arithmetic` probes the sequence-number and epoch boundary
+helpers in `casper/src/rust/slashing_authorization.rs`
+(`checked_base_seq`, `checked_next_seq`, `epoch_for_block_number`)
+against the libFuzzer u64/i32/i64 input space. It asserts that the
+checked variants saturate to `None` on every overflow / underflow /
+divide-by-zero path — the kani proofs cover the same predicates over a
+bounded domain; this fuzzer extends the search over the unbounded
+domain in case kani's bound is too tight.
+
+`slash_deploy_roundtrip` is a proto idempotency check for the
+`SystemDeployData::Slash` payload only. It picks an arbitrary slash
+deploy, converts to proto, converts back, and asserts equality. The
+narrow surface lets the fuzzer find malformed-public-key, hash-length,
+and epoch-i64 edges that the broader `block_message_roundtrip` test
+would not isolate.
+
+`block_message_roundtrip` is a full `BlockMessage` proto idempotency
+check: `from_proto ∘ to_proto ∘ from_proto = from_proto`. It is the
+catch-all for proto field-encoding regressions across the entire block
+schema, not just the slashing subset.
+
 `slash_authorization_paths` builds synthetic `CasperSnapshot` DAG
 metadata, invalid-block indices, bond maps, and received SlashDeploy
 blocks. It checks that production candidate selection and received

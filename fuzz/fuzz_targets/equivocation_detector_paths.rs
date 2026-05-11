@@ -1,3 +1,20 @@
+//! `equivocation_detector_paths` — fuzz the detector boundary against an
+//! independent three-way oracle.
+//!
+//! Reference: docs/theory/slashing/slashing-specification.md §4
+//! (detection), §12 UC-01..UC-04.
+//!
+//! Oracle: a block whose creator-justification equals the snapshot's latest
+//! message for that validator is Valid; otherwise, if the block was pulled
+//! in as a dependency, AdmissibleEquivocation; otherwise IgnorableEquivocation.
+//! The production detector must agree on every synthetic input.
+//!
+//! The `.expect(...)` at the bottom asserts the detector is *total* for
+//! synthetic DAGs — synthetic DAGs cannot reach the store-error branch
+//! because `support::snapshot` builds an in-memory DAG with no I/O. A
+//! failure of that expect would mean the production detector grew a new
+//! error path that synthetic input can trigger (regression of T-9.11).
+
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -39,6 +56,11 @@ fuzz_target!(|input: Input| {
             latest_block_hash: support::block_hash(input.creator_justification_hash),
         });
     }
+    // `.take(6)` bounds the synthetic justification list at 6 entries.
+    // The bound is a search-space cap, not a semantic limit — production
+    // blocks may have arbitrarily many justifications; 6 is the smallest
+    // value that exposes both the creator-justification path and at least
+    // a few cross-validator citations.
     for item in input.extra_justifications.iter().take(6) {
         justifications.push(Justification {
             validator: support::validator(item.validator),
