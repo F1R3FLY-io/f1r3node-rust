@@ -907,16 +907,28 @@ impl Validate {
     }
 
     /// Justification regression check.
-    /// Compares justifications that has been already used by sender and recorded in the DAG with
-    /// justifications used by the same sender in new block `b` and assures that there is no
-    /// regression.
     ///
-    /// When we switch between equivocation forks for a slashed validator, we will potentially get a
-    /// justification regression that is valid. We cannot ignore this as the creator only drops the
-    /// justification block created by the equivocator on the following block.
-    /// Hence, we ignore justification regressions involving the block's sender and
-    /// let checkEquivocations handle it instead.
-    // TODO double check this logic
+    /// Compares justifications previously cited by `b.sender` (taken from
+    /// `cur_senders_block`, the sender's current latest message in the DAG)
+    /// against justifications cited by the new block `b`, and rejects any
+    /// regression — including a regression against the sender's own prior
+    /// creator-justification.
+    ///
+    /// Bug #6 / T-9.6 (post-fix behavior).
+    ///
+    /// The pre-fix code path skipped the sender's own creator-justification,
+    /// delegating self-regression detection to `checkEquivocations`. That left
+    /// a window where a block could point back to an earlier sequence number
+    /// of its own sender without being slashed at the validation boundary.
+    /// The fix is to walk the full `new_lms` map (built from `b.justifications`
+    /// via `to_latest_message_hashes`) without filtering out `b.sender` and
+    /// compare every entry against `cur_lms`; a self-regression therefore now
+    /// produces `InvalidBlock::JustificationRegression` at the loop body below.
+    ///
+    /// Proven sound by `t_9_6_self_regression_detected`,
+    /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
+    /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
+    /// `docs/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,

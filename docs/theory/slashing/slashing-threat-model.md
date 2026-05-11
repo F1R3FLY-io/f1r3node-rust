@@ -50,7 +50,122 @@ The adversary may not:
 - break cryptographic hash collision resistance;
 - mutate on-chain PoS state outside protocol transitions;
 - violate the explicit theorem preconditions without being classified as
-  a boundary or assumption counterexample.
+  a boundary or assumption counterexample;
+- rationally defect beyond protocol incentives (the *cost* of the
+  capabilities above is modeled at game-theoretic scope only — see
+  **§5.A Economic and game-theoretic threats** below).
+
+## 2.1 STRIDE classification of consensus-layer threats
+
+STRIDE [Howard&LeBlanc] partitions threats into six categories:
+**S**poofing, **T**ampering, **R**epudiation, **I**nformation
+disclosure, **D**enial of service, **E**levation of privilege. The
+slashing protocol's defensive surface maps as follows:
+
+| Threat (from §3 coverage matrix)             | STRIDE bucket(s) | Why                                                                                            | Defense (formal artifact)                                         |
+|----------------------------------------------|------------------|------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| Direct equivocation                          | **T**            | A validator tampers with consensus state by signing two distinct blocks at one sequence number | Detector soundness/completeness (T-1, T-2, T-3)                   |
+| Ignorable equivocation flooding              | **T** + **D**    | Tampering primitive used as a DoS amplifier when accumulated                                   | Ignorable promoted to slashable (T-9.1)                           |
+| Tracker race (lost RMW)                      | **T** + **R**    | Atomicity violation enables repudiation of one of two concurrently inserted records            | Atomic RMW (T-9.2)                                                |
+| Slashable invalid block not recorded         | **R**            | Adversary repudiates evidence by causing the dispatcher to drop it                             | Dispatcher catch-all (T-9.3)                                      |
+| Transfer-failure rollback                    | **D** + **R**    | Failure path could otherwise leak funds or deadlock the slash transition                       | Retry-preserving fail-stop (T-9.4, T-9.10)                        |
+| Stake-zero bonded state                      | **T**            | Tampering with the active-set invariant                                                        | Positive-bond invariant (T-9.5)                                   |
+| Self-regression / LMD inconsistency          | **T**            | Sender tampers with their own latest-message pointers                                          | Self-regression check, Rust self-correction (T-9.6, T-9.9)        |
+| Sequence-number density attack               | **T**            | Tampering by skipping seq numbers to evade canonical-self-chain walk                           | Canonical visible self-chain child rule (T-9.7)                   |
+| Unbonded proposer slash emission             | **E**            | Elevation: unbonded principal performs slashing                                                | Proposer-bond guard (T-9.8)                                       |
+| Detector partial / missing-pointer abort     | **R** + **T**    | Adversary repudiates evidence by shaping a view that aborts detection or fakes two children    | Total iterative detector (T-9.11)                                 |
+| Unauthorized slash deploy                    | **E** + **S**    | Block author spoofs authority to slash; effectively elevation of privilege                     | Pre-replay `SlashAuthorizedByEvidence` filter (T-9.13)            |
+| Stale-evidence rebond                        | **S** + **R**    | Evidence from a prior validator lifetime is reused to slash a new same-key lifetime            | Epoch-scoped slash authorization (T-9.12)                         |
+| Spoofed system-auth token                    | **E** + **S**    | Forged authority token used to bypass the auth boundary                                        | Auth-token oracle, valid/invalid token theorems (T-Auth)          |
+| Slash liveness gap                           | **D**            | Denial: detected offender never slashed because candidate index doesn't contain the evidence   | Authorized invalid-block evidence index (T-LivenessGap)           |
+| Sequence-arithmetic panic / wrap             | **D**            | Boundary arithmetic crashes the proposer or corrupts record keys                               | Checked arithmetic + nonpositive rejection (T-9.14)               |
+| Duplicate-justification projection ambiguity | **R** + **T**    | Adversary tampers with detector projection ordering                                            | Pre-projection validation rejects duplicates (T-9.15)             |
+| Evidence-denial min-cut                      | **D**            | Adversary denies decisive evidence paths to a target view                                      | View-merge over-approximation (T-12V); proposer fairness (T-12PF) |
+| Closure-depth latency                        | **D**            | Adversary tries to delay closure beyond practical bound                                        | `|V|−1` rounds bound (T-12C)                                      |
+| Validator-renaming order dependence          | **T**            | Adversary tries to make outcomes depend on the validator-name labeling                         | Bijective renaming equivariance (T-12 renaming)                   |
+
+The STRIDE columns are **inclusive**, not partitioning — many
+threats span multiple buckets. The "Defense" column links to the
+formal artifact in `formal/rocq/slashing/` (Rocq) or
+`formal/tlaplus/slashing/` (TLA+) that discharges the threat. For
+the complete coverage matrix with Rust-test pointers see §3.
+
+> *Citation note.* STRIDE was introduced by M. Howard and D. LeBlanc,
+> *Writing Secure Code* (2nd ed., Microsoft Press, 2003, ISBN
+> 0-7356-1722-8), where it is presented as a structured method for
+> enumerating attack surfaces.
+
+## 2.2 Attack tree — paths to a successful slashing-safety violation
+
+Following Schneier's *Attack Trees* methodology [Schneier1999], we
+root the goal at "**Violate slashing safety**" — i.e., either
+(a) cause an honest validator's bond to be slashed without their
+having committed a slashable offence, or (b) prevent a detected
+offender from being slashed despite the offence being attributable.
+The four internal nodes ("Avoid detection", "Avoid record
+insertion", "Avoid effect", "Avoid fork-choice exclusion") match the
+five-layer architecture from §03 of the design suite. Leaves are
+labeled with the relevant headline theorem; a path from root to a
+leaf is *blocked* iff the leaf's theorem holds.
+
+```
+Goal: Violate slashing safety
+│
+├─ A. Cause unjust slashing of an honest validator
+│  │
+│  ├─ A1. Forge slash deploy with adversarial authority              [BLOCKED by T-Auth]
+│  ├─ A2. Submit slash referencing fake evidence                     [BLOCKED by T-9.13]
+│  ├─ A3. Replay stale evidence against a rebonded same-key lifetime [BLOCKED by T-9.12]
+│  ├─ A4. Cause projection ambiguity via duplicate justifications    [BLOCKED by T-9.15]
+│  └─ A5. Cause sequence-arithmetic panic / wrap to corrupt key      [BLOCKED by T-9.14]
+│
+└─ B. Prevent slashing of a detected offender
+   │
+   ├─ B1. Avoid detection
+   │  │
+   │  ├─ B1.1 Ignorable equivocation flooding                        [BLOCKED by T-9.1]
+   │  ├─ B1.2 Tracker race lose evidence                             [BLOCKED by T-9.2]
+   │  ├─ B1.3 Missing-pointer detector abort                         [BLOCKED by T-9.11]
+   │  ├─ B1.4 Duplicate-child false positive (becomes false neg)     [BLOCKED by T-9.11]
+   │  └─ B1.5 Self-regression slips through                          [BLOCKED by T-9.6]
+   │
+   ├─ B2. Avoid record insertion
+   │  │
+   │  ├─ B2.1 Dispatcher stub drops slashable variants               [BLOCKED by T-9.3]
+   │  └─ B2.2 Record-key collision (delimiter-free)                  [BLOCKED by T-5DF]
+   │
+   ├─ B3. Avoid slash effect
+   │  │
+   │  ├─ B3.1 PoS transfer-failure FIXME leaves SlashPending         [BLOCKED by T-9.4]
+   │  ├─ B3.2 Withdrawal transfer-failure variant                    [BLOCKED by T-9.10]
+   │  ├─ B3.3 Stake-0 silent classification                          [BLOCKED by T-9.5]
+   │  ├─ B3.4 Unbonded proposer cannot emit slash deploy             [BLOCKED by T-9.8]
+   │  └─ B3.5 Liveness gap from invalid-latest-message dependency    [BLOCKED by T-LivenessGap]
+   │
+   └─ B4. Avoid fork-choice exclusion
+      │
+      ├─ B4.1 Slashed validator still votes in GHOST tally           [BLOCKED by T-10]
+      └─ B4.2 Sub-quorum coalition slashes ≥ F+1 honest validators   [BLOCKED by T-12 BFT bound]
+```
+
+**Reading the tree.** A *successful* attack would require an adversary
+to traverse from root to a leaf without all branches on that path being
+blocked. Because every leaf above is blocked by an explicit theorem,
+*and* the OR-tree shape means a single unblocked leaf suffices, the
+slashing protocol's safety property holds iff every theorem above
+holds simultaneously — which is exactly what T-15 (Rust ↔ Scala
+bisimilarity, modulo the documented bug-fix deltas) summarizes.
+
+The economic threats in §5.A live at a *higher* layer: they assume
+all of the above leaves remain blocked, and ask whether the
+*incentive* alignment still pays. If economic incentive fails, the
+adversary need not breach any of the leaves above; they instead
+choose not to play honestly.
+
+> *Citation note.* Attack-tree methodology: B. Schneier, *Attack
+> Trees: Modeling security threats*, **Dr. Dobb's Journal**, Dec.
+> 1999. The original method generalizes from *AND/OR* trees over
+> goal states.
 
 ## 3. Threat Coverage Matrix
 
@@ -133,6 +248,188 @@ be promoted:
 Bug #11 is `permitted_bug_fix`: complete latest-message views stay
 bisimilar, but the old missing-pointer abort and duplicate-child
 false-positive behaviors are rejected as bugs.
+
+## 4.1 Vocabulary mapping to traceability ledger
+
+The traceability ledger at `slashing-traceability.md §1` defines an
+eight-status vocabulary used to track each Sage / Hypothesis finding
+from raw witness through promotion. The six classes above are the
+*defensive-classification* projection; the eight statuses are the
+*workflow* projection. The mapping is:
+
+| Threat-model class (this §4) | Traceability status (`slashing-traceability.md`)               |
+|------------------------------|----------------------------------------------------------------|
+| `bisimilar`                  | `confirmed_no_change_needed` (and intermediate `under_review`) |
+| `permitted_bug_fix`          | `confirmed_fixed_bug` (after fix is shipped)                   |
+| `candidate_boundary`         | `confirmed_boundary` (precondition documented)                 |
+| `projection_risk`            | `confirmed_projection_risk` (regression guard added)           |
+| `assumption_counterexample`  | `confirmed_assumption_necessary`                               |
+| `unexpected`                 | `pending_investigation` (must not remain in this state)        |
+
+The traceability ledger has additional sub-statuses (`shipped`,
+`reverted`) that record the deployment outcome of `permitted_bug_fix`
+findings; for the threat-model classification this is one bucket.
+
+## 5.A Economic and game-theoretic threats
+
+The threats in §3 are consensus-layer: an adversary tries to subvert
+the *protocol* via Byzantine behavior. The threats below are
+*game-theoretic*: even when every protocol guard from §3 holds, an
+adversary may choose not to play by the protocol's intended
+incentives. The defensive primitives at this layer are economic
+(stake, slashing penalty, opportunity cost) rather than formal.
+
+The reference economic model for Proof-of-Stake security is
+**[Sal21]** F. Saleh, *Blockchain Without Waste: Proof-of-Stake*,
+*Review of Financial Studies* 34(3):1156–1190, 2021,
+**doi:10.1093/rfs/hhaa075**.
+
+### 5.A.1 Rational adversary
+
+**Threat.** A profit-maximizing adversary computes the expected
+profit `π` of an attack and compares it to the slashing penalty
+`σ · stake` (where `σ ∈ (0, 1]` is the slashing fraction). If
+`π > σ · stake`, the attack is rationally pursued.
+
+**Assumption.** Adversary knows their stake, the slashing fraction,
+and the expected attack profit (e.g., a successful double-spend
+amount). The protocol does not assume the adversary is honest; it
+assumes they are *cost-rational*.
+
+**Defense.** Set `σ` and the maximum-stake-per-validator cap such
+that `σ · stake` exceeds any single-attack profit by a margin chosen
+by the operator. The F1R3FLY default is `σ = 1` (the entire bond is
+forfeited), which makes the rational-adversary condition reduce to
+`π > stake` — i.e., the attack must extract more value than the
+validator has staked. *Crypto-economic security* is then bounded
+below by the aggregate bonded stake.
+
+**Residual risk.** A *very* well-funded attacker may stake the
+attack capital, execute the attack, and exit. The protocol relies
+on operators choosing `σ` and bond caps such that this is
+unprofitable. T-7 (`slash_zeros_bond`) formally guarantees the
+penalty is applied; the *economic* claim that `σ · stake > π` is
+empirical.
+
+**Formal artifact.** None at the consensus layer; `[Sal21] §3`
+formalizes the assumption.
+
+### 5.A.2 Bribery
+
+**Threat.** An external party (a *briber*) offers a payment `β` to
+a validator in exchange for misbehavior. If `β + π > σ · stake`,
+the validator may rationally accept.
+
+**Assumption.** Bribes are exogenous to the protocol; the protocol
+cannot observe them.
+
+**Defense.** (1) Slashing makes the penalty *immediate* and *fully
+attributable* — the bribed validator pays publicly. (2) Slashing
+is a *public good*: every honest validator's stake benefits from
+each successful slash, so honest validators have a positive
+expected return from detecting and reporting misbehavior. (3) The
+protocol does not assume validators are unbribable; it assumes the
+*marginal* validator finds bribes unprofitable at margin.
+
+**Residual risk.** A briber who can target a coalition of size
+`> F = ⌊(n−1)/3⌋` can attempt a Byzantine attack. T-12 (BFT-quorum
+preservation) ensures that *if* such a coalition acts, the protocol
+correctly identifies them; the briber and the bribed coalition all
+forfeit stake.
+
+**Formal artifact.** T-12 (collusion-resistance / BFT bound)
+provides the upper bound on coalition size before safety is at risk;
+the economic-incentive layer is treated qualitatively.
+
+### 5.A.3 Long-range attack
+
+**Threat.** An adversary acquires the private keys of validators
+who unbonded long ago (perhaps the keys were sold or stolen after
+unbonding). They use these keys to sign a *historical* alternative
+chain branching from before the validators unbonded, claiming the
+alternative branch is the canonical history.
+
+**Assumption.** Unbonded validators may behave arbitrarily with
+their old keys; PKI revocation cannot be assumed.
+
+**Defense.** (1) **Weak-subjectivity checkpointing.** A newly-
+joining or long-offline node must consult a recent trusted
+checkpoint (e.g., a snapshot signed by current validators) before
+deciding the canonical chain. The slashing protocol does not on its
+own defend against long-range; weak-subjectivity is required at the
+network/operations layer. (2) **Bounded evidence retention window.**
+T-12RET ensures stale evidence does not authorize current slashes;
+symmetrically, stale signatures from an unbonded key cannot
+*demote* a current validator.
+
+**Residual risk.** A node that has been *offline longer than the
+weak-subjectivity period* may be tricked by a long-range
+alternative chain. Operations protocol (not consensus): rejoin via
+a fresh checkpoint.
+
+**Formal artifact.** T-12RET (`Inv_TemporalRetentionBoundary`
+family). Out-of-scope for the bisimilarity claim T-15 (weak
+subjectivity is in the §13 scope-boundaries clause).
+
+### 5.A.4 Censorship-as-attack
+
+**Threat.** A proposer omits valid evidence — specifically, an
+`EquivocationRecord` or `SlashDeploy` it could have included — to
+delay or prevent slashing.
+
+**Assumption.** Proposer rotation is fair; eventually a non-
+censoring proposer takes over.
+
+**Defense.** (1) T-12V (view-merge over-approximation): merged
+local evidence views over-approximate each input, so a censoring
+proposer cannot *erase* evidence from the merged view of the next
+honest proposer. (2) T-12PF (proposer fairness boundary): under
+the fair-proposer assumption, every offender is eventually
+included by a non-censoring proposer.
+
+**Residual risk.** If *every* proposer in the active set is
+censoring (i.e., the active set is `> F` Byzantine), T-12 is
+violated and the protocol is already in BFT-violation territory.
+
+**Formal artifact.** T-12V, T-12PF; Sage Finding 88
+(evidence-denial min-cut).
+
+### 5.A.5 Withholding-as-attack
+
+**Threat.** A validator signs an invalid or equivocating block but
+withholds it until releasing it is maximally profitable (e.g.,
+after a high-value finalization window passes).
+
+**Assumption.** Gossip-fairness: every signed block eventually
+propagates to honest validators.
+
+**Defense.** T-12RET (temporal retention boundary): evidence remains
+authorizable for a configured retention window, so a withheld block
+released within the window still triggers slashing. T-9.10 ensures
+withdrawal cannot complete inside the slash window.
+
+**Residual risk.** Releasing outside the retention window: the
+attack succeeds *but the attacker has also forfeited the
+profitability of the withheld signing* (they cannot earn rewards
+from the withheld branch). The economic balance is delicate; the
+operator-chosen retention window must cover gossip + inclusion
+latency with a margin.
+
+**Formal artifact.** T-12RET, T-9.10.
+
+### 5.A.6 Nothing-at-stake / costless simulation
+
+**Threat.** In a *naïve* PoS without slashing, a validator can sign
+multiple competing chains "just in case" — there is no cost to
+voting on every fork. This is the *original* motivation for
+slashing.
+
+**Defense.** This is the threat slashing *exists to address*. T-7
+(`slash_zeros_bond`) is the slashing penalty; T-9.1 (slashable
+ignorable equivocation) extends the penalty to ignorable variants
+that a naïve nothing-at-stake validator would emit.
+
+**Formal artifact.** T-7, T-9.1 (the entire slashing protocol).
 
 ## 5. Exploratory Frontier Extensions
 

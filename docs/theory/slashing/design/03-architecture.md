@@ -1,15 +1,25 @@
 # 03 · Architecture
 
-## 3.1 Five layers, thirteen sub-components
+## 3.1 Five layers, eleven active components plus two data artifacts
 
 The slashing subsystem is structured as **five layers**, each with
-**two to four sub-components**, totalling **thirteen sub-components**.
-The layering reflects the *direction of data flow* through a slashing
-event: a misbehavior arrives → the **Detection layer** classifies it
-→ the **Storage layer** records evidence → the **Proposing layer**
-emits a `SlashDeploy` → the **Effect layer** executes the slash on-
-chain → the **Fork-choice layer** stops counting the slashed
-validator's votes.
+**two to four entities**, totalling **eleven active components plus
+two data artifacts** (`BondsMap`, `CoopVault`) — **thirteen
+sub-components in all**. The layering reflects the *direction of data
+flow* through a slashing event: a misbehavior arrives → the
+**Detection layer** classifies it → the **Storage layer** records
+evidence → the **Proposing layer** emits a `SlashDeploy` → the
+**Effect layer** executes the slash on-chain → the **Fork-choice
+layer** stops counting the slashed validator's votes.
+
+**Counting convention.** *Components* are code-bearing modules
+(Validate, EquivocationDetector, MultiParentCasperImpl, …);
+*data artifacts* are on-chain or in-memory data structures
+(Bond map, Coop vault) cited as first-class entities in Diagram 01.
+Where the spec abstract and Diagram 01 say "eleven components", they
+mean the code-bearing modules; where this chapter and the spec's
+§1.7 dependency DAG say "thirteen sub-components", they include the
+two data artifacts.
 
 [![Diagram 01 — Slashing subsystem topology: 13 sub-components in five layers](../diagrams/01-component-overview.svg)](../diagrams/01-component-overview.svg)
 

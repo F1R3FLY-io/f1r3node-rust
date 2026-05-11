@@ -4,11 +4,18 @@
 // (TLA+ trace replay), Item 4 (Track 7) of the principled-resolution
 // session.
 //
-// Reads a JSON trace file (produced by hand from a TLC schedule, or
-// dumped via the `scripts/ci/dump-tla-traces.sh` tool), applies each
-// step to a `SlashingTestHarness` via `tla_projection::apply_step`,
-// and asserts the projected final state matches the TLA+ model's
-// final state for that schedule.
+// Reads a JSON trace file (a hand-authored canonical schedule
+// mirroring a TLC counter-example or a representative invariant-
+// exercising path; see `scripts/ci/dump-tla-traces.sh` for the
+// curation workflow), applies each step to a `SlashingTestHarness`
+// via `tla_projection::apply_step`, and asserts the projected final
+// state matches the TLA+ model's final state for that schedule.
+//
+// Trace JSONs at `tla_traces/*.json` are **hand-authored**, NOT
+// auto-generated. When a TLA+ action signature changes, the
+// affected JSON must be edited manually using the workflow in
+// `scripts/ci/dump-tla-traces.sh` (deliberately-false-invariant
+// trick → copy TLC counter-example → restore .cfg).
 //
 // Trace files are stored under
 // `casper/tests/slashing/tla_traces/*.json`. One file per spec.

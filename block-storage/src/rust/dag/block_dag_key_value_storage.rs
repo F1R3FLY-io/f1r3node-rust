@@ -504,10 +504,25 @@ impl BlockDagKeyValueStorage {
         })
     }
 
+    // The following three methods bypass `global_lock` — production code MUST
+    // route through `access_equivocations_tracker` to honor the Bug #2 / T-9.2
+    // atomicity contract (see `docs/theory/slashing/slashing-verification.md`
+    // §9.2 and `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They
+    // remain `pub` so cross-crate integration tests can read tracker state
+    // directly; the `#[deprecated]` attribute fails CI on any production call
+    // site that compiles with `-D warnings`.
+    #[deprecated(
+        note = "Bug #2 / T-9.2: bypasses global_lock. Use access_equivocations_tracker for any RMW. Test-only."
+    )]
+    #[doc(hidden)]
     pub fn equivocation_records(&self) -> Result<HashSet<EquivocationRecord>, KvStoreError> {
         self.equivocation_tracker_index.data()
     }
 
+    #[deprecated(
+        note = "Bug #2 / T-9.2: bypasses global_lock. Use access_equivocations_tracker for any RMW. Test-only."
+    )]
+    #[doc(hidden)]
     pub fn insert_equivocation_record(
         &self,
         record: EquivocationRecord,
@@ -515,6 +530,10 @@ impl BlockDagKeyValueStorage {
         self.equivocation_tracker_index.add(record)
     }
 
+    #[deprecated(
+        note = "Bug #2 / T-9.2: bypasses global_lock. Use access_equivocations_tracker for any RMW. Test-only."
+    )]
+    #[doc(hidden)]
     pub fn update_equivocation_record(
         &self,
         mut record: EquivocationRecord,

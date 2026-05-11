@@ -128,14 +128,14 @@ literal byte `1` in the `splitByte` call.
 
 [![Diagram 07 — PoS.slash() Rholang activity flow](../diagrams/07-activity-pos-slash-contract.svg)](../diagrams/07-activity-pos-slash-contract.svg)
 
-The contract lives at `casper/src/main/resources/PoS.rhox:435-495`
+The contract lives at `casper/src/main/resources/PoS.rhox:446-507`
 (signature on line 436; lines 432-435 are the block-comment header).
 
 The activity flow:
 
 1. **Receive** `(deployerId, blockHash, sysAuthToken, returnCh)`.
 2. **Auth-token check** — `sysAuthTokenOps!("check", sysAuthToken,
-   *isValidTokenCh)` (PoS.rhox:437-439). If the token is invalid,
+   *isValidTokenCh)` (PoS.rhox:448). If the token is invalid,
    `returnCh!((false, "Invalid system auth token"))` and stop.
 3. **Parallel reads (fork-join):**
    - `getInvalidBlocks` → `invalidBlocks` map.
@@ -143,15 +143,20 @@ The activity flow:
 4. **Atomic state-update wrapper** — `runMVar(stateCh, …)`.
 5. **Identify the offender:**
    - If `blockHash ∈ invalidBlocks`, then `validator ← invalidBlocks[blockHash]`.
-   - Else (degraded path, no invalid-block evidence):
-     `validator ← userPk` — slash whoever submitted the deploy.
+   - Else: the contract returns `(false, "invalid slash evidence")`
+     and no state mutation occurs (`PoS.rhox:497`). There is **no**
+     fallback to "slash whoever submitted the deploy" — that would
+     over-broaden the threat surface (a malicious sender could slash
+     an honest deployer by submitting a bogus `blockHash`). The
+     stricter rejection is intentional and is the only safe choice
+     under Bug #12 / T-9.13.
 6. **Read the offender's bond:** `valBond ← state.allBonds[validator]`.
 7. **Transfer** `valBond` to the Coop vault via
    `@posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
    *transferDoneCh)`.
 8. **Wait for transfer ack** on `transferDoneCh`:
    - On **success**: atomically construct the new state in one
-     `stateUpdateCh!` write at `PoS.rhox:473-482`:
+     `stateUpdateCh!` write at `PoS.rhox:477-486`:
      ```
      atomic stateUpdate(state', (true, Nil)) where
        state'.allBonds          := state.allBonds[validator := 0]

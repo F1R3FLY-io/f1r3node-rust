@@ -92,7 +92,7 @@ After the prior renaming pass, T-13 is split into three
 sub-theorems, one per projection:
 
 - **T-13a (Bonds projection).** *(`t_13_bm_slash_preserves_bonds_bisim`,
-  `Bisimulation.v:77`.)* If `bonds_bisim(b₁, b₂)`, then
+  `Bisimulation.v:116`.)* If `bonds_bisim(b₁, b₂)`, then
   `bonds_bisim(bm_slash(b₁, v), bm_slash(b₂, v))`.
 
 - **T-13b (Records projection).** *(`records_bisim_strong_preserved_update`,
@@ -107,10 +107,11 @@ sub-theorems, one per projection:
 
 ## 10.6 Theorem T-14 (Weak barbed equivalence)
 
-**Statement.** *(`weak_barbed_equiv` (relation, `Bisimulation.v:367`),
-`weak_barbed_equiv_refl` (`Bisimulation.v:376`),
-`weak_barbed_equiv_sym` (`Bisimulation.v:388`), and
-`weak_barbed_equiv_trans`.)* The five-component relation
+**Statement.** *(`weak_barbed_equiv` (relation, `Bisimulation.v:466`),
+`weak_barbed_equiv_refl` (`Bisimulation.v:475`),
+`weak_barbed_equiv_sym` (`Bisimulation.v:487`), and
+`weak_barbed_equiv_trans` (`Bisimulation.v:502`).)* The five-component
+relation
 `weak_barbed_equiv` is reflexive, symmetric, and transitive.
 
 ```
@@ -125,7 +126,7 @@ weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)
 ## 10.7 Theorem T-15 (split into a/b)
 
 - **T-15a (Pipeline composition).** *(`t_15_pipeline_step_preserves_R`,
-  `MainTheorem.v:335`.)* Define a pipeline step as the composition
+  `MainTheorem.v:546`.)* Define a pipeline step as the composition
 
   ```
   pipeline_step(b, rs, sl, v, lm, offender, baseSeq, h)
@@ -140,7 +141,7 @@ weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)
   consistently on both sides preserves all five components.
 
 - **T-15b (Composed bisimulation closure).** *(`main_bisimilarity_theorem`,
-  `MainTheorem.v:232`.)* For every component triple, the slash
+  `MainTheorem.v:428`.)* For every component triple, the slash
   transition preserves component-wise R-equivalence.
 
 ## 10.8 What T-15 lets you conclude
@@ -172,16 +173,25 @@ The bisimilarity claim is **modulo**:
   orders but agree on element membership. The bisimilarity is
   *value-level*, not byte-level on-disk equality.
 
-- **Eight Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8,
-  T-9.10) and two Rust-introduced regression fixes (T-9.2, T-9.11)**.
-  T-9.2 restores Rust↔Scala convergence for tracker atomicity. T-9.11
-  preserves the old verdict for complete latest-message views and
-  intentionally diverges only from the buggy pre-fix behavior where
-  missing pointers aborted traversal or duplicate child paths were
-  over-counted. T-9.10 closes the withdrawal-flow analog of T-9.4's
-  slash-arm transfer-failure FIXME; both are common-source fixes that
-  apply to Rust and Scala equally via the shared
-  `casper/src/main/resources/PoS.rhox`.
+- **Sixteen documented bug-fix deltas** comprising:
+  - **Eight Scala-inherited fixes** (T-9.1, T-9.3–T-9.8, T-9.10) that
+    restore Rust↔Scala convergence;
+  - **Two Rust-introduced regression fixes** (T-9.2, T-9.11): T-9.2
+    restores Rust↔Scala convergence for tracker atomicity. T-9.11
+    preserves the old verdict for complete latest-message views and
+    intentionally diverges only from the buggy pre-fix behavior
+    where missing pointers aborted traversal or duplicate child
+    paths were over-counted.
+  - **Five Rust-source-confirmed authorization / projection /
+    liveness / arithmetic / projection-cardinality fixes** —
+    Bugs #12..#16 discharged by T-9.13, T-9.12, T-LivenessGap
+    (`deploy_epoch_matches_target`), T-9.14, and T-9.15 respectively;
+    plus the T-Auth corollary for the system-auth-token guard.
+  T-9.10 closes the withdrawal-flow analog of T-9.4's slash-arm
+  transfer-failure FIXME; both are common-source fixes that apply
+  to Rust and Scala equally via the shared
+  `casper/src/main/resources/PoS.rhox`. See §09 for the canonical
+  list of all sixteen.
 
 - **The deliberate Rust-side widening at bug #9 (T-9.9)** which
   admits self-correcting blocks Scala rejects. This is the **only
@@ -262,7 +272,14 @@ found, repeat:
    failure surface to its detection / recovery story.
 9. **Add a test-replay trace** under
    `casper/tests/slashing/tla_traces/` and a `replay_mc_*` test
-   in `tla_trace_replay.rs`.
+   in `tla_trace_replay.rs`. **Trace JSONs are hand-authored**,
+   not auto-generated: the workflow at
+   `scripts/ci/dump-tla-traces.sh` documents how to coax a TLC
+   counter-example trace out by deliberately injecting a false
+   invariant, then transcribing the action sequence into the
+   JSON schema. The Rust harness replays the JSON; if the TLA+
+   action signature changes, the JSON must be regenerated
+   manually.
 10. **Apply the fix** in the relevant production source location
     only after every formal artefact above type-checks /
     TLC-cleans.

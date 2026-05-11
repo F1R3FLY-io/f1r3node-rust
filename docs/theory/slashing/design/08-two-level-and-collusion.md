@@ -96,7 +96,7 @@ set of validators whose invalid blocks `v` cited as justifications
 without a corresponding `SlashDeploy`.
 
 **Theorem T-11 (Level-2 termination and bounded stabilization).**
-*(`t_11_level_2_termination`, `TwoLevelSlashing.v:126`.)* After
+*(`t_11_level_2_termination`, `TwoLevelSlashing.v:331`.)* After
 `|V|` iterations of the slash closure, the slashed set is still
 contained in `V`:
 
@@ -119,7 +119,7 @@ already in `universe` (by `slash_iter_step_incl`). The invariant
 iterations preserve it. ∎
 
 **Theorem T-12 (Collusion-resistance / BFT-quorum preservation).**
-*(`t_12_bft_quorum_preservation`, `TwoLevelSlashing.v:174`.)* Under
+*(`t_12_bft_quorum_preservation`, `TwoLevelSlashing.v:379`.)* Under
 the standard BFT precondition `|closure| ≤ F = ⌊(n − 1) / 3⌋` per
 [LSP82], the slash closure preserves
 `|universe| − |closure| ≥ |universe| − F`. With strict `F < |universe|`,

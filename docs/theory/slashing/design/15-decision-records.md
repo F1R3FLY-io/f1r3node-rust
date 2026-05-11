@@ -90,3 +90,27 @@ underflow, and proposer `seq + 1` must fit in `i32`.
 | --- | --- |
 | Wrapping arithmetic | Can corrupt record keys and differ between debug and release behavior. |
 | Saturating arithmetic | Avoids panic but aliases boundary values into real record keys. |
+
+## DR ↔ Bug ↔ Theorem cross-reference
+
+Each Decision Record was motivated by a specific bug class and is
+discharged by a specific theorem. The table below makes the
+linkage explicit so a reader can move bidirectionally between the
+operational decision (this file), the bug taxonomy (§09), and the
+formal claim (verification §9 / MainTheorem.v).
+
+| DR   | Bug    | Headline theorem                                                | Rocq alias                                  |
+|------|--------|-----------------------------------------------------------------|---------------------------------------------|
+| DR-1 | #13    | T-9.12 — Stale evidence cannot slash a same-key rebond         | `main_T9_12_stale_evidence_not_authorized`  |
+| DR-2 | #14    | T-LivenessGap — Authorized invalid-block evidence index path   | `deploy_epoch_matches_target`               |
+| DR-3 | #12    | T-9.13 — Unknown / unauthorized slash deploys are no-ops       | `main_T9_13_unknown_slash_evidence_noop`    |
+| DR-3 | (corollary) | T-Auth — Auth-token check rejects invalid tokens          | `main_TAuth_invalid_token_noop`, `main_TAuth_valid_token_equiv` |
+| DR-4 | #16    | T-9.15 — Duplicate justifications rejected before projection   | `main_T9_15_duplicate_justifications_rejected` |
+| DR-5 | #15    | T-9.14 — Checked sequence arithmetic at boundary               | `main_T9_14_checked_pred_positive`          |
+
+DR-1 through DR-5 each cover one of the Rust-source-confirmed bug
+classes #12..#16. The Rocq aliases above all live in
+`formal/rocq/slashing/theories/MainTheorem.v` and resolve to the
+corresponding underlying lemmas in the relevant `BugFix*.v` files
+(e.g. `BugFixSlashAuthorization.v`, `ValidatorLifetime.v`,
+`BugFixSeqArithmetic.v`, `BugFixDuplicateJustifications.v`).

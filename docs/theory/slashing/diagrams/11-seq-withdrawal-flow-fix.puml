@@ -38,20 +38,22 @@ skinparam sequence {
 skinparam defaultFontName "sans-serif"
 skinparam defaultFontSize 11
 
-title Bug #10 — post-fix withdrawal-flow with transfer-failure handling
+title Bug #10 — withdrawal-flow transfer-failure handling (pre-fix vs post-fix)\n(production application: PoS.rhox:615-651)
 
-participant "removeQuarantinedWithdrawers" as RQW
-participant "payWithdraw" as PW
-participant "posVault.transfer" as PVT
-participant "computeRemove" as CR
-participant "state" as STATE
+participant "removeQuarantinedWithdrawers" as RQW #D1C4E9
+participant "payWithdraw" as PW #D1C4E9
+participant "posVault.transfer" as PVT #BBDEFB
+participant "computeRemove" as CR #D1C4E9
+participant "state" as STATE #ECEFF1
+
+== Pre-fix (Bug #10 — fund loss) — see design §11.11, lines 330–343 ==
 
 [-> RQW : block_number ≥ k\n(quarantine elapsed for V)
 
-RQW -> RQW : ListOps.filter(\n  state.withdrawers.toList(),\n  isQuarantineFinished\n) → [V]
-RQW -> PW : unorderedParMap [V] payWithdraw payRet
+RQW -[#1565C0]> RQW : ListOps.filter(\n  state.withdrawers.toList(),\n  isQuarantineFinished\n) → [V]
+RQW -[#00838F]> PW : unorderedParMap [V] payWithdraw payRet
 
-PW -> PVT : posVault!("transfer",\n  V_vault, 60, posAuthKey,\n  transferResultCh)
+PW -[#6A1B9A]> PVT : posVault!("transfer",\n  V_vault, 60, posAuthKey,\n  transferResultCh)
 
 note over PVT #FFCDD2
   TRANSFER FAILS
@@ -59,7 +61,53 @@ note over PVT #FFCDD2
   vault deploy quota exhausted)
 end note
 
-PVT --> PW : transferResultCh!\n  (false, "balance-low")
+PVT -[#C62828]-> PW : transferResultCh!\n  (false, "balance-low")
+
+note over PW #FFCDD2
+  PRE-FIX: payWithdraw ignores
+  transferResult and returns
+  unconditional success
+end note
+
+PW -[#C62828]> RQW : resultCh!((V, true))  ' UNCONDITIONAL
+
+RQW -[#00838F]> CR : ListOps.fold(\n  payResults, state, computeRemove,\n  returnCh\n)
+
+note over CR #FFCDD2
+  PRE-FIX: computeRemove runs
+  delete unconditionally (transfer
+  failure was hidden by payWithdraw)
+end note
+
+CR -[#E65100]> STATE : state.withdrawers.delete(V)
+CR -[#E65100]> STATE : state.committedRewards.delete(V)
+STATE -[#C62828]> CR : updatedState (V removed,\nbut V's 60 tokens never\nreached V_vault — funds lost)
+
+CR -[#C62828]-> RQW : returnCh!(updatedState)
+
+note over RQW, STATE #FFCDD2
+  Pre-fix outcome:
+    V loses 60 tokens; posVault keeps them
+    or they are unrecoverable depending on
+    the underlying failure cause.
+    total_funds = posVault + Σ user_vaults
+    invariant VIOLATED (-60).
+end note
+
+== Post-fix (Bug #10 fix; T-9.10 / T-9.10′ / T-9.10″) ==
+
+[-> RQW : block_number ≥ k\n(quarantine elapsed for V)
+
+RQW -[#1565C0]> RQW : ListOps.filter(\n  state.withdrawers.toList(),\n  isQuarantineFinished\n) → [V]
+RQW -[#00838F]> PW : unorderedParMap [V] payWithdraw payRet
+
+PW -[#6A1B9A]> PVT : posVault!("transfer",\n  V_vault, 60, posAuthKey,\n  transferResultCh)
+
+note over PVT #FFCDD2
+  TRANSFER FAILS (same cause as above)
+end note
+
+PVT -[#C62828]-> PW : transferResultCh!\n  (false, "balance-low")
 
 note over PW #BBDEFB
   POST-FIX: pattern-match on
@@ -67,17 +115,17 @@ note over PW #BBDEFB
 end note
 
 alt transferResult = (true, _)
-  PW -> RQW : resultCh!((V, true))
+  PW -[#2E7D32]> RQW : resultCh!((V, true))
 else transferResult = (_, _)  ' failure path
-  PW -> RQW : resultCh!((V, false))
+  PW -[#C62828]> RQW : resultCh!((V, false))
 end
 
-RQW -> CR : ListOps.fold(\n  payResults, state, computeRemove,\n  returnCh\n)
+RQW -[#00838F]> CR : ListOps.fold(\n  payResults, state, computeRemove,\n  returnCh\n)
 
 alt success = true
-  CR -> STATE : state.withdrawers.delete(V)
-  CR -> STATE : state.committedRewards.delete(V)
-  STATE -> CR : updatedState' (V removed)
+  CR -[#E65100]> STATE : state.withdrawers.delete(V)
+  CR -[#E65100]> STATE : state.committedRewards.delete(V)
+  STATE -[#2E7D32]> CR : updatedState' (V removed)
 else success = false
   note over CR #FFCDD2
     NO MUTATION:
@@ -85,10 +133,10 @@ else success = false
     with (50, k); rewards intact.
     total_funds invariant preserved.
   end note
-  CR -> STATE : updatedState (no change)
+  CR -[#FF6F00]> STATE : updatedState (no change)
 end
 
-CR --> RQW : returnCh!(updatedState)
+CR -[#2E7D32]-> RQW : returnCh!(updatedState)
 
 note over RQW, STATE #C8E6C9
   Per-validator safety (T-9.10):

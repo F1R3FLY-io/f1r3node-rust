@@ -4,12 +4,17 @@
 
 > **Abstract.** This document gives a complete normative specification of the
 > slashing layer of the F1R3FLY CBC Casper consensus implementation. It
-> formalizes the eleven components of the slashing subsystem, the labeled
-> transition system that connects them, the validator lifecycle, and the
+> formalizes the **eleven active components** plus **two data artifacts**
+> (Bond map, Coop vault) — together **thirteen sub-components grouped
+> into five layers** — of the slashing subsystem, the labeled transition
+> system that connects them, the validator lifecycle, and the
 > bisimilarity claim between the Rust port and the Scala original. It
-> enumerates eleven identified bug-fix deltas — nine inherited from the
-> Scala upstream, one introduced by the Rust port — and specifies their
-> corrected behavior. Every claim is anchored to a Rocq theorem in
+> enumerates **sixteen identified bug-fix deltas** — nine inherited
+> from the Scala upstream, two introduced by the Rust port (bugs #2 and
+> #11), and five Rust-source-confirmed authorization / projection /
+> liveness / arithmetic / projection-cardinality gaps surfaced by the
+> Sage and Hypothesis traceability passes — and specifies their corrected
+> behavior. Every claim is anchored to a Rocq theorem in
 > `formal/rocq/slashing/` and a TLA+ invariant in `formal/tlaplus/slashing/`,
 > with the proofs translated to mathematical prose in the companion
 > verification document `slashing-verification.md`.
@@ -32,6 +37,7 @@
 12. [Use-case catalog](#12-use-case-catalog)
 13. [Scope boundaries](#13-scope-boundaries)
 14. [References](#14-references)
+15. [Authorized Slash Evidence](#15--authorized-slash-evidence)
 
 ---
 
@@ -148,7 +154,7 @@ artifacts may still use the alias.
 | `slashing-verification.md`          | ~1,300 lines markdown                           |
 | `formal/rocq/slashing/theories/*.v` | 21 modules / ~3,500 lines                       |
 | `formal/tlaplus/slashing/*.tla`     | 5 base specs + 8 MC instances / ~1,100 lines    |
-| PlantUML sources                    | 10 diagrams / ~1,500 lines                      |
+| PlantUML sources                    | 11 diagrams / ~1,700 lines                      |
 | Total new artifact                  | ~9,500 lines                                    |
 
 ### 1.7 Component dependency DAG
@@ -217,7 +223,7 @@ specification is self-contained.
 | **RMW**   | Read-Modify-Write                 | The atomic primitive bug #2 protects (§7.2).                  |
 | **TLC**   | TLA+ model checker (Lamport's)    | State-space exploration of TLA+ models (§10).                 |
 | **LTS**   | Labeled Transition System         | The slashing pipeline's formal model `T = (S, L, →)` (§3).    |
-| **GHOST** | Greedy Heaviest-Observed Sub-Tree | Fork-choice rule [LSZ15] (§7).                                |
+| **GHOST** | Greedy Heaviest-Observed Sub-Tree | Fork-choice rule [SZ15] (§7).                                 |
 | **FFG**   | Friendly Finality Gadget (Casper) | Ethereum 2.0 slashing comparison anchor [BG19].               |
 | **DOS**   | Denial of Service                 | The vector closed by bug fix #1 (§10.1).                      |
 | **KV**    | Key-Value                         | Store abstraction underlying the equivocation tracker (§3.4). |
@@ -282,8 +288,10 @@ form `weak_barbed_equiv` as it appears in the Rocq mechanization.
 
 ### 2.4 InvalidBlock taxonomy
 
-The `InvalidBlock` enum has 26 variants. The 17 marked **slashable** in
-the current Rust source are:
+The `InvalidBlock` enum has **26 variants**. **17 are slashable
+pre-fix; 18 are slashable post-fix** (Bug #1 promotes
+`IgnorableEquivocation` from non-slashable to slashable). The 17
+pre-fix slashable variants in the current Rust source are:
 
 ```
 AdmissibleEquivocation,  NeglectedEquivocation,    NeglectedInvalidBlock,
@@ -527,7 +535,7 @@ remaining names to the unforgeable channels `sys:casper:deployerId`,
 `sys:casper:invalidBlockHash`, `sys:casper:authToken`, and
 `sys:casper:return`. Note: `invalidBlockHash` is a hex string in the
 deploy and must be converted via `.hexToBytes()` before being passed
-to `slash` (which expects raw bytes per `PoS.rhox:435`).
+to `slash` (which expects raw bytes per `PoS.rhox:446`).
 
 Source seed: `splitByte(1)` of `generateSlashDeployRandomSeed(selfId,
 seqNum)`. Endianness is little-endian on both sides; the bisimulation
@@ -548,7 +556,7 @@ across implementations — same byte layout, same `splitByte(1)` semantics.
 #### 3.4.1 PoS Rholang contract
 
 The on-chain `slash` method at
-`casper/src/main/resources/PoS.rhox:435-495` (signature on line 435;
+`casper/src/main/resources/PoS.rhox:446-507` (signature on line 446;
 lines 432-434 are the `new commitRewards in {` wrapper plus block-comment
 header preceding the signature). Same file is loaded into
 both Rust and Scala interpreters; the contract itself is bisimilar by
@@ -561,7 +569,7 @@ construction. The contract:
 4. Transfers the bond to the Coop vault.
 5. Updates `state.allBonds`, `state.activeValidators`,
    `state.committedRewards` as a single atomic `stateUpdateCh!`
-   map-construction at `PoS.rhox:473-482` (one map write, not three
+   map-construction at `PoS.rhox:477-486` (one map write, not three
    field writes).
 6. Returns `(true, Nil)` on `returnCh`.
 
@@ -754,16 +762,28 @@ proven against the three-field Rocq record.
 ```
 slash(ps, v) =
   | not authTokenValid                    ⟹ (ps, false)  [auth failure]
-  | ps.allBonds[v] = 0                    ⟹ (ps, true)   [no-op idempotent]
   | otherwise:
       let b = ps.allBonds[v]
-      transfer(coopVault, b)              [bug #4: assume success]
+      transfer(coopVault, b)              [bug #4: pattern-match on result]
       ps' = { allBonds[v] := 0;
               activeValidators := activeValidators \\ {v};
               committedRewards := committedRewards \\ {v};
               coopVaultBalance += b }
       return (ps', true)
 ```
+
+**Idempotence is structural, not branch-explicit.** The implementation
+at `PoS.rhox:446-507` does not read `state.allBonds[v]` to short-circuit
+on a second slash. Instead, a second slash on the same offender hits the
+same `invalidBlocks.contains(blockHash)` predicate (`PoS.rhox:461`), and
+on the second attempt one of two structural identities applies: either
+(a) the block is no longer in `invalidBlocks` (the invalid-block index
+has been pruned post-slash), and the contract returns
+`(false, "invalid slash evidence")` at `PoS.rhox:497`; or (b) the
+`posVault.transfer` of an already-zero `valBond` is a no-op map
+identity, and the subsequent `state.allBonds[v := 0]` overwrite of an
+already-zero entry leaves the state unchanged. The Rocq proof of T-Idem
+(`PoSContract.v:117`) is consistent with this structural realisation.
 
 ### 5.3 Theorems
 
@@ -813,9 +833,9 @@ For every PoS deploy invoking `@PoS!("slash", deployerId, blockHash,
 sysAuthToken, returnCh)` with `sysAuthToken` not equal to the system auth
 token introduced at PoS contract instantiation, the contract rejects the
 deploy at the first guard
-(`PoS.rhox:437-439`, `sysAuthTokenOps!("check", sysAuthToken,
+(`PoS.rhox:448`, `sysAuthTokenOps!("check", sysAuthToken,
 *isValidTokenCh)`) with `returnCh!((false, "Invalid system auth
-token"))` at `PoS.rhox:491`. No state mutation occurs and no transfer is
+token"))` at `PoS.rhox:503`. No state mutation occurs and no transfer is
 initiated. Rocq models this boundary with
 `execute_authenticated_slash_deploy`: invalid auth returns `(ps, false)`;
 valid auth is extensionally equal to `execute_slash_deploy`. TLA+ models the
@@ -948,14 +968,24 @@ Sl ← Sl ∪ {v : neglect(v) ∩ Sl ≠ ∅}
 
 starting from the direct equivocators.
 
+**Operational realisation.** The closure operator is realised
+**incrementally** by the per-block neglected-invalid-block predicate
+at `casper/src/rust/validate.rs:1059-1069`, not as a single sweep.
+As the DAG grows block-by-block, the set of validators marked
+`NeglectedInvalidBlock` converges to the same least-fixed-point that
+the Rocq closure (`TwoLevelSlashing.v`) computes by explicit
+iteration. The two are equivalent at DAG-saturation; the Rocq
+theorem `t_11_level_2_termination` (`TwoLevelSlashing.v:331`) bounds
+the iteration count by `|universe|`.
+
 ### 8.2 Theorems
 
 **Theorem 8.1 (T-11, Level-2 termination).**
-*(`t_11_level_2_termination`, `TwoLevelSlashing.v:126`.)* The slash closure
+*(`t_11_level_2_termination`, `TwoLevelSlashing.v:331`.)* The slash closure
 reaches a fixed point in at most `|V|` iterations.
 
 **Theorem 8.2 (T-12, Level-2 collusion-resistance).**
-*(`t_12_bft_quorum_preservation`, `TwoLevelSlashing.v:174`.)* Under the BFT
+*(`t_12_bft_quorum_preservation`, `TwoLevelSlashing.v:379`.)* Under the BFT
 precondition `|closure| ≤ F`, the slash closure preserves
 `|universe| − |closure| ≥ |universe| − F`. With `F = ⌊(n−1)/3⌋` per
 [LSP82], the active validator set after both levels of slashing fire
@@ -1142,7 +1172,7 @@ R = { (sR, sS) | sR.BondMap = sS.BondMap
 ### 9.2 Main theorems
 
 **Theorem 9.1 (T-13, Strong bisimilarity baseline).**
-*(`t_13_bm_slash_preserves_bonds_bisim`, `Bisimulation.v:77`.)* The bonds
+*(`t_13_bm_slash_preserves_bonds_bisim`, `Bisimulation.v:116`.)* The bonds
 bisimulation `bonds_bisim b1 b2` is preserved by `bm_slash`, meaning
 the `AdmissibleEquivocation → record → slash` happy path keeps the
 bond-component of `R` consistent across implementations. Companion
@@ -1151,10 +1181,10 @@ theorems `records_bisim_strong_preserved_update` and
 components.
 
 **Theorem 9.2 (T-14, Weak barbed bisimulation, full pipeline).**
-*(`weak_barbed_equiv` (relation, `Bisimulation.v:367`),
-`weak_barbed_equiv_refl` (`Bisimulation.v:376`), and
-`weak_barbed_equiv_sym` (`Bisimulation.v:388`), and
-`weak_barbed_equiv_trans`.)* Over all observable barbs
+*(`weak_barbed_equiv` (relation, `Bisimulation.v:466`),
+`weak_barbed_equiv_refl` (`Bisimulation.v:475`),
+`weak_barbed_equiv_sym` (`Bisimulation.v:487`), and
+`weak_barbed_equiv_trans` (`Bisimulation.v:502`).)* Over all observable barbs
 `x = {bonds, records, slashedSet, coopVault, forkChoice}`, the
 `weak_barbed_equiv` relation is reflexive, symmetric, and transitive.
 The per-component preservation theorems combined with
@@ -1195,18 +1225,25 @@ fixed, one Rust-introduced regression identified and fixed.
 
 ## 10 · Bug-fix manifest
 
-Ten numbered bug fixes. Each carries: origin, cause, location, corrected
-behavior, theorem name, bisimulation impact, and worked-example /
-diagram pointers. The corresponding TLC counter-example, where
+**Sixteen numbered bug fixes.** Each carries: origin, cause, location,
+corrected behavior, theorem name, bisimulation impact, and worked-example
+/ diagram pointers. The corresponding TLC counter-example, where
 applicable, fires under the pre-fix configuration and passes under the
-post-fix one.
+post-fix one. Bugs #1–#10 are Scala-inherited or Rust-introduced
+regressions covered by `T-9.1`..`T-9.10`. Bug #11 is a Rust-introduced
+detector-traversal regression (`T-9.11`). Bugs #12–#16 are
+Rust-source-confirmed authorization / projection / liveness /
+arithmetic / projection-cardinality gaps surfaced by the Sage and
+Hypothesis traceability passes, mechanized by `T-9.12`..`T-9.15`,
+`T-Auth`, and the `deploy_epoch_matches_target` lemma family. See
+[`design/09-bug-fixes-and-rationale.md`](../slashing/design/09-bug-fixes-and-rationale.md) §9.1 for the canonical headline table.
 
 ### 10.0 Bug-class summary
 
 | Bug | Theorem | Origin                                                   | Bisimilarity impact                                                        |
 |-----|---------|----------------------------------------------------------|----------------------------------------------------------------------------|
 | #1  | T-9.1   | Scala-inherited                                          | Preserving (both sides converge once fixed)                                |
-| #2  | T-9.2   | **Rust-introduced regression**                          | Preserving (closing Rust-only gap)                                         |
+| #2  | T-9.2   | **Rust-introduced regression**                           | Preserving (closing Rust-only gap)                                         |
 | #3  | T-9.3   | Scala-inherited                                          | Preserving                                                                 |
 | #4  | T-9.4   | Scala-inherited                                          | Preserving                                                                 |
 | #5  | T-9.5   | Scala-inherited                                          | Preserving                                                                 |
@@ -1215,7 +1252,12 @@ post-fix one.
 | #8  | T-9.8   | Scala-inherited                                          | Preserving                                                                 |
 | #9  | T-9.9   | Scala bug, Rust-fixed                                    | **Deliberate widening** (Rust admits self-correcting blocks Scala rejects) |
 | #10 | T-9.10  | Scala-inherited                                          | Preserving (withdrawal-flow analog of #4; closes fund-loss bug)            |
-| #11 | T-9.11  | **Rust-introduced regression**                          | Permitted bug fix (total detector traversal; distinct child hashes)        |
+| #11 | T-9.11  | **Rust-introduced regression**                           | Permitted bug fix (total detector traversal; distinct child hashes)        |
+| #12 | T-9.13  | Rust-source confirmed                                    | Permitted bug fix (unauthorized slash deploys rejected pre-replay)         |
+| #13 | T-9.12  | Rust-source confirmed                                    | Permitted bug fix (stale evidence cannot slash a same-key rebond)          |
+| #14 | T-LivenessGap (`deploy_epoch_matches_target`)            | Rust-source confirmed | Permitted bug fix (proposer derives candidates from authorized invalid-block evidence index) |
+| #15 | T-9.14  | Rust-source confirmed                                    | Permitted bug fix (checked sequence arithmetic at boundary)                |
+| #16 | T-9.15  | Rust-source confirmed                                    | Permitted bug fix (duplicate justifications rejected pre-projection)       |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
@@ -1404,7 +1446,7 @@ design*; T-9.9 establishes that the widening is sound.
   `Validate.scala:649-702`); the fix tightens the predicate on both
   sides identically.
 - **Worked example.** §11.9.
-- **Cause.** `validate.rs:875-985` (Scala `Validate.scala:649-702`)
+- **Cause.** `validate.rs:932-1037` (Scala `Validate.scala:649-702`)
   ignores regression of the block's own sender and defers to
   `check_equivocations`. But `check_equivocations` only compares the
   creator-justification *hash*, not the *sequence-number ordering*. A
@@ -1584,9 +1626,9 @@ design*; T-9.9 establishes that the widening is sound.
   `Inv_RemovedImpliesPaid`, `Inv_RewardsConsistent`,
   `Inv_TypeOK`) and the liveness property
   `Live_AllEventuallyPaid` under fair retry scheduling.
-- **Production application.** Applied at PoS.rhox:615-651
+- **Production application.** Applied at PoS.rhox:613-640
   (the post-fix `payWithdraw` + `computeRemove` rewrite). See
-  design §11.11 for the worked-example trace and design §9.13
+  design §11.11 for the worked-example trace and design §9.12
   for the rationale.
 
 ### 10.11 Bug #11 — Detector missing-pointer abort and duplicate-child over-count
@@ -1872,9 +1914,9 @@ Trace:
 7. Other validators replay bA: at the slash deploy,
    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh)
    reports !isValid because A's auth token does not match the
-   system token (PoS.rhox:437-439).
+   system token (PoS.rhox:448).
 8. PoS contract returns (false, "Invalid system auth token") on
-   returnCh (PoS.rhox:491).
+   returnCh (PoS.rhox:503).
 9. bA is rejected as a malformed system-deploy result.
    A's CPU and gossip bandwidth wasted.
 
@@ -2144,15 +2186,24 @@ The bisimilarity claim (T-15) is **modulo**:
   rho-calculus terms, justified in [MR05a]).
 - Iteration order on `BTreeSet` (Rust) vs `Set` (Scala) — value-level
   equality, not byte-level on-disk equality.
-- Eight Scala-inherited bug-fix deltas (T-9.1, T-9.3–T-9.8, T-9.10)
-  and two Rust-introduced regression fixes (T-9.2 and T-9.11), all of
-  which restore Rust↔Scala convergence except where T-9.11 deliberately
-  rejects the pre-fix missing-pointer abort and duplicate-child false
-  positive; **and** the deliberate Rust-side widening at bug #9 (T-9.9)
-  which admits self-correcting blocks Scala rejects. (See §10.0 for the
-  per-bug origin classification.) T-9.10 closes the withdrawal-flow analog
-  of T-9.4's slash-arm transfer-failure FIXME; both apply equally to
-  Rust and Scala via the shared `casper/src/main/resources/PoS.rhox`.
+- **Sixteen mechanized bug-fix deltas** comprising:
+  - Eight Scala-inherited fixes (`T-9.1`, `T-9.3`–`T-9.8`, `T-9.10`)
+    that restore Rust↔Scala convergence;
+  - Two Rust-introduced regression fixes (`T-9.2`, `T-9.11`) that
+    close Rust-only gaps; `T-9.11` deliberately rejects the pre-fix
+    missing-pointer abort and the duplicate-child false-positive;
+  - The deliberate Rust-side widening at Bug #9 (`T-9.9`) which
+    admits self-correcting blocks Scala rejects (sound by `T-9.9`);
+  - Five Rust-source-confirmed authorization / projection / liveness
+    / arithmetic / projection-cardinality fixes — Bugs #12..#16
+    discharged by `T-9.13`, `T-9.12`, `T-LivenessGap`
+    (`deploy_epoch_matches_target`), `T-9.14`, and `T-9.15`
+    respectively; see §10.0 for the per-bug origin classification.
+  T-9.10 closes the withdrawal-flow analog of T-9.4's slash-arm
+  transfer-failure FIXME; both apply equally to Rust and Scala via the
+  shared `casper/src/main/resources/PoS.rhox`. The `T-Auth` family
+  (system-auth-token guard) is a corollary of `T-9.13` for the
+  `SlashAuthorizedByEvidence` invariant.
 - An authenticated PKI identity layer (out of scope; T-15 holds
   modulo this assumption).
 
@@ -2160,123 +2211,42 @@ The bisimilarity claim (T-15) is **modulo**:
 
 ## 14 · References
 
-[BG19]
-    V. Buterin and V. Griffith.
-    *Casper the Friendly Finality Gadget*.
-    arXiv:1710.09437, 2019.
-    [doi:10.48550/arXiv.1710.09437](https://doi.org/10.48550/arXiv.1710.09437)
+The canonical bibliography for the slashing documentation suite —
+including DOIs, citation-usage map, and tool citations — is
+[`design/13-references.md`](./design/13-references.md). The inline
+`[CiteKey]` references throughout this specification resolve to
+entries in that single source of truth; this section is intentionally
+brief to avoid drift between the spec's bibliography and the design's.
 
-[BHKPQRSWZ20]
-    V. Buterin, D. Hernandez, T. Kamphefner, K. Pham, Z. Qiao, D. Ryan,
-    J. Sin, Y. Wang, Y. X. Zhang.
-    *Combining GHOST and Casper*.
-    arXiv:2003.03052, 2020.
-    [doi:10.48550/arXiv.2003.03052](https://doi.org/10.48550/arXiv.2003.03052)
+Quick-reference index for the cite-keys used in this document:
 
-[Z16]
-    V. Zamfir.
-    *The History of Casper* (Parts 1–5).
-    Medium, 2016.
-    [https://medium.com/@Vlad_Zamfir/the-history-of-casper-part-1-59233819c9a9](https://medium.com/@Vlad_Zamfir/the-history-of-casper-part-1-59233819c9a9)
+- `[BG19]` Buterin & Griffith, *Casper the Friendly Finality Gadget*
+- `[BHKPQRSWZ20]` Buterin et al., *Combining GHOST and Casper* (Gasper)
+- `[Z16]` Zamfir, *The History of Casper*
+- `[CBCCoq20]` Li, Șerbănuță, Diaconescu, Zamfir, Roșu — CBC Casper in Coq
+- `[BKM18]` Buchman, Kwon, Milosevic — Tendermint BFT
+- `[ABPT19]` Amoussou-Guenou et al. — Tendermint correctness
+- `[BBKMW20]` Braithwaite et al. — Tendermint formal model
+- `[LSP82]` Lamport, Shostak, Pease — Byzantine Generals
+- `[CL99]` Castro & Liskov — PBFT (TOCS extension at doi:10.1145/571637.571640)
+- `[Mil89]`, `[Mil99]`, `[SW01]`, `[San98]` — Process calculus / bisimulation
+- `[MR05a]`, `[MR05b]`, `[Lyb22]` — Rho-calculus / namespace logic
+- `[WWPTWEA15]`, `[GKMB17]` — Formal verification of distributed systems
+- `[SZ15]` Sompolinsky & Zohar — GHOST (FC 2015 ch. 32, doi:10.1007/978-3-662-47854-7_32)
+- `[LSZ15]` Lewenberg, Sompolinsky, Zohar — Inclusive Block-DAG (FC 2015 ch. 33)
+- `[HW90]` Herlihy & Wing — Linearizability
+- `[Sal21]` Saleh — *Blockchain Without Waste* (PoS economic security)
+- `[Rocq]`, `[Lamport02]`, `[YML99]`, `[Apalache19]`, `[Kani]`, `[Miri]`,
+  `[SageMath]`, `[proptest]`, `[loom]`, `[Hypothesis]`, `[cargo-fuzz]` —
+  Tool citations
+- `[ETH-SPEC]`, `[COSMOS-ADR009]` — Reference implementations
 
-[CBCCoq20]
-    *Formalizing Correct-by-Construction Casper in Coq*.
-    IEEE Xplore document 9169468, 2020.
-    [https://ieeexplore.ieee.org/document/9169468/](https://ieeexplore.ieee.org/document/9169468/)
-
-[BKM18]
-    E. Buchman, J. Kwon, Z. Milosevic.
-    *The latest gossip on BFT consensus*.
-    arXiv:1807.04938, 2018.
-    [doi:10.48550/arXiv.1807.04938](https://doi.org/10.48550/arXiv.1807.04938)
-
-[ABPT19]
-    Y. Amoussou-Guenou, A. Del Pozzo, M. Potop-Butucaru,
-    S. Tucci-Piergiovanni.
-    *Correctness of Tendermint-Core Blockchains*.
-    OPODIS 2018, LIPIcs 125, 16:1–16:16, 2019.
-    [doi:10.4230/LIPIcs.OPODIS.2018.16](https://doi.org/10.4230/LIPIcs.OPODIS.2018.16)
-
-[ETH-SPEC]
-    Ethereum Foundation.
-    *Phase 0 — Honest Validator* and *Phase 0 — Beacon Chain*.
-    `ethereum/consensus-specs`, accessed 2026-05-01.
-    [https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md](https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md)
-    [https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md](https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md)
-
-[COSMOS-ADR009]
-    Cosmos SDK Working Group.
-    *ADR 009: Evidence Module*.
-    [https://github.com/cosmos/cosmos-sdk/blob/main/docs/architecture/adr-009-evidence-module.md](https://github.com/cosmos/cosmos-sdk/blob/main/docs/architecture/adr-009-evidence-module.md)
-
-[LSP82]
-    L. Lamport, R. Shostak, M. Pease.
-    *The Byzantine Generals Problem*.
-    ACM TOPLAS, 4(3):382–401, 1982.
-    [doi:10.1145/357172.357176](https://doi.org/10.1145/357172.357176)
-
-[MR05a]
-    L. G. Meredith and M. Radestock.
-    *A Reflective Higher-order Calculus*.
-    *Electronic Notes in Theoretical Computer Science*, 141(5):49–67, 2005.
-    [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
-
-[WWPTWEA15]
-    J. R. Wilcox, D. Woos, P. Panchekha, Z. Tatlock, X. Wang, M. D. Ernst,
-    T. Anderson.
-    *Verdi: A Framework for Implementing and Formally Verifying Distributed Systems*.
-    PLDI 2015, 357–368.
-    [doi:10.1145/2737924.2737958](https://doi.org/10.1145/2737924.2737958)
-
-### Further Reading
-
-[Mil89] R. Milner. *Communication and Concurrency*. Prentice-Hall, 1989.
-ISBN 978-0131149847.
-
-[Mil99] R. Milner. *Communicating and Mobile Systems: The π-Calculus*.
-Cambridge University Press, 1999. ISBN 978-0521643207.
-
-[SW01] D. Sangiorgi and D. Walker. *The π-Calculus: A Theory of Mobile
-Processes*. Cambridge University Press, 2001. ISBN 978-0521781770.
-
-[San98] D. Sangiorgi. *On the bisimulation proof method*. *Mathematical
-Structures in Computer Science*, 8(5):447–479, 1998.
-[doi:10.1017/S0960129598002527](https://doi.org/10.1017/S0960129598002527)
-
-[Lyb22] S. Lybech. *Encodability and Separation for a Reflective
-Higher-Order Calculus*. arXiv:2209.02356, 2022.
-[doi:10.48550/arXiv.2209.02356](https://doi.org/10.48550/arXiv.2209.02356)
-
-[CL99] M. Castro and B. Liskov. *Practical Byzantine Fault Tolerance*.
-OSDI 1999, 173–186.
-[https://www.usenix.org/conference/osdi-99/practical-byzantine-fault-tolerance](https://www.usenix.org/conference/osdi-99/practical-byzantine-fault-tolerance)
-
-[GKMB17] V. B. F. Gomes, M. Kleppmann, D. P. Mulligan, A. R. Beresford.
-*Verifying Strong Eventual Consistency in Distributed Systems*. PACMPL,
-1(OOPSLA):109, 2017.
-[doi:10.1145/3133933](https://doi.org/10.1145/3133933)
-
-[BBKMW20] S. Braithwaite, E. Buchman, I. Konnov, Z. Milosevic,
-I. Stoilkovska, J. Widder, A. Zamfir.
-*Formal Specification and Model Checking of the Tendermint Blockchain
-Synchronization Protocol*. FMBC 2020, OASIcs 84, paper 10.
-[doi:10.4230/OASIcs.FMBC.2020.10](https://doi.org/10.4230/OASIcs.FMBC.2020.10)
-
-[LSZ15] Y. Lewenberg, Y. Sompolinsky, A. Zohar.
-*Inclusive Block Chain Protocols*. FC 2015, LNCS 8975, 528–547.
-[doi:10.1007/978-3-662-47854-7_33](https://doi.org/10.1007/978-3-662-47854-7_33)
-
-[MR05b] L. G. Meredith and M. Radestock.
-*Namespace Logic: A Logic for a Reflective Higher-Order Calculus*.
-TGC 2005, LNCS 3705, 353–369.
-[doi:10.1007/11580850_19](https://doi.org/10.1007/11580850_19)
-
-## 16. Authorized Slash Evidence
+## 15 · Authorized Slash Evidence
 
 This section is normative for the post-2026 vulnerability-resolution
 semantics.
 
-### 16.1 Validator lifetime
+### 15.1 Validator lifetime
 
 An **epoch** is `epoch(b) = ⌊blockNumber(b) / epochLength⌋` for
 `epochLength > 0`. A **validator lifetime** is the pair `(v, e)`, where `v`
@@ -2285,7 +2255,7 @@ is the validator public key and `e` is the epoch targeted by the evidence.
 Evidence for `(v, e₁)` does not authorize slashing `(v, e₂)` when `e₁ ≠ e₂`.
 This prevents old evidence from slashing a later same-key rebond.
 
-### 16.2 Authorization relation
+### 15.2 Authorization relation
 
 For an invalid block hash `h`, offender `v`, and epoch `e`:
 
@@ -2308,7 +2278,7 @@ Unknown invalid hashes, stale epochs, issuer mismatch, unbonded targets, and
 duplicate `(v, e)` slash targets are invalid block conditions. They are
 classified as slashable proposer faults.
 
-### 16.3 Candidate generation
+### 15.3 Candidate generation
 
 The proposer candidate source is the authorized invalid-block evidence index,
 not `invalid_latest_messages`. The candidate algorithm is:
@@ -2329,7 +2299,7 @@ The `minHash` rule is normative: candidate generation must not depend on set
 iteration order when several invalid blocks exist for the same offender in the
 same epoch.
 
-### 16.4 Checked arithmetic and justifications
+### 15.4 Checked arithmetic and justifications
 
 Legacy record key arithmetic `seq − 1` is checked. If it would underflow, the
 legacy `EquivocationRecord` key is not minted, but the invalid-block evidence

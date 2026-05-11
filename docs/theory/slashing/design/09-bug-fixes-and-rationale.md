@@ -25,12 +25,12 @@ convergence fixes that restore Rust↔Scala bisimilarity.
 | 8  | T-9.8   | Scala-inherited                | Preserving              | §11.10                  | 01      |
 | 9  | T-9.9   | Scala bug, Rust-fixed          | **Deliberate widening** | §11.5                   | 08      |
 | 10 | T-9.10  | Scala-inherited                | Preserving              | §11.11                  | 11      |
-| 11 | T-9.11  | **Rust-introduced regression** | **Permitted bug fix**   | UC-101–UC-108           | n/a     |
-| 12 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
-| 13 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
-| 14 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
-| 15 | T-9.14  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
-| 16 | T-9.15  | Rust-source confirmed          | **Permitted bug fix**   | authorization regressions | n/a   |
+| 11 | T-9.11  | **Rust-introduced regression** | **Permitted bug fix**   | §11.12 (UC-101–UC-108)    | n/a   |
+| 12 | T-9.13  | Rust-source confirmed          | **Permitted bug fix**   | §11.13 (unauthorized slash deploy) | n/a |
+| 13 | T-9.12  | Rust-source confirmed          | **Permitted bug fix**   | §11.14 (stale-evidence rebond)     | n/a |
+| 14 | T-LivenessGap (`deploy_epoch_matches_target`) | Rust-source confirmed | **Permitted bug fix** | §11.15 (authorized-index candidates) | n/a |
+| 15 | T-9.14  | Rust-source confirmed          | **Permitted bug fix**   | §11.16 (checked seq-arithmetic)    | n/a |
+| 16 | T-9.15  | Rust-source confirmed          | **Permitted bug fix**   | §11.17 (duplicate justifications)  | n/a |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
@@ -443,7 +443,7 @@ The eleven fixes interact in four notable ways:
    retry on a later block). Future `posVault.transfer` callsites,
    if added, must follow the same template.
 
-## 9.13 Bug #10 — PoS withdrawal transfer-failure FIXME
+## 9.12 Bug #10 — PoS withdrawal transfer-failure FIXME
 
 **Origin.** Scala-inherited.
 
@@ -518,7 +518,7 @@ explicit success / fail / retry actions and verify
 `Inv_NoFundsLost`, `Inv_TotalFundsConst`, `Inv_RemovedImpliesPaid`,
 `Inv_RewardsConsistent`, and `Live_AllEventuallyPaid`.
 
-## 9.14 Bug #11 — Detector traversal was partial and duplicate-child sensitive
+## 9.13 Bug #11 — Detector traversal was partial and duplicate-child sensitive
 
 **Origin.** Rust-introduced regression. The Scala/Rust bisimilarity
 target is maintained for complete latest-message views, but the fixed
@@ -564,13 +564,21 @@ executable exploit: missing pointers do not abort the detector, and only
 two distinct offender children or a known detected hash can trigger
 neglect.
 
-## 9.15 Bug #12 — Received slash deploys were not locally authorized
+## 9.14 Bug #12 — Received slash deploys were not locally authorized
 
 **Origin.** Rust-source confirmed vulnerability.
 
 **Cause.** Received blocks could carry a `SlashDeploy` whose invalid hash,
 issuer, target epoch, or target bond state was not checked against local
 slashing policy before replay.
+
+**Pre-fix behavior.** A Byzantine block sender could craft a block
+carrying a `SlashDeploy` referencing (a) an unknown invalid hash, (b)
+a bonded validator the local node had no evidence against, (c) an
+epoch outside the current authorization window, or (d) an issuer
+field forged to look like another validator. The local Rholang
+replay would execute the deploy *as if it were authorized*, mutating
+PoS state on the basis of evidence the local node had not validated.
 
 **Post-fix behavior.** Validation rejects unauthorized slash deploys before
 Rholang replay. The issuer must equal the block sender, the invalid hash must
@@ -583,12 +591,30 @@ each `(validator, epoch)` at most once.
 `Inv_RejectedSlashWithoutEvidenceNoPending`. Rust:
 `slash_authorization_regressions`.
 
-## 9.16 Bug #13 — Same-key rebond could inherit stale evidence
+**Why this matters.** Without the fix, slash authorization is *delegated to
+the block sender*: any block author could fire arbitrary slashes against
+any bonded validator, turning slashing — a defensive economic-security
+primitive — into an offensive griefing tool. The post-fix authorization
+relation `SlashAuthorizedByEvidence(local, deploy)` is the necessary
+locally-checked precondition for replaying any `SlashDeploy`.
+
+**Worked example:** §11.13.  **Diagram:** extends Diagram 05 (generic
+invalid-block dispatch) with the new pre-replay authorization filter
+at the `replay_runtime` boundary.
+
+## 9.15 Bug #13 — Same-key rebond could inherit stale evidence
 
 **Origin.** Rust-source confirmed vulnerability.
 
 **Cause.** Raw public-key identity does not distinguish an old validator
 lifetime from a later same-key rebond.
+
+**Pre-fix behavior.** Validator `v` bonds at epoch `e₁`, equivocates,
+is slashed and unbonded. Later, the same public key bonds again at
+epoch `e₂ > e₁`. The stale evidence from epoch `e₁` — still
+retained for replay determinism and chain integrity — could be used
+to fire a *second* slash against the rebonded `(v, e₂)` lifetime,
+even though the new lifetime is innocent.
 
 **Post-fix behavior.** Slash evidence is epoch-scoped. Evidence for `(v, e₁)`
 does not authorize a slash for `(v, e₂)` when `e₁ ≠ e₂`.
@@ -599,13 +625,31 @@ does not authorize a slash for `(v, e₂)` when `e₁ ≠ e₂`.
 `stale_invalid_evidence_is_not_an_authorized_slash_candidate` and
 `received_stale_slash_deploy_is_rejected_before_replay`.
 
-## 9.17 Bug #14 — Slash liveness depended on invalid latest messages
+**Why this matters.** A *rebond identity attack* — where the same
+public key returns to the active set after slashing — would let an
+adversary double-charge a validator for a single offence (once at
+each rebond) or replay an old slash to grief a now-innocent
+operator. The epoch-scoped authorization makes evidence identity
+strictly stronger than key identity.
+
+**Worked example:** §11.14.  **Diagram:** extends Diagram 06
+(validator lifecycle) with epoch-tagged `(v, eₖ)` lifetimes.
+
+## 9.16 Bug #14 — Slash liveness depended on invalid latest messages
 
 **Origin.** Rust-source confirmed liveness gap.
 
 **Cause.** The proposer generated slash deploys from
 `invalid_latest_messages()`, but invalid blocks are inserted as invalid and
 do not necessarily update latest-message state.
+
+**Pre-fix behavior.** A validator producing an invalid block had its
+invalid-block hash inserted into the DAG with the invalid flag, but
+the *latest-message* index — used by the proposer's slash candidate
+generator — was not updated to point at the invalid block. The
+proposer thus saw the offender's *previous* (valid) latest message
+and could not generate a slash deploy. The system would silently fail
+to slash a detected equivocator.
 
 **Post-fix behavior.** The proposer derives candidates from the authorized
 invalid-block evidence index, sorts deterministically, and emits at most one
@@ -615,12 +659,30 @@ slash deploy per current offender epoch.
 `Inv_NoInvalidLatestLivenessGap`. Rust:
 `current_epoch_invalid_evidence_is_authorized_once_per_offender`.
 
-## 9.18 Bug #15 — Sequence arithmetic used unchecked boundaries
+**Why this matters.** Slashing without liveness is hollow: if
+detection works but the slash deploy never emerges, the offender
+keeps the bond. The fix decouples slash-candidate generation from
+the latest-message index, restoring liveness for every detected,
+authorized invalid block.
+
+**Worked example:** §11.15.  **Diagram:** extends Diagram 08
+(justifications → neglect data-flow) with the new
+authorized-invalid-block-evidence-index path.
+
+## 9.17 Bug #15 — Sequence arithmetic used unchecked boundaries
 
 **Origin.** Rust-source confirmed hardening issue.
 
 **Cause.** `seq − 1` in evidence recording and proposer `seq + 1` could
 panic in debug builds or wrap/cast incorrectly in release-shaped paths.
+
+**Pre-fix behavior.** With `seq = 0` (genesis or freshly-bonded
+validator), `seq − 1` overflowed to `usize::MAX` on the unsigned
+path, or panicked under `debug_assertions` on the signed path; the
+record-key domain became invalid and the record-insert silently
+malfunctioned (key collision or store rejection). Symmetrically,
+`seq + 1` near `i32::MAX` could wrap into a negative sequence and
+fail block validation downstream.
 
 **Post-fix behavior.** The legacy record key uses checked predecessor logic
 and rejects nonpositive predecessor domains; the invalid evidence index still
@@ -631,15 +693,46 @@ and `i32` conversion.
 `checked_succ_bounded_sound`, `main_T9_14_checked_pred_positive`. Rust:
 `checked_sequence_arithmetic_rejects_boundaries`.
 
-## 9.19 Bug #16 — Duplicate justifications made detector projection ambiguous
+**Why this matters.** Boundary-arithmetic faults are not theoretical:
+the F1R3FLY consensus is a 24-7 process across many node instances,
+and a single panic or silent wrap at `seq = 0` or near `i32::MAX`
+could crash an operator's proposer or corrupt the on-chain evidence
+key space. Checked arithmetic plus explicit rejection of nonpositive
+domains *closes a panic-on-boundary class of bugs* that fuzz-testing
+alone would not necessarily catch.
+
+**Worked example:** §11.16.  **Diagram:** none (the fix is local to
+arithmetic in `equivocation_detector.rs` and `block_creator.rs`).
+
+## 9.18 Bug #16 — Duplicate justifications made detector projection ambiguous
 
 **Origin.** Rust-source confirmed validation gap.
 
 **Cause.** Validation compared justification validators as a set, while the
 detector projected justifications into a validator-keyed map.
 
+**Pre-fix behavior.** A block could include two justification entries
+naming the same validator (with different cited hashes). Validation
+accepted this — it used set semantics over `validator` identities,
+not list semantics — but the detector projected into a `HashMap<V, H>`
+keyed by validator, and one of the entries silently overwrote the
+other. Which entry "won" depended on hash-iteration order, giving the
+adversary a way to choose which of two cited hashes the detector saw.
+
 **Post-fix behavior.** Duplicate justification validators are invalid before
-detector projection.
+detector projection. The rejection variant is `InvalidBlock::InvalidFollows`
+(reused, not a new variant): `InvalidFollows` is the existing umbrella for
+structural validation of the follows/justifications relation, and the
+duplicate-validator guard at `casper/src/rust/validate.rs:830-847` runs
+upstream of the `bonded_validators == justified_validators` check that
+already returns `InvalidFollows` on mismatch. Both arms classify as
+`is_slashable() = true` in `casper/src/rust/block_status.rs:182-209`, so
+detector projection and slash-evidence emission proceed identically to any
+other `InvalidFollows` rejection. A dedicated
+`InvalidBlock::DuplicateJustifications` variant is a possible future
+clarity-improvement (Rocq `InvalidBlock.v` would gain a constructor and the
+`is_slashable` predicate would gain an arm); it is intentionally deferred
+because it changes no behavior.
 
 **Proofs and tests.** Rocq: `duplicate_head_rejected`,
 `main_T9_15_duplicate_justifications_rejected`. TLA+:
@@ -647,7 +740,17 @@ detector projection.
 `Inv_AcceptedProjectionCardinality`. Rust:
 `duplicate_justification_validators_are_invalid`.
 
-## 9.20 Summary
+**Why this matters.** The detector's projection cardinality is its
+canonical contract: one cited hash per validator. Allowing duplicates
+gave the adversary an *order-dependent* projection — the kind of bug
+T-9.11 was supposed to eliminate. Rejecting duplicates at validation
+restores the cardinality invariant `Inv_AcceptedProjectionCardinality`.
+
+**Worked example:** §11.17.  **Diagram:** extends Diagram 08 with a
+"validation rejects duplicate-validator justifications" guard at the
+detector projection boundary.
+
+## 9.19 Summary
 
 The sixteen fixes restore the slashing subsystem to audit-grade
 correctness:

@@ -182,7 +182,24 @@ fn uc_01_admissible_single() {
 }
 ```
 
-The current mapping of all 112 use cases and theorem-derived fixtures:
+The current mapping of all **112 use cases** and theorem-derived
+fixtures is given below. **Naming-convention note.** Core UCs
+(UC-01..UC-27) and the explicit Tier-A and §14.3.4 Tier-C entries
+follow the `casper/tests/slashing/uc_NN_<descriptive>.rs` convention.
+Tier B (UC-28..UC-36, §14.3.3) and the Sage-derived UCs in the
+UC-55..UC-100 + UC-109..UC-111 range use **descriptive filenames
+without the `uc_NN_` prefix**, because each such test has a strong
+semantic identity (e.g. `weighted_neglect_chain.rs`,
+`integration_t_invalid_parents.rs`) and the UC numbering is a
+*post-hoc* index, not a primary key. Both conventions coexist by
+design; the index in the tables below maps every UC number to its
+canonical Rust test module so the convention split is transparent
+to any reader scanning by UC number.
+
+The Tier B mapping (UC-28..UC-36) is presented as a prose list at
+§14.3.3 rather than a tabulated row-per-UC because each Tier-B test
+exercises exactly one slashable `InvalidBlock` variant under
+post-fix #3 and the assertion is uniform across all nine.
 
 ### 14.3.1 Core scenarios (UC-01 through UC-25)
 

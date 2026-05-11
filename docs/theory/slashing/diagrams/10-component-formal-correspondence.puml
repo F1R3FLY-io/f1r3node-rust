@@ -82,12 +82,16 @@ package "Fork-choice layer" <<ForkChoice>> {
   component "ForkChoice estimator\n────────────────────────────\nspec  §3.5.1\nRocq  ForkChoice.v\nTLA+  SlashFlow.tla\nRust  casper/src/rust/estimator.rs"  as FC #BBDEFB
 }
 
+package "Validator-lifetime layer" <<Effect>> {
+  component "Validator / ValidatorLifetime\n────────────────────────────\nspec  §6, §15.1\nRocq  Validator.v + ValidatorLifetime.v\nTLA+  AuthorizedSlashFlow.tla\nRust  casper/src/rust/slashing_authorization.rs\n(epoch-scoped (v, eₖ) lifetime;\n cited by Bug #13 T-9.12 and\n Bug #14 T-LivenessGap)"  as VL #D1C4E9
+}
+
 package "Bug-fix proofs" <<BugFix>> {
-  component "BugFix #1–#11\n────────────────────────────\nspec  §10\nRocq  BugFix*.v + EquivocationDetector.v;\n      Bisimulation.v classifies permitted deltas\nTLA+  ConcurrentTracker.tla (#2),\n      SlashFlow.tla (#3, #4, #8),\n      EquivocationDetector.tla (#11)\nRust  patched per detector and helper regressions"  as BF #FFCDD2
+  component "BugFix #1–#16\n────────────────────────────\nspec  §10 (sixteen mechanised deltas)\nRocq:\n  #1  BugFixIgnorable.v                   → T-9.1\n  #2  BugFixAtomicTracker.v               → T-9.2\n  #3  BugFixDispatcher.v                  → T-9.3\n  #4  BugFixTransferFailure.v             → T-9.4\n  #5  BugFixStakeZero.v                   → T-9.5\n  #6  BugFixSelfRegression.v              → T-9.6\n  #7  BugFixSeqNumDensity.v               → T-9.7\n  #8  BugFixUnbondedProposer.v            → T-9.8\n  #9  EquivocationDetector.v widening     → T-9.9\n  #10 BugFixWithdrawTransferFailure.v     → T-9.10 / T-9.10′ / T-9.10″\n  #11 EquivocationDetector.v totality     → T-9.11\n  #12 BugFixSlashAuthorization.v          → T-9.13 + T-Auth\n  #13 ValidatorLifetime.v                 → T-9.12\n  #14 SlashDeploy.v deploy_epoch_matches  → T-LivenessGap\n  #15 BugFixSeqArithmetic.v               → T-9.14\n  #16 BugFixDuplicateJustifications.v     → T-9.15\n  (Bisimulation.v classifies permitted deltas)\nTLA+:\n  ConcurrentTracker.tla            (#2)\n  SlashFlow.tla                    (#3, #4, #8)\n  EquivocationDetector{,Eager}.tla (#11)\n  WithdrawFlow.tla                 (#10)\n  AuthorizedSlashFlow.tla          (#12, #13, #14)\n  JustificationProjection.tla      (#16)\nRust  patched per detector / proposer /\n      validator / authorisation regressions"  as BF #FFEBEE
 }
 
 package "Top-level theorem" <<Theorem>> {
-  component "Bisimilarity Rust ~~ Scala\n────────────────────────────\nspec  §9\nRocq  Bisimulation.v + MainTheorem.v\nTLA+  (composition of all four)"  as BIS #C8E6C9
+  component "Bisimilarity Rust ~~ Scala\n────────────────────────────\nspec  §9 (and §15 for T-Auth, T-LivenessGap)\nRocq  Bisimulation.v + MainTheorem.v\n      T-9.1..T-9.15, T-Auth,\n      T-LivenessGap, T-Idem\nTLA+  composition of all six MC harnesses"  as BIS #E8F5E9
 }
 
 V -[#E65100]-> C
@@ -99,8 +103,11 @@ BC -[#1565C0]-> DS
 BC -[#1565C0]-> Tk
 BC -[#00838F]-> SD
 SD -[#6A1B9A]-> PoS
-PoS -[#1565C0]-> FC
+FC -[#1565C0]-> PoS : reads bonds(v)\n(pull, not push)\nper §3.5.1, §7.2
+SD -[#00838F]-> VL : §15.1 epoch /\nbond authorisation
+VL -[#1565C0]-> PoS : current_epoch,\nactive_validators
 
 BF -[hidden]-> BIS
+VL -[hidden]-> BF
 
 @enduml

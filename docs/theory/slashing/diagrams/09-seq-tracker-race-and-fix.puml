@@ -104,12 +104,24 @@ Tk -[#C62828]> KV : put((A, sn−1), {b2.hash})\n← final state holds only b2.h
 == Post-fix (T-9.2): access_equivocations_tracker holds the lock ==
 |||
 
-note over T1, KV #FFF8E1
-  Post-fix represents the proposed patch from
-  T-9.2 (see formal/rocq/slashing/theories/T_9_2.v
-  for the atomicity proof). It is **not yet
-  committed** to the Rust codebase — the live tree
-  still uses the lock-free path shown above.
+note over T1, KV #C8E6C9
+  ✓ **COMMITTED** — Bug #2 / T-9.2 landed.
+  Production: `EquivocationsAccess::access_equivocations_tracker`
+  at block-storage/src/rust/dag/equivocations_access.rs:38-43,
+  implemented in
+  block_dag_key_value_storage.rs:766-779 with
+  `self.global_lock.lock()`. Call sites:
+  multi_parent_casper_impl.rs:1058 (record_evidence)
+  and equivocation_detector.rs:116
+  (is_neglected_equivocation_detected_with_update).
+  Atomicity proven in
+  formal/rocq/slashing/theories/BugFixAtomicTracker.v
+  (t_9_2_atomic_no_overwrite,
+   t_9_2_atomic_n_threads_arbitrary).
+  Loom exhaustive interleavings:
+  casper/tests/slashing/loom_t_9_2_atomic_record.rs,
+  loom_t_9_2_n_threads_3.rs, loom_t_9_2_n_threads_4.rs
+  (plus the pre-fix witness pre_fix_bug_2.rs).
 end note
 
 T1 -[#6A1B9A]> Tk ++ : access_equivocations_tracker { f }\nacquires global semaphore

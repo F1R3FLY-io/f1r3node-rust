@@ -82,6 +82,17 @@ note right of C #FFCDD2
 end note
 deactivate C
 
+note over A, ETK #FFCDD2
+  **Pre-fix outcome**
+  Equivocator A pays nothing — no
+  EquivocationRecord, no SlashDeploy,
+  no bond loss. Ignorable equivocation
+  becomes a **DOS vector at zero cost**:
+  an adversary can flood the network with
+  unrequested second blocks knowing none
+  will be slashed.
+end note
+
 == Post-fix behavior (T-9.1) ==
 
 |||

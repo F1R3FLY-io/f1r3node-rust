@@ -98,6 +98,9 @@ V -[#1565C0]> CS  : casper_snapshot.dag.lookup(j.latestBlockHash)\nfor each j �
 CS -[#1565C0]-> V : invalidJustifications = { b' }
 V -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
 CS -[#1565C0]-> V : bonds_map (A still has bond > 0\nfrom b_B's view of the chain)
+note over V, D #FFF8E1
+  Although neglect detection is invoked through\n  **Validate** (V) — not through the standalone\n  EquivocationDetector (D) — the detector module\n  is responsible for the underlying predicates\n  detected_hash_seen / distinct_child_hashes\n  (Bug #11 / T-9.11) reused here.
+end note
 V -[#546E7A]> V   : neglectedInvalidJustification\n  := exists j ∈ invalidJustifications\n     where bonds_map[j.validator] > 0\n  → TRUE (j.validator = A, bond > 0)
 V -[#546E7A]> V   : has_slash_system_deploys(b_B)\n  := scan b_B.body.system_deploys (input field of b_B)\n     for SystemDeployData::Slash variant\n  → FALSE (B did not attach one)
 V -[#546E7A]> V   : reject ⟺ neglected ∧ ¬has_slash\n  → REJECT (post-fix branch, see Diagram 08)
@@ -154,6 +157,29 @@ note over A, Bm #C8E6C9
   ADMITTED (post-fix Rust widening, T-9.9), and only A
   would have been slashed. By neglecting, B incurs the
   same economic cost as the equivocator.
+end note
+
+== Slash-closure iteration (spec §8.1 Def 8.2; T-11 termination ≤ |V|−1 rounds) ==
+
+note over A, Bm #FFF8E1
+  This diagram shows Level-1 (A direct) and Level-2 (B
+  neglects A). The general two-level slashing closure
+  generalises to any reachable depth in the neglect
+  graph:
+
+     Sl₀ ← DirectOffenders
+     Sl_{i+1} ← Sl_i ∪ { v ∈ V :
+                           neglect(v) ∩ Sl_i ≠ ∅ }
+
+  A validator C who cited B's invalid block without an
+  accompanying SlashDeploy(b_B, B) becomes a Level-3
+  neglecter; D who cites C becomes Level-4; and so on.
+  **T-11** (`t_11_level_2_termination`,
+  `TwoLevelSlashing.v:331`) proves the iteration
+  stabilises in at most |V|−1 rounds. **T-12**
+  (`t_12_bft_quorum_preservation`,
+  `TwoLevelSlashing.v:379`) bounds the closure under
+  the BFT precondition |Sl| ≤ ⌊(n−1)/3⌋.
 end note
 
 @enduml

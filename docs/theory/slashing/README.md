@@ -9,12 +9,13 @@ Scala source is faulty.
 
 ## Reading order
 
-1. **`design/`** — *Pedagogical design document set* (16 files in
-   intuitively-named subsections). Read first if you are an engineer
-   or auditor approaching the slashing subsystem for the first time
-   and want to understand *what each component is, what it does, how
-   it does it, and why it was chosen*. Each section leads with
-   intuition, then formal definition, then literate-pseudocode
+1. **`design/`** — *Pedagogical design document set* (17 files:
+   15 numbered chapters + `14a-tier-architecture.md` + `README.md`,
+   in intuitively-named subsections). Read first if you are an
+   engineer or auditor approaching the slashing subsystem for the
+   first time and want to understand *what each component is, what it
+   does, how it does it, and why it was chosen*. Each section leads
+   with intuition, then formal definition, then literate-pseudocode
    algorithm, then example, then rationale and references.
    See [`design/README.md`](./design/README.md) for the
    reading order within the design document set.
@@ -36,24 +37,38 @@ Scala source is faulty.
 6. **`slashing-search-horizon.md`** — *Defensive search program.* Read when
    expanding bug hunting beyond the current proofs and regression tests with
    fuzzing, symbolic Rust checks, symbolic TLA+, and adversarial system tests.
-7. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
+7. **`methodology/`** — *Pedagogical bug-hunting & property-discovery methodology.*
+   Read when you want to understand *how* the bugs, vulnerabilities, and
+   interesting properties were *found* — and how to apply the same methodology
+   to a new component, a new property, or a new threat class. Covers the nine
+   techniques (Rocq, TLA⁺/TLC, Apalache, Kani, Sage, proptest, Hypothesis,
+   libFuzzer, Loom), the witness-to-source promotion pipeline, the 14 Sage
+   model families, per-tool tutorials, and a case study per bug. See
+   [`methodology/README.md`](./methodology/README.md) for the reading order.
+8. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
    referenced in the spec. Each is embedded inline at its first relevant
    mention in the spec/verification docs; the visuals and the LTS rules
    are designed to stay 1:1.
 
    | #  | Title                                                                                                  | Embedded at                      |
    |----|--------------------------------------------------------------------------------------------------------|----------------------------------|
-   | 01 | [Slashing subsystem topology](./diagrams/01-component-overview.svg)                                    | spec §3                          |
-   | 02 | [Admissible equivocation slash flow](./diagrams/02-seq-admissible-equivocation.svg)                    | spec §7                          |
-   | 03 | [Ignorable equivocation slash flow (post-fix)](./diagrams/03-seq-ignorable-equivocation-fixed.svg)     | spec §10.1                       |
-   | 04 | [Two-level slashing](./diagrams/04-seq-two-level-slashing.svg)                                         | spec §8                          |
-   | 05 | [Generic invalid-block dispatch (post-fix)](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)        | spec §7.2, §10.3                 |
-   | 06 | [Validator lifecycle](./diagrams/06-state-validator-lifecycle.svg)                                     | spec §6                          |
-   | 07 | [PoS.slash() Rholang activity flow](./diagrams/07-activity-pos-slash-contract.svg)                     | spec §5, §10.4                   |
-   | 08 | [Justifications → neglect detection data-flow](./diagrams/08-dataflow-justifications-to-neglect.svg)   | spec §8                          |
-   | 09 | [Tracker race and locking fix](./diagrams/09-seq-tracker-race-and-fix.svg)                             | spec §10.2; verification §10.8.1 |
-   | 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](./diagrams/10-component-formal-correspondence.svg) | spec §3; verification §11        |
-   | 11 | [Withdrawal transfer-failure fix](./diagrams/11-seq-withdrawal-flow-fix.svg)                          | spec §10.10; design §11          |
+   | #  | Title                                                                                                  | Embedded at                      | Scope                                   |
+   |----|--------------------------------------------------------------------------------------------------------|----------------------------------|-----------------------------------------|
+   | 01 | [Slashing subsystem topology](./diagrams/01-component-overview.svg)                                    | spec §3                          | **Exhaustive** — 11 components + 2 data artifacts (Bond map, Coop vault) |
+   | 02 | [Admissible equivocation slash flow](./diagrams/02-seq-admissible-equivocation.svg)                    | spec §7                          | Sequence                                |
+   | 03 | [Ignorable equivocation slash flow (post-fix)](./diagrams/03-seq-ignorable-equivocation-fixed.svg)     | spec §10.1                       | Sequence                                |
+   | 04 | [Two-level slashing](./diagrams/04-seq-two-level-slashing.svg)                                         | spec §8                          | Sequence                                |
+   | 05 | [Generic invalid-block dispatch (post-fix)](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)        | spec §7.2, §10.3                 | Sequence                                |
+   | 06 | [Validator lifecycle](./diagrams/06-state-validator-lifecycle.svg)                                     | spec §6                          | Statechart (6 observable + 1 doc state) |
+   | 07 | [PoS.slash() Rholang activity flow](./diagrams/07-activity-pos-slash-contract.svg)                     | spec §5, §10.4                   | Activity                                |
+   | 08 | [Justifications → neglect detection data-flow](./diagrams/08-dataflow-justifications-to-neglect.svg)   | spec §8                          | Data-flow                               |
+   | 09 | [Tracker race and locking fix](./diagrams/09-seq-tracker-race-and-fix.svg)                             | spec §10.2; verification §10.8.1 | Sequence                                |
+   | 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](./diagrams/10-component-formal-correspondence.svg) | spec §3; verification §11        | **Proof-bearing only** — components with Rocq/TLA+ artifacts; omits SystemDeployUtil, Bond map, Coop vault (no separate formal counterpart) |
+   | 11 | [Withdrawal transfer-failure fix](./diagrams/11-seq-withdrawal-flow-fix.svg)                          | spec §10.10; design §11          | Sequence                                |
+
+   Diagram 01 is the **exhaustive** component diagram; Diagram 10 is
+   the **proof-bearing subset** (components with Rocq theorems and/or
+   TLA+ models). Both are correct, just at different scopes.
 8. **`../../formal/rocq/slashing/`** — Mechanized Rocq proofs. The verification
    doc translates these to mathematical prose; this is where the kernel-checked
    evidence lives.
@@ -138,9 +153,9 @@ Scala source is faulty.
 | 9 | Scala rejects self-correcting blocks (Scala bug, Rust-fixed) | T-9.9   |
 | 10 | PoS withdrawal transfer-failure FIXME (analog of #4)        | T-9.10  |
 | 11 | Detector missing-pointer abort and duplicate-child over-count | T-9.11 |
-| 12 | Unauthorized received slash deploys                         | T-9.12  |
+| 12 | Unauthorized received slash deploys                         | T-9.13  |
 | 13 | Same-key rebond stale-evidence slash                        | T-9.12  |
-| 14 | Slash liveness depended on invalid-latest messages          | T-9.12  |
+| 14 | Slash liveness depended on invalid-latest messages          | T-LivenessGap (`deploy_epoch_matches_target`) |
 | 15 | Unchecked sequence arithmetic at fixed-width boundaries     | T-9.14  |
 | 16 | Duplicate justification projection                          | T-9.15  |
 

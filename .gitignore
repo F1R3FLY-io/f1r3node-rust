@@ -109,3 +109,5 @@ MC_TE.tla
 MC_TE.cfg
 MC_TE.out
 *.st
+
+*.temp

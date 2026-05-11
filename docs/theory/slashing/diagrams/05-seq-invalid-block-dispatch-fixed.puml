@@ -1,8 +1,11 @@
 ' Sequence Diagram 05 — Generic invalid-block dispatch (post-fix).
 '
 ' Today, only AdmissibleEquivocation creates an EquivocationRecord and
-' enters the slashing pipeline. The other 16 slashable InvalidBlock
-' variants (JustificationRegression, InvalidBondsCache,
+' enters the slashing pipeline. The **14 non-equivocation slashable
+' InvalidBlock variants** (17 slashable variants pre-fix minus the 3
+' equivocation variants: AdmissibleEquivocation, NeglectedEquivocation,
+' and post-fix IgnorableEquivocation; see spec §2.4 + §10.3 for the
+' full enumeration — JustificationRegression, InvalidBondsCache,
 ' ContainsExpiredDeploy, etc.) are merely flagged invalid in the DAG.
 ' Bug fix #3 (T-9.3) extends the dispatcher so all is_slashable() = true
 ' variants enter the pipeline.

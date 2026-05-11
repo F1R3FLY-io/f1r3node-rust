@@ -147,11 +147,16 @@ failure modes are likely:
 | Inconsistent `equivocation_records()` views across nodes | Bug #2 (race) — pre-fix only.                                                                        |
 | `JustificationRegression` blocks not surfacing slashes   | Bug #3 (dispatcher stub) — pre-fix only.                                                             |
 | Repeated rejected proposer-block submissions             | Bug #8 (unbonded proposer) — pre-fix only.                                                           |
-| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the eleven fixes; if seen, investigate as a regression. |
+| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the sixteen fixes; if seen, investigate as a regression. |
 | Validator stuck in `withdrawers` map for > N rounds      | Bug #10 (post-fix retry path). If `posVault.transfer` keeps failing, the validator's withdrawal entry remains intact across blocks; investigate the underlying vault failure cause. |
 | Validator set size drops below `n − F`                   | F-neglectful quorum-drop (§12.3.1). Manual intervention required.                                    |
 | Detector emits storage `KeyNotFound` for a block view     | Bug #11 pre-fix only. Post-fix, missing latest-message pointers contribute `∅` and traversal continues. |
 | Neglect fires from two citations of the same child        | Bug #11 pre-fix only. Post-fix, distinct offender-child hashes are counted before applying `≥ 2`.       |
+| Slash deploy executes against an honest, never-detected validator | Bug #12 pre-fix only. Post-fix, `SlashAuthorizedByEvidence` rejects unknown / unbonded / cross-epoch / duplicate-target deploys before replay (`Inv_RejectedSlashWithoutEvidenceNoPending`). |
+| Rebonded validator gets slashed for prior-lifetime equivocation | Bug #13 pre-fix only. Post-fix, slash evidence is epoch-scoped: `(v, e₁)` evidence does not authorize a slash for `(v, e₂)` with `e₁ ≠ e₂` (`Inv_StaleEvidenceCannotSlashRebondedKey`). |
+| Detected equivocator keeps their bond — no slash deploy emerges | Bug #14 pre-fix only. Post-fix, the proposer derives candidates from the authorized invalid-block evidence index (`Inv_NoInvalidLatestLivenessGap`). |
+| Proposer panics or block has negative `seq`               | Bug #15 pre-fix only. Post-fix, `checked_pred`/`checked_succ` reject domain-boundary inputs cleanly. |
+| Two different cited hashes for the same validator in one block's justifications | Bug #16 pre-fix only. Post-fix, validation rejects duplicate-validator justifications before detector projection (`Inv_AcceptedProjectionCardinality`). |
 
 ## 12.7 Test coverage
 

@@ -427,7 +427,254 @@ preserved across every retry (T-9.10').
  └────────────────────────────────────────────┘
 ```
 
-## 11.12 Cross-example summary
+## 11.12 Detector traversal — missing pointer + duplicate child (bug #11 demo)
+
+**Setup.** Validator A signs two distinct blocks `b₁, b₁'` at the
+same `(seq=10)`, then proposes `b₂` whose justification cites both.
+A third block `b₃` cites `b₂`. Validator B observes `b₃` and must
+classify A.
+
+**Pre-fix trace** (TLC counter-example from a hypothetical
+`MC_DetectorPartial.cfg`; in practice replayed deterministically by
+`uc_101..uc_108`):
+
+```
+B.detect(view = {A ↦ b₂})
+  fold visit b₂                ⟶ direct ptr = b₁ (present)
+                                 nested ptr = b₁' (MISSING in view's HashMap)
+  unsafe lookup nested ptr     ⟶ panics / aborts with KeyNotFound
+  detection result             ⟶ NONE  (decisive evidence hidden)
+```
+
+A second adversarial shape — *duplicate child path* — causes a false
+positive:
+
+```
+B.detect(view = {A ↦ b₂, A ↦ b₂})   -- duplicate justification entry, pre-fix accepted
+  fold over Vec<JustificationEntry>  ⟶ counts b₂.hash twice
+  |distinct child hashes|            ⟶ "2" (wrongly)
+  detection result                   ⟶ NeglectedEquivocation (false positive)
+```
+
+**Post-fix trace.** Detector projects into a deterministic
+validator → option<hash> map; missing nested pointers contribute `∅`;
+duplicate child paths collapse to one entry:
+
+```
+B.detect(view ↾ canonical)
+  project view                       ⟶ map = {A ↦ Some(b₂.hash)}
+  scan iteratively                   ⟶ missing nested ptr = ∅  (no panic)
+                                     ⟶ distinct child hashes = {b₂.hash}  (count 1)
+  detection result                   ⟶ NONE — correctly, no neglect
+                                       (decisive evidence needs 2 distinct children
+                                        OR a detected_hash_seen verdict)
+```
+
+**Theorems exercised.** T-9.11 family
+(`fixed_detectable_missing_pointer_prefix`,
+`fixed_detectable_duplicate_single_child_false`,
+`fixed_detectable_two_distinct_children_true`,
+`fixed_detectable_detected_hash_true`). TLA+
+`Inv_FixedDetectorTotal`, `Inv_MissingPointerNonContributing`,
+`Inv_DuplicateChildNeedsDistinctChildren`. Rust UC-101..UC-108.
+**Diagram.** Extends Diagram 02 with the deterministic-projection
+guard.
+
+## 11.13 Unauthorized slash deploy rejected pre-replay (bug #12 demo)
+
+**Setup.** A Byzantine block sender `Z` includes a `SlashDeploy`
+targeting honest validator `H` in a block `b`. The local node has
+no invalid-block evidence against `H`.
+
+**Pre-fix trace.**
+
+```
+Z.propose(b, [SlashDeploy(target=H, evidence_hash=fake)])
+B.replay(b)
+  evaluate Rholang body
+  ⟶ @PoS!("slash", H, …)            -- replay runtime fires the deploy
+  ⟶ slash(ps, H)                     -- PoS state mutates: bonds[H] := 0
+                                       active := active \ {H}
+                                       coopVault += stake_of(H)
+                                     -- H is slashed by Z's unilateral choice
+```
+
+**Post-fix trace.** Pre-replay authorization filter intercepts:
+
+```
+Z.propose(b, [SlashDeploy(target=H, evidence_hash=fake)])
+B.replay(b)
+  authorize_slash_deploy(local_view, b.sender, deploy)
+    issuer matches block sender?         ⟶ Z = Z  ✓
+    evidence_hash ∈ local.invalid_blocks?⟶ fake ∉ I  ✗ — REJECT
+  ⟶ deploy ignored; slash NOT fired
+```
+
+**Theorems exercised.** T-9.13 (`main_T9_13_unknown_slash_evidence_noop`).
+TLA+ `Inv_RejectedSlashWithoutEvidenceNoPending`. Rust
+`slash_authorization_regressions`.  **Diagram.** Extends Diagram 05
+with the authorize-before-replay guard.
+
+## 11.14 Stale-evidence rebond identity (bug #13 demo)
+
+**Setup.** Validator with public key `K` bonds at epoch `e₁=5`,
+equivocates, is slashed, unbonds. Later at epoch `e₂=12` the same key
+rebonds. Adversarial proposer `Z` tries to slash `(K, e₂)` by
+replaying the still-retained evidence from `(K, e₁)`.
+
+**Pre-fix trace.**
+
+```
+Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
+B.replay(b)
+  -- pre-fix: authorization checked key identity only
+  K is currently bonded?           ⟶ yes (rebonded at e₂)
+  evidence references K?           ⟶ yes (eq_record_e1.target = K)
+  ⟶ slash(ps, K)                    -- second slash on innocent (K, e₂)
+```
+
+**Post-fix trace.** Authorization is epoch-scoped:
+
+```
+Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
+B.replay(b)
+  authorize_slash_deploy(local_view, deploy)
+    eq_record_e1.epoch == current_epoch(K)?  ⟶ e₁ ≠ e₂  ✗ — REJECT
+  ⟶ deploy ignored; (K, e₂) retains bond
+```
+
+**Theorems exercised.** T-9.12 (`main_T9_12_stale_evidence_not_authorized`).
+TLA+ `Inv_StaleEvidenceCannotSlashRebondedKey`. Rust
+`stale_invalid_evidence_is_not_an_authorized_slash_candidate`.
+**Diagram.** Extends Diagram 06 (validator lifecycle) with epoch
+tags on each lifetime.
+
+## 11.15 Authorized-invalid-block evidence index (bug #14 demo)
+
+**Setup.** Validator A produces an invalid block `b_inv` at
+sequence 7. The DAG inserts `b_inv` with `invalid = true`. The
+proposer `B` must decide whether to emit a slash deploy at the next
+proposing round.
+
+**Pre-fix trace.** Slash candidates derived from
+`invalid_latest_messages()`:
+
+```
+B.prepare_slashing_deploys()
+  view ← dag.invalid_latest_messages()
+  -- invalid_latest_messages reflects only blocks that updated the
+     latest-message index; `b_inv` did not (its insertion took the
+     "insert-as-invalid" code path)
+  candidates                           ⟶ ∅
+  emit nothing                         ⟶ liveness gap: A keeps the bond
+                                          despite a detected invalid block
+```
+
+**Post-fix trace.** Candidates derived from the authorized-invalid-block
+evidence index:
+
+```
+B.prepare_slashing_deploys()
+  view ← dag.authorized_invalid_evidence_index(current_epoch)
+  view contains b_inv.hash for offender A  ✓
+  -- canonicalize: sort by hash, deduplicate per (offender, epoch)
+  candidates                              ⟶ [SlashDeploy(A, b_inv.hash)]
+  emit                                    ⟶ slash deploy enters block
+```
+
+**Theorems exercised.** T-LivenessGap (`deploy_epoch_matches_target`).
+TLA+ `Inv_NoInvalidLatestLivenessGap`. Rust
+`current_epoch_invalid_evidence_is_authorized_once_per_offender`.
+**Diagram.** Extends Diagram 08 with the new index path.
+
+## 11.16 Checked sequence arithmetic at boundary (bug #15 demo)
+
+**Setup.** Freshly-bonded validator C produces its first equivocating
+pair `(b₀, b₀')` at `seq = 0`. Pre-fix, the record-insertion code
+computes `baseSeq := seq − 1 = -1` and panics or wraps. Symmetrically,
+proposer D at `seq = i32::MAX − 1` attempts `seq + 1` which overflows.
+
+**Pre-fix trace (genesis side).**
+
+```
+detector → insert_equivocation_record(C, baseSeq = seq − 1, …)
+  seq = 0 (signed) →           seq − 1 = -1  (underflow)
+                  (unsigned) →   seq − 1 = usize::MAX  (wrap)
+  key (C, baseSeq) is malformed
+  store insert silently malfunctions: collision or rejection
+```
+
+**Pre-fix trace (overflow side).**
+
+```
+proposer → next_block.seq := prev.seq + 1
+  prev.seq = i32::MAX           prev.seq + 1 = -i32::MAX − 1  (wrap to negative)
+  block_creator emits block with negative seq
+  downstream validate rejects it (or worse, accepts it depending on path)
+```
+
+**Post-fix trace.**
+
+```
+detector → insert_equivocation_record(C, baseSeq = checked_pred(seq), …)
+  seq = 0 → checked_pred returns None → record-insert rejects nonpositive domain
+                                        evidence still indexed via authorized
+                                        invalid-block evidence index (bug #14 fix)
+proposer → next_block.seq := checked_succ(prev.seq, i32::MAX)
+  prev.seq = i32::MAX           checked_succ returns None → proposer halts
+                                                            with a clean error
+```
+
+**Theorems exercised.** T-9.14 (`main_T9_14_checked_pred_positive`),
+`checked_pred_total_positive`, `checked_succ_bounded_sound`. Rust
+`checked_sequence_arithmetic_rejects_boundaries`.  **Diagram.** None
+(local arithmetic fix).
+
+## 11.17 Duplicate-justification rejection before projection (bug #16 demo)
+
+**Setup.** Block `b` contains two justification entries naming the
+same validator A with different cited hashes `h₁, h₂`. Pre-fix
+validation accepts the block; the detector projects into a
+`HashMap<V, H>` keyed by validator and silently loses one of the two
+entries depending on hash-iteration order.
+
+**Pre-fix trace.**
+
+```
+validate(b)
+  justifications.iter().map(.validator).collect::<HashSet>().len()
+                                            == justifications.len()?
+  -- set semantics over validator identity
+                                            ⟶ {A}.len() == 2  ✗  -- BUT
+  -- pre-fix the check was different; the validity gate was set-based
+  -- and accepted A appearing twice
+  validation                                ⟶ ACCEPT
+
+detector.project(b.justifications)
+  HashMap<V, H> = {A → h₁}      -- first insert
+  HashMap<V, H> = {A → h₂}      -- second insert overwrites
+                                  (or the reverse, depending on iter order)
+  ⟶ projection cardinality 1; adversary chose which hash detector sees
+```
+
+**Post-fix trace.** Validation enforces list cardinality:
+
+```
+validate(b)
+  if justifications.len() != justifications.iter().map(.validator)
+                                            .collect::<HashSet>().len()
+  ⟶ REJECT b as invalid (DuplicateJustification)
+  ⟶ b is recorded as invalid; if its sender is slashable, the dispatch
+     catch-all (bug #3 fix) inserts an equivocation record
+```
+
+**Theorems exercised.** T-9.15 (`main_T9_15_duplicate_justifications_rejected`),
+`duplicate_head_rejected`. TLA+ `Inv_DuplicateJustificationsRejected`,
+`Inv_AcceptedProjectionCardinality`. Rust
+`duplicate_justification_validators_are_invalid`.  **Diagram.**
+Extends Diagram 08 with a validation guard before detector projection.
+
+## 11.18 Cross-example summary
 
 | Example | Bug exercised             | Bisimilarity impact           | Diagram(s) |
 |---------|---------------------------|-------------------------------|------------|
@@ -437,14 +684,23 @@ preserved across every retry (T-9.10').
 | 11.4    | #4 (slash transfer)       | Preserving                    | 07         |
 | 11.5    | #9 (widening)             | **Deliberate widening**       | 08         |
 | 11.6    | #5 (stake-0)              | Preserving                    | 06         |
-| 11.7    | #7 (off-by-one)           | Preserving                    | 02         |
+| 11.7    | #7 (off-by-one)           | Permitted bug-fix delta       | 02         |
 | 11.8    | #3 (dispatcher)           | Preserving                    | 05         |
 | 11.9    | #6 (self-regression) + #3 | Preserving                    | 08         |
 | 11.10   | #8 (unbonded proposer)    | Preserving                    | 01         |
 | 11.11   | #10 (withdraw transfer)   | Preserving                    | 11         |
+| 11.12   | #11 (detector partial)    | Permitted bug fix             | 02 (extended) |
+| 11.13   | #12 (unauthorized slash)  | Permitted bug fix             | 05 (extended) |
+| 11.14   | #13 (stale-rebond)        | Permitted bug fix             | 06 (extended) |
+| 11.15   | #14 (liveness-gap)        | Permitted bug fix             | 08 (extended) |
+| 11.16   | #15 (checked arithmetic)  | Permitted bug fix             | —             |
+| 11.17   | #16 (duplicate justif.)   | Permitted bug fix             | 08 (extended) |
 
-Of the eleven worked examples, ten are *bisimilarity-preserving* and
-one (11.5) is the *deliberate widening* documented in §10.
+Of the **seventeen worked examples**, fifteen are
+*bisimilarity-preserving* or *permitted bug-fix deltas*, and one
+(11.5) is the *deliberate widening* documented in §10. The §11.7
+worked example is also a permitted bug-fix delta (non-dense
+sequence numbers, same-branch canonicalization).
 
 ---
 

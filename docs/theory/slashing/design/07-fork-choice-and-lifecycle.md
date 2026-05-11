@@ -2,16 +2,24 @@
 
 ## 7.1 The fork-choice layer — what it does
 
-GHOST-style fork-choice [LSZ15] selects the *heaviest* sub-tree
+GHOST-style fork-choice [SZ15] selects the *heaviest* sub-tree
 rooted at a candidate fork point. Each validator's *latest message*
 contributes weight equal to its bond. The fork-choice estimator
 must therefore be told to ignore the latest messages of validators
 whose bond is zero.
 
-In F1R3FLY, this filter is implemented as a *pull*: every fork-
-choice round re-reads the on-chain `bonds_map` from the
-`CasperSnapshot` and excludes validators with `bond = 0` from the
-GHOST tally.
+In F1R3FLY, this filter is implemented as a *pull*: every
+fork-choice round consults `dag.invalid_latest_messages` (see
+`casper/src/rust/estimator.rs:65-70`) and excludes any validator
+whose latest message is marked invalid. Because slashing forces a
+validator's bond to zero (T-7), and subsequent blocks from a
+zero-bond validator fail `InvalidBondsCache` validation and are
+recorded in `invalid_blocks_index`, this filter is observationally
+equivalent to the abstract "re-read `bonds_map` and exclude
+validators with `bond = 0`" formulation used by T-10 (see
+`slashing-verification.md §6.4`). The on-chain `bonds_map` is still
+re-read each round to weight the surviving messages — the difference
+is only in *which* channel selects the validators to exclude.
 
 ## 7.2 The pull-not-push design choice
 
@@ -51,11 +59,14 @@ TLC corroborates via `Inv_SlashedExcludedFromFC` in `MC_SlashFlow.tla`.
 
 [![Diagram 06 — Validator lifecycle](../diagrams/06-state-validator-lifecycle.svg)](../diagrams/06-state-validator-lifecycle.svg)
 
-A bonded validator transitions through **seven** states (the
-`EquivocatorSuspect` state is documentation-only — in the Rust
-code, the detector transitions `Bonded → EquivocatorRecorded`
-directly in one atomic step; the suspect state is split out for
-narrative clarity in the lifecycle diagram).
+A bonded validator transitions through **six observable states**
+plus **one documentation-only state**, `EquivocatorSuspect` —
+seven in the lifecycle diagram. In the Rust code, the detector
+transitions `Bonded → EquivocatorRecorded` directly in one atomic
+step; the suspect state is split out for narrative clarity in the
+lifecycle diagram and has no operational witness. The proofs in
+`Validator.v` and `ValidatorLifetime.v` quantify only over the
+six observable states.
 
 ```
 Unbonded → Bonded → EquivocatorSuspect → EquivocatorRecorded →
@@ -83,7 +94,7 @@ SlashPending → Slashed → Removed
 | `Bonded → EquivocatorSuspect`              | Detector observes a second block at same seq num.                                                                                                                                               |
 | `EquivocatorSuspect → EquivocatorRecorded` | `insert_equivocation_record(v, s − 1, ∅)` succeeds.                                                                                                                                             |
 | `EquivocatorRecorded → SlashPending`       | Next proposer's `prepare_slashing_deploys` includes `v`.                                                                                                                                        |
-| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate at `PoS.rhox:473-482`).                                                                                                                        |
+| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate at `PoS.rhox:477-486`).                                                                                                                        |
 | `Slashed → Removed`                        | PoS removes `v` from `activeValidators` (same atomic stateUpdate; the two states are not separately observable in the implementation but are listed separately to match the spec §6 lifecycle). |
 | `SlashPending → EquivocatorRecorded`       | Slash fails (transfer FIXME, bug fix #4 closes this — falls back to `EquivocatorRecorded`).                                                                                                     |
 | `Removed → ⊥`                              | Terminal — cannot rejoin without a fresh bond deploy (which transitions to `Unbonded → Bonded`).                                                                                                |
@@ -119,7 +130,7 @@ and to match the spec §6 model: `Slashed` projects on `bond := 0`,
 `Removed` projects on `v ∉ active`. Auditors verifying the
 state-machine should treat the `Slashed → Removed` transition as
 *conceptually instantaneous* — both are projections of the same
-atomic stateUpdate at `PoS.rhox:473-482`. Diagram 06 may visually
+atomic stateUpdate at `PoS.rhox:477-486`. Diagram 06 may visually
 combine them or show them separately depending on the renderer; the
 spec is the authoritative source for state count.
 
@@ -162,10 +173,12 @@ From a single validator's viewpoint, the lifecycle looks like:
 
 The validator's *operator* sees: the node loses access to its bond
 (the bond field on-chain becomes 0), the node is no longer scheduled
-as a proposer (excluded from active set), and the node's signature
-on subsequent blocks is rejected by other validators (the `slashed`
-status filters out their latest messages from the GHOST tally).
-The node's *software* keeps running but has no protocol-level
+as a proposer (excluded from active set), and **the node's votes no
+longer count in the GHOST tally** — fork-choice filters out the
+slashed validator's latest message because its bond is zero (the
+"pull, not push" design at §7.2). The node's signatures are still
+cryptographically valid; other validators are simply not weighting
+them. The node's *software* keeps running but has no protocol-level
 influence.
 
 ## 7.8 Theorems that touch the lifecycle

@@ -34,12 +34,16 @@ title Data-flow: justifications → neglected-invalid-block detection
 '   red    (#C62828) = reject (block rejected as invalid)
 
 artifact "block b\n(under validation)"             as B    #FFE0B2
-artifact "b.justifications\n(input field of b;\nseq of {validator,\n latestBlockHash})" as J    #FFF8E1
+component "VG: validation guard —\nreject duplicate-validator\njustifications (Bug #16 / T-9.15;\nInv_AcceptedProjectionCardinality)"  as VG   #FFECB3
+artifact "b.justifications\n(input field of b;\nseq of {validator,\n latestBlockHash})\n— validated; one entry per validator" as J    #FFF8E1
 database "CasperSnapshot.dag\n(pre-loaded DAG view\npassed alongside b)" as S    #BBDEFB
 
 component "filter:\nlookup(j.latestBlockHash)\nexists ∧ block.invalid"  as F1   #FFECB3
+component "AIE: authorized\ninvalid-block evidence index\n(post-fix Bug #14 / T-LivenessGap;\ndeploy_epoch_matches_target)"  as AIE  #FFECB3
 component "exists:\nbonds(b).find(_.validator\n  == j.validator).stake > 0" as F2 #FFECB3
 component "scan b.body.system_deploys\nfor SystemDeployData::Slash\n(post-fix only)"  as F3   #FFECB3
+
+component "detector (Bug #11 / T-9.11):\ndetectable(view) ≜\n  detected_hash_seen(view)\n  ∨ |distinct_child_hashes(view)| ≥ 2\n(missing pointers contribute ∅;\nduplicate paths to one child collapse\nbefore cardinality is checked)"  as DET  #FFECB3
 
 artifact "invalidJustifications"        as IJ   #FFF8E1
 artifact "neglectedInvalidJustification\n: Bool"  as N    #FFE0B2
@@ -50,12 +54,16 @@ component "decision:\nif neglected ∧ ¬hasSlash\nthen Reject\nelse Accept"  as
 artifact "Right(ValidBlock::Valid)"                       as OK   #C8E6C9
 artifact "Left(InvalidBlock::\nNeglectedInvalidBlock)"     as REJ  #FFCDD2
 
-B  -[#1565C0]-> J  : input field access
+B  -[#1565C0]-> VG : input field access
+VG -[#546E7A]-> J  : projection cardinality OK\n(one cited hash per validator)
 J  -[#1565C0]-> F1
+S  -[#1565C0]-> AIE : authorised\ninvalid-block index
+AIE -[#546E7A]-> F1 : invalid-block candidates
 S  -[#1565C0]-> F1 : s.dag.lookup(j.latestBlockHash)
 F1 -[#546E7A]-> IJ
 IJ -[#546E7A]-> F2
-F2 -[#546E7A]-> N
+F2 -[#546E7A]-> DET : projected justification view
+DET -[#546E7A]-> N
 B  -[#1565C0]-> F3
 F3 -[#546E7A]-> HS
 N  -[#546E7A]-> DEC

@@ -50,6 +50,7 @@ participant "BlockDagStorage"    as DS  #C8E6C9
 participant "EquivocationTrackerStore" as T #C8E6C9
 participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
 participant "BlockCreator"       as BC  #B2DFDB
+participant "SlashDeploy\n(system_deploys[0])" as SD #B2DFDB
 participant "PoS Rholang"        as PoS #D1C4E9
 database    "Bond map\n(on-chain state)" as B   #D1C4E9
 database    "Coop vault\n(Rholang contract)" as CV  #BBDEFB
@@ -138,7 +139,6 @@ note right of BC
   Skipped here if proposer
   itself is unbonded (fix #8).
 end note
-create SD
 BC -[#6A1B9A]> SD  : new SlashDeploy(b1', P.pubkey,\n  generateSlashDeployRandomSeed(P, seqM))\n(struct lives in bP.body.system_deploys)
 BC -[#546E7A]> BC  : assemble candidate block bP\nincluding SlashDeploy as a system deploy
 
