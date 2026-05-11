@@ -1,3 +1,26 @@
+// Shared fixtures for the detector-totality test family (UC-101..UC-108,
+// UC-112, prop_t_9_11_*, pre_fix_bug_11).
+//
+// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.12.
+// Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
+// (theorems `detector_total`, `detector_no_unsafe_lookup`,
+// `detector_permutation_invariant`).
+//
+// `DetectorFixture` wires an in-memory block store + DAG against the
+// production `EquivocationDetector` so each test can build small
+// synthetic DAGs and assert the detector's classification (Valid,
+// AdmissibleEquivocation, IgnorableEquivocation, NeglectedEquivocation).
+// `assert_valid` / `assert_neglected` keep the asserts terse so each UC
+// test stays under ~30 lines.
+//
+// Invariants this fixture protects:
+//   1. Totality: `check(block)` never returns Err/panics on any well-formed
+//      synthetic input.
+//   2. Permutation invariance: justification order does not change the
+//      classification (see UC-102, UC-104, UC-106).
+//   3. Missing-pointer tolerance: a justification whose hash is not in the
+//      store is treated as obliviousness, not as a store inconsistency.
+
 use std::collections::BTreeSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;

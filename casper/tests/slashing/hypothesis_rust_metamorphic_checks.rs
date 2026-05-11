@@ -1,3 +1,16 @@
+// UC-91 — Metamorphic checks: edge-set normalization + validator renaming
+// preserve the DAG shape that the classifier sees.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-91.
+// Reference: formal/sage/graph_edge_cases_model.sage,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Two metamorphic properties: (1) the set of edges is invariant under
+// permutation + duplicates (canonical form is the BTreeSet itself), and
+// (2) consistent validator renaming preserves graph shape. These two
+// guarantees together let the classifier compare DAGs structurally
+// without leaking validator identity into the bisimulation relation.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::divergence_class::{frontier_classification_ok, DivergenceClass};

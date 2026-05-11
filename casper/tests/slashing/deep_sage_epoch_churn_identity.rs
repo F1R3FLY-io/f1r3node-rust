@@ -1,3 +1,19 @@
+// UC-96 — Epoch-churn identity attack: stale evidence under a fresh epoch.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-96.
+// Threat class: Identity-replay across epoch boundary (Sage row
+// `epoch_churn_attack_model.sage`).
+// Reference: formal/sage/epoch_churn_attack_model.sage,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Sage finding: an adversary may try to reuse evidence from epoch N to
+// justify a slash in epoch N+1 (re-bonded under the same identity), or
+// vice versa. The post-fix invariant is a *strict* equality filter on the
+// epoch field — `current_epoch_evidence` returns only the evidence whose
+// `.epoch == current_epoch`, never a near-match or a "any prior epoch"
+// admission. This file pins that strictness so a "let's allow prior-epoch
+// evidence" refactor surfaces immediately.
+
 #[derive(Debug, Clone, Copy)]
 struct Evidence {
     offender: u8,

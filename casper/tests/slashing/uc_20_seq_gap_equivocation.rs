@@ -1,3 +1,15 @@
+// UC-20 — Equivocation detected across a sequence-number gap.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-20.
+// Theorems: T-1 (detection sound), T-9.7 (seq-num density).
+// Reference: formal/rocq/slashing/theories/BugFixSeqNumDensity.v.
+//
+// Scenario: v0 publishes a block at seq=0, then at seq=2 (skipping 1).
+// A distinct block at seq=2 is then offered. Even with the missing seq=1
+// block in the chain, the detector must classify the second seq=2 block
+// as IgnorableEquivocation and the dispatcher must mint a record. Pre-fix
+// detection assumed contiguous sequence numbers and could miss this case.
+
 use super::harness::SlashingTestHarness;
 use super::types::Status;
 

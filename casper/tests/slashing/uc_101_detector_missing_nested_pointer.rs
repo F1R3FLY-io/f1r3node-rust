@@ -1,3 +1,15 @@
+// UC-101 — Detector tolerates a missing nested offender pointer.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-101.
+// Theorems: T-9.11 (detector totality), via `detector_no_unsafe_lookup`
+// in formal/rocq/slashing/theories/EquivocationDetector.v.
+//
+// Scenario: a justification points at a *nested* offender block whose
+// own self-justification pointer is missing from the store. Pre-fix the
+// detector would `unwrap` and panic; post-fix it treats the missing
+// pointer as a non-contributing justification — the block classifies
+// Valid, not Err.
+
 use super::detector_totality_helpers::{assert_valid, block, justification, DetectorFixture};
 
 #[tokio::test]

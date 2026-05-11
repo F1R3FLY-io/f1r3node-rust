@@ -61,6 +61,14 @@ impl SlashingTestHarness {
 
     /// Signs a fresh block at `(validator, seq)` and adds it to the DAG.
     /// Returns the assigned hash.
+    ///
+    /// The single creator-justification is picked by the *canonical
+    /// creator-justification rule*: take the validator's prior block with
+    /// the largest `seq < new_seq`. This is a rule, not a heuristic —
+    /// production code (`proto_util::creator_justification_block_message`)
+    /// makes the same choice. Tests that need a non-canonical creator
+    /// justification must use `sign_block_distinct` (equivocation) or
+    /// `sign_block_citing` (cross-validator citation).
     pub fn sign_block(&mut self, validator: &str, seq: SeqNum) -> BlockHash {
         let hash = self.next_hash;
         self.next_hash += 1;

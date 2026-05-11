@@ -1,3 +1,14 @@
+// UC-87 — Persistent corpus accumulates classifications across runs.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-87.
+// Reference: formal/sage/slashing/FINDINGS.md (corpus retention rows),
+// formal/sage/slashing/hypothesis_search/.
+//
+// Property: re-inserting an existing corpus entry must not flip its
+// `DivergenceClass`, and adding new entries must not reclassify old ones.
+// This is what makes the Sage->Hypothesis fixture pipeline replayable —
+// without it, a flaky fuzz run could erase prior findings.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::divergence_class::{

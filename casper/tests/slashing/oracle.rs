@@ -25,6 +25,18 @@ use super::types::{
 
 /// Mirrors `EquivocationDetector.equivocates` plus the validation-time
 /// `JustificationRegression` check. Pure: no side effects.
+///
+/// **Admissible-vs-Ignorable approximation.** Production code distinguishes
+/// `AdmissibleEquivocation` from `IgnorableEquivocation` via the
+/// casper-buffer's `requestedAsDependency` flag — i.e. whether the block was
+/// pulled in to satisfy a justification or arrived unsolicited. Tests do
+/// not own a casper-buffer, so this oracle uses record-existence as a
+/// proxy: if a record already exists for `(sender, seq-1)` the oracle
+/// returns Admissible, else Ignorable. The two classes are equivalent for
+/// the dispatcher (both are slashable), so the proxy is sound for status
+/// invariants — but it is *not* sound for tests that depend on the exact
+/// Admissible/Ignorable label, which must build a real casper-buffer in
+/// an integration test.
 pub fn oracle_detect(dag: &DagState, hash: BlockHash) -> Status {
     let block = match dag.blocks.get(&hash) {
         Some(b) => b,

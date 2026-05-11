@@ -1,3 +1,15 @@
+// UC-104 — Detector never performs an unsafe lookup.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-104.
+// Theorems: T-9.11, `detector_no_unsafe_lookup` in
+// formal/rocq/slashing/theories/EquivocationDetector.v.
+//
+// Scenario: a justification cites a block hash that does not exist in
+// the store. Pre-fix the detector called `lookup_unsafe(...)` and
+// panicked; post-fix it falls through to the safe-lookup path and the
+// missing hash simply does not contribute to the equivocation child
+// set. The block classifies cleanly.
+
 use super::detector_totality_helpers::{
     assert_neglected, block, hash, justification, DetectorFixture,
 };

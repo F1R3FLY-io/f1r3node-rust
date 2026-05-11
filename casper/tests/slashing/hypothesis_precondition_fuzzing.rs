@@ -1,3 +1,16 @@
+// UC-92 — Dropped preconditions classify as not exploitable.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-92.
+// Reference: formal/sage/theorem_assumption_counterexamples.sage,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Threat model: an attacker constructs scenarios that *violate* a stated
+// theorem precondition (e.g. canonical-record-key uniqueness, closure
+// bound). The detector / dispatcher must downgrade those cases to a
+// non-exploitable class (boundary divergence) rather than treating them
+// as discovered counterexamples — a dropped precondition is by definition
+// outside the theorem's domain and cannot disprove it.
+
 use super::divergence_class::{
     classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
 };

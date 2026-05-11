@@ -1,3 +1,17 @@
+// UC-99 — Threat-vector ranking: projection/assumption boundaries
+// always outrank bisimilar rows.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-99.
+// Reference: docs/theory/slashing/slashing-threat-model.md,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Property: regardless of extra-stake or slash-delay weights, a row
+// classed `ProjectionBoundary` or `PreconditionFuzzingBoundary` must
+// rank above any row classed `Bisimilar`. This is the prioritization
+// guarantee for triage: a maintainer working through findings must see
+// the boundary-class rows first, even if a bisimilar row has more
+// dramatic stake numbers attached to it.
+
 use super::divergence_class::{classify, DivergenceClass, DivergenceReason};
 
 fn threat_priority(class: DivergenceClass, extra_stake: i64, slash_delay: i64) -> i64 {

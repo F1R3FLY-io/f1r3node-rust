@@ -1,3 +1,16 @@
+// Replay determinism: the same sequence of operations produces identical
+// projected state in two independent harness runs.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14.6.
+// Theorems: T-replay (catalog of replay-equivalent projections).
+//
+// Property: running the same script (sign, dispatch, slash, cite, slash)
+// in two fresh harnesses must produce equal bonds, equal coop-vault
+// balances, equal record sets, and equal fork-choice tips. This catches
+// any non-determinism — HashMap iteration leaking RandomState, ambient
+// time reads, system-clock dependencies — that would silently fork the
+// network.
+
 use super::harness::SlashingTestHarness;
 
 fn run_sequence(n: usize, stake: i64) -> SlashingTestHarness {

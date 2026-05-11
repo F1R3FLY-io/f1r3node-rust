@@ -20,6 +20,11 @@ use super::types::Status;
 #[test]
 fn pre_fix_bug_1_ignorable_dos_closed() {
     let mut harness = SlashingTestHarness::new(3, 100);
+    // `_b1` is v0's *honest* block at seq=5 (underscored because no
+    // assertion looks at it directly; it just establishes the prior
+    // creator-justification). `b1_prime` is v0's *equivocating* block
+    // at the same seq=5 — the offending block whose hash must appear
+    // in the record's witness set below.
     let _b1 = harness.sign_block("v0", 5);
     let b1_prime = harness.sign_block_distinct("v0", 5);
 

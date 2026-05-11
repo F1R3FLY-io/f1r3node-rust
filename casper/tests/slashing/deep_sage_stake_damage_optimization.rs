@@ -1,3 +1,19 @@
+// UC-94 — Weighted-damage requires a closure-bound violation.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-94.
+// Threat class: Stake-weighted damage optimization (Sage row
+// `damage_optimizer.sage`).
+// Reference: formal/sage/damage_optimizer.sage,
+// formal/sage/weighted_stake_optimization.sage,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Sage finding: an adversary may try to maximize total slashed stake by
+// choosing offender placement to exceed the closure-bound. The invariant
+// is the dual statement: weighted damage *attributable to neglect* is
+// non-trivial only when the closure bound is violated — under the bound,
+// reverse-reachability produces a small closure and the total slashed
+// stake stays within the BFT safety envelope.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 fn closure(direct: BTreeSet<u8>, edges: &[(u8, u8)]) -> BTreeSet<u8> {

@@ -1,3 +1,20 @@
+// Pre-fix regression backstop for bug #10 (PoS withdrawal-flow transfer failure).
+//
+// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.11
+// (T-9.10 in some renderings).
+// Rocq: formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v.
+//
+// The post-fix invariant: when the bond->withdrawer transfer fails during a
+// PoS withdrawal, no state mutates — withdrawers list, rewards, and
+// pos_balance must all be preserved, and total_funds must equal the pre-call
+// value. Pre-fix, the transfer could partially apply (rewards already paid
+// out, principal stuck in the contract), strictly increasing total_funds
+// over time as failed withdrawals leaked the bond into the contract.
+//
+// This file is a *shadow* implementation of WithdrawState — it models both
+// the pre-fix and post-fix payout behavior so we can diff them against the
+// same scenario and confirm the invariant holds for post-fix only.
+
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

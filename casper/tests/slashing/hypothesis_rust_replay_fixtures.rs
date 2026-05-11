@@ -1,3 +1,17 @@
+// Replay-fixture bridge from Sage/Hypothesis searches into the Rust harness.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14.6 (replay).
+// Reference: formal/sage/slashing/hypothesis_search/,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Each fixture in the JSON corpus carries an id, a coverage feature list,
+// a threat score, expected `DivergenceClass`, and a sequence of scenario
+// events. This test loads the corpus, replays each fixture against the
+// production-shape harness, and asserts the classification + threat
+// score match. Failures here indicate either (a) the production harness
+// drifted away from a known-classified Sage row, or (b) the fixture has
+// gone stale and needs regenerating from the Sage source.
+
 use std::{env, fs};
 
 use serde::Deserialize;

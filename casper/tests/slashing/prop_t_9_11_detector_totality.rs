@@ -1,3 +1,16 @@
+// Theorem T-9.11 (totality) — randomized.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14 T-9.11.
+// Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
+// theorem `detector_total`.
+//
+// Property: for any well-formed input DAG, `check(...)` returns Ok with
+// some classification (Valid / Admissible / Ignorable / Neglected). It
+// never returns Err, never panics. Proptest randomizes the
+// justification list, the offender seq numbers, and the missing-pointer
+// pattern. This is the *property-test* companion to the UC-101..UC-108
+// fixed regression suite.
+
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;

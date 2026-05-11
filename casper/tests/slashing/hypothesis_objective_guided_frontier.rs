@@ -1,3 +1,16 @@
+// UC-88 — Objective-guided frontier excludes UnexpectedDivergence rows.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-88.
+// Reference: formal/sage/objective_frontier_model.sage,
+// formal/sage/slashing/FINDINGS.md.
+//
+// Sage objective frontier scores each search row by class + extra-stake +
+// slash-delay; the frontier is the set of rows that survive scoring. The
+// post-fix invariant is: any row classed `UnexpectedDivergence` is excluded
+// regardless of its stake/delay weights — economic levers cannot disguise
+// a bisimilarity break. This test pins a frozen-objective row against the
+// classifier so a regression in `DivergenceClass` definitions would fail.
+
 use super::divergence_class::{
     classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
 };

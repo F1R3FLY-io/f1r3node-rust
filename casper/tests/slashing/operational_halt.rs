@@ -1,3 +1,17 @@
+// Operational-halt boundary: slashing past the BFT bound shrinks the
+// active set below quorum.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14
+// (operational liveness).
+// Reference: design/12-failure-modes.md.
+//
+// Scenario: n=7 validators, BFT bound F=⌊(n-1)/3⌋=2. Slashing F+2=4
+// validators leaves only 3 active — below the n-F=5 quorum required for
+// safety + liveness. This test does NOT assert "the system recovers" —
+// it asserts the operator-visible *symptom*: the active set is exactly
+// n - slashed. A misclassification or a partial-slash bug would leave
+// the active count higher than the slash budget allows.
+
 use super::harness::SlashingTestHarness;
 
 #[test]

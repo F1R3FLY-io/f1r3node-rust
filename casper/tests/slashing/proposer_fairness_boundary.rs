@@ -1,3 +1,14 @@
+// UC-74 — Fair proposer reports a visible equivocation (does not neglect it).
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-74.
+// Theorems: T-9.8.
+//
+// Scenario: v0 equivocates; the dispatcher mints a record. Honest
+// proposer v1 cites the bad block *along with* a slash directive — the
+// resulting block classifies Valid (v1 is not neglecting) and v1 does
+// not receive a record. v1's pending slash list still includes v0,
+// because the slash hasn't yet been finalized.
+
 use super::divergence_class::{
     classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
 };

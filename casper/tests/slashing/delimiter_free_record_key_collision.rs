@@ -1,3 +1,16 @@
+// UC-75 — Delimiter-free record key collision (string-concat attack).
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-75.
+// Reference: docs/theory/slashing/design/05-storage-and-records.md.
+//
+// Threat: a string-concat key like `format!("{validator}{base_seq}")`
+// makes ("1", 23) and ("12", 3) collide on the same key — a hostile
+// validator could pick its identity to alias another's record. The
+// canonical record key is the tuple `(String, u64)` itself, which the
+// store keeps distinct. This file asserts (a) the delimiter-free form
+// collides, (b) the canonical form does not, and (c) `EqRecordSet`
+// uses the canonical form.
+
 use std::collections::BTreeSet;
 
 use super::types::{EqRecord, EqRecordSet};

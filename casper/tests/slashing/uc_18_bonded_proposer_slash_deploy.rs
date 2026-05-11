@@ -1,3 +1,14 @@
+// UC-18 — Bonded proposer enumerates pending slash targets without self-cost.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-18.
+// Theorems: T-9.8.
+//
+// Scenario: an offender v0 equivocates and the dispatcher records the
+// evidence. A *bonded* proposer v1 then enumerates the pending slash
+// candidates. The proposer-side bond must remain unchanged — issuing a
+// SlashDeploy is a duty, not a cost — and v0 must appear in the target
+// list exactly once.
+
 use super::harness::SlashingTestHarness;
 
 #[test]

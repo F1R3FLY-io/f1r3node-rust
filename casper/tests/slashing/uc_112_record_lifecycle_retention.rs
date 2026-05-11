@@ -1,3 +1,14 @@
+// UC-112 — Detector updates retain pre-existing detected-hash entries.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-112.
+// Theorems: T-9.11, T-5 (record monotonicity).
+//
+// Scenario: a record already carries a detected hash from an earlier
+// run. When a new block triggers `check_neglected_equivocations_with_update`
+// the tracker.add(updated) call must *append*, not overwrite — the
+// existing hashes survive. Combined with T-5, this is what gives records
+// monotonic growth: once detected, always recorded.
+
 use super::detector_totality_helpers::{assert_valid, block, DetectorFixture};
 
 #[tokio::test]

@@ -1,3 +1,13 @@
+// UC-106 — Two *distinct* equivocation children are required to neglect.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-106.
+// Theorems: T-9.11, T-2 (detection complete).
+//
+// Scenario: one equivocation child alone is not neglect — only two
+// distinct children above the same base seq trigger NeglectedEquivocation.
+// Order of discovery of the two children must not matter; flipping the
+// justification order must produce the same classification.
+
 use super::detector_totality_helpers::{
     assert_neglected, assert_valid, block, justification, DetectorFixture,
 };

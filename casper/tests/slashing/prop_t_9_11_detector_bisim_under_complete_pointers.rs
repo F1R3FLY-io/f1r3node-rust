@@ -1,3 +1,15 @@
+// Theorem T-9.11 (bisimulation under complete pointers) — randomized.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14 T-9.11.
+// Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
+// theorem `detector_bisim_under_complete_pointers`.
+//
+// Property: when every justification pointer resolves to a present
+// block, the post-fix detector classifies identically to the pre-fix
+// detector. This is the regression-free guarantee — the totality fix
+// only changed behavior on the missing-pointer edge case. UC-103 is the
+// fixed-fixture companion.
+
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;

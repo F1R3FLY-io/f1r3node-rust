@@ -1,3 +1,16 @@
+// Catalog replay: every named minimal counterexample retains its class
+// and its prescribed mitigation.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14.6,
+// docs/theory/slashing/slashing-traceability.md.
+// Reference: formal/sage/slashing/FINDINGS.md.
+//
+// Each entry in the catalog is a Sage-found minimal counterexample with a
+// frozen class + prescribed mitigation. This file replays the catalog and
+// asserts (a) every named case still classifies as expected and (b) the
+// mitigation string is non-empty. A mitigation regression — silently
+// removing the fix for a known case — surfaces as a failed assertion here.
+
 use super::divergence_class::{
     classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
 };

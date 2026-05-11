@@ -1,3 +1,14 @@
+// UC-108 — Duplicate paths to the same child do not count as two children.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-108.
+// Theorems: T-9.11.
+//
+// Scenario: two justifications independently route to the *same*
+// equivocation-child hash. The detector must deduplicate by child hash
+// before checking the "len > 1" two-children condition — pre-fix it
+// counted paths and could classify Neglected on a single distinct
+// child (a false positive that would slash an honest validator).
+
 use super::detector_totality_helpers::{assert_valid, block, justification, DetectorFixture};
 
 #[tokio::test]

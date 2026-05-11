@@ -1,3 +1,14 @@
+// UC-105 — `equivocation_detected_block_hashes` membership is order-independent.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-105.
+// Theorems: T-9.11.
+//
+// Scenario: when a record already contains a detected-hash entry, the
+// detector short-circuits to `Neglected` regardless of where in the
+// justification list the detected hash appears. This is the symmetric
+// fix to UC-102 (justification iteration order) — the record's
+// detected-hash set must also be a *set*, not order-sensitive.
+
 use super::detector_totality_helpers::{assert_neglected, block, justification, DetectorFixture};
 
 #[tokio::test]

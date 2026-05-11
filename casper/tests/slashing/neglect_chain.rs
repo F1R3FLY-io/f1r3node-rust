@@ -1,3 +1,17 @@
+// Three-level neglect chain: only level-1 neglecters are slashable.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14, T-6
+// (neglect detection bounded to one hop).
+// Reference: design/08-two-level-and-collusion.md.
+//
+// Scenario: A equivocates (level 0); B cites A's bad block without
+// slashing (level 1, NeglectedEquivocation — record minted); C cites B's
+// neglecting block (level 2). The post-fix invariant is that level-2 is
+// *not* itself slashable — neglect detection is bounded to one hop, not
+// transitive. Otherwise an adversary could chain-neglect honest
+// validators by gossiping carefully crafted parent pointers. This test
+// pins the bound: level-1 mints a record, level-2 does not.
+
 use super::harness::SlashingTestHarness;
 use super::types::Status;
 

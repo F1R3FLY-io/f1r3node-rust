@@ -1,3 +1,20 @@
+// Pre-fix regression backstop for bug #11 (detector totality).
+//
+// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.12.
+// Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
+// (theorems `detector_total` and `detector_no_unsafe_lookup`).
+//
+// The post-fix invariant: the equivocation detector is *total* — it never
+// returns an error or panic for any well-formed input, even if a
+// justification points at a hash absent from the block store, or a
+// duplicate child appears in the canonical-child cache. Pre-fix the
+// detector returned `Err(KeyNotFound)` on missing-pointer paths and could
+// double-count duplicate children, leaving blocks with invalid-but-honest
+// shapes incorrectly flagged.
+//
+// Test fixtures come from `detector_totality_helpers` (this branch's
+// dedicated helper module for detector-totality regressions).
+
 use super::detector_totality_helpers::{
     assert_neglected, assert_valid, block, hash, justification, DetectorFixture,
 };

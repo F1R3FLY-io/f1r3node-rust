@@ -1,3 +1,15 @@
+// UC-13 — Slash with failed bond/vault transfer.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-13.
+// Theorems: T-9.4.
+// Reference: formal/rocq/slashing/theories/BugFixTransferFailure.v.
+//
+// Scenario: when the bond->coop-vault transfer fails inside slashing,
+// the slash returns `success=false` and **no** state has mutated —
+// bond, active flag, coop-vault balance, and the `slashed` set are all
+// preserved so a future block can retry the slash. Pre-fix the transfer
+// could partially apply, producing an inconsistent post-state.
+
 use super::harness::SlashingTestHarness;
 
 #[test]

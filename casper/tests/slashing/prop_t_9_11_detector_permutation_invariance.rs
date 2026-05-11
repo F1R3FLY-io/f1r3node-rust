@@ -1,3 +1,15 @@
+// Theorem T-9.11 (permutation invariance) — randomized.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14 T-9.11.
+// Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
+// theorem `detector_permutation_invariant`.
+//
+// Property: for any well-formed DAG, the detector's classification is
+// invariant under permutation of the input block's justification list.
+// Proptest randomizes orderings; the test compares the original vs.
+// permuted classification. The UC-102 fixture covers a hand-picked
+// neglect case; this property test sweeps the broader space.
+
 use proptest::prelude::*;
 
 use super::detector_totality_helpers::{assert_neglected, block, justification, DetectorFixture};

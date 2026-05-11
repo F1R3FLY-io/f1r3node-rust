@@ -1,3 +1,18 @@
+// Equivocation at seq=0 (genesis-adjacent) does NOT mint a record.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14, boundary
+// case of T-4 / T-5 (record uniqueness + monotonicity).
+// Reference: see `casper/src/rust/slashing_authorization.rs::checked_base_seq`
+// (`seq <= 0 → None`) and commit db0b979.
+//
+// Scenario: validator v0 publishes two distinct blocks at seq=0. The
+// detector classifies the second as Ignorable, but the dispatcher does
+// NOT mint a record — `checked_base_seq(0)` returns None, so there is no
+// valid base seq for the record key. This is the contrapositive of UC-49
+// (genesis-edge invariants). A downstream observer that cites v0's bad
+// block at seq=0 cannot be classed Neglected because there's no record
+// to neglect.
+
 use super::harness::SlashingTestHarness;
 use super::types::Status;
 

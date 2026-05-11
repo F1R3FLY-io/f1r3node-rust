@@ -1,3 +1,15 @@
+// UC-103 — Detector behaves identically to the pre-fix path when all
+// justification pointers are complete (preconditioned bisimulation).
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-103.
+// Theorems: T-9.11, `detector_bisim_under_complete_pointers` in
+// formal/rocq/slashing/theories/EquivocationDetector.v.
+//
+// Scenario: complete-pointer view => post-fix detector classifies a
+// 2-child equivocation the same way the pre-fix detector would. This is
+// the "regression-free" half of the totality fix — we only changed
+// behavior on the missing-pointer edge.
+
 use super::detector_totality_helpers::{assert_neglected, block, justification, DetectorFixture};
 
 #[tokio::test]

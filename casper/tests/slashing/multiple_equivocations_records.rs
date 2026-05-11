@@ -1,3 +1,15 @@
+// Same validator equivocates twice => two distinct EquivocationRecords.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14, T-4
+// (record uniqueness).
+// Reference: docs/theory/slashing/design/05-storage-and-records.md.
+//
+// Scenario: validator v0 equivocates at seq=5, then again at seq=10. The
+// record store must hold *both* records, keyed by `(equivocator,
+// base_seq)`. Pre-fix #4 the store keyed only on `equivocator` and would
+// overwrite the first record with the second — losing the seq=5
+// evidence. This test asserts both records survive.
+
 use super::harness::SlashingTestHarness;
 use super::types::Status;
 

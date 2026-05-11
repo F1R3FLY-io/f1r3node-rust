@@ -1,3 +1,14 @@
+// UC-89 — Reduced scenarios preserve classification.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-89.
+// Reference: formal/sage/slashing/FINDINGS.md (minimized counterexamples).
+//
+// Property: when Hypothesis reduces a counterexample to its minimal
+// witness (smallest input that triggers the failure), the reduced form
+// must keep the same `DivergenceClass` as the original. A classifier
+// regression that flipped a minimized case to `Bisimilar` would silently
+// erase a known threat vector — this test fails the moment that happens.
+
 use super::divergence_class::{
     classify, frontier_classification_ok, DivergenceClass, DivergenceReason,
 };

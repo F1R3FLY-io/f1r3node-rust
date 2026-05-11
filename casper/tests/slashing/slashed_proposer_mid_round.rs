@@ -1,3 +1,15 @@
+// Post-fix #8 enforcement: a proposer slashed mid-round emits no slash deploys.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14, T-9.8.
+// Rocq: formal/rocq/slashing/theories/BugFixUnbondedProposer.v.
+//
+// Scenario: v1 is the bonded proposer with v0 as a pending slash target.
+// v1 itself is then slashed (e.g. for an unrelated reason). After v1 is
+// unbonded, calling `simulate_slash_proposal("v1")` must return an empty
+// list — pre-fix #8 the proposer still emitted slash deploys despite
+// being unbonded, producing UnauthorizedSlashDeploy blocks that other
+// nodes would then slash *them* for. Cascading-slash bug.
+
 use super::harness::SlashingTestHarness;
 
 #[test]

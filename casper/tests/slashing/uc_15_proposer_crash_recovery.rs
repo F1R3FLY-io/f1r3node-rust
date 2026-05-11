@@ -1,3 +1,14 @@
+// UC-15 — Slash survives proposer crash via on-chain record.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-15.
+// Theorems: T-3, T-9.8.
+//
+// Scenario: validator v0 equivocates, but the proposer that observed it
+// crashes before issuing a SlashDeploy. Because the dispatcher minted an
+// EquivocationRecord (post-fix #1/#3), the *next* bonded proposer v1
+// can read the record from the DAG and emit the pending slash. The slash
+// then completes successfully — bond zeroed, coop vault credited.
+
 use super::harness::SlashingTestHarness;
 
 #[test]

@@ -105,6 +105,15 @@ async fn integration_t_neglected_invalid_block() {
 
     // Step 4: nodes[1] proposes b3 with explicit (v0, b1p)
     // justification — directly citing the invalid block.
+    //
+    // Why `propose_with_explicit_justifications` instead of the
+    // natural snapshot path: the natural snapshot would cite v0's
+    // *latest valid* block (b1), not the invalid b1p. To exercise
+    // the NeglectedInvalidBlock arm we must force the justification
+    // to point at the invalid block — that's the whole point of
+    // this test. Without the explicit-justification injection,
+    // nodes[1] would propose a Valid block and the integration
+    // would silently pass without exercising the arm at all.
     let d3 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d3");
     let mut b3_justifs: Vec<Justification> = Vec::new();
     b3_justifs.push(Justification {

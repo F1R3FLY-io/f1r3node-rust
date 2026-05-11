@@ -1,3 +1,14 @@
+// UC-102 — Detector classification is independent of justification order.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-102.
+// Theorems: T-9.11, `detector_permutation_invariant` in
+// formal/rocq/slashing/theories/EquivocationDetector.v.
+//
+// Scenario: two blocks cite the same justification set but in different
+// orders. The detector must classify both as Neglected — order
+// independence is consensus-critical because protobuf does not guarantee
+// repeated-field iteration order across encoders/decoders.
+
 use super::detector_totality_helpers::{assert_neglected, block, justification, DetectorFixture};
 
 #[tokio::test]

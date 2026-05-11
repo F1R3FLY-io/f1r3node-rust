@@ -1,3 +1,17 @@
+// Frontier monotonicity under merge: union(direct) closures conservatively.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14 (frontier
+// properties). Theorems: T-11 (neglect closure).
+// Reference: formal/sage/objective_frontier_model.sage.
+//
+// Property: when two slash frontiers merge (e.g. partition heal, gossip
+// fan-in), the union of their direct-offender sets must produce a closure
+// that *contains* both individual closures. No member can drop out of the
+// frontier under merge. Proptest randomizes the direct-offender sets and
+// the neglect-edge graph; the assertion is `closure(A∪B) ⊇ closure(A) ∪
+// closure(B)`. The validator count is capped at 4 to keep proptest cycles
+// tractable.
+
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;

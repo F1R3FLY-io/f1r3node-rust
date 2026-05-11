@@ -1,3 +1,17 @@
+// Search-horizon fixtures (v2): extends v1 with classifier-bound rows.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14.6.
+// Reference: formal/sage/horizon_v2_search_model.sage,
+// formal/sage/slashing/FINDINGS.md,
+// scripts/ci/slashing-search-horizon.sh.
+//
+// v2 differs from `horizon_search_fixtures.rs` by introducing the
+// `DivergenceClass` axis: each contribution row now carries an expected
+// classification, so this file checks both the structural detector
+// outcome *and* the classifier label. New for v2: `Detected(u8)` carries
+// the offender id (v1 only flagged Detected), allowing the test to
+// distinguish detected-self from detected-other contributions.
+
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;

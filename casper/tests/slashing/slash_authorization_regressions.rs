@@ -1,3 +1,23 @@
+// Slash-authorization regression suite.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §9 + §10.
+// Theorems: T-9.8 (authorization predicate), T-9.7 (seq-num density).
+// Rocq: formal/rocq/slashing/theories/BugFixSlashAuthorization.v,
+// BugFixSeqArithmetic.v, BugFixSeqNumDensity.v.
+//
+// This is the production-path companion to the predicate-level tests in
+// `slashing_authorization.rs::kani_proofs`. Every rejection rule in
+// `validate_received_slash_deploys` has at least one regression here:
+//   - issuer ≠ block.sender,
+//   - target_activation_epoch ≠ current_epoch,
+//   - invalid_block_hash unknown to the DAG,
+//   - referenced block not flagged invalid,
+//   - offender currently unbonded,
+//   - duplicate (offender, target_epoch) in same block.
+// Boundary helpers (`checked_base_seq`, `checked_next_seq`,
+// `epoch_for_block_number`) are exercised against hostile inputs at the
+// same time so a single failure points at the specific rule.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

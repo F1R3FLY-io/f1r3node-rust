@@ -1,3 +1,15 @@
+// UC-107 — Detector deterministic under validator-set churn.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-107.
+// Theorems: T-9.11.
+//
+// Scenario: the equivocator's validator entry has been removed from the
+// bonded set (churn), and a historical justification points at a block
+// whose self-pointer is missing. The detector must classify the new
+// block deterministically (Valid) — pre-fix the unbonded-equivocator
+// + missing-pointer combination could spurious-Err on some nodes and
+// Ok on others, diverging consensus.
+
 use super::detector_totality_helpers::{assert_valid, block, justification, DetectorFixture};
 
 #[tokio::test]

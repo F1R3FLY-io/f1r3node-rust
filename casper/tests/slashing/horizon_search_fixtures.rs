@@ -1,3 +1,18 @@
+// Search-horizon fixtures (v1): pin the bounded-search frontier.
+//
+// Maps to: docs/theory/slashing/slashing-specification.md §14.6.
+// Reference: formal/sage/horizon_search_model.sage,
+// docs/theory/slashing/slashing-search-horizon.md,
+// scripts/ci/slashing-search-horizon.sh.
+//
+// Why this file exists: the CI horizon search produces a frontier of
+// (validator-count, contribution-type, neglect-edge) combinations whose
+// classification is "interesting" (CandidateBoundaryDivergence or worse).
+// This file replays a small, pinned subset of that frontier so a
+// regression in the production detector + dispatcher surfaces on every
+// pull request — without paying for the full multi-hour CI search.
+// Validator count bound `< 4` matches the horizon-search v1 envelope.
+
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;
