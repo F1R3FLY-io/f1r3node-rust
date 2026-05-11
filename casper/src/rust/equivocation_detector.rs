@@ -19,6 +19,12 @@ use crate::rust::ValidBlockProcessing;
 /// Equivocation detection logic for blockchain consensus
 pub struct EquivocationDetector;
 
+/// Memoizes per-justification canonical-child resolution within a single
+/// detection pass. The key is (justification block hash, equivocating
+/// validator, equivocation-base seq); the value is the canonical child hash
+/// (or `None` if no child exists above the base). Without this cache,
+/// `is_equivocation_detectable` would re-walk the self-justification chain
+/// O(N×J) times for every iteration of the outer record loop.
 type CanonicalChildCache = HashMap<(BlockHash, Validator, i64), Option<BlockHash>>;
 
 impl EquivocationDetector {
@@ -101,6 +107,12 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
     ) -> Result<bool, KvStoreError> {
+        // Atomic read-modify-write per Theorem T-9.2 (Bug #2). Reading
+        // `tracker.data()` and writing `tracker.add(updated)` must happen
+        // under the same lock so concurrent block processors cannot observe
+        // a half-written record set. The `FnOnce` closure shape is the trait
+        // contract — see `block-storage/src/rust/dag/equivocations_access.rs`
+        // and `formal/rocq/slashing/theories/BugFixAtomicTracker.v`.
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
@@ -195,6 +207,11 @@ impl EquivocationDetector {
         }
     }
 
+    /// Project a block's justification list into a `validator -> latest-hash`
+    /// map. **`BTreeMap` is consensus-critical here** — every node iterates
+    /// the map below in `is_equivocation_detectable`, and `HashMap` iteration
+    /// order leaks `RandomState` entropy into consensus, leading to divergent
+    /// classifications across nodes. Do not switch to `HashMap`.
     fn to_latest_message_hashes(
         justifications: &[models::rust::casper::protocol::casper_message::Justification],
     ) -> BTreeMap<Validator, BlockHash> {
@@ -263,6 +280,9 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<Vec<BlockMessage>, KvStoreError> {
+        // Genesis is unconditionally the equivocation root, never a child of
+        // it. Returning the unchanged child set short-circuits the walk and
+        // keeps the (genesis, validator, seq) cache key out of the cache.
         if justification_block.block_hash == genesis.block_hash {
             return Ok(equivocation_children.to_vec());
         }
@@ -286,6 +306,13 @@ impl EquivocationDetector {
             let latest_messages =
                 Self::to_latest_message_hashes(&justification_block.justifications);
 
+            // A missing latest-message for the equivocating validator (no
+            // entry in `latest_messages`, or the referenced hash not in the
+            // store) is treated as *obliviousness*, not as a store
+            // inconsistency — the prior code returned `Err(KeyNotFound)` here
+            // and rejected the block. Per §9.x of the design we now let the
+            // detection pass continue: the block simply contributes no
+            // equivocation child via this justification.
             match latest_messages.get(equivocating_validator) {
                 Some(latest_equivocating_validator_block_hash) => {
                     match block_store.get(latest_equivocating_validator_block_hash)? {
@@ -360,6 +387,17 @@ impl EquivocationDetector {
         }
     }
 
+    /// Walk the self-justification chain upward from `block`, returning the
+    /// **oldest** ancestor authored by `target_validator` whose sequence
+    /// number still exceeds `base_seq_num`. This is the canonical child of
+    /// the equivocation base — the block we hold against the validator when
+    /// deciding whether an equivocation has been observed by `block`'s
+    /// causal cone.
+    ///
+    /// The `visited` set is a defensive cycle guard against
+    /// byzantine-crafted self-justifications, **not** genuine DAG cycles —
+    /// honest blocks form a strict DAG. A cycle here would loop forever
+    /// without it; treat the first repeat as the end of the walk.
     fn find_canonical_creator_justification_child_above_seq(
         dag: &KeyValueDagRepresentation,
         block: &BlockMessage,

@@ -827,6 +827,13 @@ impl Validate {
         b: &BlockMessage,
         block_store: &KeyValueBlockStore,
     ) -> ValidBlockProcessing {
+        // Reject duplicate-validator justifications upstream. The
+        // `justified_validators` HashSet built below silently collapses
+        // duplicates, so without this guard a hostile block could list the
+        // same validator twice (with two different latest-message pointers)
+        // and survive the `bonded_validators == justified_validators`
+        // equality check — masking an equivocation. See
+        // `formal/rocq/slashing/theories/BugFixDuplicateJustifications.v`.
         let mut seen = HashSet::new();
         if b.justifications
             .iter()
@@ -879,6 +886,10 @@ impl Validate {
         }
     }
 
+    /// Tier-2 validation gate for received `Slash` system deploys. Delegates
+    /// to `slashing_authorization::validate_received_slash_deploys`; any
+    /// rule violation collapses to `InvalidBlock::UnauthorizedSlashDeploy`,
+    /// which is itself slashable (see `block_status::is_slashable`).
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,

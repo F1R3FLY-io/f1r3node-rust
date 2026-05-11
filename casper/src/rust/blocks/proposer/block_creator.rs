@@ -436,6 +436,11 @@ pub async fn create(
         ))
     })?;
 
+    // Sequence numbers are wire-protocol i32. Use a checked successor here
+    // rather than `+ 1` so a hostile snapshot can't roll the local validator
+    // past i32::MAX silently — overflow surfaces as a `CasperError` and the
+    // proposer refuses to mint the block. Mirrors the receiver-side
+    // `checked_base_seq` check.
     let next_seq_num = casper_snapshot
         .max_seq_nums
         .get(&validator_identity.public_key.bytes)

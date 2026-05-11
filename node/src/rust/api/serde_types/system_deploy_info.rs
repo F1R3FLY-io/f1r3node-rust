@@ -81,6 +81,11 @@ pub struct SlashSystemDeployDataSerde {
     pub invalid_block_hash: Vec<u8>,
     #[serde(rename = "issuerPublicKey", with = "base64_bytes")]
     pub issuer_public_key: Vec<u8>,
+    // `default` preserves API back-compat with pre-§9 clients that don't know
+    // about `targetActivationEpoch`. Such payloads deserialize to epoch 0,
+    // which the receiver's authorization predicate
+    // (`validate_received_slash_deploys`) then rejects against the current
+    // epoch — old clients fail cleanly rather than silently slashing.
     #[serde(rename = "targetActivationEpoch", default)]
     pub target_activation_epoch: i64,
 }

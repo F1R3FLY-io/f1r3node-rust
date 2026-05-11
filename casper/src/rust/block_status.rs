@@ -58,6 +58,12 @@ pub enum InvalidBlock {
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
+    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
+    // fails the authorization predicate (wrong epoch, missing/non-invalid
+    // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
+    // Raised by `Validate::slash_deploy_authorization`; the rules are in
+    // `slashing_authorization.rs::validate_received_slash_deploys` and
+    // proven sufficient by Theorem T-9.8.
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     ContainsExpiredDeploy,
@@ -194,6 +200,11 @@ impl InvalidBlock {
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
             | InvalidBlock::ContainsFutureDeploy
+            // IgnorableEquivocation is now slashable per Bug #1 (§9.1). On
+            // dev this variant was a known DOS-vector TODO — equivocations
+            // observed via someone else's justification produced no on-chain
+            // evidence. The dispatcher (`multi_parent_casper_impl::handle_*`)
+            // now mints an EquivocationRecord whenever this branch fires.
             | InvalidBlock::IgnorableEquivocation => true,
             _ => false,
         }

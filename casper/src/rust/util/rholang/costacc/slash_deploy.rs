@@ -18,6 +18,10 @@ use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 pub struct SlashDeploy {
     pub invalid_block_hash: BlockHash,
     pub pk: PublicKey,
+    /// Epoch at which the slash takes effect. By the §9 authorization
+    /// predicate this must equal both the offender's evidence epoch and the
+    /// current epoch of the block carrying the slash; see
+    /// `slashing_authorization::received_slash_deploy_authorized`.
     pub target_activation_epoch: i64,
     pub initial_rand: Blake2b512Random,
 }

@@ -174,6 +174,10 @@ impl RuntimeManager {
                             bytes.push(0);
                             push_len_prefixed(&mut bytes, invalid_block_hash);
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
+                            // Little-endian is consensus-determined for this
+                            // hash-affecting encoding — every node must agree
+                            // on the bytes fed into the post-state hash. Do
+                            // not switch to big-endian or `to_be_bytes`.
                             bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
