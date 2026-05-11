@@ -13,6 +13,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
+use super::types::base_seq_from_seq;
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -38,13 +39,14 @@ proptest! {
         }
 
         // T-4: there is exactly one record at (v0, base = seq-1).
-        let key = ("v0".to_string(), seq.saturating_sub(1));
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
+        let key = ("v0".to_string(), base);
         let count = harness.tracker.records.iter().filter(|(k, _)| **k == key).count();
         prop_assert_eq!(count, 1, "exactly one record at {:?}", key);
 
         // Every injected witness ends up in the single record's set
         // (record-uniqueness AND witness-monotonicity).
-        let actual = harness.record_witnesses("v0", seq.saturating_sub(1));
+        let actual = harness.record_witnesses("v0", base);
         for w in &witnesses {
             prop_assert!(actual.contains(w), "witness {} merged into the record", w);
         }

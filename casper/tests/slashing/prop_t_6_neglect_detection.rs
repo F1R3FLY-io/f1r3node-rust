@@ -17,7 +17,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -53,7 +53,8 @@ proptest! {
         let _v0a = harness.sign_block("v0", equiv_seq);
         let bad = harness.sign_block_distinct("v0", equiv_seq);
         let _ = harness.dispatch(bad);
-        prop_assert!(harness.has_record("v0", equiv_seq.saturating_sub(1)));
+        let base = base_seq_from_seq(equiv_seq).expect("generated equiv_seq is positive");
+        prop_assert!(harness.has_record("v0", base));
 
         // v1 cites v0's bad block without slashing.
         let citing = harness.sign_block_citing("v1", cite_seq, bad);

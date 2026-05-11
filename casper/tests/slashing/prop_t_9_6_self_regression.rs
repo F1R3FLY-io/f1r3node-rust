@@ -12,7 +12,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::{BlockMeta, Status};
+use super::types::{base_seq_from_seq, BlockMeta, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -49,7 +49,11 @@ proptest! {
         prop_assert_eq!(s, Status::JustificationRegression,
             "post-fix #6: any self-regressing block (early_seq={} citing later_seq={}) is detected",
             early_seq, later_seq);
-        prop_assert!(harness.has_record("v0", early_seq.saturating_sub(1)),
-            "post-fix #3: dispatcher mints record for JustificationRegression");
+        match base_seq_from_seq(early_seq) {
+            Some(base) => prop_assert!(harness.has_record("v0", base),
+                "post-fix #3: dispatcher mints record for positive-seq JustificationRegression"),
+            None => prop_assert!(harness.dag.invalid.contains(&regressing),
+                "seq=0 regression is invalid evidence but has no predecessor record key"),
+        }
     }
 }

@@ -191,25 +191,25 @@ document's triple-bisim), not *structural identity*.
 
 ## 6. CI Architecture
 
-Per [§14.9](./14-test-plan.md#149-ci-integration), the slashing
-test suite runs as nine jobs in
-`.github/workflows/slashing-tests.yml`:
+Per [§14.9](./14-test-plan.md#149-manual-runbook), the slashing
+test suite is documented as manual and scriptable jobs:
 
-| Job                        | Tier  | Trigger    | Time    |
+| Job                        | Tier  | Run mode   | Time    |
 |----------------------------|-------|------------|---------|
-| example-based              | 3     | PR-gate    | <30 min |
-| property-based             | 2 + 3 | PR-gate    | <30 min |
-| pre-fix-regressions (×11)  | 3     | PR-gate    | <15 min |
-| loom-interleavings         | 3     | PR-gate    | <30 min |
-| tla-model-check            | (TLA+) | PR-gate   | <30 min |
-| rocq-build                 | (Rocq) | PR-gate   | <60 min |
-| **production-integration** | 1 + 2 + 3 | PR-gate (Track 2) | <30 min |
-| **mutation-coverage**      | 3     | Nightly    | <240 min |
-| **nightly-extended-proptest** | 2 + 3 | Nightly | <240 min |
+| example-based              | 3     | manual/scripted | <30 min |
+| property-based             | 2 + 3 | manual/scripted | <30 min |
+| pre-fix-regressions (×11)  | 3     | manual/scripted | <15 min |
+| loom-interleavings         | 3     | manual/scripted | <30 min |
+| tla-model-check            | (TLA+) | manual/scripted | <30 min |
+| rocq-build                 | (Rocq) | manual/scripted | <60 min |
+| **production-integration** | 1 + 2 + 3 | manual/scripted | <30 min |
+| **mutation-coverage**      | 3     | scheduled/manual | <240 min |
+| **nightly-extended-proptest** | 2 + 3 | scheduled/manual | <240 min |
 
-A PR cannot merge unless all PR-gate jobs pass. Nightly jobs
-surface coverage gaps and high-confidence proptest results that
-would consume too much time on every PR.
+Reviewers should run the commands in §14.9 or the corresponding
+`scripts/ci/slashing-search-horizon.sh` modes for the tiers relevant
+to their review. The jobs are not currently active GitHub workflow
+entries.
 
 `MC_EquivocationDetector_safety` is the exhaustive detector safety
 TLC model. It is not part of the default PR-gate script because it

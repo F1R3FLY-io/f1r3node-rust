@@ -13,7 +13,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 /// Strategy producing the four slashable Status variants the harness
 /// exposes (the production catch-all covers 14 InvalidBlock variants
@@ -49,7 +49,8 @@ proptest! {
         prop_assert_eq!(returned, status,
             "dispatch_with_status returns the forced classification");
 
-        prop_assert!(harness.has_record("v0", seq.saturating_sub(1)),
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
+        prop_assert!(harness.has_record("v0", base),
             "post-fix #3: every slashable status mints a record");
         prop_assert!(harness.dag.invalid.contains(&hash),
             "block is added to the invalid index");
@@ -64,7 +65,8 @@ proptest! {
 
         let _ = harness.dispatch_with_status(hash, Status::Valid);
 
-        prop_assert!(!harness.has_record("v0", seq.saturating_sub(1)),
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
+        prop_assert!(!harness.has_record("v0", base),
             "Valid status produces no record");
         prop_assert!(!harness.dag.invalid.contains(&hash),
             "Valid status leaves block out of the invalid index");

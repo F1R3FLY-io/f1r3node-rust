@@ -19,8 +19,8 @@
 use std::collections::BTreeSet;
 
 use super::types::{
-    BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum, SlashResult, Status,
-    ValidatorId,
+    base_seq_from_seq, BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum,
+    SlashResult, Status, ValidatorId,
 };
 
 /// Mirrors `EquivocationDetector.equivocates` plus the validation-time
@@ -80,17 +80,18 @@ pub fn oracle_dispatch(
         | Status::JustificationRegression
         | Status::SlashableOther => {
             if let Some(block) = dag.blocks.get(&hash) {
-                let base = block.seq.saturating_sub(1);
-                let record = EqRecord {
-                    equivocator: block.sender.clone(),
-                    base_seq: base,
-                    witnesses: {
-                        let mut s = BTreeSet::new();
-                        s.insert(hash);
-                        s
-                    },
-                };
-                new_tracker.insert_or_update(record);
+                if let Some(base) = base_seq_from_seq(block.seq) {
+                    let record = EqRecord {
+                        equivocator: block.sender.clone(),
+                        base_seq: base,
+                        witnesses: {
+                            let mut s = BTreeSet::new();
+                            s.insert(hash);
+                            s
+                        },
+                    };
+                    new_tracker.insert_or_update(record);
+                }
                 new_dag.invalid.insert(hash);
             }
         }

@@ -340,7 +340,8 @@ async fn duplicate_justification_validators_are_invalid() {
 #[test]
 fn checked_sequence_arithmetic_rejects_boundaries() {
     assert_eq!(checked_base_seq(i32::MIN), None);
-    assert_eq!(checked_base_seq(0), Some(-1));
+    assert_eq!(checked_base_seq(-1), None);
+    assert_eq!(checked_base_seq(0), None);
     assert_eq!(checked_base_seq(1), Some(0));
     assert_eq!(checked_next_seq(i32::MAX as u64), None);
     assert_eq!(checked_next_seq(41), Some(42));
@@ -361,8 +362,13 @@ proptest! {
     }
 
     #[test]
-    fn checked_base_seq_matches_i32_predecessor(n in any::<i32>()) {
-        prop_assert_eq!(checked_base_seq(n), n.checked_sub(1));
+    fn checked_base_seq_rejects_nonpositive(n in i32::MIN..=0) {
+        prop_assert_eq!(checked_base_seq(n), None);
+    }
+
+    #[test]
+    fn checked_base_seq_matches_positive_i32_predecessor(n in 1_i32..=i32::MAX) {
+        prop_assert_eq!(checked_base_seq(n), Some(n - 1));
     }
 
     #[test]

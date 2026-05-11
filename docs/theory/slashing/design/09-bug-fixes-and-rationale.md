@@ -622,9 +622,10 @@ slash deploy per current offender epoch.
 **Cause.** `seq − 1` in evidence recording and proposer `seq + 1` could
 panic in debug builds or wrap/cast incorrectly in release-shaped paths.
 
-**Post-fix behavior.** The legacy record key uses checked predecessor logic;
-the invalid evidence index still records the slashable block. Proposer sequence
-numbers use checked addition and `i32` conversion.
+**Post-fix behavior.** The legacy record key uses checked predecessor logic
+and rejects nonpositive predecessor domains; the invalid evidence index still
+records the slashable block. Proposer sequence numbers use checked addition
+and `i32` conversion.
 
 **Proofs and tests.** Rocq: `checked_pred_total_positive`,
 `checked_succ_bounded_sound`, `main_T9_14_checked_pred_positive`. Rust:

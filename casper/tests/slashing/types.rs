@@ -24,6 +24,14 @@ pub type ValidatorId = String;
 /// Sequence number of a block within its sender's chain.
 pub type SeqNum = u64;
 
+pub fn base_seq_from_seq(seq: SeqNum) -> Option<SeqNum> {
+    if seq == 0 {
+        None
+    } else {
+        Some(seq - 1)
+    }
+}
+
 /// Local projection of a single block's identity-relevant fields. Mirrors
 /// `formal/rocq/slashing/theories/Block.v` `Block` record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

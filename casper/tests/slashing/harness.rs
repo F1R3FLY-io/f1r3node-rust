@@ -24,8 +24,8 @@ use std::collections::BTreeSet;
 
 use super::observer::SlashingObserver;
 use super::types::{
-    BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum, SlashResult, Status,
-    ValidatorId,
+    base_seq_from_seq, BlockHash, BlockMeta, DagState, EqRecord, EqRecordSet, PoSState, SeqNum,
+    SlashResult, Status, ValidatorId,
 };
 
 #[derive(Debug, Clone)]
@@ -173,8 +173,9 @@ impl SlashingTestHarness {
             // citation by adding witnesses via `record_neglect`.
             // For the simple harness, default to Admissible if there is
             // an existing record, else Ignorable.
-            let base = block.seq.saturating_sub(1);
-            return if self.tracker.contains(&block.sender, base) {
+            return if base_seq_from_seq(block.seq)
+                .is_some_and(|base| self.tracker.contains(&block.sender, base))
+            {
                 Status::AdmissibleEquivocation
             } else {
                 Status::IgnorableEquivocation
@@ -251,15 +252,17 @@ impl SlashingTestHarness {
             | Status::NeglectedEquivocation
             | Status::JustificationRegression
             | Status::SlashableOther => {
-                let (sender, base) = {
+                let (sender, maybe_base) = {
                     let block = self
                         .dag
                         .blocks
                         .get(&hash)
                         .expect("dispatch: block exists in DAG");
-                    (block.sender.clone(), block.seq.saturating_sub(1))
+                    (block.sender.clone(), base_seq_from_seq(block.seq))
                 };
-                self.record_equivocation(&sender, base, hash);
+                if let Some(base) = maybe_base {
+                    self.record_equivocation(&sender, base, hash);
+                }
                 self.dag.invalid.insert(hash);
             }
             Status::Valid => {}

@@ -11,7 +11,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -48,7 +48,8 @@ proptest! {
         // T-9.9: self-correcting block is admitted as Valid.
         prop_assert_eq!(s, Status::Valid,
             "T-9.9: self-correcting block (cite + slash) is admitted");
-        prop_assert!(!harness.has_record(&slasher, slasher_seq.saturating_sub(1)),
+        let slasher_base = base_seq_from_seq(slasher_seq).expect("generated slasher_seq is positive");
+        prop_assert!(!harness.has_record(&slasher, slasher_base),
             "T-9.9: honest slasher does NOT get a record");
         prop_assert!(!harness.dag.invalid.contains(&correcting),
             "T-9.9: self-correcting block is NOT in invalid index");

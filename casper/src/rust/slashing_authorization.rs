@@ -26,7 +26,13 @@ pub fn epoch_for_block_number(block_number: i64, epoch_length: i32) -> Option<i6
     }
 }
 
-pub fn checked_base_seq(seq_num: i32) -> Option<i32> { seq_num.checked_sub(1) }
+pub fn checked_base_seq(seq_num: i32) -> Option<i32> {
+    if seq_num <= 0 {
+        None
+    } else {
+        Some(seq_num - 1)
+    }
+}
 
 pub fn checked_next_seq(max_seq: u64) -> Option<i32> {
     max_seq
@@ -258,9 +264,17 @@ mod kani_proofs {
     use super::*;
 
     #[kani::proof]
-    fn checked_base_seq_matches_i32_predecessor() {
+    fn checked_base_seq_rejects_nonpositive() {
         let seq: i32 = kani::any();
-        assert_eq!(checked_base_seq(seq), seq.checked_sub(1));
+        kani::assume(seq <= 0);
+        assert_eq!(checked_base_seq(seq), None);
+    }
+
+    #[kani::proof]
+    fn checked_base_seq_matches_positive_i32_predecessor() {
+        let seq: i32 = kani::any();
+        kani::assume(seq > 0);
+        assert_eq!(checked_base_seq(seq), Some(seq - 1));
     }
 
     #[kani::proof]

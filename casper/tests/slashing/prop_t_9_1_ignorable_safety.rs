@@ -13,7 +13,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -40,7 +40,8 @@ proptest! {
         // but the `not unrecorded` invariant is the same in both.)
         prop_assert!(matches!(s, Status::IgnorableEquivocation | Status::AdmissibleEquivocation),
             "first observation classifies as an equivocation variant");
-        prop_assert!(harness.has_record(&v, seq.saturating_sub(1)),
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
+        prop_assert!(harness.has_record(&v, base),
             "T-9.1: dispatcher mints record for every equivocation, regardless of variant");
     }
 }

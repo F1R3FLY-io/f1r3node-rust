@@ -18,7 +18,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 fn canonical_visible_child(chain_latest_to_oldest: &[u64], base_seq: u64) -> Option<u64> {
     let mut candidate = None;
@@ -57,7 +57,8 @@ proptest! {
         let s = harness.dispatch(bad);
         prop_assert_eq!(s, Status::IgnorableEquivocation,
             "T-9.7: equivocation at gapped seq still detected");
-        prop_assert!(harness.has_record("v0", later_seq.saturating_sub(1)),
+        let base = base_seq_from_seq(later_seq).expect("later_seq is positive");
+        prop_assert!(harness.has_record("v0", base),
             "T-9.7: dispatcher records the equivocation at base = later_seq - 1");
     }
 

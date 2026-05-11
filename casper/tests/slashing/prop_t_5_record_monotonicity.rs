@@ -12,6 +12,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
+use super::types::base_seq_from_seq;
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -26,12 +27,13 @@ proptest! {
     ) {
         let mut harness = SlashingTestHarness::new(3, 100);
         let _ = harness.sign_block("v0", seq);
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
 
         let mut last_size = 0usize;
         for _ in 0..steps {
             let bad = harness.sign_block_distinct("v0", seq);
             let _ = harness.dispatch(bad);
-            let now = harness.record_witnesses("v0", seq.saturating_sub(1));
+            let now = harness.record_witnesses("v0", base);
             // T-5: witness set never shrinks.
             prop_assert!(now.len() >= last_size,
                 "witnesses grew from {} to {}", last_size, now.len());

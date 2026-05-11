@@ -32,7 +32,7 @@
 use serde::Deserialize;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 /// One step of a TLA+ trace.
 ///
@@ -109,7 +109,9 @@ pub fn apply_step(harness: &mut SlashingTestHarness, step: &TraceStep) -> StepRe
             let status = harness.detect(h2);
             // Mirror the TLA Action: an equivocation block immediately
             // mints an EquivocationRecord at (v, seq - 1).
-            harness.record_equivocation(validator, seq.saturating_sub(1), h2);
+            if let Some(base_seq) = base_seq_from_seq(seq) {
+                harness.record_equivocation(validator, base_seq, h2);
+            }
             let _ = (h1, status); // silence unused
             StepResult::Ok
         }

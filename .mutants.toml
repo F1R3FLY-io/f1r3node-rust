@@ -2,8 +2,8 @@
 #
 # Reference: docs/theory/slashing/design/14-test-plan.md §14.8.8
 # (mutation coverage). Survival rate threshold is 5 %; the nightly
-# CI job at .github/workflows/slashing-tests.yml fails if any mutant
-# survives.
+# manual mutation-coverage runbook in docs/theory/slashing/design/14-test-plan.md
+# should be used to check whether any mutant survives.
 #
 # Scope is limited to the slashing modules — running cargo-mutants
 # over the entire workspace would generate tens of thousands of

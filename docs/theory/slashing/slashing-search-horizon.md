@@ -84,7 +84,8 @@ Manual equivalent of the removed **Kani symbolic checks** workflow job:
 ```sh
 cargo install --locked kani-verifier
 cargo kani setup
-RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_matches_i32_predecessor
+RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_rejects_nonpositive
+RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_matches_positive_i32_predecessor
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_next_seq_matches_i32_successor
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness epoch_for_block_number_rejects_invalid_domain
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness epoch_for_block_number_matches_bounded_floor_division
@@ -142,7 +143,8 @@ ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS="-C target-feature=+aes,+sse2" cargo fuzz 
 Run the Kani harnesses directly:
 
 ```sh
-RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_matches_i32_predecessor
+RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_rejects_nonpositive
+RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_base_seq_matches_positive_i32_predecessor
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness checked_next_seq_matches_i32_successor
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness epoch_for_block_number_rejects_invalid_domain
 RUSTFLAGS='-Aexplicit-builtin-cfgs-in-flags --cfg target_feature="aes" --cfg target_feature="sse2"' cargo kani -p casper --harness epoch_for_block_number_matches_bounded_floor_division

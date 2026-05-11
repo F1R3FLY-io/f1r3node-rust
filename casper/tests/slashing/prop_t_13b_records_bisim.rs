@@ -16,7 +16,7 @@ use proptest::prelude::*;
 use super::harness::SlashingTestHarness;
 use super::observer::SlashingObserver;
 use super::oracle_adapter::RocqOracleAdapter;
-use super::types::BlockMeta;
+use super::types::{base_seq_from_seq, BlockMeta};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -55,7 +55,9 @@ proptest! {
         // T-13b: records agree as sets keyed by (validator, base_seq).
         for (v_idx, seq) in &events {
             let v = format!("v{}", v_idx % n);
-            let base = seq.saturating_sub(1);
+            let Some(base) = base_seq_from_seq(*seq) else {
+                continue;
+            };
             prop_assert_eq!(
                 <SlashingTestHarness as SlashingObserver>::has_record(&harness, &v, base),
                 <RocqOracleAdapter as SlashingObserver>::has_record(&oracle, &v, base),

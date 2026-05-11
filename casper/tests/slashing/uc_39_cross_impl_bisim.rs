@@ -17,6 +17,7 @@ use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
 use super::oracle::{oracle_detect, oracle_dispatch, oracle_slash};
+use super::types::base_seq_from_seq;
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -78,14 +79,16 @@ proptest! {
         // match.
         prop_assert_eq!(harness.dag.invalid.contains(&bad),
             oracle_dag.invalid.contains(&bad));
-        prop_assert_eq!(
-            harness.tracker.contains(&equivocator, seq.saturating_sub(1)),
-            oracle_tracker.contains(&equivocator, seq.saturating_sub(1))
-        );
-        prop_assert_eq!(
-            harness.tracker.witnesses(&equivocator, seq.saturating_sub(1)),
-            oracle_tracker.witnesses(&equivocator, seq.saturating_sub(1))
-        );
+        if let Some(base) = base_seq_from_seq(seq) {
+            prop_assert_eq!(
+                harness.tracker.contains(&equivocator, base),
+                oracle_tracker.contains(&equivocator, base)
+            );
+            prop_assert_eq!(
+                harness.tracker.witnesses(&equivocator, base),
+                oracle_tracker.witnesses(&equivocator, base)
+            );
+        }
     }
 
     /// Harness::execute_slash(target) ≡ oracle_slash(pos_state, target).

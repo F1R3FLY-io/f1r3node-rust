@@ -5,8 +5,9 @@
 //
 // Scenario: equivocation at the very first sequence number (seq=0)
 // — the genesis-adjacent boundary case. The post-fix dispatcher
-// records the equivocation at base_seq=0 (saturating subtraction;
-// no wrap-around).
+// records invalid evidence but does not mint an equivocation-record
+// key because the predecessor sequence is outside the natural-number
+// record domain.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
@@ -21,11 +22,10 @@ fn uc_49_genesis_seq_zero_equivocation() {
     let s = harness.dispatch(bad);
 
     assert_eq!(s, Status::IgnorableEquivocation);
-    // base_seq computation uses saturating_sub, so seq=0 → base=0
-    // (no underflow).
+    assert!(harness.dag.invalid.contains(&bad));
     assert!(
-        harness.has_record("v0", 0),
-        "genesis-adjacent equivocation records at base=0"
+        !harness.has_record("v0", 0),
+        "seq=0 has invalid evidence but no predecessor record key"
     );
 }
 

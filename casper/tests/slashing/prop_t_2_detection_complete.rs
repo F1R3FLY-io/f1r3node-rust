@@ -13,7 +13,7 @@
 use proptest::prelude::*;
 
 use super::harness::SlashingTestHarness;
-use super::types::Status;
+use super::types::{base_seq_from_seq, Status};
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -43,7 +43,8 @@ proptest! {
             matches!(status, Status::AdmissibleEquivocation | Status::IgnorableEquivocation),
             "T-2: equivocation must classify as an equivocation variant, got {:?}", status
         );
-        prop_assert!(harness.has_record(&equivocator, seq.saturating_sub(1)),
+        let base = base_seq_from_seq(seq).expect("generated seq is positive");
+        prop_assert!(harness.has_record(&equivocator, base),
             "T-2 + post-fix #1/#3: detection plus dispatch always mints a record");
     }
 }

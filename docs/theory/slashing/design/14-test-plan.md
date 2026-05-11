@@ -1195,7 +1195,8 @@ checked by `JustificationProjection.tla`.
 | Property | Covers |
 | --- | --- |
 | `checked_next_seq_matches_i32_successor` | T-9.14 `seq + 1` agrees with mathematical successor when representable and rejects overflow. |
-| `checked_base_seq_matches_i32_predecessor` | T-9.14 `seq − 1` agrees with mathematical predecessor when representable and rejects underflow. |
+| `checked_base_seq_rejects_nonpositive` | T-9.14 `seq − 1` rejects nonpositive record-key domains. |
+| `checked_base_seq_matches_positive_i32_predecessor` | T-9.14 `seq − 1` agrees with mathematical predecessor when representable. |
 | `epoch_for_block_number_matches_floor_division` | T-9.12/T-9.13 epoch projection for valid block-number domains. |
 | `epoch_for_block_number_rejects_invalid_domains` | T-9.12/T-9.13 rejection of negative block numbers and non-positive epoch lengths. |
 
