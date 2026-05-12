@@ -1,11 +1,11 @@
-use heed::types::SerdeBincode;
-use heed::{Database, Env};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::rust::ByteBuffer;
+use heed::types::SerdeBincode;
+use heed::{Database, Env};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
+use crate::rust::ByteBuffer;
 
 pub struct LmdbKeyValueStore {
     pub env: Arc<Env>,
@@ -22,8 +22,8 @@ impl KeyValueStore for LmdbKeyValueStore {
 
         let reader = self.env.read_txn()?;
         let results = keys
-            .into_iter()
-            .map(|key| db.get(&reader, &key).map_err(|e| e.into()))
+            .iter()
+            .map(|key| db.get(&reader, key).map_err(|e| e.into()))
             .collect();
         drop(reader);
         results
@@ -102,9 +102,7 @@ impl KeyValueStore for LmdbKeyValueStore {
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn KeyValueStore> {
-        Box::new(self.clone())
-    }
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
         let db = self.db.lock().map_err(|_| {
@@ -125,9 +123,7 @@ impl KeyValueStore for LmdbKeyValueStore {
     }
 
     // This is only needed for testing purposes
-    fn size_bytes(&self) -> usize {
-        todo!()
-    }
+    fn size_bytes(&self) -> usize { todo!() }
 
     fn print_store(&self) -> Result<(), KvStoreError> {
         let kv_store_map = self.to_map()?;
@@ -161,13 +157,13 @@ impl KeyValueStore for LmdbKeyValueStore {
 }
 
 impl LmdbKeyValueStore {
-    pub fn new(env: Env, db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>) -> Self {
-        let env_arc = Arc::new(env);
-        let db_arc = Arc::new(Mutex::new(db));
-
+    pub fn new(
+        env: Arc<Env>,
+        db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
+    ) -> Self {
         LmdbKeyValueStore {
-            env: env_arc,
-            db: db_arc,
+            env,
+            db: Arc::new(Mutex::new(db)),
         }
     }
 }

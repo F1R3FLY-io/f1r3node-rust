@@ -98,14 +98,12 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
     let continuation = "k".to_string();
     let datum = "d".to_string();
 
-    let _ = space.consume(
-        channels.clone(),
-        patterns.clone(),
-        continuation.clone(),
-        false,
-        BTreeSet::new(),
-    ).await;
-    let _ = space.produce(channels[0].clone(), datum.clone(), false).await;
+    let _ = space
+        .consume(channels.clone(), patterns.clone(), continuation.clone(), false, BTreeSet::new())
+        .await;
+    let _ = space
+        .produce(channels[0].clone(), datum.clone(), false)
+        .await;
     let rig_point = space.create_checkpoint().await.unwrap();
 
     // Create ReportingRspace and run replay
@@ -119,16 +117,16 @@ async fn reporting_rspace_should_capture_comm_event_in_soft_report() {
         Arc::new(Box::new(StringMatch)),
     );
 
-    let _ = reporting.rig_and_reset(empty_point.root, rig_point.log).await;
+    let _ = reporting
+        .rig_and_reset(empty_point.root, rig_point.log)
+        .await;
 
-    let _ = reporting.consume(
-        channels.clone(),
-        patterns.clone(),
-        continuation.clone(),
-        false,
-        BTreeSet::new(),
-    ).await;
-    let _ = reporting.produce(channels[0].clone(), datum.clone(), false).await;
+    let _ = reporting
+        .consume(channels.clone(), patterns.clone(), continuation.clone(), false, BTreeSet::new())
+        .await;
+    let _ = reporting
+        .produce(channels[0].clone(), datum.clone(), false)
+        .await;
 
     // Ensure soft_report contains ReportingComm
     let report = reporting.get_report().unwrap();
@@ -146,13 +144,15 @@ async fn reporting_rspace_should_capture_consume_event_only() {
     // does not require a matching produce to appear in the report.
     let (_space, reporting) = build_reporting_rspace();
 
-    let _ = reporting.consume(
-        vec!["ch1".to_string()],
-        vec![Pattern::Wildcard],
-        "k".to_string(),
-        false,
-        BTreeSet::new(),
-    ).await;
+    let _ = reporting
+        .consume(
+            vec!["ch1".to_string()],
+            vec![Pattern::Wildcard],
+            "k".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await;
 
     let report = reporting.get_report().unwrap();
     let flat: Vec<_> = report.into_iter().flatten().collect();
@@ -168,7 +168,9 @@ async fn reporting_rspace_should_capture_produce_event_only() {
     // is captured by the reporting logger.
     let (_space, reporting) = build_reporting_rspace();
 
-    let _ = reporting.produce("ch1".to_string(), "d".to_string(), false).await;
+    let _ = reporting
+        .produce("ch1".to_string(), "d".to_string(), false)
+        .await;
 
     let report = reporting.get_report().unwrap();
     let flat: Vec<_> = report.into_iter().flatten().collect();
@@ -190,26 +192,36 @@ async fn reporting_rspace_should_capture_peeks_in_comm_event() {
     let continuation = "k".to_string();
     let datum = "d".to_string();
 
-    let _ = space.consume(
-        channels.clone(),
-        patterns.clone(),
-        continuation.clone(),
-        false,
-        BTreeSet::from([0]),
-    ).await;
-    let _ = space.produce(channels[0].clone(), datum.clone(), false).await;
+    let _ = space
+        .consume(
+            channels.clone(),
+            patterns.clone(),
+            continuation.clone(),
+            false,
+            BTreeSet::from([0]),
+        )
+        .await;
+    let _ = space
+        .produce(channels[0].clone(), datum.clone(), false)
+        .await;
     let rig_point = space.create_checkpoint().await.unwrap();
 
-    let _ = reporting.rig_and_reset(empty_point.root, rig_point.log).await;
+    let _ = reporting
+        .rig_and_reset(empty_point.root, rig_point.log)
+        .await;
 
-    let _ = reporting.consume(
-        channels.clone(),
-        patterns.clone(),
-        continuation.clone(),
-        false,
-        BTreeSet::from([0]),
-    ).await;
-    let _ = reporting.produce(channels[0].clone(), datum.clone(), false).await;
+    let _ = reporting
+        .consume(
+            channels.clone(),
+            patterns.clone(),
+            continuation.clone(),
+            false,
+            BTreeSet::from([0]),
+        )
+        .await;
+    let _ = reporting
+        .produce(channels[0].clone(), datum.clone(), false)
+        .await;
 
     let report = reporting.get_report().unwrap();
     let flat: Vec<_> = report.into_iter().flatten().collect();

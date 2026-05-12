@@ -1,16 +1,17 @@
+#![allow(clippy::new_ret_no_self)]
+
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::channel::oneshot;
 use heed::types::SerdeBincode;
-use heed::{Database, Env, EnvOpenOptions};
+use heed::{Database, Env};
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use tokio::sync::Mutex;
 
+use crate::rspace::shared::env_cache;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 // See shared/src/main/scala/coop/rchain/store/LmdbStoreManager.scala
@@ -18,14 +19,13 @@ pub struct LmdbStoreManager {
     dir_path: PathBuf,
     max_env_size: usize,
     max_dbs: u32,
-    env_sender: Option<oneshot::Sender<Env>>,
-    env_receiver: Option<oneshot::Receiver<Env>>,
+    env: Arc<Mutex<Option<Arc<Env>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
 }
 
 #[derive(Clone)]
 struct DbEnv {
-    env: Env,
+    env: Arc<Env>,
     db: Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>,
 }
 
@@ -35,70 +35,48 @@ impl LmdbStoreManager {
         max_env_size: usize,
         max_dbs: u32,
     ) -> Box<dyn KeyValueStoreManager> {
-        let (sender, receiver) = oneshot::channel::<Env>();
         Box::new(LmdbStoreManager {
             dir_path,
             max_env_size,
             max_dbs,
-            env_sender: Some(sender),
-            env_receiver: Some(receiver),
+            env: Arc::new(Mutex::new(None)),
             dbs: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     async fn get_current_env(&mut self, db_name: &str) -> Result<DbEnv, heed::Error> {
-        let dbs = self.dbs.lock().await;
-        if let Some(db_env) = dbs.get(db_name) {
-            return Ok(db_env.clone());
-        }
-        drop(dbs);
-
-        // Create and open the environment if it doesn't exist
-        if self.env_sender.is_some() {
-            let env = self.create_env().await?;
-            let sender = self.env_sender.take().ok_or_else(|| {
-                heed::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "LMDB_Store_Manager: LMDB environment sender unavailable",
-                ))
-            })?;
-            let _ = sender.send(env); // Send the environment to the receiver
+        {
+            let dbs = self.dbs.lock().await;
+            if let Some(db_env) = dbs.get(db_name) {
+                return Ok(db_env.clone());
+            }
         }
 
-        // Await the environment from the receiver
-        let receiver = self.env_receiver.take().ok_or_else(|| {
-            heed::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "LMDB_Store_Manager: LMDB environment receiver unavailable",
-            ))
-        })?;
-        let env = receiver.await.map_err(|_| {
-            heed::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "LMDB_Store_Manager: LMDB environment was not received",
-            ))
-        })?;
+        // Obtain a shared Arc<Env> for this path from the workspace-level
+        // env_cache. Multiple LmdbStoreManager instances targeting the same
+        // dir_path (e.g. the casper shared-LMDB test pattern) all observe the
+        // same Env via the cache.
+        let env = {
+            let mut env_slot = self.env.lock().await;
+            if env_slot.is_none() {
+                *env_slot = Some(env_cache::get_or_open_env(
+                    &self.dir_path,
+                    self.max_env_size,
+                    self.max_dbs,
+                )?);
+            }
+            env_slot.as_ref().unwrap().clone()
+        };
 
-        // Open or create the database
-        let db = env.create_database(Some(db_name))?;
+        // Open or create the named database within a write transaction.
+        let mut wtxn = env.write_txn()?;
+        let db = env.create_database(&mut wtxn, Some(db_name))?;
+        wtxn.commit()?;
 
         let mut dbs = self.dbs.lock().await;
         let db_env = DbEnv { env, db };
         dbs.insert(db_name.to_string(), db_env.clone());
         Ok(db_env)
-    }
-
-    async fn create_env(&self) -> Result<Env, heed::Error> {
-        // println!("Creating LMDB environment: {:?}", self.dir_path);
-        fs::create_dir_all(&self.dir_path)?;
-
-        let mut env_builder = EnvOpenOptions::new();
-        env_builder.map_size(self.max_env_size);
-        env_builder.max_dbs(self.max_dbs);
-        env_builder.max_readers(2048);
-
-        let env = env_builder.open(&self.dir_path)?;
-        Ok(env)
     }
 }
 
@@ -110,37 +88,25 @@ impl KeyValueStoreManager for LmdbStoreManager {
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        // Clear the databases HashMap to drop all DbEnv references
+        // Drop our Arc<Env> clones. The env_cache holds Weak refs, so when
+        // the last consumer drops, the cache entry auto-evicts on the next
+        // lookup and heed closes the LMDB file handles.
         let mut dbs = self.dbs.lock().await;
         dbs.clear();
-
-        // If there is an active receiver awaiting the environment, receive it and drop
-        // it
-        if let Some(receiver) = self.env_receiver.take() {
-            let env = receiver.await.map_err(|_| {
-                heed::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "LMDB_Store_Manager: Failed to receive LMDB environment for shutdown",
-                ))
-            })?;
-            drop(env);
-        }
-
+        let mut env_slot = self.env.lock().await;
+        *env_slot = None;
         Ok(())
     }
 }
 
-// This ensures LMDB environment is closed when the manager is dropped
+// Ensures LMDB environment is closed when the manager is dropped.
 impl Drop for LmdbStoreManager {
     fn drop(&mut self) {
-        // Use try_lock() for synchronous access in Drop
         if let Ok(mut dbs) = self.dbs.try_lock() {
             dbs.clear();
         }
-
-        // If there's an env_receiver, we need to handle it
-        // In Drop context, we can't await, so we just drop it
-        // The heed::Env Drop implementation will handle closing file handles
-        self.env_receiver.take();
+        if let Ok(mut env_slot) = self.env.try_lock() {
+            *env_slot = None;
+        }
     }
 }

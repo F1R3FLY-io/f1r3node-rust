@@ -56,7 +56,9 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     // Generate init data in space1
     for i in 0..data_size {
-        let res = space1.produce(format!("ch{}", i), format!("data{}", i), false).await;
+        let res = space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await;
         assert!(res.is_ok());
     }
 
@@ -96,13 +98,15 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     // Testing data in space2 (match all installed channels)
     for i in 0..data_size {
-        let res = space2.consume(
-            vec![format!("ch{}", i)],
-            pattern.clone(),
-            continuation.clone(),
-            false,
-            BTreeSet::new(),
-        ).await;
+        let res = space2
+            .consume(
+                vec![format!("ch{}", i)],
+                pattern.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new(),
+            )
+            .await;
         assert!(res.is_ok());
     }
 
@@ -177,7 +181,9 @@ async fn multipage_export_should_work_correctly() {
 
     // Generate init data in space1
     for i in 0..data_size {
-        let res = space1.produce(format!("ch{}", i), format!("data{}", i), false).await;
+        let res = space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await;
         assert!(res.is_ok());
     }
 
@@ -211,13 +217,15 @@ async fn multipage_export_should_work_correctly() {
 
     // Testing data in space2 (match all installed channels)
     for i in 0..data_size {
-        let res = space2.consume(
-            vec![format!("ch{}", i)],
-            pattern.clone(),
-            continuation.clone(),
-            false,
-            BTreeSet::new(),
-        ).await;
+        let res = space2
+            .consume(
+                vec![format!("ch{}", i)],
+                pattern.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new(),
+            )
+            .await;
         assert!(res.is_ok());
     }
     let end_point = space2.create_checkpoint().await.unwrap();
@@ -293,7 +301,9 @@ async fn multipage_export_with_skip_should_work_correctly() {
 
     // Generate init data in space1
     for i in 0..data_size {
-        let res = space1.produce(format!("ch{}", i), format!("data{}", i), false).await;
+        let res = space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await;
         assert!(res.is_ok());
     }
 
@@ -327,13 +337,15 @@ async fn multipage_export_with_skip_should_work_correctly() {
 
     // Testing data in space2 (match all installed channels)
     for i in 0..data_size {
-        let res = space2.consume(
-            vec![format!("ch{}", i)],
-            pattern.clone(),
-            continuation.clone(),
-            false,
-            BTreeSet::new(),
-        ).await;
+        let res = space2
+            .consume(
+                vec![format!("ch{}", i)],
+                pattern.clone(),
+                continuation.clone(),
+                false,
+                BTreeSet::new(),
+            )
+            .await;
         assert!(res.is_ok());
     }
     let end_point = space2.create_checkpoint().await.unwrap();

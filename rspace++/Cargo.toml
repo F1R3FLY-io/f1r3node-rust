@@ -1,6 +1,7 @@
 [package]
 name = "rspace_plus_plus"
 version = "0.1.0"
+publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
 
 # [workspace]
@@ -14,7 +15,7 @@ doctest = false
 [dependencies]
 shared = { path = "../shared" }
 bincode = { workspace = true }
-heed = "0.11.0"
+heed = "0.22.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
@@ -43,7 +44,7 @@ counter = "0.5.7"
 multiset = "0.0.5"
 rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", package = "rholang-parser", rev = "d25f953a" }
 validated = "1.0.0"
-metrics = { workspace = true }
+metrics = "0.23"
 tracing-subscriber = { workspace = true }
 
 [dependencies.uuid]
