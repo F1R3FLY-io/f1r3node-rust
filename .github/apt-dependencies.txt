@@ -1,8 +1,0 @@
-autoconf
-cmake
-curl
-git
-libtool
-make
-protobuf-compiler
-unzip
