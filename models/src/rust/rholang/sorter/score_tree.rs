@@ -182,10 +182,10 @@ impl<T: Clone> ScoredTerm<T> {
 }
 
 /**
-* Total order of all terms
-*
-* The general order is ground, vars, arithmetic, comparisons, logical, and then others
-*/
+ * Total order of all terms
+ *
+ * The general order is ground, vars, arithmetic, comparisons, logical, and then others
+ */
 pub struct Score;
 
 impl Score {

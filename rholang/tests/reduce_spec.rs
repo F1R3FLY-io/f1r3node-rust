@@ -1,62 +1,47 @@
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/ReduceSpec.scala
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    i64,
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::i64;
+use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::{
-    rhoapi::{
-        connective::ConnectiveInstance::VarRefBody, expr::ExprInstance, g_unforgeable::UnfInstance,
-        Bundle, Connective, EDiv, EEq, EList, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult,
-        ENeg, EPercentPercent, EPlus, EPlusPlus, ETuple, GPrivate, GUnforgeable, Match, MatchCase,
-        New, Receive, ReceiveBind, VarRef,
-    },
-    rust::{
-        par_map::ParMap,
-        par_map_type_mapper::ParMapTypeMapper,
-        par_set::ParSet,
-        par_set_type_mapper::ParSetTypeMapper,
-        rholang::implicits::GPrivateBuilder,
-        string_ops::StringOps,
-        utils::{
-            new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_etuple_par,
-            new_freevar_par, new_freevar_var, new_gbool_expr, new_gbool_par, new_gstring_expr,
-            new_gstring_par, new_wildcard_par,
-        },
-    },
+use models::rhoapi::connective::ConnectiveInstance::VarRefBody;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{
+    BindPattern, Bundle, Connective, EDiv, EEq, EList, EMatches, EMethod, EMinus, EMinusMinus,
+    EMod, EMult, ENeg, EPercentPercent, EPlus, EPlusPlus, ETuple, Expr, GDeployId, GPrivate,
+    GUnforgeable, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
+    ReceiveBind, Send, TaggedContinuation, VarRef,
 };
-use models::{
-    rhoapi::{
-        tagged_continuation::TaggedCont, BindPattern, Expr, GDeployId, ListParWithRandom, Par,
-        ParWithRandom, Send, TaggedContinuation,
-    },
-    rust::utils::{new_eplus_par_gint, new_gint_expr, new_gint_par},
+use models::rust::par_map::ParMap;
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set::ParSet;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::rholang::implicits::GPrivateBuilder;
+use models::rust::string_ops::StringOps;
+use models::rust::utils::{
+    new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par_gint,
+    new_etuple_par, new_freevar_par, new_freevar_var, new_gbool_expr, new_gbool_par, new_gint_expr,
+    new_gint_par, new_gstring_expr, new_gstring_par, new_wildcard_par,
 };
 use prost::Message;
-use rholang::rust::interpreter::{
-    accounting::{cost_accounting::CostAccounting, costs::Cost},
-    env::Env,
-    errors::InterpreterError,
-    matcher::r#match::Matcher,
-    reduce::DebruijnInterpreter,
-    rho_runtime::RhoISpace,
-    test_utils::persistent_store_tester::create_test_space,
-};
-use rspace_plus_plus::rspace::{
-    internal::{Datum, Row, WaitingContinuation},
-    rspace::RSpace,
-    rspace_interface::ISpace,
-    shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    },
-};
+use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::reduce::DebruijnInterpreter;
+use rholang::rust::interpreter::rho_runtime::RhoISpace;
+use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-fn rand() -> Blake2b512Random {
-    Blake2b512Random::create_from_bytes(&Vec::new())
-}
+fn rand() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&Vec::new()) }
 
 struct DataMapEntry {
     data: Vec<Par>,
@@ -94,21 +79,18 @@ fn check_continuation(
     body: ParWithRandom,
 ) -> bool {
     let mut expected_result = HashMap::new();
-    expected_result.insert(
-        channels.clone(),
-        Row {
-            data: Vec::new(),
-            wks: vec![WaitingContinuation::create(
-                &channels,
-                &bind_patterns,
-                &TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body)),
-                },
-                false,
-                BTreeSet::new(),
-            )],
-        },
-    );
+    expected_result.insert(channels.clone(), Row {
+        data: Vec::new(),
+        wks: vec![WaitingContinuation::create(
+            &channels,
+            &bind_patterns,
+            &TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(body)),
+            },
+            false,
+            BTreeSet::new(),
+        )],
+    });
 
     if result.len() != expected_result.len() {
         return false;
@@ -482,9 +464,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(receive, &env, rand())
-        .await;
+    let result = reducer.eval(receive, &env, rand()).await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert_eq!(
@@ -514,9 +494,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(send, &env, rand())
-        .await;
+    let result = reducer.eval(send, &env, rand()).await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert_eq!(
@@ -547,10 +525,7 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
     }]);
 
     let env: Env<Par> = Env::new();
-    reducer
-        .eval(send, &env, split_rand.clone())
-        .await
-        .unwrap();
+    reducer.eval(send, &env, split_rand.clone()).await.unwrap();
 
     let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
@@ -589,10 +564,7 @@ async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_b
     }]);
 
     let env: Env<Par> = Env::new();
-    reducer
-        .eval(send, &env, split_rand.clone())
-        .await
-        .unwrap();
+    reducer.eval(send, &env, split_rand.clone()).await.unwrap();
 
     let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
@@ -1679,41 +1651,35 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
     let channel1 = new_gstring_par("result1".to_string(), Vec::new(), false);
 
     let mut expected_result = HashMap::new();
-    expected_result.insert(
-        vec![channel0.clone()],
-        Row {
-            data: vec![Datum::create(
-                &channel0,
-                ListParWithRandom {
-                    pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
-                        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
-                    }])],
-                    random_state: result0_rand.to_bytes(),
-                },
-                false,
-            )],
-            wks: vec![],
-        },
-    );
+    expected_result.insert(vec![channel0.clone()], Row {
+        data: vec![Datum::create(
+            &channel0,
+            ListParWithRandom {
+                pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
+                }])],
+                random_state: result0_rand.to_bytes(),
+            },
+            false,
+        )],
+        wks: vec![],
+    });
 
-    expected_result.insert(
-        vec![channel1.clone()],
-        Row {
-            data: vec![Datum::create(
-                &channel1,
-                ListParWithRandom {
-                    pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
-                        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                            id: chosen_name.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                        })),
-                    }])],
-                    random_state: result1_rand.to_bytes(),
-                },
-                false,
-            )],
-            wks: vec![],
-        },
-    );
+    expected_result.insert(vec![channel1.clone()], Row {
+        data: vec![Datum::create(
+            &channel1,
+            ListParWithRandom {
+                pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                        id: chosen_name.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
+                    })),
+                }])],
+                random_state: result1_rand.to_bytes(),
+            },
+            false,
+        )],
+        wks: vec![],
+    });
 
     assert_eq!(result, expected_result);
 }
@@ -2557,10 +2523,9 @@ async fn slice_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("aba".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "aba".to_string()
+    )])
 }
 
 // "'abcabcac'.slice(2,1)" should "return empty string"
@@ -2673,10 +2638,9 @@ async fn percent_percent_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("Hello, Alice!".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "Hello, Alice!".to_string()
+    )])
 }
 
 // "'abc' ++ 'def'" should "return 'abcdef"
@@ -2697,10 +2661,9 @@ async fn plus_plus_should_work_correctly_with_string() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("abcdef".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "abcdef".to_string()
+    )])
 }
 
 // "ByteArray('dead') ++ ByteArray('beef)'" should "return ByteArray('deadbeef')"
@@ -2729,14 +2692,11 @@ async fn plus_plus_should_work_correctly_with_byte_array() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::GByteArray(StringOps::unsafe_decode_hex(
-                "deadbeef".to_string(),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(StringOps::unsafe_decode_hex(
+            "deadbeef".to_string(),
+        ))),
+    }])
 }
 
 fn interpolate(base: String, substitutes: Vec<(Par, Par)>) -> Par {
@@ -2760,26 +2720,22 @@ async fn interpolate_should_work_correctly() {
 
     let env = Env::new();
     let res = reducer.eval_expr(
-        &interpolate(
-            "${a} ${b}".to_string(),
-            vec![
-                (
-                    new_gstring_par("a".to_string(), Vec::new(), false),
-                    new_gstring_par("1 ${b}".to_string(), Vec::new(), false),
-                ),
-                (
-                    new_gstring_par("b".to_string(), Vec::new(), false),
-                    new_gstring_par("2 ${a}".to_string(), Vec::new(), false),
-                ),
-            ],
-        ),
+        &interpolate("${a} ${b}".to_string(), vec![
+            (
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gstring_par("1 ${b}".to_string(), Vec::new(), false),
+            ),
+            (
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                new_gstring_par("2 ${a}".to_string(), Vec::new(), false),
+            ),
+        ]),
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("1 ${b} 2 ${a}".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "1 ${b} 2 ${a}".to_string()
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2790,26 +2746,22 @@ async fn interpolate_should_interpolate_boolean_values() {
 
     let env = Env::new();
     let res = reducer.eval_expr(
-        &interpolate(
-            "${a} ${b}".to_string(),
-            vec![
-                (
-                    new_gstring_par("a".to_string(), Vec::new(), false),
-                    new_gbool_par(false, Vec::new(), false),
-                ),
-                (
-                    new_gstring_par("b".to_string(), Vec::new(), false),
-                    new_gbool_par(true, Vec::new(), false),
-                ),
-            ],
-        ),
+        &interpolate("${a} ${b}".to_string(), vec![
+            (
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gbool_par(false, Vec::new(), false),
+            ),
+            (
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                new_gbool_par(true, Vec::new(), false),
+            ),
+        ]),
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("false true".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "false true".to_string()
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2820,30 +2772,26 @@ async fn interpolate_should_interpolate_uris() {
 
     let env = Env::new();
     let res = reducer.eval_expr(
-        &interpolate(
-            "${a} ${b}".to_string(),
-            vec![
-                (
-                    new_gstring_par("a".to_string(), Vec::new(), false),
-                    Par::default().with_exprs(vec![Expr {
-                        expr_instance: Some(ExprInstance::GUri("testUriA".to_string())),
-                    }]),
-                ),
-                (
-                    new_gstring_par("b".to_string(), Vec::new(), false),
-                    Par::default().with_exprs(vec![Expr {
-                        expr_instance: Some(ExprInstance::GUri("testUriB".to_string())),
-                    }]),
-                ),
-            ],
-        ),
+        &interpolate("${a} ${b}".to_string(), vec![
+            (
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::GUri("testUriA".to_string())),
+                }]),
+            ),
+            (
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::GUri("testUriB".to_string())),
+                }]),
+            ),
+        ]),
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_gstring_expr("testUriA testUriB".to_string())]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_gstring_expr(
+        "testUriA testUriB".to_string()
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2922,20 +2870,17 @@ async fn slice_should_work_correctly_with_list_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps: vec![
-                    new_gint_par(9, Vec::new(), false),
-                    new_gint_par(4, Vec::new(), false),
-                ],
-                locally_free: Vec::new(),
-                connective_used: false,
-                remainder: None
-            }))
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![
+                new_gint_par(9, Vec::new(), false),
+                new_gint_par(4, Vec::new(), false),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None
+        }))
+    }])
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(5, 4)" should "return []"
@@ -2978,17 +2923,14 @@ async fn slice_should_work_correctly_with_list_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps: vec![],
-                locally_free: Vec::new(),
-                connective_used: false,
-                remainder: None
-            }))
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None
+        }))
+    }])
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(7, 8)" should "return []"
@@ -3031,17 +2973,14 @@ async fn slice_should_work_correctly_with_list_3() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps: vec![],
-                locally_free: Vec::new(),
-                connective_used: false,
-                remainder: None
-            }))
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None
+        }))
+    }])
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(-2, 2)" should "return [3, 7]"
@@ -3084,20 +3023,17 @@ async fn slice_should_work_correctly_with_list_4() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps: vec![
-                    new_gint_par(3, Vec::new(), false),
-                    new_gint_par(7, Vec::new(), false),
-                ],
-                locally_free: Vec::new(),
-                connective_used: false,
-                remainder: None
-            }))
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![
+                new_gint_par(3, Vec::new(), false),
+                new_gint_par(7, Vec::new(), false),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None
+        }))
+    }])
 }
 
 // "[3, 2, 9] ++ [6, 1, 7]" should "return [3, 2, 9, 6, 1, 7]"
@@ -3143,22 +3079,19 @@ async fn plus_plus_should_work_correctly_with_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_elist_expr(
-            vec![
-                new_gint_par(3, Vec::new(), false),
-                new_gint_par(2, Vec::new(), false),
-                new_gint_par(9, Vec::new(), false),
-                new_gint_par(6, Vec::new(), false),
-                new_gint_par(1, Vec::new(), false),
-                new_gint_par(7, Vec::new(), false),
-            ],
-            Vec::new(),
-            false,
-            None
-        )]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+        vec![
+            new_gint_par(3, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+            new_gint_par(9, Vec::new(), false),
+            new_gint_par(6, Vec::new(), false),
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(7, Vec::new(), false),
+        ],
+        Vec::new(),
+        false,
+        None
+    )])
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(1, 'c')" should "return 'a'"
@@ -3284,27 +3217,24 @@ async fn set_method_should_work_correctly_1() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gint_par(1, Vec::new(), false),
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(2, Vec::new(), false),
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(3, Vec::new(), false),
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gint_par(1, Vec::new(), false),
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(2, Vec::new(), false),
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(3, Vec::new(), false),
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 // "{1: 'a', 2: 'b'}.set(2, 'c')" should "return {1: 'a', 2: 'c'}"
@@ -3346,23 +3276,20 @@ async fn set_method_should_work_correctly_2() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gint_par(1, Vec::new(), false),
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(2, Vec::new(), false),
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gint_par(1, Vec::new(), false),
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(2, Vec::new(), false),
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 // "{1: 'a', 2: 'b', 3: 'c'}.keys()" should "return Set(1, 2, 3)"
@@ -3405,18 +3332,15 @@ async fn keys_method_should_work_correctly() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                ])
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ])
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3520,18 +3444,15 @@ async fn plus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 // "{1: 'a', 2: 'b', 3: 'c'} - 3" should "return {1: 'a', 2: 'b'}"
@@ -3571,23 +3492,20 @@ async fn minus_method_should_work_correctly_with_emap() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gint_par(1, Vec::new(), false),
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(2, Vec::new(), false),
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gint_par(1, Vec::new(), false),
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(2, Vec::new(), false),
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3617,17 +3535,14 @@ async fn minus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3664,19 +3579,16 @@ async fn plus_plus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                    new_gint_par(4, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+                new_gint_par(4, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3725,31 +3637,28 @@ async fn plus_plus_method_with_map_should_return_union() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gint_par(1, Vec::new(), false),
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(2, Vec::new(), false),
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(3, Vec::new(), false),
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                    ),
-                    (
-                        new_gint_par(4, Vec::new(), false),
-                        new_gstring_par("d".to_string(), Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gint_par(1, Vec::new(), false),
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(2, Vec::new(), false),
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(3, Vec::new(), false),
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                ),
+                (
+                    new_gint_par(4, Vec::new(), false),
+                    new_gstring_par("d".to_string(), Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3788,17 +3697,14 @@ async fn minus_minus_method_should_work_correctly_with_eset() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(3, Vec::new(), false),
-                    new_gint_par(4, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(3, Vec::new(), false),
+                new_gint_par(4, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3949,19 +3855,16 @@ async fn to_list_method_should_transform_set_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_elist_expr(
-            vec![
-                new_gint_par(1, Vec::new(), false),
-                new_gint_par(2, Vec::new(), false),
-                new_gint_par(3, Vec::new(), false),
-            ],
-            Vec::new(),
-            false,
-            None
-        )]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+        vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+            new_gint_par(3, Vec::new(), false),
+        ],
+        Vec::new(),
+        false,
+        None
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4001,28 +3904,25 @@ async fn to_list_method_should_transform_map_into_list_of_tuples() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_elist_expr(
-            vec![
-                new_etuple_par(vec![
-                    new_gstring_par("a".to_string(), Vec::new(), false),
-                    new_gint_par(1, Vec::new(), false),
-                ]),
-                new_etuple_par(vec![
-                    new_gstring_par("b".to_string(), Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                ]),
-                new_etuple_par(vec![
-                    new_gstring_par("c".to_string(), Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                ])
-            ],
-            Vec::new(),
-            false,
-            None
-        )]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+        vec![
+            new_etuple_par(vec![
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gint_par(1, Vec::new(), false),
+            ]),
+            new_etuple_par(vec![
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+            ]),
+            new_etuple_par(vec![
+                new_gstring_par("c".to_string(), Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ])
+        ],
+        Vec::new(),
+        false,
+        None
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4055,19 +3955,16 @@ async fn to_list_method_should_transform_tuple_into_list() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![new_elist_expr(
-            vec![
-                new_gint_par(1, Vec::new(), false),
-                new_gint_par(2, Vec::new(), false),
-                new_gint_par(3, Vec::new(), false),
-            ],
-            Vec::new(),
-            false,
-            None
-        )]
-    )
+    assert_eq!(res.unwrap().exprs, vec![new_elist_expr(
+        vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+            new_gint_par(3, Vec::new(), false),
+        ],
+        Vec::new(),
+        false,
+        None
+    )])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4101,18 +3998,15 @@ async fn to_set_method_should_turn_list_into_set() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4145,14 +4039,11 @@ async fn to_set_method_should_turn_list_with_duplicate_into_set_without_duplicat
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![new_gint_par(1, Vec::new(), false)]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![new_gint_par(1, Vec::new(), false)]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4182,14 +4073,11 @@ async fn to_set_method_should_turn_empty_list_into_empty_set() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4230,27 +4118,24 @@ async fn to_map_method_should_transform_list_of_tuples_into_map() {
         &env,
     );
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                        new_gint_par(1, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                        new_gint_par(2, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                        new_gint_par(3, Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                    new_gint_par(1, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                    new_gint_par(2, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                    new_gint_par(3, Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4291,27 +4176,24 @@ async fn to_map_method_should_transform_set_of_tuples_into_map() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                        new_gint_par(1, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                        new_gint_par(2, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                        new_gint_par(3, Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                    new_gint_par(1, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                    new_gint_par(2, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                    new_gint_par(3, Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4352,27 +4234,24 @@ async fn to_set_method_should_turn_map_into_set() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_etuple_par(vec![
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                        new_gint_par(1, Vec::new(), false),
-                    ]),
-                    new_etuple_par(vec![
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                        new_gint_par(2, Vec::new(), false),
-                    ]),
-                    new_etuple_par(vec![
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                        new_gint_par(3, Vec::new(), false),
-                    ]),
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_etuple_par(vec![
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                    new_gint_par(1, Vec::new(), false),
                 ]),
-            ))),
-        }]
-    )
+                new_etuple_par(vec![
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                    new_gint_par(2, Vec::new(), false),
+                ]),
+                new_etuple_par(vec![
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                    new_gint_par(3, Vec::new(), false),
+                ]),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4410,17 +4289,14 @@ async fn to_map_method_should_correctly_do_put_operations() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![(
-                    new_gstring_par("a".to_string(), Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                ),]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![(
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+            ),]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4449,14 +4325,11 @@ async fn to_map_method_should_turn_empty_list_into_empty_map() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4480,18 +4353,15 @@ async fn to_set_method_should_not_change_the_object_it_is_applied_on() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                ParSet::create_from_vec(vec![
-                    new_gint_par(1, Vec::new(), false),
-                    new_gint_par(2, Vec::new(), false),
-                    new_gint_par(3, Vec::new(), false),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet::create_from_vec(vec![
+                new_gint_par(1, Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+                new_gint_par(3, Vec::new(), false),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4532,27 +4402,24 @@ async fn to_map_method_should_not_change_the_object_it_is_applied_on() {
     );
 
     assert!(res.is_ok());
-    assert_eq!(
-        res.unwrap().exprs,
-        vec![Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_vec(vec![
-                    (
-                        new_gstring_par("a".to_string(), Vec::new(), false),
-                        new_gint_par(1, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("b".to_string(), Vec::new(), false),
-                        new_gint_par(2, Vec::new(), false),
-                    ),
-                    (
-                        new_gstring_par("c".to_string(), Vec::new(), false),
-                        new_gint_par(3, Vec::new(), false),
-                    ),
-                ]),
-            ))),
-        }]
-    )
+    assert_eq!(res.unwrap().exprs, vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(vec![
+                (
+                    new_gstring_par("a".to_string(), Vec::new(), false),
+                    new_gint_par(1, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("b".to_string(), Vec::new(), false),
+                    new_gint_par(2, Vec::new(), false),
+                ),
+                (
+                    new_gstring_par("c".to_string(), Vec::new(), false),
+                    new_gint_par(3, Vec::new(), false),
+                ),
+            ]),
+        ))),
+    }])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,11 +1,8 @@
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
 
-use crate::rust::{
-    block_status::{BlockError, InvalidBlock, ValidBlock},
-    casper::CasperSnapshot,
-    system_deploy::is_system_deploy_id,
-    ValidBlockProcessing,
-};
+use std::collections::{HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -15,25 +12,26 @@ use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
 };
 use models::casper::Signature as ProtoSignature;
-use models::rust::{
-    block_metadata::BlockMetadata,
-    casper::pretty_printer::PrettyPrinter,
-    casper::protocol::casper_message::{
-        ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
-    },
-};
-use rspace_plus_plus::rspace::history::Either;
-use shared::rust::{dag::dag_ops, store::key_value_store::KvStoreError};
-
-use crate::rust::util::proto_util;
-
-use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+};
 use models::rust::validator::Validator;
-use prost::{bytes::Bytes, Message};
-use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use prost::bytes::Bytes;
+use prost::Message;
+use rspace_plus_plus::rspace::history::Either;
+use shared::rust::dag::dag_ops;
+use shared::rust::store::key_value_store::KvStoreError;
+
+use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::system_deploy::is_system_deploy_id;
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::ValidBlockProcessing;
 
 pub type PublicKey = Vec<u8>;
 pub type Data = Vec<u8>;
@@ -823,13 +821,10 @@ impl Validate {
         // Slash deploys are liveness-critical recovery actions and must not be blocked
         // by empty-block progress checks.
         let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
-            matches!(
-                system_deploy,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { .. },
-                    ..
-                }
-            )
+            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
         });
 
         let maybe_parent_hashes = proto_util::parent_hashes(b);
@@ -1146,13 +1141,10 @@ impl Validate {
         // Recovery path: if this block carries slash system deploys, allow it through so
         // validators can converge by slashing the offending branch.
         let has_slash_system_deploys = block.body.system_deploys.iter().any(|system_deploy| {
-            matches!(
-                system_deploy,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { .. },
-                    ..
-                }
-            )
+            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
         });
 
         if neglected_invalid_justification && !has_slash_system_deploys {

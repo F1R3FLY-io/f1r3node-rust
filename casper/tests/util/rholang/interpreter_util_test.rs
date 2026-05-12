@@ -1,10 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/InterpreterUtilTest.scala
 
-use crate::helper::block_dag_storage_fixture::{with_genesis, with_storage};
-use crate::helper::block_generator;
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
-use crate::util::rholang::resources;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -25,8 +23,12 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+
+use crate::helper::block_dag_storage_fixture::{with_genesis, with_storage};
+use crate::helper::block_generator;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use crate::util::rholang::resources;
 
 // Note: In Scala, genesisContext is defined at class level. In Rust, each test creates its own genesis context
 struct TestContext {
@@ -726,12 +728,9 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     acc_costs_sep.extend(cost3);
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(
-            &mut node.runtime_manager,
-            dag,
-            &mut node.block_store,
-            vec![deploy1, deploy2, deploy3],
-        )
+        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
+            deploy1, deploy2, deploy3,
+        ])
         .await
         .unwrap();
 
@@ -802,12 +801,9 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
             .unwrap();
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(
-            &mut node.runtime_manager,
-            dag,
-            &mut node.block_store,
-            vec![deploy1, deploy2, deploy_err],
-        )
+        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
+            deploy1, deploy2, deploy_err,
+        ])
         .await
         .unwrap();
 

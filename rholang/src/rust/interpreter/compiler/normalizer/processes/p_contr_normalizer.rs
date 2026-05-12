@@ -1,3 +1,9 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{Par, Receive, ReceiveBind};
+use models::rust::utils::union;
+use rholang_parser::ast::{AnnProc, Name};
+
 use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
@@ -8,11 +14,6 @@ use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
-use models::rhoapi::{Par, Receive, ReceiveBind};
-use models::rust::utils::union;
-use std::collections::HashMap;
-
-use rholang_parser::ast::{AnnProc, Name};
 
 pub fn normalize_p_contr<'ast>(
     name: &'ast Name<'ast>,
@@ -112,23 +113,22 @@ pub fn normalize_p_contr<'ast>(
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use models::{
-        create_bit_vector,
-        rhoapi::{expr::ExprInstance, EPlus, Expr, Par, Receive, ReceiveBind},
-        rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par, new_send_par},
-    };
+    use models::create_bit_vector;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EPlus, Expr, Par, Receive, ReceiveBind};
+    use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par, new_send_par};
 
-    use crate::rust::interpreter::{
-        compiler::normalize::VarSort, errors::InterpreterError,
-        test_utils::utils::proc_visit_inputs_and_env,
-    };
+    use crate::rust::interpreter::compiler::normalize::VarSort;
+    use crate::rust::interpreter::errors::InterpreterError;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn p_contr_should_handle_a_basic_contract() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::SendType;
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         /*  new add in {
              contract add(ret, @x, @y) = {
@@ -139,11 +139,13 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "add".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("add".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -212,10 +214,11 @@ mod tests {
 
     #[test]
     fn p_contr_should_not_count_ground_values_in_the_formals_towards_the_bind_count() {
-        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
         use rholang_parser::ast::SendType;
         use rholang_parser::SourcePos;
+
+        use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+        use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         /*  new ret5 in {
              contract ret5(ret, @5) = {
@@ -226,11 +229,13 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "ret5".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("ret5".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let parser = rholang_parser::RholangParser::new();
 

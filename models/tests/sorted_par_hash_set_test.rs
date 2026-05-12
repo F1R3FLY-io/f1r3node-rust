@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use models::create_bit_vector;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{ESet, GPrivate, GUnforgeable, Par};
@@ -8,7 +10,6 @@ use models::rust::utils::{
     new_boundvar_par, new_emethod_expr, new_eplus_par, new_gbool_par, new_gint_expr, new_gint_par,
 };
 use prost::Message;
-use std::collections::HashSet;
 
 fn create_pars() -> Vec<Par> {
     let par_ground = Par::default().with_exprs(vec![
@@ -109,9 +110,7 @@ fn sorted_par_hash_set_should_preserve_ordering_during_serialization_required_fo
 
 #[test]
 fn sorted_par_hash_set_should_deduplicate_its_elements_where_last_seen_element_wins() {
-    fn deduplicate(in_seq: Vec<Par>) -> HashSet<Par> {
-        in_seq.into_iter().collect()
-    }
+    fn deduplicate(in_seq: Vec<Par>) -> HashSet<Par> { in_seq.into_iter().collect() }
 
     let elements: Vec<Par> = vec![
         new_gint_par(1, Vec::new(), false),
@@ -229,9 +228,7 @@ fn check_sorted(iterable: &[Par]) {
     );
 }
 
-fn is_sorted(par: &Par) -> bool {
-    *par == ParSortMatcher::sort_match(par).term
-}
+fn is_sorted(par: &Par) -> bool { *par == ParSortMatcher::sort_match(par).term }
 
 fn check_sorted_input<A, B, F>(f: F, unsorted: A, sorted: A)
 where

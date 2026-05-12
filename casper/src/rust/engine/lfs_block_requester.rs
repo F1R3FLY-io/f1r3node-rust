@@ -1,18 +1,17 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsBlockRequester.scala
 
-use async_stream::stream;
-use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::Semaphore;
 
+use async_stream::stream;
+use async_trait::async_trait;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use tokio::sync::{mpsc, Semaphore};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -268,9 +267,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     }
 
     /// Returns flag if all keys are marked as finished (Done).
-    pub fn is_finished(&self) -> bool {
-        self.latest.is_empty() && self.d.is_empty()
-    }
+    pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
 struct StreamProcessor<'a, T: BlockRequesterOps> {

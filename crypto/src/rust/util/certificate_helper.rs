@@ -2,12 +2,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose, Engine as _};
-use p256::{
-    elliptic_curve::sec1::ToEncodedPoint,
-    pkcs8::{DecodePrivateKey, EncodePrivateKey},
-    PublicKey as P256PublicKey, SecretKey as P256SecretKey,
-};
+use base64::engine::general_purpose;
+use base64::Engine as _;
+use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
+use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
 use rand::rngs::OsRng;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use x509_certificate::X509Certificate;

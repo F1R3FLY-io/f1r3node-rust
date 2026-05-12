@@ -5,9 +5,8 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use super::util::rholang::{
-    replay_failure::ReplayFailure, system_deploy_user_error::SystemDeployPlatformFailure,
-};
+use super::util::rholang::replay_failure::ReplayFailure;
+use super::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CasperError {
@@ -43,25 +42,17 @@ impl fmt::Display for CasperError {
 }
 
 impl From<InterpreterError> for CasperError {
-    fn from(error: InterpreterError) -> Self {
-        CasperError::InterpreterError(error)
-    }
+    fn from(error: InterpreterError) -> Self { CasperError::InterpreterError(error) }
 }
 
 impl From<KvStoreError> for CasperError {
-    fn from(error: KvStoreError) -> Self {
-        CasperError::KvStoreError(error)
-    }
+    fn from(error: KvStoreError) -> Self { CasperError::KvStoreError(error) }
 }
 
 impl From<ReplayFailure> for CasperError {
-    fn from(error: ReplayFailure) -> Self {
-        CasperError::ReplayFailure(error)
-    }
+    fn from(error: ReplayFailure) -> Self { CasperError::ReplayFailure(error) }
 }
 
 impl From<CommError> for CasperError {
-    fn from(error: CommError) -> Self {
-        CasperError::CommError(error)
-    }
+    fn from(error: CommError) -> Self { CasperError::CommError(error) }
 }

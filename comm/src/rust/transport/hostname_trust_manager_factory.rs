@@ -1,13 +1,13 @@
 // comm/src/main/scala/coop/rchain/comm/transport/HostnameTrustManagerFactory.scala
 
+use std::sync::Arc;
+
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use p256::elliptic_curve::sec1::FromEncodedPoint;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::PrivatePkcs8KeyDer;
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme};
-use std::sync::Arc;
 
 /// Custom error type for certificate validation
 #[derive(Debug, Clone)]
@@ -242,9 +242,7 @@ impl HostnameTrustManagerFactory {
 pub struct HostnameTrustManager;
 
 impl HostnameTrustManager {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     /// Check client certificate trust
     pub fn check_client_trusted(

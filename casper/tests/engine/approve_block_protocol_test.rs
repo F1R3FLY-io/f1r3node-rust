@@ -2,25 +2,19 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::time::{sleep, timeout};
 
 use casper::rust::engine::approve_block_protocol::{
     ApproveBlockProtocolFactory, ApproveBlockProtocolImpl,
 };
-use comm::rust::{
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    rp::{
-        connect::{Connections, ConnectionsCell},
-        rp_conf::ClearConnectionsConf,
-    },
-    test_instances::{create_rp_conf_ask, TransportLayerStub},
-};
-use crypto::rust::{
-    hash::blake2b256::Blake2b256,
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
-};
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::rp::connect::{Connections, ConnectionsCell};
+use comm::rust::rp::rp_conf::ClearConnectionsConf;
+use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use metrics_util::debugging::DebuggingRecorder;
 use models::casper::Signature as ProtoSignature;
 use models::rust::casper::protocol::casper_message::{ApprovedBlockCandidate, BlockApproval};
@@ -28,6 +22,7 @@ use prost::{bytes, Message};
 use serial_test::serial;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::time::{sleep, timeout};
 
 // Import GenesisBuilder functionality for bonds creation
 use crate::util::genesis_builder::GenesisBuilder;
@@ -125,20 +120,14 @@ impl TestFixture {
         actual_count == expected_count
     }
 
-    fn signature_count(&self) -> usize {
-        self.protocol.signature_count()
-    }
+    fn signature_count(&self) -> usize { self.protocol.signature_count() }
 
-    fn has_approved_block(&self) -> bool {
-        self.last_approved_block.lock().unwrap().is_some()
-    }
+    fn has_approved_block(&self) -> bool { self.last_approved_block.lock().unwrap().is_some() }
 }
 
 // Helper function to wait for an assertion to be true with a timeout
 async fn wait_for<F>(f: F, timeout_duration: Duration) -> bool
-where
-    F: Fn() -> bool,
-{
+where F: Fn() -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout_duration {
         if f() {

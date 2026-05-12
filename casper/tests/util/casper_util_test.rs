@@ -1,10 +1,10 @@
 // See casper/src/test/scala/coop/rchain/casper/util/CasperUtilTest.scala
 
-use crate::helper::{
-    block_dag_storage_fixture::with_storage,
-    block_generator::{create_block_fast, create_block_fast_with_creator, create_genesis_block},
-    block_util::generate_validator,
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{
+    create_block_fast, create_block_fast_with_creator, create_genesis_block,
 };
+use crate::helper::block_util::generate_validator;
 
 #[tokio::test]
 async fn is_in_main_chain_should_classify_appropriately() {

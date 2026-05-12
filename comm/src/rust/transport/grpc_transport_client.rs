@@ -1,30 +1,27 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportClient.scala
 
-use async_trait::async_trait;
-use hex;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use hex;
+use models::routing::transport_layer_client::TransportLayerClient;
+use models::routing::Protocol;
 use tokio::sync::{Mutex, OnceCell};
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 
-use crate::rust::{
-    errors::CommError,
-    peer_node::PeerNode,
-    transport::{
-        f1r3fly_connector::F1r3flyConnector,
-        grpc_transport::GrpcTransport,
-        packet_ops::PacketOps,
-        ssl_session_client_interceptor::SslSessionClientInterceptor,
-        stream_observable::StreamObservable,
-        transport_layer::{Blob, TransportLayer},
-    },
-    utils::resolve_hostname_to_ip,
-};
-
-use models::routing::{transport_layer_client::TransportLayerClient, Protocol};
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
+use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
+use crate::rust::transport::grpc_transport::GrpcTransport;
+use crate::rust::transport::packet_ops::PacketOps;
+use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
+use crate::rust::transport::stream_observable::StreamObservable;
+use crate::rust::transport::transport_layer::{Blob, TransportLayer};
+use crate::rust::utils::resolve_hostname_to_ip;
 
 type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
 

@@ -2,17 +2,17 @@
 
 // See casper/src/main/scala/coop/rchain/casper/merging/DeployChainIndex.scala
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
-use std::{collections::HashSet, sync::Arc};
-
-use rspace_plus_plus::rspace::{
-    errors::HistoryError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    history::history_repository::HistoryRepository,
-    merger::{event_log_index::EventLogIndex, state_change::StateChange},
-};
 
 use super::deploy_index::DeployIndex;
 
@@ -107,25 +107,19 @@ impl DeployChainIndex {
 }
 
 impl PartialEq for DeployChainIndex {
-    fn eq(&self, other: &Self) -> bool {
-        self.deploys_with_cost == other.deploys_with_cost
-    }
+    fn eq(&self, other: &Self) -> bool { self.deploys_with_cost == other.deploys_with_cost }
 }
 
 // Hash is hand-rolled to match PartialEq (the derived Hash would cover all
 // fields and violate the k1 == k2 => hash(k1) == hash(k2) contract).
 impl std::hash::Hash for DeployChainIndex {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.deploys_with_cost.hash(state);
-    }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.deploys_with_cost.hash(state); }
 }
 
 impl Eq for DeployChainIndex {}
 
 impl PartialOrd for DeployChainIndex {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for DeployChainIndex {
@@ -195,9 +189,11 @@ impl Ord for DeployChainIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use std::collections::HashSet;
+
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    use super::*;
 
     fn mk_index(deploys: &[(u8, u64)], post_state_seed: u8) -> DeployChainIndex {
         let deploys_with_cost: HashSet<DeployIdWithCost> = deploys

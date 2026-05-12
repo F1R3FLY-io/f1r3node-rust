@@ -1,8 +1,7 @@
 // See models/src/main/scala/coop/rchain/models/ParMapTypeMapper.scala
 
-use crate::rhoapi::{EMap, KeyValuePair, Par};
-
 use super::par_map::ParMap;
+use crate::rhoapi::{EMap, KeyValuePair, Par};
 
 pub struct ParMapTypeMapper;
 

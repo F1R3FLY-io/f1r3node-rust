@@ -16,12 +16,13 @@ use std::collections::BTreeMap;
 use connective::ConnectiveInstance::*;
 use expr::ExprInstance::*;
 use g_unforgeable::UnfInstance::GPrivateBody;
+use models::rhoapi::*;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
-use models::{rhoapi::*, rust::rholang::implicits::vector_par};
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 

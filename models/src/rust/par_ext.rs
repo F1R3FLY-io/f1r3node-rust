@@ -1,4 +1,5 @@
-use crate::rhoapi::{expr::ExprInstance, ETuple, Par};
+use crate::rhoapi::expr::ExprInstance;
+use crate::rhoapi::{ETuple, Par};
 
 /// Helper functions to extract values from Par expressions
 /// Equivalent to Scala's getGString, getGInt, getGBool, getETupleBody methods

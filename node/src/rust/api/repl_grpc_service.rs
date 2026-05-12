@@ -16,13 +16,11 @@ pub mod repl {
 use itertools::Itertools;
 use models::rhoapi::Par;
 use repl::{CmdRequest, EvalRequest, ReplResponse};
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    compiler::compiler::Compiler,
-    interpreter::EvaluateResult,
-    pretty_printer::PrettyPrinter,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 
 use crate::rust::api::repl_grpc_service::repl::repl_server::Repl;
 
@@ -134,15 +132,16 @@ impl Repl for ReplGrpcServiceImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rholang::rust::interpreter::{
-        external_services::ExternalServices, matcher::r#match::Matcher,
-        rho_runtime::create_runtime_from_kv_store, system_processes::test_framework_contracts,
-    };
-    use rspace_plus_plus::rspace::shared::{
-        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-    };
     use std::sync::Arc;
+
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::matcher::r#match::Matcher;
+    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+    use rholang::rust::interpreter::system_processes::test_framework_contracts;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
 
     async fn create_test_runtime_with_stdout() -> RhoRuntimeImpl {
         let mut kvm = InMemoryStoreManager::new();

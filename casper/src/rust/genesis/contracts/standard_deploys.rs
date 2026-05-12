@@ -2,22 +2,21 @@
 
 use std::collections::HashMap;
 
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
 use lazy_static::lazy_static;
-
-use crypto::rust::{
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
-};
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::{
     CompiledRholangSource, CompiledRholangTemplate,
 };
 
-use super::{
-    embedded_rho, proof_of_stake::ProofOfStake, vault::Vault,
-    vaults_generator::VaultsGenerator,
-};
+use super::embedded_rho;
+use super::proof_of_stake::ProofOfStake;
+use super::vault::Vault;
+use super::vaults_generator::VaultsGenerator;
 
 /// Build a `CompiledRholangSource` from an embedded `.rho` constant. The
 /// `name` is preserved on the resulting source as identification metadata
@@ -188,7 +187,10 @@ pub fn system_vault(shard_id: &str) -> Signed<DeployData> {
 
 pub fn multi_sig_system_vault(shard_id: &str) -> Signed<DeployData> {
     to_deploy(
-        embedded_source("MultiSigSystemVault.rho", embedded_rho::MULTI_SIG_SYSTEM_VAULT),
+        embedded_source(
+            "MultiSigSystemVault.rho",
+            embedded_rho::MULTI_SIG_SYSTEM_VAULT,
+        ),
         MULTI_SIG_SYSTEM_VAULT_PK,
         MULTI_SIG_SYSTEM_VAULT_TIMESTAMP,
         shard_id,
@@ -236,30 +238,25 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.validators.len() > 0);
 
     to_deploy(
-        CompiledRholangTemplate::new(
-            "PoS.rhox",
-            embedded_rho::POS,
-            HashMap::new(),
-            &[
-                ("minimumBond", &pos.minimum_bond.to_string()),
-                ("maximumBond", &pos.maximum_bond.to_string()),
-                (
-                    "initialBonds",
-                    &ProofOfStake::initial_bonds(&pos.validators),
-                ),
-                ("epochLength", &pos.epoch_length.to_string()),
-                ("quarantineLength", &pos.quarantine_length.to_string()),
-                (
-                    "numberOfActiveValidators",
-                    &pos.number_of_active_validators.to_string(),
-                ),
-                (
-                    "posMultiSigPublicKeys",
-                    &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
-                ),
-                ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
-            ],
-        ),
+        CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[
+            ("minimumBond", &pos.minimum_bond.to_string()),
+            ("maximumBond", &pos.maximum_bond.to_string()),
+            (
+                "initialBonds",
+                &ProofOfStake::initial_bonds(&pos.validators),
+            ),
+            ("epochLength", &pos.epoch_length.to_string()),
+            ("quarantineLength", &pos.quarantine_length.to_string()),
+            (
+                "numberOfActiveValidators",
+                &pos.number_of_active_validators.to_string(),
+            ),
+            (
+                "posMultiSigPublicKeys",
+                &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
+            ),
+            ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
+        ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
         shard_id,

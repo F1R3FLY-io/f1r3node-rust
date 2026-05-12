@@ -3,7 +3,8 @@
 //! This module provides functionality to map command-line options into a configuration
 
 use super::options::Options;
-use crate::rust::configuration::{commandline::options::OptionsSubCommand, NodeConf};
+use crate::rust::configuration::commandline::options::OptionsSubCommand;
+use crate::rust::configuration::NodeConf;
 
 /// Configuration mapper for converting CLI options to configuration
 pub trait ConfigMapper<T> {
@@ -401,12 +402,13 @@ impl ConfigMapper<Options> for NodeConf {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::path::PathBuf;
+    use std::time::Duration;
 
-    use crate::rust::configuration::commandline::options::{OptionsSubCommand, RunOptions};
+    use clap::Parser;
 
     use super::*;
-    use clap::Parser;
+    use crate::rust::configuration::commandline::options::{OptionsSubCommand, RunOptions};
 
     #[test]
     fn test_parse_args() {

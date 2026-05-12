@@ -1,22 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chroma::{
-    client::ChromaHttpClientError,
-    embed::EmbeddingFunction,
-    types::{Include, IncludeList},
-    ChromaCollection, ChromaHttpClient,
-};
+use chroma::client::ChromaHttpClientError;
+use chroma::embed::EmbeddingFunction;
+use chroma::types::{Include, IncludeList};
+use chroma::{ChromaCollection, ChromaHttpClient};
 use futures::TryFutureExt;
 use itertools::izip;
 use models::rhoapi::Par;
 
-use crate::rust::interpreter::{
-    rho_type::{Extractor, RhoBoolean, RhoMap, RhoNil, RhoNumber, RhoString, RhoTuple2},
-    util::sbert_embeddings::SBERTEmbeddings,
-};
-
 use super::errors::InterpreterError;
+use crate::rust::interpreter::rho_type::{
+    Extractor, RhoBoolean, RhoMap, RhoNil, RhoNumber, RhoString, RhoTuple2,
+};
+use crate::rust::interpreter::util::sbert_embeddings::SBERTEmbeddings;
 
 /// Like [`chroma::types::MetadataValue`] but restricted to the types supported in Rholang.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -31,9 +28,7 @@ pub enum MetadataValue {
 pub struct Metadata(pub HashMap<String, MetadataValue>);
 
 impl<const N: usize> From<[(String, MetadataValue); N]> for Metadata {
-    fn from(x: [(String, MetadataValue); N]) -> Self {
-        Self(HashMap::from(x))
-    }
+    fn from(x: [(String, MetadataValue); N]) -> Self { Self(HashMap::from(x)) }
 }
 
 impl Into<Par> for MetadataValue {
@@ -142,10 +137,7 @@ impl<'a> Extractor for CollectionEntry {
         } else {
             <Metadata as Extractor>::unapply(&metadata_par).map(Some)
         }?;
-        Some(CollectionEntry {
-            document: document,
-            metadata,
-        })
+        Some(CollectionEntry { document, metadata })
     }
 }
 
@@ -190,14 +182,12 @@ impl ChromaDBClient {
     fn new() -> Result<Self, InterpreterError> {
         // TODO (chase): Do we need custom options? i.e custom database name, authentication method, and url?
         // If the chroma db is hosted alongside the node locally, custom options don't make much sense.
-        let client = ChromaHttpClient::from_env()
-            .map_err(|_| InterpreterError::ChromaDBError(
-                "Failed to build ChromaDB client".into()
-            ))?;
-        let embedding_f = SBERTEmbeddings::new()
-            .map_err(|_| InterpreterError::ChromaDBError(
-                "Failed to build SBERTEmbeddings model".into()
-            ))?;
+        let client = ChromaHttpClient::from_env().map_err(|_| {
+            InterpreterError::ChromaDBError("Failed to build ChromaDB client".into())
+        })?;
+        let embedding_f = SBERTEmbeddings::new().map_err(|_| {
+            InterpreterError::ChromaDBError("Failed to build SBERTEmbeddings model".into())
+        })?;
 
         Ok(Self {
             client,
@@ -237,7 +227,7 @@ pub enum ChromaDBService {
     /// Real implementation that interacts with ChromaDB
     Real(ChromaDBClient),
     /// NoOp implementation that returns empty results
-    NoOp
+    NoOp,
 }
 
 impl ChromaDBService {
@@ -251,13 +241,9 @@ impl ChromaDBService {
         }
     }
 
-    pub fn new_noop() -> Self {
-        Self::NoOp
-    }
+    pub fn new_noop() -> Self { Self::NoOp }
 
-    pub fn is_enabled(&self) -> bool {
-        matches!(self, Self::Real(_))
-    }
+    pub fn is_enabled(&self) -> bool { matches!(self, Self::Real(_)) }
 
     /// Creates a collection with given name and metadata. Semantics follow [`ChromaHttpClient::create_collection`].
     /// Also see [`ChromaCollection::modify`]
@@ -281,35 +267,39 @@ impl ChromaDBService {
             ChromaDBService::NoOp => Ok(()),
             ChromaDBService::Real(client) => {
                 let metadata_interal = metadata.map(Into::into);
-                client.create_collection_helper(name, metadata_interal.clone(), ignore_or_update_if_exists)
+                client
+                    .create_collection_helper(
+                        name,
+                        metadata_interal.clone(),
+                        ignore_or_update_if_exists,
+                    )
                     .and_then(async move |mut collection: ChromaCollection| {
-                        /* 
+                        /*
                         Ideally there ought to be a way to check whether the
                         returned collection from create_collection already
                         existed or not (without extra API calls).
 
                         However, such functionality does not currently exist, so
-                        we resort to testingwhether or not the metadata of the 
+                        we resort to testingwhether or not the metadata of the
                         returned collection is the same as the one provided.
 
-                        If not, clearly this collection already existed (with 
+                        If not, clearly this collection already existed (with
                         different metadata), and we must update it.
                         */
-                        if ignore_or_update_if_exists && 
-                            *collection.metadata() != metadata_interal 
+                        if ignore_or_update_if_exists && *collection.metadata() != metadata_interal
                         {
                             // Update the collection metadata if required.
                             collection.modify(None::<&str>, metadata_interal).await
-                        }
-                        else {
+                        } else {
                             Ok(())
                         }
                     })
                     .await
                     .map_err(|err| {
-                        InterpreterError::ChromaDBError(
-                            format!("Failed to create collection: {}", err)
-                        )
+                        InterpreterError::ChromaDBError(format!(
+                            "Failed to create collection: {}",
+                            err
+                        ))
                     })
             }
         }
@@ -366,8 +356,7 @@ impl ChromaDBService {
                 for (entry_id, entry) in entries.0.into_iter() {
                     ids_vec.push(entry_id);
                     documents_vec.push(entry.document);
-                    metadatas_vec.push(
-                        entry
+                    metadatas_vec.push(entry
                             .metadata
                             // We'll have to convert this to [`chroma::types::UpdateMetadata`]
                             .map(|x| {
@@ -376,12 +365,12 @@ impl ChromaDBService {
                                     .into_iter()
                                     .map(|(x, y)| (x, y.into()))
                                     .collect()
-                            }),
-                    );
+                            }));
                 }
                 // Calculate the embeddings.
                 let doc_refs: Vec<&str> = documents_vec.iter().map(AsRef::as_ref).collect();
-                let embeddings = client.embedding_f
+                let embeddings = client
+                    .embedding_f
                     .embed_strs(&doc_refs)
                     .await
                     .map_err(|err| {
@@ -434,7 +423,8 @@ impl ChromaDBService {
 
                 // Calculate the embeddings.
                 let doc_refs: Vec<&str> = doc_texts.iter().map(AsRef::as_ref).collect();
-                let embeddings = client.embedding_f
+                let embeddings = client
+                    .embedding_f
                     .embed_strs(&doc_refs)
                     .await
                     .map_err(|err| {
@@ -459,20 +449,21 @@ impl ChromaDBService {
                         ))
                     })?;
                 let doc_ids_per_text = raw_res.ids;
-                let docs_per_text = raw_res
-                    .documents
-                    .ok_or(InterpreterError::ChromaDBError(format!(
+                let docs_per_text =
+                    raw_res
+                        .documents
+                        .ok_or(InterpreterError::ChromaDBError(format!(
                         "Expected field documents in query result; for collection {collection_name}"
                     )))?;
-                let metadatas_per_text =
-                    raw_res
-                        .metadatas
-                        .ok_or(InterpreterError::ChromaDBError(format!(
-                            "Expected field metadatas in query result; for collection {collection_name}"
-                        )))?;
+                let metadatas_per_text = raw_res
+                    .metadatas
+                    .ok_or(InterpreterError::ChromaDBError(format!(
+                    "Expected field metadatas in query result; for collection {collection_name}"
+                )))?;
                 let entries_per_text = izip!(doc_ids_per_text, docs_per_text, metadatas_per_text)
-                    .map(|(doc_ids, docs, metadatas)| -> HashMap<String, CollectionEntry> {
-                        izip!(doc_ids, docs, metadatas)
+                    .map(
+                        |(doc_ids, docs, metadatas)| -> HashMap<String, CollectionEntry> {
+                            izip!(doc_ids, docs, metadatas)
                             // We ignore entries with no associated document.
                             // However, empty documents are impossible if the document
                             // was inserted using this service to begin with.
@@ -492,7 +483,8 @@ impl ChromaDBService {
                                 ))
                             })
                             .collect()
-                    })
+                        },
+                    )
                     .map(CollectionEntries)
                     .collect();
                 Ok(entries_per_text)
@@ -540,9 +532,7 @@ impl ChromaDBService {
 pub type SharedChromaDBService = Arc<ChromaDBService>;
 
 /// Create a shared ChromaDB service
-pub fn create_chromadb_service() -> SharedChromaDBService {
-    Arc::new(ChromaDBService::new_real())
-}
+pub fn create_chromadb_service() -> SharedChromaDBService { Arc::new(ChromaDBService::new_real()) }
 
 /// Create a NoOp ChromaDB service
 pub fn create_noop_chromadb_service() -> SharedChromaDBService {
@@ -565,7 +555,10 @@ mod tests {
 
         assert!(service.create_collection("foo", true, None).await.is_ok());
         assert_eq!(service.get_collection_meta("foo").await, Ok(None));
-        assert!(service.upsert_entries("foo", CollectionEntries(HashMap::new())).await.is_ok());
+        assert!(service
+            .upsert_entries("foo", CollectionEntries(HashMap::new()))
+            .await
+            .is_ok());
         assert_eq!(service.query("foo", vec![]).await.unwrap(), Vec::new());
         assert!(service.delete_documents("foo", Vec::new()).await.is_ok());
     }

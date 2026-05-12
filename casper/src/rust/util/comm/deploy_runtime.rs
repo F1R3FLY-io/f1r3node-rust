@@ -1,15 +1,9 @@
-use std::{
-    process::exit,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::process::exit;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::rust::util::comm::{
-    grpc_deploy_service::DeployService,
-    grpc_propose_service::ProposeService,
-    listen_at_name::{self, Name},
-    ServiceResult,
-};
-use crypto::rust::{private_key::PrivateKey, public_key::PublicKey, signatures::signed::Signed};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
 use futures::FutureExt;
 use models::casper::{
     BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, FindDeployQuery,
@@ -18,14 +12,17 @@ use models::casper::{
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 
+use crate::rust::util::comm::grpc_deploy_service::DeployService;
+use crate::rust::util::comm::grpc_propose_service::ProposeService;
+use crate::rust::util::comm::listen_at_name::{self, Name};
+use crate::rust::util::comm::ServiceResult;
+
 pub struct DeployRuntime;
 
 impl DeployRuntime {
     /// Like Scala: gracefulExit(program: F[Either[Seq[String], String]])
     async fn graceful_exit<F>(program: F)
-    where
-        F: std::future::Future<Output = ServiceResult<String>>,
-    {
+    where F: std::future::Future<Output = ServiceResult<String>> {
         let attempted = program.await;
 
         // Note: usage of the sync IO is not a good practice in the async context. The reason of such impl
@@ -173,7 +170,5 @@ impl DeployRuntime {
         .await
     }
 
-    pub async fn status<S: DeployService>(svc: &mut S) {
-        Self::graceful_exit(svc.status()).await
-    }
+    pub async fn status<S: DeployService>(svc: &mut S) { Self::graceful_exit(svc.status()).await }
 }

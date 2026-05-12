@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use graphz::rust::graphz::{
     apply, subgraph, GraphArrowType, GraphRankDir, GraphSerializer, GraphShape, GraphStyle,
@@ -6,8 +9,6 @@ use graphz::rust::graphz::{
 use itertools::Itertools;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ValidatorBlock {
@@ -178,14 +179,11 @@ impl GraphzGenerator {
                     .collect();
 
                 let mut validator_blocks = HashMap::new();
-                validator_blocks.insert(
-                    time_entry,
-                    vec![ValidatorBlock {
-                        block_hash,
-                        parents,
-                        justifications,
-                    }],
-                );
+                validator_blocks.insert(time_entry, vec![ValidatorBlock {
+                    block_hash,
+                    parents,
+                    justifications,
+                }]);
 
                 let mut block_map = HashMap::new();
                 block_map.insert(block_sender_hash, validator_blocks);
@@ -420,9 +418,7 @@ impl std::fmt::Display for GraphGeneratorError {
 impl std::error::Error for GraphGeneratorError {}
 
 impl From<GraphzError> for GraphGeneratorError {
-    fn from(err: GraphzError) -> Self {
-        GraphGeneratorError::GraphzError(err)
-    }
+    fn from(err: GraphzError) -> Self { GraphGeneratorError::GraphzError(err) }
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, KeyValueBlockStore>>>

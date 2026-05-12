@@ -35,9 +35,7 @@ pub struct ReportingProtoTransformer;
 /// 3. This is a one-time transformation for reporting, not a hot path
 
 impl ReportingProtoTransformer {
-    pub fn new() -> Self {
-        ReportingProtoTransformer
-    }
+    pub fn new() -> Self { ReportingProtoTransformer }
 
     pub fn serialize_consume_proto(
         &self,

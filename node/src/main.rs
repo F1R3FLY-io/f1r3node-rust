@@ -1,24 +1,26 @@
+use std::path::PathBuf;
+
 use casper::rust::util::comm::deploy_runtime::DeployRuntime;
 use casper::rust::util::comm::grpc_deploy_service::GrpcDeployService;
 use casper::rust::util::comm::grpc_propose_service::GrpcProposeService;
-use clap::{error::ErrorKind, CommandFactory, Parser};
-use crypto::rust::{
-    private_key::PrivateKey, signatures::secp256k1::Secp256k1,
-    signatures::signatures_alg::SignaturesAlg, util::key_util::KeyUtil,
-};
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::util::key_util::KeyUtil;
 use eyre::Result;
-use node::rust::configuration::commandline::options::{GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT};
+use node::rust::configuration::commandline::options::{
+    OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
+};
 use node::rust::configuration::config_check::{
     check_host, check_ports, load_private_key_from_file,
 };
-use node::rust::configuration::{
-    commandline::options::OptionsSubCommand, NodeConf, Options, Profile,
-};
+use node::rust::configuration::{NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
-use std::path::PathBuf;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -68,8 +70,7 @@ fn main() -> Result<()> {
 async fn start_node(options: Options) -> Result<()> {
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
-    let (node_conf, profile, config_file) =
-        node::rust::configuration::builder::build(options)?;
+    let (node_conf, profile, config_file) = node::rust::configuration::builder::build(options)?;
 
     // Set system property for data directory (equivalent to Scala's System.setProperty)
     // SAFETY: This is called early in node startup before spawning threads that read env vars

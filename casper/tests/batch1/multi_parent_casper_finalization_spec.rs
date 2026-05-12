@@ -1,12 +1,14 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperFinalizationSpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
+use std::collections::HashMap;
+
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use std::collections::HashMap;
+
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 // TODO: Round-robin finalization concept no longer applies with multi-parent merging.
 // Scala deleted this test in PR #288.
@@ -206,11 +208,9 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
         }
         let producer_idx = ((step + 2) % 3) as usize;
         let deploy_idx = 8 + step as usize;
-        let _ = TestNode::propagate_block_at_index(
-            &mut nodes,
-            producer_idx,
-            &[deploy_datas[deploy_idx].clone()],
-        )
+        let _ = TestNode::propagate_block_at_index(&mut nodes, producer_idx, &[deploy_datas
+            [deploy_idx]
+            .clone()])
         .await
         .unwrap();
         let next_lfb = nodes[0].casper.last_finalized_block().await.unwrap();

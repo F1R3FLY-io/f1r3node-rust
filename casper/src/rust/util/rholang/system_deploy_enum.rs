@@ -1,8 +1,7 @@
 // Enum wrapper for heterogeneous system deploys
 
-use crate::rust::util::rholang::costacc::{
-    close_block_deploy::CloseBlockDeploy, slash_deploy::SlashDeploy,
-};
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 
 /// Enum to hold different types of system deploys in a homogeneous collection
 #[derive(Clone)]

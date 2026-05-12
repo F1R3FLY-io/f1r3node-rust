@@ -1,8 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/state/instances/ProposerState.scala
 
-use crate::rust::blocks::proposer::propose_result::ProposeResult;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::oneshot;
+
+use crate::rust::blocks::proposer::propose_result::ProposeResult;
 
 #[derive(Debug)]
 pub struct ProposerState {

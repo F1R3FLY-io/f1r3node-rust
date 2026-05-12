@@ -1,10 +1,8 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use casper::rust::blocks::proposer::{
-    propose_result::{ProposeFailure, ProposeStatus},
-    proposer::ProposerResult,
-};
+use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
+use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{CasperSnapshot, MultiParentCasper};
 use casper::rust::casper_conf::HeartbeatConf;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -13,13 +11,11 @@ use casper::rust::heartbeat_signal::{
 };
 use casper::rust::system_deploy::is_system_deploy_id;
 use casper::rust::validator_identity::ValidatorIdentity;
+use casper::rust::ProposeFunction;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rand::Rng;
-
 use tokio::sync::Notify;
-
-use casper::rust::ProposeFunction;
 
 /// Implementation of HeartbeatSignal using tokio::sync::Notify.
 /// This allows external callers (like deploy submission) to wake the heartbeat immediately.
@@ -28,9 +24,7 @@ struct NotifyHeartbeatSignal {
 }
 
 impl HeartbeatSignal for NotifyHeartbeatSignal {
-    fn trigger_wake(&self) {
-        self.notify.notify_one();
-    }
+    fn trigger_wake(&self) { self.notify.notify_one(); }
 }
 
 /// Heartbeat proposer that periodically checks if a block
@@ -861,10 +855,11 @@ fn is_lag_recovery_leader(
 /// which can properly set up a full Casper environment.
 #[cfg(test)]
 mod tests {
-    use super::*;
     use casper::rust::heartbeat_signal::new_heartbeat_signal_ref;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
 
     fn create_test_validator_identity() -> ValidatorIdentity {
         let secp = Secp256k1;
@@ -990,9 +985,11 @@ mod tests {
     // Tests that call do_heartbeat_check directly for deterministic behavior
 
     mod decision_logic_tests {
-        use super::*;
-        use casper::rust::casper::MultiParentCasper;
         use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use casper::rust::casper::MultiParentCasper;
+
+        use super::*;
 
         // Helper to create LFB with controllable timestamp (age in ms)
         fn create_lfb_with_age(

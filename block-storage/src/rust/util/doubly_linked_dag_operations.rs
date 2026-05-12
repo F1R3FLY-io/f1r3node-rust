@@ -1,9 +1,9 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/util/DoublyLinkedDagOperations.scala
 
-use shared::rust::store::key_value_store::KvStoreError;
 use std::collections::{HashMap, HashSet};
 
 use models::rust::block_hash::BlockHashSerde;
+use shared::rust::store::key_value_store::KvStoreError;
 
 #[derive(Debug, Clone)]
 pub struct BlockDependencyDag {
@@ -132,8 +132,9 @@ impl BlockDependencyDag {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::bytes::Bytes;
+
+    use super::*;
 
     fn create_block_hash(value: &[u8]) -> BlockHashSerde {
         models::rust::block_hash::BlockHashSerde(Bytes::from(value.to_vec()))

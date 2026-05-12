@@ -1,10 +1,12 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::expr::ExprInstance::EMapBody;
+use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::Bundle;
-use models::rhoapi::Var;
-use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -13,20 +15,32 @@ use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
-use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace::RSpaceStore;
+use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
 
+use super::accounting::_cost;
+use super::accounting::cost_accounting::CostAccounting;
+use super::accounting::costs::Cost;
+use super::accounting::has_cost::HasCost;
+use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
+use super::env::Env;
+use super::errors::InterpreterError;
+use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::reduce::DebruijnInterpreter;
+use super::registry::registry_bootstrap::ast;
+use super::storage::charging_rspace::ChargingRSpace;
+use super::substitute::Substitute;
+use super::system_processes::{
+    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
+    Remainder, RhoDispatchMap,
+};
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
@@ -40,25 +54,6 @@ use crate::rust::interpreter::metrics_constants::{
 use crate::rust::interpreter::ollama_service::SharedOllamaService;
 use crate::rust::interpreter::openai_service::SharedOpenAIService;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
-
-use super::accounting::_cost;
-use super::accounting::cost_accounting::CostAccounting;
-use super::accounting::costs::Cost;
-use super::accounting::has_cost::HasCost;
-use super::dispatch::RhoDispatch;
-use super::dispatch::RholangAndScalaDispatcher;
-use super::env::Env;
-use super::errors::InterpreterError;
-use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
-use super::reduce::DebruijnInterpreter;
-use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
-use super::substitute::Substitute;
-use super::system_processes::{
-    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
-};
-use models::rhoapi::expr::ExprInstance::GByteArray;
 
 /*
  * This trait has been combined with the 'ReplayRhoRuntime' trait
@@ -284,13 +279,9 @@ impl RhoRuntimeImpl {
         }
     }
 
-    pub fn get_cost_log(&self) -> Vec<Cost> {
-        self.cost.get_log()
-    }
+    pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
-    pub fn clear_cost_log(&self) {
-        self.cost.clear_log()
-    }
+    pub fn clear_cost_log(&self) { self.cost.clear_log() }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -326,11 +317,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         &mut self,
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
-        let checkpoint = self
-            .reducer
-            .space
-            .create_soft_checkpoint()
-            .await;
+        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -356,9 +343,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         log
     }
 
-    async fn get_root(&self) -> Blake2b256Hash {
-        self.reducer.space.get_root().await
-    }
+    async fn get_root(&self) -> Blake2b256Hash { self.reducer.space.get_root().await }
 
     async fn revert_to_soft_checkpoint(
         &mut self,
@@ -378,12 +363,7 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
-        let checkpoint = self
-            .reducer
-            .space
-            .create_checkpoint()
-            .await
-            .unwrap();
+        let checkpoint = self.reducer.space.create_checkpoint().await.unwrap();
         metrics::histogram!(CREATE_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -401,11 +381,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         channel: Vec<Par>,
         pattern: Vec<BindPattern>,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, InterpreterError> {
-        Ok(self
-            .reducer
-            .space
-            .consume_result(channel, pattern)
-            .await?)
+        Ok(self.reducer.space.consume_result(channel, pattern).await?)
     }
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
@@ -420,10 +396,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         &self,
         channels: Vec<Par>,
     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.reducer
-            .space
-            .get_waiting_continuations(channels)
-            .await
+        self.reducer.space.get_waiting_continuations(channels).await
     }
 
     async fn set_block_data(&self, block_data: BlockData) -> () {
@@ -478,25 +451,17 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &_cost {
-        &self.cost
-    }
+    fn cost(&self) -> &_cost { &self.cost }
 }
 
-pub type RhoTuplespace = Arc<
-    Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
->;
+pub type RhoTuplespace =
+    Arc<Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
 
-pub type RhoISpace = Arc<
-    Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
->;
+pub type RhoISpace =
+    Arc<Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
 
 pub type RhoReplayISpace = Arc<
-    Box<
-        dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-            + Send
-            + Sync,
-    >,
+    Box<dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
 >;
 
 pub type RhoHistoryRepository = Arc<
@@ -532,7 +497,9 @@ where
         };
 
         for space in &mut spaces {
-            let result = space.install(channels.clone(), patterns.clone(), continuation.clone()).await;
+            let result = space
+                .install(channels.clone(), patterns.clone(), continuation.clone())
+                .await;
             results.push(result.map_err(|err| panic!("{}", err)).unwrap());
         }
     }
@@ -997,9 +964,7 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 }
 
 #[cfg(not(feature = "chromadb"))]
-fn std_rho_chroma_processes() -> Vec<Definition> {
-    vec![]
-}
+fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
 fn dispatch_table_creator(
     space: RhoISpace,
@@ -1228,9 +1193,10 @@ where
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
-    let charging_rspace: RhoISpace = Arc::new(Box::new(
-        ChargingRSpace::charging_rspace(rspace, cost.clone()),
-    ));
+    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+        rspace,
+        cost.clone(),
+    )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();

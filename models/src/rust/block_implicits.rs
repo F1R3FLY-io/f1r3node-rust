@@ -1,23 +1,21 @@
 // See models/src/test/scala/coop/rchain/models/blockImplicits.scala
 
-use proptest::{prelude::*, strategy::ValueTree, test_runner::TestRunner};
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use proptest::prelude::*;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::TestRunner;
 use rand::prelude::*;
 
-use crypto::rust::signatures::{
-    secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed,
+use super::block::state_hash::{self, StateHash};
+use super::block_hash::{self, BlockHash};
+use super::casper::protocol::casper_message::{
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy,
 };
-
+use super::validator::{self, Validator};
 use crate::rhoapi::PCost;
-
-use super::{
-    block::state_hash::{self, StateHash},
-    block_hash::{self, BlockHash},
-    casper::protocol::casper_message::{
-        BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-        ProcessedSystemDeploy,
-    },
-    validator::{self, Validator},
-};
 
 pub fn block_hash_gen() -> impl Strategy<Value = BlockHash> {
     prop::collection::vec(any::<u8>(), block_hash::LENGTH)

@@ -1,14 +1,13 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/RunningSpec.scala
 
+use std::collections::HashSet;
+
 use casper::rust::engine::engine::Engine;
-use models::rust::{
-    block_implicits::get_random_block,
-    casper::protocol::casper_message::{
-        BlockRequest, CasperMessage, ForkChoiceTipRequest, HasBlock,
-    },
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message::{
+    BlockRequest, CasperMessage, ForkChoiceTipRequest, HasBlock,
 };
 use prost::bytes::Bytes;
-use std::collections::HashSet;
 
 use crate::engine::setup::{to_casper_message, TestFixture};
 

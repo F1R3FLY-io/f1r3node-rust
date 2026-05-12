@@ -1,19 +1,18 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PLetNormalizer.scala
 
-use super::exports::InterpreterError;
-use crate::rust::interpreter::compiler::{
-    exports::{ProcVisitInputs, ProcVisitOutputs},
-    normalize::normalize_ann_proc,
-    span_utils::SpanContext,
-};
-use models::rhoapi::Par;
 use std::collections::HashMap;
-use uuid::Uuid;
 
+use models::rhoapi::Par;
 use rholang_parser::ast::{
     AnnProc, Bind, Id, LetBinding, Name, NameDecl, Names, SendType, Source, Var,
 };
 use rholang_parser::SourceSpan;
+use uuid::Uuid;
+
+use super::exports::InterpreterError;
+use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::span_utils::SpanContext;
 
 pub fn normalize_p_let<'ast>(
     bindings: &'ast smallvec::SmallVec<[LetBinding<'ast>; 1]>,
@@ -367,8 +366,9 @@ pub fn normalize_p_let<'ast>(
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala
 #[cfg(test)]
 mod tests {
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
     fn test_translate_single_declaration_into_match_process() {
@@ -557,9 +557,10 @@ mod tests {
 
     #[test]
     fn test_translate_sequential_declarations_into_nested_matches() {
+        use rholang_parser::SourceSpan;
+
         use super::*;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-        use rholang_parser::SourceSpan;
 
         let (inputs, env) = proc_visit_inputs_and_env();
         let parser = rholang_parser::RholangParser::new();

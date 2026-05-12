@@ -289,7 +289,9 @@ where
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
     ) -> Result<(), RSpaceError> {
-        self.replay_rspace.revert_to_soft_checkpoint(checkpoint).await
+        self.replay_rspace
+            .revert_to_soft_checkpoint(checkpoint)
+            .await
     }
 
     async fn consume(
@@ -318,16 +320,16 @@ where
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        self.replay_rspace.install(channels, patterns, continuation).await
+        self.replay_rspace
+            .install(channels, patterns, continuation)
+            .await
     }
 
     async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
         ReportingRspace::rig_and_reset(self, start_root, log).await
     }
 
-    async fn rig(&self, log: Log) -> Result<(), RSpaceError> {
-        self.replay_rspace.rig(log).await
-    }
+    async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.replay_rspace.rig(log).await }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
         self.replay_rspace.check_replay_data().await
@@ -417,13 +419,7 @@ where
         consume_ref
     }
 
-    fn log_produce(
-        &self,
-        produce_ref: Produce,
-        channel: &C,
-        data: &A,
-        _persist: bool,
-    ) -> Produce {
+    fn log_produce(&self, produce_ref: Produce, channel: &C, data: &A, _persist: bool) -> Produce {
         let reporting_produce = ReportingEvent::ReportingProduce(ReportingProduce {
             channel: channel.clone(),
             data: data.clone(),

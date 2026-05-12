@@ -4,14 +4,13 @@ use prost::bytes::Bytes;
 use shared::rust::grpc::grpc_server::GrpcServer;
 use tonic::transport::Server as TonicServer;
 
-use crate::{
-    comm::{kademlia_rpc_service_server::KademliaRpcServiceServer, Node},
-    rust::{
-        discovery::grpc_kademlia_rpc_server::{GrpcKademliaRPCServer, LookupHandler, PingHandler},
-        errors::CommError,
-        peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    },
+use crate::comm::kademlia_rpc_service_server::KademliaRpcServiceServer;
+use crate::comm::Node;
+use crate::rust::discovery::grpc_kademlia_rpc_server::{
+    GrpcKademliaRPCServer, LookupHandler, PingHandler,
 };
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 
 /// Converts a protobuf Node to a PeerNode
 pub fn to_peer_node(n: &Node) -> PeerNode {

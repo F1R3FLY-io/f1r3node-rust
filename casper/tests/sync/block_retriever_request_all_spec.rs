@@ -6,15 +6,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use casper::rust::{
-        engine::block_retriever::{AdmitHashReason, BlockRetriever},
-        protocol::{extract_packet_from_protocol, verify_block_request, verify_has_block_request},
+    use casper::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+    use casper::rust::protocol::{
+        extract_packet_from_protocol, verify_block_request, verify_has_block_request,
     };
-    use comm::rust::{
-        peer_node::PeerNode,
-        rp::connect::{Connections, ConnectionsCell},
-        test_instances::{create_rp_conf_ask, TransportLayerStub},
-    };
+    use comm::rust::peer_node::PeerNode;
+    use comm::rust::rp::connect::{Connections, ConnectionsCell};
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use models::rust::block_hash::BlockHash;
 
     use crate::engine::setup;
@@ -26,9 +24,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
     impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason {
-            AdmitHashReason::HasBlockMessageReceived
-        }
+        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
@@ -65,14 +61,10 @@ mod tests {
             }
         }
 
-        fn reset(&self) {
-            self.transport_layer.reset();
-        }
+        fn reset(&self) { self.transport_layer.reset(); }
 
         // Helper function to create a peer node for testing
-        fn peer_node(name: &str, port: u32) -> PeerNode {
-            setup::peer_node(name, port)
-        }
+        fn peer_node(name: &str, port: u32) -> PeerNode { setup::peer_node(name, port) }
 
         // Helper function to create a timed out timestamp
         fn create_timed_out_timestamp(&self) -> u64 {
@@ -131,8 +123,9 @@ mod tests {
         }
 
         mod if_block_was_not_delivered_within_given_timeout {
-            use super::*;
             use std::collections::HashSet;
+
+            use super::*;
 
             mod if_waiting_list_is_not_empty {
                 use super::*;

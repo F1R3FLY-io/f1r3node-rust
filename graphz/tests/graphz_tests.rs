@@ -1,9 +1,10 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use graphz::rust::graphz::{
     apply, default_shape, subgraph, GraphRank, GraphRankDir, GraphShape, GraphType,
     StringSerializer,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn simple_graph() {

@@ -1,21 +1,19 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/ConflictSetMerger.scala
 
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
 use models::rhoapi::ListParWithRandom;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
-use rspace_plus_plus::rspace::{
-    errors::HistoryError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    hot_store_trie_action::HotStoreTrieAction,
-    internal::Datum,
-    merger::{
-        merging_logic::{combine_mergeable_value, MergeType, NumberChannelsDiff},
-        state_change::StateChange,
-    },
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::merger::merging_logic::{
+    combine_mergeable_value, MergeType, NumberChannelsDiff,
 };
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 type Branch<R> = HashableSet<R>;
@@ -664,8 +662,9 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::{BTreeMap, HashSet};
+
+    use super::*;
 
     fn branch(items: &[i32]) -> Branch<i32> {
         HashableSet(items.iter().copied().collect::<HashSet<i32>>())

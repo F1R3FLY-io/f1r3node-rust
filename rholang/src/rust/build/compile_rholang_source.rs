@@ -7,8 +7,9 @@
 // time via `include_str!`. This makes the binary self-contained and
 // eliminates the CWD-relative resource-path search.
 
-use models::rhoapi::Par;
 use std::collections::HashMap;
+
+use models::rhoapi::Par;
 
 use crate::rust::interpreter::compiler::compiler::Compiler;
 use crate::rust::interpreter::errors::InterpreterError;

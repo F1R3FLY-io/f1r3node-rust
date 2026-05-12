@@ -1,12 +1,12 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployUtil.scala
 
 use byteorder::{LittleEndian, WriteBytesExt};
-use crypto::rust::{
-    hash::blake2b512_random::Blake2b512Random, public_key::PublicKey, signatures::signed::Signed,
-};
-use models::rust::{
-    block_hash::BlockHash, casper::protocol::casper_message::DeployData, validator::Validator,
-};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::validator::Validator;
 
 use super::tools::Tools;
 
@@ -85,8 +85,9 @@ pub fn generate_refund_deploy_random_seed(deploy: &Signed<DeployData>) -> Blake2
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::bytes::Bytes;
+
+    use super::*;
 
     /// Two slashes in the same block, same proposer, same seq_num, different
     /// equivocators must produce distinct rng seeds. Without

@@ -1,7 +1,8 @@
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::sync::Arc;
+
+use async_trait::async_trait;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -22,15 +23,11 @@ impl StringSerializer {
         }
     }
 
-    pub async fn get_content(&self) -> String {
-        self.buffer.lock().await.clone()
-    }
+    pub async fn get_content(&self) -> String { self.buffer.lock().await.clone() }
 }
 
 impl Default for StringSerializer {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[async_trait]
@@ -208,9 +205,7 @@ impl Display for GraphRank {
 }
 
 impl Display for GraphRankDir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{:?}", self) }
 }
 
 impl Display for GraphArrowType {
@@ -227,9 +222,7 @@ impl Display for GraphArrowType {
 // Public functions corresponding to Scala's object Graphz
 const TAB: &str = "  ";
 
-pub fn default_shape() -> GraphShape {
-    GraphShape::Circle
-}
+pub fn default_shape() -> GraphShape { GraphShape::Circle }
 
 pub async fn apply(
     name: String,

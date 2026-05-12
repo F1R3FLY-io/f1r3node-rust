@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use prost::bytes::Bytes;
 
-use crate::rust::{errors::CommError, peer_node::PeerNode};
-
 use super::kademlia_rpc::KademliaRPC;
+use crate::rust::errors::CommError;
+use crate::rust::peer_node::PeerNode;
 
 // Lookup table for log 2 (highest bit set) of an 8-bit unsigned
 // integer. Entry 0 is unused.
@@ -79,9 +79,7 @@ impl<T: KademliaRPC> PeerTable<T> {
     }
 
     /// Get the concurrency factor (alpha) for network operations
-    pub fn alpha(&self) -> u32 {
-        self.alpha
-    }
+    pub fn alpha(&self) -> u32 { self.alpha }
 
     /** Computes Kademlia XOR distance.
      *

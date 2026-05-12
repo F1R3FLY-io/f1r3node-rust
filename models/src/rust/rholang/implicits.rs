@@ -3,10 +3,9 @@
 use prost::Message;
 use uuid::Uuid;
 
-use crate::{
-    rhoapi::{g_unforgeable::UnfInstance, Bundle, Expr, GPrivate, GUnforgeable, Par},
-    rust::utils::union,
-};
+use crate::rhoapi::g_unforgeable::UnfInstance;
+use crate::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, Par};
+use crate::rust::utils::union;
 
 // Somehow they are not initializing 'locally_free' and 'connective_used' fields
 pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {

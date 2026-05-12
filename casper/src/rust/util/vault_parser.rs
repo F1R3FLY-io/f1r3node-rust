@@ -120,9 +120,11 @@ impl VaultParser {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     #[test]
     fn test_parse_valid_wallets_file() {

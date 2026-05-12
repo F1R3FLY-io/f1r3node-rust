@@ -1,20 +1,14 @@
-use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
-    response::Response,
-    routing::get,
-    Router,
-};
-use futures::StreamExt;
-use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use shared::rust::shared::{
-    f1r3fly_event::F1r3flyEvent,
-    f1r3fly_events::{EventStream, StartupBuffer},
-};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::Response;
+use axum::routing::get;
+use axum::Router;
+use futures::StreamExt;
+use serde_json::{json, Value};
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
 
 use crate::rust::web::shared_handlers::AppState;
 
@@ -165,9 +159,10 @@ pub async fn events_info_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
     use shared::rust::shared::f1r3fly_event::DeployEvent;
+
+    use super::*;
 
     fn create_test_deploy(id: &str) -> DeployEvent {
         DeployEvent::new(id.to_string(), 100, "deployer1".to_string(), false)

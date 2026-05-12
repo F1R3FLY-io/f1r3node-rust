@@ -1,13 +1,15 @@
+use std::sync::Mutex;
+
 use async_trait::async_trait;
 use chroma::embed::EmbeddingFunction;
-use rust_bert::{
-    RustBertError, pipelines::sentence_embeddings::{SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType}
+use rust_bert::pipelines::sentence_embeddings::{
+    SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
 };
-use std::sync::Mutex;
+use rust_bert::RustBertError;
 
 // Struct to store the model for embedding documents
 pub struct SBERTEmbeddings {
-    model: Mutex<SentenceEmbeddingsModel>
+    model: Mutex<SentenceEmbeddingsModel>,
 }
 
 impl SBERTEmbeddings {
@@ -40,7 +42,8 @@ impl EmbeddingFunction for SBERTEmbeddings {
     type Error = SBERTEmbeddingsError;
 
     async fn embed_strs(&self, docs: &[&str]) -> Result<Vec<Self::Embedding>, Self::Error> {
-        let res = self.model
+        let res = self
+            .model
             .lock()
             .map_err(|err| SBERTEmbeddingsError::ThreadingError(err.to_string()))?
             .encode(docs)

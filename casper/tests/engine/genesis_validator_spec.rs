@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/GenesisValidatorSpec.scala
 
-use crate::engine::setup::TestFixture;
+use std::sync::Arc;
+
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::genesis_validator::GenesisValidator;
 use comm::rust::rp::protocol_helper::packet_with_content;
@@ -9,8 +10,9 @@ use models::rust::casper::protocol::casper_message::{
     CasperMessage, NoApprovedBlockAvailable, UnapprovedBlock,
 };
 use serial_test::serial;
-use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+
+use crate::engine::setup::TestFixture;
 
 struct GenesisValidatorSpec;
 

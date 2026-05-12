@@ -1,6 +1,4 @@
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
-use tracing::{debug, info, trace, warn};
-
 // Imports needed for function signature and return type
 use std::{
     future::Future,
@@ -10,44 +8,34 @@ use std::{
         Arc, Mutex,
     },
 };
-use tokio::sync::{mpsc, oneshot, RwLock};
 
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{ApprovedBlock, BlockMessage},
-};
-
+use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
+use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::engine::block_retriever::BlockRetriever;
+use casper::rust::engine::casper_launch::CasperLaunch;
+use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
-use casper::rust::{
-    blocks::{
-        block_processor::BlockProcessor,
-        proposer::proposer::{ProductionProposer, ProposerResult},
-    },
-    casper::{Casper, MultiParentCasper},
-    engine::{block_retriever::BlockRetriever, casper_launch::CasperLaunch},
-    errors::CasperError,
-    state::instances::ProposerState,
-    ProposeFunction,
-};
-
-use comm::rust::{
-    discovery::node_discovery::NodeDiscovery, p2p::packet_handler::PacketHandler,
-    rp::connect::ConnectionsCell, transport::transport_layer::TransportLayer,
-};
-
+use casper::rust::state::instances::ProposerState;
+use casper::rust::ProposeFunction;
+use comm::rust::discovery::node_discovery::NodeDiscovery;
+use comm::rust::p2p::packet_handler::PacketHandler;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tracing::{debug, info, trace, warn};
 
-use crate::rust::{
-    api::{admin_web_api::AdminWebApi, web_api::WebApi},
-    configuration::NodeConf,
-    runtime::{
-        api_servers::APIServers,
-        node_runtime::{CasperLoop, EngineInit},
-    },
-    web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes},
-};
+use crate::rust::api::admin_web_api::AdminWebApi;
+use crate::rust::api::web_api::WebApi;
+use crate::rust::configuration::NodeConf;
+use crate::rust::runtime::api_servers::APIServers;
+use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
+use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
@@ -59,13 +47,9 @@ type ProposerQueueEntry = (
     u8,
 );
 
-fn proposer_queue_max_pending() -> usize {
-    PROPOSER_QUEUE_MAX_PENDING
-}
+fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
-fn block_processor_queue_max_pending() -> usize {
-    BLOCK_PROCESSOR_QUEUE_MAX_PENDING
-}
+fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
@@ -226,7 +210,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // Runtime for `rnode eval`
     let eval_runtime = {
-        use rholang::rust::interpreter::{matcher::r#match::Matcher, rho_runtime};
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime;
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let eval_stores = rnode_store_manager
@@ -941,8 +926,9 @@ async fn handle_block_finalized(
     block_hash: String,
     block_number: i64,
 ) {
-    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
     use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
+
+    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 
     let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
         Ok(bytes) => bytes.into(),

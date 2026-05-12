@@ -1,11 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperCommunicationSpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {

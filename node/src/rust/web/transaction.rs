@@ -54,7 +54,8 @@ pub fn transfer_unforgeable() -> Par {
         to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
     };
     use casper::rust::util::rholang::tools::Tools;
-    use models::rhoapi::{g_unforgeable::UnfInstance, GPrivate, GUnforgeable};
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{GPrivate, GUnforgeable};
 
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);
     let mut seed_for_system_vault =
@@ -77,8 +78,9 @@ pub fn transfer_unforgeable() -> Par {
 }
 
 pub mod helpers {
-    use crate::rust::web::transaction::Transaction;
     use models::rust::par_ext::ParExt;
+
+    use crate::rust::web::transaction::Transaction;
 
     /// Parse a transaction from a produce event
     pub fn parse_transaction_from_produce(

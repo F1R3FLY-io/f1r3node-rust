@@ -8,9 +8,7 @@ use crate::rust::errors::CommError;
 
 /// Validates an IP address using a predicate function
 pub async fn validate_inet_address<P>(host: &str, predicate: P) -> Result<bool, CommError>
-where
-    P: Fn(&IpAddr) -> bool,
-{
+where P: Fn(&IpAddr) -> bool {
     match host.parse::<IpAddr>() {
         Ok(addr) => Ok(predicate(&addr)),
         Err(_) => {

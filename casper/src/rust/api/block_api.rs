@@ -1,53 +1,47 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use futures::future;
-use prost::bytes::Bytes;
-use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crypto::rust::{public_key::PublicKey, signatures::signed::Signed};
+use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use futures::future;
 use models::casper::{
     BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, LightBlockInfo, RejectedDeployInfo,
     WaitingContinuationInfo,
 };
 use models::rhoapi::Par;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::rholang::sorter::{par_sort_matcher::ParSortMatcher, sortable::Sortable};
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata};
-use rspace_plus_plus::rspace::{
-    hashing::stable_hash_provider,
-    trace::event::{Event as RspaceEvent, IOEvent},
-};
-
-use crate::rust::casper::MultiParentCasper;
-
-use crate::rust::{
-    blocks::proposer::{
-        propose_result::{
-            CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
-        },
-        proposer::ProposerResult,
-    },
-    engine::engine_cell::EngineCell,
-    errors::CasperError,
-    genesis::contracts::standard_deploys,
-    reporting_proto_transformer::ReportingProtoTransformer,
-    state::instances::proposer_state::ProposerState,
-    util::rholang::runtime_manager::RuntimeManager,
-    util::{event_converter, proto_util, rholang::tools::Tools},
-};
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-
-use crate::rust::ProposeFunction;
-
-use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
-use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
+use prost::bytes::Bytes;
+use prost::Message;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
 use shared::rust::ByteString;
+
+use crate::rust::blocks::proposer::propose_result::{
+    CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
+};
+use crate::rust::blocks::proposer::proposer::ProposerResult;
+use crate::rust::casper::MultiParentCasper;
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::errors::CasperError;
+use crate::rust::genesis::contracts::standard_deploys;
+use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
+use crate::rust::state::instances::proposer_state::ProposerState;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::tools::Tools;
+use crate::rust::util::{event_converter, proto_util};
+use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
 pub type ApiErr<T> = eyre::Result<T>;
@@ -71,9 +65,7 @@ fn pad_hex_string(hash: &str) -> String {
 // Automatic error conversions for common error types used in this API
 // We can only implement From for our own types, so we implement for CasperError -> String
 impl From<CasperError> for String {
-    fn from(err: CasperError) -> String {
-        err.to_string()
-    }
+    fn from(err: CasperError) -> String { err.to_string() }
 }
 
 fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String> {
@@ -101,13 +93,9 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
 const DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
 const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
 
-fn deploy_propose_max_attempts() -> u32 {
-    DEPLOY_PROPOSE_MAX_ATTEMPTS
-}
+fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
 
-fn deploy_propose_retry_delay() -> Duration {
-    Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS)
-}
+fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
@@ -213,9 +201,7 @@ impl std::fmt::Display for LatestBlockMessageError {
 impl std::error::Error for LatestBlockMessageError {}
 
 impl BlockAPI {
-    fn find_deploy_scan_depth() -> usize {
-        128
-    }
+    fn find_deploy_scan_depth() -> usize { 128 }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,

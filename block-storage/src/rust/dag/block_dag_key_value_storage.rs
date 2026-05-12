@@ -1,30 +1,23 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+
+use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::equivocation_record::{EquivocationRecord, SequenceNumber};
+use models::rust::validator::{self, Validator, ValidatorSerde};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::{
-    collections::{BTreeSet, HashMap, HashSet, VecDeque},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, RwLock,
-    },
-};
-
-use models::rust::{
-    block_hash::{self, BlockHash, BlockHashSerde},
-    block_metadata::BlockMetadata,
-    casper::{pretty_printer::PrettyPrinter, protocol::casper_message::BlockMessage},
-    equivocation_record::{EquivocationRecord, SequenceNumber},
-    validator::{self, Validator, ValidatorSerde},
-};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::{
-    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-    key_value_typed_store_impl::KeyValueTypedStoreImpl,
-};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
-use super::{
-    block_metadata_store::BlockMetadataStore, equivocation_tracker_store::EquivocationTrackerStore,
-};
+use super::block_metadata_store::BlockMetadataStore;
+use super::equivocation_tracker_store::EquivocationTrackerStore;
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -70,13 +63,9 @@ impl KeyValueDagRepresentation {
         self.latest_messages_map.clone()
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> {
-        self.invalid_blocks_set.clone()
-    }
+    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
 
-    pub fn last_finalized_block(&self) -> BlockHash {
-        self.last_finalized_block_hash.clone()
-    }
+    pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
     // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
@@ -89,9 +78,7 @@ impl KeyValueDagRepresentation {
         }
     }
 
-    pub fn latest_block_number(&self) -> i64 {
-        self.get_max_height()
-    }
+    pub fn latest_block_number(&self) -> i64 { self.get_max_height() }
 
     pub fn block_number(&self, block_hash: &BlockHash) -> Option<i64> {
         self.block_number_map.get(block_hash).copied()
@@ -541,9 +528,7 @@ impl BlockDagKeyValueStorage {
 
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
-    pub fn current_generation(&self) -> u64 {
-        self.dag_generation.load(Ordering::Relaxed)
-    }
+    pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).

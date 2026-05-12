@@ -1,70 +1,57 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/TestNode.scala
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, RwLock},
-};
-use tokio::sync::mpsc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use casper::rust::{
-    block_status::BlockStatus,
-    blocks::{
-        block_processor::{BlockProcessor, BlockProcessorDependencies},
-        proposer::{block_creator, propose_result::BlockCreatorResult, proposer::new_proposer},
-    },
-    casper::{Casper, CasperShardConf, MultiParentCasper},
-    engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks},
-    errors::CasperError,
-    estimator::Estimator,
-    genesis::genesis::Genesis,
-    multi_parent_casper_impl::MultiParentCasperImpl,
-    safety_oracle::CliqueOracleImpl,
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-    ValidBlockProcessing,
-};
-use comm::rust::{
-    errors::CommError,
-    p2p::packet_handler::{NOPPacketHandler, PacketHandler},
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    rp::{connect::ConnectionsCell, handle_messages, rp_conf::RPConf},
-    test_instances::create_rp_conf_ask,
-    transport::{
-        communication_response::CommunicationResponse, grpc_transport_server::TransportLayerServer,
-        transport_layer::Blob,
-    },
-};
-use crypto::rust::{private_key::PrivateKey, signatures::signed::Signed};
-use models::{
-    routing::Protocol,
-    rust::{
-        block_hash::BlockHash,
-        casper::protocol::casper_message::{
-            ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
-        },
-    },
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::block_status::BlockStatus;
+use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::blocks::proposer::block_creator;
+use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use casper::rust::blocks::proposer::proposer::new_proposer;
+use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
+use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
+use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::engine::running::Running;
+use casper::rust::errors::CasperError;
+use casper::rust::estimator::Estimator;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::validator_identity::ValidatorIdentity;
+use casper::rust::ValidBlockProcessing;
+use comm::rust::errors::CommError;
+use comm::rust::p2p::packet_handler::{NOPPacketHandler, PacketHandler};
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::handle_messages;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::test_instances::create_rp_conf_ask;
+use comm::rust::transport::communication_response::CommunicationResponse;
+use comm::rust::transport::grpc_transport_server::TransportLayerServer;
+use comm::rust::transport::transport_layer::Blob;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::signed::Signed;
+use dashmap::DashSet;
+use models::routing::Protocol;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::mpsc;
 
-use crate::util::{
-    comm::transport_layer_test_impl::{
-        test_network::TestNetwork, TransportLayerServerTestImpl, TransportLayerTestImpl,
-    },
-    genesis_builder::GenesisContext,
-    rholang::resources,
+use crate::util::comm::transport_layer_test_impl::test_network::TestNetwork;
+use crate::util::comm::transport_layer_test_impl::{
+    TransportLayerServerTestImpl, TransportLayerTestImpl,
 };
-
-use casper::rust::{
-    engine::{engine_cell::EngineCell, running::Running},
-    util::comm::casper_packet_handler::CasperPacketHandler,
-};
-use dashmap::DashSet;
+use crate::util::genesis_builder::GenesisContext;
+use crate::util::rholang::resources;
 
 pub struct TestNode {
     pub name: String,
@@ -607,9 +594,7 @@ impl TestNode {
     }
 
     /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool {
-        self.casper.contains(block_hash)
-    }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
 
     /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
@@ -628,9 +613,7 @@ impl TestNode {
     /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
     ///
     /// This is useful for simulating network partitions or node failures in tests.
-    pub fn shutoff(&self) -> Result<(), CommError> {
-        self.tle.test_network().clear(&self.local)
-    }
+    pub fn shutoff(&self) -> Result<(), CommError> { self.tle.test_network().clear(&self.local) }
 
     pub async fn handle_receive(&self) -> Result<(), CasperError> {
         let tle = self.tle.clone();
@@ -1018,8 +1001,8 @@ impl TestNode {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
-            finalization_rate: finalization_rate,
-            max_number_of_parents: max_number_of_parents,
+            finalization_rate,
+            max_number_of_parents,
             max_parent_depth: max_parent_depth.unwrap_or(i32::MAX),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
@@ -1134,9 +1117,7 @@ impl TestNode {
     }
 
     /// Creates an endpoint with the given port for both TCP and UDP
-    fn endpoint(port: u32) -> Endpoint {
-        Endpoint::new("host".to_string(), port, port)
-    }
+    fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
 
     /// Propagates messages across all nodes until all queues are empty (equivalent to Scala propagate, line 640-649).
     ///

@@ -1,7 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/GenesisCeremonyMasterSpec.scala
 
-use crate::engine::approve_block_protocol_test::create_approval;
-use crate::engine::setup::TestFixture;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::engine::approve_block_protocol::ApproveBlockProtocolFactory;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
@@ -12,8 +13,9 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, CasperMessage,
 };
 use prost::Message as ProstMessage;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::engine::approve_block_protocol_test::create_approval;
+use crate::engine::setup::TestFixture;
 
 struct GenesisCeremonyMasterSpec;
 

@@ -1,14 +1,16 @@
-use crate::genesis::contracts::test_util::TestUtil;
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::genesis::genesis::Genesis;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom};
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
 use rspace_plus_plus::rspace::r#match::Match;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::genesis::contracts::test_util::TestUtil;
+use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
 async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> {
     let scope_id = generate_scope_id();
@@ -51,8 +53,8 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
 /// Without StackGrowingFuture, this causes stack overflow in debug builds.
 #[tokio::test]
 async fn deep_recursion_shortslow_should_not_stackoverflow() {
-    let code =
-        crate::util::rholang::test_rho_loader::load_test_rho("shortslow.rho").expect("Failed to load shortslow.rho");
+    let code = crate::util::rholang::test_rho_loader::load_test_rho("shortslow.rho")
+        .expect("Failed to load shortslow.rho");
 
     let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
     assert!(
@@ -69,8 +71,8 @@ async fn deep_recursion_shortslow_should_not_stackoverflow() {
 /// in addition to deep recursion, matching the exact integration test scenario.
 #[tokio::test]
 async fn deep_recursion_longslow_should_not_stackoverflow() {
-    let code =
-        crate::util::rholang::test_rho_loader::load_test_rho("longslow.rho").expect("Failed to load longslow.rho");
+    let code = crate::util::rholang::test_rho_loader::load_test_rho("longslow.rho")
+        .expect("Failed to load longslow.rho");
 
     let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
     assert!(

@@ -1,16 +1,16 @@
+use std::collections::HashMap;
+
+use models::rhoapi::{EMinus, EPlus, Expr, Par};
+use rholang_parser::ast::{AnnProc, Proc};
+use rholang_parser::RholangParser;
+
 use super::bound_map_chain::BoundMapChain;
 use super::free_map::FreeMap;
-use crate::rust::interpreter::compiler::normalizer::processes::{
-    p_ground_normalizer::normalize_p_ground, p_simple_type_normalizer::normalize_simple_type,
-};
+use crate::rust::interpreter::compiler::normalizer::processes::p_ground_normalizer::normalize_p_ground;
+use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
 use crate::rust::interpreter::compiler::utils::{BinaryExpr, UnaryExpr};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_expr;
-use models::rhoapi::{EMinus, EPlus, Expr, Par};
-use std::collections::HashMap;
-
-use rholang_parser::ast::{AnnProc, Proc};
-use rholang_parser::RholangParser;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum VarSort {
@@ -43,9 +43,7 @@ impl ProcVisitInputs {
 }
 
 impl Default for ProcVisitInputs {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 /// Returns the update Par and an updated map of free variables.
@@ -441,6 +439,12 @@ pub fn normalize_ann_proc<'ast>(
 // inside this source file we tested unary and binary operations, because we don't have separate normalizers for them.
 #[cfg(test)]
 mod tests {
+    use models::create_bit_vector;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EDiv, EMinus, EMinusMinus, EMult, EPlus, EPlusPlus, Expr, Par};
+    use models::rust::utils::{new_boundvar_par, new_gint_par, new_gstring_par};
+    use pretty_assertions::assert_eq;
+
     use crate::rust::interpreter::compiler::compiler::Compiler;
     use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
     use crate::rust::interpreter::compiler::normalize::VarSort::ProcSort;
@@ -448,11 +452,6 @@ mod tests {
         proc_visit_inputs_and_env, proc_visit_inputs_with_updated_vec_bound_map_chain,
     };
     use crate::rust::interpreter::util::prepend_expr;
-    use models::create_bit_vector;
-    use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::{EDiv, EMinus, EMinusMinus, EMult, EPlus, EPlusPlus, Expr, Par};
-    use models::rust::utils::{new_boundvar_par, new_gint_par, new_gstring_par};
-    use pretty_assertions::assert_eq;
 
     #[test]
     fn p_nil_should_compile_as_no_modification() {
@@ -463,8 +462,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("Nil");
             match result {
@@ -497,8 +497,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("~false");
             match result {
@@ -546,8 +547,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("-7");
             match result {
@@ -588,8 +590,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("7 * 8");
             match result {
@@ -632,8 +635,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("7 / 8");
             match result {
@@ -676,8 +680,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("7 % 8");
             match result {
@@ -721,8 +726,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("7 + 8");
             match result {
@@ -765,8 +771,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("\"abc\" ++ \"def\"");
             match result {
@@ -805,20 +812,18 @@ mod tests {
         use std::collections::HashMap;
 
         let (base_inputs, _env) = proc_visit_inputs_and_env();
-        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(
-            base_inputs,
-            vec![
-                ("x".into(), ProcSort),
-                ("y".into(), ProcSort),
-                ("z".into(), ProcSort),
-            ],
-        );
+        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(base_inputs, vec![
+            ("x".into(), ProcSort),
+            ("y".into(), ProcSort),
+            ("z".into(), ProcSort),
+        ]);
 
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("x - (y * z)");
             match result {
@@ -871,8 +876,9 @@ mod tests {
         fn test_with_parser(
             inputs: ProcVisitInputs,
         ) -> Result<ProcVisitOutputs, crate::rust::interpreter::InterpreterError> {
-            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             use validated::Validated;
+
+            use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
             let parser = rholang_parser::RholangParser::new();
             let result = parser.parse("\"abc\" -- \"def\"");
             match result {

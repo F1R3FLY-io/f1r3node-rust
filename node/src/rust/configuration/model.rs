@@ -3,12 +3,12 @@
 //! This module contains the data structures that represent the node configuration,
 //! including all the nested configuration sections.
 
-use casper::rust::casper_conf::de_duration;
-use casper::rust::casper_conf::CasperConf;
-use clap::Subcommand;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
+
+use casper::rust::casper_conf::{de_duration, CasperConf};
+use clap::Subcommand;
+use serde::{Deserialize, Serialize};
 
 use crate::rust::configuration::commandline::options::{
     BondStatusOptions, ContAtNameOptions, DataAtNameOptions, DeployOptions, EvalOptions,
@@ -227,13 +227,12 @@ pub struct Metrics {
     pub influxdb_endpoint: InfluxDbEndpoint,
 }
 
-fn default_tick_interval() -> Duration {
-    Duration::from_secs(10)
-}
+fn default_tick_interval() -> Duration { Duration::from_secs(10) }
 
 mod duration_secs {
-    use serde::{Deserialize, Deserializer, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_u64(d.as_secs())
@@ -290,9 +289,7 @@ pub struct InfluxDbEndpoint {
     pub password: Option<String>,
 }
 
-fn default_influxdb_protocol() -> String {
-    "http".to_string()
-}
+fn default_influxdb_protocol() -> String { "http".to_string() }
 
 /// Development configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,13 +323,9 @@ pub struct OpenAIConf {
     pub validation_timeout_sec: u64,
 }
 
-fn default_validate_api_key() -> bool {
-    true
-}
+fn default_validate_api_key() -> bool { true }
 
-fn default_validation_timeout_sec() -> u64 {
-    15
-}
+fn default_validation_timeout_sec() -> u64 { 15 }
 
 impl Default for OpenAIConf {
     fn default() -> Self {
@@ -409,9 +402,7 @@ pub enum Command {
 
 // Accept integers (bytes) or strings like "256K", "16M", "2G".
 fn de_bytes<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
+where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
     use serde::Deserialize;
     #[derive(Deserialize)]

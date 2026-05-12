@@ -19,8 +19,7 @@ pub trait KeyValueTypedStore<K, V> {
      * @param pf Partial function to project and filter values
      */
     fn collect<F, T>(&self, f: F) -> Result<Vec<T>, KvStoreError>
-    where
-        F: FnMut((&K, &V)) -> Option<T>;
+    where F: FnMut((&K, &V)) -> Option<T>;
 
     fn to_map(&self) -> Result<HashMap<K, V>, KvStoreError>;
 

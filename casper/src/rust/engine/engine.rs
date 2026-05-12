@@ -1,5 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/Engine.scala
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -16,15 +20,12 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::rust::casper::CasperShardConf;
-use crate::rust::casper::MultiParentCasper;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::running::Running;
@@ -37,7 +38,6 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
 /// Object-safe Engine trait that matches Scala Engine[F] behavior.
 /// Note: we expose `with_casper() -> Option<&MultiParentCasper>` as an accessor,
@@ -98,17 +98,13 @@ pub fn noop() -> impl Engine {
 
     #[async_trait]
     impl Engine for NoopEngine {
-        async fn init(&self) -> Result<(), CasperError> {
-            Ok(())
-        }
+        async fn init(&self) -> Result<(), CasperError> { Ok(()) }
 
         async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
             Ok(())
         }
 
-        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-            None
-        }
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
     }
 
     NoopEngine

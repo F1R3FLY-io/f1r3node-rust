@@ -1,7 +1,9 @@
 // See models/src/main/scala/coop/rchain/models/EquivocationRecord.scala
 
-use super::{block_hash::BlockHash, validator::Validator};
 use std::collections::BTreeSet;
+
+use super::block_hash::BlockHash;
+use super::validator::Validator;
 
 /**
  * A summary of the neglected equivocation algorithm is as follows.

@@ -70,77 +70,47 @@ impl fmt::Display for CommError {
 }
 
 // Helper functions matching Scala's API
-pub fn unknown_comm_error(msg: String) -> CommError {
-    CommError::UnknownCommError(msg)
-}
+pub fn unknown_comm_error(msg: String) -> CommError { CommError::UnknownCommError(msg) }
 
-pub fn unknown_protocol(msg: String) -> CommError {
-    CommError::UnknownProtocolError(msg)
-}
+pub fn unknown_protocol(msg: String) -> CommError { CommError::UnknownProtocolError(msg) }
 
-pub fn parse_error(msg: String) -> CommError {
-    CommError::ParseError(msg)
-}
+pub fn parse_error(msg: String) -> CommError { CommError::ParseError(msg) }
 
-pub fn protocol_exception(msg: String) -> CommError {
-    CommError::ProtocolException(msg)
-}
+pub fn protocol_exception(msg: String) -> CommError { CommError::ProtocolException(msg) }
 
-pub fn header_not_available() -> CommError {
-    CommError::HeaderNotAvailable
-}
+pub fn header_not_available() -> CommError { CommError::HeaderNotAvailable }
 
-pub fn peer_node_not_found(peer: String) -> CommError {
-    CommError::PeerNodeNotFound(peer)
-}
+pub fn peer_node_not_found(peer: String) -> CommError { CommError::PeerNodeNotFound(peer) }
 
-pub fn peer_unavailable(peer: String) -> CommError {
-    CommError::PeerUnavailable(peer)
-}
+pub fn peer_unavailable(peer: String) -> CommError { CommError::PeerUnavailable(peer) }
 
-pub fn wrong_network(peer: String, msg: String) -> CommError {
-    CommError::WrongNetwork(peer, msg)
-}
+pub fn wrong_network(peer: String, msg: String) -> CommError { CommError::WrongNetwork(peer, msg) }
 
-pub fn message_too_large(peer: String) -> CommError {
-    CommError::MessageToLarge(peer)
-}
+pub fn message_too_large(peer: String) -> CommError { CommError::MessageToLarge(peer) }
 
 pub fn public_key_not_available(peer: String) -> CommError {
     CommError::PublicKeyNotAvailable(peer)
 }
 
-pub fn could_not_connect_to_bootstrap() -> CommError {
-    CommError::CouldNotConnectToBootstrap
-}
+pub fn could_not_connect_to_bootstrap() -> CommError { CommError::CouldNotConnectToBootstrap }
 
 pub fn internal_communication_error(msg: String) -> CommError {
     CommError::InternalCommunicationError(msg)
 }
 
-pub fn malformed_message(msg: String) -> CommError {
-    CommError::MalformedMessage(msg)
-}
+pub fn malformed_message(msg: String) -> CommError { CommError::MalformedMessage(msg) }
 
-pub fn upstream_not_available() -> CommError {
-    CommError::UpstreamNotAvailable
-}
+pub fn upstream_not_available() -> CommError { CommError::UpstreamNotAvailable }
 
-pub fn unexpected_message(msg: String) -> CommError {
-    CommError::UnexpectedMessage(msg)
-}
+pub fn unexpected_message(msg: String) -> CommError { CommError::UnexpectedMessage(msg) }
 
-pub fn sender_not_available() -> CommError {
-    CommError::SenderNotAvailable
-}
+pub fn sender_not_available() -> CommError { CommError::SenderNotAvailable }
 
 pub fn pong_not_received_for_ping(peer: String) -> CommError {
     CommError::PongNotReceivedForPing(peer)
 }
 
-pub fn timeout() -> CommError {
-    CommError::TimeOut
-}
+pub fn timeout() -> CommError { CommError::TimeOut }
 
 pub fn unable_to_store_packet(packet: String, error: String) -> CommError {
     CommError::UnableToStorePacket(packet, error)

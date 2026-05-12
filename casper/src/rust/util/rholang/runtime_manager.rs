@@ -1,14 +1,13 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManager.scala
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManagerSyntax.scala
 
-use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
+use dashmap::DashMap;
 use hex::ToHex;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
@@ -199,33 +198,21 @@ impl RuntimeManager {
         Blake2b256::hash(bytes)
     }
 
-    fn max_block_index_cache_entries() -> usize {
-        Self::MAX_BLOCK_INDEX_CACHE_ENTRIES
-    }
+    fn max_block_index_cache_entries() -> usize { Self::MAX_BLOCK_INDEX_CACHE_ENTRIES }
 
     fn max_parents_post_state_cache_entries() -> usize {
         Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES
     }
 
-    fn max_active_validators_cache_entries() -> usize {
-        Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES
-    }
+    fn max_active_validators_cache_entries() -> usize { Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES }
 
-    fn max_bonds_cache_entries() -> usize {
-        Self::MAX_BONDS_CACHE_ENTRIES
-    }
+    fn max_bonds_cache_entries() -> usize { Self::MAX_BONDS_CACHE_ENTRIES }
 
-    fn max_replay_cache_entries() -> usize {
-        Self::MAX_REPLAY_CACHE_ENTRIES
-    }
+    fn max_replay_cache_entries() -> usize { Self::MAX_REPLAY_CACHE_ENTRIES }
 
-    fn max_replay_cache_event_log_entries() -> usize {
-        Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES
-    }
+    fn max_replay_cache_event_log_entries() -> usize { Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES }
 
-    fn max_state_hash_cache_entries() -> usize {
-        Self::MAX_STATE_HASH_CACHE_ENTRIES
-    }
+    fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
 
     pub fn trim_allocator() {
         #[cfg(target_os = "linux")]
@@ -238,9 +225,7 @@ impl RuntimeManager {
     }
 
     fn touch_cache_key<K>(order: &Mutex<VecDeque<K>>, key: &K)
-    where
-        K: Eq + Clone,
-    {
+    where K: Eq + Clone {
         // LRU touch is O(n) due VecDeque::position/remove. This is intentional for now:
         // these caches are tightly bounded (64-256 entries by default), so linear touch
         // remains cheaper than introducing additional synchronized index maps.
@@ -253,9 +238,7 @@ impl RuntimeManager {
     }
 
     fn evict_fifo_entry<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>)
-    where
-        K: Eq + Hash + Clone,
-    {
+    where K: Eq + Hash + Clone {
         if let Ok(mut guard) = order.lock() {
             while let Some(evict_key) = guard.pop_front() {
                 if map.remove(&evict_key).is_some() {
@@ -800,9 +783,7 @@ impl RuntimeManager {
         Ok(computed)
     }
 
-    pub fn get_history_repo(&self) -> RhoHistoryRepository {
-        self.history_repo.clone()
-    }
+    pub fn get_history_repo(&self) -> RhoHistoryRepository { self.history_repo.clone() }
 
     /// Get or compute BlockIndex with caching
     pub fn get_or_compute_block_index(

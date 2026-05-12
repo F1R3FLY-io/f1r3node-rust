@@ -1,7 +1,5 @@
-use models::{
-    rhoapi::{Bundle, Connective, Expr, Match, New, Par, Receive, Send},
-    rust::utils::union,
-};
+use models::rhoapi::{Bundle, Connective, Expr, Match, New, Par, Receive, Send};
+use models::rust::utils::union;
 
 use super::matcher::has_locally_free::HasLocallyFree;
 

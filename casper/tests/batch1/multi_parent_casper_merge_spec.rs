@@ -1,10 +1,11 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
 use casper::rust::block_status::ValidBlock;
 use casper::rust::util::{construct_deploy, rspace_util};
 use rspace_plus_plus::rspace::history::Either;
+
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
@@ -79,14 +80,14 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
             .unwrap()
     };
 
-    assert_eq!(
-        block0.header.parents_hash_list,
-        vec![genesis.genesis_block.block_hash.clone()]
-    );
-    assert_eq!(
-        block1.header.parents_hash_list,
-        vec![genesis.genesis_block.block_hash.clone()]
-    );
+    assert_eq!(block0.header.parents_hash_list, vec![genesis
+        .genesis_block
+        .block_hash
+        .clone()]);
+    assert_eq!(block1.header.parents_hash_list, vec![genesis
+        .genesis_block
+        .block_hash
+        .clone()]);
     // With multi-parent merging, all validators' latest blocks are included as parents
     // (block0 from node0, block1 from node1, genesis from node2 who hasn't created a block yet)
     assert_eq!(multiparent_block.header.parents_hash_list.len(), 3);

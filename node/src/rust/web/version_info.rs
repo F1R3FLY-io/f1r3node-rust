@@ -1,10 +1,8 @@
-use axum::{
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-};
-
 use std::env;
+
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
 
 pub fn get_version_info() -> (&'static str, &'static str) {
     let version = env!("CARGO_PKG_VERSION");
@@ -20,9 +18,7 @@ pub fn get_version_info_str() -> String {
 pub struct VersionInfo;
 
 impl VersionInfo {
-    pub fn create_router() -> Router {
-        Router::new().route("/", get(version_info_handler))
-    }
+    pub fn create_router() -> Router { Router::new().route("/", get(version_info_handler)) }
 }
 
 #[utoipa::path(
@@ -33,6 +29,4 @@ impl VersionInfo {
         ),
         tag = "System"
     )]
-pub async fn version_info_handler() -> Response {
-    get_version_info_str().into_response()
-}
+pub async fn version_info_handler() -> Response { get_version_info_str().into_response() }

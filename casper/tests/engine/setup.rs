@@ -1,69 +1,56 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::{
-        block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId},
-        block_metadata_store::BlockMetadataStore,
-        equivocation_tracker_store::EquivocationTrackerStore,
-    },
-    deploy::{
-        key_value_deploy_storage::KeyValueDeployStorage,
-        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
-    },
-    key_value_block_store::KeyValueBlockStore,
-};
-use casper::rust::{
-    engine::{
-        block_approver_protocol::BlockApproverProtocol, block_retriever, engine_cell::EngineCell,
-        running::Running,
-    },
-    validator_identity::ValidatorIdentity,
-};
-use comm::rust::{
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    rp::connect::{Connections, ConnectionsCell},
-    rp::rp_conf::RPConf,
-    test_instances::{create_rp_conf_ask, TransportLayerStub},
-};
-use crypto::rust::{private_key::PrivateKey, public_key::PublicKey};
-use models::{
-    routing::Protocol,
-    rust::{
-        block_hash::{BlockHash, BlockHashSerde},
-        block_metadata::BlockMetadata,
-        casper::protocol::casper_message::{
-            ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, HasBlock,
-        },
-        equivocation_record::SequenceNumber,
-        validator::ValidatorSerde,
-    },
-};
-use prost::bytes::Bytes;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{atomic::AtomicU64, Arc, Mutex};
-use tokio::sync::mpsc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 
-use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
-use crate::{
-    helper::no_ops_casper_effect::NoOpsCasperEffect,
-    util::{genesis_builder::GenesisBuilder, test_mocks::MockKeyValueStore},
-};
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
+use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
+use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
+use casper::rust::engine::block_retriever;
+use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::validator_identity::ValidatorIdentity;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::rp::connect::{Connections, ConnectionsCell};
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::routing::Protocol;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
+};
+use models::rust::equivocation_record::SequenceNumber;
+use models::rust::validator::ValidatorSerde;
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
+use tokio::sync::mpsc;
+
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
+use crate::util::test_mocks::MockKeyValueStore;
 
 /// Test fixture struct to hold all test dependencies
 pub struct TestFixture {

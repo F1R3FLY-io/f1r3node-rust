@@ -1,9 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperRholangSpec.scala
 
+use casper::rust::util::rholang::tools::Tools;
+use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
-use casper::rust::util::{construct_deploy, proto_util, rholang::tools::Tools, rspace_util};
-use crypto::rust::signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg};
 
 // Scala comments:
 // Uncomment this to use the debugger on M2

@@ -3,7 +3,8 @@ extern crate tonic_prost_build;
 // https://docs.rs/prost-build/latest/prost_build/struct.Config.html
 // https://docs.rs/tonic-build/latest/tonic_build/struct.Builder.html#
 
-use std::{env, fs, path::Path};
+use std::path::Path;
+use std::{env, fs};
 
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();

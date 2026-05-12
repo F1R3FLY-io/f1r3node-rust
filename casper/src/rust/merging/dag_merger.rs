@@ -1,29 +1,23 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use prost::bytes::Bytes;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
-use rholang::rust::interpreter::{
-    merging::rholang_merging_logic::RholangMergingLogic, rho_runtime::RhoHistoryRepository,
-};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    merger::{
-        merging_logic::{self, NumberChannelsDiff},
-        state_change_merger,
-    },
-};
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
+use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
-use super::{conflict_set_merger, deploy_chain_index::DeployChainIndex};
-use crate::rust::{
-    errors::CasperError,
-    system_deploy::{is_slash_deploy_id, is_system_deploy_id},
-};
+use super::conflict_set_merger;
+use super::deploy_chain_index::DeployChainIndex;
+use crate::rust::errors::CasperError;
+use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {

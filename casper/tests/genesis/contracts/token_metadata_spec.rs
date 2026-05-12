@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
+use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+
 use crate::genesis::contracts::GENESIS_TEST_TIMEOUT;
 use crate::helper::rho_spec::RhoSpec;
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-use std::collections::HashMap;
 
 #[tokio::test]
 async fn token_metadata_spec() {

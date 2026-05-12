@@ -1,10 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/SafetyOracle.scala
 
-use crate::rust::safety::clique_oracle::CliqueOracle;
 use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
+
+use crate::rust::safety::clique_oracle::CliqueOracle;
 /*
  * Implementation inspired by Ethereum's CBC casper simulator's clique oracle implementation.
  *

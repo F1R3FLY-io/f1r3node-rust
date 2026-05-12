@@ -55,7 +55,8 @@ pub struct RSpaceStore {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
-    pub history_repository: Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
+    pub history_repository:
+        Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
     pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
@@ -126,10 +127,14 @@ where
         (phase_a, phase_b)
     }
 
-    pub fn get_history_repository(&self) -> Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>> {
-        self.history_repository.read().expect("history read lock").clone()
+    pub fn get_history_repository(
+        &self,
+    ) -> Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>> {
+        self.history_repository
+            .read()
+            .expect("history read lock")
+            .clone()
     }
-
 }
 
 struct HeldLock {
@@ -242,7 +247,8 @@ where
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
-        let curr_produce_counter = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        let curr_produce_counter =
+            std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
 
         SoftCheckpoint {
             cache_snapshot,
@@ -293,14 +299,16 @@ where
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
 
             let lock_start = Instant::now();
-            let channel_hashes: Vec<u64> = channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> =
+                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
             tracing::trace!(target: "rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
             metrics::counter!("rspace.consume.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
                 .increment(lock_start.elapsed().as_nanos() as u64);
 
-            metrics::counter!("rspace.consume.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
+            metrics::counter!("rspace.consume.calls", "source" => RSPACE_METRICS_SOURCE)
+                .increment(1);
             let start = Instant::now();
             let result = self.locked_consume(
                 &channels,
@@ -356,7 +364,11 @@ where
         result
     }
 
-    async fn rig_and_reset(&self, _start_root: Blake2b256Hash, _log: Log) -> Result<(), RSpaceError> {
+    async fn rig_and_reset(
+        &self,
+        _start_root: Blake2b256Hash,
+        _log: Log,
+    ) -> Result<(), RSpaceError> {
         panic!("\nERROR: RSpace rig_and_reset should not be called here");
     }
 
@@ -556,7 +568,17 @@ where
         produce_refs
             .iter()
             .cloned()
-            .map(|p| (p.clone(), self.produce_counter.lock().expect("produce counter lock").get(&p).unwrap_or(&0).clone()))
+            .map(|p| {
+                (
+                    p.clone(),
+                    self.produce_counter
+                        .lock()
+                        .expect("produce counter lock")
+                        .get(&p)
+                        .unwrap_or(&0)
+                        .clone(),
+                )
+            })
             .collect()
     }
 
@@ -687,11 +709,12 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
-                let result = Ok(self
-                    .process_match_found(produce_candidate)
-                    .map(|consume_result| {
-                        (consume_result.0, consume_result.1, produce_ref.clone())
-                    }));
+                let result =
+                    Ok(self
+                        .process_match_found(produce_candidate)
+                        .map(|consume_result| {
+                            (consume_result.0, consume_result.1, produce_ref.clone())
+                        }));
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
@@ -796,13 +819,7 @@ where
         self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
     }
 
-    fn log_comm(
-        &self,
-        _channels: &[C],
-        _wk: &WaitingContinuation<P, K>,
-        comm: COMM,
-        label: &str,
-    ) {
+    fn log_comm(&self, _channels: &[C], _wk: &WaitingContinuation<P, K>, comm: COMM, label: &str) {
         // Increment counter FIRST (matching Scala) using constants to avoid memory
         // leaks Labels are always "comm.consume" or "comm.produce" based on the
         // RSpace implementation
@@ -822,7 +839,10 @@ where
         }
 
         // Then update event log (RSpace-specific behavior)
-        self.event_log.lock().expect("event log lock").insert(0, Event::Comm(comm));
+        self.event_log
+            .lock()
+            .expect("event log lock")
+            .insert(0, Event::Comm(comm));
     }
 
     fn log_consume(
@@ -834,12 +854,16 @@ where
         _persist: bool,
         _peeks: &BTreeSet<i32>,
     ) {
-        self.event_log.lock().expect("event log lock")
+        self.event_log
+            .lock()
+            .expect("event log lock")
             .insert(0, Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
     }
 
     fn log_produce(&self, produce_ref: &Produce, _channel: &C, _data: &A, persist: bool) {
-        self.event_log.lock().expect("event log lock")
+        self.event_log
+            .lock()
+            .expect("event log lock")
             .insert(0, Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
         if !persist {
             let mut counter = self.produce_counter.lock().expect("produce counter lock");
@@ -1056,7 +1080,11 @@ where
                 } = consume_candidate;
 
                 if *datum_index >= 0 && !persist {
-                    if self.get_store().remove_datum(&channel, *datum_index).is_err() {
+                    if self
+                        .get_store()
+                        .remove_datum(&channel, *datum_index)
+                        .is_err()
+                    {
                         return None;
                     }
                 }

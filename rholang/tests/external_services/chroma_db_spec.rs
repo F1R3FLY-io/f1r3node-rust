@@ -1,13 +1,12 @@
-use models::rhoapi::Par;
-use rholang::rust::interpreter::chromadb_service::{Metadata, CollectionEntry, MetadataValue};
-use rholang::rust::interpreter::rho_type::{RhoList, RhoMap, RhoNil, RhoNumber, RhoString};
-use rholang::rust::interpreter::{
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
-    test_utils::resources::with_runtime,
-};
 use std::collections::HashMap;
+
+use models::rhoapi::Par;
+use rholang::rust::interpreter::chromadb_service::{CollectionEntry, Metadata, MetadataValue};
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::{RhoList, RhoMap, RhoNil, RhoNumber, RhoString};
+use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 async fn success(runtime: &mut RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
     execute(runtime, term).await.map(|res| {
@@ -111,21 +110,29 @@ async fn entry_should_be_queried() {
 
     test_runtime(
         meta_contract,
-        Some(RhoList::create_par(vec![
-            RhoMap::create_par(HashMap::from([
-                (RhoString::create_par("doc1".into()), CollectionEntry {
-                    document: "Hello world!".to_string(),
-                    metadata: None,
-                }.into()),
-                (RhoString::create_par("doc2".into()), CollectionEntry {
-                    document: "Hello world again!".to_string(),
-                    metadata: Some(Metadata::from([(
-                        "meta1".to_string(),
-                        MetadataValue::String("42".to_string()),
-                    )]))
-                }.into())
-            ]))
-        ])),
+        Some(RhoList::create_par(vec![RhoMap::create_par(
+            HashMap::from([
+                (
+                    RhoString::create_par("doc1".into()),
+                    CollectionEntry {
+                        document: "Hello world!".to_string(),
+                        metadata: None,
+                    }
+                    .into(),
+                ),
+                (
+                    RhoString::create_par("doc2".into()),
+                    CollectionEntry {
+                        document: "Hello world again!".to_string(),
+                        metadata: Some(Metadata::from([(
+                            "meta1".to_string(),
+                            MetadataValue::String("42".to_string()),
+                        )])),
+                    }
+                    .into(),
+                ),
+            ]),
+        )])),
     )
     .await
 }

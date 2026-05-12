@@ -8,10 +8,12 @@ pub mod zipkin_reporter;
 #[cfg(test)]
 mod tests;
 
-use crate::rust::configuration::NodeConf;
-use eyre::Result;
 use std::sync::Arc;
+
+use eyre::Result;
 use tracing::{info, warn};
+
+use crate::rust::configuration::NodeConf;
 
 pub const SYSTEM_METRICS_SOURCE: &str = "f1r3fly.system";
 

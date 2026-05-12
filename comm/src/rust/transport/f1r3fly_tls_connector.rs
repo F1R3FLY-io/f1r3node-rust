@@ -10,12 +10,10 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::rust::transport::{
-    f1r3fly_tls_transport::{
-        F1r3flyClientTlsTransport, F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
-    },
-    hostname_trust_manager_factory::HostnameTrustManagerFactory,
+use crate::rust::transport::f1r3fly_tls_transport::{
+    F1r3flyClientTlsTransport, F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
 };
+use crate::rust::transport::hostname_trust_manager_factory::HostnameTrustManagerFactory;
 
 /// F1r3fly TLS connector for client connections
 ///
@@ -134,9 +132,7 @@ impl F1r3flyTlsConnector {
     }
 
     /// Get the network ID for this connector
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 /// F1r3fly TLS acceptor for server connections
@@ -223,9 +219,7 @@ impl F1r3flyTlsAcceptor {
     }
 
     /// Get the network ID for this acceptor
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 /// Builder for F1r3fly TLS configurations
@@ -265,9 +259,7 @@ impl F1r3flyTlsBuilder {
     }
 
     /// Get the network ID
-    pub fn network_id(&self) -> &str {
-        &self.network_id
-    }
+    pub fn network_id(&self) -> &str { &self.network_id }
 }
 
 #[cfg(test)]

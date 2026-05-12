@@ -1,54 +1,50 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/Initializing.scala
 
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use futures::stream::StreamExt;
-use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
-    future::Future,
-    pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage, StoreItemsMessageRequest,
 };
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-    deploy::{
-        key_value_deploy_storage::KeyValueDeployStorage,
-        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
-    },
-    key_value_block_store::KeyValueBlockStore,
-};
-use comm::rust::{
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
-use models::rust::casper::protocol::casper_message::StoreItemsMessageRequest;
-use models::rust::{
-    block_hash::BlockHash,
-    casper::{
-        pretty_printer::PrettyPrinter,
-        protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage},
-    },
-};
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporterInstance;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
-};
-use shared::rust::{
-    shared::{f1r3fly_event::F1r3flyEvent, f1r3fly_events::F1r3flyEvents},
-    ByteString,
-};
-
 use crate::rust::block_status::ValidBlock;
-use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
+use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::engine::{
+    log_no_approved_block_available, send_no_approved_block_available, transition_to_running,
+    Engine,
+};
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
+use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
+use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
     CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC, CASPER_INIT_ATTEMPTS_METRIC,
@@ -56,24 +52,10 @@ use crate::rust::metrics_constants::{
     CASPER_INIT_TIME_TO_RUNNING_METRIC, CASPER_METRICS_SOURCE,
     INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC, INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC,
 };
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
-use crate::rust::{
-    casper::{CasperShardConf, MultiParentCasper},
-    engine::{
-        block_retriever::BlockRetriever,
-        engine::{
-            log_no_approved_block_available, send_no_approved_block_available,
-            transition_to_running, Engine,
-        },
-        engine_cell::EngineCell,
-        lfs_block_requester::{self, BlockRequesterOps},
-        lfs_tuple_space_requester::{self, TupleSpaceRequesterOps},
-    },
-    errors::CasperError,
-    util::proto_util,
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-};
+use crate::rust::validator_identity::ValidatorIdentity;
 
 /// Scala equivalent: `class Initializing[F[_]](...) extends Engine[F]`
 ///
@@ -366,9 +348,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
 
     /// Scala equivalent: Engine trait - Initializing doesn't have casper yet, so withCasper returns default
     /// In Scala: `def withCasper[A](f: MultiParentCasper[F] => F[A], default: F[A]): F[A] = default`
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-        None
-    }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -1029,9 +1009,7 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         Ok(self.block_store.put(block_hash, &block)?)
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        (self.validate_block_fn)(block)
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
 }
 
 /// Wrapper struct for block request operations

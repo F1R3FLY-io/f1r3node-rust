@@ -1,12 +1,9 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/SendSortMatcher.scala
 
+use super::par_sort_matcher::ParSortMatcher;
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
 use crate::rhoapi::{Par, Send};
-
-use super::{
-    par_sort_matcher::ParSortMatcher,
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
 
 pub struct SendSortMatcher;
 

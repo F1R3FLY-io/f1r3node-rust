@@ -1,6 +1,7 @@
 // See node/src/main/scala/coop/rchain/node/state/instances/RNodeStateManagerImpl.scala
 
-use casper::rust::{errors::CasperError, state::instances::BlockStateManager};
+use casper::rust::errors::CasperError;
+use casper::rust::state::instances::BlockStateManager;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
 pub struct RNodeStateManager {

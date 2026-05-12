@@ -1,7 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/LfsStateRequesterStateSpec.scala
 
-use casper::rust::engine::lfs_tuple_space_requester::ST;
 use std::collections::HashSet;
+
+use casper::rust::engine::lfs_tuple_space_requester::ST;
 
 #[cfg(test)]
 mod tests {

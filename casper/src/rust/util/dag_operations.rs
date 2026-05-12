@@ -1,10 +1,12 @@
 // See casper/src/main/scala/coop/rchain/casper/util/DagOperations.scala
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata};
-use shared::rust::store::key_value_store::KvStoreError;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct DagOperations;
 
@@ -13,9 +15,7 @@ pub struct DagOperations;
 struct OrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for OrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for OrderedBlockMetadata {
@@ -32,9 +32,7 @@ impl Ord for OrderedBlockMetadata {
 struct ReverseOrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for ReverseOrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 impl Ord for ReverseOrderedBlockMetadata {
@@ -87,9 +85,7 @@ impl DagOperations {
                 .collect::<Result<Vec<_>, _>>()
         }
 
-        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool {
-            set == common_set
-        }
+        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool { set == common_set }
 
         let init_map: HashMap<BlockMetadata, HashSet<u8>> = blocks
             .iter()

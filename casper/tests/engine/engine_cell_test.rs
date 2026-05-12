@@ -1,8 +1,6 @@
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Barrier;
-use tokio::time::sleep;
 
 use async_trait::async_trait;
 use casper::rust::engine::engine::Engine;
@@ -10,6 +8,8 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::PeerNode;
 use models::rust::casper::protocol::casper_message::CasperMessage;
+use tokio::sync::Barrier;
+use tokio::time::sleep;
 
 /// Test engine that tracks method calls for verification
 #[derive(Clone)]
@@ -26,9 +26,7 @@ impl TestEngine {
         }
     }
 
-    fn get_init_count(&self) -> usize {
-        self.init_count.load(Ordering::SeqCst)
-    }
+    fn get_init_count(&self) -> usize { self.init_count.load(Ordering::SeqCst) }
 }
 
 #[async_trait]

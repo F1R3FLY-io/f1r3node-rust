@@ -1,26 +1,26 @@
-use super::signatures_alg::SignaturesAlg;
-use crate::rust::{private_key::PrivateKey, public_key::PublicKey};
+use std::path::Path;
+
 use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
-use k256::ecdsa::VerifyingKey;
-use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
-
-use openssl::pkey::PKey;
-
 use eyre::{Context, Result};
-use k256::elliptic_curve::{sec1::ToEncodedPoint, SecretKey};
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::SecretKey;
+use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
 use rand::rngs::OsRng;
-use std::path::Path;
+
+use super::signatures_alg::SignaturesAlg;
+use crate::rust::private_key::PrivateKey;
+use crate::rust::public_key::PublicKey;
 
 // See crypto/src/main/scala/coop/rchain/crypto/signatures/Secp256k1.scala
 #[derive(Clone, Debug, PartialEq)]
 pub struct Secp256k1;
 
 impl Secp256k1 {
-    pub fn name() -> String {
-        "secp256k1".to_string()
-    }
+    pub fn name() -> String { "secp256k1".to_string() }
 
     /// Parse an encrypted PEM file and extract the private key
     /// Equivalent to Scala's parsePemFile method
@@ -181,27 +181,20 @@ impl SignaturesAlg for Secp256k1 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String {
-        "secp256k1".to_string()
-    }
+    fn name(&self) -> String { "secp256k1".to_string() }
 
-    fn sig_length(&self) -> usize {
-        32
-    }
+    fn sig_length(&self) -> usize { 32 }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
-        Box::new(self.clone())
-    }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sha2::{Digest, Sha256};
+
+    use super::*;
 
     fn sec_key_verify(seckey: &[u8]) -> bool {
         seckey.len() == 32 && SigningKey::from_slice(seckey).is_ok()
@@ -464,9 +457,10 @@ mod tests {
 
     #[test]
     fn parse_encrypted_pem_file_test() {
+        use std::io::Write;
+
         use openssl::pkey::PKey;
         use pkcs8::EncodePrivateKey;
-        use std::io::Write;
         use tempfile::NamedTempFile;
 
         let secp256k1 = Secp256k1;

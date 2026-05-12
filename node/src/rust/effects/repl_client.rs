@@ -1,5 +1,4 @@
 //! REPL client module
-//!
 
 //! REPL client for F1r3fly node
 //!
@@ -9,13 +8,12 @@ pub mod repl {
     tonic::include_proto!("repl");
 }
 
-use futures::future::join_all;
-use repl::repl_client::ReplClient;
-use repl::CmdRequest;
-use repl::ReplResponse;
-
 use std::path::Path;
 use std::time::Duration;
+
+use futures::future::join_all;
+use repl::repl_client::ReplClient;
+use repl::{CmdRequest, ReplResponse};
 use tokio::fs;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Status;

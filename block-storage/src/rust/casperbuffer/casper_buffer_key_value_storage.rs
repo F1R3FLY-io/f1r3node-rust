@@ -3,16 +3,14 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::{
-    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
-    key_value_typed_store_impl::KeyValueTypedStoreImpl,
-};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::rust::util::doubly_linked_dag_operations::BlockDependencyDag;
 
@@ -328,10 +326,11 @@ impl CasperBufferKeyValueStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rust::block_hash::BlockHashSerde;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
 
     fn create_block_hash(data: &[u8]) -> BlockHashSerde {
         BlockHashSerde(Bytes::copy_from_slice(data))

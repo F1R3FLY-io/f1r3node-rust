@@ -1,5 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/api/LastFinalizedAPITest.scala
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -8,8 +11,6 @@ use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use casper::rust::util::{construct_deploy, proto_util};
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};

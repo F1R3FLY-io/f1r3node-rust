@@ -1,20 +1,18 @@
 // Rust port of casper/src/test/scala/coop/rchain/casper/util/comm/TransportLayerTestImpl.scala
 
-use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use comm::rust::{
-    errors::CommError,
-    peer_node::PeerNode,
-    rp::protocol_helper,
-    transport::{
-        communication_response::CommunicationResponse,
-        grpc_transport_server::{Cancelable, DispatchFn, HandleStreamedFn, TransportLayerServer},
-        transport_layer::{Blob, TransportLayer},
-    },
+use async_trait::async_trait;
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::protocol_helper;
+use comm::rust::transport::communication_response::CommunicationResponse;
+use comm::rust::transport::grpc_transport_server::{
+    Cancelable, DispatchFn, HandleStreamedFn, TransportLayerServer,
 };
+use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Protocol;
 
 /// Test network module providing message queue management between peers
@@ -133,14 +131,10 @@ pub struct TransportLayerTestImpl {
 
 impl TransportLayerTestImpl {
     /// Create a new test transport layer with the given test network
-    pub fn new(test_network: test_network::TestNetwork) -> Self {
-        Self { test_network }
-    }
+    pub fn new(test_network: test_network::TestNetwork) -> Self { Self { test_network } }
 
     /// Get access to the underlying test network for test setup
-    pub fn test_network(&self) -> &test_network::TestNetwork {
-        &self.test_network
-    }
+    pub fn test_network(&self) -> &test_network::TestNetwork { &self.test_network }
 }
 
 #[async_trait]

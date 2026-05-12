@@ -1,9 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/RholangBuildTest.scala
 
 use casper::rust::genesis::contracts::vault::Vault;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::util::rspace_util;
+use casper::rust::util::{construct_deploy, rspace_util};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 

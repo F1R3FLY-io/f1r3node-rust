@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
-use crate::rust::configuration::model::{NodeConf, TlsConf};
-use comm::rust::{peer_node::NodeIdentifier, transport::generate_certificate_if_absent};
+use comm::rust::peer_node::NodeIdentifier;
+use comm::rust::transport::generate_certificate_if_absent;
 use crypto::rust::util::certificate_helper::CertificateHelper;
-
 use tokio::{fs, io};
 use tracing::{error, info};
+
+use crate::rust::configuration::model::{NodeConf, TlsConf};
 
 /// Create a NodeIdentifier from the given configuration
 ///

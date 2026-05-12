@@ -1,5 +1,8 @@
+use axum::extract::State;
+use axum::routing::post;
+use axum::Router;
+
 use crate::rust::web::shared_handlers::{AppError, AppState};
-use axum::{extract::State, routing::post, Router};
 
 pub struct AdminWebApiRoutes;
 

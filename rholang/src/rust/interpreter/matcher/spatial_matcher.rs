@@ -2,8 +2,7 @@
 
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::rholang::implicits::single_expr;
-use models::rust::rholang::implicits::vector_par;
+use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
 
 use super::exports::*;

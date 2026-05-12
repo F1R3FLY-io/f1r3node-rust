@@ -10,9 +10,7 @@ use super::protocol::casper_message::{
 pub struct PrettyPrinter;
 
 impl PrettyPrinter {
-    pub fn build_string_no_limit(b: &[u8]) -> String {
-        hex::encode(b)
-    }
+    pub fn build_string_no_limit(b: &[u8]) -> String { hex::encode(b) }
 
     pub fn build_string(t: CasperMessage, short: bool) -> String {
         match t {
@@ -73,9 +71,7 @@ impl PrettyPrinter {
         )
     }
 
-    pub fn build_string_bytes(bytes: &[u8]) -> String {
-        Self::limit(&hex::encode(bytes), 10)
-    }
+    pub fn build_string_bytes(bytes: &[u8]) -> String { Self::limit(&hex::encode(bytes), 10) }
 
     pub fn build_string_sig(bytes: &[u8]) -> String {
         let str1 = hex::encode(&bytes[0..10.min(bytes.len())]);

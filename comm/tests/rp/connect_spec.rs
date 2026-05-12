@@ -1,19 +1,14 @@
 // See comm/src/test/scala/coop/rchain/comm/rp/ConnectSpec.scala
 
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use comm::rust::rp::connect::connect;
+use comm::rust::test_instances::{TransportLayerStub, NETWORK_ID};
+use comm::rust::transport::transport_layer::TransportLayer;
 use prost::bytes::Bytes;
 
-use comm::rust::test_instances::{TransportLayerStub, NETWORK_ID};
-use comm::rust::{
-    errors::CommError,
-    peer_node::{Endpoint, NodeIdentifier, PeerNode},
-    rp::connect::connect,
-    transport::transport_layer::TransportLayer,
-};
-
 /// Helper function to create an endpoint with given port
-fn endpoint(port: u32) -> Endpoint {
-    Endpoint::new("host".to_string(), port, port)
-}
+fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
 
 /// Helper function to create a peer node with given name and port
 fn peer_node(name: &str, port: u32) -> PeerNode {

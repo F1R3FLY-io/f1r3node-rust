@@ -1,13 +1,11 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoLoggerContract.scala
 
 use models::rhoapi::{ListParWithRandom, Par};
-use rholang::rust::interpreter::{
-    contract_call::ContractCall,
-    errors::{illegal_argument_error, InterpreterError},
-    pretty_printer::PrettyPrinter,
-    rho_type::RhoString,
-    system_processes::ProcessContext,
-};
+use rholang::rust::interpreter::contract_call::ContractCall;
+use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+use rholang::rust::interpreter::rho_type::RhoString;
+use rholang::rust::interpreter::system_processes::ProcessContext;
 
 pub struct RhoLoggerContract;
 

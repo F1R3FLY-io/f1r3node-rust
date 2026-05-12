@@ -19,9 +19,12 @@ const EMBEDDED_DEFAULTS: &str = include_str!("../../main/resources/defaults.conf
 
 /// Configuration building and parsing functionality
 pub mod builder {
+    use std::collections::HashMap;
+    use std::env;
+    use std::path::PathBuf;
+
     use super::*;
     use crate::rust::configuration::commandline::ConfigMapper;
-    use std::{collections::HashMap, env, path::PathBuf};
 
     /// Builds Configuration instance from CLI options.
     /// If config file is provided as part of CLI options, it shall be parsed and merged
@@ -232,8 +235,9 @@ mod heartbeat_conf_hocon_tests {
     //! crate is a `node` dependency, not a `casper` dependency. Exercises
     //! the same `serde::Deserialize` path the production binary uses.
 
-    use casper::rust::casper_conf::{HeartbeatAdvancedConf, HeartbeatConf};
     use std::time::Duration;
+
+    use casper::rust::casper_conf::{HeartbeatAdvancedConf, HeartbeatConf};
 
     fn parse_heartbeat(hocon_text: &str) -> HeartbeatConf {
         try_parse_heartbeat(hocon_text).expect("HOCON should deserialize into HeartbeatConf")

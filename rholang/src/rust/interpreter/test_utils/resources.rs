@@ -1,26 +1,26 @@
 // See rholang/src/test/scala/coop/rchain/rholang/Resources.scala
 
-use std::path::PathBuf;
-use std::{future::Future, path::Path, sync::Arc};
-use tempfile::Builder;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
+use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
+use tempfile::Builder;
 
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::matcher::r#match::Matcher;
 use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
-#[cfg(feature = "chromadb")]
-use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
 use crate::rust::interpreter::rho_runtime;
 use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, create_rho_runtime};
 use crate::rust::interpreter::system_processes::Definition;
+#[cfg(feature = "chromadb")]
+use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
 use crate::RhoRuntimeImpl;
-use rspace_plus_plus::rspace::shared::{
-    key_value_store_manager::KeyValueStoreManager, lmdb_dir_store_manager::MB,
-    rspace_store_manager::mk_rspace_store_manager,
-};
 
 pub fn mk_temp_dir(prefix: &str) -> PathBuf {
     let temp_dir = Builder::new()
@@ -31,9 +31,7 @@ pub fn mk_temp_dir(prefix: &str) -> PathBuf {
 }
 
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
-where
-    F: FnOnce(&Path) -> R,
-{
+where F: FnOnce(&Path) -> R {
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()
@@ -61,10 +59,8 @@ where
     let rspace_store = store_manager.r_space_stores().await.unwrap();
 
     #[cfg(feature = "chromadb")]
-    let external_services = ExternalServices::for_validator(
-        &OpenAIConfig::disabled(),
-        &OllamaConfig::disabled()
-    );
+    let external_services =
+        ExternalServices::for_validator(&OpenAIConfig::disabled(), &OllamaConfig::disabled());
     #[cfg(not(feature = "chromadb"))]
     let external_services = ExternalServices::noop();
 
@@ -74,7 +70,7 @@ where
         false,
         &mut Vec::new(),
         Arc::new(Box::new(Matcher)),
-        external_services
+        external_services,
     )
     .await;
 

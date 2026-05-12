@@ -23,9 +23,7 @@ impl LastFinalizedMemoryStorage {
 }
 
 impl Default for LastFinalizedMemoryStorage {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl LastFinalizedStorage for LastFinalizedMemoryStorage {

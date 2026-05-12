@@ -1,11 +1,9 @@
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use axum::routing::{get, post};
+use axum::Router;
 
-use crate::rust::web::{
-    admin_web_api_routes::AdminWebApiRoutes, shared_handlers, shared_handlers::AppState,
-};
+use crate::rust::web::admin_web_api_routes::AdminWebApiRoutes;
+use crate::rust::web::shared_handlers;
+use crate::rust::web::shared_handlers::AppState;
 
 pub struct WebApiRoutesV1;
 

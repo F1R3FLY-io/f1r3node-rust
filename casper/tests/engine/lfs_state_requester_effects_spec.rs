@@ -1,25 +1,24 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/LfsStateRequesterEffectsSpec.scala
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use casper::rust::engine::lfs_tuple_space_requester::{
     self, StatePartPath, TupleSpaceRequesterOps, PAGE_SIZE, ST,
 };
 use casper::rust::errors::CasperError;
-use prost::bytes::Bytes;
-use std::sync::{atomic::AtomicUsize, Arc, Mutex};
-use tokio::sync::mpsc;
-
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, StoreItemsMessage,
 };
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    shared::trie_exporter::{KeyHash, Value},
-    shared::trie_importer::TrieImporter,
-    state::rspace_importer::RSpaceImporter,
-};
+use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::shared::trie_exporter::{KeyHash, Value};
+use rspace_plus_plus::rspace::shared::trie_importer::TrieImporter;
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use shared::rust::ByteVector;
+use tokio::sync::mpsc;
 
 /// Test error types for mock operations
 /// Scala equivalent: No direct equivalent, but similar to test error handling
@@ -71,9 +70,7 @@ fn create_hash(s: &str) -> Blake2b256Hash {
 
 /// Create request tuple from state path
 /// Scala equivalent: def mkRequest(path: StatePartPath) = (path, LfsTupleSpaceRequester.pageSize)
-fn mk_request(path: StatePartPath) -> (StatePartPath, i32) {
-    (path, PAGE_SIZE)
-}
+fn mk_request(path: StatePartPath) -> (StatePartPath, i32) { (path, PAGE_SIZE) }
 
 /// Approved block state (start of the state)
 /// Scala equivalent: val historyHash1 = createHash("1a")
@@ -94,14 +91,10 @@ const INVALID_HASH_STR: &str = "666aaaaa";
 
 /// Get approved block state (start of the state)
 /// Scala equivalent: val historyHash1 = createHash("1a")
-fn history_hash_1() -> Blake2b256Hash {
-    create_hash(HISTORY_HASH_1_STR)
-}
+fn history_hash_1() -> Blake2b256Hash { create_hash(HISTORY_HASH_1_STR) }
 
 /// Scala equivalent: val historyPath1 = List((historyHash1, None))
-fn history_path_1() -> StatePartPath {
-    vec![(history_hash_1(), None)]
-}
+fn history_path_1() -> StatePartPath { vec![(history_hash_1(), None)] }
 
 /// Scala equivalent: val history1 = Seq((createHash("1a1"), ByteString.EMPTY), (createHash("1a2"), ByteString.EMPTY))
 fn history_1() -> Vec<(Blake2b256Hash, Bytes)> {
@@ -112,25 +105,17 @@ fn history_1() -> Vec<(Blake2b256Hash, Bytes)> {
 }
 
 /// Scala equivalent: val data1 = Seq((createHash("1b1"), ByteString.EMPTY))
-fn data_1() -> Vec<(Blake2b256Hash, Bytes)> {
-    vec![(create_hash("1b1"), Bytes::new())]
-}
+fn data_1() -> Vec<(Blake2b256Hash, Bytes)> { vec![(create_hash("1b1"), Bytes::new())] }
 
 /// Chunk 2
 /// Scala equivalent: val historyHash2 = createHash("2a")
-fn history_hash_2() -> Blake2b256Hash {
-    create_hash(HISTORY_HASH_2_STR)
-}
+fn history_hash_2() -> Blake2b256Hash { create_hash(HISTORY_HASH_2_STR) }
 
 /// Scala equivalent: val historyPath2 = List((historyHash2, None))
-fn history_path_2() -> StatePartPath {
-    vec![(history_hash_2(), None)]
-}
+fn history_path_2() -> StatePartPath { vec![(history_hash_2(), None)] }
 
 /// Scala equivalent: val history2 = Seq((createHash("2a1"), ByteString.EMPTY))
-fn history_2() -> Vec<(Blake2b256Hash, Bytes)> {
-    vec![(create_hash("2a1"), Bytes::new())]
-}
+fn history_2() -> Vec<(Blake2b256Hash, Bytes)> { vec![(create_hash("2a1"), Bytes::new())] }
 
 /// Scala equivalent: val data2 = Seq((createHash("2b1"), ByteString.EMPTY), (createHash("2b2"), ByteString.EMPTY))
 fn data_2() -> Vec<(Blake2b256Hash, Bytes)> {
@@ -142,9 +127,7 @@ fn data_2() -> Vec<(Blake2b256Hash, Bytes)> {
 
 /// Chunk 3
 /// Scala equivalent: val historyPath3 = List((historyHash2, None)) - Note: reuses hash2
-fn history_path_3() -> StatePartPath {
-    vec![(history_hash_2(), None)]
-}
+fn history_path_3() -> StatePartPath { vec![(history_hash_2(), None)] }
 
 /// Invalid test data
 /// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"), ByteString.EMPTY))
@@ -217,9 +200,7 @@ impl MockImpl {
 
     /// Get access to validation state for test control
     /// Scala equivalent: Test setup functions that control mock behavior
-    fn setup(&self) -> Arc<Mutex<ValidationState>> {
-        self.validation_state.clone()
-    }
+    fn setup(&self) -> Arc<Mutex<ValidationState>> { self.validation_state.clone() }
 
     /// Get the next state from the processing stream
     /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] = processingStream
@@ -364,9 +345,7 @@ impl MockRSpaceImporter {
 
     /// Get access to validation state for test control
     /// Scala equivalent: Test setup functions that control mock behavior
-    pub fn validation_state(&self) -> Arc<Mutex<ValidationState>> {
-        self.validation_state.clone()
-    }
+    pub fn validation_state(&self) -> Arc<Mutex<ValidationState>> { self.validation_state.clone() }
 
     /// Validate state items - can be controlled to fail for testing
     /// Scala equivalent: mockValidateStateChunk function in createMock
@@ -728,9 +707,8 @@ pub async fn assert_no_saved_data(mock: &mut MockImpl, timeout_ms: u64) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use crate::init_logger;
-
     use super::*;
+    use crate::init_logger;
 
     /// Tests that the LFS tuple space requester sends initial request for the next state chunk
     /// Scala equivalent: "send request for next state chunk"

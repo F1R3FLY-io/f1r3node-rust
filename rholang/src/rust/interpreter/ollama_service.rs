@@ -1,8 +1,10 @@
-use super::errors::InterpreterError;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
+
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use super::errors::InterpreterError;
 
 #[derive(Clone, Debug)]
 pub struct OllamaConfig {
@@ -149,9 +151,7 @@ impl OllamaService {
         }
     }
 
-    pub fn new_disabled() -> Self {
-        Self::Disabled
-    }
+    pub fn new_disabled() -> Self { Self::Disabled }
 
     pub fn from_config(config: &OllamaConfig) -> Self {
         if config.enabled {

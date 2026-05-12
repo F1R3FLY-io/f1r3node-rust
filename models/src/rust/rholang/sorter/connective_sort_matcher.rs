@@ -1,12 +1,10 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ConnectiveSortMatcher.scala
 
-use crate::rhoapi::{connective::ConnectiveInstance, Connective, Par};
-
-use super::{
-    par_sort_matcher::ParSortMatcher,
-    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
-    sortable::Sortable,
-};
+use super::par_sort_matcher::ParSortMatcher;
+use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sortable::Sortable;
+use crate::rhoapi::connective::ConnectiveInstance;
+use crate::rhoapi::{Connective, Par};
 
 pub struct ConnectiveSortMatcher;
 
@@ -63,10 +61,9 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                     term: Connective {
                         connective_instance: Some(ConnectiveInstance::ConnNotBody(scored_par.term)),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::CONNECTIVE_NOT,
-                        vec![scored_par.score],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_NOT, vec![
+                        scored_par.score,
+                    ]),
                 }
             }
 

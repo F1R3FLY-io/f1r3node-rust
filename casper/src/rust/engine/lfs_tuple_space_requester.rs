@@ -1,19 +1,18 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
-use async_stream;
-use async_trait::async_trait;
-use futures::Stream;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
+use async_stream;
+use async_trait::async_trait;
+use futures::Stream;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use tokio::sync::mpsc;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -174,9 +173,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Returns flag if all keys are marked as finished (Done).
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
-    pub fn is_finished(&self) -> bool {
-        !self.d.values().any(|status| *status != ReqStatus::Done)
-    }
+    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
 }
 
 /// Stream processor for tuple space requester operations

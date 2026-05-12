@@ -1,21 +1,14 @@
-use axum::{
-    extract::{Path, Query, State},
-    response::{IntoResponse, Json, Response},
-    routing::{get, post},
-    Router,
-};
+use axum::extract::{Path, Query, State};
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::{get, post};
+use axum::Router;
 use serde::Deserialize;
 
-use crate::rust::{
-    api::{
-        serde_types::block_info::BlockInfoSerde,
-        web_api::{
-            DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse,
-            RhoDataResponse,
-        },
-    },
-    web::shared_handlers::{self, AppError, AppState},
+use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::web_api::{
+    DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
 };
+use crate::rust::web::shared_handlers::{self, AppError, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
@@ -180,7 +173,11 @@ pub async fn get_blocks_by_heights_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
-    match app_state.web_api.get_blocks_by_heights(start, end, view).await {
+    match app_state
+        .web_api
+        .get_blocks_by_heights(start, end, view)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -245,7 +242,9 @@ pub async fn find_deploy_handler(
     match app_state.web_api.find_deploy(deploy_id, view).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => {
-            if e.downcast_ref::<casper::rust::api::block_api::DeployNotFoundError>().is_some() {
+            if e.downcast_ref::<casper::rust::api::block_api::DeployNotFoundError>()
+                .is_some()
+            {
                 (axum::http::StatusCode::NOT_FOUND, format!("{}", e)).into_response()
             } else {
                 AppError(e).into_response()
@@ -276,7 +275,9 @@ pub async fn is_finalized_handler(
     }
 }
 
-use crate::rust::api::web_api::{BalanceResponse, RegistryResponse, ValidatorsResponse, EpochResponse};
+use crate::rust::api::web_api::{
+    BalanceResponse, EpochResponse, RegistryResponse, ValidatorsResponse,
+};
 
 #[utoipa::path(
     get,
@@ -298,7 +299,11 @@ pub async fn deploy_finalization_status_handler(
     State(app_state): State<AppState>,
     Path(deploy_sig_hex): Path<String>,
 ) -> Response {
-    match app_state.web_api.deploy_finalization_status(deploy_sig_hex).await {
+    match app_state
+        .web_api
+        .deploy_finalization_status(deploy_sig_hex)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -322,7 +327,11 @@ pub async fn balance_handler(
     Path(address): Path<String>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_balance(address, query.block_hash).await {
+    match app_state
+        .web_api
+        .get_balance(address, query.block_hash)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -397,8 +406,8 @@ pub async fn epoch_handler(
 }
 
 use crate::rust::api::web_api::{
-    EstimateCostResponse, EpochRewardsResponse, ValidatorStatusResponse,
-    BondStatusResponse as BondStatusResp, SimpleExploreDeployRequest,
+    BondStatusResponse as BondStatusResp, EpochRewardsResponse, EstimateCostResponse,
+    SimpleExploreDeployRequest, ValidatorStatusResponse,
 };
 
 #[utoipa::path(
@@ -419,7 +428,11 @@ pub async fn estimate_cost_handler(
     Query(query): Query<BlockHashQuery>,
     Json(request): Json<SimpleExploreDeployRequest>,
 ) -> Response {
-    match app_state.web_api.estimate_cost(request.term, query.block_hash).await {
+    match app_state
+        .web_api
+        .estimate_cost(request.term, query.block_hash)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -465,7 +478,11 @@ pub async fn validator_handler(
     Path(pubkey): Path<String>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_validator(pubkey, query.block_hash).await {
+    match app_state
+        .web_api
+        .get_validator(pubkey, query.block_hash)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -495,15 +512,16 @@ pub async fn bond_status_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::StatusCode;
-    use std::sync::Arc;
     use tower::ServiceExt;
 
+    use super::*;
     use crate::rust::api::web_api::{
-        ApiStatus, DataAtNameByBlockHashRequest,
-        DeployRequest, DeployResponse, ViewMode, RhoDataResponse, WebApi,
+        ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
+        ViewMode, WebApi,
     };
 
     /// Stub WebApi that returns sample DeployResponse for testing.
@@ -519,12 +537,24 @@ mod tests {
             cost: 100,
             errored: false,
             is_finalized: true,
-            deployer: if is_full { Some("0487def456".to_string()) } else { None },
-            term: if is_full { Some("new ret in { ret!(42) }".to_string()) } else { None },
+            deployer: if is_full {
+                Some("0487def456".to_string())
+            } else {
+                None
+            },
+            term: if is_full {
+                Some("new ret in { ret!(42) }".to_string())
+            } else {
+                None
+            },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
             phlo_price: if is_full { Some(10) } else { None },
             phlo_limit: if is_full { Some(100000) } else { None },
-            sig_algorithm: if is_full { Some("secp256k1".to_string()) } else { None },
+            sig_algorithm: if is_full {
+                Some("secp256k1".to_string())
+            } else {
+                None
+            },
             valid_after_block_number: if is_full { Some(0) } else { None },
             transfers: if is_full { Some(vec![]) } else { None },
         }
@@ -532,18 +562,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WebApi for StubWebApi {
-        async fn status(&self) -> eyre::Result<ApiStatus> {
-            unimplemented!()
-        }
+        async fn status(&self) -> eyre::Result<ApiStatus> { unimplemented!() }
         async fn prepare_deploy(
             &self,
             _: Option<crate::rust::api::web_api::PrepareRequest>,
         ) -> eyre::Result<crate::rust::api::web_api::PrepareResponse> {
             unimplemented!()
         }
-        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> {
-            unimplemented!()
-        }
+        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> { unimplemented!() }
         async fn get_data_at_par(
             &self,
             _: DataAtNameByBlockHashRequest,
@@ -589,37 +615,63 @@ mod tests {
         ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
             unimplemented!()
         }
-        async fn is_finalized(&self, _: String) -> eyre::Result<bool> {
-            unimplemented!()
-        }
+        async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
         async fn deploy_finalization_status(
             &self,
             _: String,
         ) -> eyre::Result<crate::rust::api::web_api::DeployFinalizationStatusJson> {
             unimplemented!()
         }
-        async fn get_balance(&self, _: String, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::BalanceResponse> {
+        async fn get_balance(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::BalanceResponse> {
             unimplemented!()
         }
-        async fn get_registry(&self, _: String, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::RegistryResponse> {
+        async fn get_registry(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::RegistryResponse> {
             unimplemented!()
         }
-        async fn get_validators(&self, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::ValidatorsResponse> {
+        async fn get_validators(
+            &self,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::ValidatorsResponse> {
             unimplemented!()
         }
-        async fn get_epoch(&self, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::EpochResponse> {
+        async fn get_epoch(
+            &self,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::EpochResponse> {
             unimplemented!()
         }
-        async fn estimate_cost(&self, _: String, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::EstimateCostResponse> {
+        async fn estimate_cost(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::EstimateCostResponse> {
             unimplemented!()
         }
-        async fn get_epoch_rewards(&self, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::EpochRewardsResponse> {
+        async fn get_epoch_rewards(
+            &self,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::EpochRewardsResponse> {
             unimplemented!()
         }
-        async fn get_validator(&self, _: String, _: Option<String>) -> eyre::Result<crate::rust::api::web_api::ValidatorStatusResponse> {
+        async fn get_validator(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::ValidatorStatusResponse> {
             unimplemented!()
         }
-        async fn get_bond_status(&self, _: String) -> eyre::Result<crate::rust::api::web_api::BondStatusResponse> {
+        async fn get_bond_status(
+            &self,
+            _: String,
+        ) -> eyre::Result<crate::rust::api::web_api::BondStatusResponse> {
             unimplemented!()
         }
     }

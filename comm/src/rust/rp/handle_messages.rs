@@ -4,14 +4,15 @@ use std::sync::Arc;
 
 use models::routing::{Packet, Protocol};
 
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{DISCONNECT_METRIC, RP_HANDLE_METRICS_SOURCE},
-    p2p::packet_handler::PacketHandler,
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, protocol_helper, rp_conf::RPConf},
-    transport::{communication_response::CommunicationResponse, transport_layer::TransportLayer},
-};
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{DISCONNECT_METRIC, RP_HANDLE_METRICS_SOURCE};
+use crate::rust::p2p::packet_handler::PacketHandler;
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::connect::ConnectionsCell;
+use crate::rust::rp::protocol_helper;
+use crate::rust::rp::rp_conf::RPConf;
+use crate::rust::transport::communication_response::CommunicationResponse;
+use crate::rust::transport::transport_layer::TransportLayer;
 
 pub async fn handle(
     protocol: &Protocol,

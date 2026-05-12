@@ -15,12 +15,11 @@
 
 use std::collections::HashMap;
 
-use crypto::rust::{
-    hash::blake2b512_random::Blake2b512Random,
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
-};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::casper::DeployDataProto;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};

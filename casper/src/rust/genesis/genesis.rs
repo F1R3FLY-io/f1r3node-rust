@@ -1,26 +1,23 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/Genesis.scala
 
+use std::collections::HashMap;
+
 use crypto::rust::signatures::signed::Signed;
-use models::{
-    rhoapi::Par,
-    rust::{
-        block::state_hash::StateHash,
-        casper::protocol::casper_message::{
-            BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
-        },
-    },
+use models::rhoapi::Par;
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-use std::collections::HashMap;
 
-use crate::rust::{
-    errors::CasperError,
-    util::{proto_util, rholang::runtime_manager::RuntimeManager},
-};
-
-use super::contracts::{proof_of_stake::ProofOfStake, standard_deploys, vault::Vault};
+use super::contracts::proof_of_stake::ProofOfStake;
+use super::contracts::standard_deploys;
+use super::contracts::vault::Vault;
+use crate::rust::errors::CasperError;
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {

@@ -150,13 +150,14 @@ async fn resolve_pure_function_returns_pending_for_unknown_sig() {
 /// just `main_parent`) locked in.
 #[tokio::test]
 async fn resolve_finds_sig_in_secondary_parent_branch() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -341,16 +342,18 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
 /// This test exercises that distinction.
 #[tokio::test]
 async fn resolve_and_resolve_batch_agree_across_states() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use std::collections::HashSet;
+
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::api::deploy_finalization_status::resolve_batch;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
     use prost::bytes::Bytes;
-    use std::collections::HashSet;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -711,13 +714,14 @@ async fn resolve_and_resolve_batch_agree_across_states() {
 ///   - Sig X awaits finalization of B
 #[tokio::test]
 async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -821,13 +825,14 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
 /// chain); the latest canonical inclusion is D's clean event → `Finalized`.
 #[tokio::test]
 async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -1020,13 +1025,14 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
 /// ```
 #[tokio::test]
 async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_failed() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -1170,15 +1176,16 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
 /// warn target gives operators visibility for the inconsistency.
 #[tokio::test]
 async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::api::deploy_finalization_status::DeployFinalizationCorruption;
     use models::rust::block_hash::BlockHashSerde;
     use models::rust::block_implicits;
     use prost::bytes::Bytes;
     use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
@@ -1293,13 +1300,14 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
 /// validate and re-execute → double-execution.
 #[tokio::test]
 async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject() {
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();

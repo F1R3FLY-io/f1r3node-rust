@@ -257,7 +257,5 @@ impl F1r3flyEvent {
         Self::BlockApprovalReceived(BlockApprovalReceived { block_hash, sender })
     }
 
-    pub fn node_started(address: String) -> Self {
-        Self::NodeStarted(NodeStarted { address })
-    }
+    pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
 }

@@ -1,9 +1,10 @@
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::Par;
-use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::Par;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use tokio::sync::RwLock;
 use tracing::{event, Level};
 

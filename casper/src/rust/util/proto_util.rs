@@ -2,29 +2,24 @@
 
 use std::collections::HashSet;
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::signatures::signed::Signed;
+use models::casper::{BondInfo, JustificationInfo};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, Par};
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy,
 };
-use crypto::rust::{hash::blake2b256::Blake2b256, signatures::signed::Signed};
-use models::{
-    casper::{BondInfo, JustificationInfo},
-    rhoapi::{expr::ExprInstance, Expr, Par},
-    rust::{
-        block_hash::BlockHash,
-        block_metadata::BlockMetadata,
-        casper::{
-            pretty_printer::PrettyPrinter,
-            protocol::casper_message::{
-                BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-                ProcessedSystemDeploy,
-            },
-        },
-        validator::Validator,
-    },
-};
+use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::{store::key_value_store::KvStoreError, ByteString};
+use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::ByteString;
 
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
@@ -263,9 +258,7 @@ pub fn get_parent_metadatas_above_block_number(
     })
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> {
-    block.body.deploys.clone()
-}
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()
@@ -279,13 +272,9 @@ pub fn pre_state_hash(block: &BlockMessage) -> prost::bytes::Bytes {
     block.body.state.pre_state_hash.clone()
 }
 
-pub fn bonds(block: &BlockMessage) -> Vec<Bond> {
-    block.body.state.bonds.clone()
-}
+pub fn bonds(block: &BlockMessage) -> Vec<Bond> { block.body.state.bonds.clone() }
 
-pub fn block_number(block: &BlockMessage) -> i64 {
-    block.body.state.block_number
-}
+pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number }
 
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {

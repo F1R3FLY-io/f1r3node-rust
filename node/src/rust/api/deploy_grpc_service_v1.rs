@@ -3,9 +3,9 @@
 //! This module provides a gRPC service for deploy functionality,
 //! allowing clients to deploy contracts, query blocks, and perform various blockchain operations.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::rust::web::version_info::get_version_info_str;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::block_report_api::BlockReportAPI;
@@ -31,8 +31,9 @@ use models::casper::{
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
+
+use crate::rust::web::version_info::get_version_info_str;
 
 trait IntoServiceError {
     fn into_service_error(self) -> ServiceError;
@@ -57,13 +58,9 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
 
-fn find_deploy_retry_interval_ms() -> u64 {
-    FIND_DEPLOY_RETRY_INTERVAL_MS
-}
+fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
-fn find_deploy_max_attempts() -> u8 {
-    FIND_DEPLOY_MAX_ATTEMPTS
-}
+fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
@@ -152,12 +149,17 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
-        match self.block_report_api.block_report(block_hash_bytes, false).await {
+        match self
+            .block_report_api
+            .block_report(block_hash_bytes, false)
+            .await
+        {
             Ok(report) => {
-                let transfers_by_deploy = crate::rust::web::block_info_enricher::extract_transfers_from_report(
-                    &report,
-                    &self.transfer_unforgeable,
-                );
+                let transfers_by_deploy =
+                    crate::rust::web::block_info_enricher::extract_transfers_from_report(
+                        &report,
+                        &self.transfer_unforgeable,
+                    );
                 for deploy in &mut block_info.deploys {
                     deploy.transfers_available = true;
                     if let Some(transfers) = transfers_by_deploy.get(&deploy.sig) {
@@ -817,10 +819,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         match self
             .block_report_api
-            .block_report(
-                block_hash_bytes,
-                request.force_replay,
-            )
+            .block_report(block_hash_bytes, request.force_replay)
             .await
         {
             Ok(block_event_info) => Ok(tonic::Response::new(EventInfoResponse {

@@ -1,20 +1,18 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
-use dashmap::DashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
-
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::{ProposeFunction, ValidBlockProcessing};
-
 use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use tokio::sync::mpsc;
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
@@ -60,9 +58,7 @@ impl InFlightBlockGuard {
 }
 
 impl Drop for InFlightBlockGuard {
-    fn drop(&mut self) {
-        self.blocks_in_processing.remove(&self.hash);
-    }
+    fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
 }
 
 /// Configuration for BlockProcessorInstance

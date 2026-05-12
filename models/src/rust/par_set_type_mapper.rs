@@ -1,8 +1,7 @@
 // See models/src/main/scala/coop/rchain/models/ParSetTypeMapper.scala
 
-use crate::rhoapi::ESet;
-
 use super::par_set::ParSet;
+use crate::rhoapi::ESet;
 
 pub struct ParSetTypeMapper;
 

@@ -2,16 +2,15 @@
 // See models/src/main/scala/coop/rchain/casper/protocol/PacketTypeTag.scala
 
 use comm::rust::rp::protocol_helper;
-use models::{
-    casper::{
-        ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-        BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-        HasBlockRequestProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
-        StoreItemsMessageRequestProto, UnapprovedBlockProto,
-    },
-    routing::{Packet, Protocol},
-    rust::{block_hash::BlockHash, casper::protocol::casper_message::CasperMessage},
+use models::casper::{
+    ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
+    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
+    HasBlockRequestProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
+use models::routing::{Packet, Protocol};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::CasperMessage;
 use prost::Message;
 
 /// Result type for packet parsing operations
@@ -23,9 +22,7 @@ pub enum PacketParseResult<T> {
 }
 
 impl<T> PacketParseResult<T> {
-    pub fn is_success(&self) -> bool {
-        matches!(self, PacketParseResult::Success(_))
-    }
+    pub fn is_success(&self) -> bool { matches!(self, PacketParseResult::Success(_)) }
 
     pub fn get(self) -> Result<T, String> {
         match self {
@@ -35,9 +32,7 @@ impl<T> PacketParseResult<T> {
     }
 
     pub fn map<U, F>(self, f: F) -> PacketParseResult<U>
-    where
-        F: FnOnce(T) -> U,
-    {
+    where F: FnOnce(T) -> U {
         match self {
             PacketParseResult::Success(value) => PacketParseResult::Success(f(value)),
             PacketParseResult::Failure(msg) => PacketParseResult::Failure(msg),
@@ -258,8 +253,9 @@ pub fn extract_and_verify_block_request(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rust::casper::protocol::packet_type_tag::ToPacket;
+
+    use super::*;
 
     #[test]
     fn test_parse_has_block_request() {

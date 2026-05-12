@@ -8,20 +8,20 @@ use models::casper::{
     BlockEventInfo, DeployInfoWithEventData, ReportProto, SingleReport,
     SystemDeployInfoWithEventData,
 };
-use models::rust::{
-    block_hash::BlockHash,
-    casper::protocol::casper_message::{BlockMessage, SystemDeployData},
-};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
-use shared::rust::{store::key_value_typed_store::KeyValueTypedStore, ByteString};
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use shared::rust::ByteString;
 use tokio::sync::Semaphore;
 
-use crate::rust::{
-    api::block_api::BlockAPI, engine::engine_cell::EngineCell, report_store::ReportStore,
-    reporting_casper::ReportingCasper, reporting_proto_transformer::ReportingProtoTransformer,
-    safety_oracle::CliqueOracleImpl,
-};
+use crate::rust::api::block_api::BlockAPI;
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::report_store::ReportStore;
+use crate::rust::reporting_casper::ReportingCasper;
+use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
+use crate::rust::safety_oracle::CliqueOracleImpl;
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]

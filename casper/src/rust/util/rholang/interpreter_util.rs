@@ -1,43 +1,36 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
 
-use prost::bytes::Bytes;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use models::{
-    rhoapi::Par,
-    rust::{
-        block::state_hash::StateHash,
-        block_hash::BlockHash,
-        casper::{
-            pretty_printer::PrettyPrinter,
-            protocol::casper_message::{
-                BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
-            },
-        },
-        validator::Validator,
-    },
+use models::rhoapi::Par;
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
-use rholang::rust::interpreter::{
-    compiler::compiler::Compiler, errors::InterpreterError, system_processes::BlockData,
-};
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+use models::rust::validator::Validator;
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 
-use crate::rust::{
-    block_status::BlockStatus,
-    casper::CasperSnapshot,
-    errors::CasperError,
-    merging::{block_index::BlockIndex, dag_merger, deploy_chain_index::DeployChainIndex},
-    metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE},
-    util::proto_util,
-    BlockProcessing,
-};
-
-use super::{replay_failure::ReplayFailure, runtime_manager::RuntimeManager};
+use super::replay_failure::ReplayFailure;
+use super::runtime_manager::RuntimeManager;
+use crate::rust::block_status::BlockStatus;
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::merging::block_index::BlockIndex;
+use crate::rust::merging::dag_merger;
+use crate::rust::merging::deploy_chain_index::DeployChainIndex;
+use crate::rust::metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE};
+use crate::rust::util::proto_util;
+use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)

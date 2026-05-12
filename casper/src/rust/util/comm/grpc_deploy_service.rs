@@ -97,9 +97,7 @@ impl DeployService for GrpcDeployService {
         self.bond_status_impl(q).await
     }
 
-    async fn status(&mut self) -> ServiceResult<String> {
-        self.status_impl().await
-    }
+    async fn status(&mut self) -> ServiceResult<String> { self.status_impl().await }
 }
 
 impl GrpcDeployService {
@@ -316,6 +314,4 @@ impl GrpcDeployService {
 /// Substitute with any pretty/proto-string you prefer.
 /// If your generated types implement `Debug`, this default works.
 /// This is a simplified analogue of Scala-like `toProtoString`.
-fn proto_string<T: std::fmt::Debug>(t: &T) -> String {
-    format!("{t:#?}")
-}
+fn proto_string<T: std::fmt::Debug>(t: &T) -> String { format!("{t:#?}") }

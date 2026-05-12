@@ -16,9 +16,9 @@ use prost::Message;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
-use crate::rust::genesis::contracts::{
-    proof_of_stake::ProofOfStake, validator::Validator, vault::Vault,
-};
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use crate::rust::genesis::contracts::validator::Validator;
+use crate::rust::genesis::contracts::vault::Vault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 

@@ -2,15 +2,13 @@
 
 use std::collections::HashMap;
 
-use casper::rust::{
-    merging::block_index,
-    util::{
-        construct_deploy,
-        rholang::{costacc::close_block_deploy::CloseBlockDeploy, system_deploy_util},
-    },
-};
+use casper::rust::merging::block_index;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::system_deploy_util;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, merger::merging_logic};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic;
 
 use crate::util::rholang::resources::with_runtime_manager;
 

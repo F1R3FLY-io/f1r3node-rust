@@ -1,5 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/LmdbKeyValueStoreSpec.scala
 
+use std::collections::HashMap;
+
 use lazy_static::lazy_static;
 use proptest::collection::hash_map;
 use proptest::prelude::*;
@@ -7,7 +9,6 @@ use proptest::test_runner::Config as ProptestConfig;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig,
 };
-use std::collections::HashMap;
 
 use crate::util::in_memory_key_value_store_spec::KeyValueStoreSut;
 use crate::util::rholang::resources::{generate_scope_id, get_shared_lmdb_path};

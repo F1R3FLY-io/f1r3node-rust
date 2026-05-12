@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
 
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,45 +134,27 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
-fn default_synchrony_recovery_stall_window() -> Duration {
-    Duration::from_secs(60)
-}
+fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
-fn default_synchrony_recovery_cooldown() -> Duration {
-    Duration::from_secs(20)
-}
+fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
 
-fn default_synchrony_recovery_max_bypasses() -> u32 {
-    2
-}
+fn default_synchrony_recovery_max_bypasses() -> u32 { 2 }
 
-fn default_synchrony_finalized_baseline_enabled() -> bool {
-    true
-}
+fn default_synchrony_finalized_baseline_enabled() -> bool { true }
 
-fn default_synchrony_finalized_baseline_max_distance() -> u64 {
-    2048
-}
+fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
-fn default_max_user_deploys_per_block() -> u32 {
-    32
-}
+fn default_max_user_deploys_per_block() -> u32 { 32 }
 
-fn default_disable_late_block_filtering() -> bool {
-    true
-}
+fn default_disable_late_block_filtering() -> bool { true }
 
-fn default_enable_mergeable_channel_gc() -> bool {
-    false
-}
+fn default_enable_mergeable_channel_gc() -> bool { false }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
 }
 
-fn default_mergeable_channels_gc_depth_buffer() -> i32 {
-    10
-}
+fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,17 +328,11 @@ impl Default for HeartbeatConf {
     }
 }
 
-fn default_self_propose_cooldown() -> Duration {
-    Duration::from_secs(15)
-}
+fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
 
-fn default_stale_recovery_min_interval() -> Duration {
-    Duration::from_secs(12)
-}
+fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
 
-fn default_deploy_finalization_grace() -> Duration {
-    Duration::from_secs(25)
-}
+fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 
 /// EXPERIMENTAL: tuning knobs for the heartbeat proposer's lag caps.
 ///
@@ -416,17 +394,11 @@ impl Default for HeartbeatAdvancedConf {
     }
 }
 
-fn default_frontier_chase_max_lag() -> i64 {
-    0
-}
+fn default_frontier_chase_max_lag() -> i64 { 0 }
 
-fn default_pending_deploy_max_lag() -> i64 {
-    20
-}
+fn default_pending_deploy_max_lag() -> i64 { 20 }
 
-fn default_deploy_recovery_max_lag() -> i64 {
-    64
-}
+fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizerConf {
@@ -467,26 +439,16 @@ impl Default for FinalizerConf {
     }
 }
 
-fn default_finalizer_work_budget() -> Duration {
-    Duration::from_secs(8)
-}
+fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
 
-fn default_finalizer_step_timeout() -> Duration {
-    Duration::from_secs(1)
-}
+fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
 
-fn default_finalizer_catchup_work_budget() -> Duration {
-    Duration::from_secs(8)
-}
+fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
 
-fn default_finalizer_catchup_step_timeout() -> Duration {
-    Duration::from_secs(1)
-}
+fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
+where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
     use serde::Deserialize;
     #[derive(Deserialize)]
@@ -514,9 +476,7 @@ where
 /// proposer's comparison sites, but a negative value silently disables
 /// the corresponding code path — fail fast instead.
 fn de_non_negative_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
+where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
     use serde::Deserialize;
     let v = i64::deserialize(deserializer)?;
@@ -551,9 +511,7 @@ mod native_token_validation_tests {
     }
 
     #[test]
-    fn accepts_valid_baseline() {
-        valid_genesis().validate_native_token().unwrap();
-    }
+    fn accepts_valid_baseline() { valid_genesis().validate_native_token().unwrap(); }
 
     #[test]
     fn rejects_empty_name() {

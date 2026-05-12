@@ -1,11 +1,12 @@
 // F1r3flyEvents — event publishing with startup replay buffer.
 // Ported from node/src/main/scala/coop/rchain/node/effects/RchainEvents.scala
 
-use futures::stream::Stream;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+
+use futures::stream::Stream;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -72,14 +73,10 @@ impl F1r3flyEvents {
 
     /// Get a shared reference to the startup buffer.
     /// Pass this to AppState so the WebSocket handler can replay events.
-    pub fn startup_buffer(&self) -> StartupBuffer {
-        self.startup_buffer.clone()
-    }
+    pub fn startup_buffer(&self) -> StartupBuffer { self.startup_buffer.clone() }
 
     /// Publish a noop event
-    pub fn noop(&self) -> Result<(), String> {
-        Ok(())
-    }
+    pub fn noop(&self) -> Result<(), String> { Ok(()) }
 
     /// Get a stream to consume events
     pub fn consume(&self) -> EventStream {
@@ -132,9 +129,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use futures::StreamExt;
+
     use super::super::f1r3fly_event::{BlockAdded, BlockCreated, BlockFinalised, DeployEvent};
     use super::*;
-    use futures::StreamExt;
 
     fn create_test_deploy_event(id: &str) -> DeployEvent {
         DeployEvent::new(id.to_string(), 100, "deployer1".to_string(), false)

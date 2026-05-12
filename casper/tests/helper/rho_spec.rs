@@ -1,12 +1,9 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
 
-use crate::genesis::contracts::test_util::TestUtil;
-use crate::helper::{
-    block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
-    secp256k1_sign_contract, sys_auth_token_contract,
-};
-use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::helper::test_result_collector::{
     RhoTestAssertion, TestResult, TestResultCollector,
@@ -25,9 +22,14 @@ use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
 use rspace_plus_plus::rspace::r#match::Match;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::genesis::contracts::test_util::TestUtil;
+use crate::helper::{
+    block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
+    secp256k1_sign_contract, sys_auth_token_contract,
+};
+use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
+use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
 const SHARD_ID: &str = "root-shard";
 const RHO_SPEC_PRIVATE_KEY: &str =
@@ -69,9 +71,7 @@ impl RhoSpec {
         }
     }
 
-    fn printer() -> PrettyPrinter {
-        PrettyPrinter::new()
-    }
+    fn printer() -> PrettyPrinter { PrettyPrinter::new() }
 
     pub fn mk_test(&self, _test_name: &str, test_attempts: &HashMap<i64, Vec<RhoTestAssertion>>) {
         assert!(

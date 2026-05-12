@@ -1,46 +1,42 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/ValidateTest.scala
 
-use crate::helper::{
-    block_dag_storage_fixture::with_storage,
-    block_generator::{build_block, create_block, create_genesis_block, create_validator_block},
-    block_util::generate_validator,
-};
-use crate::util::genesis_builder::GenesisBuilder;
-use casper::rust::{
-    block_status::{InvalidBlock, ValidBlock},
-    casper::CasperSnapshot,
-    util::proto_util,
-    validate::Validate,
-    validator_identity::ValidatorIdentity,
-};
-use crypto::rust::{
-    private_key::PrivateKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
-};
+use std::collections::HashMap;
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::casper::CasperSnapshot;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::rholang::interpreter_util;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::validate::Validate;
+use casper::rust::validator_identity::ValidatorIdentity;
+use casper_message::Justification;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
-use std::collections::HashMap;
-
-use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::block_status::BlockError;
-use casper::rust::genesis::genesis::Genesis;
-use casper::rust::util::construct_deploy;
-use casper::rust::util::rholang::{interpreter_util, runtime_manager::RuntimeManager};
-use casper_message::Justification;
-use models::rust::block_implicits::get_random_block;
-use models::rust::casper::protocol::casper_message;
 use rspace_plus_plus::rspace::history::Either;
+
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{
+    build_block, create_block, create_genesis_block, create_validator_block,
+};
+use crate::helper::block_util::generate_validator;
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
-}
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -539,13 +535,11 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
             vec![],
         );
 
-        let b3 = create_block_with_number(
-            &mut block_store,
-            &mut block_dag_storage,
-            8,
-            &genesis,
-            vec![b1.block_hash.clone(), b2.block_hash.clone()],
-        );
+        let b3 =
+            create_block_with_number(&mut block_store, &mut block_dag_storage, 8, &genesis, vec![
+                b1.block_hash.clone(),
+                b2.block_hash.clone(),
+            ]);
 
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
@@ -873,8 +867,9 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 /// apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
-    use dashmap::DashSet;
     use std::sync::Arc;
+
+    use dashmap::DashSet;
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -981,8 +976,9 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 /// passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
-    use dashmap::DashSet;
     use std::sync::Arc;
+
+    use dashmap::DashSet;
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -1050,15 +1046,10 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let validator = generate_validator(Some("Validator"));
         let impostor = generate_validator(Some("Impostor"));
 
-        let _genesis = create_chain(
-            &mut block_store,
-            &mut block_dag_storage,
-            3,
-            vec![Bond {
-                validator: validator.clone(),
-                stake: 1,
-            }],
-        );
+        let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 3, vec![Bond {
+            validator: validator.clone(),
+            stake: 1,
+        }]);
 
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
         let valid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);

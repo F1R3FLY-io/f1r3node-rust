@@ -1442,7 +1442,6 @@ impl RadixTreeImpl {
         curr_node: &Node,
         actions: Vec<HistoryAction>,
     ) -> Result<Option<Node>, RadixTreeError> {
-
         // If we have 1 action in group.
         // We can't parallel next and we should use sequential traversing with help
         // update() or delete().

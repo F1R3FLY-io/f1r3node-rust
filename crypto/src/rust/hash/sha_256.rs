@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 
 /**
-* Sha256 hashing algorithm
-*/
+ * Sha256 hashing algorithm
+ */
 // See crypto/src/main/scala/coop/rchain/crypto/hash/Sha256.scala
 pub struct Sha256Hasher;
 

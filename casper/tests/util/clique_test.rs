@@ -1,7 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/util/CliqueTest.scala
 
-use casper::rust::util::clique::Clique;
 use std::collections::HashMap;
+
+use casper::rust::util::clique::Clique;
 
 fn g1() -> Vec<(i32, i32)> {
     vec![

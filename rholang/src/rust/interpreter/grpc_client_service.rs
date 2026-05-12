@@ -3,11 +3,10 @@
 //
 // Uses enum-based dispatch instead of trait objects for async compatibility.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use models::rust::rholang::grpc_client::{GrpcClient, GrpcClientError};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 
 /// Mock configuration for GrpcClient service
 #[derive(Clone)]
@@ -31,9 +30,7 @@ impl GrpcClientMockConfig {
     }
 
     /// Check if the service was called
-    pub fn was_called(&self) -> bool {
-        self.was_called.load(Ordering::SeqCst)
-    }
+    pub fn was_called(&self) -> bool { self.was_called.load(Ordering::SeqCst) }
 }
 
 /// GrpcClientService using enum dispatch for async compatibility
@@ -63,9 +60,7 @@ impl GrpcClientService {
         Self::Mock(config)
     }
 
-    pub fn is_enabled(&self) -> bool {
-        matches!(self, Self::Real | Self::Mock(_))
-    }
+    pub fn is_enabled(&self) -> bool { matches!(self, Self::Real | Self::Mock(_)) }
 
     pub async fn tell(
         &self,

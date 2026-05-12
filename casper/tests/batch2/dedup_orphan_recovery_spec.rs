@@ -30,26 +30,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
-use casper::rust::{
-    casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-    util::{
-        construct_deploy, proto_util,
-        rholang::{
-            interpreter_util::{compute_deploys_checkpoint, compute_parents_post_state},
-            runtime_manager::RuntimeManager,
-            system_deploy_enum::SystemDeployEnum,
-        },
-    },
+use casper::rust::util::rholang::interpreter_util::{
+    compute_deploys_checkpoint, compute_parents_post_state,
 };
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use casper::rust::util::{construct_deploy, proto_util};
 use dashmap::{DashMap, DashSet};
-use models::rust::{
-    block::state_hash::StateHash, block_hash::BlockHash, block_implicits,
-    casper::protocol::casper_message::ProcessedDeploy,
-};
-use rholang::rust::interpreter::{
-    external_services::ExternalServices, system_processes::BlockData,
-};
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::block_implicits;
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::system_processes::BlockData;
 
 use crate::util::rholang::resources::{
     block_dag_storage_from_dyn, mergeable_store_from_dyn, mk_test_rnode_store_manager_from_genesis,

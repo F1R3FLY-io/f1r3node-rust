@@ -1,5 +1,6 @@
-use crate::rhoapi::Par;
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
+
+use crate::rhoapi::Par;
 
 /// Left-biased Lattice implementation for Par.
 /// Uses Identity to avoid cloning - signals to PathMap to keep the existing value unchanged.

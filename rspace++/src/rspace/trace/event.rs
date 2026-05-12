@@ -50,8 +50,9 @@ impl COMM {
         //         b.persistent,
         //     ))
         // });
-        // Note: this sort uses (channel_hash, hash, persistent) for COMM event identity,
-        // which differs from Produce::Ord (hash-only). Do not replace with .sort().
+        // Note: this sort uses (channel_hash, hash, persistent) for COMM event
+        // identity, which differs from Produce::Ord (hash-only). Do not replace
+        // with .sort().
         produce_refs.sort_by(|a, b| {
             a.channel_hash
                 .cmp(&b.channel_hash)
@@ -93,14 +94,7 @@ impl Hash for COMM {
 // field (a cryptographic hash of channel + data + persist). Metadata fields
 // like `is_deterministic`, `output_value`, and `failed` are set after creation
 // (e.g. via mark_as_non_deterministic) and must NOT affect identity.
-#[derive(
-    Serialize,
-    Deserialize,
-    Clone,
-    Debug,
-    Arbitrary,
-    Default,
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, Arbitrary, Default)]
 pub struct Produce {
     pub channel_hash: Blake2b256Hash,
     pub hash: Blake2b256Hash,
@@ -114,29 +108,21 @@ pub struct Produce {
 }
 
 impl PartialEq for Produce {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
-    }
+    fn eq(&self, other: &Self) -> bool { self.hash == other.hash }
 }
 
 impl Eq for Produce {}
 
 impl std::hash::Hash for Produce {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.hash.hash(state);
-    }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.hash.hash(state); }
 }
 
 impl Ord for Produce {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.hash.cmp(&other.hash)
-    }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.hash.cmp(&other.hash) }
 }
 
 impl PartialOrd for Produce {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Produce {

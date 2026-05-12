@@ -5,10 +5,9 @@ use crypto::rust::util::certificate_helper::{
 };
 use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
 use tokio::fs;
+use tracing::info;
 
 use crate::rust::transport::tls_conf::TlsConf;
-
-use tracing::info;
 
 /// Generate certificate if absent
 ///

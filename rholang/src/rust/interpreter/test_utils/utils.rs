@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+
+use models::rhoapi::Par;
+use rholang_parser::SourcePos;
+
 use crate::rust::interpreter::compiler::exports::{
     BoundMapChain, FreeMap, IdContextPos, NameVisitInputs, ProcVisitInputs,
 };
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize::VarSort::{NameSort, ProcSort};
-use models::rhoapi::Par;
-use std::collections::HashMap;
-
-use rholang_parser::SourcePos;
 
 pub fn name_visit_inputs_and_env() -> (NameVisitInputs, HashMap<String, Par>) {
     let input: NameVisitInputs = NameVisitInputs {

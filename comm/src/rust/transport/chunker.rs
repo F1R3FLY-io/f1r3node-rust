@@ -4,7 +4,9 @@ use models::routing::{Chunk, ChunkData, ChunkHeader};
 use prost::bytes::Bytes;
 use shared::rust::shared::compression::CompressionOps;
 
-use crate::rust::{peer_node::PeerNode, rp::protocol_helper, transport::transport_layer::Blob};
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::protocol_helper;
+use crate::rust::transport::transport_layer::Blob;
 
 pub struct Chunker;
 
@@ -88,9 +90,10 @@ impl Chunker {
 
 #[cfg(test)]
 mod tests {
+    use models::routing::Packet;
+
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
-    use models::routing::Packet;
 
     fn create_test_blob(content: Vec<u8>) -> Blob {
         let peer = PeerNode {

@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use prost::bytes::Bytes;

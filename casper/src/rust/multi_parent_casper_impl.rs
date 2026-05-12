@@ -1,85 +1,63 @@
 // See casper/src/main/scala/coop/rchain/casper/MultiParentCasperImpl.scala
 
-use async_trait::async_trait;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::block_dag_key_value_storage::{
-        BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
-    },
-    deploy::{
-        key_value_deploy_storage::KeyValueDeployStorage,
-        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
-    },
-    key_value_block_store::KeyValueBlockStore,
+use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::{
-    block_hash::{BlockHash, BlockHashSerde},
-    casper::{
-        pretty_printer::PrettyPrinter,
-        protocol::casper_message::{BlockMessage, DeployData, Justification},
-    },
-    equivocation_record::EquivocationRecord,
-    normalizer_env::normalizer_env_from_deploy,
-    validator::Validator,
-};
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
+use models::rust::equivocation_record::EquivocationRecord;
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
-use shared::rust::{
-    dag::dag_ops,
-    shared::{
-        f1r3fly_event::{DeployEvent, F1r3flyEvent},
-        f1r3fly_events::F1r3flyEvents,
-    },
-    store::key_value_store::KvStoreError,
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use shared::rust::dag::dag_ops;
+use shared::rust::shared::f1r3fly_event::{DeployEvent, F1r3flyEvent};
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::{
-    block_status::{BlockError, InvalidBlock, ValidBlock},
-    casper::{
-        Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper, OnChainCasperState,
-    },
-    engine::block_retriever::{AdmitHashReason, BlockRetriever},
-    equivocation_detector::EquivocationDetector,
-    errors::CasperError,
-    estimator::Estimator,
-    finality::finalizer::Finalizer,
-    metrics_constants::{
-        ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
-        BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
-        DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC,
-        DAG_HEIGHTS_SIZE_METRIC, DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
-        DEPLOYS_IN_SCOPE_SIZE_METRIC,
-    },
-    util::{
-        proto_util,
-        rholang::{
-            interpreter_util::{self, validate_block_checkpoint},
-            runtime_manager::RuntimeManager,
-        },
-    },
-    validate::Validate,
-    validator_identity::ValidatorIdentity,
+use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::casper::{
+    Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper, OnChainCasperState,
 };
+use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::rust::equivocation_detector::EquivocationDetector;
+use crate::rust::errors::CasperError;
+use crate::rust::estimator::Estimator;
+use crate::rust::finality::finalizer::Finalizer;
+use crate::rust::metrics_constants::{
+    ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC, BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
+    BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
+    DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC,
+    DAG_HEIGHTS_SIZE_METRIC, DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
+    DEPLOYS_IN_SCOPE_SIZE_METRIC,
+};
+use crate::rust::util::proto_util;
+use crate::rust::util::rholang::interpreter_util::{self, validate_block_checkpoint};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::validate::Validate;
+use crate::rust::validator_identity::ValidatorIdentity;
 
 const FINALIZER_BLOCKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 4096;
-fn deploy_heartbeat_wake_enabled() -> bool {
-    false
-}
+fn deploy_heartbeat_wake_enabled() -> bool { false }
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -87,9 +65,7 @@ fn deploy_heartbeat_wake_enabled() -> bool {
 struct FinalizationGuard<'a>(&'a AtomicBool);
 
 impl Drop for FinalizationGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
+    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
 }
 
 pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
@@ -484,9 +460,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         self.casper_buffer_storage.contains(&block_hash_serde)
     }
 
-    fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
-        Ok(&self.approved_block)
-    }
+    fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved_block) }
     fn deploy(
         &self,
         deploy: Signed<DeployData>,
@@ -557,9 +531,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         }
     }
 
-    fn get_version(&self) -> i64 {
-        self.casper_shard_conf.casper_version
-    }
+    fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
 
     async fn validate(
         &self,
@@ -1407,25 +1379,17 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         Ok(self.block_dag_storage.get_representation())
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore {
-        &self.block_store
-    }
+    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-    fn casper_shard_conf(&self) -> &crate::rust::casper::CasperShardConf {
-        &self.casper_shard_conf
-    }
+    fn casper_shard_conf(&self) -> &crate::rust::casper::CasperShardConf { &self.casper_shard_conf }
 
-    fn get_validator(&self) -> Option<ValidatorIdentity> {
-        self.validator_id.clone()
-    }
+    fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         self.runtime_manager.get_history_repo().exporter()
     }
 
-    fn runtime_manager(&self) -> Arc<RuntimeManager> {
-        self.runtime_manager.clone()
-    }
+    fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
         let snapshot = self.get_snapshot().await?;

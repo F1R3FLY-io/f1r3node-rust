@@ -10,31 +10,23 @@ pub const LENGTH: usize = 32;
 pub struct BlockHashSerde(pub BlockHash);
 
 impl From<BlockHash> for BlockHashSerde {
-    fn from(hash: BlockHash) -> Self {
-        BlockHashSerde(hash)
-    }
+    fn from(hash: BlockHash) -> Self { BlockHashSerde(hash) }
 }
 
 impl From<BlockHashSerde> for BlockHash {
-    fn from(wrapper: BlockHashSerde) -> Self {
-        wrapper.0
-    }
+    fn from(wrapper: BlockHashSerde) -> Self { wrapper.0 }
 }
 
 impl Serialize for BlockHashSerde {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    where S: serde::Serializer {
         serde_bytes::serialize(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for BlockHashSerde {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    where D: serde::Deserializer<'de> {
         Ok(BlockHashSerde(serde_bytes::deserialize(deserializer)?))
     }
 }

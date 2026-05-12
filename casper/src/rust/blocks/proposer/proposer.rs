@@ -1,45 +1,35 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
 use std::sync::{Arc, Mutex};
-use tracing;
 
-use block_storage::rust::{
-    deploy::{
-        key_value_deploy_storage::KeyValueDeployStorage,
-        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
-    },
-    key_value_block_store::KeyValueBlockStore,
-};
-use comm::rust::{
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-
-use crate::rust::{
-    block_status::{BlockError, InvalidBlock},
-    blocks::proposer::{
-        block_creator,
-        propose_result::{
-            BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
-            ProposeFailure, ProposeResult,
-        },
-    },
-    casper::{Casper, CasperSnapshot},
-    engine::block_retriever::BlockRetriever,
-    errors::CasperError,
-    last_finalized_height_constraint_checker,
-    multi_parent_casper_impl::{self},
-    synchrony_constraint_checker,
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-    ValidBlockProcessing,
-};
+use tracing;
 
 use super::propose_result::ProposeStatus;
+use crate::rust::block_status::{BlockError, InvalidBlock};
+use crate::rust::blocks::proposer::block_creator;
+use crate::rust::blocks::proposer::propose_result::{
+    BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
+    ProposeFailure, ProposeResult,
+};
+use crate::rust::casper::{Casper, CasperSnapshot};
+use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::errors::CasperError;
+use crate::rust::multi_parent_casper_impl::{self};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::validator_identity::ValidatorIdentity;
+use crate::rust::{
+    last_finalized_height_constraint_checker, synchrony_constraint_checker, ValidBlockProcessing,
+};
 
 pub struct ProposeReturnType {
     pub propose_result: ProposeResult,
@@ -121,9 +111,7 @@ pub enum ProposerResult {
 }
 
 impl ProposerResult {
-    pub fn empty() -> Self {
-        Self::Empty
-    }
+    pub fn empty() -> Self { Self::Empty }
 
     pub fn success(status: ProposeStatus, block: BlockMessage) -> Self {
         Self::Success(status, block)
@@ -133,9 +121,7 @@ impl ProposerResult {
         Self::Failure(status, seq_number)
     }
 
-    pub fn started(seq_number: i32) -> Self {
-        Self::Started(seq_number)
-    }
+    pub fn started(seq_number: i32) -> Self { Self::Started(seq_number) }
 }
 
 pub struct Proposer<C, A, S, H, BC, BV, E>
@@ -633,9 +619,7 @@ pub struct ProductionHeightChecker {
 }
 
 impl ProductionHeightChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
-        Self { validator }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl HeightChecker for ProductionHeightChecker {

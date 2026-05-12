@@ -1,10 +1,27 @@
-use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
-#[cfg(feature = "chromadb")]
-use crate::rust::interpreter::chromadb_service::{
-    CollectionEntries, Metadata
-};
-#[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::hash::keccak256::Keccak256;
+use crypto::rust::hash::sha_256::Sha256Hasher;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::ed25519::Ed25519;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature, SigningKey};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
+use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rust::casper::protocol::casper_message;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::rholang::implicits::single_expr;
+use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
+use prost::Message;
+use shared::rust::{BitSet, Byte};
 
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
@@ -20,29 +37,11 @@ use super::rho_type::{
     RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
-use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::hash::keccak256::Keccak256;
-use crypto::rust::hash::sha_256::Sha256Hasher;
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::ed25519::Ed25519;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
-use k256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
-use models::rust::casper::protocol::casper_message;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use prost::Message;
-use models::rust::rholang::implicits::single_expr;
-use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
-use shared::rust::BitSet;
-use shared::rust::Byte;
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
+#[cfg(feature = "chromadb")]
+use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
+#[cfg(feature = "chromadb")]
+use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -88,137 +87,71 @@ pub fn byte_name(b: Byte) -> Par {
 pub struct FixedChannels;
 
 impl FixedChannels {
-    pub fn stdout() -> Par {
-        byte_name(0)
-    }
+    pub fn stdout() -> Par { byte_name(0) }
 
-    pub fn stdout_ack() -> Par {
-        byte_name(1)
-    }
+    pub fn stdout_ack() -> Par { byte_name(1) }
 
-    pub fn stderr() -> Par {
-        byte_name(2)
-    }
+    pub fn stderr() -> Par { byte_name(2) }
 
-    pub fn stderr_ack() -> Par {
-        byte_name(3)
-    }
+    pub fn stderr_ack() -> Par { byte_name(3) }
 
-    pub fn ed25519_verify() -> Par {
-        byte_name(4)
-    }
+    pub fn ed25519_verify() -> Par { byte_name(4) }
 
-    pub fn sha256_hash() -> Par {
-        byte_name(5)
-    }
+    pub fn sha256_hash() -> Par { byte_name(5) }
 
-    pub fn keccak256_hash() -> Par {
-        byte_name(6)
-    }
+    pub fn keccak256_hash() -> Par { byte_name(6) }
 
-    pub fn blake2b256_hash() -> Par {
-        byte_name(7)
-    }
+    pub fn blake2b256_hash() -> Par { byte_name(7) }
 
-    pub fn secp256k1_verify() -> Par {
-        byte_name(8)
-    }
+    pub fn secp256k1_verify() -> Par { byte_name(8) }
 
-    pub fn get_block_data() -> Par {
-        byte_name(10)
-    }
+    pub fn get_block_data() -> Par { byte_name(10) }
 
-    pub fn get_invalid_blocks() -> Par {
-        byte_name(11)
-    }
+    pub fn get_invalid_blocks() -> Par { byte_name(11) }
 
-    pub fn vault_address() -> Par {
-        byte_name(12)
-    }
+    pub fn vault_address() -> Par { byte_name(12) }
 
-    pub fn deployer_id_ops() -> Par {
-        byte_name(13)
-    }
+    pub fn deployer_id_ops() -> Par { byte_name(13) }
 
-    pub fn reg_lookup() -> Par {
-        byte_name(14)
-    }
+    pub fn reg_lookup() -> Par { byte_name(14) }
 
-    pub fn reg_insert_random() -> Par {
-        byte_name(15)
-    }
+    pub fn reg_insert_random() -> Par { byte_name(15) }
 
-    pub fn reg_insert_signed() -> Par {
-        byte_name(16)
-    }
+    pub fn reg_insert_signed() -> Par { byte_name(16) }
 
-    pub fn reg_ops() -> Par {
-        byte_name(17)
-    }
+    pub fn reg_ops() -> Par { byte_name(17) }
 
-    pub fn sys_authtoken_ops() -> Par {
-        byte_name(18)
-    }
+    pub fn sys_authtoken_ops() -> Par { byte_name(18) }
 
-    pub fn gpt4() -> Par {
-        byte_name(20)
-    }
+    pub fn gpt4() -> Par { byte_name(20) }
 
-    pub fn dalle3() -> Par {
-        byte_name(21)
-    }
+    pub fn dalle3() -> Par { byte_name(21) }
 
-    pub fn text_to_audio() -> Par {
-        byte_name(22)
-    }
+    pub fn text_to_audio() -> Par { byte_name(22) }
 
-    pub fn grpc_tell() -> Par {
-        byte_name(25)
-    }
+    pub fn grpc_tell() -> Par { byte_name(25) }
 
-    pub fn dev_null() -> Par {
-        byte_name(26)
-    }
+    pub fn dev_null() -> Par { byte_name(26) }
 
-    pub fn abort() -> Par {
-        byte_name(27)
-    }
+    pub fn abort() -> Par { byte_name(27) }
 
-    pub fn ollama_chat() -> Par {
-        byte_name(28)
-    }
+    pub fn ollama_chat() -> Par { byte_name(28) }
 
-    pub fn ollama_generate() -> Par {
-        byte_name(29)
-    }
+    pub fn ollama_generate() -> Par { byte_name(29) }
 
-    pub fn ollama_models() -> Par {
-        byte_name(30)
-    }
+    pub fn ollama_models() -> Par { byte_name(30) }
 
-    pub fn deploy_data() -> Par {
-        byte_name(31)
-    }
+    pub fn deploy_data() -> Par { byte_name(31) }
 
-    pub fn chroma_create_collection() -> Par {
-        byte_name(32)
-    }
+    pub fn chroma_create_collection() -> Par { byte_name(32) }
 
-    pub fn chroma_get_collection_meta() -> Par {
-        byte_name(33)
-    }
+    pub fn chroma_get_collection_meta() -> Par { byte_name(33) }
 
-    pub fn chroma_upsert_entries() -> Par {
-        byte_name(34)
-    }
+    pub fn chroma_upsert_entries() -> Par { byte_name(34) }
 
-    pub fn chroma_query() -> Par {
-        byte_name(35)
-    }
+    pub fn chroma_query() -> Par { byte_name(35) }
 
-    pub fn chroma_delete_documents() -> Par {
-        byte_name(36)
-    }
+    pub fn chroma_delete_documents() -> Par { byte_name(36) }
 }
 
 pub struct BodyRefs;
@@ -486,7 +419,7 @@ impl SystemProcesses {
             ollama_service,
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
-            chromadb_service
+            chromadb_service,
         }
     }
 
@@ -1635,9 +1568,7 @@ impl SystemProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((produce, _, _, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
             return Err(illegal_argument_error("chroma_create_collection"));
         };
 
@@ -1693,7 +1624,10 @@ impl SystemProcesses {
             return Ok(previous_output);
         }
 
-        let meta = self.chromadb_service.get_collection_meta(&collection_name).await?;
+        let meta = self
+            .chromadb_service
+            .get_collection_meta(&collection_name)
+            .await?;
         let result_par = match meta {
             None => RhoNil::create_par(),
             Some(inner) => inner.into(),
@@ -1709,9 +1643,7 @@ impl SystemProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((produce, _, _, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
             return Err(illegal_argument_error("chroma_upsert_entries"));
         };
 
@@ -1762,7 +1694,8 @@ impl SystemProcesses {
             return Ok(previous_output);
         }
 
-        let res = self.chromadb_service
+        let res = self
+            .chromadb_service
             .query(
                 &collection_name,
                 doc_texts.iter().map(|s| s.as_ref()).collect(),
@@ -1782,9 +1715,7 @@ impl SystemProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((produce, _, _, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
             return Err(illegal_argument_error("chroma_delete_documents"));
         };
 

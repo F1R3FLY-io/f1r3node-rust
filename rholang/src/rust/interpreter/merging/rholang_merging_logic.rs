@@ -1,22 +1,22 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogic.scala
 
-use indexmap::IndexSet;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use indexmap::IndexSet;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rspace_plus_plus::rspace::hot_store_trie_action::TrieInsertAction;
-use rspace_plus_plus::rspace::hot_store_trie_action::TrieInsertBinaryProduce;
-use rspace_plus_plus::rspace::{
-    hashing::{blake2b256_hash::Blake2b256Hash, stable_hash_provider},
-    hot_store_trie_action::HotStoreTrieAction,
-    internal::Datum,
-    merger::{channel_change::ChannelChange, merging_logic::MergeType},
-    serializers::serializers,
-    trace::event::Produce,
+use rspace_plus_plus::rspace::errors::HistoryError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::hot_store_trie_action::{
+    HotStoreTrieAction, TrieInsertAction, TrieInsertBinaryProduce,
 };
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::serializers::serializers;
+use rspace_plus_plus::rspace::trace::event::Produce;
 
 use crate::rust::interpreter::rho_type::RhoNumber;
 
@@ -216,9 +216,7 @@ impl RholangMergingLogic {
     pub fn convert_to_read_number<F>(
         get_data_func: F,
     ) -> impl Fn(&Blake2b256Hash) -> Result<Option<i64>, HistoryError>
-    where
-        F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
-    {
+    where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
         move |hash: &Blake2b256Hash| {
             let data = get_data_func(hash)?;
             if data.len() > 1 {
@@ -258,8 +256,9 @@ pub struct NumberChannel {
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogicSpec.scala
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn test_calculate_num_channel_diff() {

@@ -7,27 +7,21 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::{
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use casper::rust::{
-    blocks::proposer::block_creator,
-    casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-    util::rholang::runtime_manager::RuntimeManager,
-    validator_identity::ValidatorIdentity,
-};
-use crypto::rust::{
-    private_key::PrivateKey,
-    signatures::{secp256k1::Secp256k1, signed::Signed},
-};
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::blocks::proposer::block_creator;
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::validator_identity::ValidatorIdentity;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signed::Signed;
 use dashmap::{DashMap, DashSet};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
 use crate::util::rholang::resources;

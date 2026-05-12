@@ -1,17 +1,15 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ConstructDeploy.scala
 
-use lazy_static::lazy_static;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crypto::rust::{
-    private_key::PrivateKey,
-    public_key::PublicKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
-};
-use models::{
-    rhoapi::PCost,
-    rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy},
-};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use lazy_static::lazy_static;
+use models::rhoapi::PCost;
+use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
 
 use crate::rust::errors::CasperError;
 

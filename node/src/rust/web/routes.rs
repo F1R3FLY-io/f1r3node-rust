@@ -1,26 +1,19 @@
-use axum::{
-    http::{header, StatusCode},
-    response::IntoResponse,
-    routing::get,
-    Router,
-};
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::rust::{
-    diagnostics::new_prometheus_reporter::NewPrometheusReporter,
-    web::{
-        admin_web_api_routes::AdminWebApiRoutes,
-        events_info,
-        reporting_routes::ReportingRoutes,
-        shared_handlers::AppState,
-        status_info, version_info,
-        web_api_docs::{AdminApi, PublicApi},
-        web_api_routes::WebApiRoutes,
-        web_api_routes_v1::WebApiRoutesV1,
-    },
-};
+use crate::rust::diagnostics::new_prometheus_reporter::NewPrometheusReporter;
+use crate::rust::web::admin_web_api_routes::AdminWebApiRoutes;
+use crate::rust::web::reporting_routes::ReportingRoutes;
+use crate::rust::web::shared_handlers::AppState;
+use crate::rust::web::web_api_docs::{AdminApi, PublicApi};
+use crate::rust::web::web_api_routes::WebApiRoutes;
+use crate::rust::web::web_api_routes_v1::WebApiRoutesV1;
+use crate::rust::web::{events_info, status_info, version_info};
 
 pub struct Routes;
 

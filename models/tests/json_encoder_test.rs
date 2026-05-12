@@ -2,7 +2,9 @@
 // Port of Scala JsonEncoder tests
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rust::{par_map::ParMap, par_set::ParSet, utils::*};
+use models::rust::par_map::ParMap;
+use models::rust::par_set::ParSet;
+use models::rust::utils::*;
 use serde_json;
 
 #[test]

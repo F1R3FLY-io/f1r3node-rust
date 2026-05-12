@@ -1,4 +1,3 @@
-pub use crate::rust::interpreter::matcher::maximum_bipartite_match::MaximumBipartiteMatch;
 pub use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
     VarRefBody,
@@ -20,3 +19,5 @@ pub use models::rhoapi::{
     GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
+
+pub use crate::rust::interpreter::matcher::maximum_bipartite_match::MaximumBipartiteMatch;

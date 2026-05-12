@@ -9,30 +9,28 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use casper::rust::{
-    errors::CasperError,
-    rholang::{replay_runtime::ReplayRuntimeOps, runtime::RuntimeOps},
-    util::{
-        construct_deploy,
-        rholang::{
-            costacc::pre_charge_deploy::PreChargeDeploy, costacc::refund_deploy::RefundDeploy,
-            runtime_manager::RuntimeManager, system_deploy::SystemDeployTrait,
-            system_deploy_result::SystemDeployResult, system_deploy_util,
-        },
-    },
-};
+use casper::rust::errors::CasperError;
+use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
+use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
+use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
+use casper::rust::util::rholang::system_deploy_util;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use metrics_util::debugging::{DebuggingRecorder, Snapshotter};
-use models::{
-    rhoapi::Par,
-    rust::{block::state_hash::StateHash, casper::protocol::casper_message::ProcessedDeploy},
-};
-use rholang::rust::interpreter::{rho_runtime::RhoRuntime, system_processes::BlockData};
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash, merger::merging_logic::MergeType,
-};
+use models::rhoapi::Par;
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
-use crate::util::{genesis_builder::GenesisContext, rholang::resources::with_runtime_manager};
+use crate::util::genesis_builder::GenesisContext;
+use crate::util::rholang::resources::with_runtime_manager;
 
 static METRICS_INIT: OnceLock<Snapshotter> = OnceLock::new();
 

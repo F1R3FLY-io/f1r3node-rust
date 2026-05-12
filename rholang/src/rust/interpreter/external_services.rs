@@ -3,8 +3,9 @@
 //
 // Uses enum-based dispatch instead of trait objects for async compatibility.
 
-
-use super::chromadb_service::{create_noop_chromadb_service, create_chromadb_service, SharedChromaDBService};
+use super::chromadb_service::{
+    create_chromadb_service, create_noop_chromadb_service, SharedChromaDBService,
+};
 use super::errors::InterpreterError;
 use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{

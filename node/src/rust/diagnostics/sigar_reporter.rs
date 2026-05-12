@@ -1,6 +1,8 @@
-use crate::rust::diagnostics::SYSTEM_METRICS_SOURCE;
 use std::time::Duration;
+
 use sysinfo::{CpuExt, System, SystemExt};
+
+use crate::rust::diagnostics::SYSTEM_METRICS_SOURCE;
 
 pub fn start_sigar_reporter(interval_duration: Duration) {
     std::thread::spawn(move || {
@@ -24,10 +26,12 @@ pub fn start_sigar_reporter(interval_duration: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use serial_test::serial;
+
     use super::*;
     use crate::rust::diagnostics::new_prometheus_reporter::NewPrometheusReporter;
-    use serial_test::serial;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_sigar_reporter_starts_without_error() {

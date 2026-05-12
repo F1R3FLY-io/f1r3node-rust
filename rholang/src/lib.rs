@@ -85,38 +85,32 @@ pub mod rust {
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use crate::rust::interpreter::compiler::compiler::Compiler;
 use crypto::rust::hash::blake2b512_block::Blake2b512Block;
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, public_key::PublicKey};
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rholang_scala_rust_types::*;
 use models::rspace_plus_plus_types::*;
-use models::{
-    rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation},
-    rholang_scala_rust_types::*,
-};
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store::{new_hashmap, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
-use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
-use rspace_plus_plus::rspace::{
-    rspace::RSpace,
-    trace::event::{Event, IOEvent},
-};
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+use rust::interpreter::accounting::costs::Cost;
 use rust::interpreter::env::Env;
 use rust::interpreter::external_services::ExternalServices;
 use rust::interpreter::ollama_service::OllamaConfig;
 use rust::interpreter::openai_service::OpenAIConfig;
-use rust::interpreter::system_processes::test_framework_contracts;
-use rust::interpreter::{
-    accounting::costs::Cost,
-    rho_runtime::{
-        bootstrap_registry as bootstrap_registry_internal, create_rho_runtime,
-        RhoRuntime as RhoRuntimeTrait, RhoRuntimeImpl,
-    },
-    system_processes::BlockData,
+use rust::interpreter::rho_runtime::{
+    bootstrap_registry as bootstrap_registry_internal, create_rho_runtime,
+    RhoRuntime as RhoRuntimeTrait, RhoRuntimeImpl,
 };
+use rust::interpreter::system_processes::{test_framework_contracts, BlockData};
+
+use crate::rust::interpreter::compiler::compiler::Compiler;
 
 #[repr(C)]
 struct RhoRuntime {
@@ -1394,7 +1388,10 @@ extern "C" fn create_runtime(
 
     let mergeable_tag_name = params.mergeable_tag_name.unwrap();
     let mut mergeable_tags = std::collections::HashMap::new();
-    mergeable_tags.insert(mergeable_tag_name, rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd);
+    mergeable_tags.insert(
+        mergeable_tag_name,
+        rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd,
+    );
     let mergeable_tags = std::sync::Arc::new(mergeable_tags);
     let init_registry = params.init_registry;
     if params.rho_spec_system_processes {
@@ -1433,7 +1430,10 @@ extern "C" fn create_runtime_with_test_framework(
 
     let mergeable_tag_name = params.mergeable_tag_name.unwrap();
     let mut mergeable_tags = std::collections::HashMap::new();
-    mergeable_tags.insert(mergeable_tag_name, rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd);
+    mergeable_tags.insert(
+        mergeable_tag_name,
+        rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd,
+    );
     let mergeable_tags = std::sync::Arc::new(mergeable_tags);
     let init_registry = params.init_registry;
     let mut extra_system_processes = if params.rho_spec_system_processes {
@@ -1474,7 +1474,10 @@ extern "C" fn create_replay_runtime(
 
     let mergeable_tag_name = params.mergeable_tag_name.unwrap();
     let mut mergeable_tags = std::collections::HashMap::new();
-    mergeable_tags.insert(mergeable_tag_name, rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd);
+    mergeable_tags.insert(
+        mergeable_tag_name,
+        rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd,
+    );
     let mergeable_tags = std::sync::Arc::new(mergeable_tags);
     let init_registry = params.init_registry;
     if params.rho_spec_system_processes {

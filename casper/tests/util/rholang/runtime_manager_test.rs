@@ -1,48 +1,40 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/RuntimeManagerTest.scala
 
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use casper::rust::{
-    errors::CasperError,
-    rholang::{replay_runtime::ReplayRuntimeOps, runtime::RuntimeOps},
-    util::{
-        construct_deploy,
-        rholang::{
-            costacc::{
-                check_balance::CheckBalance, close_block_deploy::CloseBlockDeploy,
-                pre_charge_deploy::PreChargeDeploy, refund_deploy::RefundDeploy,
-            },
-            replay_failure::ReplayFailure,
-            runtime_manager::RuntimeManager,
-            system_deploy::SystemDeployTrait,
-            system_deploy_result::SystemDeployResult,
-            system_deploy_user_error::SystemDeployUserError,
-            system_deploy_util,
-        },
-    },
+use casper::rust::errors::CasperError;
+use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
+use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use casper::rust::util::rholang::replay_failure::ReplayFailure;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
+use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
+use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+use casper::rust::util::rholang::system_deploy_util;
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::signatures::signed::Signed;
+use models::rhoapi::PCost;
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::{
+    DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
-use crypto::rust::{hash::blake2b512_random::Blake2b512Random, signatures::signed::Signed};
-use models::{
-    rhoapi::PCost,
-    rust::{
-        block::state_hash::StateHash,
-        casper::protocol::casper_message::{DeployData, ProcessedDeploy, ProcessedSystemDeploy},
-    },
-};
-use rholang::rust::interpreter::{
-    accounting::costs::{self, Cost},
-    compiler::compiler::Compiler,
-    env::Env,
-    rho_runtime::RhoRuntime,
-    system_processes::BlockData,
-    test_utils::par_builder_util::ParBuilderUtil,
-};
-use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+use rholang::rust::interpreter::accounting::costs::{self, Cost};
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::system_processes::BlockData;
+use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 
-use crate::util::{genesis_builder::GenesisContext, rholang::resources::with_runtime_manager};
+use crate::util::genesis_builder::GenesisContext;
+use crate::util::rholang::resources::with_runtime_manager;
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -960,9 +952,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 {
-                p.iter().map(|d| d.cost.cost).sum()
-            }
+            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
 
             let deploy0 = construct_deploy::source_deploy(
                 r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
@@ -1785,22 +1775,22 @@ in {{
 /// empty deployId after finalization (intermittent)"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bridge_query_survives_multi_parent_merge() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+    use casper::rust::genesis::genesis::Genesis;
+    use casper::rust::util::proto_util;
+    use casper::rust::util::rholang::interpreter_util::{
+        compute_deploys_checkpoint, compute_parents_post_state,
+    };
+    use dashmap::{DashMap, DashSet};
+    use models::rust::block_hash::BlockHash;
+    use models::rust::block_implicits;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
         mk_test_rnode_store_manager_from_genesis,
     };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use casper::rust::genesis::genesis::Genesis;
-    use casper::rust::{
-        casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-        util::{
-            proto_util,
-            rholang::interpreter_util::{compute_deploys_checkpoint, compute_parents_post_state},
-        },
-    };
-    use dashmap::{DashMap, DashSet};
-    use models::rust::{block_hash::BlockHash, block_implicits};
-    use rholang::rust::interpreter::external_services::ExternalServices;
 
     crate::init_logger();
     let genesis_context = crate::util::rholang::resources::genesis_context()
@@ -2119,22 +2109,22 @@ in {{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "assertion contradicts multi-parent DAG design; awaits rewrite"]
 async fn concurrent_registry_inserts_should_not_conflict() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+    use casper::rust::genesis::genesis::Genesis;
+    use casper::rust::util::proto_util;
+    use casper::rust::util::rholang::interpreter_util::{
+        compute_deploys_checkpoint, compute_parents_post_state,
+    };
+    use dashmap::{DashMap, DashSet};
+    use models::rust::block_hash::BlockHash;
+    use models::rust::block_implicits;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
         mk_test_rnode_store_manager_from_genesis,
     };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use casper::rust::genesis::genesis::Genesis;
-    use casper::rust::{
-        casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-        util::{
-            proto_util,
-            rholang::interpreter_util::{compute_deploys_checkpoint, compute_parents_post_state},
-        },
-    };
-    use dashmap::{DashMap, DashSet};
-    use models::rust::{block_hash::BlockHash, block_implicits};
-    use rholang::rust::interpreter::external_services::ExternalServices;
 
     crate::init_logger();
     let genesis_context = crate::util::rholang::resources::genesis_context()
@@ -2847,23 +2837,24 @@ async fn parallel_replay_determinism() {
 /// assertion below — "no ancestor-rejected-but-descendant-surviving" — holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stale_diff_application_corrupts_merged_state() {
+    use std::collections::HashSet;
+
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+    use casper::rust::genesis::genesis::Genesis;
+    use casper::rust::util::proto_util;
+    use casper::rust::util::rholang::interpreter_util::{
+        compute_deploys_checkpoint, compute_parents_post_state,
+    };
+    use dashmap::{DashMap, DashSet};
+    use models::rust::block_hash::BlockHash;
+    use models::rust::block_implicits;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mergeable_store_from_dyn,
         mk_test_rnode_store_manager_from_genesis,
     };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use casper::rust::genesis::genesis::Genesis;
-    use casper::rust::{
-        casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-        util::{
-            proto_util,
-            rholang::interpreter_util::{compute_deploys_checkpoint, compute_parents_post_state},
-        },
-    };
-    use dashmap::{DashMap, DashSet};
-    use models::rust::{block_hash::BlockHash, block_implicits};
-    use rholang::rust::interpreter::external_services::ExternalServices;
-    use std::collections::HashSet;
 
     crate::init_logger();
     let genesis_context = crate::util::rholang::resources::genesis_context()

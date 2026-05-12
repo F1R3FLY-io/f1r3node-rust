@@ -1,8 +1,10 @@
-use crate::rust::diagnostics::prometheus_config::PrometheusConfiguration;
+use std::sync::{Arc, OnceLock};
+
 use eyre::Result;
 use metrics_exporter_prometheus::PrometheusHandle;
-use std::sync::{Arc, OnceLock};
 use tracing::{info, warn};
+
+use crate::rust::diagnostics::prometheus_config::PrometheusConfiguration;
 
 static GLOBAL_REPORTER: OnceLock<Arc<NewPrometheusReporter>> = OnceLock::new();
 
@@ -45,11 +47,7 @@ impl NewPrometheusReporter {
         Ok(reporter)
     }
 
-    pub fn global() -> Option<Arc<Self>> {
-        GLOBAL_REPORTER.get().map(Arc::clone)
-    }
+    pub fn global() -> Option<Arc<Self>> { GLOBAL_REPORTER.get().map(Arc::clone) }
 
-    pub fn scrape_data(&self) -> String {
-        self.prometheus_handle.render()
-    }
+    pub fn scrape_data(&self) -> String { self.prometheus_handle.render() }
 }

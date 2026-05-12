@@ -2,14 +2,15 @@
 //!
 //! This module defines all command-line arguments and subcommands for the F1r3fly node.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use casper::rust::util::comm::listen_at_name::Name;
 use clap::builder::ValueParser;
 use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
-use std::path::PathBuf;
-use std::time::Duration;
 
 use super::converters::{PrivateKeyConverter, PublicKeyConverter, VecNameConverter};
 
@@ -699,8 +700,9 @@ pub struct ProposeOptions {
 
 #[cfg(test)]
 mod native_token_clap_tests {
-    use super::*;
     use clap::Parser;
+
+    use super::*;
 
     #[test]
     fn rejects_negative_decimals() {

@@ -1,7 +1,6 @@
+use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::EncodePrivateKey;
-
-use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
 #[test]
 fn test_generate_key_pair() {

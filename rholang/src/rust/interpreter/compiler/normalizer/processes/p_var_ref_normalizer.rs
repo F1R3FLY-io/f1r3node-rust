@@ -1,13 +1,15 @@
-use crate::rust::interpreter::compiler::exports::BoundContext;
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
+use std::result::Result;
+
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::{Connective, VarRef};
+use rholang_parser::ast::{Id, VarRefKind};
+
+use crate::rust::interpreter::compiler::exports::{
+    BoundContext, ProcVisitInputs, ProcVisitOutputs,
+};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
-use models::rhoapi::connective::ConnectiveInstance;
-use models::rhoapi::{Connective, VarRef};
-use std::result::Result;
-
-use rholang_parser::ast::{Id, VarRefKind};
 
 pub fn normalize_p_var_ref(
     var_ref_kind: VarRefKind,
@@ -77,21 +79,23 @@ pub fn normalize_p_var_ref(
 
 #[cfg(test)]
 mod tests {
+    use models::create_bit_vector;
+    use models::rhoapi::connective::ConnectiveInstance::VarRefBody;
+    use models::rhoapi::{
+        Connective, Match as model_match, MatchCase, Par, Receive, ReceiveBind,
+        VarRef as model_VarRef,
+    };
+    use models::rust::utils::new_gint_par;
+    use pretty_assertions::assert_eq;
+    use rholang_parser::ast::{Bind, Case, Id, Names, Source, VarRefKind};
+    use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
     use crate::rust::interpreter::compiler::normalize::VarSort::{NameSort, ProcSort};
+    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
     use crate::rust::interpreter::test_utils::utils::{
         proc_visit_inputs_and_env, proc_visit_inputs_with_updated_bound_map_chain,
     };
-    use models::create_bit_vector;
-    use models::rhoapi::connective::ConnectiveInstance::VarRefBody;
-    use models::rhoapi::{Connective, Match as model_match, MatchCase, Par, ReceiveBind};
-    use models::rhoapi::{Receive, VarRef as model_VarRef};
-    use models::rust::utils::new_gint_par;
-    use pretty_assertions::assert_eq;
-
-    use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-    use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-    use rholang_parser::ast::{Bind, Case, Id, Names, Source, VarRefKind};
-    use rholang_parser::SourcePos;
 
     #[test]
     fn p_var_ref_should_do_deep_lookup_in_match_case() {

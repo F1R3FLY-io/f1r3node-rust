@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
+use models::rhoapi::Par;
+use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
+use uuid::Uuid;
+
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::errors::InterpreterError;
-use models::rhoapi::Par;
-use std::collections::HashMap;
-use uuid::Uuid;
-
-use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
 
 pub fn normalize_p_send_sync<'ast>(
     channel: &'ast Name<'ast>,
@@ -110,10 +111,11 @@ pub fn normalize_p_send_sync<'ast>(
 
 #[cfg(test)]
 mod tests {
+    use models::rhoapi::Par;
+
     use super::*;
     use crate::rust::interpreter::compiler::exports::{BoundMapChain, FreeMap};
     use crate::rust::interpreter::compiler::normalize::VarSort;
-    use models::rhoapi::Par;
 
     #[test]
     fn p_send_sync_should_normalize_a_basic_send_sync() {

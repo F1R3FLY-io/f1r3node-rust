@@ -1,90 +1,77 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeSyntax.scala
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    future::Future,
-    mem,
-    sync::OnceLock,
-    time::Instant,
-};
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::mem;
+use std::sync::OnceLock;
+use std::time::Instant;
 
-use crypto::rust::{
-    hash::blake2b512_random::Blake2b512Random, public_key::PublicKey, signatures::signed::Signed,
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::Signed;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{
+    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
-use models::{
-    rhoapi::{
-        expr::ExprInstance, g_unforgeable::UnfInstance, tagged_continuation::TaggedCont,
-        BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
-    },
-    rust::{
-        block::state_hash::StateHash,
-        block_hash::BlockHash,
-        casper::{
-            pretty_printer::PrettyPrinter,
-            protocol::casper_message::{
-                Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
-            },
-        },
-        normalizer_env::normalizer_env_from_deploy,
-        par_map_type_mapper::ParMapTypeMapper,
-        par_set_type_mapper::ParSetTypeMapper,
-        sorted_par_hash_set::SortedParHashSet,
-        sorted_par_map::SortedParMap,
-        utils::new_freevar_par,
-        validator::Validator,
-    },
+use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use rholang::rust::interpreter::{
-    accounting::costs::Cost,
-    accounting::has_cost::HasCost,
-    compiler::compiler::Compiler,
-    env::Env,
-    errors::InterpreterError,
-    interpreter::EvaluateResult,
-    merging::rholang_merging_logic::RholangMergingLogic,
-    rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl},
-    system_processes::{BlockData, DeployData as SystemProcessDeployData},
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::sorted_par_hash_set::SortedParHashSet;
+use models::rust::sorted_par_map::SortedParMap;
+use models::rust::utils::new_freevar_par;
+use models::rust::validator::Validator;
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::has_cost::HasCost;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::system_processes::{
+    BlockData, DeployData as SystemProcessDeployData,
 };
-use rspace_plus_plus::rspace::{
-    hashing::{blake2b256_hash::Blake2b256Hash, stable_hash_provider},
-    history::{instances::radix_history::RadixHistory, Either},
-    merger::merging_logic::{MergeType, NumberChannelsEndVal},
-};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
-use crate::rust::{
-    errors::CasperError,
-    metrics_constants::{
-        BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
-        BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
-        EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
-        EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
-    },
-    rholang::types::eval_collector::EvalCollector,
-    util::{
-        construct_deploy, event_converter,
-        rholang::{
-            costacc::{
-                close_block_deploy::CloseBlockDeploy, pre_charge_deploy::PreChargeDeploy,
-                refund_deploy::RefundDeploy, slash_deploy::SlashDeploy,
-            },
-            interpreter_util,
-            system_deploy::SystemDeployTrait,
-            system_deploy_result::SystemDeployResult,
-            system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError},
-            system_deploy_util,
-            tools::Tools,
-        },
-    },
+use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
+    BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
+    EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
+    EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
+use crate::rust::rholang::types::eval_collector::EvalCollector;
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
+use crate::rust::util::rholang::system_deploy_user_error::{
+    SystemDeployPlatformFailure, SystemDeployUserError,
+};
+use crate::rust::util::rholang::tools::Tools;
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
+use crate::rust::util::{construct_deploy, event_converter};
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self {
-        Self { runtime }
-    }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
 }
 
 #[allow(type_alias_bounds)]

@@ -3,12 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::block_hash::BlockHash;
+use models::rust::validator::Validator;
+use shared::rust::store::key_value_store::KvStoreError;
+
 use crate::rust::safety_oracle::MIN_FAULT_TOLERANCE;
 use crate::rust::util::clique::Clique;
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, validator::Validator};
-
-use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct CliqueOracle;
 

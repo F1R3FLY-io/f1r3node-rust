@@ -1,14 +1,10 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.scala
 
-use crate::{
-    rhoapi::{Match, MatchCase},
-    rust::rholang::sorter::{
-        par_sort_matcher::ParSortMatcher,
-        score_tree::{Score, ScoreAtom, Tree},
-    },
-};
-
-use super::{score_tree::ScoredTerm, sortable::Sortable};
+use super::score_tree::ScoredTerm;
+use super::sortable::Sortable;
+use crate::rhoapi::{Match, MatchCase};
+use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
 
 pub struct MatchSortMatcher;
 

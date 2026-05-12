@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata, validator::Validator};
+use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::safety::clique_oracle::CliqueOracle;

@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use rholang::rust::interpreter::{compiler::compiler::Compiler, errors::InterpreterError};
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::errors::InterpreterError;
 
 /// Protobuf message types for LSP service
 pub mod lsp {
@@ -39,9 +40,7 @@ static RE_TOP_LEVEL_CONNECTIVES: LazyLock<Regex> = LazyLock::new(|| {
 pub struct LspGrpcServiceImpl;
 
 impl LspGrpcServiceImpl {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     const SOURCE: &'static str = "rholang";
 
@@ -460,9 +459,7 @@ impl Lsp for LspGrpcServiceImpl {
 }
 
 /// Create a new LSP gRPC service instance
-pub fn create_lsp_grpc_service() -> impl Lsp {
-    LspGrpcServiceImpl::new()
-}
+pub fn create_lsp_grpc_service() -> impl Lsp { LspGrpcServiceImpl::new() }
 
 #[cfg(test)]
 mod tests {

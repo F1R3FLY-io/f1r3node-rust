@@ -1,18 +1,19 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
-use models::{
-    rhoapi::{
-        connective::ConnectiveInstance, expr::ExprInstance, g_unforgeable::UnfInstance,
-        var::VarInstance, Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-        EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-        EPlusPlus, ETuple, EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
-    },
-    rust::{
-        bundle_ops::BundleOps, par_map_type_mapper::ParMapTypeMapper,
-        par_set_type_mapper::ParSetTypeMapper,
-    },
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::var::VarInstance;
+use models::rhoapi::{
+    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
+    EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
 };
-use shared::rust::shared::{printer::Printer, string_ops::wrap_with_braces};
+use models::rust::bundle_ops::BundleOps;
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use shared::rust::shared::printer::Printer;
+use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
 
@@ -29,9 +30,7 @@ pub struct PrettyPrinter {
 }
 
 impl PrettyPrinter {
-    pub fn new() -> Self {
-        PrettyPrinter::create(0, 0)
-    }
+    pub fn new() -> Self { PrettyPrinter::create(0, 0) }
 
     fn create(free_shift: i32, bound_shift: i32) -> Self {
         PrettyPrinter {
@@ -54,17 +53,11 @@ impl PrettyPrinter {
         }
     }
 
-    fn indent_string(&self) -> String {
-        String::from("  ")
-    }
+    fn indent_string(&self) -> String { String::from("  ") }
 
-    fn bound_id(&self) -> String {
-        self.rotate(self.base_id.clone())
-    }
+    fn bound_id(&self) -> String { self.rotate(self.base_id.clone()) }
 
-    fn set_base_id(&self) -> String {
-        self.increment(self.base_id.clone())
-    }
+    fn set_base_id(&self) -> String { self.increment(self.base_id.clone()) }
 
     pub fn build_string_from_expr(&mut self, e: &Expr) -> String {
         // Instead of panicking on errors, return a fallback string
@@ -552,7 +545,11 @@ impl PrettyPrinter {
                     } else {
                         let scale = fp.scale as usize;
                         let is_negative = unscaled_str.starts_with('-');
-                        let digits = if is_negative { &unscaled_str[1..] } else { &unscaled_str };
+                        let digits = if is_negative {
+                            &unscaled_str[1..]
+                        } else {
+                            &unscaled_str
+                        };
                         if digits.len() <= scale {
                             let padded = format!("{:0>width$}", digits, width = scale + 1);
                             let (integer, fraction) = padded.split_at(padded.len() - scale);
@@ -1162,13 +1159,14 @@ fn twos_complement_to_decimal(bytes: &[u8]) -> String {
 // rholang/src/test/scala/coop/rchain/rholang/interpreter/PrettyPrinterTest.scala
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+    use rholang_parser::ast::Proc;
+
     use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, ProcVisitOutputs};
     use crate::rust::interpreter::compiler::normalizer::ground_normalize_matcher::normalize_ground;
     use crate::rust::interpreter::errors::InterpreterError;
     use crate::rust::interpreter::pretty_printer::PrettyPrinter;
     use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
-    use pretty_assertions::assert_eq;
-    use rholang_parser::ast::Proc;
 
     //ground tests
     #[test]

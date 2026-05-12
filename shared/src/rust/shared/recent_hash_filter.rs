@@ -1,7 +1,8 @@
 // See shared/src/main/scala/coop/rchain/shared/RecentHashFilter.scala
 
-use indexmap::IndexSet;
 use std::sync::Mutex;
+
+use indexmap::IndexSet;
 
 /// Simple synchronized LRU filter to suppress redundant gossip messages by hash.
 ///

@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use models::{rhoapi::Par, rust::casper::protocol::casper_message::Event};
+use models::rhoapi::Par;
+use models::rust::casper::protocol::casper_message::Event;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 pub struct EvalCollector {
@@ -18,9 +19,7 @@ impl EvalCollector {
         }
     }
 
-    pub fn add_event_log(&mut self, event_log: Vec<Event>) {
-        self.event_log.extend(event_log);
-    }
+    pub fn add_event_log(&mut self, event_log: Vec<Event>) { self.event_log.extend(event_log); }
 
     pub fn add_mergeable_channels(&mut self, mergeable_channels: HashMap<Par, MergeType>) {
         self.mergeable_channels.extend(mergeable_channels);

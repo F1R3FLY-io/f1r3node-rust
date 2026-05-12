@@ -1,13 +1,15 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/PoSSpec.scala
 
-use crate::helper::rho_spec::RhoSpec;
-use crate::util::genesis_builder::GenesisBuilder;
+use std::collections::HashMap;
+use std::time::Duration;
+
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
-use std::collections::HashMap;
-use std::time::Duration;
+
+use crate::helper::rho_spec::RhoSpec;
+use crate::util::genesis_builder::GenesisBuilder;
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     let (hex_string, balance) = vault_data;
@@ -52,8 +54,9 @@ fn pos_spec() {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let test_object = crate::util::rholang::test_rho_loader::load_test_rho("PoSTest.rho")
-                    .expect("Failed to load PoSTest.rho");
+                let test_object =
+                    crate::util::rholang::test_rho_loader::load_test_rho("PoSTest.rho")
+                        .expect("Failed to load PoSTest.rho");
 
                 let compiled = CompiledRholangSource::new(
                     test_object,

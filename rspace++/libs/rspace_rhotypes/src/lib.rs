@@ -116,13 +116,12 @@ pub extern "C" fn space_print(rspace: *mut Space) -> () {
 #[no_mangle]
 pub extern "C" fn space_clear(rspace: *mut Space) -> () {
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
-    blocking_runtime()
-        .block_on(async {
-            space
-                .clear()
-                .await
-                .expect("Rust RSpacePlusPlus Library: Failed to clear")
-        });
+    blocking_runtime().block_on(async {
+        space
+            .clear()
+            .await
+            .expect("Rust RSpacePlusPlus Library: Failed to clear")
+    });
 }
 
 #[no_mangle]
@@ -1192,7 +1191,14 @@ pub extern "C" fn spawn(rspace: *mut Space) -> *mut Space {
 
 #[no_mangle]
 pub extern "C" fn history_repo_root(rspace: *mut Space) -> *const u8 {
-    let root = unsafe { (*rspace).rspace.lock().unwrap().get_history_repository().root() };
+    let root = unsafe {
+        (*rspace)
+            .rspace
+            .lock()
+            .unwrap()
+            .get_history_repository()
+            .root()
+    };
 
     let hash = hash(&root);
     let hash_proto = HashProto { hash: hash.bytes() };
@@ -1658,7 +1664,10 @@ pub extern "C" fn set_history_items(
 
     let _ = unsafe {
         let space = (*rspace).rspace.lock().unwrap();
-        space.get_history_repository().importer().set_history_items(data)
+        space
+            .get_history_repository()
+            .importer()
+            .set_history_items(data)
     };
 }
 
@@ -1684,7 +1693,10 @@ pub extern "C" fn set_data_items(
 
     let _ = unsafe {
         let space = (*rspace).rspace.lock().unwrap();
-        space.get_history_repository().importer().set_data_items(data)
+        space
+            .get_history_repository()
+            .importer()
+            .set_data_items(data)
     };
 }
 
@@ -2092,13 +2104,12 @@ pub extern "C" fn replay_consume(
 #[no_mangle]
 pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
-    let checkpoint = blocking_runtime()
-        .block_on(async {
-            space
-                .create_checkpoint()
-                .await
-                .expect("Rust RSpacePlusPlus Library: Failed to create checkpoint")
-        });
+    let checkpoint = blocking_runtime().block_on(async {
+        space
+            .create_checkpoint()
+            .await
+            .expect("Rust RSpacePlusPlus Library: Failed to create checkpoint")
+    });
 
     let log = checkpoint.log;
     let log_proto: Vec<EventProto> = log
@@ -2219,13 +2230,12 @@ pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
 #[no_mangle]
 pub extern "C" fn replay_clear(rspace: *mut Space) -> () {
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
-    blocking_runtime()
-        .block_on(async {
-            space
-                .clear()
-                .await
-                .expect("Rust RSpacePlusPlus Library: Failed to clear")
-        });
+    blocking_runtime().block_on(async {
+        space
+            .clear()
+            .await
+            .expect("Rust RSpacePlusPlus Library: Failed to clear")
+    });
 }
 
 #[no_mangle]

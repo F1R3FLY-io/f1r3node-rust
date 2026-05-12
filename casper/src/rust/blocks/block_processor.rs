@@ -11,43 +11,35 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::rust::block_status::BlockError;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
+use prost::Message;
+use rspace_plus_plus::rspace::history::Either;
+
+use crate::rust::block_status::{BlockError, InvalidBlock};
+use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
     BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
 };
-use crate::rust::{
-    block_status::InvalidBlock,
-    casper::{Casper, CasperSnapshot},
-    errors::CasperError,
-    util::proto_util,
-    validate::Validate,
-    ValidBlockProcessing,
-};
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::{
-    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    key_value_block_store::KeyValueBlockStore,
-};
-use comm::rust::{
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
-use models::rust::{
-    block_hash::{BlockHash, BlockHashSerde},
-    casper::pretty_printer::PrettyPrinter,
-    casper::protocol::casper_message::{BlockMessage, CasperMessage},
-};
-use prost::Message;
-use rspace_plus_plus::rspace::history::Either;
+use crate::rust::util::proto_util;
+use crate::rust::validate::Validate;
+use crate::rust::ValidBlockProcessing;
 
 /// Logic for processing incoming blocks
 /// Blocks created by node itself are not held here, but in Proposer.
@@ -97,9 +89,7 @@ fn maybe_trim_allocator_after_block() {
 }
 
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
-    pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self {
-        Self { dependencies }
-    }
+    pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
     /// check if block should be processed
     pub fn check_if_of_interest(
@@ -370,13 +360,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     }
 
     // Public getters for tests
-    pub fn transport(&self) -> &Arc<T> {
-        &self.transport
-    }
+    pub fn transport(&self) -> &Arc<T> { &self.transport }
 
-    pub fn casper_buffer(&self) -> &CasperBufferKeyValueStorage {
-        &self.casper_buffer
-    }
+    pub fn casper_buffer(&self) -> &CasperBufferKeyValueStorage { &self.casper_buffer }
 
     fn prune_casper_buffer_if_needed(&self) -> Result<(), CasperError> {
         let now_ms = SystemTime::now()

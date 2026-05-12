@@ -1,14 +1,16 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/FailingResultCollectorSpec.scala
 
-use crate::helper::rho_spec::get_results;
-use crate::util::genesis_builder::GenesisBuilder;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use casper::rust::helper::test_result_collector::{
     RhoTestAssertion, TestResult, TestResultCollector,
 };
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+
+use crate::helper::rho_spec::get_results;
+use crate::util::genesis_builder::GenesisBuilder;
 
 struct FailingResultCollectorSpec;
 
@@ -49,8 +51,9 @@ impl FailingResultCollectorSpec {
     }
 
     async fn result() -> TestResult {
-        let test_object = crate::util::rholang::test_rho_loader::load_test_rho("FailingResultCollectorTest.rho")
-            .expect("Failed to load FailingResultCollectorTest.rho");
+        let test_object =
+            crate::util::rholang::test_rho_loader::load_test_rho("FailingResultCollectorTest.rho")
+                .expect("Failed to load FailingResultCollectorTest.rho");
 
         let compiled = CompiledRholangSource::new(
             test_object,

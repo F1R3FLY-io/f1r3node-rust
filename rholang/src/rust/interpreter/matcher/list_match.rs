@@ -1,5 +1,7 @@
-use models::{rhoapi::Par, rust::utils::FreeMap};
 use std::collections::HashSet;
+
+use models::rhoapi::Par;
+use models::rust::utils::FreeMap;
 
 #[derive(Clone, Debug)]
 pub enum Pattern<T: Clone> {

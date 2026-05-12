@@ -1,5 +1,6 @@
-use crate::rust::peer_node::PeerNode;
 use models::routing::Protocol;
+
+use crate::rust::peer_node::PeerNode;
 
 /// Server message types for transport layer communication
 #[derive(Debug, Clone)]
@@ -18,9 +19,7 @@ pub struct Send {
 
 impl Send {
     /// Create a new Send message
-    pub fn new(msg: Protocol) -> Self {
-        Self { msg }
-    }
+    pub fn new(msg: Protocol) -> Self { Self { msg } }
 }
 
 /// Stream message containing metadata about a streamed blob

@@ -1,5 +1,11 @@
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -7,15 +13,15 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, Match, New, ParWithRandom, Receive,
-    ReceiveBind, Send, Var,
+    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
+    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, New, Par,
+    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
-use models::rhoapi::{ETuple, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_zipper::RholangReadZipper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -27,22 +33,8 @@ use models::rust::utils::{
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
-use std::collections::{BTreeMap, BTreeSet};
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-
-use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
-};
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
-use crate::rust::interpreter::rho_type::RhoTuple2;
 
 use super::accounting::_cost;
 use super::accounting::costs::{
@@ -70,7 +62,13 @@ use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
-use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use crate::rust::interpreter::accounting::costs::{
+    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
+    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
+    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+};
+use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::rho_type::RhoTuple2;
 
 /// Minimum remaining stack space (in bytes) before growing.
 /// When the current stack has less than this amount remaining, a new stack segment is allocated.
@@ -6339,7 +6337,7 @@ impl DebruijnInterpreter {
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: ps,
+                                    ps,
                                     locally_free: Vec::new(),
                                     connective_used: false,
                                     remainder: None,

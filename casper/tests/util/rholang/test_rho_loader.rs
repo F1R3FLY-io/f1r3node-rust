@@ -14,8 +14,9 @@
 //! let compiled = CompiledRholangSource::new(code, HashMap::new(), "AuthKeyTest.rho".into())?;
 //! ```
 
-use rholang::rust::interpreter::errors::InterpreterError;
 use std::fs;
+
+use rholang::rust::interpreter::errors::InterpreterError;
 
 /// Reads a Rholang source/template file from one of several well-known
 /// test-resource locations relative to the current working directory.

@@ -3,29 +3,24 @@
 use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
+use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::rspace_interface::{
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
+};
+use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::Log;
+use rspace_plus_plus::rspace::util::unpack_option;
 
-use crate::rust::interpreter::{
-    accounting::{
-        _cost,
-        costs::{
-            comm_event_storage_cost, event_storage_cost, storage_cost_consume,
-            storage_cost_produce, Cost,
-        },
-    },
-    errors::InterpreterError,
+use crate::rust::interpreter::accounting::_cost;
+use crate::rust::interpreter::accounting::costs::{
+    comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
-use models::rhoapi::{
-    tagged_continuation::TaggedCont, BindPattern, ListParWithRandom, Par, TaggedContinuation,
-};
-use rspace_plus_plus::rspace::{
-    checkpoint::{Checkpoint, SoftCheckpoint},
-    errors::RSpaceError,
-    hashing::blake2b256_hash::Blake2b256Hash,
-    internal::{Datum, Row, WaitingContinuation},
-    rspace_interface::{ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult},
-    trace::{event::Produce, Log},
-    util::unpack_option,
-};
+use crate::rust::interpreter::errors::InterpreterError;
 
 pub struct ChargingRSpace;
 
@@ -159,13 +154,9 @@ impl ChargingRSpace {
                 self.space.get_joins(channel).await
             }
 
-            async fn clear(&self) -> Result<(), RSpaceError> {
-                self.space.clear().await
-            }
+            async fn clear(&self) -> Result<(), RSpaceError> { self.space.clear().await }
 
-            async fn get_root(&self) -> Blake2b256Hash {
-                self.space.get_root().await
-            }
+            async fn get_root(&self) -> Blake2b256Hash { self.space.get_root().await }
 
             async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
                 self.space.reset(root).await
@@ -204,9 +195,7 @@ impl ChargingRSpace {
                 self.space.create_soft_checkpoint().await
             }
 
-            async fn take_event_log(&self) -> Log {
-                self.space.take_event_log().await
-            }
+            async fn take_event_log(&self) -> Log { self.space.take_event_log().await }
 
             async fn revert_to_soft_checkpoint(
                 &self,
@@ -223,17 +212,13 @@ impl ChargingRSpace {
                 self.space.rig_and_reset(start_root, log).await
             }
 
-            async fn rig(&self, log: Log) -> Result<(), RSpaceError> {
-                self.space.rig(log).await
-            }
+            async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log).await }
 
             async fn check_replay_data(&self) -> Result<(), RSpaceError> {
                 self.space.check_replay_data().await
             }
 
-            async fn is_replay(&self) -> bool {
-                self.space.is_replay().await
-            }
+            async fn is_replay(&self) -> bool { self.space.is_replay().await }
 
             async fn update_produce(&self, produce: Produce) -> () {
                 self.space.update_produce(produce).await

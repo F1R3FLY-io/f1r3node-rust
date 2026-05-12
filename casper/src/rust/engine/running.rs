@@ -1,50 +1,35 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/Running.scala
 
-use tokio::sync::mpsc;
-
-use crate::rust::{
-    casper::MultiParentCasper,
-    engine::{
-        block_retriever::{self, BlockRetriever},
-        engine::{self, Engine},
-        engine_cell::EngineCell,
-    },
-    errors::CasperError,
-    metrics_constants::{
-        BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
-    },
-};
-use async_trait::async_trait;
-use comm::rust::{
-    peer_node::PeerNode,
-    rp::{connect::ConnectionsCell, rp_conf::RPConf},
-    transport::transport_layer::TransportLayer,
-};
-use dashmap::DashSet;
-use models::rust::{
-    block_hash::BlockHash,
-    casper::{
-        pretty_printer::PrettyPrinter,
-        protocol::casper_message::{
-            self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage,
-            BlockRequest, CasperMessage, HasBlock, HasBlockRequest,
-        },
-    },
-};
-
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    state::{
-        exporters::rspace_exporter_items::RSpaceExporterItems,
-        rspace_exporter::RSpaceExporterInstance,
-    },
-};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use async_trait::async_trait;
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{
+    self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
+    CasperMessage, HasBlock, HasBlockRequest,
+};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
+use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use tokio::sync::mpsc;
+
+use crate::rust::casper::MultiParentCasper;
+use crate::rust::engine::block_retriever::{self, BlockRetriever};
+use crate::rust::engine::engine::{self, Engine};
+use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,9 +321,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize {
-    MAX_BLOCKS_IN_PROCESSING
-}
+fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
     pub fn new(
@@ -535,7 +518,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             take as i32,
         );
         let resp = casper_message::StoreItemsMessage {
-            start_path: start_path,
+            start_path,
             last_path: history.last_path,
             history_items: history
                 .items

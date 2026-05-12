@@ -10,6 +10,8 @@
 //     validators correctly flag as `InvalidRepeatDeploy` — leading to
 //     mutual-slashing on FTT=0 shards.
 
+use std::sync::Arc;
+
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
@@ -17,7 +19,6 @@ use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
-use std::sync::Arc;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
@@ -25,8 +26,9 @@ use crate::helper::block_generator::{create_block, create_genesis_block};
 fn mk_casper_snapshot(
     dag: block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
 ) -> casper::rust::casper::CasperSnapshot {
-    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use std::collections::HashMap;
+
+    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 
     let shard_conf = CasperShardConf {
         fault_tolerance_threshold: 0.0,
@@ -151,12 +153,13 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
+    use std::sync::Mutex as StdMutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
     use casper::rust::blocks::proposer::block_creator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-    use std::sync::Mutex as StdMutex;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     crate::init_logger();
 

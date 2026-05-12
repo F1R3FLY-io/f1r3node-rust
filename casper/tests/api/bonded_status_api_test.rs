@@ -1,5 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BondedStatusAPITest.scala
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
@@ -9,8 +12,6 @@ use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;

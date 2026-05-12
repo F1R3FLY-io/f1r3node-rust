@@ -1,20 +1,17 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
 
-use crate::{
-    rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send},
-    rust::rholang::sorter::{
-        bundle_sort_matcher::BundleSortMatcher,
-        connective_sort_matcher::ConnectiveSortMatcher,
-        expr_sort_matcher::ExprSortMatcher,
-        match_sort_matcher::MatchSortMatcher,
-        new_sort_matcher::NewSortMatcher,
-        receive_sort_matcher::ReceiveSortMatcher,
-        score_tree::{Score, ScoreAtom, Tree},
-        unforgeable_sort_matcher::UnforgeableSortMatcher,
-    },
-};
-
-use super::{score_tree::ScoredTerm, send_sort_matcher::SendSortMatcher, sortable::Sortable};
+use super::score_tree::ScoredTerm;
+use super::send_sort_matcher::SendSortMatcher;
+use super::sortable::Sortable;
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send};
+use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
+use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
+use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
+use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
+use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
+use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
+use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
 
 pub struct ParSortMatcher;
 

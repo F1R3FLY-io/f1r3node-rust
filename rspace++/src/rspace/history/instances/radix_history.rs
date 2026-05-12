@@ -86,14 +86,12 @@ impl History for RadixHistory {
 
                 Ok(Box::new(new_history))
             }
-            None => {
-                Ok(Box::new(RadixHistory {
-                    root_hash: self.root_hash.clone(),
-                    root_node: self.root_node.clone(),
-                    imple: RadixTreeImpl::new(self.store.clone()),
-                    store: self.store.clone(),
-                }))
-            }
+            None => Ok(Box::new(RadixHistory {
+                root_hash: self.root_hash.clone(),
+                root_node: self.root_node.clone(),
+                imple: RadixTreeImpl::new(self.store.clone()),
+                store: self.store.clone(),
+            })),
         }
     }
 

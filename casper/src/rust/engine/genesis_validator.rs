@@ -1,14 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/GenesisValidator.scala
 
-use async_trait::async_trait;
-use dashmap::DashSet;
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc;
-
+use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -18,6 +15,7 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -26,6 +24,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use tokio::sync::mpsc;
 
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
@@ -87,9 +86,7 @@ impl SeenCandidates {
         }
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
-        self.set.contains(hash)
-    }
+    fn contains(&self, hash: &BlockHash) -> bool { self.set.contains(hash) }
 
     fn insert(&mut self, hash: BlockHash) {
         if !self.set.insert(hash.clone()) {
@@ -106,9 +103,7 @@ impl SeenCandidates {
     }
 }
 
-fn genesis_seen_candidates_max_entries() -> usize {
-    4_096
-}
+fn genesis_seen_candidates_max_entries() -> usize { 4_096 }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// Scala equivalent: Constructor for `GenesisValidator` class
@@ -174,9 +169,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         self.seen_candidates.lock().unwrap().contains(hash)
     }
 
-    fn ack(&self, hash: BlockHash) {
-        self.seen_candidates.lock().unwrap().insert(hash);
-    }
+    fn ack(&self, hash: BlockHash) { self.seen_candidates.lock().unwrap().insert(hash); }
 
     /// Handle an ApprovedBlock that arrives while we're still in GenesisValidator state.
     ///
@@ -307,9 +300,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
-    async fn init(&self) -> Result<(), CasperError> {
-        Ok(())
-    }
+    async fn init(&self) -> Result<(), CasperError> { Ok(()) }
 
     /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {

@@ -1,32 +1,30 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportServer.scala
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use models::routing::Protocol;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use models::routing::Protocol;
-
-use crate::rust::{
-    errors::CommError,
-    metrics_constants::{
-        DISPATCHED_MESSAGES_METRIC, DISPATCHED_PACKETS_METRIC, TRANSPORT_METRICS_SOURCE,
-    },
-    peer_node::PeerNode,
-    rp::rp_conf::RPConf,
-    transport::{
-        communication_response::CommunicationResponse,
-        grpc_transport_receiver::{GrpcTransportReceiver, MessageHandlers, PeerBufferSlot},
-        packet_ops::StreamCache,
-        stream_handler::StreamHandler,
-        transport_layer::Blob,
-    },
+use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{
+    DISPATCHED_MESSAGES_METRIC, DISPATCHED_PACKETS_METRIC, TRANSPORT_METRICS_SOURCE,
 };
+use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::rp_conf::RPConf;
+use crate::rust::transport::communication_response::CommunicationResponse;
+use crate::rust::transport::grpc_transport_receiver::{
+    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot,
+};
+use crate::rust::transport::packet_ops::StreamCache;
+use crate::rust::transport::stream_handler::StreamHandler;
+use crate::rust::transport::transport_layer::Blob;
 
 /// Cancelable resource that can be cancelled/stopped
 pub type Cancelable = JoinHandle<()>;
@@ -233,9 +231,7 @@ impl TransportServer {
     }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Acquire)
-    }
+    pub fn is_running(&self) -> bool { self.is_running.load(Ordering::Acquire) }
 
     /// Get a JoinHandle for monitoring the server's lifecycle
     ///

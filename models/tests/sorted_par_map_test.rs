@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use models::rhoapi::{
     connective, g_unforgeable, Bundle, Connective, EMap, GPrivate, GUnforgeable, KeyValuePair, Par,
 };
@@ -10,7 +12,6 @@ use models::rust::utils::{
     new_boundvar_par, new_eset_par, new_gint_par, new_gstring_par, new_par_from_par_set,
 };
 use prost::Message;
-use std::collections::HashMap;
 
 fn to_kv_pair(pair: (Par, Par)) -> KeyValuePair {
     KeyValuePair {

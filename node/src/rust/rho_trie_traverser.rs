@@ -1,4 +1,7 @@
-use casper::rust::{genesis::contracts::standard_deploys, util::rholang::tools::Tools};
+use std::collections::HashMap;
+
+use casper::rust::genesis::contracts::standard_deploys;
+use casper::rust::util::rholang::tools::Tools;
 use crypto::rust::hash::keccak256::Keccak256;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -8,7 +11,6 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use prost::Message;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use std::collections::HashMap;
 
 pub type ReadParams = (Vec<Vec<i32>>, i32, Par, Vec<ParMap>);
 
@@ -116,9 +118,7 @@ impl RhoTrieTraverser {
     }
 
     /// Serialize a Par to byte array using protobuf encoding
-    fn par_to_byte_array(p: &Par) -> Vec<u8> {
-        p.encode_to_vec()
-    }
+    fn par_to_byte_array(p: &Par) -> Vec<u8> { p.encode_to_vec() }
 
     /// Create a Keccak256 hash of a string wrapped as a Par
     ///
@@ -208,7 +208,6 @@ impl RhoTrieTraverser {
     }
 
     /// Create the store token unforgeable name
-    ///
     fn store_token_unforgeable() -> Par {
         let mut rand = Tools::unforgeable_name_rng(
             &standard_deploys::REGISTRY_PUB_KEY,

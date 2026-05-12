@@ -12,14 +12,12 @@
 pub const REGISTRY: &str = include_str!("../../../main/resources/Registry.rho");
 pub const LIST_OPS: &str = include_str!("../../../main/resources/ListOps.rho");
 pub const EITHER: &str = include_str!("../../../main/resources/Either.rho");
-pub const NON_NEGATIVE_NUMBER: &str =
-    include_str!("../../../main/resources/NonNegativeNumber.rho");
+pub const NON_NEGATIVE_NUMBER: &str = include_str!("../../../main/resources/NonNegativeNumber.rho");
 pub const MAKE_MINT: &str = include_str!("../../../main/resources/MakeMint.rho");
 pub const AUTH_KEY: &str = include_str!("../../../main/resources/AuthKey.rho");
 pub const SYSTEM_VAULT: &str = include_str!("../../../main/resources/SystemVault.rho");
 pub const MULTI_SIG_SYSTEM_VAULT: &str =
     include_str!("../../../main/resources/MultiSigSystemVault.rho");
 pub const STACK: &str = include_str!("../../../main/resources/Stack.rho");
-pub const TOKEN_METADATA: &str =
-    include_str!("../../../main/resources/TokenMetadata.rhox");
+pub const TOKEN_METADATA: &str = include_str!("../../../main/resources/TokenMetadata.rhox");
 pub const POS: &str = include_str!("../../../main/resources/PoS.rhox");

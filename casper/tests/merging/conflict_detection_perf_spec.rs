@@ -4,15 +4,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::{
-    hashing::blake2b256_hash::Blake2b256Hash,
-    merger::{event_log_index::EventLogIndex, merging_logic},
-    trace::event::{Consume, Produce},
-};
-use shared::rust::hashable_set::HashableSet;
-
 use casper::rust::merging::deploy_chain_index::{DeployChainIndex, DeployIdWithCost};
+use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::merging_logic;
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
+use shared::rust::hashable_set::HashableSet;
 
 fn make_chain(idx: usize) -> DeployChainIndex {
     let mut ch = [0u8; 32];

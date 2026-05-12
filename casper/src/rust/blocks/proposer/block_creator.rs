@@ -1,18 +1,13 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-use prost::bytes::Bytes;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::{
-    collections::{HashMap, HashSet},
-    time::SystemTime,
-};
-use tracing;
+use std::time::SystemTime;
 
-use block_storage::rust::{
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
-};
-use crypto::rust::{private_key::PrivateKey, signatures::signed::Signed};
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
@@ -20,24 +15,21 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
-
+use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
+use tracing;
 
-use crate::rust::util::construct_deploy;
-use crate::rust::util::rholang::{
-    costacc::{close_block_deploy::CloseBlockDeploy, slash_deploy::SlashDeploy},
-    interpreter_util,
-    system_deploy_enum::SystemDeployEnum,
-    system_deploy_user_error::SystemDeployPlatformFailure,
-    system_deploy_util,
-};
-use crate::rust::{
-    blocks::proposer::propose_result::BlockCreatorResult,
-    casper::CasperSnapshot,
-    errors::CasperError,
-    util::{proto_util, rholang::runtime_manager::RuntimeManager},
-    validator_identity::ValidatorIdentity,
-};
+use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use crate::rust::casper::CasperSnapshot;
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use crate::rust::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
+use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
+use crate::rust::util::{construct_deploy, proto_util};
+use crate::rust::validator_identity::ValidatorIdentity;
 
 /*
  * Overview of createBlock
@@ -56,9 +48,7 @@ pub struct PreparedUserDeploys {
     pub cap_hit: bool,
 }
 
-fn deploy_selection_reserve_tail_enabled() -> bool {
-    true
-}
+fn deploy_selection_reserve_tail_enabled() -> bool { true }
 
 pub async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
@@ -924,13 +914,9 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 mod tests {
     use super::*;
 
-    fn validator(byte: u8) -> Validator {
-        Bytes::from(vec![byte; 32])
-    }
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; 32]) }
 
-    fn invalid_block_hash(byte: u8) -> BlockHash {
-        Bytes::from(vec![byte; 32])
-    }
+    fn invalid_block_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
 
     /// A bonded validator that PoS still considers active is slashable
     /// when their latest message is invalid. Baseline behavior.

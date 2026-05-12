@@ -2,36 +2,35 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::{
-    dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation},
-    deploy::key_value_deploy_storage::KeyValueDeployStorage,
-    key_value_block_store::KeyValueBlockStore,
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
-use casper::rust::{
-    blocks::proposer::{block_creator, propose_result::BlockCreatorResult},
-    casper::{CasperShardConf, CasperSnapshot, OnChainCasperState},
-    genesis::contracts::{proof_of_stake::ProofOfStake, validator::Validator as GenesisValidator},
-    genesis::genesis::Genesis,
-    util::rholang::{
-        costacc::close_block_deploy::CloseBlockDeploy,
-        interpreter_util::compute_parents_post_state, runtime_manager::RuntimeManager,
-        system_deploy_enum::SystemDeployEnum, system_deploy_util,
-    },
-    validator_identity::ValidatorIdentity,
-};
-use crypto::rust::{
-    private_key::PrivateKey,
-    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
-};
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::blocks::proposer::block_creator;
+use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::interpreter_util::compute_parents_post_state;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use casper::rust::util::rholang::system_deploy_util;
+use casper::rust::validator_identity::ValidatorIdentity;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
 use dashmap::{DashMap, DashSet};
 use models::rust::casper::protocol::casper_message::{DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::shared::{
-    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
-};
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use tokio::time::{timeout, Duration};
 
 const DEPLOY_LIFESPAN: i64 = 50;
@@ -45,13 +44,9 @@ fn vm_rss_kb() -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn kb_to_mib(kb: usize) -> f64 {
-    kb as f64 / 1024.0
-}
+fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
 
-fn delta_kb_to_mib(delta_kb: isize) -> f64 {
-    delta_kb as f64 / 1024.0
-}
+fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
 fn delta_kb(curr: Option<usize>, prev: Option<usize>) -> isize {
     match (curr, prev) {

@@ -1,7 +1,8 @@
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
-use super::errors::CasperError;
 use shared::rust::store::key_value_store::KvStoreError;
+
+use super::errors::CasperError;
 
 /// Represents the status of a block in the system
 #[derive(Debug, Clone)]
@@ -66,25 +67,15 @@ pub enum InvalidBlock {
 }
 
 impl BlockStatus {
-    pub fn valid() -> ValidBlock {
-        ValidBlock::Valid
-    }
+    pub fn valid() -> ValidBlock { ValidBlock::Valid }
 
-    pub fn processed() -> BlockError {
-        BlockError::Processed
-    }
+    pub fn processed() -> BlockError { BlockError::Processed }
 
-    pub fn casper_is_busy() -> BlockError {
-        BlockError::CasperIsBusy
-    }
+    pub fn casper_is_busy() -> BlockError { BlockError::CasperIsBusy }
 
-    pub fn exception(ex: CasperError) -> BlockError {
-        BlockError::BlockException(ex)
-    }
+    pub fn exception(ex: CasperError) -> BlockError { BlockError::BlockException(ex) }
 
-    pub fn missing_blocks() -> BlockError {
-        BlockError::MissingBlocks
-    }
+    pub fn missing_blocks() -> BlockError { BlockError::MissingBlocks }
 
     pub fn admissible_equivocation() -> BlockError {
         BlockError::Invalid(InvalidBlock::AdmissibleEquivocation)
@@ -94,29 +85,17 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::IgnorableEquivocation)
     }
 
-    pub fn invalid_format() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidFormat)
-    }
+    pub fn invalid_format() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidFormat) }
 
-    pub fn invalid_signature() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidSignature)
-    }
+    pub fn invalid_signature() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidSignature) }
 
-    pub fn invalid_sender() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidSender)
-    }
+    pub fn invalid_sender() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidSender) }
 
-    pub fn invalid_version() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidVersion)
-    }
+    pub fn invalid_version() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidVersion) }
 
-    pub fn invalid_timestamp() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidTimestamp)
-    }
+    pub fn invalid_timestamp() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidTimestamp) }
 
-    pub fn deploy_not_signed() -> BlockError {
-        BlockError::Invalid(InvalidBlock::DeployNotSigned)
-    }
+    pub fn deploy_not_signed() -> BlockError { BlockError::Invalid(InvalidBlock::DeployNotSigned) }
 
     pub fn invalid_block_number() -> BlockError {
         BlockError::Invalid(InvalidBlock::InvalidBlockNumber)
@@ -126,21 +105,15 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
     }
 
-    pub fn invalid_parents() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidParents)
-    }
+    pub fn invalid_parents() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidParents) }
 
-    pub fn invalid_follows() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidFollows)
-    }
+    pub fn invalid_follows() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidFollows) }
 
     pub fn invalid_sequence_number() -> BlockError {
         BlockError::Invalid(InvalidBlock::InvalidSequenceNumber)
     }
 
-    pub fn invalid_shard_id() -> BlockError {
-        BlockError::Invalid(InvalidBlock::InvalidShardId)
-    }
+    pub fn invalid_shard_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidShardId) }
 
     pub fn justification_regression() -> BlockError {
         BlockError::Invalid(InvalidBlock::JustificationRegression)
@@ -182,13 +155,9 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::ContainsFutureDeploy)
     }
 
-    pub fn not_of_interest() -> BlockError {
-        BlockError::Invalid(InvalidBlock::NotOfInterest)
-    }
+    pub fn not_of_interest() -> BlockError { BlockError::Invalid(InvalidBlock::NotOfInterest) }
 
-    pub fn low_deploy_cost() -> BlockError {
-        BlockError::Invalid(InvalidBlock::LowDeployCost)
-    }
+    pub fn low_deploy_cost() -> BlockError { BlockError::Invalid(InvalidBlock::LowDeployCost) }
 
     pub fn is_in_dag(&self) -> bool {
         match self {
@@ -225,7 +194,5 @@ impl InvalidBlock {
 }
 
 impl From<KvStoreError> for BlockError {
-    fn from(error: KvStoreError) -> Self {
-        BlockError::BlockException(CasperError::from(error))
-    }
+    fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
 }
