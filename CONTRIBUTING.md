@@ -1,12 +1,53 @@
-# Contributing to RChain
+# Contributing
 
-* [Coding Standards](https://rchain.atlassian.net/wiki/spaces/DOC/pages/28082177/Coding+Standards)
-* [Sign your commits](https://rchain.atlassian.net/wiki/spaces/DOC/pages/498630673/How+to+sign+commits+to+rchain+rchain)
-* [Code Review Process](https://rchain.atlassian.net/wiki/spaces/DOC/pages/44040200/Code+Review+Process)
-* [Github Workflow](https://rchain.atlassian.net/wiki/spaces/DOC/pages/44007462/Github+Fork-n-Beans+Workflow)
-* We use [Travis CI](https://travis-ci.org) for unit testing. We require passage of unit tests to merge PRs. To start this automated testing in a PR, please assure you have an account with Travis based on your GitHub account. See [Travis CI](https://travis-ci.org) to confirm or create your account.
-* Information about setting up your development environment and the structure of the RChain GitHub repository is available in [RChain/README.md](https://github.com/rchain/rchain/blob/master/README.md).
+## Before You Start
 
-If you're picking up someone else's pull request, then whatever you
-do must preserve the commit history. We're not going to squash commits
-for now.
+1. Install the native toolchain described in [DEVELOPER.md](DEVELOPER.md).
+2. Create a feature branch from your working base.
+3. Keep changes scoped to one concern per pull request.
+
+## Local Checks
+
+Run the smallest useful set for your change, then the broader checks if you touched shared behavior.
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets
+cargo test
+```
+
+Useful narrower commands:
+
+```bash
+cargo test -p node
+cargo test -p casper
+cargo test -p rholang --release
+./scripts/run_rust_tests.sh
+```
+
+## Documentation Expectations
+
+- Update Markdown when commands, ports, flags, paths, or workflows change.
+- Keep examples runnable from the repository root unless the doc says otherwise.
+- Prefer Rust-only instructions and terminology in this repository.
+
+## Pull Requests
+
+Include:
+
+- What changed
+- Why it changed
+- How you verified it
+- Any follow-up work that remains
+
+If you skipped a validation step, state that explicitly in the PR description.
+
+## Code Review Notes
+
+- Keep crate boundaries clean.
+- Add or update tests when behavior changes.
+- Do not introduce undocumented setup steps.
+
+## License
+
+By contributing, you agree that your contributions are licensed under Apache License 2.0.

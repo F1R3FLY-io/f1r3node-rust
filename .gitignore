@@ -1,121 +1,74 @@
-# Eclipse Project Files
-#######################
-.settings
-.classpath
-.project
-.springBeans
-
-.cache-main
-.cache-tests
-.worksheet/
-.tmpBin/
-
-# Maven Output #
-#################
-target
-
-# Bloop output #
-#################
-.bloop
-out/
-.bsp
-
-# Intellij IDEA Project Files
-#############################
-*.iml
-.idea
-Springsprout.iml
+# Build output
+target/
+/build
 
 # OS generated files
-####################
-.DS_Store?
 .DS_Store
+.DS_Store?
 ehthumbs.db
 Icon?
 Thumbs.db
 *.swp
 
-# NIX
-#####
-.envrc
+# IDE / Editor
+*.iml
+.idea
+.vscode
+.metals
+.history
+.bsp
 
-# SBT
-#####
-target/
-lib_managed/
-src_managed/
-boot/
+# Rust
+*.rs.bk
 
-# BNFC
-###################
+# Per-crate Cargo.lock (cargo build artifacts when invoked in subdirs)
+# Only the workspace-root Cargo.lock is tracked.
+Cargo.lock
+!/Cargo.lock
+
+# BNFC generated
 rholang/bnfc/
 rholang/src/main/java/
 
-# ChromaDB
-#############
-chroma_data/
-
 # Secp256k1
-###################
 crypto/secp256k1/
-
-# Rosette
-###################
-!rosette/bin/README
-rosette/src/*.o
-rosette/.vagrant
-Vagrantfile
-
-# node-client
-###################
-node-client/*pb2_grpc.py
-node-client/*pb2.py
-node-client/protobuf
-node-client/.virtualenv
-
-# Actual code editors
-###################
-*~
-\#*
-.ensime*
-ensime.sbt
-TAGS
-node-client/__pycache__
-node-client/ve
-research/sharding/ve
-*.pyc
-integration-tests/.pytest_cache
-integration-tests/.mypy_cache
-integration-tests/report.json
-integration-tests.log
-*.log
-.virtualenv
-.metals
-.history
-.vscode
-dist-newstyle/
-
-rspacePlusPlus/
-/**/metals.sbt
-
-.aider*
-.sbtopts
-
-# cmake
-/build
 
 # direnv
 .direnv
+.envrc
 
-# pyenv
+# Environment
+.env
 .python-version
 
-# docker compose
+# Docker compose data
 docker/data/
 docker/data.*/
 
+# LMDB files
 rholang/**/*.mdb
-rspace++/tests/*.proptest-regressions
+
+# proptest regression artifacts (created by proptest on test failures, used to
+# replay shrunken counterexamples; safe to regenerate, not worth tracking)
+**/*.proptest-regressions
+
+# Rust JNI/JNA libraries (legacy hybrid build)
 rust_libraries/**
 
-.env
+# Run-local node data
+run-local/data/
+
+# Logs
+*.log
+
+# Aider
+.aider*
+
+# OCI testbed state (EPOCH-009)
+scripts/remote/testbed-state.json
+scripts/remote/testbed.pem
+scripts/remote/testbed.pem.pub
+
+# story-manager.sh backup artifacts
+docs/*.md.bak
+.claude/
