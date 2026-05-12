@@ -1,0 +1,8 @@
+build-essential
+cmake
+curl
+git
+liblmdb-dev
+libssl-dev
+pkg-config
+protobuf-compiler
