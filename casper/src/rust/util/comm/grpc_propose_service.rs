@@ -21,7 +21,9 @@ impl ProposeService for GrpcProposeService {
         self.propose_impl(is_async).await
     }
 
-    async fn propose_result(&mut self) -> ServiceResult<String> { self.propose_result_impl().await }
+    async fn propose_result(&mut self) -> ServiceResult<String> {
+        self.propose_result_impl().await
+    }
 }
 
 impl GrpcProposeService {

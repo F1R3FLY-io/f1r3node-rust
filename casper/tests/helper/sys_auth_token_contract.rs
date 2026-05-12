@@ -2,8 +2,9 @@
 
 use models::rhoapi::{ListParWithRandom, Par};
 use models::rust::utils::new_gsys_auth_token_par;
-use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
-use rholang::rust::interpreter::system_processes::ProcessContext;
+use rholang::rust::interpreter::{
+    errors::illegal_argument_error, errors::InterpreterError, system_processes::ProcessContext,
+};
 
 use crate::helper::process_context_ext::ProcessContextExt;
 

@@ -1,11 +1,9 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TreeHashMapSpec.scala
 
-use std::collections::HashMap;
-
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-
 use crate::genesis::contracts::GENESIS_TEST_TIMEOUT;
 use crate::helper::rho_spec::RhoSpec;
+use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use std::collections::HashMap;
 
 #[test]
 fn tree_hash_map_spec() {
@@ -14,7 +12,7 @@ fn tree_hash_map_spec() {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let test_object = CompiledRholangSource::load_source("TreeHashMapTest.rho")
+                let test_object = crate::util::rholang::test_rho_loader::load_test_rho("TreeHashMapTest.rho")
                     .expect("Failed to load TreeHashMapTest.rho");
 
                 let compiled = CompiledRholangSource::new(

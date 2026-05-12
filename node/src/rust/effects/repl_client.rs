@@ -1,6 +1,5 @@
-#![allow(clippy::ptr_arg)]
-
 //! REPL client module
+//!
 
 //! REPL client for F1r3fly node
 //!
@@ -10,12 +9,13 @@ pub mod repl {
     tonic::include_proto!("repl");
 }
 
-use std::path::Path;
-use std::time::Duration;
-
 use futures::future::join_all;
 use repl::repl_client::ReplClient;
-use repl::{CmdRequest, ReplResponse};
+use repl::CmdRequest;
+use repl::ReplResponse;
+
+use std::path::Path;
+use std::time::Duration;
 use tokio::fs;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Status;
@@ -78,14 +78,14 @@ impl GrpcReplClient {
     fn process_error(error: Status) -> eyre::Report {
         // Extract the root cause if available
         let message = error.message().to_string();
-        eyre::Report::new(std::io::Error::other(message))
+        eyre::Report::new(std::io::Error::new(std::io::ErrorKind::Other, message))
     }
 }
 
 #[async_trait::async_trait]
 impl ReplClientService for GrpcReplClient {
     async fn run(&self, line: String) -> eyre::Result<String> {
-        let req = CmdRequest { line };
+        let req = CmdRequest { line: line.into() };
 
         // Call the RPC
         match self.client.clone().run(req).await {
@@ -103,7 +103,7 @@ impl ReplClientService for GrpcReplClient {
         print_unmatched_sends_only: bool,
         language: String,
     ) -> Vec<eyre::Result<String>> {
-        join_all(file_names.iter().map(|file_name| async {
+        join_all(file_names.into_iter().map(|file_name| async {
             self.eval_file(
                 file_name.clone(),
                 print_unmatched_sends_only,

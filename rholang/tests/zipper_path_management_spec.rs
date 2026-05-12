@@ -1,7 +1,6 @@
 // Unit tests for PathMap zipper path management methods: createPath, prunePath, reset
 
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
+use models::rhoapi::{expr::ExprInstance, EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 
 #[cfg(test)]

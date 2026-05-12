@@ -3,24 +3,29 @@
 use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
-use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
-use rspace_plus_plus::rspace::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
-};
-use rspace_plus_plus::rspace::trace::event::Produce;
-use rspace_plus_plus::rspace::trace::Log;
-use rspace_plus_plus::rspace::util::unpack_option;
 
-use crate::rust::interpreter::accounting::_cost;
-use crate::rust::interpreter::accounting::costs::{
-    comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
+use crate::rust::interpreter::{
+    accounting::{
+        _cost,
+        costs::{
+            comm_event_storage_cost, event_storage_cost, storage_cost_consume,
+            storage_cost_produce, Cost,
+        },
+    },
+    errors::InterpreterError,
 };
-use crate::rust::interpreter::errors::InterpreterError;
+use models::rhoapi::{
+    tagged_continuation::TaggedCont, BindPattern, ListParWithRandom, Par, TaggedContinuation,
+};
+use rspace_plus_plus::rspace::{
+    checkpoint::{Checkpoint, SoftCheckpoint},
+    errors::RSpaceError,
+    hashing::blake2b256_hash::Blake2b256Hash,
+    internal::{Datum, Row, WaitingContinuation},
+    rspace_interface::{ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult},
+    trace::{event::Produce, Log},
+    util::unpack_option,
+};
 
 pub struct ChargingRSpace;
 
@@ -75,30 +80,22 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost.charge(storage_cost_consume(
-                    channels.clone(),
-                    patterns.clone(),
-                    continuation.clone(),
-                ))?;
-
-                let consume_res = self
-                    .space
-                    .consume(
-                        channels.clone(),
-                        patterns,
-                        continuation.clone(),
-                        persist,
-                        peeks,
-                    )
-                    .await?;
+                self.cost
+                    .charge(storage_cost_consume(&channels, &patterns, &continuation))?;
 
                 let id = consume_id_bytes(&continuation)?;
+                let channels_count = channels.len() as i64;
+                let consume_res = self
+                    .space
+                    .consume(channels, patterns, continuation, persist, peeks)
+                    .await?;
+
                 handle_result(
                     consume_res.clone(),
                     TriggeredBy::Consume {
                         id,
                         persistent: persist,
-                        channels_count: channels.len() as i64,
+                        channels_count,
                     },
                     self.cost.clone(),
                 )?;
@@ -114,16 +111,17 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost
-                    .charge(storage_cost_produce(channel.clone(), data.clone()))?;
-                let produce_res = self.space.produce(channel, data.clone(), persist).await?;
+                self.cost.charge(storage_cost_produce(&channel, &data))?;
+
+                let id = data.random_state.clone();
+                let produce_res = self.space.produce(channel, data, persist).await?;
                 let common_result = produce_res
                     .clone()
                     .map(|(cont, data_list, _)| (cont, data_list));
                 handle_result(
                     common_result,
                     TriggeredBy::Produce {
-                        id: data.random_state.clone(),
+                        id,
                         persistent: persist,
                         channels_count: 1,
                     },
@@ -161,9 +159,13 @@ impl ChargingRSpace {
                 self.space.get_joins(channel).await
             }
 
-            async fn clear(&self) -> Result<(), RSpaceError> { self.space.clear().await }
+            async fn clear(&self) -> Result<(), RSpaceError> {
+                self.space.clear().await
+            }
 
-            async fn get_root(&self) -> Blake2b256Hash { self.space.get_root().await }
+            async fn get_root(&self) -> Blake2b256Hash {
+                self.space.get_root().await
+            }
 
             async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
                 self.space.reset(root).await
@@ -202,7 +204,9 @@ impl ChargingRSpace {
                 self.space.create_soft_checkpoint().await
             }
 
-            async fn take_event_log(&self) -> Log { self.space.take_event_log().await }
+            async fn take_event_log(&self) -> Log {
+                self.space.take_event_log().await
+            }
 
             async fn revert_to_soft_checkpoint(
                 &self,
@@ -219,13 +223,17 @@ impl ChargingRSpace {
                 self.space.rig_and_reset(start_root, log).await
             }
 
-            async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.space.rig(log).await }
+            async fn rig(&self, log: Log) -> Result<(), RSpaceError> {
+                self.space.rig(log).await
+            }
 
             async fn check_replay_data(&self) -> Result<(), RSpaceError> {
                 self.space.check_replay_data().await
             }
 
-            async fn is_replay(&self) -> bool { self.space.is_replay().await }
+            async fn is_replay(&self) -> bool {
+                self.space.is_replay().await
+            }
 
             async fn update_produce(&self, produce: Produce) -> () {
                 self.space.update_produce(produce).await
@@ -262,11 +270,7 @@ fn handle_result(
             // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
-                    storage_cost_consume(
-                        cont.channels.clone(),
-                        cont.patterns.clone(),
-                        cont.continuation.clone(),
-                    )
+                    storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation)
                 } else {
                     Cost::create(0, "refund_for_consume")
                 };
@@ -307,7 +311,7 @@ fn refund_for_removing_produces(
 
     let removed_data: Vec<(RSpaceResult<Par, ListParWithRandom>, Par)> = data_list
         .into_iter()
-        .zip(cont.channels)
+        .zip(cont.channels.into_iter())
         // A persistent produce is charged for upfront before reaching the TS, and needs to be refunded
         // after each iteration it matches an existing consume. We treat it as 'removed' on each such iteration.
         // It is going to be 'not removed' and charged for on the last iteration, where it doesn't match anything.
@@ -318,7 +322,7 @@ fn refund_for_removing_produces(
 
     removed_data
         .into_iter()
-        .map(|(data, channel)| storage_cost_produce(channel, data.removed_datum))
+        .map(|(data, channel)| storage_cost_produce(&channel, &data.removed_datum))
         .fold(
             Cost::create(0, "refund_for_removing_produces init"),
             |acc, cost| {

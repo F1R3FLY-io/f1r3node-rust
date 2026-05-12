@@ -159,7 +159,6 @@ pub struct NodeStarted {
 }
 
 impl F1r3flyEvent {
-    #[allow(clippy::too_many_arguments)]
     pub fn block_created(
         block_hash: String,
         block_number: i64,
@@ -182,7 +181,6 @@ impl F1r3flyEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn block_added(
         block_hash: String,
         block_number: i64,
@@ -205,7 +203,6 @@ impl F1r3flyEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn block_finalised(
         block_hash: String,
         block_number: i64,
@@ -260,5 +257,7 @@ impl F1r3flyEvent {
         Self::BlockApprovalReceived(BlockApprovalReceived { block_hash, sender })
     }
 
-    pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
+    pub fn node_started(address: String) -> Self {
+        Self::NodeStarted(NodeStarted { address })
+    }
 }

@@ -7,8 +7,10 @@ use models::rust::block_implicits::block_element_gen;
 use proptest::prelude::*;
 use prost::bytes::Bytes;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use crate::{
+    helper::test_node::TestNode,
+    util::genesis_builder::{GenesisBuilder, GenesisContext},
+};
 
 proptest! {
     #[test]

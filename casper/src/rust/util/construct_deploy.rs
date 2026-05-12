@@ -1,15 +1,17 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ConstructDeploy.scala
 
+use lazy_static::lazy_static;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crypto::rust::private_key::PrivateKey;
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
-use lazy_static::lazy_static;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
+use crypto::rust::{
+    private_key::PrivateKey,
+    public_key::PublicKey,
+    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
+};
+use models::{
+    rhoapi::PCost,
+    rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy},
+};
 
 use crate::rust::errors::CasperError;
 
@@ -47,7 +49,7 @@ pub fn source_deploy(
     let phlo_limit = phlo_limit.unwrap_or(90000);
     let phlo_price = phlo_price.unwrap_or(1);
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
-    let shard_id = shard_id.unwrap_or_default();
+    let shard_id = shard_id.unwrap_or_else(|| "".to_string());
 
     let data = DeployData {
         term: source,
@@ -59,7 +61,7 @@ pub fn source_deploy(
         expiration_timestamp: None,
     };
 
-    Signed::create(data, Box::new(Secp256k1), sec).map_err(CasperError::SigningError)
+    Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
 }
 
 pub fn source_deploy_now(

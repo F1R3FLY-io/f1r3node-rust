@@ -1,9 +1,8 @@
+use crate::rust::effects::console_io::console_io;
+use crate::rust::{configuration::NodeConf, effects::console_io::decrypt_key_from_file};
 use comm::rust::utils::{is_valid_inet_address, is_valid_public_inet_address};
 use eyre::Result;
 use tracing::{error, info};
-
-use crate::rust::configuration::NodeConf;
-use crate::rust::effects::console_io::{console_io, decrypt_key_from_file};
 
 /// Check host configuration (equivalent to Scala's checkHost)
 pub async fn check_host(conf: &NodeConf) -> Result<()> {

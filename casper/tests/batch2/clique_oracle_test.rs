@@ -1,19 +1,20 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/CliqueOracleTest.scala
 
-use std::collections::HashMap;
-use std::time::Instant;
-
+use crate::helper::{
+    block_dag_storage_fixture::with_storage, block_generator::create_genesis_block,
+    block_util::generate_validator,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::safety::clique_oracle::CliqueOracle;
 use casper::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
-use models::rust::validator::Validator;
-
-use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::create_genesis_block;
-use crate::helper::block_util::generate_validator;
+use models::rust::{
+    block_hash::BlockHash,
+    casper::protocol::casper_message::{BlockMessage, Bond},
+    validator::Validator,
+};
+use std::collections::HashMap;
+use std::time::Instant;
 
 fn create_block<'a>(
     bonds: &'a [Bond],
@@ -226,17 +227,17 @@ async fn finalized_block_ft_should_not_change_with_dag_state() {
 
 // See [[/docs/casper/images/cbc-casper_ping_pong_diagram.png]]
 /**
- *       *     b8
- *       |
- *   *   *     b6 b7
- *   | /
- *   *   *     b4 b5
- *   | /
- *   *   *     b2 b3
- *    \ /
- *     *
- *   c2 c1
- */
+*       *     b8
+*       |
+*   *   *     b6 b7
+*   | /
+*   *   *     b4 b5
+*   | /
+*   *   *     b2 b3
+*    \ /
+*     *
+*   c2 c1
+*/
 #[tokio::test]
 async fn clique_oracle_should_detect_finality_as_appropriate() {
     with_storage(|mut block_store, mut block_dag_storage| async move {

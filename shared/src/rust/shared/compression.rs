@@ -1,8 +1,7 @@
 // See shared/src/main/scala/coop/rchain/shared/Compression.scala
 
-use std::io::Cursor;
-
 use prost::encoding::{decode_varint, encode_varint};
+use std::io::Cursor;
 
 /// Compression utilities using LZ4 algorithm
 ///
@@ -52,7 +51,10 @@ impl Compression {
         let compressed_data = &compressed[cursor.position() as usize..];
 
         // Decompress with the decoded length
-        lz4_flex::decompress(compressed_data, decompressed_length).ok()
+        match lz4_flex::decompress(compressed_data, decompressed_length) {
+            Ok(decompressed) => Some(decompressed),
+            Err(_) => None,
+        }
     }
 }
 
@@ -66,7 +68,9 @@ pub trait CompressionOps {
 }
 
 impl CompressionOps for [u8] {
-    fn compress(&self) -> Vec<u8> { Compression::compress(self) }
+    fn compress(&self) -> Vec<u8> {
+        Compression::compress(self)
+    }
 
     fn decompress(&self, decompressed_length: usize) -> Option<Vec<u8>> {
         Compression::decompress(self, decompressed_length)
@@ -74,7 +78,9 @@ impl CompressionOps for [u8] {
 }
 
 impl CompressionOps for Vec<u8> {
-    fn compress(&self) -> Vec<u8> { Compression::compress(self) }
+    fn compress(&self) -> Vec<u8> {
+        Compression::compress(self)
+    }
 
     fn decompress(&self, decompressed_length: usize) -> Option<Vec<u8>> {
         Compression::decompress(self, decompressed_length)
@@ -83,10 +89,9 @@ impl CompressionOps for Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-
-    use super::*;
 
     /// Generate random byte arrays for testing
     fn generate_byte_array(size: usize, seed: u64) -> Vec<u8> {

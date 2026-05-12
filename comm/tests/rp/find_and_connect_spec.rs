@@ -1,10 +1,13 @@
 // See comm/src/test/scala/coop/rchain/comm/rp/FindAndConnectSpec.scala
 
-use comm::rust::errors::CommError;
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use comm::rust::rp::connect::{find_and_connect, Connections, ConnectionsCell};
-use comm::rust::test_instances::NodeDiscoveryStub;
 use prost::bytes::Bytes;
+
+use comm::rust::test_instances::NodeDiscoveryStub;
+use comm::rust::{
+    errors::CommError,
+    peer_node::{Endpoint, NodeIdentifier, PeerNode},
+    rp::connect::{find_and_connect, Connections, ConnectionsCell},
+};
 
 /// Helper function to create a peer with given name
 fn peer(name: &str) -> PeerNode {
@@ -24,9 +27,8 @@ fn mk_connections(peers: &[PeerNode]) -> ConnectionsCell {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     // Test state to track which peers were called and which should succeed
     struct TestState {
@@ -51,7 +53,9 @@ mod tests {
             *self.will_connect_successfully.lock().unwrap() = peers;
         }
 
-        fn get_called_peers(&self) -> Vec<PeerNode> { self.connect_called.lock().unwrap().clone() }
+        fn get_called_peers(&self) -> Vec<PeerNode> {
+            self.connect_called.lock().unwrap().clone()
+        }
 
         fn create_connect_fn(
             &self,

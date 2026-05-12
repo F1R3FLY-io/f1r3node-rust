@@ -1,11 +1,12 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/SslSessionServerInterceptor.scala
 
-use crypto::rust::util::certificate_helper::CertificateHelper;
-use hex;
-use models::routing::{Header, Protocol, TlRequest};
 use p256::PublicKey as P256PublicKey;
 use tonic::service::Interceptor;
 use tonic::{Request, Status};
+
+use crypto::rust::util::certificate_helper::CertificateHelper;
+use hex;
+use models::routing::{Header, Protocol, TlRequest};
 
 /// SSL Session Server Interceptor for validating incoming gRPC requests
 ///
@@ -25,6 +26,7 @@ use tonic::{Request, Status};
 ///
 /// This design enables full F1r3fly certificate verification while maintaining compatibility
 /// with tonic's interceptor system and providing the same security guarantees as the Scala implementation.
+///
 #[derive(Clone, Debug)]
 pub struct SslSessionServerInterceptor {
     network_id: String,
@@ -46,7 +48,9 @@ impl SslSessionServerInterceptor {
     ///
     /// # Arguments
     /// * `network_id` - The expected network ID for validation
-    pub fn new(network_id: String) -> Self { Self { network_id } }
+    pub fn new(network_id: String) -> Self {
+        Self { network_id }
+    }
 
     /// Validate a TLRequest message against TLS session context
     ///
@@ -225,7 +229,9 @@ impl SslSessionServerInterceptor {
     }
 
     /// Get the network ID for this interceptor
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 
     /// Validate a streaming request against TLS session context
     ///
@@ -326,11 +332,10 @@ impl Interceptor for SslSessionServerInterceptor {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use models::routing::{Node, Protocol};
     use prost::bytes::Bytes;
     use tonic::Code;
-
-    use super::*;
 
     fn create_test_header(network_id: &str, sender_id: Vec<u8>) -> Header {
         Header {

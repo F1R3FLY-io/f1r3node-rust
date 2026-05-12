@@ -1,10 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use super::schnorr_secp256k1::SchnorrSecp256k1;
-use super::signatures_alg::SignaturesAlg;
-use crate::rust::hash::blake2b256::Blake2b256;
-use crate::rust::private_key::PrivateKey;
-use crate::rust::public_key::PublicKey;
+use super::{schnorr_secp256k1::SchnorrSecp256k1, signatures_alg::SignaturesAlg};
+use crate::rust::{hash::blake2b256::Blake2b256, private_key::PrivateKey, public_key::PublicKey};
 
 pub const FROST_SECP256K1_ALGORITHM_NAME: &str = "frost-secp256k1";
 pub const FROST_SECP256K1_SIGNING_DOMAIN: &[u8] = b"f1r3node/frost-secp256k1/signing/v1";
@@ -16,7 +13,9 @@ const FROST_PARTIAL_DOMAIN: &[u8] = b"f1r3node/frost-secp256k1/partial/v1";
 pub struct FrostSecp256k1;
 
 impl FrostSecp256k1 {
-    pub fn name() -> String { FROST_SECP256K1_ALGORITHM_NAME.to_string() }
+    pub fn name() -> String {
+        FROST_SECP256K1_ALGORITHM_NAME.to_string()
+    }
 
     pub fn signing_preimage(serialized_payload: &[u8]) -> Vec<u8> {
         let mut out =
@@ -42,17 +41,29 @@ impl SignaturesAlg for FrostSecp256k1 {
         SchnorrSecp256k1.sign(data, sec)
     }
 
-    fn to_public(&self, sec: &PrivateKey) -> PublicKey { SchnorrSecp256k1.to_public(sec) }
+    fn to_public(&self, sec: &PrivateKey) -> PublicKey {
+        SchnorrSecp256k1.to_public(sec)
+    }
 
-    fn new_key_pair(&self) -> (PrivateKey, PublicKey) { SchnorrSecp256k1.new_key_pair() }
+    fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
+        SchnorrSecp256k1.new_key_pair()
+    }
 
-    fn name(&self) -> String { Self::name() }
+    fn name(&self) -> String {
+        Self::name()
+    }
 
-    fn sig_length(&self) -> usize { SchnorrSecp256k1.sig_length() }
+    fn sig_length(&self) -> usize {
+        SchnorrSecp256k1.sig_length()
+    }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
+        self.name() == other.name()
+    }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
+        Box::new(self.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -136,11 +147,14 @@ impl MockFrostSecp256k1Coordinator {
         for i in 1..=total_participants {
             let (sk, pk) = SchnorrSecp256k1.new_key_pair();
             let participant_id = FrostParticipantId(i as u16);
-            shares.insert(participant_id, FrostParticipantShare {
+            shares.insert(
                 participant_id,
-                private_share: sk,
-                public_share: pk,
-            });
+                FrostParticipantShare {
+                    participant_id,
+                    private_share: sk,
+                    public_share: pk,
+                },
+            );
         }
 
         let (aggregate_private_key, aggregate_public_key) = SchnorrSecp256k1.new_key_pair();
@@ -251,10 +265,13 @@ impl FrostThresholdSignerProvider for MockFrostSecp256k1Coordinator {
         let mut commitments = HashMap::new();
         for participant in &participants_sorted {
             let commitment = self.expected_commitment(&session_id, *participant)?;
-            commitments.insert(*participant, FrostNonceCommitment {
-                participant_id: *participant,
-                commitment,
-            });
+            commitments.insert(
+                *participant,
+                FrostNonceCommitment {
+                    participant_id: *participant,
+                    commitment,
+                },
+            );
         }
 
         Ok(FrostSigningSession {
@@ -332,7 +349,9 @@ impl FrostThresholdSignerProvider for MockFrostSecp256k1Coordinator {
         })
     }
 
-    fn aggregate_public_key(&self) -> PublicKey { self.aggregate_public_key.clone() }
+    fn aggregate_public_key(&self) -> PublicKey {
+        self.aggregate_public_key.clone()
+    }
 }
 
 pub fn verify_frost_aggregate(

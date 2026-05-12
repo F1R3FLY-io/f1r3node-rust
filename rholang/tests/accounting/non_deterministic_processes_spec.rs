@@ -1,23 +1,26 @@
 // Tests for replay consistency of non-deterministic processes (OpenAI, gRPC, Ollama).
 // Ensures that replays produce consistent costs and error handling for non-deterministic operations.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
-use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::openai_service::{
-    create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
-};
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
+use rholang::rust::interpreter::{
+    accounting::costs::Cost,
+    external_services::ExternalServices,
+    grpc_client_service::{GrpcClientMockConfig, GrpcClientService},
+    interpreter::EvaluateResult,
+    openai_service::{create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig},
+    rho_runtime::RhoRuntime,
+};
+use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::{
+    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
+};
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Helper to create external services with mock OpenAI and optional mock gRPC
 fn create_test_external_services(
@@ -34,6 +37,7 @@ fn create_test_external_services(
         openai_enabled: true,
         ollama_enabled: false,
         is_validator: true,
+        chroma: create_noop_chromadb_service(),
     }
 }
 
@@ -47,6 +51,7 @@ fn create_test_external_services_grpc(grpc_mock: GrpcClientMockConfig) -> Extern
         openai_enabled: false,
         ollama_enabled: false,
         is_validator: true,
+        chroma: create_noop_chromadb_service(),
     }
 }
 

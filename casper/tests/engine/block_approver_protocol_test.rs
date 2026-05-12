@@ -1,20 +1,18 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/BlockApproverProtocolTest.scala
 
-use std::collections::HashMap;
-use std::error::Error;
-use std::sync::Arc;
-
-use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
-use crypto::rust::public_key::PublicKey;
-use models::rust::block_implicits::get_random_block;
-use models::rust::casper::protocol::casper_message::{
-    ApprovedBlockCandidate, BlockMessage, UnapprovedBlock,
-};
-use serial_test::serial;
-
 use crate::helper::test_node::TestNode;
 use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
 use crate::util::genesis_builder::GenesisBuilder;
+use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
+use crypto::rust::public_key::PublicKey;
+use models::rust::{
+    block_implicits::get_random_block,
+    casper::protocol::casper_message::{ApprovedBlockCandidate, BlockMessage, UnapprovedBlock},
+};
+use serial_test::serial;
+use std::collections::HashMap;
+use std::error::Error;
+use std::sync::Arc;
 
 const SHARD_ID: &str = "root";
 

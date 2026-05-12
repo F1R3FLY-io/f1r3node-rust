@@ -1,23 +1,23 @@
-#![allow(clippy::ptr_arg)]
-
 use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+use block_storage::rust::{
+    dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation},
+    key_value_block_store::KeyValueBlockStore,
 };
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord};
-use models::rust::validator::Validator;
+use models::rust::{
+    block_hash::BlockHash,
+    casper::{pretty_printer::PrettyPrinter, protocol::casper_message::BlockMessage},
+    equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord},
+    validator::Validator,
+};
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::dag::dag_ops;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::{dag::dag_ops, store::key_value_store::KvStoreError};
 
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::util::proto_util;
-use crate::rust::ValidBlockProcessing;
+use crate::rust::{
+    block_status::{BlockError, InvalidBlock, ValidBlock},
+    util::proto_util,
+    ValidBlockProcessing,
+};
 
 /// Equivocation detection logic for blockchain consensus
 pub struct EquivocationDetector;
@@ -171,7 +171,7 @@ impl EquivocationDetector {
         // Find the bond for the equivocating validator
         let maybe_equivocating_validator_bond = bonds
             .iter()
-            .find(|bond| bond.validator == equivocating_validator);
+            .find(|bond| &bond.validator == equivocating_validator);
 
         match maybe_equivocating_validator_bond {
             Some(bond) => Self::get_equivocation_discovery_status_for_bonded_validator(

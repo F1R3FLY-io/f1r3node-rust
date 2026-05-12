@@ -1,13 +1,11 @@
-use std::collections::HashMap;
-
+use crate::rust::interpreter::compiler::compiler::Compiler;
+use crate::rust::interpreter::errors::InterpreterError;
 use models::rhoapi::Par;
 use rholang_parser::ast::{
     AnnProc, BinaryExpOp, BundleType, Id, KeyValuePair, Name, Names, SendType, SimpleType, Var,
 };
 use rholang_parser::{SourcePos, SourceSpan};
-
-use crate::rust::interpreter::compiler::compiler::Compiler;
-use crate::rust::interpreter::errors::InterpreterError;
+use std::collections::HashMap;
 
 pub struct ParBuilderUtil;
 
@@ -336,7 +334,9 @@ impl ParBuilderUtil {
     }
 
     // Helper for creating Name::Quote wrapping a proc
-    pub fn create_ast_quote_name<'ast>(proc: AnnProc<'ast>) -> Name<'ast> { Name::Quote(proc) }
+    pub fn create_ast_quote_name<'ast>(proc: AnnProc<'ast>) -> Name<'ast> {
+        Name::Quote(proc)
+    }
 
     // Helper for creating Wildcard proc
     pub fn create_ast_wildcard<'ast>(

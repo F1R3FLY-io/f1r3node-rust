@@ -1,5 +1,3 @@
-#![allow(clippy::match_like_matches_macro)]
-
 use models::rust::utils::no_frees;
 
 use super::exports::*;
@@ -17,7 +15,7 @@ pub struct ParCount {
 }
 
 impl ParCount {
-    pub fn new(par: Par) -> Self {
+    pub fn new(par: &Par) -> Self {
         ParCount {
             sends: par.sends.len(),
             receives: par.receives.len(),
@@ -90,7 +88,7 @@ impl ParCount {
     }
 
     pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) {
-        let pc = ParCount::new(no_frees(par.clone()));
+        let pc = ParCount::new(&no_frees(&par));
         let wildcard: bool = par.exprs.iter().any(|expr| match &expr.expr_instance {
             Some(EVarBody(EVar { v })) => match v.as_ref().unwrap().var_instance {
                 Some(Wildcard(_)) => true,

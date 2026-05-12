@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_iter_cloned, clippy::type_complexity, clippy::unnecessary_sort_by)]
-
 // See /home/spreston/src/firefly/f1r3fly/rspace/src/main/scala/coop/rchain/
 // rspace/ReplayRSpace.scala
 
@@ -344,8 +342,10 @@ where
                 Event::Comm(comm) => {
                     let comm_cloned = comm.clone();
                     let (consume, produces) = (comm_cloned.consume, comm_cloned.produces);
-                    let produce_io_events: Vec<IOEvent> =
-                        produces.into_iter().map(IOEvent::Produce).collect();
+                    let produce_io_events: Vec<IOEvent> = produces
+                        .into_iter()
+                        .map(|produce| IOEvent::Produce(produce))
+                        .collect();
 
                     let mut io_events = produce_io_events.clone();
                     io_events.insert(0, IOEvent::Consume(consume));
@@ -416,9 +416,9 @@ where
                             .iter()
                             .map(|(k, v)| {
                                 if k.hash == produce_ref.hash {
-                                    (produce_ref.clone(), *v)
+                                    (produce_ref.clone(), v.clone())
                                 } else {
-                                    (k.clone(), *v)
+                                    (k.clone(), v.clone())
                                 }
                             })
                             .collect(),
@@ -576,12 +576,12 @@ where
             .map(|p| {
                 (
                     p.clone(),
-                    *self
-                        .produce_counter
+                    self.produce_counter
                         .lock()
                         .expect("produce counter lock")
                         .get(&p)
-                        .unwrap_or(&0),
+                        .unwrap_or(&0)
+                        .clone(),
                 )
             })
             .collect()
@@ -670,7 +670,7 @@ where
                         );
 
                         let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
-                        self.remove_bindings_for(comm_ref);
+                        let _ = self.remove_bindings_for(comm_ref);
                         Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
                     }
                 }
@@ -735,11 +735,13 @@ where
         let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> =
             channel_to_indexed_data_list.into_iter().collect();
 
-        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns).collect();
-
-        self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
+        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns.into_iter()).collect();
+        let result = self
+            .extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
             .into_iter()
-            .collect::<Option<Vec<_>>>()
+            .collect::<Option<Vec<_>>>();
+
+        result
     }
 
     fn locked_produce(
@@ -757,22 +759,26 @@ where
 
         self.log_produce(produce_ref.clone(), &channel, &data, persist);
 
-        let io_event_and_comm = self
+        // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
+        // manual impls hash/compare on `self.hash` only — the metadata
+        // fields (`is_deterministic`, `output_value`, `failed`) are
+        // documented as non-identity, so this is semantically identical
+        // to a hash-only linear scan over the map.
+        let comms_option = self
             .replay_data
             .lock()
             .unwrap()
             .map
-            .clone()
-            .into_iter()
-            .find(|(io_event, _)| match io_event {
-                IOEvent::Produce(p) => p.hash == produce_ref.hash,
-                _ => false,
+            .get(&IOEvent::Produce(produce_ref.clone()))
+            .map(|comms| {
+                comms
+                    .iter()
+                    .map(|tuple| tuple.0.clone())
+                    .collect::<Vec<_>>()
             });
-        match io_event_and_comm {
+        match comms_option {
             None => Ok(self.store_data(channel, data, persist, produce_ref)),
-            Some((_, comms_list)) => {
-                let comms: Vec<_> = comms_list.iter().map(|tuple| tuple.0.clone()).collect();
-
+            Some(comms) => {
                 match self.get_comm_or_produce_candidate(
                     channel.clone(),
                     data.clone(),
@@ -786,7 +792,7 @@ where
                             .produces
                             .into_iter()
                             .find(|p| p.hash == produce_ref.hash);
-                        (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
+                        (consume_result.0, consume_result.1, p.unwrap_or_else(|| produce_ref))
                     })),
                     None => Ok(self.store_data(channel, data, persist, produce_ref)),
                 }
@@ -874,8 +880,8 @@ where
     fn matches(&self, comm: COMM, datum_with_index: (Datum<A>, i32)) -> bool {
         let datum = datum_with_index.0;
         let x = comm.produces.contains(&datum.source);
-
-        x && self.was_repeated_enough_times(comm, datum)
+        let res = x && self.was_repeated_enough_times(comm, datum);
+        res
     }
 
     fn was_repeated_enough_times(&self, comm: COMM, datum: Datum<A>) -> bool {
@@ -940,11 +946,11 @@ where
         }
 
         let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
-        self.remove_bindings_for(comm_ref);
+        let _ = self.remove_bindings_for(comm_ref);
         self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
     }
 
-    fn remove_bindings_for(&self, comm_ref: COMM) {
+    fn remove_bindings_for(&self, comm_ref: COMM) -> () {
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.remove_binding_in_place(&IOEvent::Consume(comm_ref.consume.clone()), &comm_ref);
 
@@ -1122,11 +1128,11 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().flatten().collect())
+            Some(results.into_iter().filter_map(|x| x).collect())
         }
     }
 
-    fn restore_installs(&self) {
+    fn restore_installs(&self) -> () {
         // Move out the install map to avoid cloning the whole structure on each
         // restore.
         let installs = {
@@ -1204,7 +1210,7 @@ where
     fn create_new_hot_store(
         &self,
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
-    ) {
+    ) -> () {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
@@ -1255,13 +1261,14 @@ where
                 } = consume_candidate;
 
                 let channels_clone = channels.clone();
-                if datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
+                if datum_index >= 0 && !persist {
+                    if self
+                        .get_store()
                         .remove_datum(&channel, datum_index)
                         .is_err()
-                {
-                    return None;
+                    {
+                        return None;
+                    }
                 }
                 self.get_store().remove_join(&channel, &channels_clone);
 
@@ -1272,7 +1279,7 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().flatten().collect())
+            Some(results.into_iter().filter_map(|x| x).collect())
         }
     }
 

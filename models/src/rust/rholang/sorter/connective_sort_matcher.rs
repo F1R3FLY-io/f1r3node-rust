@@ -1,10 +1,12 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ConnectiveSortMatcher.scala
 
-use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
-use super::sortable::Sortable;
-use crate::rhoapi::connective::ConnectiveInstance;
-use crate::rhoapi::{Connective, Par};
+use crate::rhoapi::{connective::ConnectiveInstance, Connective, Par};
+
+use super::{
+    par_sort_matcher::ParSortMatcher,
+    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
+    sortable::Sortable,
+};
 
 pub struct ConnectiveSortMatcher;
 
@@ -12,8 +14,11 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
     fn sort_match(c: &Connective) -> ScoredTerm<Connective> {
         match &c.connective_instance {
             Some(ConnectiveInstance::ConnAndBody(cb)) => {
-                let pars: Vec<ScoredTerm<Par>> =
-                    cb.ps.iter().map(ParSortMatcher::sort_match).collect();
+                let pars: Vec<ScoredTerm<Par>> = cb
+                    .ps
+                    .iter()
+                    .map(|p| ParSortMatcher::sort_match(p))
+                    .collect();
 
                 ScoredTerm {
                     term: Connective {
@@ -31,8 +36,11 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
             }
 
             Some(ConnectiveInstance::ConnOrBody(cb)) => {
-                let pars: Vec<ScoredTerm<Par>> =
-                    cb.ps.iter().map(ParSortMatcher::sort_match).collect();
+                let pars: Vec<ScoredTerm<Par>> = cb
+                    .ps
+                    .iter()
+                    .map(|p| ParSortMatcher::sort_match(p))
+                    .collect();
 
                 ScoredTerm {
                     term: Connective {
@@ -55,15 +63,16 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                     term: Connective {
                         connective_instance: Some(ConnectiveInstance::ConnNotBody(scored_par.term)),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_NOT, vec![
-                        scored_par.score,
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::CONNECTIVE_NOT,
+                        vec![scored_par.score],
+                    ),
                 }
             }
 
             Some(ConnectiveInstance::VarRefBody(v)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::VarRefBody(*v)),
+                    connective_instance: Some(ConnectiveInstance::VarRefBody(v.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_VARREF as i64,
@@ -74,7 +83,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
 
             Some(ConnectiveInstance::ConnBool(b)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnBool(*b)),
+                    connective_instance: Some(ConnectiveInstance::ConnBool(b.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_BOOL as i64,
@@ -90,7 +99,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
 
             Some(ConnectiveInstance::ConnInt(b)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnInt(*b)),
+                    connective_instance: Some(ConnectiveInstance::ConnInt(b.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_INT as i64,
@@ -106,7 +115,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
 
             Some(ConnectiveInstance::ConnString(b)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnString(*b)),
+                    connective_instance: Some(ConnectiveInstance::ConnString(b.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_STRING as i64,
@@ -122,7 +131,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
 
             Some(ConnectiveInstance::ConnUri(b)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnUri(*b)),
+                    connective_instance: Some(ConnectiveInstance::ConnUri(b.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_URI as i64,
@@ -138,7 +147,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
 
             Some(ConnectiveInstance::ConnByteArray(b)) => ScoredTerm {
                 term: Connective {
-                    connective_instance: Some(ConnectiveInstance::ConnByteArray(*b)),
+                    connective_instance: Some(ConnectiveInstance::ConnByteArray(b.clone())),
                 },
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::CONNECTIVE_BYTEARRAY as i64,

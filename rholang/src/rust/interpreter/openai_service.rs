@@ -4,16 +4,17 @@
 // This module provides OpenAI integration with configuration support.
 // Uses enum-based dispatch instead of trait objects for async compatibility.
 
+use dotenv::dotenv;
+use openai_api_rs::v1::{
+    api::OpenAIClient,
+    audio::{self, AudioSpeechRequest, TTS_1},
+    chat_completion::{self, ChatCompletionRequest},
+    common::GPT4_O_MINI,
+    image::ImageGenerationRequest,
+};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-
-use dotenv::dotenv;
-use openai_api_rs::v1::api::OpenAIClient;
-use openai_api_rs::v1::audio::{self, AudioSpeechRequest, TTS_1};
-use openai_api_rs::v1::chat_completion::{self, ChatCompletionRequest};
-use openai_api_rs::v1::common::GPT4_O_MINI;
-use openai_api_rs::v1::image::ImageGenerationRequest;
 
 use super::errors::InterpreterError;
 
@@ -311,7 +312,9 @@ impl OpenAIService {
     }
 
     /// Check if this service is enabled
-    pub fn is_enabled(&self) -> bool { matches!(self, Self::Real(_)) }
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Real(_))
+    }
 
     /// Create audio speech from text (text-to-speech)
     /// Returns the raw audio bytes for use as non-deterministic produce output
@@ -394,15 +397,16 @@ impl OpenAIService {
     pub async fn gpt4_chat_completion(&self, prompt: &str) -> Result<String, InterpreterError> {
         match self {
             Self::Real(client) => {
-                let request = ChatCompletionRequest::new(GPT4_O_MINI.to_string(), vec![
-                    chat_completion::ChatCompletionMessage {
+                let request = ChatCompletionRequest::new(
+                    GPT4_O_MINI.to_string(),
+                    vec![chat_completion::ChatCompletionMessage {
                         role: chat_completion::MessageRole::user,
                         content: chat_completion::Content::Text(prompt.to_string()),
                         name: None,
                         tool_calls: None,
                         tool_call_id: None,
-                    },
-                ]);
+                    }],
+                );
 
                 let mut client = client.lock().await;
                 let response = client.chat_completion(request).await?;

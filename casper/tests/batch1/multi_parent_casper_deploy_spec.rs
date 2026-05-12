@@ -1,13 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperDeploySpec.scala
 
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::GenesisBuilder;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
-
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {

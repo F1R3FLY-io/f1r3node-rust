@@ -1,53 +1,67 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.scala
 
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::time::Instant;
+use std::{collections::HashMap, future::Future, time::Instant};
 
-use models::rhoapi::Par;
-use models::rust::block::state_hash::StateHash;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+use models::{
+    rhoapi::Par,
+    rust::{
+        block::state_hash::StateHash,
+        block_hash::BlockHash,
+        casper::protocol::casper_message::{
+            Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+        },
+        validator::Validator,
+    },
 };
-use models::rust::validator::Validator;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::system_processes::{
-    BlockData, DeployData as SystemProcessDeployData,
+use rholang::rust::interpreter::{
+    interpreter::EvaluateResult,
+    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
+    system_processes::{BlockData, DeployData as SystemProcessDeployData},
 };
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
+use rspace_plus_plus::rspace::{
+    hashing::blake2b256_hash::Blake2b256Hash,
+    history::Either,
+    merger::merging_logic::{MergeType, NumberChannelsEndVal},
+};
+
+use crate::rust::{
+    errors::CasperError,
+    metrics_constants::{
+        BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC,
+        BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC,
+        BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC,
+        BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC, BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+        BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC,
+        BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC,
+        BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, CASPER_METRICS_SOURCE,
+    },
+    util::{
+        event_converter,
+        rholang::{
+            costacc::{
+                close_block_deploy::CloseBlockDeploy, pre_charge_deploy::PreChargeDeploy,
+                refund_deploy::RefundDeploy, slash_deploy::SlashDeploy,
+            },
+            interpreter_util,
+            replay_failure::ReplayFailure,
+            system_deploy::SystemDeployTrait,
+            system_deploy_util,
+        },
+    },
+};
 
 use super::runtime::{RuntimeOps, SysEvalResult};
-use crate::rust::errors::CasperError;
-use crate::rust::metrics_constants::{
-    BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC,
-    BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
-    BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
-    BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC,
-    BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC,
-    BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, CASPER_METRICS_SOURCE,
-};
-use crate::rust::util::event_converter;
-use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
-use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
-use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
-use crate::rust::util::rholang::replay_failure::ReplayFailure;
-use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
-use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 pub struct ReplayRuntimeOps {
     pub runtime_ops: RuntimeOps,
 }
 
 impl ReplayRuntimeOps {
-    pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
+    pub fn new(runtime_ops: RuntimeOps) -> Self {
+        Self { runtime_ops }
+    }
 
     pub fn new_from_runtime(runtime: RhoRuntimeImpl) -> Self {
         Self {
@@ -55,7 +69,7 @@ impl ReplayRuntimeOps {
         }
     }
 
-    async fn discard_event_log(&mut self, phase: &str, error_path: bool) {
+    pub async fn discard_event_log(&mut self, phase: &str, error_path: bool) {
         let drained = self.runtime_ops.runtime.take_event_log().await;
         if error_path {
             tracing::warn!(
@@ -168,9 +182,13 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Option<CasperError> {
-        self.replay_deploy_e(with_cost_accounting, processed_deploy)
+        match self
+            .replay_deploy_e(with_cost_accounting, processed_deploy)
             .await
-            .err()
+        {
+            Ok(_) => None,
+            Err(err) => Some(err),
+        }
     }
 
     #[tracing::instrument(
@@ -183,7 +201,7 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
-        let mut mergeable_channels = HashSet::new();
+        let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
         let rig_start = Instant::now();
         self.rig(processed_deploy).await?;
@@ -191,10 +209,10 @@ impl ReplayRuntimeOps {
             .record(rig_start.elapsed().as_secs_f64());
 
         let eval_successful = if with_cost_accounting {
-            self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
+            self.process_deploy_with_cost_accounting(&processed_deploy, &mut mergeable_channels)
                 .await?
         } else {
-            self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
+            self.process_deploy_without_cost_accounting(&processed_deploy, &mut mergeable_channels)
                 .await?
         };
 
@@ -218,7 +236,7 @@ impl ReplayRuntimeOps {
     async fn process_deploy_with_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
@@ -311,17 +329,17 @@ impl ReplayRuntimeOps {
     async fn process_deploy_without_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
         self.run_user_deploy(processed_deploy, mergeable_channels)
             .await
             .map(|(_, eval_successful)| eval_successful)
     }
 
-    async fn run_user_deploy(
+    pub async fn run_user_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<(EvaluateResult, bool), CasperError> {
         // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
         // so pre-charge context remains available for refund replay.
@@ -352,7 +370,7 @@ impl ReplayRuntimeOps {
         }
 
         // Verify that our execution matches the expected result
-        if processed_deploy.is_failed == eval_successful {
+        if processed_deploy.is_failed != !eval_successful {
             return Err(CasperError::ReplayFailure(
                 ReplayFailure::replay_status_mismatch(processed_deploy.is_failed, !eval_successful),
             ));
@@ -403,6 +421,7 @@ impl ReplayRuntimeOps {
                     initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                         block_data.sender.bytes.clone(),
                         block_data.seq_num,
+                        invalid_block_hash,
                     ),
                 };
 
@@ -565,7 +584,8 @@ impl ReplayRuntimeOps {
 
     pub async fn rig(&self, processed_deploy: &ProcessedDeploy) -> Result<(), CasperError> {
         let rig_start = Instant::now();
-        self.runtime_ops
+        let result = self
+            .runtime_ops
             .runtime
             .rig(
                 processed_deploy
@@ -577,7 +597,7 @@ impl ReplayRuntimeOps {
             .await?;
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
-        Ok(())
+        Ok(result)
     }
 
     pub async fn rig_system_deploy(
@@ -595,7 +615,7 @@ impl ReplayRuntimeOps {
             .rig(
                 event_list
                     .iter()
-                    .map(|event: &Event| event_converter::to_rspace_event(event))
+                    .map(|event: &Event| event_converter::to_rspace_event(&event))
                     .collect(),
             )
             .await?)

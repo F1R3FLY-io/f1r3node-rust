@@ -1,25 +1,30 @@
-#![allow(clippy::while_let_loop)]
-
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
-
-use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::equivocation_record::{EquivocationRecord, SequenceNumber};
-use models::rust::validator::{self, Validator, ValidatorSerde};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
-use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+use std::{
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock,
+    },
+};
 
-use super::block_metadata_store::BlockMetadataStore;
-use super::equivocation_tracker_store::EquivocationTrackerStore;
+use models::rust::{
+    block_hash::{self, BlockHash, BlockHashSerde},
+    block_metadata::BlockMetadata,
+    casper::{pretty_printer::PrettyPrinter, protocol::casper_message::BlockMessage},
+    equivocation_record::{EquivocationRecord, SequenceNumber},
+    validator::{self, Validator, ValidatorSerde},
+};
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use shared::rust::store::{
+    key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore,
+    key_value_typed_store_impl::KeyValueTypedStoreImpl,
+};
+
+use super::{
+    block_metadata_store::BlockMetadataStore, equivocation_tracker_store::EquivocationTrackerStore,
+};
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -65,9 +70,13 @@ impl KeyValueDagRepresentation {
         self.latest_messages_map.clone()
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> {
+        self.invalid_blocks_set.clone()
+    }
 
-    pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
+    pub fn last_finalized_block(&self) -> BlockHash {
+        self.last_finalized_block_hash.clone()
+    }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
     // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
@@ -80,7 +89,9 @@ impl KeyValueDagRepresentation {
         }
     }
 
-    pub fn latest_block_number(&self) -> i64 { self.get_max_height() }
+    pub fn latest_block_number(&self) -> i64 {
+        self.get_max_height()
+    }
 
     pub fn block_number(&self, block_hash: &BlockHash) -> Option<i64> {
         self.block_number_map.get(block_hash).copied()
@@ -114,12 +125,12 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn find(&self, truncated_hash: &str) -> Option<BlockHash> {
-        if truncated_hash.len().is_multiple_of(2) {
+        if truncated_hash.len() % 2 == 0 {
             let truncated_bytes = hex::decode(truncated_hash).expect("invalid truncated hash");
             self.dag_set
                 .iter()
                 .find(|hash| hash.starts_with(&truncated_bytes))
-                .cloned()
+                .map(|v| v.clone())
         } else {
             // if truncatedHash is odd length string we cannot convert it to ByteString with 8 bit resolution
             // because each symbol has 4 bit resolution. Need to make a string of even length by removing the last symbol,
@@ -130,7 +141,7 @@ impl KeyValueDagRepresentation {
                 .iter()
                 .filter(|hash| hash.starts_with(&truncated_bytes))
                 .find(|hash| hex::encode(&**hash).starts_with(truncated_hash))
-                .cloned()
+                .map(|v| v.clone())
         }
     }
 
@@ -177,7 +188,7 @@ impl KeyValueDagRepresentation {
             Ok(Some(metadata)) => Ok(metadata),
             _ => Err(KvStoreError::InvalidArgument(format!(
                 "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
+                PrettyPrinter::build_string_bytes(&block_hash)
             ))),
         }
     }
@@ -204,7 +215,7 @@ impl KeyValueDagRepresentation {
             Some(hash) => Ok(hash),
             None => Err(KvStoreError::InvalidArgument(format!(
                 "No latest message for validator {}",
-                PrettyPrinter::build_string_bytes(validator)
+                PrettyPrinter::build_string_bytes(&validator)
             ))),
         }
     }
@@ -346,7 +357,7 @@ impl KeyValueDagRepresentation {
         loop {
             let current_height = self.block_number_unsafe(&current_hash)?;
             if current_height <= stop_height {
-                return Ok(current_hash == ancestor);
+                return Ok(&current_hash == ancestor);
             }
 
             let Some(main_parent) = self.main_parent(&current_hash) else {
@@ -530,7 +541,9 @@ impl BlockDagKeyValueStorage {
 
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
-    pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
+    pub fn current_generation(&self) -> u64 {
+        self.dag_generation.load(Ordering::Relaxed)
+    }
 
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).
@@ -556,7 +569,8 @@ impl BlockDagKeyValueStorage {
             .invalid_blocks_index
             .to_map()
             .expect("Failed to convert invalid_blocks_index to map")
-            .into_values()
+            .into_iter()
+            .map(|(_, v)| v)
             .collect();
 
         let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
@@ -600,9 +614,13 @@ impl BlockDagKeyValueStorage {
         invalid: bool,
         approved: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let __insert_start = std::time::Instant::now();
         // Acquire global lock to ensure atomic insert operation
         let _lock_guard = self.global_lock.lock().unwrap();
-        self.insert_internal(block, invalid, approved)
+        let result = self.insert_internal(block, invalid, approved);
+        metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
+            .record(__insert_start.elapsed().as_secs_f64());
+        result
     }
 
     /// Internal method to insert without acquiring lock.
@@ -621,18 +639,47 @@ impl BlockDagKeyValueStorage {
 
         let log_already_stored = format!(
             "Block {} is already stored.",
-            PrettyPrinter::build_string_block_message(block, true)
+            PrettyPrinter::build_string_block_message(&block, true)
         );
         let log_empty_sender = format!(
             "Block {} sender is empty.",
-            PrettyPrinter::build_string_block_message(block, true)
+            PrettyPrinter::build_string_block_message(&block, true)
         );
 
+        // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
+        // (and other invalid blocks) advance the sender's latest message and
+        // register newly-bonded validators just like valid blocks. This matches
+        // the Scala source-of-truth (`BlockDagKeyValueStorage.scala`, where
+        // `newLatestMessages` and `shouldAddAsLatest` never reference `invalid`).
+        //
+        // Safety argument:
+        //   - Fork choice and finalization are unaffected. Parent selection filters
+        //     `latest_messages` through `invalid_latest_messages_from_hashes` to
+        //     produce `valid_latest_msgs` (see
+        //     `multi_parent_casper_impl.rs::create_block_data`, ~line 160). Only
+        //     valid-latest validators contribute candidate parents; invalid blocks
+        //     therefore cannot become parents, cannot enter the ancestor chain of
+        //     any parent, and cannot influence the Estimator's fork-choice scoring
+        //     or finalization depth.
+        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
+        //     detector reads `invalid_latest_messages` and feeds it to
+        //     `prepare_slashing_deploys`. The pre-fix `if invalid { return empty }`
+        //     guard had no Scala counterpart and silently disabled the slashing
+        //     pipeline (no slashes ever issued, equivocators never punished).
+        //   - `justification_follows` validation requires every bonded validator
+        //     to appear in a new block's justifications. Without the LMM advancing
+        //     on invalid blocks, validators whose latest is invalid would be
+        //     missing from the creator's view and `justification_follows` would
+        //     reject otherwise-valid blocks.
+        //
+        // Companion sites that depend on this invariant:
+        //   - `multi_parent_casper_impl.rs::create_block_data` (justifications
+        //     and max_seq_nums both read the unfiltered `latest_msgs_hashes`).
+        //   - The
+        //     `dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender`
+        //     test in `block-storage/tests/block_dag_storage_test.rs` exercises
+        //     this directly.
         let new_latest_messages = || -> Result<HashMap<Validator, BlockHash>, KvStoreError> {
-            if invalid {
-                return Ok(HashMap::new());
-            }
-
             let block_hash: BlockHash = block.block_hash.clone();
 
             let newly_bonded_set: HashSet<_> = block
@@ -665,8 +712,8 @@ impl BlockDagKeyValueStorage {
 
         let block_exists = {
             let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
-
-            block_metadata_index_guard.contains(&block.block_hash)
+            let exists = block_metadata_index_guard.contains(&block.block_hash);
+            exists
         };
 
         if block_exists {
@@ -674,7 +721,7 @@ impl BlockDagKeyValueStorage {
             Ok(self.get_representation_internal())
         } else {
             let block_hash = block.block_hash.clone();
-            let block_hash_is_invalid = block_hash.len() != block_hash::LENGTH;
+            let block_hash_is_invalid = !(block_hash.len() == block_hash::LENGTH);
 
             if sender_has_invalid_format {
                 return Err(KvStoreError::InvalidArgument(format!(
@@ -695,7 +742,7 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
-            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            let block_metadata = BlockMetadata::from_block(&block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write().unwrap();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
@@ -720,7 +767,7 @@ impl BlockDagKeyValueStorage {
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
-            let new_latest_from_sender = if !sender_is_empty && !invalid {
+            let new_latest_from_sender = if !sender_is_empty {
                 // Add LM either if there is no existing message for the sender, or if sequence number advances
                 // - assumes block sender is not valid hash
                 if match self
@@ -826,7 +873,7 @@ impl BlockDagKeyValueStorage {
 
                 let indirectly_finalized = dag
                     .ancestors(directly_finalized_hash.clone(), |hash| {
-                        !dag.is_finalized(hash)
+                        !dag.is_finalized(&hash)
                     })?;
 
                 let mut all_finalized = indirectly_finalized.clone();

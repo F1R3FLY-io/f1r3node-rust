@@ -6,23 +6,25 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use comm::rust::errors::CommError;
-use comm::rust::peer_node::PeerNode;
-use comm::rust::rp::protocol_helper;
-use comm::rust::test_instances::create_rp_conf_ask;
-use comm::rust::transport::communication_response::CommunicationResponse;
-use comm::rust::transport::grpc_transport_client::{
-    BufferedGrpcStreamChannel, GrpcTransportClient,
-};
-use comm::rust::transport::grpc_transport_server::{
-    DispatchFn, GrpcTransportServer, HandleStreamedFn, TransportServer,
-};
-use comm::rust::transport::transport_layer::{Blob, TransportLayer};
-use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
-use models::routing::Protocol;
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
+
+use comm::rust::test_instances::create_rp_conf_ask;
+use comm::rust::{
+    errors::CommError,
+    peer_node::PeerNode,
+    rp::protocol_helper,
+    transport::{
+        communication_response::CommunicationResponse,
+        grpc_transport_client::{BufferedGrpcStreamChannel, GrpcTransportClient},
+        grpc_transport_server::{
+            DispatchFn, GrpcTransportServer, HandleStreamedFn, TransportServer,
+        },
+        transport_layer::{Blob, TransportLayer},
+    },
+};
+use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
+use models::routing::Protocol;
 
 /// TLS Environment for transport layer testing
 pub struct TlsEnvironment {
@@ -423,7 +425,9 @@ impl TestProtocolDispatcher {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, Protocol)> { self.received.lock().unwrap().clone() }
+    pub fn received(&self) -> Vec<(PeerNode, Protocol)> {
+        self.received.lock().unwrap().clone()
+    }
 }
 
 /// Test stream dispatcher that records received Blob messages

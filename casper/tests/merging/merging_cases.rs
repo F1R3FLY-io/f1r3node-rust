@@ -2,13 +2,15 @@
 
 use std::collections::HashMap;
 
-use casper::rust::merging::block_index;
-use casper::rust::util::construct_deploy;
-use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use casper::rust::util::rholang::system_deploy_util;
+use casper::rust::{
+    merging::block_index,
+    util::{
+        construct_deploy,
+        rholang::{costacc::close_block_deploy::CloseBlockDeploy, system_deploy_util},
+    },
+};
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::merger::merging_logic;
+use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, merger::merging_logic};
 
 use crate::util::rholang::resources::with_runtime_manager;
 
@@ -19,7 +21,7 @@ use crate::util::rholang::resources::with_runtime_manager;
  */
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_deploys_executed_inside_single_state_transition_should_be_dependent() {
-    with_runtime_manager(|mut runtime_manager, genesis_context, _| async move {
+    with_runtime_manager(|runtime_manager, genesis_context, _| async move {
         let base_state = genesis_context.genesis_block.body.state.post_state_hash;
         let payer1_key = &genesis_context.genesis_vaults[0].0;
         let payer2_key = &genesis_context.genesis_vaults[1].0;

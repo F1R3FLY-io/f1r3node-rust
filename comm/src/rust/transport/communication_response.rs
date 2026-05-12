@@ -1,8 +1,7 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/CommunicationResponse.scala
 
-use models::routing::Protocol;
-
 use crate::rust::errors::CommError;
+use models::routing::Protocol;
 
 /// Communication response types for handling transport layer messages
 #[derive(Debug, Clone)]

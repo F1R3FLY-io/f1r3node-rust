@@ -1,21 +1,24 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/InitializingSpec.scala
 
+use rspace_plus_plus::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tokio::sync::mpsc;
 
+use crate::engine::setup::TestFixture;
 use casper::rust::engine::engine::transition_to_initializing;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
-use casper::rust::errors::CasperError;
-use comm::rust::rp::protocol_helper::packet_with_content;
-use comm::rust::test_instances::TransportLayerStub;
-use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::{
+    hash::blake2b256::Blake2b256,
+    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
+};
 use models::casper::Signature;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::casper::protocol::casper_message::{
@@ -24,14 +27,14 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use prost::Message;
+
+use casper::rust::errors::CasperError;
+use comm::rust::rp::protocol_helper::packet_with_content;
+use comm::rust::test_instances::TransportLayerStub;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
-use rspace_plus_plus::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::ByteVector;
-use tokio::sync::mpsc;
-
-use crate::engine::setup::TestFixture;
 
 struct InitializingSpec;
 
@@ -42,7 +45,9 @@ impl InitializingSpec {
             .set_responses(|_peer, _protocol| Ok(()));
     }
 
-    fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
+    fn after_each(fixture: &TestFixture) {
+        fixture.transport_layer.reset();
+    }
     async fn make_transition_to_running_once_approved_block_received() {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
@@ -389,6 +394,7 @@ async fn create_initializing_engine(
         fixture.block_store.clone(),
         fixture.block_dag_storage.clone(),
         fixture.deploy_storage.clone(),
+        fixture.rejected_deploy_buffer.clone(),
         fixture.casper_buffer_storage.clone(),
         fixture.rspace_state_manager.clone(),
         block_processing_queue_tx,
@@ -533,6 +539,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.block_store,
                     &fixture.block_dag_storage,
                     &fixture.deploy_storage,
+                    &fixture.rejected_deploy_buffer,
                     &fixture.casper_buffer_storage,
                     &fixture.rspace_state_manager,
                     fixture.event_publisher.clone(),

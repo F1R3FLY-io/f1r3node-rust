@@ -1,55 +1,69 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
+use block_storage::rust::{
+    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
+    dag::{
+        block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId},
+        block_metadata_store::BlockMetadataStore,
+        equivocation_tracker_store::EquivocationTrackerStore,
+    },
+    deploy::{
+        key_value_deploy_storage::KeyValueDeployStorage,
+        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    },
+    key_value_block_store::KeyValueBlockStore,
+};
+use casper::rust::{
+    engine::{
+        block_approver_protocol::BlockApproverProtocol, block_retriever, engine_cell::EngineCell,
+        running::Running,
+    },
+    validator_identity::ValidatorIdentity,
+};
+use comm::rust::{
+    peer_node::{Endpoint, NodeIdentifier, PeerNode},
+    rp::connect::{Connections, ConnectionsCell},
+    rp::rp_conf::RPConf,
+    test_instances::{create_rp_conf_ask, TransportLayerStub},
+};
+use crypto::rust::{private_key::PrivateKey, public_key::PublicKey};
+use models::{
+    routing::Protocol,
+    rust::{
+        block_hash::{BlockHash, BlockHashSerde},
+        block_metadata::BlockMetadata,
+        casper::protocol::casper_message::{
+            ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, HasBlock,
+        },
+        equivocation_record::SequenceNumber,
+        validator::ValidatorSerde,
+    },
+};
+use prost::bytes::Bytes;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicU64, Arc, Mutex};
+use tokio::sync::mpsc;
 
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
-use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
+use crate::{
+    helper::no_ops_casper_effect::NoOpsCasperEffect,
+    util::{genesis_builder::GenesisBuilder, test_mocks::MockKeyValueStore},
+};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
-use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
-use casper::rust::engine::block_retriever;
-use casper::rust::engine::engine_cell::EngineCell;
-use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::validator_identity::ValidatorIdentity;
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use comm::rust::rp::connect::{Connections, ConnectionsCell};
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
-use crypto::rust::private_key::PrivateKey;
-use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
-use models::routing::Protocol;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
-};
-use models::rust::equivocation_record::SequenceNumber;
-use models::rust::validator::ValidatorSerde;
-use prost::bytes::Bytes;
+use models::rust::casper::protocol::casper_message::DeployData;
 use prost::Message;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
-use tokio::sync::mpsc;
-
-use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::util::genesis_builder::GenesisBuilder;
-use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
-use crate::util::test_mocks::MockKeyValueStore;
 
 /// Test fixture struct to hold all test dependencies
 pub struct TestFixture {
@@ -80,7 +94,7 @@ pub struct TestFixture {
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
     pub rspace_state_manager: RSpaceStateManager,
     // Scala: implicit val runtimeManager = RuntimeManager[Task](rspace, replay, historyRepo, mStore, Genesis.NonNegativeMergeableTagName)
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
     pub estimator: Estimator,
     pub rspace_store: rspace_plus_plus::rspace::rspace::RSpaceStore,
@@ -126,6 +140,7 @@ pub struct TestFixture {
     pub block_dag_storage: BlockDagKeyValueStorage,
     // Scala: implicit val deployStorage = KeyValueDeployStorage[Task](kvm).unsafeRunSync(...)
     pub deploy_storage: KeyValueDeployStorage,
+    pub rejected_deploy_buffer: Arc<std::sync::Mutex<KeyValueRejectedDeployBuffer>>,
     // Scala: implicit val casperBuffer = CasperBufferKeyValueStorage.create[Task](spaceKVManager).unsafeRunSync(...)
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
 }
@@ -182,7 +197,7 @@ impl TestFixture {
         let (runtime_manager, history_repo) = RuntimeManager::create_with_history(
             rspace_store.clone(), // Clone the Arc-wrapped store (cheap operation)
             m_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -295,6 +310,15 @@ impl TestFixture {
             store: deploy_storage_typed_store,
         };
 
+        // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
+        let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
+        let rejected_buffer_typed_store =
+            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
+        let rejected_deploy_buffer =
+            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
+                store: rejected_buffer_typed_store,
+            }));
+
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply(Estimator::UNLIMITED_PARENTS, None);
 
@@ -305,7 +329,7 @@ impl TestFixture {
         let block_dag_representation = block_dag_storage_unwrapped.get_representation();
 
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
-        let runtime_manager_shared = Arc::new(tokio::sync::Mutex::new(runtime_manager));
+        let runtime_manager_shared = Arc::new(runtime_manager);
 
         let casper = NoOpsCasperEffect::new_with_shared_kvm(
             None, // estimator_func
@@ -503,6 +527,7 @@ impl TestFixture {
             engine_cell,
             block_dag_storage: block_dag_storage_unwrapped,
             deploy_storage,
+            rejected_deploy_buffer,
             casper_buffer_storage,
         }
         // Note: space_kv_manager will be dropped here, triggering its Drop implementation

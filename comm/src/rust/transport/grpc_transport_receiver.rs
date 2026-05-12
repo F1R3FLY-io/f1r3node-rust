@@ -1,37 +1,37 @@
-#![allow(clippy::too_many_arguments)]
-
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportReceiver.scala
 
+use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-use futures::stream::StreamExt;
-use models::routing::transport_layer_server::{TransportLayer, TransportLayerServer};
-use models::routing::{Chunk, TlRequest, TlResponse};
-use prost::Message;
-use shared::rust::shared::recent_hash_filter::RecentHashFilter;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
+
+use crate::rust::rp::protocol_helper;
+use crate::rust::rp::rp_conf::RPConf;
+use crate::rust::transport::limited_buffer::LimitedBuffer;
+use crate::rust::{
+    errors::CommError,
+    metrics_constants::{
+        PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC, PACKETS_RECEIVED_METRIC,
+        STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC, STREAM_CHUNKS_RECEIVED_METRIC,
+        TRANSPORT_METRICS_SOURCE,
+    },
+    peer_node::PeerNode,
+};
+use models::routing::transport_layer_server::{TransportLayer, TransportLayerServer};
+use models::routing::{Chunk, TlRequest, TlResponse};
+use prost::Message;
 
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
 use super::ssl_session_server_interceptor::SslSessionServerInterceptor;
 use super::stream_handler::{Circuit, StreamError, StreamHandler, Streamed};
-use crate::rust::errors::CommError;
-use crate::rust::metrics_constants::{
-    PACKETS_DROPPED_METRIC, PACKETS_ENQUEUED_METRIC, PACKETS_RECEIVED_METRIC,
-    STREAM_CHUNKS_DROPPED_METRIC, STREAM_CHUNKS_ENQUEUED_METRIC, STREAM_CHUNKS_RECEIVED_METRIC,
-    TRANSPORT_METRICS_SOURCE,
-};
-use crate::rust::peer_node::PeerNode;
-use crate::rust::rp::protocol_helper;
-use crate::rust::rp::rp_conf::RPConf;
-use crate::rust::transport::limited_buffer::LimitedBuffer;
+use shared::rust::shared::recent_hash_filter::RecentHashFilter;
 
 /// Calculate a deterministic hash of bytes for gossip deduplication.
 fn calculate_hash(bytes: &[u8]) -> u64 {
@@ -45,7 +45,7 @@ fn calculate_hash(bytes: &[u8]) -> u64 {
 
 // Circuit breaker parameters for thread-local storage
 thread_local! {
-    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
+    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<(String, u64)>> = std::cell::RefCell::new(None);
 }
 
 /// Circuit breaker function that uses thread-local parameters
@@ -160,10 +160,13 @@ impl TransportLayerService {
             } else {
                 // Peer doesn't exist
                 let new_once_cell = Arc::new(OnceCell::new());
-                buffers_map.insert(peer.clone(), PeerBufferSlot {
-                    once_cell: new_once_cell.clone(),
-                    last_seen_ms: now_ms,
-                });
+                buffers_map.insert(
+                    peer.clone(),
+                    PeerBufferSlot {
+                        once_cell: new_once_cell.clone(),
+                        last_seen_ms: now_ms,
+                    },
+                );
                 (new_once_cell, true)
             }
         };
@@ -213,7 +216,7 @@ impl TransportLayerService {
 
     async fn maybe_cleanup_stale_peer_buffers(&self) {
         let activity = PEER_BUFFER_ACTIVITY_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let should_periodic = activity.is_multiple_of(PEER_BUFFER_CLEANUP_EVERY_REQUESTS);
+        let should_periodic = activity % PEER_BUFFER_CLEANUP_EVERY_REQUESTS == 0;
 
         let (evict_peers, pre_len) = {
             let buffers_map = self.buffers_map.lock().await;
@@ -592,7 +595,6 @@ impl GrpcTransportReceiver {
         cache: StreamCache,
     ) -> Result<JoinHandle<()>, CommError> {
         use std::net::SocketAddr;
-
         use tonic::transport::Server;
 
         // Import our custom F1r3fly server

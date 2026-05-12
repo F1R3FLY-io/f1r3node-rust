@@ -9,10 +9,9 @@
  * This test is marked as ignored until ReportingCasper infrastructure is ported from Scala to Rust.
  */
 
-use casper::rust::util::construct_deploy;
-
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
+use casper::rust::util::construct_deploy;
 
 #[tokio::test]
 #[ignore = "ReportingCasper not implemented for RSpace++ - see detailed comment above"]

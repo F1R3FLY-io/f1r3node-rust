@@ -1,7 +1,6 @@
 [package]
 name = "comm"
 version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -29,7 +28,7 @@ rustls-pemfile = "2.1"
 tokio-rustls = "0.26" 
 x509-parser = "0.16"
 webpki = "0.22"
-rustls-webpki = "0.103"
+rustls-webpki = "0.102"
 thiserror = { workspace = true }
 p256 = { version = "0.13", features = ["ecdsa"] }
 futures = { workspace = true }
@@ -44,7 +43,7 @@ igd-next = { version = "0.16.2", features = ["aio_tokio"] }
 eyre = { workspace = true }
 local-ip-address = "0.6.5"
 reqwest = "0.12.24"
-metrics = "0.23"
+metrics = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

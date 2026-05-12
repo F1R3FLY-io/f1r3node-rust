@@ -1,13 +1,13 @@
 // comm/src/main/scala/coop/rchain/comm/transport/HostnameTrustManagerFactory.scala
 
-use std::sync::Arc;
-
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use p256::elliptic_curve::sec1::FromEncodedPoint;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+use rustls::pki_types::PrivatePkcs8KeyDer;
+use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme};
+use std::sync::Arc;
 
 /// Custom error type for certificate validation
 #[derive(Debug, Clone)]
@@ -206,7 +206,7 @@ impl HostnameTrustManagerFactory {
                     let pkcs8_bytes = key_der.secret_pkcs8_der();
 
                     let secret_key: p256::SecretKey =
-                        p256::SecretKey::from_pkcs8_der(pkcs8_bytes).unwrap();
+                        p256::SecretKey::from_pkcs8_der(&pkcs8_bytes).unwrap();
 
                     // Re-encode using p256's PKCS#8 encoding to get rustls-compatible format
                     let rustls_compatible_pkcs8 = secret_key.to_pkcs8_der().unwrap();
@@ -241,12 +241,10 @@ impl HostnameTrustManagerFactory {
 #[derive(Debug)]
 pub struct HostnameTrustManager;
 
-impl Default for HostnameTrustManager {
-    fn default() -> Self { Self::new() }
-}
-
 impl HostnameTrustManager {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// Check client certificate trust
     pub fn check_client_trusted(
@@ -362,10 +360,13 @@ impl HostnameTrustManager {
                         {
                             if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) = &extension.parsed_extension() {
                                 for name in &san.general_names {
-                                    if let x509_parser::extensions::GeneralName::DNSName(dns_name) = name {
-                                        if dns_name == &host {
-                                            return Ok(());
+                                    match name {
+                                        x509_parser::extensions::GeneralName::DNSName(dns_name) => {
+                                            if dns_name == &host {
+                                                return Ok(());
+                                            }
                                         }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -469,10 +470,6 @@ impl ServerCertVerifier for HostnameTrustManager {
 #[derive(Debug)]
 pub struct F1r3flyClientCertVerifier {
     trust_manager: Arc<HostnameTrustManager>,
-}
-
-impl Default for F1r3flyClientCertVerifier {
-    fn default() -> Self { Self::new() }
 }
 
 impl F1r3flyClientCertVerifier {

@@ -1,11 +1,9 @@
-#![allow(clippy::type_complexity)]
-
 // See block-storage/src/main/scala/coop/rchain/blockstorage/util/DoublyLinkedDagOperations.scala
 
+use shared::rust::store::key_value_store::KvStoreError;
 use std::collections::{HashMap, HashSet};
 
 use models::rust::block_hash::BlockHashSerde;
-use shared::rust::store::key_value_store::KvStoreError;
 
 #[derive(Debug, Clone)]
 pub struct BlockDependencyDag {
@@ -121,11 +119,11 @@ impl BlockDependencyDag {
         self.dependency_free.remove(&element);
 
         for parent in &orphaned_parents {
-            if self.child_to_parent_adjacency_list.contains_key(parent) {
+            if self.child_to_parent_adjacency_list.contains_key(&parent) {
                 continue;
             }
 
-            self.dependency_free.remove(parent);
+            self.dependency_free.remove(&parent);
         }
 
         Ok((children_affected, children_removed, orphaned_parents))
@@ -134,9 +132,8 @@ impl BlockDependencyDag {
 
 #[cfg(test)]
 mod tests {
-    use prost::bytes::Bytes;
-
     use super::*;
+    use prost::bytes::Bytes;
 
     fn create_block_hash(value: &[u8]) -> BlockHashSerde {
         models::rust::block_hash::BlockHashSerde(Bytes::from(value.to_vec()))

@@ -3,8 +3,7 @@
 use std::fmt;
 
 use models::rhoapi::Par;
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
+use rholang::rust::interpreter::{errors::InterpreterError, pretty_printer::PrettyPrinter};
 
 #[derive(Debug)]
 pub struct SystemDeployUserError {
@@ -12,7 +11,9 @@ pub struct SystemDeployUserError {
 }
 
 impl SystemDeployUserError {
-    pub fn new(error_message: String) -> Self { Self { error_message } }
+    pub fn new(error_message: String) -> Self {
+        Self { error_message }
+    }
 }
 
 /**

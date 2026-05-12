@@ -1,5 +1,3 @@
-#![allow(clippy::empty_line_after_doc_comments)]
-
 // See casper/src/main/scala/coop/rchain/casper/ReportingProtoTransformer.scala
 
 use models::casper::{
@@ -36,12 +34,10 @@ pub struct ReportingProtoTransformer;
 /// 2. Generated protobuf types require owned data for serialization
 /// 3. This is a one-time transformation for reporting, not a hot path
 
-impl Default for ReportingProtoTransformer {
-    fn default() -> Self { Self::new() }
-}
-
 impl ReportingProtoTransformer {
-    pub fn new() -> Self { ReportingProtoTransformer }
+    pub fn new() -> Self {
+        ReportingProtoTransformer
+    }
 
     pub fn serialize_consume_proto(
         &self,

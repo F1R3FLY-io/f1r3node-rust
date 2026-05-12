@@ -2,11 +2,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
-use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
-use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
+use base64::{engine::general_purpose, Engine as _};
+use p256::{
+    elliptic_curve::sec1::ToEncodedPoint,
+    pkcs8::{DecodePrivateKey, EncodePrivateKey},
+    PublicKey as P256PublicKey, SecretKey as P256SecretKey,
+};
 use rand::rngs::OsRng;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use x509_certificate::X509Certificate;
@@ -253,7 +254,7 @@ impl CertificateHelper {
         // Create an rcgen KeyPair from the PKCS8 DER bytes
         let key_pair = KeyPair::from_pem(&format!(
             "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
-            general_purpose::STANDARD.encode(secret_bytes.as_bytes())
+            general_purpose::STANDARD.encode(&secret_bytes.as_bytes())
         ))
         .map_err(|e| {
             CertificateError::CertificateGeneration(format!("Key conversion failed: {}", e))
@@ -335,7 +336,7 @@ impl CertificateHelper {
         let r_bytes = r.to_bytes();
         if r_bytes.len() <= 32 {
             // Left-pad with zeros to make exactly 32 bytes
-            result.extend(std::iter::repeat_n(0u8, 32 - r_bytes.len()));
+            result.extend(std::iter::repeat(0u8).take(32 - r_bytes.len()));
             result.extend_from_slice(&r_bytes);
         } else {
             // Take the rightmost 32 bytes if somehow longer
@@ -346,7 +347,7 @@ impl CertificateHelper {
         let s_bytes = s.to_bytes();
         if s_bytes.len() <= 32 {
             // Left-pad with zeros to make exactly 32 bytes
-            result.extend(std::iter::repeat_n(0u8, 32 - s_bytes.len()));
+            result.extend(std::iter::repeat(0u8).take(32 - s_bytes.len()));
             result.extend_from_slice(&s_bytes);
         } else {
             // Take the rightmost 32 bytes if somehow longer

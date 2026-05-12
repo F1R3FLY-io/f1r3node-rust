@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, HashMap};
-
-use models::rhoapi::{New, Par};
-use rholang_parser::ast::{AnnProc, NameDecl};
-use rholang_parser::SourcePos;
-
 use crate::rust::interpreter::compiler::exports::{
     BoundMapChain, IdContextPos, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_new};
+use crate::rust::interpreter::util::filter_and_adjust_bitset;
+use crate::rust::interpreter::util::prepend_new;
+use models::rhoapi::{New, Par};
+use std::collections::{BTreeMap, HashMap};
+
+use rholang_parser::ast::{AnnProc, NameDecl};
+use rholang_parser::SourcePos;
 
 pub fn normalize_p_new<'ast>(
     decls: &[NameDecl<'ast>],
@@ -47,10 +47,14 @@ pub fn normalize_p_new<'ast>(
     let new_bindings: Vec<IdContextPos<VarSort>> = sorted_bindings
         .iter()
         .map(|row| {
-            (row.1.clone(), row.2.clone(), SourcePos {
-                line: row.3,
-                col: row.4,
-            })
+            (
+                row.1.clone(),
+                row.2.clone(),
+                SourcePos {
+                    line: row.3,
+                    col: row.4,
+                },
+            )
         })
         .collect();
 
@@ -96,20 +100,22 @@ pub fn normalize_p_new<'ast>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use models::create_bit_vector;
-    use models::rhoapi::{New, Par};
-    use models::rust::utils::{new_boundvar_par, new_gint_par, new_send};
+    use models::{
+        create_bit_vector,
+        rhoapi::{New, Par},
+        rust::utils::{new_boundvar_par, new_gint_par, new_send},
+    };
 
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
-    use crate::rust::interpreter::util::prepend_new;
+    use crate::rust::interpreter::{
+        test_utils::utils::proc_visit_inputs_and_env, util::prepend_new,
+    };
 
     #[test]
     fn p_new_should_bind_new_variables() {
-        use rholang_parser::ast::{Id, NameDecl, SendType};
-        use rholang_parser::SourcePos;
-
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+        use rholang_parser::ast::{Id, NameDecl, SendType};
+        use rholang_parser::SourcePos;
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -178,36 +184,39 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let expected_result = prepend_new(Par::default(), New {
-            bind_count: 3,
-            p: Some(
-                Par::default()
-                    .prepend_send(new_send(
-                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
-                        vec![new_gint_par(7, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![2]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                        vec![new_gint_par(8, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![1]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                        vec![new_gint_par(9, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![0]),
-                        false,
-                    )),
-            ),
-            uri: Vec::new(),
-            injections: BTreeMap::new(),
-            locally_free: Vec::new(),
-        });
+        let expected_result = prepend_new(
+            Par::default(),
+            New {
+                bind_count: 3,
+                p: Some(
+                    Par::default()
+                        .prepend_send(new_send(
+                            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                            vec![new_gint_par(7, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![2]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                            vec![new_gint_par(8, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![1]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                            vec![new_gint_par(9, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![0]),
+                            false,
+                        )),
+                ),
+                uri: Vec::new(),
+                injections: BTreeMap::new(),
+                locally_free: Vec::new(),
+            },
+        );
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(
@@ -218,11 +227,10 @@ mod tests {
 
     #[test]
     fn p_new_should_sort_uris_and_place_them_at_the_end() {
-        use rholang_parser::ast::{Id, NameDecl, SendType, Uri};
-        use rholang_parser::SourcePos;
-
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
+        use rholang_parser::ast::{Id, NameDecl, SendType, Uri};
+        use rholang_parser::SourcePos;
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -318,50 +326,53 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let expected_result = prepend_new(Par::default(), New {
-            bind_count: 5,
-            p: Some(
-                Par::default()
-                    .prepend_send(new_send(
-                        new_boundvar_par(4, create_bit_vector(&vec![4]), false),
-                        vec![new_gint_par(7, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![4]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(3, create_bit_vector(&vec![3]), false),
-                        vec![new_gint_par(8, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![3]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                        vec![new_gint_par(9, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![1]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                        vec![new_gint_par(10, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![0]),
-                        false,
-                    ))
-                    .prepend_send(new_send(
-                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
-                        vec![new_gint_par(11, Vec::new(), false)],
-                        false,
-                        create_bit_vector(&vec![2]),
-                        false,
-                    )),
-            ),
-            uri: vec!["rho:registry".to_string(), "rho:stdout".to_string()],
-            injections: BTreeMap::new(),
-            locally_free: Vec::new(),
-        });
+        let expected_result = prepend_new(
+            Par::default(),
+            New {
+                bind_count: 5,
+                p: Some(
+                    Par::default()
+                        .prepend_send(new_send(
+                            new_boundvar_par(4, create_bit_vector(&vec![4]), false),
+                            vec![new_gint_par(7, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![4]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(3, create_bit_vector(&vec![3]), false),
+                            vec![new_gint_par(8, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![3]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                            vec![new_gint_par(9, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![1]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                            vec![new_gint_par(10, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![0]),
+                            false,
+                        ))
+                        .prepend_send(new_send(
+                            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                            vec![new_gint_par(11, Vec::new(), false)],
+                            false,
+                            create_bit_vector(&vec![2]),
+                            false,
+                        )),
+                ),
+                uri: vec!["rho:registry".to_string(), "rho:stdout".to_string()],
+                injections: BTreeMap::new(),
+                locally_free: Vec::new(),
+            },
+        );
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(

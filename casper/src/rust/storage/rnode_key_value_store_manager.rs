@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB,
+use rspace_plus_plus::rspace::shared::{
+    key_value_store_manager::KeyValueStoreManager,
+    lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB},
 };
 
 pub fn new_key_value_store_manager(
@@ -21,19 +21,25 @@ pub fn new_key_value_store_manager(
 
 // RSpace
 fn rspace_history_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("rspace/history".to_string(), TB)
+    LmdbEnvConfig::new("rspace/history".to_string(), 1 * TB)
 }
 
-fn rspace_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("rspace/cold".to_string(), TB) }
+fn rspace_cold_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("rspace/cold".to_string(), 1 * TB)
+}
 
 // RSpace evaluator
-fn eval_history_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/history".to_string(), TB) }
+fn eval_history_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("eval/history".to_string(), 1 * TB)
+}
 
-fn eval_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/cold".to_string(), TB) }
+fn eval_cold_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("eval/cold".to_string(), 1 * TB)
+}
 
 // Blocks
 fn block_storage_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("blockstorage".to_string(), TB)
+    LmdbEnvConfig::new("blockstorage".to_string(), 1 * TB)
 }
 
 fn dag_storage_env_config() -> LmdbEnvConfig {
@@ -41,21 +47,25 @@ fn dag_storage_env_config() -> LmdbEnvConfig {
 }
 
 fn deploy_storage_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("deploystorage".to_string(), GB)
+    LmdbEnvConfig::new("deploystorage".to_string(), 1 * GB)
 }
 
 // Temporary storage / cache
 fn casper_buffer_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("casperbuffer".to_string(), GB)
+    LmdbEnvConfig::new("casperbuffer".to_string(), 1 * GB)
 }
 
-fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_string(), 10 * TB) }
+fn reporting_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("reporting".to_string(), 10 * TB)
+}
 
-fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
+fn transaction_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("transaction".to_string(), 1 * GB)
+}
 
 // Legacy RSpace paths
 fn legacy_env_config(dir: &str) -> LmdbEnvConfig {
-    LmdbEnvConfig::new(format!("{}/{}", "rspace/casper/v2", dir), TB)
+    LmdbEnvConfig::new(format!("{}/{}", "rspace/casper/v2", dir), 1 * TB)
 }
 
 // Database name to store instance name mapping (sub-folder for LMDB store)
@@ -106,6 +116,13 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         // Deploy storage
         (
             Db::new("deploy_storage".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        // Buffer of deploys rejected during multi-parent merge; shares sizing
+        // with deploy_storage since its entries are the same value type
+        // (Signed<DeployData>) and it is bounded by `deployLifespan`.
+        (
+            Db::new("rejected_deploy_buffer".to_string(), None),
             deploy_storage_env_config(),
         ),
         // Reporting (trace) cache

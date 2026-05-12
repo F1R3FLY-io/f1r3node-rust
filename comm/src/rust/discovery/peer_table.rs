@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use prost::bytes::Bytes;
 
+use crate::rust::{errors::CommError, peer_node::PeerNode};
+
 use super::kademlia_rpc::KademliaRPC;
-use crate::rust::errors::CommError;
-use crate::rust::peer_node::PeerNode;
 
 // Lookup table for log 2 (highest bit set) of an 8-bit unsigned
 // integer. Entry 0 is unused.
@@ -79,7 +79,9 @@ impl<T: KademliaRPC> PeerTable<T> {
     }
 
     /// Get the concurrency factor (alpha) for network operations
-    pub fn alpha(&self) -> u32 { self.alpha }
+    pub fn alpha(&self) -> u32 {
+        self.alpha
+    }
 
     /** Computes Kademlia XOR distance.
      *
@@ -121,11 +123,11 @@ impl<T: KademliaRPC> PeerTable<T> {
 
         if let Some(bucket_mutex) = bucket {
             // Try to add/update or pick old peer
-            let old_peer_candidate = self.add_update_or_pick_old_peer(bucket_mutex, peer)?;
+            let old_peer_candidate = self.add_update_or_pick_old_peer(&bucket_mutex, peer)?;
 
             // If we have an old peer to ping, do so
             if let Some(old_entry) = old_peer_candidate {
-                self.ping_and_update(bucket_mutex, peer, old_entry).await?;
+                self.ping_and_update(&bucket_mutex, peer, old_entry).await?;
             }
         }
 
@@ -199,6 +201,7 @@ impl<T: KademliaRPC> PeerTable<T> {
             .kademlia_rpc
             .ping(&old_entry.entry)
             .await
+            .map(|result| result)
             .unwrap_or(false);
 
         let mut entries = bucket.lock().map_err(|_| {

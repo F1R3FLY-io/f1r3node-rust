@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/serializers/ScodecSerialize.
 // scala
 

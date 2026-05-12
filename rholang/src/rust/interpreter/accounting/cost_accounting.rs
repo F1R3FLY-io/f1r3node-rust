@@ -1,7 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/CostAccounting.scala
 
-use super::costs::Cost;
-use super::{CostManager, _cost};
+use super::{_cost, costs::Cost, CostManager};
 
 pub struct CostAccounting;
 
@@ -13,5 +12,7 @@ impl CostAccounting {
         }
     }
 
-    pub fn empty_cost() -> _cost { CostManager::new(Self::empty()) }
+    pub fn empty_cost() -> _cost {
+        CostManager::new(Self::empty())
+    }
 }

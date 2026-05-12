@@ -4,18 +4,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use lazy_static::lazy_static;
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::validator::Validator;
 
-use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
-use super::casper::{CasperShardConf, CasperSnapshot};
-use super::errors::CasperError;
-use super::util::rholang::runtime_manager::RuntimeManager;
-use super::validator_identity::ValidatorIdentity;
+use block_storage::rust::{
+    dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    key_value_block_store::KeyValueBlockStore,
+};
+use models::rust::{block_metadata::BlockMetadata, validator::Validator};
+
 use crate::rust::util::proto_util;
+
+use super::{
+    blocks::proposer::propose_result::CheckProposeConstraintsResult,
+    casper::{CasperShardConf, CasperSnapshot},
+    errors::CasperError,
+    util::rholang::runtime_manager::RuntimeManager,
+    validator_identity::ValidatorIdentity,
+};
 
 #[derive(Debug)]
 struct SynchronyRecoveryState {
@@ -83,9 +88,8 @@ impl SynchronyRecoveryState {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
+    use std::time::Duration;
 
     fn test_conf() -> CasperShardConf {
         let mut conf = CasperShardConf::new();
@@ -296,13 +300,16 @@ fn should_bypass_synchrony_constraint(
             false
         }
         None => {
-            states.insert(validator.clone(), SynchronyRecoveryState {
-                last_known_hash: last_proposed_block_hash.to_vec(),
-                first_failure_at: Some(now),
-                consecutive_failures: 1,
-                bypass_count: 0,
-                last_bypass_at: None,
-            });
+            states.insert(
+                validator.clone(),
+                SynchronyRecoveryState {
+                    last_known_hash: last_proposed_block_hash.to_vec(),
+                    first_failure_at: Some(now),
+                    consecutive_failures: 1,
+                    bypass_count: 0,
+                    last_bypass_at: None,
+                },
+            );
             false
         }
     }
@@ -377,7 +384,7 @@ pub async fn check(
                     other_validators_weight,
                 );
 
-                let threshold_f64 = synchrony_constraint_threshold;
+                let threshold_f64 = synchrony_constraint_threshold as f64;
 
                 tracing::warn!(
                     "Seen {} senders with weight {} out of total {} ({:.2} out of {:.2} needed)",
@@ -402,7 +409,7 @@ pub async fn check(
                     let can_use_finalized = can_use_finalized_baseline(
                         last_proposed_block_meta.block_number,
                         last_finalized_block_meta.block_number,
-                        shard_conf.height_constraint_threshold,
+                        shard_conf.height_constraint_threshold as i64,
                         shard_conf.synchrony_finalized_baseline_max_distance,
                     );
 
@@ -521,7 +528,7 @@ fn calculate_seen_senders_since(
         let present_in_justifications = last_proposed
             .justifications
             .iter()
-            .any(|j| j.validator == validator);
+            .any(|j| &j.validator == validator);
         if present_in_justifications {
             continue;
         }

@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use graphz::rust::graphz::{
     apply, subgraph, GraphArrowType, GraphRankDir, GraphSerializer, GraphShape, GraphStyle,
@@ -9,6 +6,8 @@ use graphz::rust::graphz::{
 use itertools::Itertools;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ValidatorBlock {
@@ -18,9 +17,16 @@ pub struct ValidatorBlock {
 }
 
 #[derive(Debug, Clone)]
-#[derive(Default)]
 pub struct GraphConfig {
     pub show_justification_lines: bool,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            show_justification_lines: false,
+        }
+    }
 }
 
 pub type ValidatorsBlocks = HashMap<i64, Vec<ValidatorBlock>>;
@@ -172,11 +178,14 @@ impl GraphzGenerator {
                     .collect();
 
                 let mut validator_blocks = HashMap::new();
-                validator_blocks.insert(time_entry, vec![ValidatorBlock {
-                    block_hash,
-                    parents,
-                    justifications,
-                }]);
+                validator_blocks.insert(
+                    time_entry,
+                    vec![ValidatorBlock {
+                        block_hash,
+                        parents,
+                        justifications,
+                    }],
+                );
 
                 let mut block_map = HashMap::new();
                 block_map.insert(block_sender_hash, validator_blocks);
@@ -188,9 +197,15 @@ impl GraphzGenerator {
 
         // Equivalent to acc.validators |+| Foldable[List].fold(validators)
         for (block_sender_hash, blocks_map) in validators.into_iter().flat_map(|m| m.into_iter()) {
-            let acc_validator = acc.validators.entry(block_sender_hash).or_default();
+            let acc_validator = acc
+                .validators
+                .entry(block_sender_hash)
+                .or_insert_with(HashMap::new);
             for (ts, blocks) in blocks_map {
-                acc_validator.entry(ts).or_default().extend(blocks);
+                acc_validator
+                    .entry(ts)
+                    .or_insert_with(Vec::new)
+                    .extend(blocks);
             }
         }
 
@@ -405,7 +420,9 @@ impl std::fmt::Display for GraphGeneratorError {
 impl std::error::Error for GraphGeneratorError {}
 
 impl From<GraphzError> for GraphGeneratorError {
-    fn from(err: GraphzError) -> Self { GraphGeneratorError::GraphzError(err) }
+    fn from(err: GraphzError) -> Self {
+        GraphGeneratorError::GraphzError(err)
+    }
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, KeyValueBlockStore>>>

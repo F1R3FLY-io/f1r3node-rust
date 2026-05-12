@@ -2,15 +2,17 @@
 
 use std::collections::HashMap;
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use crypto::rust::public_key::PublicKey;
+use crypto::rust::{hash::blake2b512_random::Blake2b512Random, public_key::PublicKey};
 use models::rhoapi::Par;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoNumber};
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
-use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+use crate::rust::{
+    errors::CasperError,
+    util::rholang::{
+        system_deploy::SystemDeployTrait, system_deploy_user_error::SystemDeployUserError,
+    },
+};
 
 pub struct CheckBalance {
     pub pk: PublicKey,
@@ -43,15 +45,19 @@ impl SystemDeployTrait for CheckBalance {
       "#
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
     fn process_result(
-        value: <Self::Output as Extractor<Self::Output>>::RustType,
+        value: <Self::Output as Extractor>::RustType,
     ) -> Either<SystemDeployUserError, Self::Result> {
         Either::Right(value)
     }
 
-    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+    fn rand(&self) -> Blake2b512Random {
+        self.rand.clone()
+    }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

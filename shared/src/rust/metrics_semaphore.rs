@@ -4,7 +4,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::metrics_constants::{LOCK_ACQUIRE_TIME_METRIC, LOCK_PERMIT_METRIC, LOCK_QUEUE_METRIC};
@@ -39,10 +38,14 @@ impl MetricsSemaphore {
 
     /// Creates a new MetricsSemaphore with a single permit (mutex-like behavior).
     /// This matches Scala's `MetricsSemaphore.single`.
-    pub fn single(source: &'static str) -> Self { Self::new(1, source) }
+    pub fn single(source: &'static str) -> Self {
+        Self::new(1, source)
+    }
 
     /// Returns the current number of available permits.
-    pub fn available_permits(&self) -> usize { self.semaphore.available_permits() }
+    pub fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
 
     /// Acquires a permit from the semaphore, recording metrics.
     ///
@@ -105,7 +108,9 @@ impl MetricsSemaphore {
     /// Executes the given async closure while holding a permit.
     /// This is the equivalent of Scala's `withPermit`.
     pub async fn with_permit<F, T>(&self, f: F) -> T
-    where F: std::future::Future<Output = T> {
+    where
+        F: std::future::Future<Output = T>,
+    {
         let _permit = self.acquire().await;
         f.await
     }

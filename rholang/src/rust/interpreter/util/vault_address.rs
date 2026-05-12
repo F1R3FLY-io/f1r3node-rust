@@ -1,9 +1,9 @@
 use crypto::rust::public_key::PublicKey;
 use hex;
-use models::rhoapi::GPrivate;
 use models::rust::validator;
 
 use super::address_tools::{Address, AddressTools};
+use models::rhoapi::GPrivate;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/VaultAddress.scala
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -28,22 +28,26 @@ fn tools() -> AddressTools {
 }
 
 impl VaultAddress {
-    pub fn to_base58(&self) -> String { self.address.to_base58() }
+    pub fn to_base58(&self) -> String {
+        self.address.to_base58()
+    }
 
     pub fn from_deployer_id(deployer_id: Vec<u8>) -> Option<VaultAddress> {
         VaultAddress::from_public_key(&PublicKey::from_bytes(&deployer_id))
     }
 
     pub fn from_public_key(pk: &PublicKey) -> Option<VaultAddress> {
-        tools()
-            .from_public_key(pk)
-            .map(|address| VaultAddress { address })
+        match tools().from_public_key(pk) {
+            Some(address) => Some(VaultAddress { address }),
+            None => None,
+        }
     }
 
     pub fn from_eth_address(eth_address: &str) -> Option<VaultAddress> {
-        tools()
-            .from_eth_address(eth_address)
-            .map(|address| VaultAddress { address })
+        match tools().from_eth_address(eth_address) {
+            Some(address) => Some(VaultAddress { address }),
+            None => None,
+        }
     }
 
     pub fn from_unforgeable(gprivate: &GPrivate) -> VaultAddress {
@@ -59,5 +63,7 @@ impl VaultAddress {
         }
     }
 
-    pub fn is_valid(address: &str) -> bool { VaultAddress::parse(address).is_ok() }
+    pub fn is_valid(address: &str) -> bool {
+        VaultAddress::parse(address).is_ok()
+    }
 }

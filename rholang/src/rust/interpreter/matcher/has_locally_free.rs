@@ -1,8 +1,8 @@
-use models::create_bit_vector;
-use models::rust::utils::union;
+use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+
+use models::{create_bit_vector, rust::utils::union};
 
 use super::exports::*;
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 
 // See models/src/main/scala/coop/rchain/models/HasLocallyFree.scala
 pub trait HasLocallyFree<T> {
@@ -47,13 +47,19 @@ impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
 
 // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - line 357 and beyond
 impl HasLocallyFree<Par> for SpatialMatcherContext {
-    fn connective_used(&self, p: Par) -> bool { p.connective_used }
+    fn connective_used(&self, p: Par) -> bool {
+        p.connective_used
+    }
 
-    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
+    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> {
+        p.locally_free
+    }
 }
 
 impl HasLocallyFree<Bundle> for SpatialMatcherContext {
-    fn connective_used(&self, _source: Bundle) -> bool { false }
+    fn connective_used(&self, _source: Bundle) -> bool {
+        false
+    }
 
     fn locally_free(&self, source: Bundle, _depth: i32) -> Vec<u8> {
         source.body.unwrap().locally_free
@@ -61,15 +67,23 @@ impl HasLocallyFree<Bundle> for SpatialMatcherContext {
 }
 
 impl HasLocallyFree<Send> for SpatialMatcherContext {
-    fn connective_used(&self, s: Send) -> bool { s.connective_used }
+    fn connective_used(&self, s: Send) -> bool {
+        s.connective_used
+    }
 
-    fn locally_free(&self, s: Send, _depth: i32) -> Vec<u8> { s.locally_free }
+    fn locally_free(&self, s: Send, _depth: i32) -> Vec<u8> {
+        s.locally_free
+    }
 }
 
 impl HasLocallyFree<GUnforgeable> for SpatialMatcherContext {
-    fn connective_used(&self, _unf: GUnforgeable) -> bool { false }
+    fn connective_used(&self, _unf: GUnforgeable) -> bool {
+        false
+    }
 
-    fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> { Default::default() }
+    fn locally_free(&self, _s: GUnforgeable, _depth: i32) -> Vec<u8> {
+        Default::default()
+    }
 }
 
 impl HasLocallyFree<Expr> for SpatialMatcherContext {
@@ -235,9 +249,13 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
 }
 
 impl HasLocallyFree<New> for SpatialMatcherContext {
-    fn connective_used(&self, n: New) -> bool { n.p.unwrap().connective_used }
+    fn connective_used(&self, n: New) -> bool {
+        n.p.unwrap().connective_used
+    }
 
-    fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
+    fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> {
+        n.locally_free
+    }
 }
 
 impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
@@ -253,7 +271,7 @@ impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
         match v {
             BoundVar(index) => {
                 if depth == 0 {
-                    create_bit_vector(&[index as usize])
+                    create_bit_vector(&vec![index as usize])
                 } else {
                     Default::default()
                 }
@@ -265,7 +283,9 @@ impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
 }
 
 impl HasLocallyFree<Var> for SpatialMatcherContext {
-    fn connective_used(&self, v: Var) -> bool { self.connective_used(v.var_instance.unwrap()) }
+    fn connective_used(&self, v: Var) -> bool {
+        self.connective_used(v.var_instance.unwrap())
+    }
 
     fn locally_free(&self, v: Var, depth: i32) -> Vec<u8> {
         self.locally_free(v.var_instance.unwrap(), depth)
@@ -273,13 +293,19 @@ impl HasLocallyFree<Var> for SpatialMatcherContext {
 }
 
 impl HasLocallyFree<Receive> for SpatialMatcherContext {
-    fn connective_used(&self, r: Receive) -> bool { r.connective_used }
+    fn connective_used(&self, r: Receive) -> bool {
+        r.connective_used
+    }
 
-    fn locally_free(&self, r: Receive, _depth: i32) -> Vec<u8> { r.locally_free }
+    fn locally_free(&self, r: Receive, _depth: i32) -> Vec<u8> {
+        r.locally_free
+    }
 }
 
 impl HasLocallyFree<ReceiveBind> for SpatialMatcherContext {
-    fn connective_used(&self, rb: ReceiveBind) -> bool { self.connective_used(rb.source.unwrap()) }
+    fn connective_used(&self, rb: ReceiveBind) -> bool {
+        self.connective_used(rb.source.unwrap())
+    }
 
     fn locally_free(&self, rb: ReceiveBind, depth: i32) -> Vec<u8> {
         union(
@@ -292,13 +318,19 @@ impl HasLocallyFree<ReceiveBind> for SpatialMatcherContext {
 }
 
 impl HasLocallyFree<Match> for SpatialMatcherContext {
-    fn connective_used(&self, m: Match) -> bool { m.connective_used }
+    fn connective_used(&self, m: Match) -> bool {
+        m.connective_used
+    }
 
-    fn locally_free(&self, m: Match, _depth: i32) -> Vec<u8> { m.locally_free }
+    fn locally_free(&self, m: Match, _depth: i32) -> Vec<u8> {
+        m.locally_free
+    }
 }
 
 impl HasLocallyFree<MatchCase> for SpatialMatcherContext {
-    fn connective_used(&self, mc: MatchCase) -> bool { mc.source.unwrap().connective_used }
+    fn connective_used(&self, mc: MatchCase) -> bool {
+        mc.source.unwrap().connective_used
+    }
 
     fn locally_free(&self, mc: MatchCase, depth: i32) -> Vec<u8> {
         union(
@@ -331,7 +363,7 @@ impl HasLocallyFree<Connective> for SpatialMatcherContext {
                 depth: var_depth,
             })) => {
                 if depth == var_depth {
-                    create_bit_vector(&[idx as usize])
+                    create_bit_vector(&vec![idx as usize])
                 } else {
                     Default::default()
                 }
@@ -354,7 +386,7 @@ impl HasLocallyFree<VarInstance> for VarInstance {
         match v {
             BoundVar(index) => {
                 if depth == 0 {
-                    create_bit_vector(&[index as usize])
+                    create_bit_vector(&vec![index as usize])
                 } else {
                     Default::default()
                 }
@@ -367,13 +399,15 @@ impl HasLocallyFree<VarInstance> for VarInstance {
 
 impl HasLocallyFree<Var> for Var {
     fn connective_used(&self, v: Var) -> bool {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .connective_used(v.var_instance.unwrap())
     }
 
     fn locally_free(&self, v: Var, depth: i32) -> Vec<u8> {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .locally_free(v.var_instance.unwrap(), depth)
     }
@@ -399,7 +433,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().connective_used(v.unwrap()),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().connective_used(v.unwrap()),
             Some(ENotBody(ENot { p })) => p.unwrap().connective_used,
             Some(ENegBody(ENeg { p })) => p.unwrap().connective_used,
 
@@ -479,7 +513,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.locally_free,
             Some(EZipperBody(e)) => e.locally_free,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().locally_free(v.unwrap(), depth),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().locally_free(v.unwrap(), depth),
             Some(ENotBody(ENot { p })) => p.unwrap().locally_free,
             Some(ENegBody(ENeg { p })) => p.unwrap().locally_free,
 
@@ -564,7 +598,7 @@ impl HasLocallyFree<Connective> for Connective {
                 depth: var_depth,
             })) => {
                 if depth == var_depth {
-                    create_bit_vector(&[idx as usize])
+                    create_bit_vector(&vec![idx as usize])
                 } else {
                     Default::default()
                 }
@@ -575,13 +609,21 @@ impl HasLocallyFree<Connective> for Connective {
 }
 
 impl HasLocallyFree<Par> for Par {
-    fn connective_used(&self, p: Par) -> bool { p.connective_used }
+    fn connective_used(&self, p: Par) -> bool {
+        p.connective_used
+    }
 
-    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
+    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> {
+        p.locally_free
+    }
 }
 
 impl HasLocallyFree<New> for New {
-    fn connective_used(&self, n: New) -> bool { n.p.unwrap().connective_used }
+    fn connective_used(&self, n: New) -> bool {
+        n.p.unwrap().connective_used
+    }
 
-    fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
+    fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> {
+        n.locally_free
+    }
 }

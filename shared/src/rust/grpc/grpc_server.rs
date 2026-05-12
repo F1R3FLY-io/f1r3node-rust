@@ -2,7 +2,6 @@
 
 use std::net::SocketAddr;
 use std::time::Duration;
-
 use tokio::time::timeout;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server as TonicServer;
@@ -20,7 +19,10 @@ async fn bind_tcp_listener_with_retry(
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
                 if attempt > 1 {
-                    tracing::info!("gRPC server bound to {} after {} attempts", addr, attempt);
+                    tracing::info!(
+                        "gRPC server bound to {} after {} attempts",
+                        addr, attempt
+                    );
                 }
                 return Ok(listener);
             }
@@ -30,11 +32,7 @@ async fn bind_tcp_listener_with_retry(
             {
                 tracing::warn!(
                     "gRPC server bind attempt {}/{} failed at {}: {}. Retrying in {:?}",
-                    attempt,
-                    GRPC_BIND_RETRY_ATTEMPTS,
-                    addr,
-                    e,
-                    GRPC_BIND_RETRY_DELAY
+                    attempt, GRPC_BIND_RETRY_ATTEMPTS, addr, e, GRPC_BIND_RETRY_DELAY
                 );
                 attempt += 1;
                 tokio::time::sleep(GRPC_BIND_RETRY_DELAY).await;
@@ -43,8 +41,7 @@ async fn bind_tcp_listener_with_retry(
                 return Err(format!(
                     "Failed to bind gRPC server at {} after {} attempt(s): {}",
                     addr, attempt, e
-                )
-                .into());
+                ).into());
             }
         }
     }
@@ -163,10 +160,14 @@ impl GrpcServer {
     }
 
     /// Get the port the server is configured to run on
-    pub fn port(&self) -> u16 { self.port }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool { self.server_future.is_some() }
+    pub fn is_running(&self) -> bool {
+        self.server_future.is_some()
+    }
 
     /// Take the server future handle for external lifecycle management
     ///

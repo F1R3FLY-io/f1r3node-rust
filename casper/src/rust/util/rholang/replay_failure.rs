@@ -27,7 +27,9 @@ pub enum ReplayFailure {
 }
 
 impl ReplayFailure {
-    pub fn internal_error(msg: String) -> Self { ReplayFailure::InternalError { msg } }
+    pub fn internal_error(msg: String) -> Self {
+        ReplayFailure::InternalError { msg }
+    }
 
     pub fn replay_status_mismatch(initial_failed: bool, replay_failed: bool) -> Self {
         ReplayFailure::ReplayStatusMismatch {
@@ -36,7 +38,9 @@ impl ReplayFailure {
         }
     }
 
-    pub fn unused_comm_event(msg: String) -> Self { ReplayFailure::UnusedCOMMEvent { msg } }
+    pub fn unused_comm_event(msg: String) -> Self {
+        ReplayFailure::UnusedCOMMEvent { msg }
+    }
 
     pub fn replay_cost_mismatch(initial_cost: u64, replay_cost: u64) -> Self {
         ReplayFailure::ReplayCostMismatch {

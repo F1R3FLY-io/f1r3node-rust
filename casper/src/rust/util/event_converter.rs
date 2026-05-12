@@ -1,12 +1,16 @@
 // See casper/src/main/scala/coop/rchain/casper/util/EventConverter.scala
 
-use models::rust::casper::protocol::casper_message::{
-    CommEvent, ConsumeEvent, Event, Peek, ProduceEvent,
-};
+use models::rust::casper::protocol::casper_message::CommEvent;
+use models::rust::casper::protocol::casper_message::ConsumeEvent;
+use models::rust::casper::protocol::casper_message::Event;
+use models::rust::casper::protocol::casper_message::Peek;
+use models::rust::casper::protocol::casper_message::ProduceEvent;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::trace::event::{
-    Consume, Event as RspaceEvent, IOEvent, Produce, COMM as RspaceComm,
-};
+use rspace_plus_plus::rspace::trace::event::Consume;
+use rspace_plus_plus::rspace::trace::event::Event as RspaceEvent;
+use rspace_plus_plus::rspace::trace::event::IOEvent;
+use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::event::COMM as RspaceComm;
 
 pub fn to_casper_event(event: RspaceEvent) -> Event {
     match event {
@@ -89,7 +93,7 @@ pub fn to_rspace_event(event: &Event) -> RspaceEvent {
             channel_hashes: consume_event
                 .channels_hashes
                 .iter()
-                .map(Blake2b256Hash::from_bytes_prost)
+                .map(|h| Blake2b256Hash::from_bytes_prost(h))
                 .collect(),
             hash: Blake2b256Hash::from_bytes_prost(&consume_event.hash),
             persistent: consume_event.persistent,
@@ -101,7 +105,7 @@ pub fn to_rspace_event(event: &Event) -> RspaceEvent {
                     .consume
                     .channels_hashes
                     .iter()
-                    .map(Blake2b256Hash::from_bytes_prost)
+                    .map(|h| Blake2b256Hash::from_bytes_prost(h))
                     .collect(),
                 hash: Blake2b256Hash::from_bytes_prost(&comm_event.consume.hash),
                 persistent: comm_event.consume.persistent,

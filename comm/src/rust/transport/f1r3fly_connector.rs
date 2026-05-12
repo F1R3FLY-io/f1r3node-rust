@@ -12,9 +12,9 @@ use http::Uri;
 use tokio::net::TcpStream;
 use tower::Service;
 
-use crate::rust::transport::f1r3fly_tls_connector::F1r3flyTlsConnector;
-use crate::rust::transport::f1r3fly_tls_transport::{
-    F1r3flyClientTlsTransport, F1r3flyTlsTransportError,
+use crate::rust::transport::{
+    f1r3fly_tls_connector::F1r3flyTlsConnector,
+    f1r3fly_tls_transport::{F1r3flyClientTlsTransport, F1r3flyTlsTransportError},
 };
 use crate::rust::utils::resolve_hostname_to_ip;
 
@@ -114,7 +114,7 @@ impl F1r3flyConnector {
         match addr_str.parse::<SocketAddr>() {
             Ok(addr) => Ok(addr),
             Err(_) => {
-                let resolved_addr = resolve_hostname_to_ip(host, port as u32)
+                let resolved_addr = resolve_hostname_to_ip(&host, port as u32)
                     .await
                     .map_err(|e| F1r3flyConnectorError::DnsResolutionError(e.to_string()))?;
 
@@ -124,13 +124,19 @@ impl F1r3flyConnector {
     }
 
     /// Get the configured connection timeout
-    pub fn connect_timeout(&self) -> Duration { self.connect_timeout }
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
 
     /// Get the network ID for this connector
-    pub fn network_id(&self) -> &str { self.tls_connector.network_id() }
+    pub fn network_id(&self) -> &str {
+        self.tls_connector.network_id()
+    }
 
     /// Get the peer F1r3fly address used for TLS hostname verification
-    pub fn peer_f1r3fly_address(&self) -> &str { &self.peer_f1r3fly_address }
+    pub fn peer_f1r3fly_address(&self) -> &str {
+        &self.peer_f1r3fly_address
+    }
 }
 
 impl Service<Uri> for F1r3flyConnector {

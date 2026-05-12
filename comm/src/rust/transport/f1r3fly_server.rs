@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_pattern_matching)]
-
 // F1r3fly Server for tonic's gRPC server with custom TLS acceptor
 //
 // This module provides F1r3flyServer::builder() to create tonic servers
@@ -17,9 +15,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::server::{Connected, TcpConnectInfo};
 
-use crate::rust::transport::f1r3fly_tls_connector::F1r3flyTlsAcceptor;
-use crate::rust::transport::f1r3fly_tls_transport::{
-    F1r3flyServerTlsTransport, F1r3flyTlsTransportError,
+use crate::rust::transport::{
+    f1r3fly_tls_connector::F1r3flyTlsAcceptor,
+    f1r3fly_tls_transport::{F1r3flyServerTlsTransport, F1r3flyTlsTransportError},
 };
 
 /// F1r3fly Server Builder for creating tonic servers with custom TLS
@@ -312,9 +310,8 @@ impl Connected for F1r3flyServerConnection {
 
 #[cfg(test)]
 mod tests {
-    use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
-
     use super::*;
+    use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
     #[test]
     fn test_f1r3fly_server_builder_creation() {

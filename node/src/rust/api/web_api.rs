@@ -1,46 +1,46 @@
-#![allow(clippy::too_many_arguments)]
-
 //! Web API implementation for F1r3fly node
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
+use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 use casper::rust::api::block_report_api::BlockReportAPI;
+use crate::rust::web::version_info::get_version_info_str;
+use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
+use std::sync::atomic::{AtomicBool, Ordering};
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
+};
+use crypto::rust::{
+    public_key::PublicKey, signatures::signatures_alg::SignaturesAlg, signatures::signed::Signed,
 };
 use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
-use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
-use crate::rust::web::block_info_enricher::extract_transfers_from_report;
-use crate::rust::web::version_info::get_version_info_str;
-
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 50;
 const FIND_DEPLOY_MAX_ATTEMPTS: u16 = 1;
 
-fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
+fn find_deploy_retry_interval_ms() -> u64 {
+    FIND_DEPLOY_RETRY_INTERVAL_MS
+}
 
-fn find_deploy_max_attempts() -> u16 { FIND_DEPLOY_MAX_ATTEMPTS }
+fn find_deploy_max_attempts() -> u16 {
+    FIND_DEPLOY_MAX_ATTEMPTS
+}
 
 /// Web API trait defining the interface for HTTP endpoints
 #[async_trait::async_trait]
@@ -91,21 +91,19 @@ pub trait WebApi {
     /// Check if a block is finalized
     async fn is_finalized(&self, hash: String) -> Result<bool>;
 
+    /// Query the finalization status of a deploy by its signature (hex-encoded).
+    async fn deploy_finalization_status(
+        &self,
+        deploy_sig_hex: String,
+    ) -> Result<DeployFinalizationStatusJson>;
+
     /// Get balance for an address via exploratory deploy against SystemVault.
     /// Queries against `block_hash` if provided, otherwise LFB.
-    async fn get_balance(
-        &self,
-        address: String,
-        block_hash: Option<String>,
-    ) -> Result<BalanceResponse>;
+    async fn get_balance(&self, address: String, block_hash: Option<String>) -> Result<BalanceResponse>;
 
     /// Look up a registry URI via exploratory deploy.
     /// Queries against `block_hash` if provided, otherwise LFB.
-    async fn get_registry(
-        &self,
-        uri: String,
-        block_hash: Option<String>,
-    ) -> Result<RegistryResponse>;
+    async fn get_registry(&self, uri: String, block_hash: Option<String>) -> Result<RegistryResponse>;
 
     /// Get active validator set via exploratory deploy against PoS contract.
     /// Queries against `block_hash` if provided, otherwise LFB.
@@ -116,24 +114,39 @@ pub trait WebApi {
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse>;
 
     /// Estimate phlogiston cost of Rholang code via exploratory deploy
-    async fn estimate_cost(
-        &self,
-        term: String,
-        block_hash: Option<String>,
-    ) -> Result<EstimateCostResponse>;
+    async fn estimate_cost(&self, term: String, block_hash: Option<String>) -> Result<EstimateCostResponse>;
 
     /// Get current epoch rewards from PoS contract
     async fn get_epoch_rewards(&self, block_hash: Option<String>) -> Result<EpochRewardsResponse>;
 
     /// Get status of a specific validator (bond, active/quarantined)
-    async fn get_validator(
-        &self,
-        pubkey: String,
-        block_hash: Option<String>,
-    ) -> Result<ValidatorStatusResponse>;
+    async fn get_validator(&self, pubkey: String, block_hash: Option<String>) -> Result<ValidatorStatusResponse>;
 
     /// Check if a public key is bonded
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse>;
+}
+
+/// JSON-serializable view of a deploy-finalization-status response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeployFinalizationStatusJson {
+    /// One of "Finalized", "Failed", "Pending", "Expired".
+    pub state: String,
+    pub rejection_count: u32,
+    /// Hex-encoded block hash. Absent (`null`) when the deploy has never
+    /// been included in any block.
+    pub latest_block_hash: Option<String>,
+}
+
+fn deploy_state_json_label(
+    state: casper::rust::api::deploy_finalization_status::DeployFinalizationState,
+) -> &'static str {
+    use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+    match state {
+        S::Finalized => "Finalized",
+        S::Failed => "Failed",
+        S::Pending => "Pending",
+        S::Expired => "Expired",
+    }
 }
 
 /// Web API implementation
@@ -209,17 +222,13 @@ impl WebApiImpl {
         match block_hash {
             Some(hash) => {
                 let block = BlockAPI::get_block(&self.engine_cell, &hash).await?;
-                let bi = block
-                    .block_info
-                    .as_ref()
+                let bi = block.block_info.as_ref()
                     .ok_or_else(|| eyre!("Block {} returned without block_info", hash))?;
                 Ok((hash, bi.block_number))
             }
             None => {
                 let lfb = BlockAPI::last_finalized_block(&self.engine_cell).await?;
-                let bi = lfb
-                    .block_info
-                    .as_ref()
+                let bi = lfb.block_info.as_ref()
                     .ok_or_else(|| eyre!("Last finalized block returned without block_info"))?;
                 Ok((bi.block_hash.clone(), bi.block_number))
             }
@@ -229,7 +238,11 @@ impl WebApiImpl {
     /// Enrich a BlockInfoSerde with transfer data from BlockReportAPI.
     /// On success: each deploy gets `Some(transfers)`.
     /// On failure (validator node): each deploy gets `None` (field omitted).
-    async fn enrich_transfers(&self, serde: &mut BlockInfoSerde, block_hash_hex: String) {
+    async fn enrich_transfers(
+        &self,
+        serde: &mut BlockInfoSerde,
+        block_hash_hex: String,
+    ) {
         let deploys = match serde.deploys.as_mut() {
             Some(deploys) => deploys,
             None => return,
@@ -244,11 +257,7 @@ impl WebApiImpl {
                 return;
             }
         };
-        match self
-            .block_report_api
-            .block_report(block_hash_bytes, false)
-            .await
-        {
+        match self.block_report_api.block_report(block_hash_bytes, false).await {
             Ok(report) => {
                 let transfers_by_deploy =
                     extract_transfers_from_report(&report, &self.transfer_unforgeable);
@@ -491,22 +500,20 @@ impl WebApi for WebApiImpl {
         };
 
         // Always fetch full block to get deploy execution details
-        let block_info = self
-            .get_block(light_block.block_hash.clone(), ViewMode::Full)
-            .await?;
+        let block_info = self.get_block(light_block.block_hash.clone(), ViewMode::Full).await?;
 
-        let deploys = block_info
-            .deploys
-            .as_ref()
-            .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
+        let deploys = block_info.deploys.as_ref().ok_or_else(|| eyre!(
+            "Block {} returned without deploys",
+            light_block.block_hash
+        ))?;
 
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
+        let deploy = deploys
+            .iter()
+            .find(|d| d.sig == deploy_id)
+            .ok_or_else(|| eyre!(
                 "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
+                deploy_id, light_block.block_hash
+            ))?;
 
         let is_full = view == ViewMode::Full;
 
@@ -518,46 +525,14 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
-            deployer: if is_full {
-                Some(deploy.deployer.clone())
-            } else {
-                None
-            },
-            term: if is_full {
-                Some(deploy.term.clone())
-            } else {
-                None
-            },
-            system_deploy_error: if is_full {
-                Some(deploy.system_deploy_error.clone())
-            } else {
-                None
-            },
-            phlo_price: if is_full {
-                Some(deploy.phlo_price)
-            } else {
-                None
-            },
-            phlo_limit: if is_full {
-                Some(deploy.phlo_limit)
-            } else {
-                None
-            },
-            sig_algorithm: if is_full {
-                Some(deploy.sig_algorithm.clone())
-            } else {
-                None
-            },
-            valid_after_block_number: if is_full {
-                Some(deploy.valid_after_block_number)
-            } else {
-                None
-            },
-            transfers: if is_full {
-                deploy.transfers.clone()
-            } else {
-                None
-            },
+            deployer: if is_full { Some(deploy.deployer.clone()) } else { None },
+            term: if is_full { Some(deploy.term.clone()) } else { None },
+            system_deploy_error: if is_full { Some(deploy.system_deploy_error.clone()) } else { None },
+            phlo_price: if is_full { Some(deploy.phlo_price) } else { None },
+            phlo_limit: if is_full { Some(deploy.phlo_limit) } else { None },
+            sig_algorithm: if is_full { Some(deploy.sig_algorithm.clone()) } else { None },
+            valid_after_block_number: if is_full { Some(deploy.valid_after_block_number) } else { None },
+            transfers: if is_full { deploy.transfers.clone() } else { None },
         })
     }
 
@@ -613,11 +588,21 @@ impl WebApi for WebApiImpl {
         BlockAPI::is_finalized(&self.engine_cell, &hash).await
     }
 
-    async fn get_balance(
+    async fn deploy_finalization_status(
         &self,
-        address: String,
-        block_hash: Option<String>,
-    ) -> Result<BalanceResponse> {
+        deploy_sig_hex: String,
+    ) -> Result<DeployFinalizationStatusJson> {
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
+            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
+        Ok(DeployFinalizationStatusJson {
+            state: deploy_state_json_label(status.state).to_string(),
+            rejection_count: status.rejection_count,
+            latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+        })
+    }
+
+    async fn get_balance(&self, address: String, block_hash: Option<String>) -> Result<BalanceResponse> {
         let term = format!(
             r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
   rl!(`rho:vault:system`, *systemVaultCh) |
@@ -665,11 +650,7 @@ impl WebApi for WebApiImpl {
         })
     }
 
-    async fn get_registry(
-        &self,
-        uri: String,
-        block_hash: Option<String>,
-    ) -> Result<RegistryResponse> {
+    async fn get_registry(&self, uri: String, block_hash: Option<String>) -> Result<RegistryResponse> {
         let term = format!(
             r#"new return, rl(`rho:registry:lookup`), ch in {{
   rl!(`{uri}`, *ch) |
@@ -734,13 +715,10 @@ impl WebApi for WebApiImpl {
             for (public_key, value) in data {
                 let stake = match value {
                     RhoExpr::ExprInt { data } => *data,
-                    other => {
-                        return Err(eyre!(
-                            "Unexpected stake type for validator {}: {:?}",
-                            public_key,
-                            other
-                        ))
-                    }
+                    other => return Err(eyre!(
+                        "Unexpected stake type for validator {}: {:?}",
+                        public_key, other
+                    )),
                 };
                 total_stake += stake;
                 validators.push(ValidatorInfo {
@@ -764,11 +742,7 @@ impl WebApi for WebApiImpl {
         let epoch_length = self.epoch_length as i64;
         let quarantine_length = self.quarantine_length as i64;
 
-        let current_epoch = if epoch_length > 0 {
-            block_number / epoch_length
-        } else {
-            0
-        };
+        let current_epoch = if epoch_length > 0 { block_number / epoch_length } else { 0 };
         let blocks_until_next_epoch = if epoch_length > 0 {
             epoch_length - (block_number % epoch_length)
         } else {
@@ -785,11 +759,7 @@ impl WebApi for WebApiImpl {
         })
     }
 
-    async fn estimate_cost(
-        &self,
-        term: String,
-        block_hash: Option<String>,
-    ) -> Result<EstimateCostResponse> {
+    async fn estimate_cost(&self, term: String, block_hash: Option<String>) -> Result<EstimateCostResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
@@ -829,9 +799,7 @@ impl WebApi for WebApiImpl {
         .await?;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-        let rewards = exprs
-            .into_iter()
-            .next()
+        let rewards = exprs.into_iter().next()
             .ok_or_else(|| eyre!("No result from getCurrentEpochRewards"))?;
 
         Ok(EpochRewardsResponse {
@@ -841,11 +809,7 @@ impl WebApi for WebApiImpl {
         })
     }
 
-    async fn get_validator(
-        &self,
-        pubkey: String,
-        block_hash: Option<String>,
-    ) -> Result<ValidatorStatusResponse> {
+    async fn get_validator(&self, pubkey: String, block_hash: Option<String>) -> Result<ValidatorStatusResponse> {
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {
@@ -889,8 +853,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let pubkey_bytes = hex::decode(&pubkey)
+            .map_err(|e| eyre!("Invalid public key hex: {}", e))?;
 
         let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
 
@@ -906,172 +870,73 @@ impl WebApi for WebApiImpl {
 #[schema(no_recursion)]
 pub enum RhoExpr {
     // === Collections ===
-    ExprPar {
-        data: Vec<RhoExpr>,
-    },
-    ExprTuple {
-        data: Vec<RhoExpr>,
-    },
-    ExprList {
-        data: Vec<RhoExpr>,
-    },
-    ExprSet {
-        data: Vec<RhoExpr>,
-    },
-    ExprMap {
-        data: HashMap<String, RhoExpr>,
-    },
+    ExprPar { data: Vec<RhoExpr> },
+    ExprTuple { data: Vec<RhoExpr> },
+    ExprList { data: Vec<RhoExpr> },
+    ExprSet { data: Vec<RhoExpr> },
+    ExprMap { data: HashMap<String, RhoExpr> },
 
     // === Primitives ===
-    ExprBool {
-        data: bool,
-    },
-    ExprInt {
-        data: i64,
-    },
-    ExprString {
-        data: String,
-    },
-    ExprUri {
-        data: String,
-    },
-    ExprBytes {
-        data: String,
-    },
+    ExprBool { data: bool },
+    ExprInt { data: i64 },
+    ExprString { data: String },
+    ExprUri { data: String },
+    ExprBytes { data: String },
 
     // === Extended numerics ===
-    ExprFloat {
-        data: f64,
-    },
-    ExprBigInt {
-        data: String,
-    },
-    ExprBigRat {
-        numerator: String,
-        denominator: String,
-    },
-    ExprFixedPoint {
-        value: String,
-        scale: u32,
-    },
+    ExprFloat { data: f64 },
+    ExprBigInt { data: String },
+    ExprBigRat { numerator: String, denominator: String },
+    ExprFixedPoint { value: String, scale: u32 },
 
     // === Unforgeable names ===
-    ExprUnforg {
-        data: RhoUnforg,
-    },
+    ExprUnforg { data: RhoUnforg },
 
     // === Bundle (with permissions) ===
-    ExprBundle {
-        data: Box<RhoExpr>,
-        read: bool,
-        write: bool,
-    },
+    ExprBundle { data: Box<RhoExpr>, read: bool, write: bool },
 
     // === Unary operators ===
-    ExprNot {
-        data: Box<RhoExpr>,
-    },
-    ExprNeg {
-        data: Box<RhoExpr>,
-    },
+    ExprNot { data: Box<RhoExpr> },
+    ExprNeg { data: Box<RhoExpr> },
 
     // === Binary arithmetic ===
-    ExprPlus {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprMinus {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprMult {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprDiv {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprMod {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
+    ExprPlus { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprMinus { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprMult { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprDiv { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprMod { left: Box<RhoExpr>, right: Box<RhoExpr> },
 
     // === Comparison ===
-    ExprLt {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprLte {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprGt {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprGte {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprEq {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprNeq {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
+    ExprLt { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprLte { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprGt { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprGte { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprEq { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprNeq { left: Box<RhoExpr>, right: Box<RhoExpr> },
 
     // === Logical ===
-    ExprAnd {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprOr {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
+    ExprAnd { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprOr { left: Box<RhoExpr>, right: Box<RhoExpr> },
 
     // === String operations ===
-    ExprConcat {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprInterpolate {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
-    ExprDiff {
-        left: Box<RhoExpr>,
-        right: Box<RhoExpr>,
-    },
+    ExprConcat { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprInterpolate { left: Box<RhoExpr>, right: Box<RhoExpr> },
+    ExprDiff { left: Box<RhoExpr>, right: Box<RhoExpr> },
 
     // === Pattern matching ===
-    ExprMatches {
-        target: Box<RhoExpr>,
-        pattern: Box<RhoExpr>,
-    },
+    ExprMatches { target: Box<RhoExpr>, pattern: Box<RhoExpr> },
 
     // === Method call ===
-    ExprMethod {
-        target: Box<RhoExpr>,
-        name: String,
-        args: Vec<RhoExpr>,
-    },
+    ExprMethod { target: Box<RhoExpr>, name: String, args: Vec<RhoExpr> },
 
     // === Variable reference ===
-    ExprVar {
-        index: i32,
-    },
+    ExprVar { index: i32 },
 
     // === System ===
     ExprSysAuthToken,
 
     // === Catch-all for unknown/unhandled types ===
-    ExprUnknown {
-        type_name: String,
-    },
+    ExprUnknown { type_name: String },
 }
 
 /// Unforgeable name types
@@ -1261,10 +1126,7 @@ pub struct DeployResponse {
     pub phlo_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
     pub sig_algorithm: Option<String>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        rename = "validAfterBlockNumber"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "validAfterBlockNumber")]
     pub valid_after_block_number: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfers: Option<Vec<TransferInfoSerde>>,
@@ -1444,24 +1306,24 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate};
+use models::rhoapi::{GUnforgeable, Par};
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
 fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
     fn decode_hex(data: &str) -> eyre::Result<Vec<u8>> {
-        hex::decode(data)
-            .map_err(|e| eyre::eyre!("Invalid hex in unforgeable name '{}': {}", data, e))
+        hex::decode(data).map_err(|e| eyre::eyre!("Invalid hex in unforgeable name '{}': {}", data, e))
     }
     Ok(match unforg {
         RhoUnforg::UnforgPrivate { data } => UnfInstance::GPrivateBody(GPrivate {
-            id: decode_hex(&data)?,
+            id: decode_hex(&data)?.into(),
         }),
         RhoUnforg::UnforgDeploy { data } => UnfInstance::GDeployIdBody(GDeployId {
-            sig: decode_hex(&data)?,
+            sig: decode_hex(&data)?.into(),
         }),
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
-            public_key: decode_hex(&data)?,
+            public_key: decode_hex(&data)?.into(),
         }),
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
@@ -1499,9 +1361,7 @@ fn expr_from_par_proto(par: Par) -> Option<RhoExpr> {
     } else if all_exprs.is_empty() {
         if has_process_fields {
             // Par has process-level constructs (sends, receives, etc.) but no data expressions
-            Some(RhoExpr::ExprUnknown {
-                type_name: "Process".to_string(),
-            })
+            Some(RhoExpr::ExprUnknown { type_name: "Process".to_string() })
         } else {
             None // Truly empty Par (Nil)
         }
@@ -1522,61 +1382,39 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
         ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
         ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
-        ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
-            data: hex::encode(&bytes),
-        },
+        ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes { data: hex::encode(&bytes) },
 
         // Extended numerics
-        ExprInstance::GDouble(bits) => RhoExpr::ExprFloat {
-            data: f64::from_bits(bits),
-        },
+        ExprInstance::GDouble(bits) => RhoExpr::ExprFloat { data: f64::from_bits(bits) },
         ExprInstance::GBigInt(bytes) => {
             let n = BigInt::from_signed_bytes_be(&bytes);
-            RhoExpr::ExprBigInt {
-                data: n.to_string(),
-            }
+            RhoExpr::ExprBigInt { data: n.to_string() }
         }
         ExprInstance::GBigRat(rat) => {
             let num = BigInt::from_signed_bytes_be(&rat.numerator);
             let den = BigInt::from_signed_bytes_be(&rat.denominator);
-            RhoExpr::ExprBigRat {
-                numerator: num.to_string(),
-                denominator: den.to_string(),
-            }
+            RhoExpr::ExprBigRat { numerator: num.to_string(), denominator: den.to_string() }
         }
         ExprInstance::GFixedPoint(fp) => {
             let unscaled = BigInt::from_signed_bytes_be(&fp.unscaled);
-            RhoExpr::ExprFixedPoint {
-                value: unscaled.to_string(),
-                scale: fp.scale,
-            }
+            RhoExpr::ExprFixedPoint { value: unscaled.to_string(), scale: fp.scale }
         }
 
         // Collections
-        ExprInstance::ETupleBody(tuple) => RhoExpr::ExprTuple {
-            data: tuple
-                .ps
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
-        ExprInstance::EListBody(list) => RhoExpr::ExprList {
-            data: list
-                .ps
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
-        ExprInstance::ESetBody(set) => RhoExpr::ExprSet {
-            data: set.ps.into_iter().filter_map(expr_from_par_proto).collect(),
-        },
+        ExprInstance::ETupleBody(tuple) => {
+            RhoExpr::ExprTuple { data: tuple.ps.into_iter().filter_map(expr_from_par_proto).collect() }
+        }
+        ExprInstance::EListBody(list) => {
+            RhoExpr::ExprList { data: list.ps.into_iter().filter_map(expr_from_par_proto).collect() }
+        }
+        ExprInstance::ESetBody(set) => {
+            RhoExpr::ExprSet { data: set.ps.into_iter().filter_map(expr_from_par_proto).collect() }
+        }
         ExprInstance::EMapBody(map) => {
             let mut data = HashMap::new();
             for kv in map.kvs {
                 if let (Some(key_par), Some(value_par)) = (kv.key, kv.value) {
-                    if let (Some(key_expr), Some(value_expr)) =
-                        (expr_from_par_proto(key_par), expr_from_par_proto(value_par))
-                    {
+                    if let (Some(key_expr), Some(value_expr)) = (expr_from_par_proto(key_par), expr_from_par_proto(value_par)) {
                         let key = extract_key_from_expr(&key_expr);
                         data.insert(key, value_expr);
                     }
@@ -1584,137 +1422,108 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
             }
             RhoExpr::ExprMap { data }
         }
-        ExprInstance::EPathmapBody(pm) => RhoExpr::ExprList {
-            data: pm.ps.into_iter().filter_map(expr_from_par_proto).collect(),
-        },
+        ExprInstance::EPathmapBody(pm) => {
+            RhoExpr::ExprList { data: pm.ps.into_iter().filter_map(expr_from_par_proto).collect() }
+        }
         ExprInstance::EZipperBody(z) => {
-            let pathmap = z.pathmap.map(|pm| RhoExpr::ExprList {
-                data: pm.ps.into_iter().filter_map(expr_from_par_proto).collect(),
+            let pathmap = z.pathmap.map(|pm| {
+                RhoExpr::ExprList { data: pm.ps.into_iter().filter_map(expr_from_par_proto).collect() }
             });
             RhoExpr::ExprTuple {
                 data: vec![
                     pathmap.unwrap_or(RhoExpr::ExprList { data: vec![] }),
                     RhoExpr::ExprList {
-                        data: z
-                            .current_path
-                            .into_iter()
-                            .map(|b| RhoExpr::ExprBytes {
-                                data: hex::encode(&b),
-                            })
-                            .collect(),
+                        data: z.current_path.into_iter().map(|b| RhoExpr::ExprBytes { data: hex::encode(&b) }).collect(),
                     },
                 ],
             }
         }
 
         // Unary operators
-        ExprInstance::ENotBody(op) => RhoExpr::ExprNot {
-            data: Box::new(par_to_expr(op.p)),
-        },
-        ExprInstance::ENegBody(op) => RhoExpr::ExprNeg {
-            data: Box::new(par_to_expr(op.p)),
-        },
+        ExprInstance::ENotBody(op) => {
+            RhoExpr::ExprNot { data: Box::new(par_to_expr(op.p)) }
+        }
+        ExprInstance::ENegBody(op) => {
+            RhoExpr::ExprNeg { data: Box::new(par_to_expr(op.p)) }
+        }
 
         // Binary arithmetic
-        ExprInstance::EPlusBody(op) => RhoExpr::ExprPlus {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMinusBody(op) => RhoExpr::ExprMinus {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMultBody(op) => RhoExpr::ExprMult {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EDivBody(op) => RhoExpr::ExprDiv {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EModBody(op) => RhoExpr::ExprMod {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
+        ExprInstance::EPlusBody(op) => {
+            RhoExpr::ExprPlus { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EMinusBody(op) => {
+            RhoExpr::ExprMinus { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EMultBody(op) => {
+            RhoExpr::ExprMult { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EDivBody(op) => {
+            RhoExpr::ExprDiv { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EModBody(op) => {
+            RhoExpr::ExprMod { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
 
         // Comparison
-        ExprInstance::ELtBody(op) => RhoExpr::ExprLt {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::ELteBody(op) => RhoExpr::ExprLte {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EGtBody(op) => RhoExpr::ExprGt {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EGteBody(op) => RhoExpr::ExprGte {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EEqBody(op) => RhoExpr::ExprEq {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::ENeqBody(op) => RhoExpr::ExprNeq {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
+        ExprInstance::ELtBody(op) => {
+            RhoExpr::ExprLt { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::ELteBody(op) => {
+            RhoExpr::ExprLte { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EGtBody(op) => {
+            RhoExpr::ExprGt { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EGteBody(op) => {
+            RhoExpr::ExprGte { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EEqBody(op) => {
+            RhoExpr::ExprEq { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::ENeqBody(op) => {
+            RhoExpr::ExprNeq { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
 
         // Logical
-        ExprInstance::EAndBody(op) => RhoExpr::ExprAnd {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EOrBody(op) => RhoExpr::ExprOr {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
+        ExprInstance::EAndBody(op) => {
+            RhoExpr::ExprAnd { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EOrBody(op) => {
+            RhoExpr::ExprOr { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
 
         // String operations
-        ExprInstance::EPlusPlusBody(op) => RhoExpr::ExprConcat {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EPercentPercentBody(op) => RhoExpr::ExprInterpolate {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMinusMinusBody(op) => RhoExpr::ExprDiff {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
+        ExprInstance::EPlusPlusBody(op) => {
+            RhoExpr::ExprConcat { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EPercentPercentBody(op) => {
+            RhoExpr::ExprInterpolate { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
+        ExprInstance::EMinusMinusBody(op) => {
+            RhoExpr::ExprDiff { left: Box::new(par_to_expr(op.p1)), right: Box::new(par_to_expr(op.p2)) }
+        }
 
         // Pattern matching
-        ExprInstance::EMatchesBody(op) => RhoExpr::ExprMatches {
-            target: Box::new(par_to_expr(op.target)),
-            pattern: Box::new(par_to_expr(op.pattern)),
-        },
+        ExprInstance::EMatchesBody(op) => {
+            RhoExpr::ExprMatches { target: Box::new(par_to_expr(op.target)), pattern: Box::new(par_to_expr(op.pattern)) }
+        }
 
         // Method call
-        ExprInstance::EMethodBody(method) => RhoExpr::ExprMethod {
-            target: Box::new(par_to_expr(method.target)),
-            name: method.method_name,
-            args: method
-                .arguments
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
+        ExprInstance::EMethodBody(method) => {
+            RhoExpr::ExprMethod {
+                target: Box::new(par_to_expr(method.target)),
+                name: method.method_name,
+                args: method.arguments.into_iter().filter_map(expr_from_par_proto).collect(),
+            }
+        }
 
         // Variable
         ExprInstance::EVarBody(var) => {
-            let index = var
-                .v
-                .and_then(|v| v.var_instance)
-                .map(|vi| match vi {
-                    models::rhoapi::var::VarInstance::BoundVar(i) => i,
-                    models::rhoapi::var::VarInstance::FreeVar(i) => i,
-                    models::rhoapi::var::VarInstance::Wildcard(_) => -1,
-                })
-                .unwrap_or(-1);
+            let index = var.v.and_then(|v| v.var_instance).map(|vi| match vi {
+                models::rhoapi::var::VarInstance::BoundVar(i) => i,
+                models::rhoapi::var::VarInstance::FreeVar(i) => i,
+                models::rhoapi::var::VarInstance::Wildcard(_) => -1,
+            }).unwrap_or(-1);
             RhoExpr::ExprVar { index }
         }
     })
@@ -1723,9 +1532,7 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
 /// Convert an optional Par to RhoExpr, falling back to ExprUnknown for None.
 fn par_to_expr(par: Option<Par>) -> RhoExpr {
     par.and_then(expr_from_par_proto)
-        .unwrap_or(RhoExpr::ExprUnknown {
-            type_name: "Nil".to_string(),
-        })
+        .unwrap_or(RhoExpr::ExprUnknown { type_name: "Nil".to_string() })
 }
 
 /// Convert GUnforgeable to RhoExpr.
@@ -1756,12 +1563,8 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
 
 /// Convert Bundle to RhoExpr, preserving read/write permissions.
 fn expr_from_bundle_proto(bundle: Bundle) -> Option<RhoExpr> {
-    let body_expr = bundle
-        .body
-        .and_then(expr_from_par_proto)
-        .unwrap_or(RhoExpr::ExprUnknown {
-            type_name: "Nil".to_string(),
-        });
+    let body_expr = bundle.body.and_then(expr_from_par_proto)
+        .unwrap_or(RhoExpr::ExprUnknown { type_name: "Nil".to_string() });
     Some(RhoExpr::ExprBundle {
         data: Box::new(body_expr),
         read: bundle.read_flag,
@@ -1791,6 +1594,7 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     }
 }
 
+
 /// Convert (Vec<Par>, LightBlockInfo) to RhoDataResponse
 /// Equivalent to Scala's toRhoDataResponse function
 fn to_rho_data_response(
@@ -1810,13 +1614,12 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
         Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
     };
-
-    use super::*;
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
@@ -2243,11 +2046,7 @@ mod tests {
         // Empty body bundle returns ExprBundle with ExprUnknown body
         assert!(matches!(
             result,
-            Some(RhoExpr::ExprBundle {
-                read: true,
-                write: false,
-                ..
-            })
+            Some(RhoExpr::ExprBundle { read: true, write: false, .. })
         ));
     }
 
@@ -2290,9 +2089,6 @@ mod tests {
         // Test complex key type — serialized to JSON
         let expr = RhoExpr::ExprPar { data: vec![] };
         let key = extract_key_from_expr(&expr);
-        assert!(
-            !key.is_empty(),
-            "complex keys should serialize to non-empty string"
-        );
+        assert!(!key.is_empty(), "complex keys should serialize to non-empty string");
     }
 }

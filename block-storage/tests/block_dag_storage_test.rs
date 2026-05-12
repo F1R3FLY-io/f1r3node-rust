@@ -1,8 +1,17 @@
 // See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagStorageTest.scala
 // See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
+use models::rust::equivocation_record::EquivocationRecord;
+use once_cell::sync::Lazy;
+use proptest::prelude::ProptestConfig;
+use proptest::proptest;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Once;
+use tokio::runtime::Runtime;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rust::block_hash::BlockHash;
@@ -12,17 +21,8 @@ use models::rust::block_implicits::{
 };
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
-use once_cell::sync::Lazy;
-use proptest::prelude::ProptestConfig;
-use proptest::proptest;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use tokio::runtime::Runtime;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 static INIT: Once = Once::new();
 
@@ -457,7 +457,11 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 }
 
 #[test]
-fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_sender() {
+fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender() {
+    // Inserting an invalid block with an advancing sequence number updates the
+    // sender's latest message. Required for equivocation detection via
+    // `invalid_latest_messages` to fire on validators that have a prior valid
+    // block.
     let genesis = genesis_block();
     let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
@@ -500,11 +504,14 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
     let dag = dag_storage.get_representation();
     assert_eq!(
         dag.latest_message_hash(&valid_block.sender),
-        Some(valid_block.block_hash.clone())
+        Some(invalid_block.block_hash.clone())
     );
 
     let invalid_latest_messages = dag.invalid_latest_messages().unwrap();
-    assert!(!invalid_latest_messages.contains_key(&valid_block.sender));
+    assert_eq!(
+        invalid_latest_messages.get(&valid_block.sender),
+        Some(&invalid_block.block_hash)
+    );
 }
 
 #[test]

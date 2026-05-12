@@ -1,12 +1,14 @@
 // See comm/src/test/scala/coop/rchain/comm/discovery/PeerTableSpec.scala
 
 use async_trait::async_trait;
-use comm::rust::discovery::kademlia_rpc::KademliaRPC;
-use comm::rust::discovery::peer_table::PeerTable;
-use comm::rust::errors::CommError;
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use prost::bytes::Bytes;
 use rand::RngCore;
+
+use comm::rust::{
+    discovery::{kademlia_rpc::KademliaRPC, peer_table::PeerTable},
+    errors::CommError,
+    peer_node::{Endpoint, NodeIdentifier, PeerNode},
+};
 
 /// Helper function to generate random bytes
 fn rand_bytes(nbytes: usize) -> Vec<u8> {
@@ -16,7 +18,9 @@ fn rand_bytes(nbytes: usize) -> Vec<u8> {
 }
 
 /// Helper function to create an endpoint for testing
-fn endpoint() -> Endpoint { Endpoint::new("".to_string(), 0, 0) }
+fn endpoint() -> Endpoint {
+    Endpoint::new("".to_string(), 0, 0)
+}
 
 /// Test implementation of KademliaRPC that always succeeds
 struct KademliaRPCStub;

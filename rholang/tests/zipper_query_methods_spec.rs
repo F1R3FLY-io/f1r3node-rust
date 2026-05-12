@@ -1,7 +1,6 @@
 // Unit tests for PathMap zipper query methods: hasVal, atPath, pathExists
 
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
+use models::rhoapi::{expr::ExprInstance, EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::par_to_path;
 

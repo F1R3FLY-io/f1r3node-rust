@@ -1,8 +1,10 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/InterpreterUtilTest.scala
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
+use crate::helper::block_dag_storage_fixture::{with_genesis, with_storage};
+use crate::helper::block_generator;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use crate::util::rholang::resources;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -23,12 +25,8 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
-
-use crate::helper::block_dag_storage_fixture::{with_genesis, with_storage};
-use crate::helper::block_generator;
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
-use crate::util::rholang::resources;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 // Note: In Scala, genesisContext is defined at class level. In Rust, each test creates its own genesis context
 struct TestContext {
@@ -124,6 +122,7 @@ impl TestContext {
             justifications: DashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: DashMap::new(),
             on_chain_state: OnChainCasperState {
@@ -210,6 +209,7 @@ impl TestContext {
             runtime_manager,
             block_data,
             HashMap::new(),
+            None,
         )
         .await
     }
@@ -471,6 +471,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -631,6 +632,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -724,9 +726,12 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     acc_costs_sep.extend(cost3);
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
-            deploy1, deploy2, deploy3,
-        ])
+        .compute_deploy_costs(
+            &mut node.runtime_manager,
+            dag,
+            &mut node.block_store,
+            vec![deploy1, deploy2, deploy3],
+        )
         .await
         .unwrap();
 
@@ -797,9 +802,12 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
             .unwrap();
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
-            deploy1, deploy2, deploy_err,
-        ])
+        .compute_deploy_costs(
+            &mut node.runtime_manager,
+            dag,
+            &mut node.block_store,
+            vec![deploy1, deploy2, deploy_err],
+        )
         .await
         .unwrap();
 
@@ -857,6 +865,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &block_store,
             &mut casper_snapshot,
             &mut runtime_manager,
+            None,
         )
         .await
         .expect("Failed to validate block checkpoint");
@@ -921,6 +930,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -952,6 +962,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1032,6 +1043,7 @@ contract @"recursionTest"(@list) = {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1063,6 +1075,7 @@ contract @"recursionTest"(@list) = {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1147,6 +1160,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1178,6 +1192,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1258,6 +1273,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1289,6 +1305,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1361,6 +1378,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1393,6 +1411,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");
@@ -1455,6 +1474,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1502,6 +1522,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1580,6 +1601,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1612,6 +1634,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");

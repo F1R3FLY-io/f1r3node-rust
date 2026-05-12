@@ -1,19 +1,18 @@
-#![allow(clippy::redundant_pattern_matching, clippy::too_many_arguments)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsBlockRequester.scala
 
+use async_stream::stream;
+use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
-use async_stream::stream;
-use async_trait::async_trait;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
-use tokio::sync::{mpsc, Semaphore};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -210,7 +209,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Save in height map
             let mut new_height_map = self.height_map.clone();
-            let height_keys = new_height_map.entry(height).or_default();
+            let height_keys = new_height_map.entry(height).or_insert_with(HashSet::new);
             height_keys.insert(k.clone());
 
             // Calculate new minimum height if latest message
@@ -269,7 +268,9 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     }
 
     /// Returns flag if all keys are marked as finished (Done).
-    pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
+    pub fn is_finished(&self) -> bool {
+        self.latest.is_empty() && self.d.is_empty()
+    }
 }
 
 struct StreamProcessor<'a, T: BlockRequesterOps> {
@@ -726,7 +727,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         request_rx,
         request_tx,
         response_hash_rx,
-        initial_response_messages,
+        &initial_response_messages,
         response_message_receiver,
         response_queue_pending,
         request_timeout,

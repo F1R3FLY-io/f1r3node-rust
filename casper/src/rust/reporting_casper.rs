@@ -1,23 +1,29 @@
-#![allow(clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/ReportingCasper.scala
 
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::casper::protocol::casper_message::{
-    BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+use block_storage::rust::{
+    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+    key_value_block_store::KeyValueBlockStore,
 };
-use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::system_processes::{BlockData, Definition};
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
-use rspace_plus_plus::rspace::rspace::RSpaceStore;
+use models::{
+    rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation},
+    rust::casper::protocol::casper_message::{
+        BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    },
+};
+use rholang::rust::interpreter::{
+    rho_runtime::RhoRuntime,
+    system_processes::{BlockData, Definition},
+};
+use rspace_plus_plus::rspace::{
+    errors::RSpaceError,
+    hashing::blake2b256_hash::Blake2b256Hash,
+    reporting_rspace::{ReportingEvent, ReportingRspace},
+    rspace::RSpaceStore,
+};
 use shared::rust::ByteString;
 
 /// Deploy details + reporting events
@@ -81,11 +87,11 @@ impl ReportingCasper for RhoReporterCasper {
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tag_name = Genesis::non_negative_mergeable_tag_name();
+        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,
-            mergeable_tag_name,
+            mergeable_tags,
             &mut extra_system_processes,
             self.external_services.clone(),
         )
@@ -242,7 +248,9 @@ impl RhoReporterCasper {
 }
 
 /// Factory function to create noop reporting casper
-pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
+pub fn noop() -> Arc<dyn ReportingCasper> {
+    Arc::new(NoopReportingCasper)
+}
 
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
@@ -367,7 +375,12 @@ impl ReportingRuntime {
     /// The reporting space is ephemeral and reset to `preStateHash` before replay.
     pub async fn create_reporting_runtime(
         reporting_space: RhoReportingRspace,
-        mergeable_tag_name: Par,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
         extra_system_processes: &mut Vec<Definition>,
         external_services: rholang::rust::interpreter::external_services::ExternalServices,
     ) -> Result<Self, String> {
@@ -375,7 +388,7 @@ impl ReportingRuntime {
 
         let runtime = create_replay_rho_runtime(
             reporting_space.clone(),
-            mergeable_tag_name,
+            mergeable_tags,
             false,
             extra_system_processes,
             external_services,

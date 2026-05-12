@@ -156,12 +156,13 @@ impl PacketExt for Packet {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use prost::bytes::Bytes;
 
-    use super::*;
-
     /// Create a test cache
-    fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
+    fn create_test_cache() -> StreamCache {
+        Arc::new(DashMap::new())
+    }
 
     #[test]
     fn test_packet_store_and_restore() {

@@ -1,26 +1,31 @@
 //See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/CostAccountingSpec.scala from main branch
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use rholang::rust::interpreter::rho_runtime::{create_replay_rho_runtime, RhoRuntimeImpl};
+use rholang::rust::interpreter::system_processes::Definition;
+use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::{
+    accounting::costs::Cost,
+    external_services::ExternalServices,
+    interpreter::EvaluateResult,
+    matcher::r#match::Matcher,
+    rho_runtime::{create_rho_runtime, RhoRuntime},
+};
+use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
+use rspace_plus_plus::rspace::rspace::RSpaceStore;
+use rspace_plus_plus::rspace::{
+    rspace::RSpace,
+    shared::{
+        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
+    },
+};
+
+use rand::Rng;
+use rholang::rust::interpreter::errors::InterpreterError;
 use std::collections::{HashMap, HashSet};
 use std::option::Option;
 use std::sync::Arc;
-
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use rand::Rng;
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::rho_runtime::{
-    create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
-};
-use rholang::rust::interpreter::system_processes::Definition;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
-use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 async fn evaluate_with_cost_log(
     initial_phlo: i64,
@@ -80,7 +85,7 @@ async fn create_runtimes_with_cost_log(
 
     let rho_runtime = create_rho_runtime(
         space.clone(),
-        Par::default(),
+        Arc::new(std::collections::HashMap::new()),
         init_registry,
         additional_system_processes,
         ExternalServices::noop(),
@@ -89,7 +94,7 @@ async fn create_runtimes_with_cost_log(
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay,
-        Par::default(),
+        Arc::new(std::collections::HashMap::new()),
         init_registry,
         additional_system_processes,
         ExternalServices::noop(),
@@ -299,22 +304,15 @@ async fn total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the
     for (contract, expected_cost) in contracts() {
         let initial_phlo = 10000i64;
         let (eval_result, cost_log) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
-        assert_eq!(
-            eval_result.errors,
-            Vec::new(),
-            "Contract errored: {}",
-            contract
-        );
+        assert_eq!(eval_result.errors, Vec::new(), "Contract errored: {}", contract);
         assert_eq!(
             eval_result.cost.value, expected_cost,
-            "Cost mismatch for '{}': expected={}, got={}",
-            contract, expected_cost, eval_result.cost.value
+            "Cost mismatch for '{}': expected={}, got={}", contract, expected_cost, eval_result.cost.value
         );
         assert_eq!(
             cost_log.iter().map(|c| c.value).sum::<i64>(),
             expected_cost,
-            "Cost log sum mismatch for: {}",
-            contract
+            "Cost log sum mismatch for: {}", contract
         );
     }
 }
@@ -362,11 +360,7 @@ async fn cost_should_be_repeatable_when_generated() {
         let is_same_channel_error = |errors: &[InterpreterError]| {
             errors.iter().any(|e| match e {
                 InterpreterError::ReceiveOnSameChannelsError { .. } => true,
-                InterpreterError::ParserError(msg)
-                    if msg.contains("Receiving on the same channels") =>
-                {
-                    true
-                }
+                InterpreterError::ParserError(msg) if msg.contains("Receiving on the same channels") => true,
                 _ => false,
             })
         };
@@ -374,18 +368,8 @@ async fn cost_should_be_repeatable_when_generated() {
             skipped += 1;
             continue;
         }
-        assert!(
-            play.errors.is_empty(),
-            "Unexpected play error for '{}': {:?}",
-            contract,
-            play.errors
-        );
-        assert!(
-            replay.errors.is_empty(),
-            "Unexpected replay error for '{}': {:?}",
-            contract,
-            replay.errors
-        );
+        assert!(play.errors.is_empty(), "Unexpected play error for '{}': {:?}", contract, play.errors);
+        assert!(replay.errors.is_empty(), "Unexpected replay error for '{}': {:?}", contract, replay.errors);
 
         if play.cost != replay.cost {
             mismatches.push((contract, play.cost.value, replay.cost.value));
@@ -393,27 +377,12 @@ async fn cost_should_be_repeatable_when_generated() {
         tested += 1;
     }
 
-    eprintln!(
-        "Replay cost determinism: {} tested, {} skipped, {} mismatches",
-        tested,
-        skipped,
-        mismatches.len()
-    );
+    eprintln!("Replay cost determinism: {} tested, {} skipped, {} mismatches", tested, skipped, mismatches.len());
     for (contract, play, replay) in &mismatches {
-        eprintln!(
-            "  MISMATCH: play={}, replay={}, diff={}, contract='{}'",
-            play,
-            replay,
-            play - replay,
-            contract
-        );
+        eprintln!("  MISMATCH: play={}, replay={}, diff={}, contract='{}'", play, replay, play - replay, contract);
     }
     assert!(tested > 100, "Too few contracts tested: {}", tested);
-    assert!(
-        mismatches.is_empty(),
-        "{} contracts had play/replay cost mismatches",
-        mismatches.len()
-    );
+    assert!(mismatches.is_empty(), "{} contracts had play/replay cost mismatches", mismatches.len());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -421,10 +390,11 @@ async fn running_out_of_phlogistons_should_stop_evaluation_upon_cost_depletion_i
 ) {
     let parsing_cost = 6;
 
-    check_phlo_limit_exceeded("@1!(1)".to_string(), parsing_cost, vec![Cost::create(
+    check_phlo_limit_exceeded(
+        "@1!(1)".to_string(),
         parsing_cost,
-        "parsing".to_string(),
-    )])
+        vec![Cost::create(parsing_cost, "parsing".to_string())],
+    )
     .await;
 }
 
@@ -490,18 +460,8 @@ async fn peek_with_parallel_produce_should_have_deterministic_replay_cost() {
     for contract in contracts {
         for _ in 0..20 {
             let (play, replay) = evaluate_and_replay(phlo.clone(), contract.to_string()).await;
-            assert!(
-                play.errors.is_empty(),
-                "Play error for '{}': {:?}",
-                contract,
-                play.errors
-            );
-            assert!(
-                replay.errors.is_empty(),
-                "Replay error for '{}': {:?}",
-                contract,
-                replay.errors
-            );
+            assert!(play.errors.is_empty(), "Play error for '{}': {:?}", contract, play.errors);
+            assert!(replay.errors.is_empty(), "Replay error for '{}': {:?}", contract, replay.errors);
             assert_eq!(
                 play.cost, replay.cost,
                 "Play/replay cost mismatch for '{}': play={}, replay={}",

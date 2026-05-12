@@ -1,29 +1,34 @@
 // See casper/src/test/scala/coop/rchain/casper/util/GenesisBuilder.scala
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::errors::CasperError;
-use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
-use casper::rust::genesis::contracts::validator::Validator;
-use casper::rust::genesis::contracts::vault::Vault;
-use casper::rust::genesis::genesis::Genesis;
-use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC, DEFAULT_SEC2};
-use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::private_key::PrivateKey;
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use dashmap::DashMap;
 use lazy_static::lazy_static;
+use std::{collections::HashMap, path::PathBuf};
+use tempfile::TempDir;
+
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+
+use casper::rust::{
+    errors::CasperError,
+    genesis::{
+        contracts::{proof_of_stake::ProofOfStake, validator::Validator, vault::Vault},
+        genesis::Genesis,
+    },
+    util::{
+        construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC, DEFAULT_SEC2},
+        rholang::runtime_manager::RuntimeManager,
+    },
+};
+use crypto::rust::{
+    hash::blake2b256::Blake2b256,
+    private_key::PrivateKey,
+    public_key::PublicKey,
+    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg},
+};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header,
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
-use tempfile::TempDir;
 
 use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
 
@@ -81,7 +86,9 @@ pub struct GenesisBuilder {
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self { Self { vaults: None } }
+    pub fn new() -> Self {
+        Self { vaults: None }
+    }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
@@ -210,36 +217,40 @@ impl GenesisBuilder {
             }))
             .collect();
 
-        (validator_key_pairs, genesis_vaults, Genesis {
-            shard_id: "root".to_string(),
-            timestamp: 0,
-            proof_of_stake: ProofOfStake {
-                minimum_bond: 1,
-                maximum_bond: i64::MAX,
-                // Epoch length is set to large number to prevent trigger of epoch change
-                // in PoS close block method, which causes block merge conflicts
-                // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
-                epoch_length: 1000,
-                quarantine_length: 50000,
-                number_of_active_validators: 100,
-                validators: bonds
-                    .into_iter()
-                    .map(|(pk, stake)| Validator {
-                        pk: pk.clone(),
-                        stake: *stake,
-                    })
-                    .collect(),
-                pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
-                pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+        (
+            validator_key_pairs,
+            genesis_vaults,
+            Genesis {
+                shard_id: "root".to_string(),
+                timestamp: 0,
+                proof_of_stake: ProofOfStake {
+                    minimum_bond: 1,
+                    maximum_bond: i64::MAX,
+                    // Epoch length is set to large number to prevent trigger of epoch change
+                    // in PoS close block method, which causes block merge conflicts
+                    // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
+                    epoch_length: 1000,
+                    quarantine_length: 50000,
+                    number_of_active_validators: 100,
+                    validators: bonds
+                        .into_iter()
+                        .map(|(pk, stake)| Validator {
+                            pk: pk.clone(),
+                            stake: *stake,
+                        })
+                        .collect(),
+                    pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
+                    pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+                },
+                vaults,
+                supply: i64::MAX,
+                block_number: 0,
+                version: 1,
+                native_token_name: "F1R3CAP".to_string(),
+                native_token_symbol: "F1R3".to_string(),
+                native_token_decimals: 8,
             },
-            vaults,
-            supply: i64::MAX,
-            block_number: 0,
-            version: 1,
-            native_token_name: "F1R3CAP".to_string(),
-            native_token_symbol: "F1R3".to_string(),
-            native_token_decimals: 8,
-        })
+        )
     }
 
     fn predefined_vault(pubkey: &PublicKey) -> Vault {
@@ -311,7 +322,7 @@ impl GenesisBuilder {
             let mut runtime_manager = RuntimeManager::create_with_store(
                 r_store,
                 m_store,
-                Genesis::non_negative_mergeable_tag_name(),
+                std::sync::Arc::new(Genesis::default_mergeable_tags()),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             );
 

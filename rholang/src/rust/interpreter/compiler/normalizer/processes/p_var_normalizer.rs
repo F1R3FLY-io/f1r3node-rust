@@ -1,16 +1,13 @@
-#![allow(clippy::extra_unused_lifetimes)]
-
-use std::result::Result;
-
 use models::rust::utils::{new_boundvar_expr, new_freevar_expr, new_wildcard_expr};
-use rholang_parser::ast::Var;
 
 use super::exports::*;
-use crate::rust::interpreter::compiler::exports::{
-    BoundContext, FreeContext, ProcVisitInputs, ProcVisitOutputs,
-};
+use crate::rust::interpreter::compiler::exports::{BoundContext, FreeContext};
+use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
+use std::result::Result;
+
+use rholang_parser::ast::Var;
 
 pub fn normalize_p_var<'ast>(
     var: &Var,
@@ -93,12 +90,13 @@ pub fn normalize_p_var<'ast>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use models::create_bit_vector;
+
+    use super::normalize_p_var;
+    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
     use rholang_parser::ast::{Id, Var};
     use rholang_parser::{SourcePos, SourceSpan};
-
-    use super::{normalize_p_var, *};
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     fn inputs_span() -> ProcVisitInputs {
         let (inputs_data, _env) = proc_visit_inputs_and_env();
@@ -112,7 +110,9 @@ mod tests {
         })
     }
 
-    fn create_wildcard_var() -> Var<'static> { Var::Wildcard }
+    fn create_wildcard_var() -> Var<'static> {
+        Var::Wildcard
+    }
 
     #[test]
     fn p_var_should_compile_as_bound_var_if_its_in_env() {

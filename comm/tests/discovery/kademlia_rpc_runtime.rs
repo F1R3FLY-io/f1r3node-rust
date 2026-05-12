@@ -1,20 +1,24 @@
 // See comm/src/test/scala/coop/rchain/comm/discovery/KademliaRPCRuntime.scala
 // See comm/src/test/scala/coop/rchain/comm/discovery/GrpcKademliaRPCSpec.scala
 
+use prost::bytes::Bytes;
+use rand::RngCore;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC;
-use comm::rust::discovery::grpc_kademlia_rpc_server::{LookupHandler, PingHandler};
-use comm::rust::discovery::utils::acquire_kademlia_rpc_server;
-use comm::rust::errors::CommError;
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use prost::bytes::Bytes;
-use rand::RngCore;
-use shared::rust::grpc::grpc_server::GrpcServer;
 use tokio::net::TcpListener;
+
+use comm::rust::{
+    discovery::{
+        grpc_kademlia_rpc::GrpcKademliaRPC,
+        grpc_kademlia_rpc_server::{LookupHandler, PingHandler},
+        utils::acquire_kademlia_rpc_server,
+    },
+    errors::CommError,
+    peer_node::{Endpoint, NodeIdentifier, PeerNode},
+};
+use shared::rust::grpc::grpc_server::GrpcServer;
 
 pub struct GrpcEnvironment {
     pub host: String,
@@ -27,7 +31,9 @@ pub struct TestRuntime {
 }
 
 impl TestRuntime {
-    pub fn new(network_id: String) -> Self { Self { network_id } }
+    pub fn new(network_id: String) -> Self {
+        Self { network_id }
+    }
 
     /// Create environment with random peer ID and given port
     pub fn create_environment(&self, port: u16) -> GrpcEnvironment {
@@ -118,7 +124,9 @@ impl TestPingHandler {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> { self.received.lock().unwrap().clone() }
+    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> {
+        self.received.lock().unwrap().clone()
+    }
 }
 
 /// Test lookup handler

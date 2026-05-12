@@ -1,13 +1,10 @@
-#![allow(clippy::type_complexity)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
-use models::rhoapi::{Par, ReceiveBind, Var};
-use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
-use models::rust::rholang::sorter::score_tree::ScoredTerm;
-
-use crate::rust::interpreter::compiler::exports::FreeMap;
-use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::{compiler::exports::FreeMap, errors::InterpreterError};
+use models::{
+    rhoapi::{Par, ReceiveBind, Var},
+    rust::rholang::sorter::{receive_sort_matcher::ReceiveSortMatcher, score_tree::ScoredTerm},
+};
 
 pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
     binds: Vec<(Vec<Par>, Option<Var>, Par, FreeMap<T>)>,
@@ -40,8 +37,9 @@ pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
 mod tests {
     use models::rust::utils::{new_freevar_var, new_gint_par};
 
-    use super::*;
     use crate::rust::interpreter::compiler::normalize::VarSort;
+
+    use super::*;
 
     #[test]
     fn binds_should_pre_sort_based_on_their_channel_and_then_patterns() {

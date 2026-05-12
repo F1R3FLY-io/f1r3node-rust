@@ -90,6 +90,7 @@ pub enum InterpreterError {
 
     OpenAIError(String),
     OllamaError(String),
+    ChromaDBError(String),
     IllegalArgumentError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
@@ -234,6 +235,8 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::OllamaError(msg) => write!(f, "Ollama error: {}", msg),
 
+            InterpreterError::ChromaDBError(msg) => write!(f, "ChromaDB error: {}", msg),
+
             InterpreterError::IllegalArgumentError(msg) => write!(f, "Illegal argument: {}", msg),
 
             InterpreterError::IoError(msg) => write!(f, "IO error: {}", msg),
@@ -333,11 +336,15 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        InterpreterError::RSpaceError(err)
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {
-    fn from(error: InterpreterError) -> Self { RSpaceError::InterpreterError(error.to_string()) }
+    fn from(error: InterpreterError) -> Self {
+        RSpaceError::InterpreterError(error.to_string())
+    }
 }
 
 impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
@@ -347,5 +354,7 @@ impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
 }
 
 impl From<std::io::Error> for InterpreterError {
-    fn from(error: std::io::Error) -> Self { InterpreterError::IoError(error.to_string()) }
+    fn from(error: std::io::Error) -> Self {
+        InterpreterError::IoError(error.to_string())
+    }
 }

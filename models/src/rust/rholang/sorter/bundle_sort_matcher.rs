@@ -1,9 +1,12 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/BundleSortMatcher.scala
 
-use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
-use super::sortable::Sortable;
 use crate::rhoapi::Bundle;
+
+use super::{
+    par_sort_matcher::ParSortMatcher,
+    score_tree::{Score, ScoreAtom, ScoredTerm, Tree},
+    sortable::Sortable,
+};
 
 pub struct BundleSortMatcher;
 
@@ -20,7 +23,7 @@ impl Sortable<Bundle> for BundleSortMatcher {
         };
 
         let sorted_par = ParSortMatcher::sort_match(
-            b.body.as_ref().expect("body was None, should be Some(Par)"),
+            &b.body.as_ref().expect("body was None, should be Some(Par)"),
         );
 
         ScoredTerm {

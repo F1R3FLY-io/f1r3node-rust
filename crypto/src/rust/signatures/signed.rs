@@ -1,13 +1,14 @@
 use prost::Message;
 
-use super::secp256k1_eth::Secp256k1Eth;
-use super::signatures_alg::SignaturesAlg;
+use crate::rust::{
+    hash::{blake2b256::Blake2b256, keccak256::Keccak256},
+    private_key::PrivateKey,
+    public_key::PublicKey,
+};
+
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use super::{frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1};
-use crate::rust::hash::blake2b256::Blake2b256;
-use crate::rust::hash::keccak256::Keccak256;
-use crate::rust::private_key::PrivateKey;
-use crate::rust::public_key::PublicKey;
+use super::{secp256k1_eth::Secp256k1Eth, signatures_alg::SignaturesAlg};
 
 pub trait ToMessage {
     type Type: Message;

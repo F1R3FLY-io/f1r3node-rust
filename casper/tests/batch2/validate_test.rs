@@ -1,42 +1,46 @@
 // See casper/src/test/scala/coop/rchain/casper/batch2/ValidateTest.scala
 
-use std::collections::HashMap;
-
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::casper::CasperSnapshot;
-use casper::rust::genesis::genesis::Genesis;
-use casper::rust::util::rholang::interpreter_util;
-use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::util::{construct_deploy, proto_util};
-use casper::rust::validate::Validate;
-use casper::rust::validator_identity::ValidatorIdentity;
-use casper_message::Justification;
-use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
-use models::rust::block_implicits::get_random_block;
-use models::rust::casper::protocol::casper_message;
+use crate::helper::{
+    block_dag_storage_fixture::with_storage,
+    block_generator::{build_block, create_block, create_genesis_block, create_validator_block},
+    block_util::generate_validator,
+};
+use crate::util::genesis_builder::GenesisBuilder;
+use casper::rust::{
+    block_status::{InvalidBlock, ValidBlock},
+    casper::CasperSnapshot,
+    util::proto_util,
+    validate::Validate,
+    validator_identity::ValidatorIdentity,
+};
+use crypto::rust::{
+    private_key::PrivateKey,
+    signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg, signed::Signed},
+};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::history::Either;
+use std::collections::HashMap;
 
-use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{
-    build_block, create_block, create_genesis_block, create_validator_block,
-};
-use crate::helper::block_util::generate_validator;
-use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
+use casper::rust::block_status::BlockError;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::{interpreter_util, runtime_manager::RuntimeManager};
+use casper_message::Justification;
+use models::rust::block_implicits::get_random_block;
+use models::rust::casper::protocol::casper_message;
+use rspace_plus_plus::rspace::history::Either;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+    CasperSnapshot::new(dag)
+}
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -535,11 +539,13 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
             vec![],
         );
 
-        let b3 =
-            create_block_with_number(&mut block_store, &mut block_dag_storage, 8, &genesis, vec![
-                b1.block_hash.clone(),
-                b2.block_hash.clone(),
-            ]);
+        let b3 = create_block_with_number(
+            &mut block_store,
+            &mut block_dag_storage,
+            8,
+            &genesis,
+            vec![b1.block_hash.clone(), b2.block_hash.clone()],
+        );
 
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
@@ -837,6 +843,206 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+/// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
+///
+/// Without the exemption, validation rejects any block that re-includes a
+/// sig already present in an ancestor's `body.deploys` — including the
+/// legitimate recovery path where a deploy was rejected by a descendant
+/// merge and is re-proposed through `RejectedDeployBuffer` to land its
+/// effects in canonical state.
+///
+/// Setup models a true recovery scenario: the deploy lives ONLY in a
+/// non-canonical / non-finalized ancestor (the `rejected_in_scope` flag
+/// is what marks it as rejected during merge), so
+/// `deploy_finalization_status::resolve` for the sig returns `Pending`
+/// — not `Finalized`. Under this state, the recovery exemption is
+/// legitimate: re-inclusion is the only way to land the deploy's
+/// effects in canonical state.
+///
+/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy], not
+/// finalized) → block_w (body.deploys=[deploy], the re-inclusion).
+/// LFB stays at genesis because only `genesis` is inserted with
+/// `approved=true`. The resolver's BFS from LFB visits only genesis,
+/// never block_x — so the sig has no clean canonical inclusion and the
+/// resolver returns `Pending`.
+///
+/// Companion test:
+/// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
+/// covers the symmetric case where the sig has a clean canonical
+/// inclusion (status `Finalized`) and the recovery exemption must NOT
+/// apply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
+    use dashmap::DashSet;
+    use std::sync::Arc;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Genesis carries no user deploys: keeps the LFB clean of `deploy`
+        // so the resolver cannot find a canonical clean inclusion.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_x carries the deploy in body.deploys but is NOT marked
+        // approved/finalized (insert_indexed only marks genesis approved).
+        // The resolver's LFB BFS walks main parents up from genesis and
+        // never visits block_x, so the resolver returns `Pending`.
+        let block_x = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_w re-includes the deploy. repeat_deploy walks block_w's
+        // ancestor chain and finds block_x with deploy in body.deploys —
+        // an "ancestor occurrence" that without the exemption would be
+        // flagged as repeat.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
+        // This is the signal the block-creator and Phase D recovery pipelines use
+        // to justify re-inclusion; validation must honor it.
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig);
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        assert_eq!(
+            result,
+            Either::Right(ValidBlock::Valid),
+            "recovery re-inclusion of a rejected-in-scope sig with status=Pending must validate; got {:?}",
+            result,
+        );
+    })
+    .await
+}
+
+/// Companion to `repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope`.
+/// Tests the symmetric case the recovery exemption must NOT cover: a sig
+/// that is in `rejected_in_scope` but ALSO has a clean canonical
+/// inclusion (status `Finalized`). Re-including a Finalized sig is
+/// double-execution, not recovery — the catchup gate
+/// (`should_admit_to_rejected_buffer`) is the primary defense, but the
+/// repeat-deploy validator must serve as a second line in case the gate
+/// misses.
+///
+/// DAG: genesis (body.deploys=[deploy], LFB) → block_w
+/// (body.deploys=[deploy], re-inclusion). Genesis IS the LFB so the
+/// resolver finds a clean canonical inclusion of `deploy` in genesis
+/// and returns `Finalized`. The recovery exemption must therefore NOT
+/// apply, and the repeat check must catch the duplicate inclusion.
+///
+/// Pre-fix: the rejected_in_scope filter in `repeat_deploy` exempts
+/// the sig unconditionally → returns `Valid` → double-execution slips
+/// through. This test fails.
+///
+/// Post-fix: the filter is gated on `status != Finalized`. The sig is
+/// Finalized, so it is NOT exempted; ancestor scan finds the clean
+/// inclusion in genesis and returns `InvalidRepeatDeploy`. This test
+/// passes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
+    use dashmap::DashSet;
+    use std::sync::Arc;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Genesis IS the LFB and contains `deploy` clean in body.deploys.
+        // The resolver therefore reports `Finalized` for this sig.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_w re-includes the deploy. ancestor scan would find genesis's
+        // clean inclusion if not exempted by the rejected_in_scope filter.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        // Same `rejected_in_scope` membership as the recovery test — the
+        // gap is exactly that the repeat_deploy filter cannot distinguish
+        // "rejected somewhere, recoverable" from "finalized somewhere,
+        // non-recoverable" via this set alone.
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig);
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "double-execution of a Finalized sig (rejected_in_scope membership notwithstanding) must be caught; got {:?}",
+            result,
+        );
+    })
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded_validators_and_false_otherwise(
 ) {
@@ -844,10 +1050,15 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let validator = generate_validator(Some("Validator"));
         let impostor = generate_validator(Some("Impostor"));
 
-        let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 3, vec![Bond {
-            validator: validator.clone(),
-            stake: 1,
-        }]);
+        let _genesis = create_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            3,
+            vec![Bond {
+                validator: validator.clone(),
+                stake: 1,
+            }],
+        );
 
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
         let valid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);
@@ -1868,7 +2079,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         let mut runtime_manager = RuntimeManager::create_with_store(
             (&mut *kvm).r_space_stores().await.unwrap(),
             m_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -1880,6 +2091,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             &mut block_store,
             &mut casper_snapshot,
             &mut runtime_manager,
+            None,
         )
         .await
         .unwrap();

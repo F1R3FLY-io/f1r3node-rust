@@ -28,11 +28,11 @@ impl SpanContext {
     ///
     /// ### 1. rholang-rs Enhancement (Best)
     /// ```rust
-    /// use rholang_parser::ast::Id;
     /// use rholang_parser::SourcePos;
+    /// use rholang_parser::ast::Id;
     /// // Potential rholang-rs change:
     /// pub enum Var<'ast> {
-    ///     Wildcard { pos: SourcePos }, // Add position info
+    ///     Wildcard { pos: SourcePos },  // Add position info
     ///     Id(Id<'ast>),
     /// }
     /// ```
@@ -83,7 +83,9 @@ impl SpanContext {
     }
 
     /// Extract position from Id (which has SourcePos)
-    pub fn extract_pos(id: &rholang_parser::ast::Id) -> rholang_parser::SourcePos { id.pos }
+    pub fn extract_pos(id: &rholang_parser::ast::Id) -> rholang_parser::SourcePos {
+        id.pos
+    }
 
     /// Convert SourcePos to SourceSpan (single point span)
     /// Useful for Id types that need to be used where spans are expected
@@ -105,13 +107,13 @@ impl SpanContext {
             .iter()
             .map(|s| s.start)
             .min()
-            .unwrap_or(rholang_parser::SourcePos { line: 1, col: 1 });
+            .unwrap_or_else(|| rholang_parser::SourcePos { line: 1, col: 1 });
 
         let end = spans
             .iter()
             .map(|s| s.end)
             .max()
-            .unwrap_or(rholang_parser::SourcePos { line: 1, col: 1 });
+            .unwrap_or_else(|| rholang_parser::SourcePos { line: 1, col: 1 });
 
         rholang_parser::SourceSpan { start, end }
     }
@@ -147,10 +149,14 @@ impl SpanContext {
     }
 
     /// Extract end position from a span
-    pub fn span_end_pos(span: rholang_parser::SourceSpan) -> rholang_parser::SourcePos { span.end }
+    pub fn span_end_pos(span: rholang_parser::SourceSpan) -> rholang_parser::SourcePos {
+        span.end
+    }
 
     /// Check if a span represents a single position (start == end)
-    pub fn is_single_position(span: rholang_parser::SourceSpan) -> bool { span.start == span.end }
+    pub fn is_single_position(span: rholang_parser::SourceSpan) -> bool {
+        span.start == span.end
+    }
 
     // ============================================================================
     // LET NORMALIZATION SPAN HELPERS
@@ -164,7 +170,7 @@ impl SpanContext {
     ) -> rholang_parser::SourceSpan {
         // Offset slightly to distinguish synthetic variables while maintaining context
         let mut start = binding_span.start;
-        start.col = start.col.saturating_add(var_index); // Prevent overflow
+        start.col = start.col.saturating_add(var_index as usize); // Prevent overflow
         rholang_parser::SourceSpan { start, end: start }
     }
 

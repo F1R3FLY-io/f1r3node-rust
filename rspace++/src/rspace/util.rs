@@ -1,5 +1,3 @@
-#![allow(clippy::match_single_binding, clippy::type_complexity)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/util/package.scala
 
 use super::rspace_interface::{ContResult, RSpaceResult};
@@ -29,7 +27,7 @@ pub fn unpack_tuple<C, P, K: Clone, R: Clone>(
     match tuple {
         (ContResult { continuation, .. }, data) => (
             continuation.clone(),
-            data.iter()
+            data.into_iter()
                 .map(|result| result.matched_datum.clone())
                 .collect(),
         ),
@@ -42,7 +40,7 @@ pub fn unpack_produce_tuple<C, P, K: Clone, R: Clone>(
     match tuple {
         (ContResult { continuation, .. }, data, previous) => (
             continuation.clone(),
-            data.iter()
+            data.into_iter()
                 .map(|result| result.matched_datum.clone())
                 .collect(),
             previous.clone(),

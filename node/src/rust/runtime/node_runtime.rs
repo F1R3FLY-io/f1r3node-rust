@@ -1,19 +1,17 @@
 // See node/src/main/scala/coop/rchain/node/runtime/NodeRuntime.scala
 
+use casper::rust::errors::CasperError;
+use comm::rust::peer_node::NodeIdentifier;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-
-use casper::rust::blocks::proposer::proposer::ProposerResult;
-use casper::rust::errors::CasperError;
-use comm::rust::peer_node::NodeIdentifier;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use crate::rust::configuration::NodeConf;
-use crate::rust::effects::node_discover;
-use crate::rust::node_environment;
+use crate::rust::{configuration::NodeConf, effects::node_discover, node_environment};
+
+use casper::rust::blocks::proposer::proposer::ProposerResult;
 
 type ProposerQueueEntry = (
     Arc<dyn casper::rust::casper::Casper + Send + Sync>,
@@ -68,7 +66,9 @@ impl NodeRuntime {
     /// # Arguments
     /// * `node_conf` - Node configuration
     /// * `id` - Node identifier derived from TLS certificate
-    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self { Self { node_conf, id } }
+    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self {
+        Self { node_conf, id }
+    }
 
     /// Main node entry point
     ///
@@ -97,9 +97,8 @@ impl NodeRuntime {
 
         // Create transport client
         let transport = {
-            use std::collections::HashMap;
-
             use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
+            use std::collections::HashMap;
 
             let channels_map = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
@@ -1034,8 +1033,8 @@ async fn clear_connections_loop(
         // Dynamic IP check - detect and handle external IP address changes
         if node_conf.protocol_server.dynamic_ip {
             match comm::rust::who_am_i::check_local_peer_node(
-                node_conf.protocol_server.port,
-                node_conf.peers_discovery.port,
+                node_conf.protocol_server.port as u16,
+                node_conf.peers_discovery.port as u16,
                 &rp_conf.local,
             )
             .await
@@ -1336,7 +1335,9 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
 /// # Returns
 /// Returns `Ok(())` on successful completion, or logs the error and exits with code 1
 async fn handle_unrecoverable_errors<F>(program: F) -> eyre::Result<()>
-where F: Future<Output = eyre::Result<()>> {
+where
+    F: Future<Output = eyre::Result<()>>,
+{
     match program.await {
         Ok(_) => {
             info!("Node program completed successfully. Exiting.");

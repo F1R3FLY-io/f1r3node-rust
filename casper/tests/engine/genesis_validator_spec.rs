@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/GenesisValidatorSpec.scala
 
-use std::sync::Arc;
-
+use crate::engine::setup::TestFixture;
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use casper::rust::engine::genesis_validator::GenesisValidator;
 use comm::rust::rp::protocol_helper::packet_with_content;
@@ -10,9 +9,8 @@ use models::rust::casper::protocol::casper_message::{
     CasperMessage, NoApprovedBlockAvailable, UnapprovedBlock,
 };
 use serial_test::serial;
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-
-use crate::engine::setup::TestFixture;
 
 struct GenesisValidatorSpec;
 
@@ -62,6 +60,7 @@ impl GenesisValidatorSpec {
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
+                fixture.rejected_deploy_buffer.clone(),
                 fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),
@@ -172,6 +171,7 @@ impl GenesisValidatorSpec {
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
+                fixture.rejected_deploy_buffer.clone(),
                 fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),
@@ -262,6 +262,7 @@ impl GenesisValidatorSpec {
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
+                fixture.rejected_deploy_buffer.clone(),
                 fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),

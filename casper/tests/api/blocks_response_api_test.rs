@@ -1,9 +1,14 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BlocksResponseAPITest.scala
 // See [[/docs/casper/images/no_finalizable_block_mistake_with_no_disagreement_check.png]]
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
+use crate::helper::block_generator;
+use crate::helper::block_util;
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
+use crate::util::rholang::resources::{
+    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+};
+use crate::util::test_mocks::MockKeyValueStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::api::block_api::BlockAPI;
@@ -12,14 +17,8 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
-
-use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
-use crate::helper::{block_generator, block_util};
-use crate::util::rholang::resources::{
-    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
-};
-use crate::util::test_mocks::MockKeyValueStore;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond, Bond, Vec<Bond>) {
     let v1 = block_util::generate_validator(Some("Validator One"));
@@ -283,7 +282,7 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(), // shared kvm!
@@ -330,7 +329,7 @@ async fn get_blocks_should_return_all_blocks() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),
@@ -375,7 +374,7 @@ async fn get_blocks_should_return_until_depth() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),
@@ -425,7 +424,7 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),

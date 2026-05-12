@@ -1,11 +1,12 @@
-use std::pin::Pin;
-
 use models::rhoapi::{ListParWithRandom, Par};
 use prost::Message;
+use std::pin::Pin;
 
-use super::dispatch::{DispatchType, RhoDispatch};
-use super::errors::InterpreterError;
-use super::rho_runtime::RhoISpace;
+use super::{
+    dispatch::{DispatchType, RhoDispatch},
+    errors::InterpreterError,
+    rho_runtime::RhoISpace,
+};
 
 /**
  * This is a tool for unapplying the messages sent to the system contracts.
@@ -63,16 +64,14 @@ impl ContractCall {
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
                 Box::pin(async move {
-                    let produce_result = space
-                        .produce(
-                            ch_cloned,
-                            ListParWithRandom {
-                                pars: values_vec,
-                                random_state: rand,
-                            },
-                            false,
-                        )
-                        .await?;
+                    let produce_result = space.produce(
+                        ch_cloned,
+                        ListParWithRandom {
+                            pars: values_vec,
+                            random_state: rand,
+                        },
+                        false,
+                    ).await?;
 
                     let is_replay = space.is_replay().await;
 

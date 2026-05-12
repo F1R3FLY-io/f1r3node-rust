@@ -2,37 +2,43 @@
 // Moved from casper/tests/helper/no_ops_casper_effect.rs to casper/src/rust/test_utils/helper/no_ops_casper_effect.rs
 // All imports fixed for library crate context
 
+use crate::rust::test_utils::util::test_mocks::MockKeyValueStore;
+use crate::rust::validator_identity::ValidatorIdentity;
+use async_trait::async_trait;
+use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crate::rust::{
+    block_status::{BlockError, InvalidBlock, ValidBlock},
+    casper::{Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper},
+    errors::CasperError,
+    util::rholang::runtime_manager::RuntimeManager,
+};
+use block_storage::rust::{
+    dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation},
+    key_value_block_store::KeyValueBlockStore,
+};
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::block_implicits::get_random_block_default;
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use models::rust::validator::Validator;
+use models::rust::{
+    block_hash::{BlockHash, BlockHashSerde},
+    block_implicits::get_random_block_default,
+    block_metadata::BlockMetadata,
+    casper::protocol::casper_message::{BlockMessage, DeployData},
+    validator::Validator,
+};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
-use crate::rust::errors::CasperError;
-use crate::rust::test_utils::util::test_mocks::MockKeyValueStore;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct NoOpsCasperEffect {
     estimator_func: Vec<BlockHash>,
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     block_store: KeyValueBlockStore,
     // Shared data for block store to ensure clones can access the same blocks
     shared_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
+    shard_conf: CasperShardConf,
 }
 
 // For testing purposes, we'll implement Clone manually by creating stub instances
@@ -59,6 +65,7 @@ impl Clone for NoOpsCasperEffect {
             shared_block_data: self.shared_block_data.clone(),
             shared_approved_block_data: self.shared_approved_block_data.clone(),
             block_dag_storage: self.block_dag_storage.clone(),
+            shard_conf: self.shard_conf.clone(),
         }
     }
 }
@@ -69,7 +76,7 @@ impl NoOpsCasperEffect {
     pub fn new(
         _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
     ) -> Self {
@@ -94,6 +101,7 @@ impl NoOpsCasperEffect {
             shared_block_data,
             shared_approved_block_data,
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 
@@ -101,7 +109,7 @@ impl NoOpsCasperEffect {
     /// This ensures all storages use the SAME kvm (like Scala's InMemoryStoreManager)
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -120,13 +128,16 @@ impl NoOpsCasperEffect {
             shared_block_data: shared_kvm_data.clone(),
             shared_approved_block_data: shared_kvm_data.clone(),
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 }
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
+    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
+        Ok(())
+    }
 
     fn normalized_initial_fault(
         &self,
@@ -143,17 +154,29 @@ impl MultiParentCasper for NoOpsCasperEffect {
         Ok(self.block_dag_storage.clone())
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+    fn block_store(&self) -> &KeyValueBlockStore {
+        &self.block_store
+    }
 
-    fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+    fn casper_shard_conf(&self) -> &CasperShardConf {
+        &self.shard_conf
+    }
 
-    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
+    fn get_validator(&self) -> Option<ValidatorIdentity> {
+        None
+    }
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
+    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
+        todo!()
+    }
+
+    fn runtime_manager(&self) -> Arc<RuntimeManager> {
         self.runtime_manager.clone()
     }
 
-    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
+    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
+        Ok(false)
+    }
 }
 
 #[async_trait]
@@ -172,9 +195,13 @@ impl Casper for NoOpsCasperEffect {
         }
     }
 
-    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn dag_contains(&self, _hash: &BlockHash) -> bool {
+        false
+    }
 
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn buffer_contains(&self, _hash: &BlockHash) -> bool {
+        false
+    }
 
     fn deploy(
         &self,
@@ -190,9 +217,13 @@ impl Casper for NoOpsCasperEffect {
         Ok(self.estimator_func.clone())
     }
 
-    fn get_version(&self) -> i64 { 1 }
+    fn get_version(&self) -> i64 {
+        1
+    }
 
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
+    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
+        Ok(Vec::new())
+    }
 
     async fn validate(
         &self,

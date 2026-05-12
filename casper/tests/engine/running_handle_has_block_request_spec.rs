@@ -1,15 +1,16 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/RunningHandleHasBlockRequestSpec.scala
 
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use models::casper::HasBlockProto;
-use models::routing::protocol::Message::Packet;
-use models::routing::Protocol;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{HasBlock, HasBlockRequest};
-use prost::bytes::Bytes;
-use prost::Message;
-
 use crate::engine::setup::TestFixture;
+use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+use models::{
+    casper::HasBlockProto,
+    routing::{protocol::Message::Packet, Protocol},
+    rust::{
+        block_hash::BlockHash,
+        casper::protocol::casper_message::{HasBlock, HasBlockRequest},
+    },
+};
+use prost::{bytes::Bytes, Message};
 
 const HASH_BYTES: &[u8] = b"hash";
 

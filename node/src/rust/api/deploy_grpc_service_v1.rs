@@ -1,13 +1,11 @@
-#![allow(clippy::too_many_arguments)]
-
 //! Deploy gRPC Service V1 implementation
 //!
 //! This module provides a gRPC service for deploy functionality,
 //! allowing clients to deploy contracts, query blocks, and perform various blockchain operations.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::rust::web::version_info::get_version_info_str;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::block_report_api::BlockReportAPI;
@@ -20,21 +18,21 @@ use graphz::{GraphSerializer, ListSerializer};
 use models::casper::v1::deploy_service_server::DeployService;
 use models::casper::v1::{
     BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
-    DeployResponse, EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse,
-    IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
+    DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
+    FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
     PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
-    DataAtNameByBlockQuery, DeployDataProto, ExploratoryDeployQuery, FindDeployQuery,
-    IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery, PrivateNamePreviewQuery,
-    ReportQuery, Status, VersionInfo, VisualizeDagQuery,
+    DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
+    DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
+    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
+    PrivateNamePreviewQuery, ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
-
-use crate::rust::web::version_info::get_version_info_str;
 
 trait IntoServiceError {
     fn into_service_error(self) -> ServiceError;
@@ -59,9 +57,13 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
 
-fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
+fn find_deploy_retry_interval_ms() -> u64 {
+    FIND_DEPLOY_RETRY_INTERVAL_MS
+}
 
-fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
+fn find_deploy_max_attempts() -> u8 {
+    FIND_DEPLOY_MAX_ATTEMPTS
+}
 
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
@@ -150,17 +152,12 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
-        match self
-            .block_report_api
-            .block_report(block_hash_bytes, false)
-            .await
-        {
+        match self.block_report_api.block_report(block_hash_bytes, false).await {
             Ok(report) => {
-                let transfers_by_deploy =
-                    crate::rust::web::block_info_enricher::extract_transfers_from_report(
-                        &report,
-                        &self.transfer_unforgeable,
-                    );
+                let transfers_by_deploy = crate::rust::web::block_info_enricher::extract_transfers_from_report(
+                    &report,
+                    &self.transfer_unforgeable,
+                );
                 for deploy in &mut block_info.deploys {
                     deploy.transfers_available = true;
                     if let Some(transfers) = transfers_by_deploy.get(&deploy.sig) {
@@ -685,6 +682,45 @@ impl DeployService for DeployGrpcServiceV1Impl {
         }
     }
 
+    /// Query the finalization status of a deploy by its signature.
+    async fn deploy_finalization_status(
+        &self,
+        request: tonic::Request<DeployFinalizationStatusQuery>,
+    ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
+        let request = request.into_inner();
+        match casper::rust::api::block_api::BlockAPI::deploy_finalization_status(
+            &self.engine_cell,
+            &request.deploy_sig,
+        )
+        .await
+        {
+            Ok(status) => Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+                message: Some(
+                    models::casper::v1::deploy_finalization_status_response::Message::Status(
+                        DeployFinalizationStatusInfo {
+                            state: deploy_state_to_proto(status.state) as i32,
+                            rejection_count: status.rejection_count,
+                            latest_block_hash: status.latest_block_hash,
+                        },
+                    ),
+                ),
+            })),
+            Err(e) => {
+                error!(
+                    "Deploy service method error deploy_finalization_status: {}",
+                    e
+                );
+                Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+                    message: Some(
+                        models::casper::v1::deploy_finalization_status_response::Message::Error(
+                            e.into_service_error(),
+                        ),
+                    ),
+                }))
+            }
+        }
+    }
+
     /// Get bond status
     async fn bond_status(
         &self,
@@ -781,7 +817,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         match self
             .block_report_api
-            .block_report(block_hash_bytes, request.force_replay)
+            .block_report(
+                block_hash_bytes,
+                request.force_replay,
+            )
             .await
         {
             Ok(block_event_info) => Ok(tonic::Response::new(EventInfoResponse {
@@ -935,5 +974,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
         Ok(tonic::Response::new(StatusResponse {
             message: Some(models::casper::v1::status_response::Message::Status(status)),
         }))
+    }
+}
+
+fn deploy_state_to_proto(
+    state: casper::rust::api::deploy_finalization_status::DeployFinalizationState,
+) -> DeployFinalizationStateProto {
+    use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+    match state {
+        S::Finalized => DeployFinalizationStateProto::DeployStateFinalized,
+        S::Failed => DeployFinalizationStateProto::DeployStateFailed,
+        S::Pending => DeployFinalizationStateProto::DeployStatePending,
+        S::Expired => DeployFinalizationStateProto::DeployStateExpired,
     }
 }

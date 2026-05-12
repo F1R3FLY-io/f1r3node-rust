@@ -8,20 +8,20 @@ use models::casper::{
     BlockEventInfo, DeployInfoWithEventData, ReportProto, SingleReport,
     SystemDeployInfoWithEventData,
 };
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
+use models::rust::{
+    block_hash::BlockHash,
+    casper::protocol::casper_message::{BlockMessage, SystemDeployData},
+};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
-use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use shared::rust::ByteString;
+use shared::rust::{store::key_value_typed_store::KeyValueTypedStore, ByteString};
 use tokio::sync::Semaphore;
 
-use crate::rust::api::block_api::BlockAPI;
-use crate::rust::engine::engine_cell::EngineCell;
-use crate::rust::report_store::ReportStore;
-use crate::rust::reporting_casper::ReportingCasper;
-use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::CliqueOracleImpl;
+use crate::rust::{
+    api::block_api::BlockAPI, engine::engine_cell::EngineCell, report_store::ReportStore,
+    reporting_casper::ReportingCasper, reporting_proto_transformer::ReportingProtoTransformer,
+    safety_oracle::CliqueOracleImpl,
+};
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -95,7 +95,7 @@ impl BlockReportAPI {
             .reporting_casper
             .trace(block)
             .await
-            .map_err(BlockReportError::ReplayFailed)?;
+            .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
@@ -108,7 +108,7 @@ impl BlockReportAPI {
 
         let post_state_hash_bytes: Bytes = report_result.post_state_hash.into();
         Ok(BlockEventInfo {
-            block_info: Some(light_block),
+            block_info: Some(light_block).into(),
             deploys,
             system_deploys: sys_deploys,
             post_state_hash: post_state_hash_bytes,
@@ -152,7 +152,7 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash_bytes: ByteString = block.block_hash.to_vec();
+        let block_hash_bytes: ByteString = block.block_hash.to_vec().into();
         let cached = self
             .report_store
             .get(&vec![block_hash_bytes.clone()])
@@ -230,7 +230,7 @@ impl BlockReportAPI {
                     .collect();
 
                 SystemDeployInfoWithEventData {
-                    system_deploy: Some(system_deploy_proto),
+                    system_deploy: Some(system_deploy_proto).into(),
                     report,
                 }
             })
@@ -266,7 +266,7 @@ impl BlockReportAPI {
                     .collect();
 
                 DeployInfoWithEventData {
-                    deploy_info: Some(deploy_info),
+                    deploy_info: Some(deploy_info).into(),
                     report,
                 }
             })

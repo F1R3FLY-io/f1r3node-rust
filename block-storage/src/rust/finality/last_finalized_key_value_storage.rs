@@ -1,10 +1,10 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/finality/LastFinalizedKeyValueStorage.scala
 
+use prost::bytes::Bytes;
 use std::collections::HashMap;
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
-use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -47,7 +47,7 @@ impl LastFinalizedKeyValueStorage {
     /// Check if migration from old LastFinalizedStorage format is required
     pub fn require_migration(&self) -> Result<bool, KvStoreError> {
         let value = self.get()?;
-        Ok(value.is_some_and(|hash| hash != Self::DONE))
+        Ok(value.map_or(false, |hash| hash != Self::DONE))
     }
 
     /// Migrate LastFinalizedStorage to BlockDagStorage
@@ -96,9 +96,12 @@ impl LastFinalizedKeyValueStorage {
         // Build blocks info map for DAG traversal
         let blocks_info_map: HashMap<BlockHash, BlockInfo> = block_metadata_db
             .collect(|(hash_serde, metadata)| {
-                Some((hash_serde.0.clone(), BlockInfo {
-                    parents: metadata.parents.clone(),
-                }))
+                Some((
+                    hash_serde.0.clone(),
+                    BlockInfo {
+                        parents: metadata.parents.clone(),
+                    },
+                ))
             })?
             .into_iter()
             .collect();
@@ -118,7 +121,7 @@ impl LastFinalizedKeyValueStorage {
                         .cloned()
                         .collect()
                 })
-                .unwrap_or_default()
+                .unwrap_or_else(Vec::new)
         });
 
         tracing::info!(

@@ -1,7 +1,4 @@
-use axum::extract::State;
-use axum::response::Json;
-use axum::routing::get;
-use axum::Router;
+use axum::{extract::State, response::Json, routing::get, Router};
 
 use crate::rust::api::web_api::ApiStatus;
 use crate::rust::web::shared_handlers::{AppError, AppState};

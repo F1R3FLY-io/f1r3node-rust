@@ -4,10 +4,14 @@
 
 use std::sync::Arc;
 
-use comm::rust::discovery::kademlia_rpc::KademliaRPC;
-use comm::rust::discovery::kademlia_store::KademliaStore;
-use comm::rust::discovery::node_discovery::{kademlia, NodeDiscovery};
-use comm::rust::peer_node::NodeIdentifier;
+use comm::rust::{
+    discovery::{
+        kademlia_rpc::KademliaRPC,
+        kademlia_store::KademliaStore,
+        node_discovery::{kademlia, NodeDiscovery},
+    },
+    peer_node::NodeIdentifier,
+};
 
 pub mod console_io;
 pub mod repl_client;

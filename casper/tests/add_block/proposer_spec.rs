@@ -2,23 +2,28 @@
 
 use std::sync::Arc;
 
-use casper::rust::blocks::proposer::propose_result::{
-    BlockCreatorResult, CheckProposeConstraintsResult,
+use crate::{
+    helper::block_dag_storage_fixture::with_storage,
+    util::{
+        genesis_builder::DEFAULT_VALIDATOR_SKS,
+        rholang::resources::{mk_dummy_casper_snapshot, mk_runtime_manager},
+    },
 };
-use casper::rust::blocks::proposer::proposer::{
-    ActiveValidatorChecker, BlockCreator, BlockValidator, CasperSnapshotProvider, HeightChecker,
-    ProposeEffectHandler, ProposeReturnType, Proposer, StakeChecker,
+use casper::rust::{
+    blocks::proposer::{
+        propose_result::{BlockCreatorResult, CheckProposeConstraintsResult},
+        proposer::{
+            ActiveValidatorChecker, BlockCreator, BlockValidator, CasperSnapshotProvider,
+            HeightChecker, ProposeEffectHandler, ProposeReturnType, Proposer, StakeChecker,
+        },
+    },
+    casper::{Casper, CasperSnapshot},
+    errors::CasperError,
+    validator_identity::ValidatorIdentity,
+    ValidBlockProcessing,
 };
-use casper::rust::casper::{Casper, CasperSnapshot};
-use casper::rust::errors::CasperError;
-use casper::rust::validator_identity::ValidatorIdentity;
-use casper::rust::ValidBlockProcessing;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-
-use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
-use crate::util::rholang::resources::{mk_dummy_casper_snapshot, mk_runtime_manager};
 
 // Test implementations for different scenarios
 pub struct TestCasperSnapshotProvider;
@@ -149,7 +154,9 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -162,7 +169,9 @@ pub struct TrackingProposeEffectHandler {
 }
 
 impl TrackingProposeEffectHandler {
-    pub fn new(value: i32) -> Self { Self { value } }
+    pub fn new(value: i32) -> Self {
+        Self { value }
+    }
 }
 
 impl ProposeEffectHandler for TrackingProposeEffectHandler {
@@ -175,12 +184,18 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
-fn get_propose_effect_var() -> i32 { PROPOSE_EFFECT_VAR.load(Ordering::SeqCst) }
+fn get_propose_effect_var() -> i32 {
+    PROPOSE_EFFECT_VAR.load(Ordering::SeqCst)
+}
 
-fn reset_propose_effect_var() { PROPOSE_EFFECT_VAR.store(0, Ordering::SeqCst); }
+fn reset_propose_effect_var() {
+    PROPOSE_EFFECT_VAR.store(0, Ordering::SeqCst);
+}
 
 fn dummy_validator_identity() -> ValidatorIdentity {
     ValidatorIdentity::new(&DEFAULT_VALIDATOR_SKS[0])
@@ -205,15 +220,14 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
             false, // allow_empty_blocks
         );
 
-        use std::collections::HashMap;
-
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+        use std::collections::HashMap;
 
         let dag_representation = block_dag_storage.get_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -263,15 +277,14 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
             false, // allow_empty_blocks
         );
 
-        use std::collections::HashMap;
-
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+        use std::collections::HashMap;
 
         let dag_representation = block_dag_storage.get_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -321,15 +334,14 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
             false, // allow_empty_blocks
         );
 
-        use std::collections::HashMap;
-
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+        use std::collections::HashMap;
 
         let dag_representation = block_dag_storage.get_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -379,15 +391,14 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
             false,                           // allow_empty_blocks
         );
 
-        use std::collections::HashMap;
-
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+        use std::collections::HashMap;
 
         let dag_representation = block_dag_storage.get_representation();
         let casper = Arc::new(NoOpsCasperEffect::new_with_self_created_validation_failure(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -428,15 +439,14 @@ async fn proposer_should_execute_propose_effects_if_block_created_successfully_r
             false,                           // allow_empty_blocks
         );
 
-        use std::collections::HashMap;
-
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+        use std::collections::HashMap;
 
         let dag_representation = block_dag_storage.get_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));

@@ -8,14 +8,15 @@
 // - Block processing (state properly restored after blocks)
 // - Invalid block handling (invalidBlocks map populated correctly)
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
+use casper::rust::{
+    block_status::{BlockError, InvalidBlock},
+    casper::MultiParentCasper,
+    util::construct_deploy,
+};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::GenesisBuilder;
+use crate::{helper::test_node::TestNode, util::genesis_builder::GenesisBuilder};
 
 /// PoS contract should return correct bonds at genesis
 #[tokio::test]

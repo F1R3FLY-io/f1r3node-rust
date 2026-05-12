@@ -12,38 +12,24 @@ minikube start \
     --memory=6g
 ```
 
-## Image Source
+## Pull `rnode` into Minikube
+**This step needed if `f1r3flyindustries/f1r3fly-rust-node:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
 
-`minikube-values.yaml` defaults to the public OCIR image (`sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest`) with `pullPolicy: IfNotPresent`, so minikube will pull on first use. For the default path, skip to [Deploy RNode](#deploy-rnode) — nothing to load.
-
-### Use a locally built image (optional)
-
-To test a locally built image instead, load it into the Minikube cache and override the image settings when deploying.
-
-Load the local Docker image:
+Load `f1r3flyindustries/f1r3fly-rust-node:latest` Docker image inside Minikube cache
 ```sh
-minikube image load f1r3fly-rust:local
+minikube image load f1r3flyindustries/f1r3fly-rust-node:latest
 ```
-Check the image list. `f1r3fly-rust:local` should appear in the table:
+Check the image list. `f1r3flyindustries/f1r3fly-rust-node:latest` should be listed in the table
 ```sh
 minikube image list --format=table
 ```
-If `load` fails (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use the alternative method via file — store the image into a file and load it from there:
+If `load` command failed (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use alternative mathod via file: store image into the file and load it from the file
 ```sh
-docker image save f1r3fly-rust:local -o rnode.tar && \
+docker image save f1r3flyindustries/f1r3fly-rust-node:latest -o rnode.tar && \
     minikube image load rnode.tar && \
     rm rnode.tar
 ```
 Check the image list again using the command above.
-
-When deploying, override the image fields so minikube uses the loaded image:
-```sh
-helm upgrade --install f1r3fly ../helm/f1r3fly -n f1r3fly --create-namespace -f ./minikube-values.yaml \
-    --set image.repository=f1r3fly-rust \
-    --set image.tag=local \
-    --set image.pullPolicy=Never
-```
-
 ## Check all system pods
 Get a list of running system pods and check statuses:
 ```sh
@@ -88,14 +74,17 @@ The expected result should be like
 {
   "version": {
     "api": "1",
-    "node": "RChain Node 1.0.0-SNAPSHOT (29aa391c6948c2c1df533b4cd35794d65eab04b5)"
+    "node": "F1r3node Rust 0.4.10 ()"
   },
   "address": "rnode://c93bc07f3d141459356791f9eaaa05f4cec49c0b@f1r3fly0-0.f1r3fly0?protocol=40400&discovery=40404",
-  "networkId": "f1r3fly",
+  "networkId": "testnet",
   "shardId": "root",
   "peers": 1,
   "nodes": 3,
-  "minPhloPrice": 1
+  "minPhloPrice": 1,
+  "nativeTokenName": "F1R3CAP",
+  "nativeTokenSymbol": "F1R3",
+  "nativeTokenDecimals": 8
 }
 ```
 

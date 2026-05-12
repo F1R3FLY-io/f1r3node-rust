@@ -1,64 +1,85 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/MultiParentCasperImpl.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
+use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+
+use block_storage::rust::{
+    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
+    dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
+    },
+    deploy::{
+        key_value_deploy_storage::KeyValueDeployStorage,
+        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    },
+    key_value_block_store::KeyValueBlockStore,
+};
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
-use models::rust::equivocation_record::EquivocationRecord;
-use models::rust::normalizer_env::normalizer_env_from_deploy;
-use models::rust::validator::Validator;
+use models::rust::{
+    block_hash::{BlockHash, BlockHashSerde},
+    casper::{
+        pretty_printer::PrettyPrinter,
+        protocol::casper_message::{BlockMessage, DeployData, Justification},
+    },
+    equivocation_record::EquivocationRecord,
+    normalizer_env::normalizer_env_from_deploy,
+    validator::Validator,
+};
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use shared::rust::dag::dag_ops;
-use shared::rust::shared::f1r3fly_event::{DeployEvent, F1r3flyEvent};
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::store::key_value_store::KvStoreError;
+use rspace_plus_plus::rspace::{hashing::blake2b256_hash::Blake2b256Hash, history::Either};
+use shared::rust::{
+    dag::dag_ops,
+    shared::{
+        f1r3fly_event::{DeployEvent, F1r3flyEvent},
+        f1r3fly_events::F1r3flyEvents,
+    },
+    store::key_value_store::KvStoreError,
+};
 
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::casper::{
-    Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper, OnChainCasperState,
+use crate::rust::{
+    block_status::{BlockError, InvalidBlock, ValidBlock},
+    casper::{
+        Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper, OnChainCasperState,
+    },
+    engine::block_retriever::{AdmitHashReason, BlockRetriever},
+    equivocation_detector::EquivocationDetector,
+    errors::CasperError,
+    estimator::Estimator,
+    finality::finalizer::Finalizer,
+    metrics_constants::{
+        ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
+        BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
+        DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC,
+        DAG_HEIGHTS_SIZE_METRIC, DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
+        DEPLOYS_IN_SCOPE_SIZE_METRIC,
+    },
+    util::{
+        proto_util,
+        rholang::{
+            interpreter_util::{self, validate_block_checkpoint},
+            runtime_manager::RuntimeManager,
+        },
+    },
+    validate::Validate,
+    validator_identity::ValidatorIdentity,
 };
-use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
-use crate::rust::equivocation_detector::EquivocationDetector;
-use crate::rust::errors::CasperError;
-use crate::rust::estimator::Estimator;
-use crate::rust::finality::finalizer::Finalizer;
-use crate::rust::metrics_constants::{
-    ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC, BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
-    DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC,
-    DAG_HEIGHTS_SIZE_METRIC, DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
-    DEPLOYS_IN_SCOPE_SIZE_METRIC,
-};
-use crate::rust::util::proto_util;
-use crate::rust::util::rholang::interpreter_util::{self, validate_block_checkpoint};
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::validate::Validate;
-use crate::rust::validator_identity::ValidatorIdentity;
 
 const FINALIZER_BLOCKING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 4096;
-fn deploy_heartbeat_wake_enabled() -> bool { false }
+fn deploy_heartbeat_wake_enabled() -> bool {
+    false
+}
 
 /// RAII guard that ensures the finalization flag is reset on drop.
 /// This prevents the flag from being stuck in `true` state if the async block
@@ -66,17 +87,20 @@ fn deploy_heartbeat_wake_enabled() -> bool { false }
 struct FinalizationGuard<'a>(&'a AtomicBool);
 
 impl Drop for FinalizationGuard<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub block_retriever: BlockRetriever<T>,
     pub event_publisher: F1r3flyEvents,
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     pub estimator: Estimator,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     // TODO: this should be read from chain, for now read from startup options - OLD
@@ -92,9 +116,20 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub finalizer_task_queued: Arc<AtomicBool>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    /// Cache for deploys_in_scope BFS result keyed by DAG generation and snapshot LFB.
-    /// Including LFB in the key avoids stale scope reuse across finalization advances.
-    pub deploys_in_scope_cache: Arc<Mutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
+    /// Cache for deploys_in_scope / rejected_in_scope BFS result keyed by DAG generation
+    /// and snapshot LFB. Including LFB in the key avoids stale scope reuse across
+    /// finalization advances. The third and fourth tuple elements are the cached
+    /// `deploys_in_scope` and `rejected_in_scope` sets respectively.
+    pub deploys_in_scope_cache: Arc<
+        Mutex<
+            Option<(
+                u64,
+                BlockHash,
+                Arc<dashmap::DashSet<Bytes>>,
+                Arc<dashmap::DashSet<Bytes>>,
+            )>,
+        >,
+    >,
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
@@ -109,7 +144,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             );
         }
 
-        let dag = self.block_dag_storage.get_representation();
+        let mut dag = self.block_dag_storage.get_representation();
 
         // Parent selection: Use latest block from EACH bonded validator.
         // Every block should have one parent per validator to ensure all deploy effects
@@ -127,15 +162,6 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .filter(|(validator, _)| !invalid_latest_msgs.contains_key(*validator))
             .map(|(validator, hash): (&Validator, &BlockHash)| (validator.clone(), hash.clone()))
             .collect();
-        let valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
-            valid_latest_msgs
-                .iter()
-                .filter_map(|(validator, hash): (&Validator, &BlockHash)| {
-                    dag.lookup_unsafe(hash)
-                        .ok()
-                        .map(|meta| (validator.clone(), meta))
-                })
-                .collect();
         // Deduplicate: multiple validators may have the same latest block (e.g., genesis)
         let unique_parent_hashes: HashSet<BlockHash> =
             valid_latest_msgs.values().cloned().collect();
@@ -154,13 +180,13 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let mut sorted_parents_list = parent_blocks_list;
         let max_parent_block_number = sorted_parents_list
             .iter()
-            .map(|b| b.body.state.block_number)
+            .map(|b| b.body.state.block_number as i64)
             .max()
             .unwrap_or(0);
         let near_tip_tolerance_blocks: i64 = 0;
         sorted_parents_list.sort_by(|a, b| {
-            let a_num = a.body.state.block_number;
-            let b_num = b.body.state.block_number;
+            let a_num = a.body.state.block_number as i64;
+            let b_num = b.body.state.block_number as i64;
             let a_is_near_tip =
                 max_parent_block_number.saturating_sub(a_num) <= near_tip_tolerance_blocks;
             let b_is_near_tip =
@@ -288,23 +314,30 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             )
             .await?;
 
-        // We ensure that only the justifications given in the block are those
-        // which are bonded validators in the chosen parent. This is safe because
-        // any latest message not from a bonded validator will not change the
-        // final fork-choice.
+        // Justifications include the latest message from every bonded validator,
+        // including those whose latest message is invalid. This is safe for fork
+        // choice because parent selection (above, ~line 160) filters
+        // `latest_msgs_hashes` through `valid_latest_msgs`, so invalid blocks
+        // never become candidate parents — only valid-latest blocks influence
+        // parent choice and the Estimator's fork-choice scoring. Justifications,
+        // by contrast, must reflect the creator's complete observed view: the
+        // `justification_follows` invariant requires
+        // `justified_validators == bonded_validators`, so omitting any bonded
+        // validator (even one whose latest is invalid) would cause validation
+        // to reject the block.
+        //
+        // See `block_dag_key_value_storage.rs::insert` for the upstream
+        // invariant that allows invalid blocks into the LMM in the first place.
         let justifications = {
             let bonded_validators = &on_chain_state.bonds_map;
 
-            valid_latest_metas
+            latest_msgs_hashes
                 .iter()
                 .filter(|(validator, _)| bonded_validators.contains_key(*validator))
                 .map(
-                    |(validator, block_metadata): (
-                        &Validator,
-                        &models::rust::block_metadata::BlockMetadata,
-                    )| Justification {
+                    |(validator, block_hash): (&Validator, &BlockHash)| Justification {
                         validator: validator.clone(),
-                        latest_block_hash: block_metadata.block_hash.clone(),
+                        latest_block_hash: block_hash.clone(),
                     },
                 )
                 .collect::<dashmap::DashSet<_>>()
@@ -314,49 +347,60 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let parent_metas = dag.lookups_unsafe(parent_hashes)?;
         let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
-        let max_seq_nums = valid_latest_metas
+        // max_seq_nums reads every validator's latest message, not just the
+        // valid-latest subset. Sequence numbers must be monotonic per-validator
+        // across both valid and invalid blocks: filtering invalid-latest
+        // validators would let an equivocator "reset" their sequence-number
+        // floor, defeating the equivocation detector that relies on seq numbers
+        // to identify divergent chains from the same sender.
+        let max_seq_nums = latest_msgs_hashes
             .iter()
-            .map(
-                |(validator, block_metadata): (
-                    &Validator,
-                    &models::rust::block_metadata::BlockMetadata,
-                )| (validator.clone(), block_metadata.sequence_number as u64),
-            )
+            .filter_map(|(validator, hash): (&Validator, &BlockHash)| {
+                dag.lookup_unsafe(hash)
+                    .ok()
+                    .map(|meta| (validator.clone(), meta.sequence_number as u64))
+            })
             .collect::<dashmap::DashMap<_, _>>();
 
-        let deploys_in_scope = {
+        let (deploys_in_scope, rejected_in_scope) = {
             let current_dag_generation = self.block_dag_storage.current_generation();
             let snapshot_lfb_hash = dag.last_finalized_block();
 
             // Phase 1: check cache under a short-lived lock.
-            let cached: Option<Arc<dashmap::DashSet<Bytes>>> = {
+            let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
                 let cache_guard = self.deploys_in_scope_cache.lock().map_err(|_| {
                     CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
                 })?;
-                cache_guard.as_ref().and_then(|(gen, cached_lfb, set)| {
-                    if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
-                        Some(set.clone())
-                    } else {
-                        None
-                    }
-                })
+                cache_guard
+                    .as_ref()
+                    .and_then(|(gen, cached_lfb, deploys, rejected)| {
+                        if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
+                            Some((deploys.clone(), rejected.clone()))
+                        } else {
+                            None
+                        }
+                    })
             };
 
             // Phase 2: return cached or compute.
-            if let Some(deploys) = cached {
-                deploys
+            if let Some(sets) = cached {
+                sets
             } else {
                 let current_block_number = max_block_num + 1;
                 let earliest_block_number =
                     current_block_number - on_chain_state.shard_conf.deploy_lifespan;
 
                 let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Vec<models::rust::block_metadata::BlockMetadata> {
-                    proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &dag).unwrap_or_default()
+                    match proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &mut dag) {
+                        Ok(parents) => parents,
+                        Err(_) => vec![],
+                    }
                 };
 
                 let traversal_result = dag_ops::bf_traverse(parent_metas, neighbor_fn);
 
                 let all_deploys = Arc::new(dashmap::DashSet::new());
+                let all_rejected = Arc::new(dashmap::DashSet::new());
                 for block_metadata in traversal_result {
                     let block_deploy_sigs = self
                         .block_store
@@ -370,6 +414,18 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     for deploy_sig in block_deploy_sigs {
                         all_deploys.insert(deploy_sig.into());
                     }
+
+                    // Rejected deploys are rare (only merge blocks that dropped a
+                    // conflicting chain populate this); the fast path for most blocks
+                    // is an empty list returned after a single body decode.
+                    if let Some(rejected_sigs) = self
+                        .block_store
+                        .rejected_deploy_sigs(&block_metadata.block_hash)?
+                    {
+                        for rejected_sig in rejected_sigs {
+                            all_rejected.insert(rejected_sig.into());
+                        }
+                    }
                 }
 
                 let mut cache_guard = self.deploys_in_scope_cache.lock().map_err(|_| {
@@ -379,8 +435,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     current_dag_generation,
                     snapshot_lfb_hash,
                     all_deploys.clone(),
+                    all_rejected.clone(),
                 ));
-                all_deploys
+                (all_deploys, all_rejected)
             }
         };
         let deploys_in_scope_len = deploys_in_scope.len();
@@ -407,6 +464,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             justifications,
             invalid_blocks,
             deploys_in_scope,
+            rejected_in_scope,
             max_block_num,
             max_seq_nums,
             on_chain_state,
@@ -426,7 +484,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         self.casper_buffer_storage.contains(&block_hash_serde)
     }
 
-    fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved_block) }
+    fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
+        Ok(&self.approved_block)
+    }
     fn deploy(
         &self,
         deploy: Signed<DeployData>,
@@ -497,31 +557,35 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         }
     }
 
-    fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
+    fn get_version(&self) -> i64 {
+        self.casper_shard_conf.casper_version
+    }
 
     async fn validate(
         &self,
         block: &BlockMessage,
         snapshot: &mut CasperSnapshot,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        async fn timed_step<A, Fut>(
+        fn timed_step<A, Fut>(
             step_name: &'static str,
             metric_name: &'static str,
             future: Fut,
-        ) -> Result<(Either<BlockError, A>, String), CasperError>
+        ) -> impl std::future::Future<Output = Result<(Either<BlockError, A>, String), CasperError>>
         where
             Fut: std::future::Future<Output = Result<Either<BlockError, A>, CasperError>>,
         {
-            tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
-            let start = std::time::Instant::now();
-            let result = future.await?;
-            let elapsed = start.elapsed();
-            let elapsed_str = format!("{:?}", elapsed);
-            let step_time_seconds = elapsed.as_secs_f64();
-            metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
-                .record(step_time_seconds);
-            tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
-            Ok((result, elapsed_str))
+            async move {
+                tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
+                let start = std::time::Instant::now();
+                let result = future.await?;
+                let elapsed = start.elapsed();
+                let elapsed_str = format!("{:?}", elapsed);
+                let step_time_seconds = elapsed.as_secs_f64();
+                metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
+                    .record(step_time_seconds);
+                tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
+                Ok((result, elapsed_str))
+            }
         }
 
         tracing::info!(
@@ -561,7 +625,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     block,
                     &self.block_store,
                     snapshot,
-                    &mut *self.runtime_manager.lock().await,
+                    &self.runtime_manager,
+                    Some(&self.rejected_deploy_buffer),
                 ),
             )
             .await?;
@@ -578,9 +643,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             let (bonds_cache_result, t3) = timed_step(
                 "bonds-cache",
                 BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-                async {
-                    Ok(Validate::bonds_cache(block, &*self.runtime_manager.lock().await).await)
-                },
+                async { Ok(Validate::bonds_cache(block, &self.runtime_manager).await) },
             )
             .await?;
             tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
@@ -682,7 +745,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             );
 
             if self.casper_shard_conf.max_number_of_parents > 1 {
-                let maybe_mergeable = self.runtime_manager.lock().await.load_mergeable_channels(
+                let maybe_mergeable = self.runtime_manager.load_mergeable_channels(
                     &block.body.state.post_state_hash,
                     block.sender.clone(),
                     block.seq_num,
@@ -690,21 +753,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
                 match maybe_mergeable {
                     Ok(mergeable_chs) => {
-                        if let Err(err) = self
-                            .runtime_manager
-                            .lock()
-                            .await
-                            .get_or_compute_block_index(
-                                &block.block_hash,
-                                &block.body.deploys,
-                                &block.body.system_deploys,
-                                &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
-                                &Blake2b256Hash::from_bytes_prost(
-                                    &block.body.state.post_state_hash,
-                                ),
-                                &mergeable_chs,
-                            )
-                        {
+                        if let Err(err) = self.runtime_manager.get_or_compute_block_index(
+                            &block.block_hash,
+                            block.body.state.block_number,
+                            &block.body.deploys,
+                            &block.body.system_deploys,
+                            &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
+                            &Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash),
+                            &mergeable_chs,
+                        ) {
                             tracing::warn!(
                                 "Skipping block index cache update for block {}: {}",
                                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -733,24 +790,26 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         pre_state_hash: Bytes,
         post_state_hash: Bytes,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        async fn timed_step<A, Fut>(
+        fn timed_step<A, Fut>(
             step_name: &'static str,
             metric_name: &'static str,
             future: Fut,
-        ) -> Result<(Either<BlockError, A>, String), CasperError>
+        ) -> impl std::future::Future<Output = Result<(Either<BlockError, A>, String), CasperError>>
         where
             Fut: std::future::Future<Output = Result<Either<BlockError, A>, CasperError>>,
         {
-            tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
-            let start = std::time::Instant::now();
-            let result = future.await?;
-            let elapsed = start.elapsed();
-            let elapsed_str = format!("{:?}", elapsed);
-            let step_time_seconds = elapsed.as_secs_f64();
-            metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
-                .record(step_time_seconds);
-            tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
-            Ok((result, elapsed_str))
+            async move {
+                tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
+                let start = std::time::Instant::now();
+                let result = future.await?;
+                let elapsed = start.elapsed();
+                let elapsed_str = format!("{:?}", elapsed);
+                let step_time_seconds = elapsed.as_secs_f64();
+                metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
+                    .record(step_time_seconds);
+                tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
+                Ok((result, elapsed_str))
+            }
         }
 
         tracing::info!(
@@ -907,7 +966,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             );
 
             if self.casper_shard_conf.max_number_of_parents > 1 {
-                let maybe_mergeable = self.runtime_manager.lock().await.load_mergeable_channels(
+                let maybe_mergeable = self.runtime_manager.load_mergeable_channels(
                     &block.body.state.post_state_hash,
                     block.sender.clone(),
                     block.seq_num,
@@ -915,21 +974,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
                 match maybe_mergeable {
                     Ok(mergeable_chs) => {
-                        if let Err(err) = self
-                            .runtime_manager
-                            .lock()
-                            .await
-                            .get_or_compute_block_index(
-                                &block.block_hash,
-                                &block.body.deploys,
-                                &block.body.system_deploys,
-                                &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
-                                &Blake2b256Hash::from_bytes_prost(
-                                    &block.body.state.post_state_hash,
-                                ),
-                                &mergeable_chs,
-                            )
-                        {
+                        if let Err(err) = self.runtime_manager.get_or_compute_block_index(
+                            &block.block_hash,
+                            block.body.state.block_number,
+                            &block.body.deploys,
+                            &block.body.system_deploys,
+                            &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
+                            &Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash),
+                            &mergeable_chs,
+                        ) {
                             tracing::warn!(
                                 "Skipping block index cache update for self-created block {}: {}",
                                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -1191,8 +1244,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let dag = self.casper_buffer_storage.to_doubly_linked_dag();
         let all_hashes = dag
             .child_to_parent_adjacency_list
-            .keys()
-            .map(|hash| BlockHash::from(hash.clone()));
+            .iter()
+            .map(|(hash, _)| BlockHash::from(hash.clone()));
 
         let mut blocks = Vec::new();
         for hash in all_hashes {
@@ -1209,7 +1262,8 @@ async fn run_queued_finalizer(
     block_dag_storage: BlockDagKeyValueStorage,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    runtime_manager: Arc<RuntimeManager>,
     event_publisher: F1r3flyEvents,
     finalization_in_progress: Arc<AtomicBool>,
     finalizer_task_in_progress: Arc<AtomicBool>,
@@ -1228,6 +1282,7 @@ async fn run_queued_finalizer(
                 block_dag_storage.clone(),
                 block_store.clone(),
                 deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
                 runtime_manager.clone(),
                 event_publisher.clone(),
                 finalization_in_progress.clone(),
@@ -1336,6 +1391,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.block_dag_storage.clone(),
             self.block_store.clone(),
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             self.runtime_manager.clone(),
             self.event_publisher.clone(),
             self.finalization_in_progress.clone(),
@@ -1351,19 +1407,23 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         Ok(self.block_dag_storage.get_representation())
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
-
-    fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
-
-    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
-        self.runtime_manager
-            .lock()
-            .await
-            .get_history_repo()
-            .exporter()
+    fn block_store(&self) -> &KeyValueBlockStore {
+        &self.block_store
     }
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
+    fn casper_shard_conf(&self) -> &crate::rust::casper::CasperShardConf {
+        &self.casper_shard_conf
+    }
+
+    fn get_validator(&self) -> Option<ValidatorIdentity> {
+        self.validator_id.clone()
+    }
+
+    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
+        self.runtime_manager.get_history_repo().exporter()
+    }
+
+    fn runtime_manager(&self) -> Arc<RuntimeManager> {
         self.runtime_manager.clone()
     }
 
@@ -1430,7 +1490,8 @@ async fn compute_last_finalized_block(
     block_dag_storage: BlockDagKeyValueStorage,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    runtime_manager: Arc<RuntimeManager>,
     event_publisher: F1r3flyEvents,
     finalization_in_progress: Arc<AtomicBool>,
     enable_mergeable_channel_gc: bool,
@@ -1447,6 +1508,7 @@ async fn compute_last_finalized_block(
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
+    let rejected_deploy_buffer_for_effect = rejected_deploy_buffer.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -1456,6 +1518,7 @@ async fn compute_last_finalized_block(
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
+        let rejected_deploy_buffer = rejected_deploy_buffer_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -1466,6 +1529,7 @@ async fn compute_last_finalized_block(
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
+                    let rejected_deploy_buffer = rejected_deploy_buffer.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -1488,6 +1552,8 @@ async fn compute_last_finalized_block(
 
                             // Remove block deploys from persistent store
                             let deploys_count = deploys.len();
+                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
+                                deploys.iter().map(|d| d.sig.to_vec()).collect();
                             deploy_storage
                                 .lock()
                                 .map_err(|_| {
@@ -1496,6 +1562,29 @@ async fn compute_last_finalized_block(
                                     )
                                 })?
                                 .remove(deploys)?;
+
+                            // Purge the rejected-deploy buffer of any sig that
+                            // landed in a finalized block, so recovered deploys
+                            // don't linger after canonical inclusion. Also purge
+                            // any sig listed in body.rejected_deploys on this
+                            // finalized block — those are definitively lost and
+                            // should not be re-proposed from this node's buffer.
+                            {
+                                let mut buffer_guard =
+                                    rejected_deploy_buffer.lock().map_err(|_| {
+                                        KvStoreError::LockError(
+                                            "Failed to acquire rejected_deploy_buffer lock"
+                                                .to_string(),
+                                        )
+                                    })?;
+                                for sig in &deploy_sigs_for_buffer {
+                                    let _ = buffer_guard.remove_by_sig(sig);
+                                }
+                                for rd in &block.body.rejected_deploys {
+                                    let _ = buffer_guard.remove_by_sig(&rd.sig);
+                                }
+                            }
+
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
                             );
@@ -1506,10 +1595,7 @@ async fn compute_last_finalized_block(
                             tracing::info!("{}", removed_deploy_msg);
 
                             // Remove block index from cache
-                            runtime_manager
-                                .lock()
-                                .await
-                                .remove_block_index_cache(block_hash);
+                            runtime_manager.remove_block_index_cache(block_hash);
 
                             // Keep mergeable data on finalization to preserve deterministic
                             // parent-state reconstruction. Safe deletion is handled only by
@@ -1561,7 +1647,7 @@ async fn compute_last_finalized_block(
         finalizer_conf,
     )
     .await
-    .map_err(CasperError::KvStoreError)?;
+    .map_err(|e| CasperError::KvStoreError(e))?;
     let finalizer_ms = finalizer_started.elapsed().as_millis();
     let new_lfb_found = new_finalized_hash_opt.is_some();
 
@@ -1620,6 +1706,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
             let block_dag_storage = self.block_dag_storage.clone();
             let block_store = self.block_store.clone();
             let deploy_storage = self.deploy_storage.clone();
+            let rejected_deploy_buffer = self.rejected_deploy_buffer.clone();
             let runtime_manager = self.runtime_manager.clone();
             let event_publisher = self.event_publisher.clone();
             let finalization_in_progress = self.finalization_in_progress.clone();
@@ -1634,6 +1721,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
                     block_dag_storage,
                     block_store,
                     deploy_storage,
+                    rejected_deploy_buffer,
                     runtime_manager,
                     event_publisher,
                     finalization_in_progress,
@@ -1675,8 +1763,6 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
 
         let fetched = self
             .runtime_manager
-            .lock()
-            .await
             .get_active_validators(&block.body.state.post_state_hash)
             .await?;
 
@@ -1760,7 +1846,7 @@ fn block_event(
         .header
         .parents_hash_list
         .iter()
-        .map(hex::encode)
+        .map(|h| hex::encode(h))
         .collect::<Vec<_>>();
 
     let justification_hashes = block

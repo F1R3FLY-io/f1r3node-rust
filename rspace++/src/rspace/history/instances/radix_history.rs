@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/history/instances/RadixHistory.
 // scala
 
@@ -42,8 +40,8 @@ impl RadixHistory {
 
     pub fn empty_root_node_hash() -> Blake2b256Hash {
         let node_hash_bytes = hash_node(&empty_node()).0;
-
-        Blake2b256Hash::from_bytes(node_hash_bytes)
+        let node_hash = Blake2b256Hash::from_bytes(node_hash_bytes);
+        node_hash
     }
 
     fn has_no_duplicates(&self, actions: &Vec<HistoryAction>) -> bool {
@@ -88,12 +86,14 @@ impl History for RadixHistory {
 
                 Ok(Box::new(new_history))
             }
-            None => Ok(Box::new(RadixHistory {
-                root_hash: self.root_hash.clone(),
-                root_node: self.root_node.clone(),
-                imple: RadixTreeImpl::new(self.store.clone()),
-                store: self.store.clone(),
-            })),
+            None => {
+                Ok(Box::new(RadixHistory {
+                    root_hash: self.root_hash.clone(),
+                    root_node: self.root_node.clone(),
+                    imple: RadixTreeImpl::new(self.store.clone()),
+                    store: self.store.clone(),
+                }))
+            }
         }
     }
 

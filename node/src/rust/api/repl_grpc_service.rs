@@ -16,11 +16,13 @@ pub mod repl {
 use itertools::Itertools;
 use models::rhoapi::Par;
 use repl::{CmdRequest, EvalRequest, ReplResponse};
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::{
+    accounting::costs::Cost,
+    compiler::compiler::Compiler,
+    interpreter::EvaluateResult,
+    pretty_printer::PrettyPrinter,
+    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
+};
 
 use crate::rust::api::repl_grpc_service::repl::repl_server::Repl;
 
@@ -51,7 +53,7 @@ impl ReplGrpcServiceImpl {
             Err(e) => {
                 // Return error as successful response, matching Scala's ReplGrpcService behavior
                 // Scala: case _: InterpreterError => Sync[F].delay(s"Error: ${er.toString}")
-                let error_msg = format!("Error: {}", e);
+                let error_msg = format!("Error: {}", e.to_string());
                 return Ok(ReplResponse { output: error_msg });
             }
         };
@@ -65,9 +67,9 @@ impl ReplGrpcServiceImpl {
             .await?;
 
         let pretty_storage = if print_unmatched_sends_only {
-            storage_printer::pretty_print_unmatched_sends(&self.runtime).await
+            storage_printer::pretty_print_unmatched_sends(&*self.runtime).await
         } else {
-            storage_printer::pretty_print(&self.runtime).await
+            storage_printer::pretty_print(&*self.runtime).await
         };
 
         let error_str = if errors.is_empty() {
@@ -132,24 +134,22 @@ impl Repl for ReplGrpcServiceImpl {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use models::rhoapi::Par;
-    use rholang::rust::interpreter::external_services::ExternalServices;
-    use rholang::rust::interpreter::matcher::r#match::Matcher;
-    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
-    use rholang::rust::interpreter::system_processes::test_framework_contracts;
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
     use super::*;
+    use rholang::rust::interpreter::{
+        external_services::ExternalServices, matcher::r#match::Matcher,
+        rho_runtime::create_runtime_from_kv_store, system_processes::test_framework_contracts,
+    };
+    use rspace_plus_plus::rspace::shared::{
+        in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
+    };
+    use std::sync::Arc;
 
     async fn create_test_runtime_with_stdout() -> RhoRuntimeImpl {
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.r_space_stores().await.unwrap();
         let runtime = create_runtime_from_kv_store(
             store,
-            Par::default(),
+            Arc::new(std::collections::HashMap::new()),
             true,
             &mut test_framework_contracts(),
             Arc::new(Box::new(Matcher)),

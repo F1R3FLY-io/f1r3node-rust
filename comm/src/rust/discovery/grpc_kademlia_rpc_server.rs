@@ -6,13 +6,14 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use tonic::{Request, Response, Status};
 
-use crate::comm::kademlia_rpc_service_server::KademliaRpcService;
-use crate::comm::{Lookup, LookupResponse, Ping, Pong};
-use crate::rust::discovery::utils::{to_node, to_peer_node};
-use crate::rust::metrics_constants::{
-    DISCOVERY_METRICS_SOURCE, HANDLE_LOOKUP_METRIC, HANDLE_PING_METRIC,
+use crate::{
+    comm::{kademlia_rpc_service_server::KademliaRpcService, Lookup, LookupResponse, Ping, Pong},
+    rust::{
+        discovery::utils::{to_node, to_peer_node},
+        metrics_constants::{DISCOVERY_METRICS_SOURCE, HANDLE_LOOKUP_METRIC, HANDLE_PING_METRIC},
+        peer_node::PeerNode,
+    },
 };
-use crate::rust::peer_node::PeerNode;
 
 /// Type alias for ping handler function
 pub type PingHandler =
@@ -118,11 +119,12 @@ impl KademliaRpcService for GrpcKademliaRPCServer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
-    use crate::comm::Node;
-    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::{
+        comm::Node,
+        rust::peer_node::{Endpoint, NodeIdentifier},
+    };
+    use std::sync::{Arc, Mutex};
 
     fn test_peer() -> PeerNode {
         PeerNode {
@@ -133,7 +135,9 @@ mod tests {
         }
     }
 
-    fn test_node() -> Node { to_node(&test_peer()) }
+    fn test_node() -> Node {
+        to_node(&test_peer())
+    }
 
     #[tokio::test]
     async fn test_ping_with_matching_network_id() {

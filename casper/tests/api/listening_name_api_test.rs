@@ -1,14 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/api/ListeningNameAPITest.scala
 
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::source_deploy_now;
 use models::casper::WaitingContinuationInfo;
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, Expr, Par};
-
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use models::rhoapi::{expr::ExprInstance, BindPattern, Expr, Par};
 
 struct TestContext {
     genesis: GenesisContext,
@@ -182,21 +180,24 @@ async fn get_listening_name_data_response_should_work_across_a_chain() {
         .collect();
     let blocks2: Vec<_> = block_results2.iter().map(|br| &br.block).collect();
 
-    assert_eq!(data2, vec![
+    assert_eq!(
+        data2,
         vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![result_data.clone(), result_data.clone()],
-        vec![result_data.clone()]
-    ]);
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![result_data.clone(), result_data.clone()],
+            vec![result_data.clone()]
+        ]
+    );
     assert_eq!(blocks2.len(), 4);
     assert_eq!(length2, 4);
 
@@ -227,45 +228,48 @@ async fn get_listening_name_data_response_should_work_across_a_chain() {
         .collect();
     let blocks3: Vec<_> = block_results3.iter().map(|br| &br.block).collect();
 
-    assert_eq!(data3, vec![
+    assert_eq!(
+        data3,
         vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![
-            result_data.clone(),
-            result_data.clone(),
-            result_data.clone()
-        ],
-        vec![result_data.clone(), result_data.clone()],
-        vec![result_data.clone()]
-    ]);
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![
+                result_data.clone(),
+                result_data.clone(),
+                result_data.clone()
+            ],
+            vec![result_data.clone(), result_data.clone()],
+            vec![result_data.clone()]
+        ]
+    );
     assert_eq!(blocks3.len(), 7);
     assert_eq!(length3, 7);
 

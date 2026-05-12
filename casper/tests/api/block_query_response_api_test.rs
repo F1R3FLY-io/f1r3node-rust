@@ -1,8 +1,10 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BlockQueryResponseAPITest.scala
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::util::rholang::resources::{
+    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+};
+use crate::util::test_mocks::MockKeyValueStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::api::block_api::BlockAPI;
@@ -19,12 +21,8 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use prost::Message;
-
-use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::util::rholang::resources::{
-    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
-};
-use crate::util::test_mocks::MockKeyValueStore;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 const TOO_SHORT_QUERY: &str = "12345";
 const BAD_TEST_HASH_QUERY: &str = "1234acd";
@@ -129,7 +127,7 @@ async fn effects_for_simple_casper_setup(
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         block_dag_storage.get_representation(),
         shared_kvm_data,
@@ -155,7 +153,7 @@ async fn empty_effects(
 ) -> (EngineCell, CliqueOracleImpl) {
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         block_dag_storage.get_representation(),
         shared_kvm_data,

@@ -1,5 +1,3 @@
-#![allow(clippy::module_inception)]
-
 pub mod bound_context;
 pub mod bound_map;
 pub mod bound_map_chain;

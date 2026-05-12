@@ -1,14 +1,10 @@
-#![allow(clippy::doc_lazy_continuation, clippy::map_entry)]
-
 // See casper/src/main/scala/coop/rchain/casper/finality/Finalizer.scala
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::validator::Validator;
+use models::rust::{block_hash::BlockHash, block_metadata::BlockMetadata, validator::Validator};
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::safety::clique_oracle::CliqueOracle;
@@ -457,6 +453,11 @@ impl Finalizer {
             parent_lookup_phase_ns,
             next_layer_push_phase_ns
         );
+        metrics::histogram!(
+            crate::rust::metrics_constants::FINALIZER_RUN_TIME_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .record(total_started.elapsed().as_secs_f64());
 
         Ok(lfb_result)
     }

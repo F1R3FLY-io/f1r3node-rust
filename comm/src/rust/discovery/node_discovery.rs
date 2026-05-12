@@ -2,11 +2,15 @@
 
 use std::sync::Arc;
 
-use super::kademlia_node_discovery::KademliaNodeDiscovery;
-use super::kademlia_rpc::KademliaRPC;
-use super::kademlia_store::KademliaStore;
-use crate::rust::errors::CommError;
-use crate::rust::peer_node::{NodeIdentifier, PeerNode};
+use crate::rust::{
+    errors::CommError,
+    peer_node::{NodeIdentifier, PeerNode},
+};
+
+use super::{
+    kademlia_node_discovery::KademliaNodeDiscovery, kademlia_rpc::KademliaRPC,
+    kademlia_store::KademliaStore,
+};
 
 #[async_trait::async_trait]
 pub trait NodeDiscovery: Send + Sync {

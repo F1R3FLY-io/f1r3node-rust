@@ -1,14 +1,10 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.scala
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -17,6 +13,10 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -71,8 +71,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         mut block_store: KeyValueBlockStore,
         mut block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters from Scala (in same order as Scala signature)
         block_processing_queue_tx: mpsc::Sender<(
@@ -102,6 +103,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     block_store,
                     block_dag_storage,
                     deploy_storage,
+                    rejected_deploy_buffer,
                     casper_buffer_storage,
                     runtime_manager,
                     estimator,
@@ -125,12 +127,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 )?;
 
                 let casper = Self::create_casper_from_storage(
-                    event_publisher,
+                    &event_publisher,
                     &runtime_manager,
                     &estimator,
                     &block_store,
                     &block_dag_storage,
                     &deploy_storage,
+                    &rejected_deploy_buffer,
                     &casper_buffer_storage,
                     validator_id.clone(),
                     &casper_shard_conf,
@@ -158,8 +161,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
-                    &engine_cell,
-                    event_publisher,
+                    &*engine_cell,
+                    &event_publisher,
                 )
                 .await?;
 
@@ -178,11 +181,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
     #[allow(clippy::too_many_arguments)]
     fn create_casper_from_storage(
         event_publisher: &F1r3flyEvents,
-        runtime_manager: &Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: &Arc<RuntimeManager>,
         estimator: &Estimator,
         block_store: &KeyValueBlockStore,
         block_dag_storage: &BlockDagKeyValueStorage,
         deploy_storage: &KeyValueDeployStorage,
+        rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: &CasperBufferKeyValueStorage,
         validator_id: Option<ValidatorIdentity>,
         casper_shard_conf: &CasperShardConf,
@@ -200,6 +204,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
             casper_buffer_storage.clone(),
             validator_id,
             casper_shard_conf.clone(),
@@ -211,7 +216,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremonyMaster<T> {
-    async fn init(&self) -> Result<(), CasperError> { self.approve_protocol.run().await }
+    async fn init(&self) -> Result<(), CasperError> {
+        self.approve_protocol.run().await
+    }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
         match msg {
@@ -235,6 +242,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremo
         }
     }
 
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+        None
+    }
 }
 use dashmap::DashSet;

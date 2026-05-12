@@ -1,8 +1,10 @@
-#![allow(clippy::manual_strip)]
-
-use crypto::rust::hash::blake2b256::{Blake2b256, HASH_LENGTH};
-use crypto::rust::hash::keccak256::Keccak256;
-use crypto::rust::public_key::PublicKey;
+use crypto::rust::{
+    hash::{
+        blake2b256::{Blake2b256, HASH_LENGTH},
+        keccak256::Keccak256,
+    },
+    public_key::PublicKey,
+};
 use models::rhoapi::GPrivate;
 use prost::Message;
 

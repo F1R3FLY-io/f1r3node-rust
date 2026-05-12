@@ -1,23 +1,23 @@
-#![allow(clippy::too_many_arguments)]
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json, Response};
+use crate::rust::api::{
+    admin_web_api::AdminWebApi,
+    serde_types::block_info::BlockInfoSerde,
+    web_api::{
+        DeployRequest, ExploreDeployRequest,
+        RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
+    },
+};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Json, Response},
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
-use comm::rust::discovery::node_discovery::NodeDiscovery;
-use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::{discovery::node_discovery::NodeDiscovery, rp::connect::ConnectionsCell};
 use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
 use tracing::warn;
-
-use crate::rust::api::admin_web_api::AdminWebApi;
-use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
-};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -69,9 +69,12 @@ impl IntoResponse for AppError {
 }
 
 impl<E> From<E> for AppError
-where E: Into<eyre::Error>
+where
+    E: Into<eyre::Error>,
 {
-    fn from(err: E) -> Self { Self(err.into()) }
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
 }
 
 #[utoipa::path(

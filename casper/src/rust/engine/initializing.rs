@@ -1,51 +1,54 @@
-#![allow(clippy::match_like_matches_macro, clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/Initializing.scala
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::peer_node::PeerNode;
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use futures::stream::StreamExt;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage, StoreItemsMessageRequest,
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::block_status::ValidBlock;
-use crate::rust::casper::{CasperShardConf, MultiParentCasper};
-use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::engine::engine::{
-    log_no_approved_block_available, send_no_approved_block_available, transition_to_running,
-    Engine,
+use block_storage::rust::{
+    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
+    dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+    deploy::{
+        key_value_deploy_storage::KeyValueDeployStorage,
+        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    },
+    key_value_block_store::KeyValueBlockStore,
 };
-use crate::rust::engine::engine_cell::EngineCell;
-use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
-use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
-use crate::rust::errors::CasperError;
+use comm::rust::{
+    peer_node::PeerNode,
+    rp::{connect::ConnectionsCell, rp_conf::RPConf},
+    transport::transport_layer::TransportLayer,
+};
+use models::rust::casper::protocol::casper_message::StoreItemsMessageRequest;
+use models::rust::{
+    block_hash::BlockHash,
+    casper::{
+        pretty_printer::PrettyPrinter,
+        protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage, StoreItemsMessage},
+    },
+};
+use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporterInstance;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use rspace_plus_plus::rspace::{
+    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
+};
+use shared::rust::{
+    shared::{f1r3fly_event::F1r3flyEvent, f1r3fly_events::F1r3flyEvents},
+    ByteString,
+};
+
+use crate::rust::block_status::ValidBlock;
+use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
     CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC, CASPER_INIT_ATTEMPTS_METRIC,
@@ -53,10 +56,24 @@ use crate::rust::metrics_constants::{
     CASPER_INIT_TIME_TO_RUNNING_METRIC, CASPER_METRICS_SOURCE,
     INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC, INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC,
 };
-use crate::rust::util::proto_util;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
-use crate::rust::validator_identity::ValidatorIdentity;
+use crate::rust::{
+    casper::{CasperShardConf, MultiParentCasper},
+    engine::{
+        block_retriever::BlockRetriever,
+        engine::{
+            log_no_approved_block_available, send_no_approved_block_available,
+            transition_to_running, Engine,
+        },
+        engine_cell::EngineCell,
+        lfs_block_requester::{self, BlockRequesterOps},
+        lfs_tuple_space_requester::{self, TupleSpaceRequesterOps},
+    },
+    errors::CasperError,
+    util::proto_util,
+    util::rholang::runtime_manager::RuntimeManager,
+    validator_identity::ValidatorIdentity,
+};
 
 /// Scala equivalent: `class Initializing[F[_]](...) extends Engine[F]`
 ///
@@ -69,6 +86,7 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
 
@@ -101,7 +119,7 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     block_retriever: BlockRetriever<T>,
     engine_cell: Arc<EngineCell>,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Arc<Mutex<Option<Estimator>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
@@ -120,6 +138,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_store: KeyValueBlockStore,
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
         block_processing_queue_tx: mpsc::Sender<(
@@ -141,7 +160,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         event_publisher: F1r3flyEvents,
         block_retriever: BlockRetriever<T>,
         engine_cell: Arc<EngineCell>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     ) -> Self {
@@ -153,6 +172,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             block_store,
             block_dag_storage,
             deploy_storage,
+            rejected_deploy_buffer,
             casper_buffer_storage,
             rspace_state_manager,
             block_processing_queue_tx,
@@ -346,7 +366,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
 
     /// Scala equivalent: Engine trait - Initializing doesn't have casper yet, so withCasper returns default
     /// In Scala: `def withCasper[A](f: MultiParentCasper[F] => F[A], default: F[A]): F[A] = default`
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+        None
+    }
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -546,7 +568,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
             lfs_block_requester::stream(
-                approved_block,
+                &approved_block,
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
@@ -555,7 +577,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &mut block_requester,
             ),
             lfs_tuple_space_requester::stream(
-                approved_block,
+                &approved_block,
                 tuple_space_rx,
                 self.tuple_space_queue_pending.clone(),
                 lfs_request_timeout,
@@ -584,7 +606,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let tuple_space_future = async move {
             // Stream items are processed by the stream itself, we just consume them to completion
             let mut stream = Box::pin(tuple_space_stream);
-            while stream.next().await.is_some() {}
+            while let Some(_) = stream.next().await {}
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
@@ -620,7 +642,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
+        self.create_casper_and_transition_to_running(&approved_block)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -774,8 +796,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let pre_state_hash = RuntimeManager::empty_state_hash_fixed();
 
         // Replay genesis - this will save mergeable channels to the store
-        let mut runtime_manager = self.runtime_manager.lock().await;
-        let result = runtime_manager
+        let result = self
+            .runtime_manager
             .replay_compute_state(
                 &pre_state_hash,
                 deploys,
@@ -843,8 +865,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         );
 
         // Replay the block - this will save mergeable channels to the store
-        let mut runtime_manager = self.runtime_manager.lock().await;
-        let result = runtime_manager
+        let result = self
+            .runtime_manager
             .replay_compute_state(
                 &pre_state_hash,
                 deploys,
@@ -904,6 +926,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.block_store.clone(),
             self.block_dag_storage.clone(),
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
             self.casper_shard_conf.clone(),
@@ -934,7 +957,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            &self.engine_cell,
+            &*self.engine_cell,
             &self.event_publisher,
         )
         .await?;
@@ -958,17 +981,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // peers) against config drift: the node's local native-token-* values
         // must match what this network baked into the TokenMetadata contract at
         // genesis. See casper/src/rust/util/token_metadata_check.rs for details.
-        {
-            let runtime_manager = self.runtime_manager.lock().await;
-            crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
-                &runtime_manager,
-                &genesis_post_state_hash,
-                &self.casper_shard_conf.native_token_name,
-                &self.casper_shard_conf.native_token_symbol,
-                self.casper_shard_conf.native_token_decimals,
-            )
-            .await?;
-        }
+        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
+            &self.runtime_manager,
+            &genesis_post_state_hash,
+            &self.casper_shard_conf.native_token_name,
+            &self.casper_shard_conf.native_token_symbol,
+            self.casper_shard_conf.native_token_decimals,
+        )
+        .await?;
 
         self.transport_layer
             .send_fork_choice_tip_request(&self.connections_cell, &self.rp_conf_ask)
@@ -988,7 +1008,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrapper<'_, T> {
     async fn request_for_block(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
         self.transport_layer
-            .broadcast_request_for_block(self.connections_cell, self.rp_conf_ask, block_hash)
+            .broadcast_request_for_block(&self.connections_cell, &self.rp_conf_ask, block_hash)
             .await?;
         Ok(())
     }
@@ -1006,10 +1026,12 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         block_hash: BlockHash,
         block: &BlockMessage,
     ) -> Result<(), CasperError> {
-        Ok(self.block_store.put(block_hash, block)?)
+        Ok(self.block_store.put(block_hash, &block)?)
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
+    fn validate_block(&self, block: &BlockMessage) -> bool {
+        (self.validate_block_fn)(block)
+    }
 }
 
 /// Wrapper struct for block request operations
@@ -1071,7 +1093,7 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         let message_proto = message.to_proto();
 
         self.transport_layer
-            .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
+            .send_to_bootstrap(&self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
     }
@@ -1085,14 +1107,13 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         skip: i32,
         get_from_history: Arc<dyn RSpaceImporter>,
     ) -> Result<(), CasperError> {
-        RSpaceImporterInstance::validate_state_items(
+        Ok(RSpaceImporterInstance::validate_state_items(
             history_items,
             data_items,
             start_path,
             page_size,
             skip,
             get_from_history,
-        );
-        Ok(())
+        ))
     }
 }

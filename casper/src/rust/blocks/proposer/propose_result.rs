@@ -1,12 +1,10 @@
-#![allow(clippy::large_enum_variant)]
-
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/ProposeResult.scala
 
 use std::fmt;
+use uuid::Uuid;
 
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
-use uuid::Uuid;
 
 use crate::rust::block_status::ValidBlock;
 
@@ -67,7 +65,9 @@ pub enum BlockCreatorResult {
 }
 
 impl CheckProposeConstraintsResult {
-    pub fn success() -> Self { CheckProposeConstraintsResult::Success }
+    pub fn success() -> Self {
+        CheckProposeConstraintsResult::Success
+    }
 
     pub fn not_bonded() -> Self {
         CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded)
@@ -142,7 +142,9 @@ impl ProposeResult {
 }
 
 impl BlockCreatorResult {
-    pub fn no_new_deploys() -> Self { BlockCreatorResult::NoNewDeploys }
+    pub fn no_new_deploys() -> Self {
+        BlockCreatorResult::NoNewDeploys
+    }
 
     pub fn created(b: BlockMessage, pre_state_hash: Bytes, post_state_hash: Bytes) -> Self {
         BlockCreatorResult::Created(b, pre_state_hash, post_state_hash)

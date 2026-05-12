@@ -1,19 +1,4 @@
-#![allow(
-    clippy::collapsible_match,
-    clippy::match_like_matches_macro,
-    clippy::ptr_arg,
-    clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::useless_conversion
-)]
-
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
-
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
@@ -22,15 +7,15 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar,
+    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, Match, New, ParWithRandom, Receive,
+    ReceiveBind, Send, Var,
 };
+use models::rhoapi::{ETuple, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_zipper::RholangReadZipper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -40,9 +25,24 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
+use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+
+use crate::rust::interpreter::accounting::costs::{
+    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
+    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
+    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+};
+use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::rho_type::RhoTuple2;
 
 use super::accounting::_cost;
 use super::accounting::costs::{
@@ -59,18 +59,18 @@ use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::matcher::has_locally_free::HasLocallyFree;
+use super::metrics_constants::{
+    REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
+    REDUCER_EVAL_NEW_CALLS_METRIC, REDUCER_EVAL_NEW_TIME_NS_METRIC,
+    REDUCER_EVAL_RECEIVE_CALLS_METRIC, REDUCER_EVAL_RECEIVE_TIME_NS_METRIC,
+    REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
+};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
-use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
-};
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
-use crate::rust::interpreter::rho_type::RhoTuple2;
+use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 
 /// Minimum remaining stack space (in bytes) before growing.
 /// When the current stack has less than this amount remaining, a new stack segment is allocated.
@@ -120,8 +120,8 @@ pub struct DebruijnInterpreter {
     pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
-    pub merge_chs: Arc<RwLock<HashSet<Par>>>,
-    pub mergeable_tag_name: Par,
+    pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
 }
@@ -784,30 +784,61 @@ impl DebruijnInterpreter {
     /* Collect mergeable channels */
 
     async fn update_mergeable_channels(&self, chan: &Par) -> () {
-        let is_mergeable = self.is_mergeable_channel(chan);
-
-        if is_mergeable {
-            {
-                let mut merge_chs_write = self.merge_chs.write().await;
-                merge_chs_write.insert(chan.clone());
-            }
+        if let Some(merge_type) = self.is_mergeable_channel(chan) {
+            let mut merge_chs_write = self.merge_chs.write().await;
+            merge_chs_write.insert(chan.clone(), merge_type);
         }
     }
 
-    fn is_mergeable_channel(&self, chan: &Par) -> bool {
-        let tuple_elms: Vec<Par> = chan
-            .exprs
-            .iter()
-            .flat_map(|y| match &y.expr_instance {
-                Some(expr_instance) => match expr_instance {
-                    ExprInstance::ETupleBody(etuple) => etuple.ps.clone(),
-                    _ => ETuple::default().ps,
-                },
-                None => ETuple::default().ps,
-            })
-            .collect();
+    fn is_mergeable_channel(&self, chan: &Par) -> Option<MergeType> {
+        // Hot path — runs on every channel produce/consume. Borrow the head
+        // Par of the first ETupleBody expression without allocating.
+        metrics::counter!("is-mergeable-channel.calls", "source" => "f1r3fly.rholang.reduce")
+            .increment(1);
 
-        tuple_elms.first() == Some(&self.mergeable_tag_name)
+        let head: Option<&Par> = chan.exprs.iter().find_map(|y| match &y.expr_instance {
+            Some(ExprInstance::ETupleBody(etuple)) => etuple.ps.first(),
+            _ => None,
+        });
+
+        let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
+
+        // Diagnostic trace: every channel write/consume invokes this. Logs
+        // distinguish (a) tuple channels that match a registered tag (mergeable),
+        // (b) tuple channels with a head that ISN'T in the tag registry
+        // (potential bitmask-tag-binding miss), and (c) non-tuple channels
+        // (most channels). Configure with `RUST_LOG=f1r3fly.merge.tag_check=trace`.
+        if let Some(head_par) = head {
+            match result {
+                Some(mt) => tracing::trace!(
+                    target: "f1r3fly.merge.tag_check",
+                    "mergeable channel detected: merge_type={:?}",
+                    mt,
+                ),
+                None => {
+                    use prost::Message;
+                    let head_bytes = head_par.encode_to_vec();
+                    let head_hex: String =
+                        head_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    let tag_hexes: Vec<String> = self
+                        .mergeable_tags
+                        .keys()
+                        .map(|k| {
+                            let bs = k.encode_to_vec();
+                            bs.iter().map(|b| format!("{:02x}", b)).collect()
+                        })
+                        .collect();
+                    tracing::trace!(
+                        target: "f1r3fly.merge.tag_check",
+                        "tuple channel with non-tag head: head_hex={}, registered_tag_hexes={:?}",
+                        head_hex,
+                        tag_hexes,
+                    );
+                }
+            }
+        }
+
+        result
     }
 
     fn aggregate_evaluator_errors(
@@ -857,15 +888,47 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         match term {
-            GeneratedMessage::Send(term) => self.eval_send(term, env, rand).await,
-            GeneratedMessage::Receive(term) => self.eval_receive(term, env, rand).await,
-            GeneratedMessage::New(term) => self.eval_new(term, env.clone(), rand).await,
-            GeneratedMessage::Match(term) => self.eval_match(term, env, rand).await,
+            GeneratedMessage::Send(term) => {
+                metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_send(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::Receive(term) => {
+                metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_receive(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::New(term) => {
+                metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_new(term, env.clone(), rand).await;
+                metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::Match(term) => {
+                metrics::counter!(REDUCER_EVAL_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_match(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_MATCH_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.v.unwrap(), env)?;
+                        let res = self.eval_var(&e.clone().v.unwrap(), &env)?;
                         self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -882,9 +945,9 @@ impl DebruijnInterpreter {
                         other
                     ))),
                 },
-                None => Err(InterpreterError::BugFoundError(
-                    "Undefined term, expr_instance was None".to_string(),
-                )),
+                None => Err(InterpreterError::BugFoundError(format!(
+                    "Undefined term, expr_instance was None"
+                ))),
             },
         }
     }
@@ -1040,56 +1103,34 @@ impl DebruijnInterpreter {
             })
         }
 
-        let first_match = Box::new(
-            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
-
-                loop {
-                    let (_target, _cases) = state;
-
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
-
-                        [single_case, case_rem @ ..] => {
-                            let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
-
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
-
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    self.eval(
-                                        single_case.source.clone().unwrap(),
-                                        &add_to_env(env, free_map.clone(), single_case.free_count),
-                                        rand,
-                                    )
-                                    .await?;
-
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
         self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
+        let evaled_target = self.eval_expr(&mat.target.as_ref().unwrap(), env)?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        for single_case in mat.cases.iter() {
+            let pattern = self.substitute.substitute_and_charge(
+                &unwrap_option_safe(single_case.pattern.clone())?,
+                1,
+                env,
+            )?;
+
+            let mut spatial_matcher = SpatialMatcherContext::new();
+            if let Some(free_map) =
+                spatial_matcher.spatial_match_result(subst_target.clone(), pattern)
+            {
+                return self
+                    .eval(
+                        single_case.source.clone().unwrap(),
+                        &add_to_env(env, free_map.clone(), single_case.free_count),
+                        rand,
+                    )
+                    .await;
+            }
+        }
+
+        Ok(())
     }
 
     /**
@@ -1157,7 +1198,20 @@ impl DebruijnInterpreter {
                     }
                 } else {
                     match self.urn_map.get(&urn) {
-                        Some(p) => Ok(new_env.put(p.clone())),
+                        Some(p) => {
+                            if urn == "rho:system:bitmaskMergeableTag" {
+                                use prost::Message;
+                                let bytes = p.encode_to_vec();
+                                let hex: String =
+                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                                tracing::info!(
+                                    target: "f1r3fly.merge.tag_check",
+                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
+                                    hex,
+                                );
+                            }
+                            Ok(new_env.put(p.clone()))
+                        }
                         None => Err(InterpreterError::ReduceError(format!(
                             "Unknown urn for new: {}",
                             urn
@@ -1375,14 +1429,14 @@ impl DebruijnInterpreter {
                 }),
 
                 ExprInstance::ENotBody(enot) => {
-                    let b = self.eval_to_bool(enot.p.as_ref().unwrap(), env)?;
+                    let b = self.eval_to_bool(&enot.p.as_ref().unwrap(), env)?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(!b)),
                     })
                 }
 
                 ExprInstance::ENegBody(eneg) => {
-                    let v = self.eval_single_expr(eneg.p.as_ref().unwrap(), env)?;
+                    let v = self.eval_single_expr(&eneg.p.as_ref().unwrap(), env)?;
                     match v.expr_instance.unwrap() {
                         ExprInstance::GInt(i) => {
                             let result = i.checked_neg().ok_or_else(|| {
@@ -1894,7 +1948,7 @@ impl DebruijnInterpreter {
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
                     &p1.clone().unwrap(),
                     &p2.clone().unwrap(),
-                    |b1: bool, b2: bool| !b1 & b2,
+                    |b1: bool, b2: bool| b1 < b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
@@ -1910,7 +1964,7 @@ impl DebruijnInterpreter {
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
                     &p1.clone().unwrap(),
                     &p2.clone().unwrap(),
-                    |b1: bool, b2: bool| b1 & !b2,
+                    |b1: bool, b2: bool| b1 > b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
@@ -2032,10 +2086,9 @@ impl DebruijnInterpreter {
                                 )))
                             }
 
-                            _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ReduceError(format!(
                                 "Error: interpolation Map should only contain String keys"
-                                    .to_string(),
-                            )),
+                            ))),
                         }
                     }
 
@@ -2135,7 +2188,7 @@ impl DebruijnInterpreter {
                             self.cost.charge(byte_array_append_cost(lhs.clone()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
-                                    lhs.into_iter().chain(rhs).collect(),
+                                    lhs.into_iter().chain(rhs.into_iter()).collect(),
                                 )),
                             })
                         }
@@ -2144,7 +2197,7 @@ impl DebruijnInterpreter {
                             self.cost.charge(list_append_cost(lhs.clone().ps))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: lhs.ps.into_iter().chain(rhs.ps).collect(),
+                                    ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
                                     locally_free: union(lhs.locally_free, rhs.locally_free),
                                     connective_used: lhs.connective_used || rhs.connective_used,
                                     remainder: None,
@@ -2255,7 +2308,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&(*v).unwrap(), env)?;
+                    let p = self.eval_var(&v.clone().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
@@ -2389,7 +2442,7 @@ impl DebruijnInterpreter {
                     ..
                 }) => {
                     self.cost.charge(method_call_cost())?;
-                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(&target.as_ref().unwrap(), env)?;
                     let evaled_args = arguments
                         .iter()
                         .map(|arg| self.eval_expr(arg, env))
@@ -2460,7 +2513,7 @@ impl DebruijnInterpreter {
                     ExprInstance::ETupleBody(ETuple { ps, .. }) => self.local_nth(&ps, nth),
                     ExprInstance::GByteArray(bs) => {
                         if nth < bs.len() {
-                            let b = bs[nth]; // Convert to unsigned;
+                            let b = bs[nth] & 0xff; // Convert to unsigned;
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
@@ -2537,11 +2590,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("hexToBytes"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match unwrap_option_safe(expr.expr_instance)? {
@@ -2584,11 +2637,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("bytesToHex"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
@@ -2631,11 +2684,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toUtf8Bytes"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
@@ -2644,7 +2697,7 @@ impl DebruijnInterpreter {
 
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
-                                        utf8_string.as_bytes().to_vec(),
+                                        utf8_string.as_str().as_bytes().to_vec(),
                                     )),
                                 }]))
                             }
@@ -2772,11 +2825,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("union"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -2820,6 +2873,7 @@ impl DebruijnInterpreter {
                         let new_par_set = ParSet::create_from_vec(
                             base_sorted_pars_set
                                 .difference(&other_sorted_pars_set)
+                                .into_iter()
                                 .cloned()
                                 .collect(),
                         );
@@ -2895,11 +2949,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("diff"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -2969,11 +3023,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("intersection"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_par = &args[0];
@@ -3044,11 +3098,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("restriction"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_par = &args[0];
@@ -3097,7 +3151,7 @@ impl DebruijnInterpreter {
                                         ps: remaining,
                                         locally_free: list.locally_free.clone(),
                                         connective_used: list.connective_used,
-                                        remainder: list.remainder,
+                                        remainder: list.remainder.clone(),
                                     };
                                     let new_par = Par {
                                         exprs: vec![models::rhoapi::Expr {
@@ -3148,11 +3202,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("dropHead"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_par = &args[0];
@@ -3200,11 +3254,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("run"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -5551,11 +5605,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("add"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5634,11 +5688,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("delete"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5700,11 +5754,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("contains"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5754,11 +5808,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5813,11 +5867,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get_or_else"),
                         expected: 2,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5876,11 +5930,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("set"),
                         expected: 2,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5937,11 +5991,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("keys"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     self.outer.cost.charge(keys_method_cost())?;
@@ -5999,11 +6053,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("size"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.size(base_expr)?;
@@ -6053,11 +6107,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("length"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     self.outer.cost.charge(length_method_cost())?;
@@ -6141,11 +6195,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("slice"),
                         expected: 2,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let from_arg = self.outer.eval_to_i64(&args[0], env)?;
@@ -6204,11 +6258,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("take"),
                         expected: 1,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_arg = self.outer.eval_to_i64(&args[0], env)?;
@@ -6285,7 +6339,7 @@ impl DebruijnInterpreter {
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps,
+                                    ps: ps,
                                     locally_free: Vec::new(),
                                     connective_used: false,
                                     remainder: None,
@@ -6315,11 +6369,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_list"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_list(base_expr)?;
@@ -6407,11 +6461,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_set"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_set(base_expr)?;
@@ -6437,7 +6491,7 @@ impl DebruijnInterpreter {
                 remainder: Option<Var>,
             ) -> Result<Par, InterpreterError> {
                 let key_pairs: Vec<Option<(Par, Par)>> =
-                    ps.into_iter().map(RhoTuple2::unapply).collect();
+                    ps.into_iter().map(|p| RhoTuple2::unapply(&p)).collect();
 
                 if key_pairs.iter().any(|pair| !pair.is_some()) {
                     Err(InterpreterError::MethodNotDefined {
@@ -6511,11 +6565,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_map(base_expr)?;
@@ -6560,11 +6614,11 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToStringMethod<'a> {
             fn apply(&self, p: Par, args: Vec<Par>, _: &Env<Par>) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    Err(InterpreterError::MethodArgumentNumberMismatch {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
                         expected: 0,
                         actual: args.len(),
-                    })
+                    });
                 } else {
                     let un = self.outer.eval_single_unforgeable(&p)?;
                     let result = self.to_string(un)?;
@@ -6650,7 +6704,7 @@ impl DebruijnInterpreter {
             )))
         } else {
             match p.exprs.as_slice() {
-                [e] => Ok(self.eval_expr_to_expr(e, env)?),
+                [e] => Ok(self.eval_expr_to_expr(&e, env)?),
 
                 _ => Err(InterpreterError::ReduceError(
                     "Error: Multiple expressions given.".to_string(),
@@ -6704,12 +6758,12 @@ impl DebruijnInterpreter {
                 [Expr {
                     expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
                 }] => {
-                    let p = self.eval_var(&unwrap_option_safe(*v)?, env)?;
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                     self.eval_to_i64(&p, env)
                 }
 
                 [e] => {
-                    let evaled = self.eval_expr_to_expr(e, env)?;
+                    let evaled = self.eval_expr_to_expr(&e, env)?;
 
                     match evaled.expr_instance {
                         Some(expr_instance) => match expr_instance {
@@ -6753,12 +6807,12 @@ impl DebruijnInterpreter {
                 [Expr {
                     expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
                 }] => {
-                    let p = self.eval_var(&unwrap_option_safe(*v)?, env)?;
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                     self.eval_to_bool(&p, env)
                 }
 
                 [e] => {
-                    let evaled = self.eval_expr_to_expr(e, env)?;
+                    let evaled = self.eval_expr_to_expr(&e, env)?;
 
                     match evaled.expr_instance {
                         Some(expr_instance) => match expr_instance {
@@ -6842,7 +6896,7 @@ impl DebruijnInterpreter {
             .ps
             .iter()
             .map(|p| p.locally_free.clone())
-            .fold(Vec::new(), union);
+            .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         elist
     }
@@ -6852,7 +6906,7 @@ impl DebruijnInterpreter {
             .ps
             .iter()
             .map(|p| p.locally_free.clone())
-            .fold(Vec::new(), union);
+            .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         etuple
     }
@@ -6886,8 +6940,8 @@ impl DebruijnInterpreter {
     pub fn new(
         space: RhoISpace,
         urn_map: Arc<HashMap<String, Par>>,
-        merge_chs: Arc<RwLock<HashSet<Par>>>,
-        mergeable_tag_name: Par,
+        merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+        mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: _cost,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -6901,7 +6955,7 @@ impl DebruijnInterpreter {
             dispatcher: dispatcher.clone(),
             urn_map,
             merge_chs,
-            mergeable_tag_name,
+            mergeable_tags,
             cost: cost.clone(),
             substitute: Substitute { cost: cost.clone() },
         });
@@ -6968,8 +7022,8 @@ fn par_contains_nan_double(par: &Par) -> bool {
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
-            kv.key.as_ref().is_some_and(par_contains_nan_double)
-                || kv.value.as_ref().is_some_and(par_contains_nan_double)
+            kv.key.as_ref().map_or(false, par_contains_nan_double)
+                || kv.value.as_ref().map_or(false, par_contains_nan_double)
         }),
         _ => false,
     })

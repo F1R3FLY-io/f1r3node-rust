@@ -1,5 +1,7 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use costs::Cost;
 
@@ -21,7 +23,9 @@ pub struct CostManager {
 }
 
 impl CostManager {
-    fn resolve_max_log_entries() -> usize { 1024 }
+    fn resolve_max_log_entries() -> usize {
+        1024
+    }
 
     pub fn new(initial_value: Cost) -> Self {
         let max_log_entries = Self::resolve_max_log_entries();
@@ -78,7 +82,11 @@ impl CostManager {
         *current_cost = new_value;
     }
 
-    pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
+    pub fn get_log(&self) -> Vec<Cost> {
+        self.log.lock().unwrap().iter().cloned().collect()
+    }
 
-    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+    pub fn clear_log(&self) {
+        self.log.lock().unwrap().clear();
+    }
 }

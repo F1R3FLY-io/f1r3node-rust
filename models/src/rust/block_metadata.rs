@@ -1,13 +1,11 @@
 // See models/src/main/scala/coop/rchain/models/BlockMetadata.scala
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use prost::{bytes::Bytes, Message};
+use std::{cmp::Ordering, collections::BTreeMap};
 
-use prost::bytes::Bytes;
-use prost::Message;
+use crate::casper::{BlockMetadataInternal, BondProto};
 
 use super::casper::protocol::casper_message::{BlockMessage, F1r3flyState, Justification};
-use crate::casper::{BlockMetadataInternal, BondProto};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BlockMetadata {
@@ -72,12 +70,12 @@ impl BlockMetadata {
             justifications: proto
                 .justifications
                 .into_iter()
-                .map(Justification::from_proto)
+                .map(|j| Justification::from_proto(j))
                 .collect(),
             weight_map: proto
                 .bonds
                 .into_iter()
-                .map(|b| (b.validator, b.stake))
+                .map(|b| (b.validator.into(), b.stake))
                 .collect(),
             block_number: proto.block_num,
             sequence_number: proto.seq_num,
@@ -111,7 +109,9 @@ impl BlockMetadata {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> { self.to_proto().encode_to_vec() }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_proto().encode_to_vec()
+    }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let proto =
@@ -119,7 +119,9 @@ impl BlockMetadata {
         Self::from_proto(proto)
     }
 
-    fn bytes_ordering(left: &Bytes, right: &Bytes) -> Ordering { left.iter().cmp(right.iter()) }
+    fn bytes_ordering(left: &Bytes, right: &Bytes) -> Ordering {
+        left.iter().cmp(right.iter())
+    }
 
     pub fn ordering_by_num(left: &BlockMetadata, right: &BlockMetadata) -> Ordering {
         match left.block_number.cmp(&right.block_number) {

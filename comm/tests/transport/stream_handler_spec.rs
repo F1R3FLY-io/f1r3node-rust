@@ -1,16 +1,18 @@
 // See comm/src/test/scala/coop/rchain/comm/transport/StreamHandlerSpec.scala
 
-use std::sync::Arc;
-
-use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use comm::rust::transport::chunker::Chunker;
-use comm::rust::transport::stream_handler::{Circuit, StreamError, StreamHandler};
-use comm::rust::transport::transport_layer::Blob;
+use comm::rust::{
+    peer_node::{Endpoint, NodeIdentifier, PeerNode},
+    transport::{
+        chunker::Chunker,
+        stream_handler::{Circuit, StreamError, StreamHandler},
+        transport_layer::Blob,
+    },
+};
 use futures::stream;
 use models::routing::{Chunk, Packet};
 use prost::bytes::Bytes;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
+use std::sync::Arc;
 use tokio_stream::Stream;
 
 const NETWORK_ID: &str = "test";
@@ -283,7 +285,9 @@ mod stream_handler_spec {
 
     /// Handle a stream and expect success
     async fn handle_stream<S>(stream: S) -> comm::rust::transport::messages::StreamMessage
-    where S: Stream<Item = Chunk> + Unpin {
+    where
+        S: Stream<Item = Chunk> + Unpin,
+    {
         let cache = Arc::new(dashmap::DashMap::new());
         StreamHandler::handle_stream(stream, never_break, &cache)
             .await

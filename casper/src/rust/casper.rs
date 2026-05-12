@@ -1,37 +1,45 @@
-#![allow(clippy::too_many_arguments)]
-
 // See casper/src/main/scala/coop/rchain/casper/Casper.scala
 
-use std::collections::HashMap;
-use std::fmt::{self, Display};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
-};
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
 use dashmap::{DashMap, DashSet};
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
-use models::rust::validator::Validator;
-use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::{
+    collections::HashMap,
+    fmt::{self, Display},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::errors::CasperError;
-use crate::rust::estimator::Estimator;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::validator_identity::ValidatorIdentity;
+use block_storage::rust::{
+    casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
+    dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
+    },
+    deploy::{
+        key_value_deploy_storage::KeyValueDeployStorage,
+        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    },
+    key_value_block_store::KeyValueBlockStore,
+};
+use crypto::rust::signatures::signed::Signed;
+use models::rust::{
+    block_hash::BlockHash,
+    casper::protocol::casper_message::{BlockMessage, DeployData, Justification},
+    validator::Validator,
+};
+use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::{history::Either, state::rspace_exporter::RSpaceExporter};
+
+use crate::rust::{
+    block_status::{BlockError, InvalidBlock, ValidBlock},
+    engine::block_retriever::BlockRetriever,
+    errors::CasperError,
+    estimator::Estimator,
+    multi_parent_casper_impl::MultiParentCasperImpl,
+    util::rholang::runtime_manager::RuntimeManager,
+    validator_identity::ValidatorIdentity,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
@@ -42,15 +50,21 @@ pub enum DeployError {
 }
 
 impl DeployError {
-    pub fn parsing_error(details: String) -> Self { DeployError::ParsingError(details) }
+    pub fn parsing_error(details: String) -> Self {
+        DeployError::ParsingError(details)
+    }
 
-    pub fn missing_user() -> Self { DeployError::MissingUser }
+    pub fn missing_user() -> Self {
+        DeployError::MissingUser
+    }
 
     pub fn unknown_signature_algorithm(alg: String) -> Self {
         DeployError::UnknownSignatureAlgorithm(alg)
     }
 
-    pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
+    pub fn signature_verification_failed() -> Self {
+        DeployError::SignatureVerificationFailed
+    }
 }
 
 impl Display for DeployError {
@@ -144,7 +158,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>>;
+    /// Read-only access to the shard configuration. Used by APIs that need
+    /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
+    /// finalization status.
+    fn casper_shard_conf(&self) -> &CasperShardConf;
+
+    fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
 
@@ -166,11 +185,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
     casper_shard_conf: CasperShardConf,
@@ -185,6 +205,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(Mutex::new(deploy_storage)),
+        rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -215,6 +236,11 @@ pub struct CasperSnapshot {
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
     pub deploys_in_scope: Arc<DashSet<Bytes>>,
+    /// Signatures of deploys that appeared in a merge block's rejected_deploys list
+    /// within the ancestry window. Intersects with `deploys_in_scope` when a deploy
+    /// was executed in one block and rejected during a descendant merge; the block
+    /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
+    pub rejected_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
     pub max_seq_nums: DashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -231,6 +257,7 @@ impl CasperSnapshot {
             justifications: DashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: DashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
@@ -301,10 +328,6 @@ pub struct CasperShardConf {
     pub native_token_decimals: u32,
 }
 
-impl Default for CasperShardConf {
-    fn default() -> Self { Self::new() }
-}
-
 impl CasperShardConf {
     pub fn new() -> Self {
         Self {
@@ -346,10 +369,9 @@ impl CasperShardConf {
 // to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
 pub mod test_helpers {
+    use super::*;
     use async_trait::async_trait;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-
-    use super::*;
 
     /// A test implementation of MultiParentCasper that returns a configurable snapshot and LFB.
     pub struct TestCasperWithSnapshot {
@@ -391,12 +413,11 @@ pub mod test_helpers {
 
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
-            use std::sync::{Arc, RwLock};
-
             use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
             use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
             use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+            use std::sync::{Arc, RwLock};
 
             let block_metadata_store =
                 KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
@@ -429,11 +450,17 @@ pub mod test_helpers {
             Ok(self.snapshot.clone())
         }
 
-        fn contains(&self, _hash: &BlockHash) -> bool { false }
+        fn contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
-        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn dag_contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
-        fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn buffer_contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             Err(CasperError::RuntimeError(
@@ -455,7 +482,9 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_version(&self) -> i64 { 1 }
+        fn get_version(&self) -> i64 {
+            1
+        }
 
         async fn validate(
             &self,
@@ -495,12 +524,16 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
+        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait]
     impl MultiParentCasper for TestCasperWithSnapshot {
-        async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
+        async fn fetch_dependencies(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
 
         fn normalized_initial_fault(
             &self,
@@ -517,13 +550,21 @@ pub mod test_helpers {
             Ok(self.snapshot.dag.clone())
         }
 
-        fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+        fn block_store(&self) -> &KeyValueBlockStore {
+            &self.block_store
+        }
 
-        fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
+        fn casper_shard_conf(&self) -> &CasperShardConf {
+            &self.snapshot.on_chain_state.shard_conf
+        }
+
+        fn runtime_manager(&self) -> Arc<RuntimeManager> {
             unimplemented!("runtime_manager not needed for heartbeat tests")
         }
 
-        fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+        fn get_validator(&self) -> Option<ValidatorIdentity> {
+            None
+        }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             unimplemented!("get_history_exporter not needed for heartbeat tests")

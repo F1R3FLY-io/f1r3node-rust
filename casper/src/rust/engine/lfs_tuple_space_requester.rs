@@ -1,20 +1,19 @@
-#![allow(clippy::doc_lazy_continuation)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
+use async_stream;
+use async_trait::async_trait;
+use futures::Stream;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use async_stream;
-use async_trait::async_trait;
-use futures::Stream;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
+
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
+use rspace_plus_plus::rspace::{
+    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_importer::RSpaceImporter,
+};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -175,7 +174,9 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Returns flag if all keys are marked as finished (Done).
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
-    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+    pub fn is_finished(&self) -> bool {
+        !self.d.values().any(|status| *status != ReqStatus::Done)
+    }
 }
 
 /// Stream processor for tuple space requester operations
@@ -251,7 +252,7 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             // Use non-blocking send to avoid deadlock. The biased select with response-first
             // ordering ensures fair scheduling between request and response processing.
             // If the channel is full (capacity 2), requests are already queued for processing.
-            if self.request_tx.try_send(false).is_err() {
+            if let Err(_) = self.request_tx.try_send(false) {
                 tracing::debug!("Request queue full - requests already pending");
             }
 
@@ -264,7 +265,7 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
             // Trigger request processing again after marking chunk as done (Scala: requestQueue.enqueue1(false))
             // Use non-blocking send to avoid deadlock when producer and consumer are in the same task
-            if self.request_tx.try_send(false).is_err() {
+            if let Err(_) = self.request_tx.try_send(false) {
                 tracing::debug!(
                     "Failed to trigger request processing - channel may be closed or full"
                 );
@@ -316,13 +317,13 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
         // Create history import task (Scala: stateImporter.setHistoryItems(...))
         let history_start = std::time::Instant::now();
-        self.state_importer.set_history_items(history_items);
+        let _ = self.state_importer.set_history_items(history_items);
         let history_duration = history_start.elapsed();
         tracing::debug!("History import completed in {:?}", history_duration);
 
         // Create data import task (Scala: stateImporter.setDataItems(...))
         let data_start = std::time::Instant::now();
-        self.state_importer.set_data_items(data_items);
+        let _ = self.state_importer.set_data_items(data_items);
         let data_duration = data_start.elapsed();
         tracing::debug!("Data import completed in {:?}", data_duration);
 

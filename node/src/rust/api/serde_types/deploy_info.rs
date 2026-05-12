@@ -81,13 +81,7 @@ impl From<DeployInfo> for DeployInfoSerde {
             cost: deploy.cost,
             errored: deploy.errored,
             system_deploy_error: deploy.system_deploy_error,
-            transfers: Some(
-                deploy
-                    .transfers
-                    .into_iter()
-                    .map(TransferInfoSerde::from)
-                    .collect(),
-            ),
+            transfers: Some(deploy.transfers.into_iter().map(TransferInfoSerde::from).collect()),
         }
     }
 }
@@ -107,12 +101,7 @@ impl From<DeployInfoSerde> for DeployInfo {
             cost: json.cost,
             errored: json.errored,
             system_deploy_error: json.system_deploy_error,
-            transfers: json
-                .transfers
-                .unwrap_or_default()
-                .into_iter()
-                .map(TransferInfo::from)
-                .collect(),
+            transfers: json.transfers.unwrap_or_default().into_iter().map(TransferInfo::from).collect(),
             transfers_available,
         }
     }

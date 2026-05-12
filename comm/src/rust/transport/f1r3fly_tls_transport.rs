@@ -20,8 +20,7 @@ use std::task::{Context, Poll};
 
 use hyper::rt::{Read, ReadBufCursor, Write};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::client::TlsStream as ClientTlsStream;
-use tokio_rustls::server::TlsStream as ServerTlsStream;
+use tokio_rustls::{client::TlsStream as ClientTlsStream, server::TlsStream as ServerTlsStream};
 use tonic::transport::server::Connected;
 
 /// Custom TLS transport wrapper for F1r3fly client connections
@@ -53,13 +52,19 @@ impl<S> F1r3flyClientTlsTransport<S> {
     }
 
     /// Get the underlying TLS stream
-    pub fn get_ref(&self) -> &ClientTlsStream<S> { &self.inner }
+    pub fn get_ref(&self) -> &ClientTlsStream<S> {
+        &self.inner
+    }
 
     /// Get a mutable reference to the underlying TLS stream
-    pub fn get_mut(&mut self) -> &mut ClientTlsStream<S> { &mut self.inner }
+    pub fn get_mut(&mut self) -> &mut ClientTlsStream<S> {
+        &mut self.inner
+    }
 
     /// Get the remote socket address if available
-    pub fn remote_addr(&self) -> Option<SocketAddr> { self.remote_addr }
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        self.remote_addr
+    }
 }
 
 /// Custom TLS transport wrapper for F1r3fly server connections
@@ -91,13 +96,19 @@ impl<S> F1r3flyServerTlsTransport<S> {
     }
 
     /// Get the underlying TLS stream
-    pub fn get_ref(&self) -> &ServerTlsStream<S> { &self.inner }
+    pub fn get_ref(&self) -> &ServerTlsStream<S> {
+        &self.inner
+    }
 
     /// Get a mutable reference to the underlying TLS stream
-    pub fn get_mut(&mut self) -> &mut ServerTlsStream<S> { &mut self.inner }
+    pub fn get_mut(&mut self) -> &mut ServerTlsStream<S> {
+        &mut self.inner
+    }
 
     /// Get the remote socket address if available
-    pub fn remote_addr(&self) -> Option<SocketAddr> { self.remote_addr }
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        self.remote_addr
+    }
 
     /// Extract peer certificates from the TLS session
     ///
@@ -124,7 +135,8 @@ impl<S> F1r3flyServerTlsTransport<S> {
 
 // Implement AsyncRead for client transport
 impl<S> AsyncRead for F1r3flyClientTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -137,7 +149,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement AsyncWrite for client transport
 impl<S> AsyncWrite for F1r3flyClientTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -161,7 +174,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement AsyncRead for server transport
 impl<S> AsyncRead for F1r3flyServerTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -174,7 +188,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement AsyncWrite for server transport
 impl<S> AsyncWrite for F1r3flyServerTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -198,11 +213,14 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement Connected trait for server transport (required by tonic server)
 impl<S> Connected for F1r3flyServerTlsTransport<S>
-where S: Connected
+where
+    S: Connected,
 {
     type ConnectInfo = S::ConnectInfo;
 
-    fn connect_info(&self) -> Self::ConnectInfo { self.inner.get_ref().0.connect_info() }
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.inner.get_ref().0.connect_info()
+    }
 }
 
 // Add Unpin implementations for both transports to make them easier to work with
@@ -211,7 +229,8 @@ impl<S> Unpin for F1r3flyServerTlsTransport<S> where S: Unpin {}
 
 // Implement hyper::rt::io::Read for client transport (required by tonic)
 impl<S> Read for F1r3flyClientTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -236,7 +255,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement hyper::rt::io::Write for client transport (required by tonic)
 impl<S> Write for F1r3flyClientTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -273,7 +293,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement hyper::rt::io::Read for server transport (for completeness)
 impl<S> Read for F1r3flyServerTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -298,7 +319,8 @@ where S: AsyncRead + AsyncWrite + Unpin
 
 // Implement hyper::rt::io::Write for server transport (for completeness)
 impl<S> Write for F1r3flyServerTlsTransport<S>
-where S: AsyncRead + AsyncWrite + Unpin
+where
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -355,7 +377,7 @@ impl From<F1r3flyTlsTransportError> for io::Error {
     fn from(err: F1r3flyTlsTransportError) -> Self {
         match err {
             F1r3flyTlsTransportError::Io(io_err) => io_err,
-            _ => io::Error::other(err.to_string()),
+            _ => io::Error::new(io::ErrorKind::Other, err.to_string()),
         }
     }
 }
@@ -402,12 +424,16 @@ mod tests {
 
         // Test that we can use the types in contexts that require AsyncRead + AsyncWrite + Unpin
         fn requires_async_io<T>(_: PhantomData<T>)
-        where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
+        where
+            T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        {
         }
 
         // Test that server transport implements Connected trait
         fn requires_connected<T>(_: PhantomData<T>)
-        where T: Connected + AsyncRead + AsyncWrite + Unpin + Send + 'static {
+        where
+            T: Connected + AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        {
         }
 
         // These calls will only compile if our types implement the required traits

@@ -1,15 +1,10 @@
-#![allow(clippy::too_many_arguments)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/ApproveBlockProtocol.scala
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::test_instances::TransportLayerStub;
-use comm::rust::transport::transport_layer::TransportLayer;
+use comm::rust::{
+    rp::{connect::ConnectionsCell, rp_conf::RPConf},
+    test_instances::TransportLayerStub,
+    transport::transport_layer::TransportLayer,
+};
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::casper::Signature as ProtoSignature;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -19,17 +14,24 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::{bytes, Message};
 use shared::rust::shared::f1r3fly_events::{F1r3flyEvent, F1r3flyEvents};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-use crate::rust::errors::CasperError;
-use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
-use crate::rust::genesis::contracts::validator::Validator;
-use crate::rust::genesis::genesis::Genesis;
-use crate::rust::metrics_constants::APPROVE_BLOCK_METRICS_SOURCE;
-use crate::rust::util::bonds_parser::BondsParser;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::util::vault_parser::VaultParser;
-use crate::rust::validate::Validate;
+use crate::rust::{
+    errors::CasperError,
+    genesis::{
+        contracts::{proof_of_stake::ProofOfStake, validator::Validator},
+        genesis::Genesis,
+    },
+    metrics_constants::APPROVE_BLOCK_METRICS_SOURCE,
+    util::{
+        bonds_parser::BondsParser, rholang::runtime_manager::RuntimeManager,
+        vault_parser::VaultParser,
+    },
+    validate::Validate,
+};
 
 // Simple wrapper for ProtoSignature to work around orphan rules
 #[derive(Debug, Clone)]
@@ -137,7 +139,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
-        runtime_manager: &mut RuntimeManager,
+        runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
         transport: Arc<T>,
@@ -320,7 +322,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                 .publish(F1r3flyEvent::sent_unapproved_block(
                     self.candidate_hash.clone(),
                 ))
-                .map_err(CasperError::RuntimeError)?;
+                .map_err(|e| CasperError::RuntimeError(e))?;
         }
 
         Ok(())
@@ -346,7 +348,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                 .publish(F1r3flyEvent::sent_approved_block(
                     self.candidate_hash.clone(),
                 ))
-                .map_err(CasperError::RuntimeError)?;
+                .map_err(|e| CasperError::RuntimeError(e))?;
         }
 
         Ok(())
@@ -449,7 +451,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                                     sender: sender.clone(),
                                 },
                             ))
-                            .map_err(CasperError::RuntimeError)?;
+                            .map_err(|e| CasperError::RuntimeError(e))?;
                     }
                 } else {
                     tracing::info!("No new sigs received");
@@ -503,9 +505,15 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         }
     }
 
-    pub fn transport(&self) -> &Arc<T> { &self.transport }
+    pub fn transport(&self) -> &Arc<T> {
+        &self.transport
+    }
 
-    pub fn conf(&self) -> &Option<Arc<RPConf>> { &self.conf }
+    pub fn conf(&self) -> &Option<Arc<RPConf>> {
+        &self.conf
+    }
 
-    pub fn signature_count(&self) -> usize { self.sigs.lock().map(|sigs| sigs.len()).unwrap_or(0) }
+    pub fn signature_count(&self) -> usize {
+        self.sigs.lock().map(|sigs| sigs.len()).unwrap_or(0)
+    }
 }

@@ -1,13 +1,10 @@
-#![allow(clippy::ptr_arg)]
-
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ordering.scala
 
 use std::collections::HashMap;
 
-use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::ScoredTerm;
-use super::sortable::Sortable;
 use crate::rhoapi::Par;
+
+use super::{par_sort_matcher::ParSortMatcher, score_tree::ScoredTerm, sortable::Sortable};
 
 pub struct Ordering;
 

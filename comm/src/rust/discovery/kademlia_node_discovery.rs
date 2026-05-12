@@ -1,17 +1,14 @@
 // See comm/src/main/scala/coop/rchain/comm/discovery/KademliaNodeDiscovery.scala
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use crate::rust::{
+    discovery::node_discovery::NodeDiscovery,
+    errors::CommError,
+    peer_node::{NodeIdentifier, PeerNode},
+};
+use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+use std::{collections::HashSet, sync::Arc};
 
-use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
-use rand::SeedableRng;
-
-use super::kademlia_rpc::KademliaRPC;
-use super::kademlia_store::KademliaStore;
-use crate::rust::discovery::node_discovery::NodeDiscovery;
-use crate::rust::errors::CommError;
-use crate::rust::peer_node::{NodeIdentifier, PeerNode};
+use super::{kademlia_rpc::KademliaRPC, kademlia_store::KademliaStore};
 
 #[derive(Clone)]
 pub struct KademliaNodeDiscovery<T: KademliaRPC> {
@@ -22,9 +19,13 @@ pub struct KademliaNodeDiscovery<T: KademliaRPC> {
 
 #[async_trait::async_trait]
 impl<T: KademliaRPC + Send + Sync + 'static> NodeDiscovery for KademliaNodeDiscovery<T> {
-    async fn discover(&self) -> Result<(), CommError> { self.discover_raw(&self.node_id).await }
+    async fn discover(&self) -> Result<(), CommError> {
+        self.discover_raw(&self.node_id).await
+    }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
+        self.store.peers()
+    }
 
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.store.remove(&peer.id.key)
@@ -71,7 +72,9 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         Ok(())
     }
 
-    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
+    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
+        self.store.peers()
+    }
 
     async fn find(
         &self,
@@ -92,7 +95,7 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
             let mut target = id.key.to_vec();
             let byte_index = dist / 8;
             let different_bit = 1 << (dist % 8);
-            target[byte_index] ^= different_bit; // A key at a distance dist from me
+            target[byte_index] = target[byte_index] ^ different_bit; // A key at a distance dist from me
 
             let peers = self.rpc.lookup(&target, peer_set.first().unwrap()).await?;
             let filtered = self.filter(&peers, potentials, id)?;

@@ -30,9 +30,9 @@ impl Tag {
     pub fn to_byte(self) -> u8 {
         match self {
             Tag::NewVar => 0xC0,
-            Tag::Symbol(n) if (1..=63).contains(&n) => 0xC0 + n,
+            Tag::Symbol(n) if n >= 1 && n <= 63 => 0xC0 + n,
             Tag::VarRef(n) if n <= 63 => 0x80 + n,
-            Tag::Arity(n) if n <= 63 => n,
+            Tag::Arity(n) if n <= 63 => 0x00 + n,
             _ => panic!("Invalid tag value"),
         }
     }
@@ -42,7 +42,7 @@ impl Tag {
         match byte {
             0xC0 => Ok(Tag::NewVar),
             b if b >= 0xC1 => Ok(Tag::Symbol(b - 0xC0)),
-            b if (0x80..=0xBF).contains(&b) => Ok(Tag::VarRef(b - 0x80)),
+            b if b >= 0x80 && b <= 0xBF => Ok(Tag::VarRef(b - 0x80)),
             b if b <= 0x3F => Ok(Tag::Arity(b)),
             _ => Err(format!("Invalid tag byte: 0x{:02X}", byte)),
         }

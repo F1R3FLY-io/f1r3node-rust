@@ -1,22 +1,26 @@
-#![allow(clippy::ptr_arg)]
-
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+use models::rust::{
+    block_hash::BlockHash,
+    casper::protocol::casper_message::{
+        Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    },
 };
-use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
-use rspace_plus_plus::rspace::merger::merging_logic;
-use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
-use rspace_plus_plus::rspace::trace::event::Produce;
 
-use crate::rust::errors::CasperError;
-use crate::rust::merging::deploy_chain_index::DeployChainIndex;
-use crate::rust::merging::deploy_index::DeployIndex;
-use crate::rust::util::event_converter;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
+use rspace_plus_plus::rspace::{
+    hashing::blake2b256_hash::Blake2b256Hash,
+    merger::{event_log_index::EventLogIndex, merging_logic::NumberChannelsDiff},
+    trace::event::Produce,
+};
+
+use crate::rust::{
+    errors::CasperError,
+    merging::{deploy_chain_index::DeployChainIndex, deploy_index::DeployIndex},
+    util::event_converter,
+};
+
+use rspace_plus_plus::rspace::merger::merging_logic;
 
 #[derive(Clone)]
 pub struct BlockIndex {
@@ -31,19 +35,19 @@ pub fn create_event_log_index(
     mergeable_chs: NumberChannelsDiff,
 ) -> EventLogIndex {
     let pre_state_reader = history_repository
-        .get_history_reader(pre_state_hash)
+        .get_history_reader(&pre_state_hash)
         .unwrap();
 
     let produce_exists_in_pre_state = |p: &Produce| {
         pre_state_reader
             .get_data(&p.channel_hash)
-            .is_ok_and(|data| data.iter().any(|d| d.source == *p))
+            .map_or(false, |data| data.iter().any(|d| d.source == *p))
     };
 
     let produce_touches_pre_state_join = |p: &Produce| {
         pre_state_reader
             .get_joins(&p.channel_hash)
-            .is_ok_and(|joins| joins.iter().any(|j| j.len() > 1))
+            .map_or(false, |joins| joins.iter().any(|j| j.len() > 1))
     };
 
     EventLogIndex::new(
@@ -59,6 +63,7 @@ pub fn create_event_log_index(
 
 pub fn new(
     block_hash: &BlockHash,
+    block_number: i64,
     usr_processed_deploys: &Vec<ProcessedDeploy>,
     sys_processed_deploys: &Vec<ProcessedSystemDeploy>,
     pre_state_hash: &Blake2b256Hash,
@@ -184,8 +189,10 @@ pub fn new(
             pre_state_hash,
             post_state_hash,
             history_repository.clone(),
+            block_hash.clone(),
+            block_number,
         )
-        .map_err(CasperError::HistoryError)?;
+        .map_err(|e| CasperError::HistoryError(e))?;
         deploy_chain_indices.push(chain_index);
     }
 

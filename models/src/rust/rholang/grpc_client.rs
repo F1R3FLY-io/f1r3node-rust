@@ -1,7 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/GrpcClient.scala
 
 use std::fmt;
-
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
 

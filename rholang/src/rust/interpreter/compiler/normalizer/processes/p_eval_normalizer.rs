@@ -1,13 +1,12 @@
-use std::collections::HashMap;
-
-use models::rhoapi::Par;
-use rholang_parser::ast::Name;
-
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::errors::InterpreterError;
+use models::rhoapi::Par;
+use std::collections::HashMap;
+
+use rholang_parser::ast::Name;
 
 pub fn normalize_p_eval<'ast>(
     eval_name: &Name<'ast>,
@@ -37,13 +36,15 @@ pub fn normalize_p_eval<'ast>(
 #[cfg(test)]
 mod tests {
     use models::rust::utils::new_boundvar_expr;
-    use rholang_parser::ast::{Id, Name, Var};
-    use rholang_parser::SourcePos;
+
+    use crate::rust::interpreter::{
+        compiler::normalize::VarSort, test_utils::utils::proc_visit_inputs_and_env,
+        util::prepend_expr,
+    };
 
     use super::normalize_p_eval;
-    use crate::rust::interpreter::compiler::normalize::VarSort;
-    use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
-    use crate::rust::interpreter::util::prepend_expr;
+    use rholang_parser::ast::{Id, Name, Var};
+    use rholang_parser::SourcePos;
 
     fn create_name_id<'ast>(name: &'ast str) -> Name<'ast> {
         Name::NameVar(Var::Id(Id {
@@ -57,13 +58,11 @@ mod tests {
         let eval_name = create_name_id("x");
         let parser = rholang_parser::RholangParser::new();
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "x".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let result = normalize_p_eval(&eval_name, inputs.clone(), &env, &parser);
         assert!(result.is_ok());
@@ -79,13 +78,11 @@ mod tests {
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "x".to_string(),
+            VarSort::ProcSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 

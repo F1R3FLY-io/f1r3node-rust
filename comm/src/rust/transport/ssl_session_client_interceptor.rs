@@ -1,12 +1,12 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/SslSessionClientInterceptor.scala
 
-use crypto::rust::util::certificate_helper::CertificateHelper;
-use hex;
-use models::routing::tl_response::Payload;
-use models::routing::{Ack, Header, TlResponse};
 use p256::PublicKey as P256PublicKey;
 use tonic::service::Interceptor;
 use tonic::{Request, Response, Status};
+
+use crypto::rust::util::certificate_helper::CertificateHelper;
+use hex;
+use models::routing::{tl_response::Payload, Ack, Header, TlResponse};
 
 /// SSL Session Client Interceptor for validating TLS sessions and certificates
 ///
@@ -14,6 +14,7 @@ use tonic::{Request, Response, Status};
 /// in the correct network. It performs two main validations:
 /// 1. Network ID validation - ensures responses are from the expected network
 /// 2. Certificate validation - verifies the sender's identity using TLS certificates
+///
 #[derive(Clone, Debug)]
 pub struct SslSessionClientInterceptor {
     network_id: String,
@@ -25,7 +26,9 @@ impl SslSessionClientInterceptor {
     /// # Arguments
     /// * `network_id` - The expected network ID for validation
     #[inline]
-    pub fn new(network_id: String) -> Self { Self { network_id } }
+    pub fn new(network_id: String) -> Self {
+        Self { network_id }
+    }
 
     /// Validate TLResponse message
     ///
@@ -217,7 +220,9 @@ impl SslSessionClientInterceptor {
 
     /// Get the network ID for this interceptor
     #[inline]
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 }
 
 impl Interceptor for SslSessionClientInterceptor {
@@ -232,11 +237,10 @@ impl Interceptor for SslSessionClientInterceptor {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use models::routing::{InternalServerError, Node};
     use prost::bytes::Bytes;
     use tonic::Code;
-
-    use super::*;
 
     fn create_test_header(network_id: &str, sender_id: Vec<u8>) -> Header {
         Header {

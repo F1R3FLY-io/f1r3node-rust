@@ -1,9 +1,3 @@
-use std::collections::HashMap;
-
-use models::rhoapi::{expr, var, EVar, Expr, Par, Var as model_var};
-use models::rust::utils::union;
-use rholang_parser::ast::{Name, Names, Var};
-
 use crate::rust::interpreter::compiler::exports::{
     BoundContext, FreeContext, NameVisitInputs, NameVisitOutputs, ProcVisitInputs,
 };
@@ -12,6 +6,11 @@ use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_expr;
+use models::rhoapi::{expr, var, EVar, Expr, Par, Var as model_var};
+use models::rust::utils::union;
+use std::collections::HashMap;
+
+use rholang_parser::ast::{Name, Names, Var};
 
 pub fn normalize_name<'ast>(
     name: &Name<'ast>,
@@ -178,7 +177,7 @@ pub fn normalize_names<'ast>(
     // Handle remainder if present
     if let Some(remainder_var) = &names.remainder {
         let (remainder_model_var, updated_free_map) =
-            normalize_match_name(&Some(*remainder_var), current_input.free_map)?;
+            normalize_match_name(&Some(remainder_var.clone()), current_input.free_map)?;
 
         // If there's a remainder variable, add it to the expressions
         if let Some(var) = remainder_model_var {
@@ -205,11 +204,10 @@ pub fn normalize_names<'ast>(
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/NameMatcherSpec.scala
 #[cfg(test)]
 mod tests {
-    use models::create_bit_vector;
-    use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par, new_wildcard_par};
-
     use super::*;
     use crate::rust::interpreter::test_utils::utils::name_visit_inputs_and_env;
+    use models::create_bit_vector;
+    use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par, new_wildcard_par};
 
     fn bound_name_inputs_with_bound_map_chain(
         input: NameVisitInputs,
@@ -260,11 +258,12 @@ mod tests {
         }
     }
 
-    fn create_wildcard<'ast>() -> Name<'ast> { Name::NameVar(Var::Wildcard) }
+    fn create_wildcard<'ast>() -> Name<'ast> {
+        Name::NameVar(Var::Wildcard)
+    }
 
     fn create_id_var<'ast>(name: &'ast str) -> Name<'ast> {
-        use rholang_parser::ast::Id;
-        use rholang_parser::SourcePos;
+        use rholang_parser::{ast::Id, SourcePos};
         Name::NameVar(Var::Id(Id {
             name,
             pos: SourcePos { line: 1, col: 1 },

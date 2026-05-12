@@ -1,12 +1,10 @@
-use std::path::Path;
-
+use crate::rust::{
+    private_key::PrivateKey, public_key::PublicKey, signatures::signatures_alg::SignaturesAlg,
+};
 use eyre::{Context, Result};
 use hex;
 use openssl::pkey::PKey;
-
-use crate::rust::private_key::PrivateKey;
-use crate::rust::public_key::PublicKey;
-use crate::rust::signatures::signatures_alg::SignaturesAlg;
+use std::path::Path;
 /// Key generation and file writing utilities
 /// Equivalent to Scala's KeyUtil.writeKeys functionality
 pub struct KeyUtil;
@@ -130,11 +128,10 @@ impl KeyUtil {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::NamedTempFile;
+    use crate::rust::signatures::{secp256k1::Secp256k1, signatures_alg::SignaturesAlg};
 
     use super::*;
-    use crate::rust::signatures::secp256k1::Secp256k1;
-    use crate::rust::signatures::signatures_alg::SignaturesAlg;
+    use tempfile::NamedTempFile;
 
     fn generate_and_write_keys<P: AsRef<Path>>(
         password: &str,

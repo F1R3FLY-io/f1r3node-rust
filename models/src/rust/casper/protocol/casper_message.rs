@@ -1,19 +1,23 @@
-#![allow(clippy::inherent_to_string)]
-
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
-use crypto::rust::signatures::signed::{Signed, ToMessage};
+use crypto::rust::{
+    public_key::PublicKey,
+    signatures::{
+        signatures_alg::SignaturesAlgFactory,
+        signed::{Signed, ToMessage},
+    },
+};
 use prost::Message;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use rspace_plus_plus::rspace::{
+    hashing::blake2b256_hash::Blake2b256Hash, state::rspace_exporter::RSpaceExporterInstance,
+};
 use shared::rust::{Byte, ByteVector};
 
-use crate::casper::system_deploy_data_proto::SystemDeploy;
-use crate::casper::*;
-use crate::rhoapi::PCost;
-use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::{
+    casper::{system_deploy_data_proto::SystemDeploy, *},
+    rhoapi::PCost,
+    rust::casper::pretty_printer::PrettyPrinter,
+};
 
 // TODO: Use type ByteString from models crate
 type ByteString = prost::bytes::Bytes;
@@ -116,9 +120,13 @@ pub struct HasBlockRequest {
 }
 
 impl HasBlockRequest {
-    pub fn from_proto(proto: HasBlockRequestProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: HasBlockRequestProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> HasBlockRequestProto { HasBlockRequestProto { hash: self.hash } }
+    pub fn to_proto(self) -> HasBlockRequestProto {
+        HasBlockRequestProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -127,9 +135,13 @@ pub struct HasBlock {
 }
 
 impl HasBlock {
-    pub fn from_proto(proto: HasBlockProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: HasBlockProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> HasBlockProto { HasBlockProto { hash: self.hash } }
+    pub fn to_proto(self) -> HasBlockProto {
+        HasBlockProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,16 +150,22 @@ pub struct BlockRequest {
 }
 
 impl BlockRequest {
-    pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: BlockRequestProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+    pub fn to_proto(self) -> BlockRequestProto {
+        BlockRequestProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForkChoiceTipRequest;
 
 impl ForkChoiceTipRequest {
-    pub fn to_proto(self) -> ForkChoiceTipRequestProto { ForkChoiceTipRequestProto {} }
+    pub fn to_proto(self) -> ForkChoiceTipRequestProto {
+        ForkChoiceTipRequestProto {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -350,7 +368,7 @@ impl BlockMessage {
             justifications: proto
                 .justifications
                 .into_iter()
-                .map(Justification::from_proto)
+                .map(|j| Justification::from_proto(j))
                 .collect(),
             sender: proto.sender,
             seq_num: proto.seq_num,
@@ -420,9 +438,13 @@ pub struct RejectedDeploy {
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self { sig: proto.sig }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto { sig: self.sig }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -445,17 +467,17 @@ impl Body {
             deploys: proto
                 .deploys
                 .into_iter()
-                .map(ProcessedDeploy::from_proto)
+                .map(|d| ProcessedDeploy::from_proto(d))
                 .collect::<Result<Vec<ProcessedDeploy>, String>>()?,
             rejected_deploys: proto
                 .rejected_deploys
                 .into_iter()
-                .map(RejectedDeploy::from_proto)
+                .map(|r| RejectedDeploy::from_proto(r))
                 .collect(),
             system_deploys: proto
                 .system_deploys
                 .into_iter()
-                .map(ProcessedSystemDeploy::from_proto)
+                .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
         })
@@ -487,15 +509,7 @@ impl Body {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Eq,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    Hash
-)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, Hash)]
 pub struct Justification {
     #[serde(with = "shared::rust::serde_bytes")]
     pub validator: ByteString,
@@ -532,7 +546,11 @@ impl F1r3flyState {
         Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
-            bonds: proto.bonds.into_iter().map(Bond::from_proto).collect(),
+            bonds: proto
+                .bonds
+                .into_iter()
+                .map(|b| Bond::from_proto(b))
+                .collect(),
             block_number: proto.block_number,
         }
     }
@@ -541,7 +559,12 @@ impl F1r3flyState {
         RChainStateProto {
             pre_state_hash: self.pre_state_hash.clone(),
             post_state_hash: self.post_state_hash.clone(),
-            bonds: self.bonds.clone().into_iter().map(Bond::to_proto).collect(),
+            bonds: self
+                .bonds
+                .clone()
+                .into_iter()
+                .map(|b| Bond::to_proto(b))
+                .collect(),
             block_number: self.block_number,
         }
     }
@@ -600,7 +623,7 @@ impl ProcessedDeploy {
             deploy_log: proto
                 .deploy_log
                 .into_iter()
-                .map(Event::from_proto)
+                .map(|e| Event::from_proto(e))
                 .collect::<Result<Vec<Event>, String>>()?,
             is_failed: proto.errored,
             system_deploy_error: {
@@ -642,7 +665,9 @@ impl SystemDeployData {
         }
     }
 
-    pub fn create_close() -> Self { Self::CloseBlockSystemDeployData }
+    pub fn create_close() -> Self {
+        Self::CloseBlockSystemDeployData
+    }
 
     pub fn from_proto(proto: SystemDeployDataProto) -> Result<Self, String> {
         match proto
@@ -672,7 +697,7 @@ impl SystemDeployData {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         invalid_block_hash,
-                        issuer_public_key: issuer_public_key.bytes,
+                        issuer_public_key: issuer_public_key.bytes.into(),
                     },
                 )),
             },
@@ -701,7 +726,9 @@ pub enum ProcessedSystemDeploy {
 }
 
 impl ProcessedSystemDeploy {
-    pub fn failed(self) -> bool { matches!(self, ProcessedSystemDeploy::Failed { .. }) }
+    pub fn failed(self) -> bool {
+        matches!(self, ProcessedSystemDeploy::Failed { .. })
+    }
 
     pub fn fold<A, F, G>(self, if_succeeded: F, if_failed: G) -> A
     where
@@ -771,14 +798,7 @@ impl ProcessedSystemDeploy {
 }
 
 #[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    Eq,
-    Hash,
-    utoipa::ToSchema
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Eq, Hash, utoipa::ToSchema,
 )]
 pub struct DeployData {
     pub term: String,
@@ -798,11 +818,15 @@ pub struct DeployData {
 
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
-    fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn to_message(&self) -> Self::Type {
+        DeployData::_to_proto(self.clone())
+    }
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> i64 { self.phlo_limit * self.phlo_price }
+    pub fn total_phlo_charge(&self) -> i64 {
+        self.phlo_limit * self.phlo_price
+    }
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -818,7 +842,9 @@ impl DeployData {
             .unwrap_or(false)
     }
 
-    pub fn encode(a: DeployData) -> ByteVector { DeployData::_to_proto(a).encode_to_vec() }
+    pub fn encode(a: DeployData) -> ByteVector {
+        DeployData::_to_proto(a).encode_to_vec()
+    }
 
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
@@ -879,8 +905,8 @@ impl DeployData {
             phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
-            deployer: dd.pk.bytes.clone(),
-            sig: dd.sig.clone(),
+            deployer: dd.pk.bytes.clone().into(),
+            sig: dd.sig.clone().into(),
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),

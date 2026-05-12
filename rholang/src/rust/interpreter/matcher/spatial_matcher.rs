@@ -1,14 +1,9 @@
-#![allow(
-    clippy::match_like_matches_macro,
-    clippy::match_single_binding,
-    clippy::type_complexity
-)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::rholang::implicits::{single_expr, vector_par};
+use models::rust::rholang::implicits::single_expr;
+use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
 
 use super::exports::*;
@@ -40,10 +35,6 @@ pub trait SpatialMatcher<T, P> {
 #[derive(Clone)]
 pub struct SpatialMatcherContext {
     pub free_map: FreeMap,
-}
-
-impl Default for SpatialMatcherContext {
-    fn default() -> Self { Self::new() }
 }
 
 impl SpatialMatcherContext {
@@ -96,13 +87,13 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 
             Some(ConnOrBody(connective_body)) => {
                 // println!("\nhit ConnOrBody");
-
-                connective_body.ps.into_iter().find_map(|p| {
+                let all_matches = connective_body.ps.into_iter().find_map(|p| {
                     let matches = self.free_map.clone();
                     self.spatial_match(target.clone(), p)?;
                     self.free_map = matches;
                     Some(())
-                })
+                });
+                all_matches
             }
 
             Some(ConnNotBody(p)) => {
@@ -226,12 +217,12 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             // println!("wildcard: {:?}", wildcard);
 
-            let filtered_pattern = no_frees(pattern.clone());
+            let filtered_pattern = no_frees(&pattern);
             // println!("filtered_pattern: {:?}", filtered_pattern);
-            let pc = ParCount::new(filtered_pattern.clone());
+            let pc = ParCount::new(&filtered_pattern);
             // println!("pc: {:?}", pc);
             let min_rem = pc.clone();
-            let max_rem = if wildcard || var_level.is_some() {
+            let max_rem = if wildcard || !var_level.is_none() {
                 pc._max()
             } else {
                 pc.clone()
@@ -297,11 +288,15 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             let remainder = connectives_with_bounds.iter().try_fold(
                 target,
-                |acc, &(connective, bounds1, bounds2)| {
+                |acc, &(ref connective, ref bounds1, ref bounds2)| {
                     match_connective_with_bounds(
                         self,
                         acc,
-                        (connective.clone(), bounds1.clone(), bounds2.clone()),
+                        (
+                            (*connective).clone(),
+                            (*bounds1).clone(),
+                            (*bounds2).clone(),
+                        ),
                     )
                 },
             )?;
@@ -335,7 +330,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             .and_then(|_| {
                 self.list_match_single_(
                     remainder.exprs,
-                    no_frees_exprs(pattern.exprs),
+                    no_frees_exprs(&pattern.exprs),
                     &|p, s| p.with_exprs(s),
                     var_level,
                     wildcard,
@@ -446,7 +441,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 })),
             ) => {
                 // println!("\n calling fold_match in ElistBody");
-                let matched_rem = self.fold_match(tlist, plist, rem)?;
+                let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
                 // println!("\nmatched_rem: {:?}", matched_rem);
 
                 // println!("\ncurrent free_map: {:#?}", self.free_map);

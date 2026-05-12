@@ -1,11 +1,11 @@
+use models::rhoapi::{expr::ExprInstance, Expr, Par};
+use rholang::rust::interpreter::{
+    errors::InterpreterError,
+    interpreter::EvaluateResult,
+    rho_runtime::{RhoRuntime, RhoRuntimeImpl},
+    test_utils::resources::with_runtime,
+};
 use std::collections::HashSet;
-
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
 async fn execute(
     runtime: &mut RhoRuntimeImpl,
@@ -48,7 +48,9 @@ async fn channel_data(runtime: &RhoRuntimeImpl, channel_expr: ExprInstance) -> H
         .unwrap_or_default()
 }
 
-fn int_channel(n: i64) -> ExprInstance { ExprInstance::GInt(n) }
+fn int_channel(n: i64) -> ExprInstance {
+    ExprInstance::GInt(n)
+}
 
 fn has_par_with_bool(data: &HashSet<Par>, expected: bool) -> bool {
     data.iter().any(|p| {
@@ -170,14 +172,8 @@ async fn float_nan_equality_follows_ieee754() {
         )
         .await;
 
-        assert!(has_par_with_bool(
-            &channel_data(&runtime, int_channel(0)).await,
-            false
-        ));
-        assert!(has_par_with_bool(
-            &channel_data(&runtime, int_channel(1)).await,
-            true
-        ));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(0)).await, false));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(1)).await, true));
     })
     .await
 }
@@ -199,14 +195,8 @@ async fn float_nan_nested_in_list_follows_ieee754() {
         )
         .await;
 
-        assert!(has_par_with_bool(
-            &channel_data(&runtime, int_channel(0)).await,
-            false
-        ));
-        assert!(has_par_with_bool(
-            &channel_data(&runtime, int_channel(1)).await,
-            true
-        ));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(0)).await, false));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(1)).await, true));
     })
     .await
 }
@@ -311,8 +301,7 @@ async fn bigrat_arithmetic_produces_correct_values() {
         )
         .await;
 
-        let storage =
-            rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
+        let storage = rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
         assert!(storage.contains("1/2r"));
         assert!(storage.contains("6/1r"));
         assert!(storage.contains("6/1r"));
@@ -332,8 +321,7 @@ async fn bigrat_division_by_zero_is_error() {
 async fn bigrat_modulo_returns_zero() {
     with_runtime("bigrat-mod-", |mut runtime| async move {
         eval_ok(&mut runtime, r#"@0!(7r % 3r)"#).await;
-        let storage =
-            rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
+        let storage = rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
         assert!(storage.contains("0/1r"));
     })
     .await
@@ -350,8 +338,7 @@ async fn fixedpoint_arithmetic_produces_correct_values() {
         )
         .await;
 
-        let storage =
-            rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
+        let storage = rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
         assert!(storage.contains("3.75p2"));
         assert!(storage.contains("3.0p1"));
         assert!(storage.contains("6.75p2"));
@@ -368,8 +355,7 @@ async fn fixedpoint_modulo_regression() {
         )
         .await;
 
-        let storage =
-            rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
+        let storage = rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
         assert!(storage.contains("0.50p2"));
         assert!(storage.contains("1.0p1"));
     })
@@ -461,8 +447,7 @@ async fn numeric_values_in_lists_and_tuples() {
         )
         .await;
 
-        let storage =
-            rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
+        let storage = rholang::rust::interpreter::storage::storage_printer::pretty_print(&runtime).await;
         assert!(storage.contains("1n"));
         assert!(storage.contains("2n"));
         assert!(storage.contains("3n"));

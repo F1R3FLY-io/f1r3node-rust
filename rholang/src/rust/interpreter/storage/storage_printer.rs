@@ -1,8 +1,4 @@
-#![allow(clippy::ptr_arg)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/StoragePrinter.scala
-
-use std::collections::BTreeSet;
 
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
@@ -10,6 +6,7 @@ use models::rhoapi::{
 };
 use models::rust::rholang::implicits::concatenate_pars;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use std::collections::BTreeSet;
 
 use crate::rust::interpreter::pretty_printer::PrettyPrinter;
 use crate::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -34,7 +31,9 @@ pub async fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
     if pars.is_empty() {
         "The space is empty. Note that top level terms that are not sends or receives are discarded.".to_string()
     } else {
-        let combined_par = pars.into_iter().fold(Par::default(), concatenate_pars);
+        let combined_par = pars
+            .into_iter()
+            .fold(Par::default(), |acc, par| concatenate_pars(acc, par));
 
         let mut pretty_printer = PrettyPrinter::new();
         pretty_printer.build_string_from_message(&combined_par)
@@ -58,7 +57,9 @@ pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {
     if pars.is_empty() {
         "The space is empty. Note that top level terms that are not sends or receives are discarded.".to_string()
     } else {
-        let combined_par = pars.into_iter().fold(Par::default(), concatenate_pars);
+        let combined_par = pars
+            .into_iter()
+            .fold(Par::default(), |acc, par| concatenate_pars(acc, par));
 
         let mut pretty_printer = PrettyPrinter::new();
         pretty_printer.build_string_from_message(&combined_par)
@@ -104,7 +105,7 @@ fn to_receives(
                 receive_binds.push(ReceiveBind {
                     patterns: pattern.patterns.clone(),
                     source: Some(channel.clone()),
-                    remainder: pattern.remainder,
+                    remainder: pattern.remainder.clone(),
                     free_count: pattern.free_count,
                 });
             }

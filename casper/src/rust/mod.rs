@@ -36,17 +36,18 @@ pub mod test_utils;
 
 // See casper/src/main/scala/coop/rchain/casper/package.scala
 
+use models::rust::block_hash::BlockHash;
+use rspace_plus_plus::rspace::history::Either;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use models::rust::block_hash::BlockHash;
-use rspace_plus_plus::rspace::history::Either;
-
-use crate::rust::block_status::{BlockError, ValidBlock};
-use crate::rust::blocks::proposer::proposer::ProposerResult;
-use crate::rust::casper::MultiParentCasper;
-use crate::rust::errors::CasperError;
+use crate::rust::{
+    block_status::{BlockError, ValidBlock},
+    blocks::proposer::proposer::ProposerResult,
+    casper::MultiParentCasper,
+    errors::CasperError,
+};
 
 pub type TopoSort = Vec<Vec<BlockHash>>;
 

@@ -1,14 +1,14 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/KeyValueBlockStore.scala
 
+use prost::Message;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 use models::casper::{ApprovedBlockProto, BlockMessageProto};
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
-use prost::Message;
+use models::rust::{block_hash::BlockHash, casper::pretty_printer::PrettyPrinter};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
@@ -81,7 +81,7 @@ impl KeyValueBlockStore {
     pub fn get_unsafe(&self, block_hash: &BlockHash) -> BlockMessage {
         let err_msg = format!(
             "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(block_hash),
+            PrettyPrinter::build_string_bytes(&block_hash),
         );
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
@@ -131,6 +131,23 @@ impl KeyValueBlockStore {
         Ok(has_any)
     }
 
+    /// Fetch rejected deploy signatures for a block without decoding a full BlockMessage.
+    /// Returns the `body.rejected_deploys[*].sig` values. Most blocks have none; only
+    /// multi-parent merge blocks that dropped a conflicting deploy populate this list.
+    pub fn rejected_deploy_sigs(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
+        let key = block_hash.to_vec();
+        let bytes = match self.store.get_one(&key)? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let body = Self::decode_block_deploy_sigs(&bytes)?;
+        let sigs = body.rejected_deploys.into_iter().map(|r| r.sig).collect();
+        Ok(Some(sigs))
+    }
+
     /// Fetch deploy signatures for a block without decoding a full BlockMessage.
     /// Uses the same bounded shared cache as `has_any_deploy_sig`.
     pub fn deploy_sigs(
@@ -176,7 +193,7 @@ impl KeyValueBlockStore {
     ) -> bool {
         let err_msg = format!(
             "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(block_hash),
+            PrettyPrinter::build_string_bytes(&block_hash),
         );
         self.has_any_deploy_sig(block_hash, deploy_sigs)
             .expect(&err_msg)
@@ -231,9 +248,8 @@ impl KeyValueBlockStore {
     }
 
     fn bytes_to_block_proto(bytes: &[u8]) -> Result<BlockMessageProto, KvStoreError> {
-        use std::io::Cursor;
-
         use prost::encoding::decode_varint;
+        use std::io::Cursor;
 
         let mut cursor = Cursor::new(bytes);
         let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
@@ -269,9 +285,8 @@ impl KeyValueBlockStore {
     }
 
     fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
-        use std::io::Cursor;
-
         use prost::encoding::decode_varint;
+        use std::io::Cursor;
 
         let mut cursor = Cursor::new(bytes);
         let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
@@ -353,9 +368,13 @@ impl KeyValueBlockStore {
         CACHE.get_or_init(|| Mutex::new(DeploySigCache::default()))
     }
 
-    fn decode_buffer_retain_bytes() -> usize { Self::DECOMPRESS_BUFFER_RETAIN_BYTES }
+    fn decode_buffer_retain_bytes() -> usize {
+        Self::DECOMPRESS_BUFFER_RETAIN_BYTES
+    }
 
-    fn max_deploy_sig_cache_entries() -> usize { Self::DEPLOY_SIG_CACHE_MAX_ENTRIES }
+    fn max_deploy_sig_cache_entries() -> usize {
+        Self::DEPLOY_SIG_CACHE_MAX_ENTRIES
+    }
 
     #[cfg(test)]
     fn block_proto_decode_buffer_capacity_for_test() -> usize {
@@ -392,6 +411,8 @@ struct BlockMessageDeploySigIndex {
 struct BlockDeploySigsBody {
     #[prost(message, repeated, tag = "2")]
     deploys: Vec<BlockDeploySigsProcessedDeploy>,
+    #[prost(message, repeated, tag = "5")]
+    rejected_deploys: Vec<BlockDeploySigsRejectedDeploy>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -406,17 +427,26 @@ struct BlockDeploySigsDeploy {
     sig: Vec<u8>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct BlockDeploySigsRejectedDeploy {
+    #[prost(bytes = "vec", tag = "1")]
+    sig: Vec<u8>,
+}
+
 // See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use models::rust::block_implicits::{block_element_gen, processed_deploy_gen};
-    use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
+    use models::rust::block_implicits::processed_deploy_gen;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
+    use std::sync::{Arc, Mutex};
+
+    use models::rust::{
+        block_implicits::block_element_gen,
+        casper::protocol::casper_message::ApprovedBlockCandidate,
+    };
     use shared::rust::{ByteBuffer, ByteString};
 
     use super::*;
@@ -483,7 +513,9 @@ mod tests {
             todo!()
         }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> {
+            todo!()
+        }
 
         fn to_map(
             &self,
@@ -494,11 +526,17 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
+        fn print_store(&self) -> Result<(), KvStoreError> {
+            Ok(())
+        }
 
-        fn size_bytes(&self) -> usize { todo!() }
+        fn size_bytes(&self) -> usize {
+            todo!()
+        }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
+        fn non_empty(&self) -> Result<bool, KvStoreError> {
+            todo!()
+        }
     }
 
     pub struct NotImplementedKV;
@@ -512,9 +550,13 @@ mod tests {
             todo!()
         }
 
-        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }
+        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
+            todo!()
+        }
 
-        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { todo!() }
+        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
+            todo!()
+        }
 
         fn iterate_while(
             &self,
@@ -523,7 +565,9 @@ mod tests {
             todo!()
         }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> {
+            todo!()
+        }
 
         fn to_map(
             &self,
@@ -531,11 +575,17 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> { todo!() }
+        fn print_store(&self) -> Result<(), KvStoreError> {
+            todo!()
+        }
 
-        fn size_bytes(&self) -> usize { todo!() }
+        fn size_bytes(&self) -> usize {
+            todo!()
+        }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
+        fn non_empty(&self) -> Result<bool, KvStoreError> {
+            todo!()
+        }
     }
 
     fn to_approved_block(block: BlockMessage) -> ApprovedBlock {
@@ -558,11 +608,17 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
     }
 
-    fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
+    fn kb_to_mib(kb: usize) -> f64 {
+        kb as f64 / 1024.0
+    }
 
-    fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
+    fn delta_kb_to_mib(delta_kb: isize) -> f64 {
+        delta_kb as f64 / 1024.0
+    }
 
-    fn bytes_to_mib(bytes: usize) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
+    fn bytes_to_mib(bytes: usize) -> f64 {
+        bytes as f64 / (1024.0 * 1024.0)
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig {

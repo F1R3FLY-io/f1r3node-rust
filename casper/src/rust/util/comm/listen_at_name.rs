@@ -3,13 +3,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::rust::util::comm::ServiceResult;
+use crate::rust::util::rholang::interpreter_util;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use serde::Deserialize;
 use tokio::time::sleep;
-
-use crate::rust::util::comm::ServiceResult;
-use crate::rust::util::rholang::interpreter_util;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum Name {
@@ -26,7 +25,9 @@ pub trait BuildPar<T> {
 
 /// Implementation for single Name
 impl BuildPar<Name> for Name {
-    fn build(&self, _input: Name) -> ServiceResult<Par> { build_par_id(self.clone()) }
+    fn build(&self, _input: Name) -> ServiceResult<Par> {
+        build_par_id(self.clone())
+    }
 }
 
 /// Build Par from a single Name
@@ -143,8 +144,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use super::*;
 

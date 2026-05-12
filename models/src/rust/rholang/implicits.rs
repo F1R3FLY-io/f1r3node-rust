@@ -3,9 +3,10 @@
 use prost::Message;
 use uuid::Uuid;
 
-use crate::rhoapi::g_unforgeable::UnfInstance;
-use crate::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, Par};
-use crate::rust::utils::union;
+use crate::{
+    rhoapi::{g_unforgeable::UnfInstance, Bundle, Expr, GPrivate, GUnforgeable, Par},
+    rust::utils::union,
+};
 
 // Somehow they are not initializing 'locally_free' and 'connective_used' fields
 pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
@@ -51,7 +52,7 @@ pub fn single_expr(p: &Par) -> Option<Expr> {
         && p.bundles.is_empty()
     {
         match &p.exprs {
-            vec if vec.len() == 1 => vec.first().cloned(),
+            vec if vec.len() == 1 => vec.get(0).cloned(),
             _ => None,
         }
     } else {
@@ -69,7 +70,7 @@ pub fn single_bundle(p: &Par) -> Option<Bundle> {
         && p.connectives.is_empty()
     {
         match &p.bundles {
-            vec if vec.len() == 1 => vec.first().cloned(),
+            vec if vec.len() == 1 => vec.get(0).cloned(),
             _ => None,
         }
     } else {
@@ -87,7 +88,7 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
         && p.connectives.is_empty()
     {
         match &p.unforgeables {
-            vec if vec.len() == 1 => vec.first().cloned(),
+            vec if vec.len() == 1 => vec.get(0).cloned(),
             _ => None,
         }
     } else {
@@ -97,39 +98,18 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
 
 pub fn concatenate_pars(p: Par, that: Par) -> Par {
     Par {
-        sends: that.sends.iter().chain(p.sends.iter()).cloned().collect(),
-        receives: that
-            .receives
-            .iter()
-            .chain(p.receives.iter())
-            .cloned()
-            .collect(),
-        news: that.news.iter().chain(p.news.iter()).cloned().collect(),
-        exprs: that.exprs.iter().chain(p.exprs.iter()).cloned().collect(),
-        matches: that
-            .matches
-            .iter()
-            .chain(p.matches.iter())
-            .cloned()
-            .collect(),
+        sends: that.sends.into_iter().chain(p.sends).collect(),
+        receives: that.receives.into_iter().chain(p.receives).collect(),
+        news: that.news.into_iter().chain(p.news).collect(),
+        exprs: that.exprs.into_iter().chain(p.exprs).collect(),
+        matches: that.matches.into_iter().chain(p.matches).collect(),
         unforgeables: that
             .unforgeables
-            .iter()
-            .chain(p.unforgeables.iter())
-            .cloned()
+            .into_iter()
+            .chain(p.unforgeables)
             .collect(),
-        bundles: that
-            .bundles
-            .iter()
-            .chain(p.bundles.iter())
-            .cloned()
-            .collect(),
-        connectives: that
-            .connectives
-            .iter()
-            .chain(p.connectives.iter())
-            .cloned()
-            .collect(),
+        bundles: that.bundles.into_iter().chain(p.bundles).collect(),
+        connectives: that.connectives.into_iter().chain(p.connectives).collect(),
         locally_free: union(that.locally_free, p.locally_free),
         connective_used: that.connective_used || p.connective_used,
     }

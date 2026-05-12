@@ -1,16 +1,16 @@
-#![allow(clippy::redundant_pattern_matching)]
-
 // See node/src/main/scala/coop/rchain/node/instances/ProposerInstance.scala
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
-use casper::rust::blocks::proposer::propose_result::{
-    ProposeFailure, ProposeResult, ProposeStatus,
-};
-use casper::rust::blocks::proposer::proposer::{
-    ProductionProposer, ProposeReturnType, ProposerResult,
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+
+use casper::rust::blocks::proposer::{
+    propose_result::{ProposeFailure, ProposeResult, ProposeStatus},
+    proposer::{ProductionProposer, ProposeReturnType, ProposerResult},
 };
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
@@ -18,9 +18,6 @@ use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use tokio::sync::{mpsc, oneshot, Semaphore};
 
 const PROPOSER_RESULT_QUEUE_CAPACITY: usize = 64;
 const PROPOSER_MAX_IMMEDIATE_RETRIES: u8 = 2;
@@ -38,7 +35,9 @@ fn should_retry_immediately_on_trigger(result: &ProposeResult, is_async: bool) -
     false
 }
 
-fn proposer_min_interval() -> Duration { PROPOSER_MIN_INTERVAL }
+fn proposer_min_interval() -> Duration {
+    PROPOSER_MIN_INTERVAL
+}
 
 /// Proposer instance that processes propose requests from a queue
 ///
@@ -58,9 +57,8 @@ pub struct ProposerInstance<T: TransportLayer + Send + Sync + 'static> {
 
 #[cfg(test)]
 mod tests {
-    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
-
     use super::*;
+    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
 
     #[test]
     fn should_not_retry_internal_deploy_error_immediately() {
@@ -254,7 +252,10 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                 }
                                 None => {
                                     if propose_result.is_no_new_deploys() {
-                                        tracing::info!("Propose: {}", propose_result.propose_status)
+                                        tracing::info!(
+                                            "Propose: {}",
+                                            propose_result.propose_status
+                                        )
                                     } else {
                                         tracing::error!(
                                             "Propose failed: {}",

@@ -1,14 +1,10 @@
-#![allow(clippy::ptr_arg, clippy::too_many_arguments, clippy::type_complexity)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Instant;
-
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
+use models::rhoapi::expr::ExprInstance::EMapBody;
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
+use models::rhoapi::Bundle;
+use models::rhoapi::Var;
+use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block_hash::BlockHash;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -17,31 +13,21 @@ use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
-use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
+use rspace_plus_plus::rspace::rspace::RSpace;
+use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 
-use super::accounting::_cost;
-use super::accounting::cost_accounting::CostAccounting;
-use super::accounting::costs::Cost;
-use super::accounting::has_cost::HasCost;
-use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
-use super::env::Env;
-use super::errors::InterpreterError;
-use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
-use super::reduce::DebruijnInterpreter;
-use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
-use super::substitute::Substitute;
-use super::system_processes::{
-    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
-};
+use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
 use crate::rust::interpreter::metrics_constants::{
@@ -54,6 +40,25 @@ use crate::rust::interpreter::metrics_constants::{
 use crate::rust::interpreter::ollama_service::SharedOllamaService;
 use crate::rust::interpreter::openai_service::SharedOpenAIService;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
+
+use super::accounting::_cost;
+use super::accounting::cost_accounting::CostAccounting;
+use super::accounting::costs::Cost;
+use super::accounting::has_cost::HasCost;
+use super::dispatch::RhoDispatch;
+use super::dispatch::RholangAndScalaDispatcher;
+use super::env::Env;
+use super::errors::InterpreterError;
+use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::reduce::DebruijnInterpreter;
+use super::registry::registry_bootstrap::ast;
+use super::storage::charging_rspace::ChargingRSpace;
+use super::substitute::Substitute;
+use super::system_processes::{
+    Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
+    Remainder, RhoDispatchMap,
+};
+use models::rhoapi::expr::ExprInstance::GByteArray;
 
 /*
  * This trait has been combined with the 'ReplayRhoRuntime' trait
@@ -257,7 +262,7 @@ pub struct RhoRuntimeImpl {
     pub block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-    pub merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
+    pub merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -267,7 +272,7 @@ impl RhoRuntimeImpl {
         block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
-        merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
+        merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -279,9 +284,13 @@ impl RhoRuntimeImpl {
         }
     }
 
-    pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
+    pub fn get_cost_log(&self) -> Vec<Cost> {
+        self.cost.get_log()
+    }
 
-    pub fn clear_cost_log(&self) { self.cost.clear_log() }
+    pub fn clear_cost_log(&self) {
+        self.cost.clear_log()
+    }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -317,7 +326,11 @@ impl RhoRuntime for RhoRuntimeImpl {
         &mut self,
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        let checkpoint = self
+            .reducer
+            .space
+            .create_soft_checkpoint()
+            .await;
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -343,7 +356,9 @@ impl RhoRuntime for RhoRuntimeImpl {
         log
     }
 
-    async fn get_root(&self) -> Blake2b256Hash { self.reducer.space.get_root().await }
+    async fn get_root(&self) -> Blake2b256Hash {
+        self.reducer.space.get_root().await
+    }
 
     async fn revert_to_soft_checkpoint(
         &mut self,
@@ -363,7 +378,12 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
-        let checkpoint = self.reducer.space.create_checkpoint().await.unwrap();
+        let checkpoint = self
+            .reducer
+            .space
+            .create_checkpoint()
+            .await
+            .unwrap();
         metrics::histogram!(CREATE_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -381,7 +401,11 @@ impl RhoRuntime for RhoRuntimeImpl {
         channel: Vec<Par>,
         pattern: Vec<BindPattern>,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, InterpreterError> {
-        Ok(self.reducer.space.consume_result(channel, pattern).await?)
+        Ok(self
+            .reducer
+            .space
+            .consume_result(channel, pattern)
+            .await?)
     }
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
@@ -396,7 +420,10 @@ impl RhoRuntime for RhoRuntimeImpl {
         &self,
         channels: Vec<Par>,
     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.reducer.space.get_waiting_continuations(channels).await
+        self.reducer
+            .space
+            .get_waiting_continuations(channels)
+            .await
     }
 
     async fn set_block_data(&self, block_data: BlockData) -> () {
@@ -451,17 +478,25 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &_cost { &self.cost }
+    fn cost(&self) -> &_cost {
+        &self.cost
+    }
 }
 
-pub type RhoTuplespace =
-    Arc<Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
+pub type RhoTuplespace = Arc<
+    Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
+>;
 
-pub type RhoISpace =
-    Arc<Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
+pub type RhoISpace = Arc<
+    Box<dyn ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
+>;
 
 pub type RhoReplayISpace = Arc<
-    Box<dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>,
+    Box<
+        dyn IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+            + Send
+            + Sync,
+    >,
 >;
 
 pub type RhoHistoryRepository = Arc<
@@ -497,9 +532,7 @@ where
         };
 
         for space in &mut spaces {
-            let result = space
-                .install(channels.clone(), patterns.clone(), continuation.clone())
-                .await;
+            let result = space.install(channels.clone(), patterns.clone(), continuation.clone()).await;
             results.push(result.map_err(|err| panic!("{}", err)).unwrap());
         }
     }
@@ -872,6 +905,102 @@ fn std_rho_ai_processes() -> Vec<Definition> {
     ]
 }
 
+#[cfg(feature = "chromadb")]
+fn std_rho_chroma_processes() -> Vec<Definition> {
+    vec![
+        Definition {
+            urn: "rho:chroma:collection:new".to_string(),
+            fixed_channel: FixedChannels::chroma_create_collection(),
+            arity: 4,
+            body_ref: BodyRefs::CHROMA_CREATE_COLLECTION,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .chroma_create_collection(args)
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:chroma:collection:meta".to_string(),
+            fixed_channel: FixedChannels::chroma_get_collection_meta(),
+            arity: 2,
+            body_ref: BodyRefs::CHROMA_GET_COLLECTION_META,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .chroma_get_collection_meta(args)
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:chroma:collection:entries:new".to_string(),
+            fixed_channel: FixedChannels::chroma_upsert_entries(),
+            arity: 3,
+            body_ref: BodyRefs::CHROMA_UPSERT_ENTRIES,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .chroma_upsert_entries(args)
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:chroma:collection:entries:query".to_string(),
+            fixed_channel: FixedChannels::chroma_query(),
+            arity: 3,
+            body_ref: BodyRefs::CHROMA_QUERY,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().chroma_query(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:chroma:collection:entries:delete".to_string(),
+            fixed_channel: FixedChannels::chroma_delete_documents(),
+            arity: 3,
+            body_ref: BodyRefs::CHROMA_DELETE_DOCUMENTS,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .chroma_delete_documents(args)
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+    ]
+}
+
+#[cfg(not(feature = "chromadb"))]
+fn std_rho_chroma_processes() -> Vec<Definition> {
+    vec![]
+}
+
 fn dispatch_table_creator(
     space: RhoISpace,
     dispatcher: RhoDispatch,
@@ -882,6 +1011,7 @@ fn dispatch_table_creator(
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
+    chromadb_service: SharedChromaDBService,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -891,8 +1021,9 @@ fn dispatch_table_creator(
     let mut all_processes: Vec<Definition> = std_system_processes();
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
+    all_processes.extend(std_rho_chroma_processes());
 
-    all_processes.append(extra_system_processes);
+    all_processes.extend(extra_system_processes.drain(..));
 
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
@@ -904,6 +1035,7 @@ fn dispatch_table_creator(
             openai_service.clone(),
             ollama_service.clone(),
             grpc_client_service.clone(),
+            chromadb_service.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -952,11 +1084,12 @@ async fn setup_reducer(
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     extra_system_processes: &mut Vec<Definition>,
     urn_map: HashMap<String, Par>,
-    merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
-    mergeable_tag_name: Par,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
+    chromadb_service: SharedChromaDBService,
     cost: _cost,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -976,6 +1109,7 @@ async fn setup_reducer(
         openai_service,
         ollama_service,
         grpc_client_service,
+        chromadb_service,
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -988,7 +1122,7 @@ async fn setup_reducer(
         dispatcher: dispatcher.clone(),
         urn_map: Arc::new(urn_map),
         merge_chs,
-        mergeable_tag_name,
+        mergeable_tags,
         cost: cost.clone(),
         substitute: Substitute { cost: cost.clone() },
     });
@@ -1015,12 +1149,14 @@ fn setup_maps_and_refs(
     // Always include AI processes for replay compatibility.
     // When OpenAI is disabled, the NoOp service handles calls gracefully.
     let rho_ai_binding = std_rho_ai_processes();
+    let rho_chroma_binding = std_rho_chroma_processes();
 
     let combined_processes = system_binding
         .iter()
         .chain(rho_crypto_binding.iter())
         .chain(rho_ai_binding.iter())
         .chain(extra_system_processes.iter())
+        .chain(rho_chroma_binding.iter())
         .collect::<Vec<&Definition>>();
 
     let mut urn_map: HashMap<_, _> = basic_processes();
@@ -1047,8 +1183,8 @@ fn setup_maps_and_refs(
 
 pub async fn create_rho_env<T>(
     mut rspace: T,
-    merge_chs: Arc<tokio::sync::RwLock<HashSet<Par>>>,
-    mergeable_tag_name: Par,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
     cost: _cost,
     external_services: ExternalServices,
@@ -1065,20 +1201,42 @@ where
         + Sync
         + 'static,
 {
-    let maps_and_refs = setup_maps_and_refs(extra_system_processes);
-    let (block_data_ref, invalid_blocks, deploy_data_ref, urn_map, proc_defs) = maps_and_refs;
+    let maps_and_refs = setup_maps_and_refs(&extra_system_processes);
+    let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
+
+    // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
+    // via a URI binding. Genesis-defined tags are unforgeable names; they must
+    // be created at runtime startup and threaded into both the merge engine's
+    // tag registry and the URN map so contracts can bind them via
+    // `bootstrapName(`rho:system:...`)`.
+    for (tag_par, merge_type) in mergeable_tags.iter() {
+        if let MergeType::BitmaskOr = merge_type {
+            tracing::info!(
+                target: "f1r3fly.merge.tag_check",
+                "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
+                tag_par.unforgeables.len(),
+                tag_par.exprs.len(),
+                tag_par.bundles.len(),
+            );
+            urn_map.insert(
+                "rho:system:bitmaskMergeableTag".to_string(),
+                tag_par.clone(),
+            );
+        }
+    }
+
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
-    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        rspace,
-        cost.clone(),
-    )));
+    let charging_rspace: RhoISpace = Arc::new(Box::new(
+        ChargingRSpace::charging_rspace(rspace, cost.clone()),
+    ));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
     let ollama_service = external_services.ollama.clone();
     let grpc_client_service = external_services.grpc_client.clone();
+    let chromadb_service = external_services.chroma.clone();
     let reducer = setup_reducer(
         charging_rspace,
         block_data_ref.clone(),
@@ -1087,10 +1245,11 @@ where
         extra_system_processes,
         urn_map,
         merge_chs,
-        mergeable_tag_name,
+        mergeable_tags,
         openai_service,
         ollama_service,
         grpc_client_service,
+        chromadb_service,
         cost,
     )
     .await;
@@ -1108,18 +1267,18 @@ fn bootstrap_rand() -> Blake2b512Random {
 pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
     let rand = bootstrap_rand();
     let cost = runtime.cost().get();
-    runtime
+    let _ = runtime
         .cost()
         .set(Cost::create(i64::MAX, "bootstrap registry".to_string()));
     runtime.inj(ast(), Env::new(), rand).await.unwrap();
-    runtime.cost().set(Cost::create_from_cost(cost));
+    let _ = runtime.cost().set(Cost::create_from_cost(cost));
 }
 
 async fn create_runtime<T>(
     rspace: T,
     extra_system_processes: &mut Vec<Definition>,
     init_registry: bool,
-    mergeable_tag_name: Par,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
 ) -> RhoRuntimeImpl
 where
@@ -1130,16 +1289,12 @@ where
         + 'static,
 {
     let cost = CostAccounting::empty_cost();
-    let merge_chs = Arc::new(tokio::sync::RwLock::new({
-        let mut set = HashSet::new();
-        set.insert(Par::default());
-        set
-    }));
+    let merge_chs = Arc::new(tokio::sync::RwLock::new(HashMap::<Par, MergeType>::new()));
 
     let rho_env = create_rho_env(
         rspace,
         merge_chs.clone(),
-        mergeable_tag_name,
+        mergeable_tags,
         extra_system_processes,
         cost.clone(),
         external_services,
@@ -1177,7 +1332,7 @@ where
 ///   contract on the rspace. For an existing rspace which bootstrapped registry before, you
 ///   can skip this. For some test cases, you don't need the registry, then you can skip this
 ///   init process which can be faster.
-/// - `mergeable_tag_name`: Tag name for mergeable channels
+/// - `mergeable_tags`: Map of tag `Par` to its merge strategy
 /// - `external_services`: External services configuration (OpenAI, gRPC)
 ///
 /// # Returns
@@ -1190,7 +1345,7 @@ where
 )]
 pub async fn create_rho_runtime<T>(
     rspace: T,
-    mergeable_tag_name: Par,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
@@ -1206,7 +1361,7 @@ where
         rspace,
         extra_system_processes,
         init_registry,
-        mergeable_tag_name,
+        mergeable_tags,
         external_services,
     )
     .await
@@ -1219,7 +1374,7 @@ where
 /// - `rspace`: The replay rspace which the runtime operates on
 /// - `extra_system_processes`: Same as `create_rho_runtime`
 /// - `init_registry`: Same as `create_rho_runtime`
-/// - `mergeable_tag_name`: Tag name for mergeable channels
+/// - `mergeable_tags`: Map of tag `Par` to its merge strategy
 /// - `external_services`: External services configuration
 ///
 /// # Returns
@@ -1232,7 +1387,7 @@ where
 )]
 pub async fn create_replay_rho_runtime<T>(
     rspace: T,
-    mergeable_tag_name: Par,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     init_registry: bool,
     extra_system_processes: &mut Vec<Definition>,
     external_services: ExternalServices,
@@ -1248,7 +1403,7 @@ where
         rspace,
         extra_system_processes,
         init_registry,
-        mergeable_tag_name,
+        mergeable_tags,
         external_services,
     )
     .await
@@ -1259,7 +1414,7 @@ pub(crate) async fn _create_runtimes<T, R>(
     replay_space: R,
     init_registry: bool,
     additional_system_processes: &mut Vec<Definition>,
-    mergeable_tag_name: Par,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
 ) -> (RhoRuntimeImpl, RhoRuntimeImpl)
 where
@@ -1276,7 +1431,7 @@ where
 {
     let rho_runtime = create_rho_runtime(
         space,
-        mergeable_tag_name.clone(),
+        mergeable_tags.clone(),
         init_registry,
         additional_system_processes,
         external_services.clone(),
@@ -1285,7 +1440,7 @@ where
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay_space,
-        mergeable_tag_name,
+        mergeable_tags,
         init_registry,
         additional_system_processes,
         external_services,
@@ -1302,7 +1457,7 @@ where
 )]
 pub async fn create_runtime_from_kv_store(
     stores: RSpaceStore,
-    mergeable_tag_name: Par,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
     init_registry: bool,
     additional_system_processes: &mut Vec<Definition>,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom>>>,
@@ -1313,7 +1468,7 @@ pub async fn create_runtime_from_kv_store(
 
     let runtime = create_rho_runtime(
         space,
-        mergeable_tag_name,
+        mergeable_tags,
         init_registry,
         additional_system_processes,
         external_services,

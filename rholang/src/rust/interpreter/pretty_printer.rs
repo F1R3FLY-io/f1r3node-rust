@@ -1,21 +1,18 @@
-#![allow(clippy::collapsible_match, clippy::manual_try_fold, clippy::ptr_arg)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
-use models::rhoapi::connective::ConnectiveInstance;
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::var::VarInstance;
-use models::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
-    EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+use models::{
+    rhoapi::{
+        connective::ConnectiveInstance, expr::ExprInstance, g_unforgeable::UnfInstance,
+        var::VarInstance, Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
+        EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
+        EPlusPlus, ETuple, EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+    },
+    rust::{
+        bundle_ops::BundleOps, par_map_type_mapper::ParMapTypeMapper,
+        par_set_type_mapper::ParSetTypeMapper,
+    },
 };
-use models::rust::bundle_ops::BundleOps;
-use models::rust::par_map_type_mapper::ParMapTypeMapper;
-use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use shared::rust::shared::printer::Printer;
-use shared::rust::shared::string_ops::wrap_with_braces;
+use shared::rust::shared::{printer::Printer, string_ops::wrap_with_braces};
 
 use super::errors::InterpreterError;
 
@@ -31,12 +28,10 @@ pub struct PrettyPrinter {
     pub is_building_channel: bool,
 }
 
-impl Default for PrettyPrinter {
-    fn default() -> Self { Self::new() }
-}
-
 impl PrettyPrinter {
-    pub fn new() -> Self { PrettyPrinter::create(0, 0) }
+    pub fn new() -> Self {
+        PrettyPrinter::create(0, 0)
+    }
 
     fn create(free_shift: i32, bound_shift: i32) -> Self {
         PrettyPrinter {
@@ -59,11 +54,17 @@ impl PrettyPrinter {
         }
     }
 
-    fn indent_string(&self) -> String { String::from("  ") }
+    fn indent_string(&self) -> String {
+        String::from("  ")
+    }
 
-    fn bound_id(&self) -> String { self.rotate(self.base_id.clone()) }
+    fn bound_id(&self) -> String {
+        self.rotate(self.base_id.clone())
+    }
 
-    fn set_base_id(&self) -> String { self.increment(self.base_id.clone()) }
+    fn set_base_id(&self) -> String {
+        self.increment(self.base_id.clone())
+    }
 
     pub fn build_string_from_expr(&mut self, e: &Expr) -> String {
         // Instead of panicking on errors, return a fallback string
@@ -416,7 +417,7 @@ impl PrettyPrinter {
                     }
 
                     result.push_str(&self.build_remainder_string(remainder));
-                    result.push('}');
+                    result.push_str("}");
 
                     Ok(result)
                 }
@@ -469,19 +470,19 @@ impl PrettyPrinter {
                                 // Decode S-expression to get readable format
                                 SExpr::decode(segment)
                                     .ok()
-                                    .map(|sexpr| {
+                                    .and_then(|sexpr| {
                                         // For simple symbols, the string may already have quotes
                                         // (e.g., from Rholang strings like "books")
                                         match sexpr {
                                             SExpr::Symbol(s) => {
                                                 // If it's already quoted, use as-is; otherwise add quotes
                                                 if s.starts_with('"') && s.ends_with('"') {
-                                                    s
+                                                    Some(s)
                                                 } else {
-                                                    format!("\"{}\"", s)
+                                                    Some(format!("\"{}\"", s))
                                                 }
                                             }
-                                            SExpr::List(_) => sexpr.to_string(),
+                                            SExpr::List(_) => Some(sexpr.to_string()),
                                         }
                                     })
                                     .unwrap_or_else(|| format!("0x{}", hex::encode(segment)))
@@ -551,11 +552,7 @@ impl PrettyPrinter {
                     } else {
                         let scale = fp.scale as usize;
                         let is_negative = unscaled_str.starts_with('-');
-                        let digits = if is_negative {
-                            &unscaled_str[1..]
-                        } else {
-                            &unscaled_str
-                        };
+                        let digits = if is_negative { &unscaled_str[1..] } else { &unscaled_str };
                         if digits.len() <= scale {
                             let padded = format!("{:0>width$}", digits, width = scale + 1);
                             let (integer, fraction) = padded.split_at(padded.len() - scale);
@@ -600,7 +597,7 @@ impl PrettyPrinter {
                 Some(VarInstance::Wildcard(_)) => String::from("..._"),
                 None => String::from("...Nil"),
             },
-            None => String::new(),
+            None => format!(""),
         }
     }
 
@@ -647,7 +644,7 @@ impl PrettyPrinter {
                             Some(v) => match &v.var_instance {
                                 Some(instance) => match instance {
                                     VarInstance::BoundVar(level) => PrettyPrinter::is_new_var(
-                                        level,
+                                        &level,
                                         news_shift_indices,
                                         bound_shift,
                                     ),
@@ -746,7 +743,8 @@ impl PrettyPrinter {
 
                     string.push_str(
                         &self._build_channel_string(
-                            bind.source
+                            &bind
+                                .source
                                 .as_ref()
                                 .expect("source field on bind was None, should be Some"),
                             indent,
@@ -764,7 +762,7 @@ impl PrettyPrinter {
                 },
             )?;
 
-            self.bound_shift += totally_free;
+            self.bound_shift = self.bound_shift + totally_free;
             let body_str = self.build_string_from_message(
                 r.body
                     .as_ref()
@@ -804,7 +802,7 @@ impl PrettyPrinter {
                 self.build_variables(n.bind_count),
                 self.indent_string().repeat(indent + 1),
                 {
-                    self.bound_shift += n.bind_count;
+                    self.bound_shift = self.bound_shift + n.bind_count;
                     self.news_shift_indices = self
                         .news_shift_indices
                         .clone()
@@ -1033,7 +1031,11 @@ impl PrettyPrinter {
     }
 
     fn increment(&self, id: String) -> String {
-        fn inc_char(char_id: char) -> char { ((char_id as u8 + 1 - b'a') % 26 + b'a') as char }
+        fn inc_char(char_id: char) -> char {
+            let new_char = ((char_id as u8 + 1 - b'a') % 26 + b'a') as char;
+
+            new_char
+        }
 
         let new_id = inc_char(id.chars().last().unwrap());
 
@@ -1050,7 +1052,11 @@ impl PrettyPrinter {
 
     fn rotate(&self, id: String) -> String {
         id.chars()
-            .map(|char| ((char as u8 + self.rotation as u8 - b'a') % 26 + b'a') as char)
+            .map(|char| {
+                let new_char = ((char as u8 + self.rotation as u8 - b'a') % 26 + b'a') as char;
+
+                new_char
+            })
             .collect()
     }
 
@@ -1117,7 +1123,7 @@ impl PrettyPrinter {
             )?,
             open_brace,
             {
-                self.bound_shift += pattern_free;
+                self.bound_shift = self.bound_shift + pattern_free;
                 self._build_string_from_message(
                     match_case
                         .source
@@ -1156,14 +1162,13 @@ fn twos_complement_to_decimal(bytes: &[u8]) -> String {
 // rholang/src/test/scala/coop/rchain/rholang/interpreter/PrettyPrinterTest.scala
 #[cfg(test)]
 mod tests {
-    use pretty_assertions::assert_eq;
-    use rholang_parser::ast::Proc;
-
     use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, ProcVisitOutputs};
     use crate::rust::interpreter::compiler::normalizer::ground_normalize_matcher::normalize_ground;
     use crate::rust::interpreter::errors::InterpreterError;
     use crate::rust::interpreter::pretty_printer::PrettyPrinter;
     use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
+    use pretty_assertions::assert_eq;
+    use rholang_parser::ast::Proc;
 
     //ground tests
     #[test]

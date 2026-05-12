@@ -2,12 +2,11 @@
 
 use std::collections::HashMap;
 
-use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::{public_key::PublicKey, signatures::signed::Signed};
 
 use super::casper::protocol::casper_message::DeployData;
-use crate::rhoapi::g_unforgeable::UnfInstance;
-use crate::rhoapi::{GDeployId, GDeployerId, GUnforgeable, Par};
+
+use crate::rhoapi::{g_unforgeable::UnfInstance, GDeployId, GDeployerId, GUnforgeable, Par};
 
 const SYSTEM_DEPLOY_ID_URI: &str = "rho:system:deployId";
 const SYSTEM_DEPLOYER_ID_URI: &str = "rho:system:deployerId";
@@ -86,11 +85,9 @@ pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String
 
 #[cfg(test)]
 mod tests {
-    use crypto::rust::public_key::PublicKey;
-    use crypto::rust::signatures::secp256k1::Secp256k1;
-    use prost::bytes::Bytes;
-
     use super::*;
+    use crypto::rust::{public_key::PublicKey, signatures::secp256k1::Secp256k1};
+    use prost::bytes::Bytes;
 
     fn signed_deploy_fixture() -> Signed<DeployData> {
         Signed {

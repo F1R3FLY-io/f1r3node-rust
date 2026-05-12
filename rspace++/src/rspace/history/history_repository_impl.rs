@@ -1,5 +1,3 @@
-#![allow(clippy::no_effect)]
-
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
@@ -71,13 +69,15 @@ where
         })
     }
 
-    fn checkpoint_parallel_actions_threshold() -> usize { CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD }
+    fn checkpoint_parallel_actions_threshold() -> usize {
+        CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD
+    }
 
     fn should_parallelize_checkpoint_actions(actions_len: usize) -> bool {
         actions_len >= Self::checkpoint_parallel_actions_threshold()
     }
 
-    fn measure(&self, actions: &Vec<HotStoreAction<C, P, A, K>>) {
+    fn measure(&self, actions: &Vec<HotStoreAction<C, P, A, K>>) -> () {
         if !tracing::enabled!(Level::DEBUG) {
             return;
         }
@@ -270,39 +270,39 @@ where
         match hot_store_action {
             HotStoreAction::Insert(InsertData(i)) => {
                 let key = hash(&i.channel);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(
-                    TrieInsertProduce::new(key, i.data),
-                ))
+                HotStoreTrieAction::TrieInsertAction(
+                    TrieInsertAction::TrieInsertProduce(TrieInsertProduce::new(key, i.data)),
+                )
             }
             HotStoreAction::Insert(InsertContinuations(i)) => {
                 let key = hash_from_vec(&i.channels);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(
-                    TrieInsertConsume::new(key, i.continuations),
-                ))
+                HotStoreTrieAction::TrieInsertAction(
+                    TrieInsertAction::TrieInsertConsume(TrieInsertConsume::new(key, i.continuations)),
+                )
             }
             HotStoreAction::Insert(InsertJoins(i)) => {
                 let key = hash(&i.channel);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(
-                    TrieInsertJoins::new(key, i.joins),
-                ))
+                HotStoreTrieAction::TrieInsertAction(
+                    TrieInsertAction::TrieInsertJoins(TrieInsertJoins::new(key, i.joins)),
+                )
             }
             HotStoreAction::Delete(DeleteData(d)) => {
                 let key = hash(&d.channel);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
-                    TrieDeleteProduce::new(key),
-                ))
+                HotStoreTrieAction::TrieDeleteAction(
+                    TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(key)),
+                )
             }
             HotStoreAction::Delete(DeleteContinuations(d)) => {
                 let key = hash_from_vec(&d.channels);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
-                    TrieDeleteConsume::new(key),
-                ))
+                HotStoreTrieAction::TrieDeleteAction(
+                    TrieDeleteAction::TrieDeleteConsume(TrieDeleteConsume::new(key)),
+                )
             }
             HotStoreAction::Delete(DeleteJoins(d)) => {
                 let key = hash(&d.channel);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(
-                    TrieDeleteJoins::new(key),
-                ))
+                HotStoreTrieAction::TrieDeleteAction(
+                    TrieDeleteAction::TrieDeleteJoins(TrieDeleteJoins::new(key)),
+                )
             }
         }
     }
@@ -323,7 +323,7 @@ where
             return self.checkpoint_noop_clone();
         }
 
-        self.measure(&actions);
+        let _ = self.measure(&actions);
 
         let trie_actions: Vec<_> = if Self::should_parallelize_checkpoint_actions(actions.len()) {
             actions
@@ -380,7 +380,7 @@ where
         };
 
         // store cold data
-        {
+        let store_leaves = {
             let serialized_cold_actions = cold_actions
                 .into_iter()
                 .map(|(key, value)| {
@@ -410,7 +410,7 @@ where
         let new_root = new_history.root();
         store_root(&new_root).expect("History Repository Impl: Unable to store root");
 
-        ();
+        let _ = store_leaves;
 
         Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(new_history)),
@@ -464,7 +464,7 @@ where
             .current_history
             .lock()
             .expect("History Repository Impl: Unable to acquire history lock");
-        let history_repo = history_lock.reset(state_hash)?;
+        let history_repo = history_lock.reset(&state_hash)?;
         Ok(Box::new(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone())))
     }
 

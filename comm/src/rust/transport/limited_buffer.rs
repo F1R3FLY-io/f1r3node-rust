@@ -2,12 +2,12 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/buffer/LimitedBufferObservable.scala
 // See comm/src/main/scala/coop/rchain/comm/transport/buffer/ConcurrentQueue.scala
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
 use futures::Stream;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::wrappers::BroadcastStream;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 /// LimitedBuffer trait providing bounded buffering with overflow policy
 pub trait LimitedBuffer<T> {
@@ -111,10 +111,14 @@ impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
     }
 
     /// Get the buffer size
-    pub fn buffer_size(&self) -> usize { self.buffer_size }
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
 
     /// Check if the sender is still active (not closed)
-    pub fn is_active(&self) -> bool { !self.sender.is_disconnected() }
+    pub fn is_active(&self) -> bool {
+        !self.sender.is_disconnected()
+    }
 }
 
 impl<T: Clone + Send + 'static> LimitedBuffer<T> for FlumeLimitedBuffer<T> {
@@ -141,7 +145,9 @@ impl<T: Clone + Send + 'static> LimitedBuffer<T> for FlumeLimitedBuffer<T> {
         // The pump task will notice completion and stop
     }
 
-    fn is_complete(&self) -> bool { self.complete.load(Ordering::Acquire) }
+    fn is_complete(&self) -> bool {
+        self.complete.load(Ordering::Acquire)
+    }
 }
 
 /// Subscription handle for FlumeLimitedBuffer using broadcast receiver
@@ -224,14 +230,15 @@ impl<T: Clone + Send + 'static> LimitedBufferObservable<T> for FlumeLimitedBuffe
 /// Convenience constructor functions
 impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
     /// Create a new drop-new limited buffer observable
-    pub fn drop_new_observable(buffer_size: usize) -> Self { Self::drop_new(buffer_size) }
+    pub fn drop_new_observable(buffer_size: usize) -> Self {
+        Self::drop_new(buffer_size)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use futures::stream::StreamExt;
-
     use super::*;
+    use futures::stream::StreamExt;
 
     #[tokio::test]
     async fn test_limited_buffer_push_next() {

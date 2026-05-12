@@ -1,17 +1,14 @@
-#![allow(clippy::too_many_arguments)]
-
 // See casper/src/main/scala/coop/rchain/casper/safety/CliqueOracle.scala
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rust::block_hash::BlockHash;
-use models::rust::validator::Validator;
-use shared::rust::store::key_value_store::KvStoreError;
-
 use crate::rust::safety_oracle::MIN_FAULT_TOLERANCE;
 use crate::rust::util::clique::Clique;
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::{block_hash::BlockHash, validator::Validator};
+
+use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct CliqueOracle;
 
@@ -158,9 +155,7 @@ impl CliqueOracle {
                 if hash == stopper {
                     break;
                 }
-                if idx.is_multiple_of(yield_check_interval)
-                    && last_yield.elapsed() >= yield_timeslice
-                {
+                if idx % yield_check_interval == 0 && last_yield.elapsed() >= yield_timeslice {
                     tokio::task::yield_now().await;
                     last_yield = Instant::now();
                 }
@@ -221,6 +216,7 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
     ) -> Result<i64, KvStoreError> {
+        let __compute_start = std::time::Instant::now();
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique-oracle", "compute-max-clique-weight-started");
         /// across combination of validators compute pairs that do not have disagreement
@@ -293,7 +289,7 @@ impl CliqueOracle {
                 for j in (i + 1)..pairwise_validators.len() {
                     // Keep this loop cooperative so higher-level timeouts can preempt
                     // expensive clique evaluation on deep DAGs.
-                    if pair_idx.is_multiple_of(yield_check_interval)
+                    if pair_idx % yield_check_interval == 0
                         && last_yield.elapsed() >= yield_timeslice
                     {
                         tokio::task::yield_now().await;
@@ -360,6 +356,11 @@ impl CliqueOracle {
                 .await?;
         let max_weight = Clique::find_maximum_clique_by_weight(&edges, agreeing_weight_map);
 
+        metrics::histogram!(
+            crate::rust::metrics_constants::CLIQUE_ORACLE_COMPUTE_TIME_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .record(__compute_start.elapsed().as_secs_f64());
         Ok(max_weight)
     }
 

@@ -1,20 +1,23 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/GenesisValidator.scala
 
+use async_trait::async_trait;
+use dashmap::DashSet;
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
+use tokio::sync::mpsc;
+
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -23,7 +26,6 @@ use models::rust::casper::protocol::casper_message::{
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
@@ -57,10 +59,11 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
 
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
 
     // Bounded set of seen UnapprovedBlock candidates to avoid unbounded memory growth.
@@ -84,7 +87,9 @@ impl SeenCandidates {
         }
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool { self.set.contains(hash) }
+    fn contains(&self, hash: &BlockHash) -> bool {
+        self.set.contains(hash)
+    }
 
     fn insert(&mut self, hash: BlockHash) {
         if !self.set.insert(hash.clone()) {
@@ -101,7 +106,9 @@ impl SeenCandidates {
     }
 }
 
-fn genesis_seen_candidates_max_entries() -> usize { 4_096 }
+fn genesis_seen_candidates_max_entries() -> usize {
+    4_096
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// Scala equivalent: Constructor for `GenesisValidator` class
@@ -128,9 +135,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         block_store: KeyValueBlockStore,
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     ) -> Self {
@@ -150,6 +158,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             block_store,
             block_dag_storage,
             deploy_storage,
+            rejected_deploy_buffer,
             casper_buffer_storage,
             rspace_state_manager,
             runtime_manager,
@@ -165,7 +174,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         self.seen_candidates.lock().unwrap().contains(hash)
     }
 
-    fn ack(&self, hash: BlockHash) { self.seen_candidates.lock().unwrap().insert(hash); }
+    fn ack(&self, hash: BlockHash) {
+        self.seen_candidates.lock().unwrap().insert(hash);
+    }
 
     /// Handle an ApprovedBlock that arrives while we're still in GenesisValidator state.
     ///
@@ -220,6 +231,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_store,
             &self.block_dag_storage,
             &self.deploy_storage,
+            &self.rejected_deploy_buffer,
             &self.casper_buffer_storage,
             &self.rspace_state_manager,
             self.event_publisher.clone(),
@@ -248,18 +260,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 
         self.ack(hash);
 
-        {
-            let mut runtime_manager_guard = self.runtime_manager.lock().await;
-
-            self.block_approver
-                .unapproved_block_packet_handler(
-                    &mut runtime_manager_guard,
-                    &peer,
-                    ub,
-                    &self.casper_shard_conf.shard_name,
-                )
-                .await?;
-        }
+        self.block_approver
+            .unapproved_block_packet_handler(
+                &self.runtime_manager,
+                &peer,
+                ub,
+                &self.casper_shard_conf.shard_name,
+            )
+            .await?;
 
         // Scala: init = noop (empty F[Unit])
         let init = Arc::new(|| {
@@ -283,6 +291,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_store,
             &self.block_dag_storage,
             &self.deploy_storage,
+            &self.rejected_deploy_buffer,
             &self.casper_buffer_storage,
             &self.rspace_state_manager,
             self.event_publisher.clone(),
@@ -298,7 +307,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
-    async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+    async fn init(&self) -> Result<(), CasperError> {
+        Ok(())
+    }
 
     /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {

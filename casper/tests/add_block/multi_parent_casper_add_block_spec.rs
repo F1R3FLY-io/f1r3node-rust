@@ -1,5 +1,8 @@
 // See casper/src/test/scala/coop/rchain/casper/addblock/MultiParentCasperAddBlockSpec.scala
 
+use crate::helper::block_util::resign_block;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -20,10 +23,6 @@ use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use ValidBlock::Valid;
-
-use crate::helper::block_util::resign_block;
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 /// Test fixture that holds common test data
 /// Equivalent to Scala class fields: val genesis = buildGenesis() and private val SHARD_ID = genesis.genesisBlock.shardId
@@ -1062,8 +1061,8 @@ async fn build_block_with_invalid_justification(
 
     let block_that_points_to_invalid_block = BlockMessage {
         block_hash: serialized_block_hash,
-        header,
-        body,
+        header: header,
+        body: body,
         justifications: serialized_justifications,
         sender: Bytes::new(),
         seq_num: 0,

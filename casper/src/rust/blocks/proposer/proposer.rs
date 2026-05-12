@@ -1,36 +1,45 @@
-#![allow(clippy::large_enum_variant, clippy::too_many_arguments)]
-
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
 use std::sync::{Arc, Mutex};
+use tracing;
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::transport::transport_layer::TransportLayer;
+use block_storage::rust::{
+    deploy::{
+        key_value_deploy_storage::KeyValueDeployStorage,
+        key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    },
+    key_value_block_store::KeyValueBlockStore,
+};
+use comm::rust::{
+    rp::{connect::ConnectionsCell, rp_conf::RPConf},
+    transport::transport_layer::TransportLayer,
+};
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tracing;
+
+use crate::rust::{
+    block_status::{BlockError, InvalidBlock},
+    blocks::proposer::{
+        block_creator,
+        propose_result::{
+            BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
+            ProposeFailure, ProposeResult,
+        },
+    },
+    casper::{Casper, CasperSnapshot},
+    engine::block_retriever::BlockRetriever,
+    errors::CasperError,
+    last_finalized_height_constraint_checker,
+    multi_parent_casper_impl::{self},
+    synchrony_constraint_checker,
+    util::rholang::runtime_manager::RuntimeManager,
+    validator_identity::ValidatorIdentity,
+    ValidBlockProcessing,
+};
 
 use super::propose_result::ProposeStatus;
-use crate::rust::block_status::{BlockError, InvalidBlock};
-use crate::rust::blocks::proposer::block_creator;
-use crate::rust::blocks::proposer::propose_result::{
-    BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
-    ProposeFailure, ProposeResult,
-};
-use crate::rust::casper::{Casper, CasperSnapshot};
-use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::errors::CasperError;
-use crate::rust::multi_parent_casper_impl::{self};
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::validator_identity::ValidatorIdentity;
-use crate::rust::{
-    last_finalized_height_constraint_checker, synchrony_constraint_checker, ValidBlockProcessing,
-};
 
 pub struct ProposeReturnType {
     pub propose_result: ProposeResult,
@@ -112,7 +121,9 @@ pub enum ProposerResult {
 }
 
 impl ProposerResult {
-    pub fn empty() -> Self { Self::Empty }
+    pub fn empty() -> Self {
+        Self::Empty
+    }
 
     pub fn success(status: ProposeStatus, block: BlockMessage) -> Self {
         Self::Success(status, block)
@@ -122,7 +133,9 @@ impl ProposerResult {
         Self::Failure(status, seq_number)
     }
 
-    pub fn started(seq_number: i32) -> Self { Self::Started(seq_number) }
+    pub fn started(seq_number: i32) -> Self {
+        Self::Started(seq_number)
+    }
 }
 
 pub struct Proposer<C, A, S, H, BC, BV, E>
@@ -511,6 +524,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -531,7 +545,12 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
             validator_arc.clone(),
         ),
         ProductionHeightChecker::new(validator_arc),
-        ProductionBlockCreator::new(deploy_storage, runtime_manager.clone(), block_store.clone()),
+        ProductionBlockCreator::new(
+            deploy_storage,
+            rejected_deploy_buffer,
+            runtime_manager.clone(),
+            block_store.clone(),
+        ),
         ProductionBlockValidator,
         ProductionProposeEffectHandler::new(
             block_store,
@@ -614,7 +633,9 @@ pub struct ProductionHeightChecker {
 }
 
 impl ProductionHeightChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
+        Self { validator }
+    }
 }
 
 impl HeightChecker for ProductionHeightChecker {
@@ -628,6 +649,7 @@ impl HeightChecker for ProductionHeightChecker {
 
 pub struct ProductionBlockCreator {
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -635,11 +657,13 @@ pub struct ProductionBlockCreator {
 impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {
         Self {
             deploy_storage,
+            rejected_deploy_buffer,
             runtime_manager,
             block_store,
         }
@@ -659,6 +683,7 @@ impl BlockCreator for ProductionBlockCreator {
             validator_identity,
             dummy_deploy_opt,
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             &mut self.runtime_manager,
             &mut self.block_store,
             allow_empty_blocks,

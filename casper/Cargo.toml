@@ -1,7 +1,6 @@
 [package]
 name = "casper"
 version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -43,7 +42,7 @@ tokio-stream = "0.1"
 humantime = "2.3.0"
 tonic = { workspace = true }
 eyre = { workspace = true }
-metrics = "0.23"
+metrics = { workspace = true }
 proptest = "1.6.0"
 tempfile = { version = "3.24.0", optional = true }
 

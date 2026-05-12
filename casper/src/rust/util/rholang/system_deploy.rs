@@ -1,25 +1,26 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeploy.scala
 
-use std::collections::HashMap;
-
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{GDeployerId, GPrivate, GSysAuthToken, GUnforgeable, Par};
+use models::rhoapi::GPrivate;
+use models::rhoapi::{GDeployerId, GSysAuthToken, GUnforgeable, Par};
 use rholang::rust::interpreter::rho_type::Extractor;
 use rspace_plus_plus::rspace::history::Either;
+use std::collections::HashMap;
 
-use super::system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError};
 use crate::rust::errors::CasperError;
 
+use super::system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError};
+
 pub trait SystemDeployTrait: Send + Sync {
-    type Output: Extractor<Self::Output>;
+    type Output: Extractor;
     type Result;
 
     fn source() -> &'static str;
 
     fn process_result(
-        value: <Self::Output as Extractor<Self::Output>>::RustType,
+        value: <Self::Output as Extractor>::RustType,
     ) -> Either<SystemDeployUserError, Self::Result>;
 
     fn as_any(&self) -> &dyn std::any::Any;
@@ -62,7 +63,7 @@ pub trait SystemDeployTrait: Send + Sync {
     }
 
     fn extract_result(&self, output: &Par) -> Either<SystemDeployUserError, Self::Result> {
-        match <Self::Output as Extractor<Self::Output>>::unapply(output) {
+        match <Self::Output as Extractor>::unapply(output) {
             Some(value) => Self::process_result(value),
             None => {
                 let error = SystemDeployPlatformFailure::UnexpectedResult(vec![output.clone()]);

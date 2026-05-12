@@ -48,13 +48,7 @@ pub type MaybeProduceResult<C, P, A, K> =
  *
  */
 #[async_trait]
-pub trait ISpace<
-    C: Eq + std::hash::Hash + Send + Sync,
-    P: Clone + Send + Sync,
-    A: Clone + Send + Sync,
-    K: Clone + Send + Sync,
->: Send + Sync
-{
+pub trait ISpace<C: Eq + std::hash::Hash + Send + Sync, P: Clone + Send + Sync, A: Clone + Send + Sync, K: Clone + Send + Sync>: Send + Sync {
     /** Creates a checkpoint.
      *
      * @return A [[Checkpoint]]

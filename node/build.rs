@@ -1,8 +1,6 @@
 extern crate tonic_prost_build;
 
-use std::env;
-use std::path::Path;
-use std::process::Command;
+use std::{env, path::Path, process::Command};
 
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
@@ -37,19 +35,22 @@ fn main() {
         .file_descriptor_set_path("build/descriptors/reflection_protos.bin")
         .build_client(true)
         .build_server(true)
-        .btree_map(".")
+        .btree_map(&".")
         .message_attribute(".", "#[repr(C)]")
-        .bytes(".")
-        .compile_protos(&proto_files, &[
-            proto_src_dir.clone(),
-            proto_src_models_dir.clone(),
-            manifest_dir.clone(),
-            scala_proto_base_dir.clone(),
-        ])
+        .bytes(&".")
+        .compile_protos(
+            &proto_files,
+            &[
+                proto_src_dir.clone(),
+                proto_src_models_dir.clone(),
+                manifest_dir.clone(),
+                scala_proto_base_dir.clone(),
+            ],
+        )
         .expect("Failed to compile proto files");
 
     let git_hash = Command::new("git")
-        .args(["rev-parse", "--short=7", "HEAD"])
+        .args(&["rev-parse", "--short=7", "HEAD"])
         .output()
         .ok()
         .and_then(|output| String::from_utf8(output.stdout).ok())

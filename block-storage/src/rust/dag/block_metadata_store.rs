@@ -1,7 +1,9 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockMetadataStore.scala
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLock},
+};
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -234,13 +236,7 @@ impl BlockMetadataStore {
     }
 
     pub fn finalized_block_hashes(&self) -> HashSet<BlockHash> {
-        self.dag_state
-            .read()
-            .unwrap()
-            .finalized_block_set
-            .iter()
-            .cloned()
-            .collect()
+        self.dag_state.read().unwrap().finalized_block_set.iter().cloned().collect()
     }
 
     pub fn get(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
@@ -251,14 +247,16 @@ impl BlockMetadataStore {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "BlockMetadataStore is missing key {}",
-                PrettyPrinter::build_string_bytes(hash)
+                PrettyPrinter::build_string_bytes(&hash.to_vec())
             ))
         })
     }
 
     // DAG state operations — all return O(1) clones via imbl structural sharing
 
-    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
+    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> {
+        &self.dag_state
+    }
 
     pub fn dag_set(&self) -> imbl::HashSet<BlockHash> {
         self.dag_state.read().unwrap().dag_set.clone()
@@ -367,7 +365,7 @@ impl BlockMetadataStore {
             && state_guard
                 .last_finalized_block
                 .as_ref()
-                .is_none_or(|&(_, height)| height <= block_info.block_num)
+                .map_or(true, |&(_, height)| height <= block_info.block_num)
         {
             state_guard.last_finalized_block = Some((hash.clone(), block_info.block_num));
         }

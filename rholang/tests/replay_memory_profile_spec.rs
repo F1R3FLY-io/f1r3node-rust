@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rholang::rust::interpreter::{
+    accounting::costs::Cost, rho_runtime::RhoRuntime, test_utils::resources::create_runtimes,
+};
+use rspace_plus_plus::rspace::shared::{
+    in_mem_store_manager::InMemoryStoreManager, key_value_store_manager::KeyValueStoreManager,
+};
 
 fn vm_rss_kb() -> Option<usize> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -16,9 +17,13 @@ fn vm_rss_kb() -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
+fn kb_to_mib(kb: usize) -> f64 {
+    kb as f64 / 1024.0
+}
 
-fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
+fn delta_kb_to_mib(delta_kb: isize) -> f64 {
+    delta_kb as f64 / 1024.0
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual memory profiling; run with --ignored --nocapture"]
@@ -83,9 +88,7 @@ async fn profile_debruijn_interpreter_replay_memory_usage() {
             .expect("Replay data check failed");
 
         runtime.revert_to_soft_checkpoint(play_checkpoint).await;
-        replay_runtime
-            .revert_to_soft_checkpoint(replay_checkpoint)
-            .await;
+        replay_runtime.revert_to_soft_checkpoint(replay_checkpoint).await;
 
         if i % sample_every == 0 {
             if let Some(rss) = vm_rss_kb() {

@@ -1,11 +1,10 @@
-use k256::elliptic_curve::rand_core::OsRng;
-use k256::schnorr::signature::hazmat::{PrehashSigner, PrehashVerifier};
-use k256::schnorr::{Signature, SigningKey, VerifyingKey};
-
 use super::signatures_alg::SignaturesAlg;
-use crate::rust::hash::blake2b256::Blake2b256;
-use crate::rust::private_key::PrivateKey;
-use crate::rust::public_key::PublicKey;
+use crate::rust::{hash::blake2b256::Blake2b256, private_key::PrivateKey, public_key::PublicKey};
+use k256::elliptic_curve::rand_core::OsRng;
+use k256::schnorr::{
+    signature::hazmat::{PrehashSigner, PrehashVerifier},
+    Signature, SigningKey, VerifyingKey,
+};
 
 pub const SCHNORR_SECP256K1_ALGORITHM_NAME: &str = "schnorr-secp256k1";
 pub const SCHNORR_SECP256K1_SIGNING_DOMAIN: &[u8] = b"f1r3node/schnorr-secp256k1/signing/v1";
@@ -19,7 +18,9 @@ const SCHNORR_SIG_LEN: usize = 64;
 pub struct SchnorrSecp256k1;
 
 impl SchnorrSecp256k1 {
-    pub fn name() -> String { SCHNORR_SECP256K1_ALGORITHM_NAME.to_string() }
+    pub fn name() -> String {
+        SCHNORR_SECP256K1_ALGORITHM_NAME.to_string()
+    }
 
     pub fn signing_preimage(serialized_payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(
@@ -129,13 +130,21 @@ impl SignaturesAlg for SchnorrSecp256k1 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String { Self::name() }
+    fn name(&self) -> String {
+        Self::name()
+    }
 
-    fn sig_length(&self) -> usize { SCHNORR_SIG_LEN }
+    fn sig_length(&self) -> usize {
+        SCHNORR_SIG_LEN
+    }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
+        self.name() == other.name()
+    }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
+        Box::new(self.clone())
+    }
 }
 
 #[cfg(test)]
@@ -143,7 +152,9 @@ mod tests {
     use super::*;
     use crate::rust::hash::blake2b256::Blake2b256;
 
-    fn decode_hex(hex_str: &str) -> Vec<u8> { hex::decode(hex_str).expect("valid hex") }
+    fn decode_hex(hex_str: &str) -> Vec<u8> {
+        hex::decode(hex_str).expect("valid hex")
+    }
 
     #[test]
     fn generates_valid_key_pairs() {

@@ -1,15 +1,14 @@
 // See casper/src/main/scala/coop/rchain/casper/Estimator.scala
 
-use std::collections::{HashMap, HashSet, VecDeque};
-
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::validator::Validator;
+use models::rust::{
+    block_hash::BlockHash, block_metadata::BlockMetadata,
+    casper::protocol::casper_message::BlockMessage, validator::Validator,
+};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::rust::util::dag_operations::DagOperations;
 use crate::rust::util::proto_util;
@@ -297,5 +296,7 @@ impl Estimator {
         }
     }
 
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
+    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool {
+        new_blocks == blocks
+    }
 }

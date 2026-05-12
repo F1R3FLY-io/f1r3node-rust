@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/state/RSpaceExporter.scala
 
 use std::sync::Arc;
@@ -83,9 +81,9 @@ impl RSpaceExporterInstance {
         ) -> Vec<(Blake2b256Hash, Option<Byte>)> {
             let prefix_size = last_prefix.len();
             let mut size_array: Vec<u8> = vec![prefix_size as u8];
-            size_array.extend(std::iter::repeat_n(0x00, 31));
+            size_array.extend(std::iter::repeat(0x00).take(31));
 
-            let prefix_zeros: Vec<u8> = std::iter::repeat_n(0x00, 128 - prefix_size).collect();
+            let prefix_zeros: Vec<u8> = std::iter::repeat(0x00).take(128 - prefix_size).collect();
             let mut prefix128_array = last_prefix.to_vec();
             prefix128_array.extend(prefix_zeros);
 
@@ -147,7 +145,7 @@ impl RSpaceExporterInstance {
             } = data;
 
             let nodes = construct_nodes(leaf_keys, node_keys.clone());
-            let mut nodes_without_last = if !nodes.is_empty() {
+            let mut nodes_without_last = if nodes.len() > 0 {
                 nodes[..nodes.len() - 1].to_vec()
             } else {
                 Vec::new()
@@ -173,7 +171,7 @@ impl RSpaceExporterInstance {
 
         // Format the index as a hexadecimal string or "--" if None
         let idx_str = match idx {
-            Some(i) => format!("{:02x}", *i),
+            Some(i) => format!("{:02x}", i & 0xff),
             None => "--".to_string(),
         };
 

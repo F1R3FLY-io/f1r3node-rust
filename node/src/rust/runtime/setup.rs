@@ -1,39 +1,53 @@
-#![allow(clippy::too_many_arguments)]
-
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
-// Imports needed for function signature and return type
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use tracing::{debug, info, trace, warn};
 
-use casper::rust::blocks::block_processor::BlockProcessor;
-use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
-use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::engine::block_retriever::BlockRetriever;
-use casper::rust::engine::casper_launch::CasperLaunch;
-use casper::rust::errors::CasperError;
+// Imports needed for function signature and return type
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+};
+use tokio::sync::{mpsc, oneshot, RwLock};
+
+use models::rust::{
+    block_hash::BlockHash,
+    casper::protocol::casper_message::{ApprovedBlock, BlockMessage},
+};
+
 use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
-use casper::rust::state::instances::ProposerState;
-use casper::rust::ProposeFunction;
-use comm::rust::discovery::node_discovery::NodeDiscovery;
-use comm::rust::p2p::packet_handler::PacketHandler;
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::{debug, info, trace, warn};
+use casper::rust::{
+    blocks::{
+        block_processor::BlockProcessor,
+        proposer::proposer::{ProductionProposer, ProposerResult},
+    },
+    casper::{Casper, MultiParentCasper},
+    engine::{block_retriever::BlockRetriever, casper_launch::CasperLaunch},
+    errors::CasperError,
+    state::instances::ProposerState,
+    ProposeFunction,
+};
 
-use crate::rust::api::admin_web_api::AdminWebApi;
-use crate::rust::api::web_api::WebApi;
-use crate::rust::configuration::NodeConf;
-use crate::rust::runtime::api_servers::APIServers;
-use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
-use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
+use comm::rust::{
+    discovery::node_discovery::NodeDiscovery, p2p::packet_handler::PacketHandler,
+    rp::connect::ConnectionsCell, transport::transport_layer::TransportLayer,
+};
+
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+
+use crate::rust::{
+    api::{admin_web_api::AdminWebApi, web_api::WebApi},
+    configuration::NodeConf,
+    runtime::{
+        api_servers::APIServers,
+        node_runtime::{CasperLoop, EngineInit},
+    },
+    web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes},
+};
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
@@ -45,9 +59,13 @@ type ProposerQueueEntry = (
     u8,
 );
 
-fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
+fn proposer_queue_max_pending() -> usize {
+    PROPOSER_QUEUE_MAX_PENDING
+}
 
-fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
+fn block_processor_queue_max_pending() -> usize {
+    BLOCK_PROCESSOR_QUEUE_MAX_PENDING
+}
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
@@ -154,6 +172,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         (deploy_storage, deploy_storage_arc)
     };
 
+    // Buffer of deploys rejected during multi-parent merge; re-proposed in
+    // subsequent blocks to avoid silent loss of otherwise-valid user deploys.
+    let rejected_deploy_buffer_arc = {
+        use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut rnode_store_manager).await?;
+        Arc::new(Mutex::new(buffer))
+    };
+
     // Safety oracle (clique oracle implementation)
     let oracle = {
         use casper::rust::safety_oracle::CliqueOracleImpl;
@@ -199,9 +226,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // Runtime for `rnode eval`
     let eval_runtime = {
-        use models::rhoapi::Par;
-        use rholang::rust::interpreter::matcher::r#match::Matcher;
-        use rholang::rust::interpreter::rho_runtime;
+        use rholang::rust::interpreter::{matcher::r#match::Matcher, rho_runtime};
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let eval_stores = rnode_store_manager
@@ -211,7 +236,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
-            Par::default(),
+            Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
             false,
             &mut Vec::new(),
             Arc::new(Box::new(Matcher)),
@@ -236,7 +261,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let result = RuntimeManager::create_with_history(
             rspace_stores,
             mergeable_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
@@ -342,6 +367,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             runtime_manager.clone(),
             block_store.clone(),
             deploy_storage_arc.clone(),
+            rejected_deploy_buffer_arc.clone(),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
@@ -475,9 +501,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage,
+            rejected_deploy_buffer_arc.clone(),
             casper_buffer_storage.clone(),
             rspace_state_manager,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager.clone())),
+            Arc::new(runtime_manager.clone()),
             estimator.clone(),
             // Explicit parameters
             block_processor_queue_tx.clone(),
@@ -796,7 +823,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         let gc_block_dag_storage = block_dag_storage.clone();
         let gc_block_store = block_store.clone();
-        let gc_runtime_manager = Arc::new(tokio::sync::Mutex::new(runtime_manager.clone()));
+        let gc_runtime_manager = Arc::new(runtime_manager.clone());
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
@@ -914,9 +941,8 @@ async fn handle_block_finalized(
     block_hash: String,
     block_number: i64,
 ) {
-    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
-
     use crate::rust::web::block_info_enricher::extract_transfers_from_report;
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
 
     let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
         Ok(bytes) => bytes.into(),

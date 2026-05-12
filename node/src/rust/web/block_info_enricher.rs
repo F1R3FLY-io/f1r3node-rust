@@ -31,8 +31,7 @@ pub fn extract_transfers_from_report(
         }
 
         // First report batch is precharge — extract deployer address from it
-        let first_batch_transactions =
-            find_transfers_in_report(&deploy.report[0], transfer_unforgeable);
+        let first_batch_transactions = find_transfers_in_report(&deploy.report[0], transfer_unforgeable);
         let deployer_addr = first_batch_transactions
             .first()
             .map(|t| t.from_addr.clone());
@@ -130,15 +129,16 @@ struct RawTransfer {
 
 #[cfg(test)]
 mod tests {
-    use models::casper::{
-        report_proto, BlockEventInfo, DeployInfo, DeployInfoWithEventData, LightBlockInfo,
-        ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
-    };
-    use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::g_unforgeable::UnfInstance;
-    use models::rhoapi::{Expr, GPrivate, GUnforgeable, ListParWithRandom};
-
     use super::*;
+    use models::casper::{
+        report_proto, BlockEventInfo, DeployInfo, DeployInfoWithEventData,
+        LightBlockInfo, ReportCommProto, ReportConsumeProto, ReportProduceProto,
+        ReportProto, SingleReport,
+    };
+    use models::rhoapi::{
+        expr::ExprInstance, g_unforgeable::UnfInstance, Expr, GPrivate, GUnforgeable,
+        ListParWithRandom,
+    };
 
     fn make_par_string(s: &str) -> Par {
         Par {
@@ -161,7 +161,9 @@ mod tests {
     fn make_transfer_unforgeable() -> Par {
         Par {
             unforgeables: vec![GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0x42; 32] })),
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                    id: vec![0x42; 32],
+                })),
             }],
             ..Default::default()
         }
@@ -264,9 +266,7 @@ mod tests {
                     sig: "deploy_no_transfer".to_string(),
                     ..Default::default()
                 }),
-                report: vec![SingleReport { events: vec![] }, SingleReport {
-                    events: vec![],
-                }],
+                report: vec![SingleReport { events: vec![] }, SingleReport { events: vec![] }],
             }],
             system_deploys: vec![],
             post_state_hash: vec![].into(),
@@ -274,9 +274,7 @@ mod tests {
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-        let transfers = result
-            .get("deploy_no_transfer")
-            .expect("should have deploy entry");
+        let transfers = result.get("deploy_no_transfer").expect("should have deploy entry");
         assert!(transfers.is_empty(), "should have no transfers");
     }
 }

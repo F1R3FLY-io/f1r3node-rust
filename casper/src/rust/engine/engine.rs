@@ -1,15 +1,10 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/Engine.scala
-
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -21,12 +16,15 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::casper::CasperShardConf;
+use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::running::Running;
@@ -39,6 +37,7 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 
 /// Object-safe Engine trait that matches Scala Engine[F] behavior.
 /// Note: we expose `with_casper() -> Option<&MultiParentCasper>` as an accessor,
@@ -99,13 +98,17 @@ pub fn noop() -> impl Engine {
 
     #[async_trait]
     impl Engine for NoopEngine {
-        async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+        async fn init(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
 
         async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
             Ok(())
         }
 
-        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+            None
+        }
     }
 
     NoopEngine
@@ -283,12 +286,13 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
     deploy_storage: &KeyValueDeployStorage,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: &CasperBufferKeyValueStorage,
     rspace_state_manager: &RSpaceStateManager,
     event_publisher: F1r3flyEvents,
     block_retriever: BlockRetriever<U>,
     engine_cell: &Arc<EngineCell>,
-    runtime_manager_arc: &Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<(), CasperError> {
@@ -308,6 +312,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_store.clone(),
         block_dag_storage.clone(),
         deploy_storage.clone(),
+        rejected_deploy_buffer.clone(),
         casper_buffer_storage.clone(),
         rspace_state_manager.clone(),
         block_processing_queue_tx.clone(),

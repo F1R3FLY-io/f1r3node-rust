@@ -1,24 +1,8 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/CasperLaunch.scala
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-
-use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::rp::connect::ConnectionsCell;
-use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::mpsc;
 
 use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
@@ -39,6 +23,23 @@ use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
 use crate::rust::validator_identity::ValidatorIdentity;
+use async_trait::async_trait;
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::rp::connect::ConnectionsCell;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::SystemTime;
 
 #[async_trait]
 pub trait CasperLaunch {
@@ -57,9 +58,10 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
     casper_shard_conf: CasperShardConf,
 
@@ -77,7 +79,9 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+fn max_blocks_in_processing() -> usize {
+    MAX_BLOCKS_IN_PROCESSING
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
@@ -97,6 +101,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.block_store.clone(),
             self.block_dag_storage.clone(),
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             validator_id,
             self.casper_shard_conf.clone(),
@@ -118,9 +123,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         block_store: KeyValueBlockStore,
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters (matching Scala signature order)
         block_processing_queue_tx: mpsc::Sender<(
@@ -143,7 +149,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             finalization_rate: conf.finalization_rate,
             max_number_of_parents: conf.max_number_of_parents,
             max_parent_depth: conf.max_parent_depth,
-            synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
+            synchrony_constraint_threshold: conf.synchrony_constraint_threshold as f32,
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
             casper_version: 1,
@@ -185,6 +191,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             block_store,
             block_dag_storage,
             deploy_storage,
+            rejected_deploy_buffer,
             casper_buffer_storage,
             rspace_state_manager,
             runtime_manager,
@@ -406,7 +413,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            &self.engine_cell,
+            &*self.engine_cell,
             &self.event_publisher,
         )
         .await?;
@@ -416,9 +423,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // contract at genesis. If they disagree, the node's /api/status would
         // advertise values that contradict on-chain state, which misleads
         // block explorers and wallets.
-        let runtime_manager = self.runtime_manager.lock().await;
         crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
-            &runtime_manager,
+            &self.runtime_manager,
             &genesis_post_state_hash,
             &self.conf.genesis_block_data.native_token_name,
             &self.conf.genesis_block_data.native_token_symbol,
@@ -516,6 +522,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.block_store.clone(),
             self.block_dag_storage.clone(),
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.rspace_state_manager.clone(),
             self.runtime_manager.clone(),
@@ -606,7 +613,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
-            &mut *self.runtime_manager.lock().await,
+            &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),
             self.transport_layer.clone(),
@@ -628,6 +635,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             let block_store = self.block_store.clone();
             let block_dag_storage = self.block_dag_storage.clone();
             let deploy_storage = self.deploy_storage.clone();
+            let rejected_deploy_buffer = self.rejected_deploy_buffer.clone();
             let casper_buffer_storage = self.casper_buffer_storage.clone();
             let event_publisher = self.event_publisher.clone();
             let block_retriever = self.block_retriever.clone();
@@ -648,6 +656,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     block_store,
                     block_dag_storage,
                     deploy_storage,
+                    rejected_deploy_buffer,
                     casper_buffer_storage,
                     runtime_manager,
                     estimator,
@@ -714,6 +723,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.block_store,
             &self.block_dag_storage,
             &self.deploy_storage,
+            &self.rejected_deploy_buffer,
             &self.casper_buffer_storage,
             &self.rspace_state_manager,
             self.event_publisher.clone(),

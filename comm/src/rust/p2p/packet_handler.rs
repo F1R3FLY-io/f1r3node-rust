@@ -3,8 +3,10 @@
 use async_trait::async_trait;
 use models::routing::Packet;
 
-use crate::rust::errors::{unknown_protocol, CommError};
-use crate::rust::peer_node::PeerNode;
+use crate::rust::{
+    errors::{unknown_protocol, CommError},
+    peer_node::PeerNode,
+};
 
 /// Trait for handling packets from peers
 #[async_trait]
@@ -15,12 +17,10 @@ pub trait PacketHandler: Send + Sync {
 /// A no-operation packet handler that does nothing
 pub struct NOPPacketHandler;
 
-impl Default for NOPPacketHandler {
-    fn default() -> Self { Self::new() }
-}
-
 impl NOPPacketHandler {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
@@ -32,20 +32,25 @@ impl PacketHandler for NOPPacketHandler {
 
 /// A packet handler that uses partial functions for different peers
 pub struct PartialFunctionPacketHandler<F>
-where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
+where
+    F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync,
 {
     handler_fn: F,
 }
 
 impl<F> PartialFunctionPacketHandler<F>
-where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
+where
+    F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync,
 {
-    pub fn new(handler_fn: F) -> Self { Self { handler_fn } }
+    pub fn new(handler_fn: F) -> Self {
+        Self { handler_fn }
+    }
 }
 
 #[async_trait]
 impl<F> PacketHandler for PartialFunctionPacketHandler<F>
-where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
+where
+    F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync,
 {
     async fn handle_packet(&self, peer: &PeerNode, packet: &Packet) -> Result<(), CommError> {
         match (self.handler_fn)(peer, packet) {
@@ -61,16 +66,17 @@ where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
 
 /// Helper function to create a packet handler from a closure
 pub fn packet_handler_from_fn<F>(handler_fn: F) -> PartialFunctionPacketHandler<F>
-where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync {
+where
+    F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync,
+{
     PartialFunctionPacketHandler::new(handler_fn)
 }
 
 #[cfg(test)]
 mod tests {
-    use prost::bytes::Bytes;
-
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use prost::bytes::Bytes;
 
     fn test_peer() -> PeerNode {
         let id = NodeIdentifier {

@@ -1,9 +1,7 @@
 use std::sync::Once;
 
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod add_block;
 mod api;
@@ -14,6 +12,7 @@ mod engine;
 mod genesis;
 mod helper;
 mod merging;
+mod multi_node;
 mod sync;
 mod util;
 

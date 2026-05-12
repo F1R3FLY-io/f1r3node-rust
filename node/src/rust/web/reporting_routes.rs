@@ -1,15 +1,16 @@
-#![allow(clippy::large_enum_variant)]
-
-use axum::extract::{Query, State};
-use axum::response::{IntoResponse, Json, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::{
+    extract::{Query, State},
+    response::{IntoResponse, Json, Response},
+    routing::get,
+    Router,
+};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
-use crate::rust::web::shared_handlers::AppState;
+use crate::rust::{
+    api::serde_types::block_event_info::BlockEventInfoSerde, web::shared_handlers::AppState,
+};
 
 pub struct ReportingRoutes;
 
@@ -33,7 +34,9 @@ pub struct TraceQuery {
 pub type ReportingHttpRoutes = Router<AppState>;
 
 impl ReportingRoutes {
-    pub fn create_router() -> Router<AppState> { Router::new().route("/trace", get(trace_handler)) }
+    pub fn create_router() -> Router<AppState> {
+        Router::new().route("/trace", get(trace_handler))
+    }
 }
 
 #[utoipa::path(

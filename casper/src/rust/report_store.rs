@@ -1,16 +1,20 @@
 // casper/src/rust/report_store.rs
 // See casper/src/main/scala/coop/rchain/casper/ReportStore.scala
 
+use prost::Message;
 use std::sync::Arc;
 
 // BlockEventInfo is defined in models/src/main/protobuf/DeployServiceCommon.proto line 224
 // It's in the "casper" package, compiled via build.rs and included in models::casper
 use models::casper::BlockEventInfo;
-use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
-use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use shared::rust::{BitVector, ByteString};
+use shared::rust::{
+    store::{
+        key_value_store::{KeyValueStore, KvStoreError},
+        key_value_typed_store::KeyValueTypedStore,
+    },
+    BitVector, ByteString,
+};
 
 pub type ReportStore = CompressedBlockEventInfoStore;
 
@@ -25,10 +29,14 @@ pub struct CompressedBlockEventInfoStore {
 }
 
 impl CompressedBlockEventInfoStore {
-    pub fn new(store: Arc<dyn KeyValueStore>) -> Self { Self { store } }
+    pub fn new(store: Arc<dyn KeyValueStore>) -> Self {
+        Self { store }
+    }
 
     /// Encode key - ByteString passes through as-is
-    fn encode_key(&self, key: &ByteString) -> Result<BitVector, KvStoreError> { Ok(key.clone()) }
+    fn encode_key(&self, key: &ByteString) -> Result<BitVector, KvStoreError> {
+        Ok(key.clone())
+    }
 
     /// Decode key - ByteString passes through as-is
     fn decode_key(&self, encoded_key: &BitVector) -> Result<ByteString, KvStoreError> {
@@ -104,7 +112,9 @@ impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfo
     }
 
     fn collect<F, T>(&self, mut f: F) -> Result<Vec<T>, KvStoreError>
-    where F: FnMut((&ByteString, &BlockEventInfo)) -> Option<T> {
+    where
+        F: FnMut((&ByteString, &BlockEventInfo)) -> Option<T>,
+    {
         let store_map = self.store.to_map()?;
         let mut result = Vec::new();
 
@@ -135,7 +145,9 @@ impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfo
         Ok(result)
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+    fn non_empty(&self) -> Result<bool, KvStoreError> {
+        self.store.non_empty()
+    }
 }
 
 /// Compress bytes using LZ4 with varint length prefix (compatible with Java LZ4CompressorWithLength)
@@ -153,9 +165,8 @@ fn compress_bytes(bytes: &[u8]) -> Vec<u8> {
 
 /// Decompress bytes using LZ4 with varint length prefix (compatible with Java LZ4DecompressorWithLength)
 fn decompress_bytes(bytes: &[u8]) -> Result<Vec<u8>, KvStoreError> {
-    use std::io::Cursor;
-
     use prost::encoding::decode_varint;
+    use std::io::Cursor;
 
     let mut cursor = Cursor::new(bytes);
 

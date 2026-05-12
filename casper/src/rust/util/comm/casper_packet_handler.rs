@@ -1,25 +1,25 @@
 // See casper/src/main/scala/coop/rchain/casper/util/comm/CasperPacketHandler.scala
 
+use async_trait::async_trait;
+use comm::rust::{errors::CommError, p2p::packet_handler::PacketHandler, peer_node::PeerNode};
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::{routing::Packet, rust::casper::protocol::casper_message::CasperMessage};
+use prost::bytes::Bytes;
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use comm::rust::errors::CommError;
-use comm::rust::p2p::packet_handler::PacketHandler;
-use comm::rust::peer_node::PeerNode;
-use models::routing::Packet;
-use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::CasperMessage;
-use prost::bytes::Bytes;
-use shared::rust::metrics_constants::CASPER_PACKET_HANDLER_METRICS_SOURCE;
-use shared::rust::metrics_semaphore::MetricsSemaphore;
+use crate::rust::{
+    engine::engine_cell::EngineCell,
+    errors::CasperError,
+    protocol::{casper_message_from_proto, to_casper_message_proto},
+    util::comm::fair_round_robin_dispatcher::{
+        Dispatch, DispatcherConfig, FairRoundRobinDispatcher,
+    },
+};
 
-use crate::rust::engine::engine_cell::EngineCell;
-use crate::rust::errors::CasperError;
-use crate::rust::protocol::{casper_message_from_proto, to_casper_message_proto};
-use crate::rust::util::comm::fair_round_robin_dispatcher::{
-    Dispatch, DispatcherConfig, FairRoundRobinDispatcher,
+use shared::rust::{
+    metrics_constants::CASPER_PACKET_HANDLER_METRICS_SOURCE, metrics_semaphore::MetricsSemaphore,
 };
 
 #[derive(Clone)]
@@ -28,7 +28,9 @@ pub struct CasperPacketHandler {
 }
 
 impl CasperPacketHandler {
-    pub fn new(engine_cell: EngineCell) -> Self { Self { engine_cell } }
+    pub fn new(engine_cell: EngineCell) -> Self {
+        Self { engine_cell }
+    }
 }
 
 #[async_trait]
@@ -46,7 +48,7 @@ impl PacketHandler for CasperPacketHandler {
         }
 
         let message = casper_message_from_proto(parse_result.unwrap())
-            .map_err(CommError::UnexpectedMessage)?;
+            .map_err(|e| CommError::UnexpectedMessage(e))?;
 
         let engine = self.engine_cell.get().await;
 
@@ -65,7 +67,9 @@ pub struct BlockCreator {
 }
 
 impl BlockCreator {
-    pub fn new(value: Bytes) -> Self { Self { value } }
+    pub fn new(value: Bytes) -> Self {
+        Self { value }
+    }
 
     /// Create an empty BlockCreator (used for non-BlockHashMessage types).
     pub fn empty() -> Self {
@@ -84,15 +88,21 @@ impl BlockCreator {
     }
 
     /// Access the underlying value (primarily for tests and debugging).
-    pub fn value(&self) -> &Bytes { &self.value }
+    pub fn value(&self) -> &Bytes {
+        &self.value
+    }
 }
 
 impl Hash for BlockCreator {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.value.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
 }
 
 impl PartialEq for BlockCreator {
-    fn eq(&self, other: &Self) -> bool { self.value == other.value }
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
 }
 
 impl Eq for BlockCreator {}
@@ -114,7 +124,9 @@ pub struct DispatcherMessage {
 }
 
 impl DispatcherMessage {
-    pub fn new(peer: PeerNode, message: CasperMessage) -> Self { Self { peer, message } }
+    pub fn new(peer: PeerNode, message: CasperMessage) -> Self {
+        Self { peer, message }
+    }
 }
 
 /// Implement equality based on message content only (ignoring peer).
@@ -230,7 +242,7 @@ impl PacketHandler for FairDispatcherPacketHandler {
         }
 
         let message = casper_message_from_proto(parse_result.unwrap())
-            .map_err(CommError::UnexpectedMessage)?;
+            .map_err(|e| CommError::UnexpectedMessage(e))?;
 
         tracing::debug!("Received message {:?} from {}", message, peer);
 

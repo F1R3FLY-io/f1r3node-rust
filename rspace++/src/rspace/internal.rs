@@ -51,7 +51,7 @@ where
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> WaitingContinuation<P, K> {
-        let source = Consume::create(channels, patterns, &continuation, persist);
+        let source = Consume::create(&channels, &patterns, &continuation, persist);
         WaitingContinuation {
             patterns: patterns.to_vec(),
             continuation: continuation.clone(),

@@ -2,38 +2,39 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::HashMap;
-use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::{fs, io};
-
+use crate::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use crate::rust::errors::CasperError;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use dashmap::{DashMap, DashSet};
 use lazy_static::lazy_static;
-use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
-use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
-};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+use std::collections::HashMap;
+use std::fs;
+use std::future::Future;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{atomic::AtomicU64, Arc, Mutex, OnceLock, RwLock};
 use tempfile::{Builder, TempDir};
 use uuid::Uuid;
 
-use crate::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
-use crate::rust::errors::CasperError;
-use crate::rust::genesis::genesis::Genesis;
-use crate::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
+use crate::rust::{
+    genesis::genesis::Genesis, storage::rnode_key_value_store_manager::rnode_db_mapping,
+    util::rholang::runtime_manager::RuntimeManager,
+};
+use models::rhoapi::Par;
+use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
+use rspace_plus_plus::rspace::shared::{
+    key_value_store_manager::KeyValueStoreManager,
+    lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig, MB},
+};
+
 use crate::rust::test_utils::util::genesis_builder::{GenesisBuilder, GenesisContext};
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
 
@@ -181,7 +182,9 @@ pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueS
 /// Each test should use a unique scope ID to ensure database isolation
 /// within the shared LMDB environment.
 #[cfg(feature = "test-utils")]
-pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
+pub fn generate_scope_id() -> String {
+    Uuid::new_v4().to_string()
+}
 
 /// Returns the path to the shared LMDB environment.
 ///
@@ -319,9 +322,6 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use std::collections::BTreeSet;
-    use std::sync::{Arc, RwLock};
-
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
@@ -330,6 +330,8 @@ pub async fn block_dag_storage_from_dyn(
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, RwLock};
 
     let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
         shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -431,11 +433,10 @@ pub async fn casper_buffer_storage_from_dyn(
     block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use std::collections::HashSet;
-
     use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
     use models::rust::block_hash::BlockHashSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use std::collections::HashSet;
 
     let parents_store_kv = kvm.store("parents-map".to_string()).await.map_err(|e| {
         shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -456,26 +457,43 @@ pub async fn casper_buffer_storage_from_dyn(
         })
 }
 
-pub async fn mk_runtime_manager(_prefix: &str, mergeable_tag_name: Option<Par>) -> RuntimeManager {
+pub async fn mk_runtime_manager(
+    _prefix: &str,
+    mergeable_tags: Option<
+        std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+    >,
+) -> RuntimeManager {
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
 
-    mk_runtime_manager_at(&mut *kvm, mergeable_tag_name).await
+    mk_runtime_manager_at(&mut *kvm, mergeable_tags).await
 }
 
 pub async fn mk_runtime_manager_at(
     kvm: &mut dyn KeyValueStoreManager,
-    mergeable_tag_name: Option<Par>,
+    mergeable_tags: Option<
+        std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+    >,
 ) -> RuntimeManager {
-    let mergeable_tag_name =
-        mergeable_tag_name.unwrap_or(Genesis::non_negative_mergeable_tag_name());
+    let mergeable_tags =
+        mergeable_tags.unwrap_or_else(|| std::sync::Arc::new(Genesis::default_mergeable_tags()));
 
     let r_store = kvm.r_space_stores().await.unwrap();
     let m_store = mergeable_store_from_dyn(kvm).await.unwrap();
     RuntimeManager::create_with_store(
         r_store,
         m_store,
-        mergeable_tag_name,
+        mergeable_tags,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
 }
@@ -488,7 +506,7 @@ pub async fn mk_runtime_manager_with_history_at(
     let (rt_manager, history_repo) = RuntimeManager::create_with_history(
         r_store,
         m_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     );
     (rt_manager, history_repo)
@@ -497,7 +515,9 @@ pub async fn mk_runtime_manager_with_history_at(
 /// Creates a managed temporary directory that will be automatically removed when the TempDir is dropped
 #[cfg(feature = "test-utils")]
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
-where F: FnOnce(&Path) -> R {
+where
+    F: FnOnce(&Path) -> R,
+{
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()
@@ -591,6 +611,7 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         justifications: DashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
+        rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
         max_seq_nums: DashMap::new(),
         on_chain_state: OnChainCasperState {

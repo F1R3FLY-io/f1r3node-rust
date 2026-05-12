@@ -1,20 +1,26 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ExprSortMatcher.scala
 
-use super::score_tree::ScoredTerm;
-use super::sortable::Sortable;
-use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{
-    EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg,
-    ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, EVar, EZipper, Expr, Par, Var,
+use crate::{
+    rhoapi::{
+        expr::ExprInstance, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
+        EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus,
+        EPlusPlus, EVar, EZipper, Expr, Par, Var,
+    },
+    rust::{
+        par_map::ParMap,
+        par_map_type_mapper::ParMapTypeMapper,
+        par_set::ParSet,
+        par_set_type_mapper::ParSetTypeMapper,
+        rholang::sorter::{
+            par_sort_matcher::ParSortMatcher,
+            score_tree::{Score, ScoreAtom, Tree},
+            var_sort_matcher::VarSortMatcher,
+        },
+        sorted_par_hash_set::SortedParHashSet,
+    },
 };
-use crate::rust::par_map::ParMap;
-use crate::rust::par_map_type_mapper::ParMapTypeMapper;
-use crate::rust::par_set::ParSet;
-use crate::rust::par_set_type_mapper::ParSetTypeMapper;
-use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
-use crate::rust::rholang::sorter::var_sort_matcher::VarSortMatcher;
-use crate::rust::sorted_par_hash_set::SortedParHashSet;
+
+use super::{score_tree::ScoredTerm, sortable::Sortable};
 
 pub struct ExprSortMatcher;
 
@@ -40,55 +46,58 @@ impl Sortable<Expr> for ExprSortMatcher {
             Some(expr) => match expr {
                 ExprInstance::ENegBody(en) => {
                     let sorted_par = ParSortMatcher::sort_match(
-                        en.p.as_ref().expect("par field was None, should be Some"),
+                        &en.p.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
                         ExprInstance::ENegBody(ENeg {
                             p: Some(sorted_par.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENEG, vec![
-                            sorted_par.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENEG,
+                            vec![sorted_par.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EVarBody(ev) => {
                     let sorted_var = VarSortMatcher::sort_match(
-                        ev.v.as_ref().expect("var field was None, should be Some"),
+                        &ev.v.as_ref().expect("var field was None, should be Some"),
                     );
 
                     construct_expr(
                         ExprInstance::EVarBody(EVar {
                             v: Some(sorted_var.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EVAR, vec![
-                            sorted_var.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EVAR,
+                            vec![sorted_var.score],
+                        ),
                     )
                 }
 
                 ExprInstance::ENotBody(en) => {
                     let sorted_par = ParSortMatcher::sort_match(
-                        en.p.as_ref().expect("par field was None, should be Some"),
+                        &en.p.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
                         ExprInstance::ENotBody(ENot {
                             p: Some(sorted_par.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENOT, vec![
-                            sorted_par.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENOT,
+                            vec![sorted_par.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EMultBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        em.p1.as_ref().expect("par field was None, should be Some"),
+                        &em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        em.p2.as_ref().expect("par field was None, should be Some"),
+                        &em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -96,19 +105,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMULT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMULT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EDivBody(ed) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ed.p1.as_ref().expect("par field was None, should be Some"),
+                        &ed.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ed.p2.as_ref().expect("par field was None, should be Some"),
+                        &ed.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -116,19 +125,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EDIV, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EDIV,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EModBody(ed) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ed.p1.as_ref().expect("par field was None, should be Some"),
+                        &ed.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ed.p2.as_ref().expect("par field was None, should be Some"),
+                        &ed.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -136,19 +145,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMOD, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMOD,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EPlusBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ep.p1.as_ref().expect("par field was None, should be Some"),
+                        &ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ep.p2.as_ref().expect("par field was None, should be Some"),
+                        &ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -156,19 +165,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPLUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPLUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EMinusBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        em.p1.as_ref().expect("par field was None, should be Some"),
+                        &em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        em.p2.as_ref().expect("par field was None, should be Some"),
+                        &em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -176,19 +185,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMINUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMINUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::ELtBody(el) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        el.p1.as_ref().expect("par field was None, should be Some"),
+                        &el.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        el.p2.as_ref().expect("par field was None, should be Some"),
+                        &el.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -196,19 +205,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ELT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ELT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::ELteBody(el) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        el.p1.as_ref().expect("par field was None, should be Some"),
+                        &el.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        el.p2.as_ref().expect("par field was None, should be Some"),
+                        &el.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -216,19 +225,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ELTE, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ELTE,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EGtBody(eg) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        eg.p1.as_ref().expect("par field was None, should be Some"),
+                        &eg.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        eg.p2.as_ref().expect("par field was None, should be Some"),
+                        &eg.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -236,19 +245,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EGT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EGT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EGteBody(eg) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        eg.p1.as_ref().expect("par field was None, should be Some"),
+                        &eg.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        eg.p2.as_ref().expect("par field was None, should be Some"),
+                        &eg.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -256,19 +265,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EGTE, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EGTE,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EEqBody(ee) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ee.p1.as_ref().expect("par field was None, should be Some"),
+                        &ee.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ee.p2.as_ref().expect("par field was None, should be Some"),
+                        &ee.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -276,19 +285,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EEQ, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EEQ,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::ENeqBody(en) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        en.p1.as_ref().expect("par field was None, should be Some"),
+                        &en.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        en.p2.as_ref().expect("par field was None, should be Some"),
+                        &en.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -296,19 +305,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENEQ, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENEQ,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EAndBody(ea) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ea.p1.as_ref().expect("par field was None, should be Some"),
+                        &ea.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ea.p2.as_ref().expect("par field was None, should be Some"),
+                        &ea.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -316,19 +325,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EAND, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EAND,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EOrBody(eo) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        eo.p1.as_ref().expect("par field was None, should be Some"),
+                        &eo.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        eo.p2.as_ref().expect("par field was None, should be Some"),
+                        &eo.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -336,21 +345,21 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EOR, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EOR,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EMatchesBody(em) => {
                     let sorted_target = ParSortMatcher::sort_match(
-                        em.target
+                        &em.target
                             .as_ref()
                             .expect("target field was None, should be Some"),
                     );
                     let sorted_pattern = ParSortMatcher::sort_match(
-                        em.pattern
+                        &em.pattern
                             .as_ref()
                             .expect("pattern field was None, should be Some"),
                     );
@@ -360,19 +369,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             target: Some(sorted_target.term),
                             pattern: Some(sorted_pattern.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMATCHES, vec![
-                            sorted_target.score,
-                            sorted_pattern.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMATCHES,
+                            vec![sorted_target.score, sorted_pattern.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EPercentPercentBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ep.p1.as_ref().expect("par field was None, should be Some"),
+                        &ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ep.p2.as_ref().expect("par field was None, should be Some"),
+                        &ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -380,19 +389,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPERCENT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPERCENT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EPlusPlusBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        ep.p1.as_ref().expect("par field was None, should be Some"),
+                        &ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        ep.p2.as_ref().expect("par field was None, should be Some"),
+                        &ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -400,19 +409,19 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPLUSPLUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPLUSPLUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
                 ExprInstance::EMinusMinusBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        em.p1.as_ref().expect("par field was None, should be Some"),
+                        &em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        em.p2.as_ref().expect("par field was None, should be Some"),
+                        &em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -420,10 +429,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMINUSMINUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMINUSMINUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -478,7 +487,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                         .ps
                         .sorted_pars
                         .iter()
-                        .map(ParSortMatcher::sort_match)
+                        .map(|p| ParSortMatcher::sort_match(p))
                         .collect();
 
                     let remainder_score = remainder_score(&par_set.remainder);
@@ -510,8 +519,11 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EPathmapBody(pathmap) => {
                     // Similar to EListBody - sort all Par elements in the pathmap
-                    let pars: Vec<ScoredTerm<Par>> =
-                        pathmap.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = pathmap
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let remainder_score = remainder_score(&pathmap.remainder);
                     let connective_used_score: i64 = if pathmap.connective_used { 1 } else { 0 };
@@ -521,7 +533,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                             ps: pars.clone().into_iter().map(|p| p.term).collect(),
                             locally_free: pathmap.locally_free.clone(),
                             connective_used: pathmap.connective_used,
-                            remainder: pathmap.remainder,
+                            remainder: pathmap.remainder.clone(),
                         }),
                         Tree::Node(
                             vec![
@@ -539,8 +551,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::EListBody(list) => {
-                    let pars: Vec<ScoredTerm<Par>> =
-                        list.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = list
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let remainder_score = remainder_score(&list.remainder);
                     let connective_used_score: i64 = if list.connective_used { 1 } else { 0 };
@@ -550,7 +565,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                             ps: pars.clone().into_iter().map(|p| p.term).collect(),
                             locally_free: list.locally_free.clone(),
                             connective_used: list.connective_used,
-                            remainder: list.remainder,
+                            remainder: list.remainder.clone(),
                         }),
                         Tree::Node(
                             vec![
@@ -570,8 +585,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 ExprInstance::EZipperBody(zipper) => {
                     // Sort the zipper's PathMap and maintain zipper metadata
                     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                    let pars: Vec<ScoredTerm<Par>> =
-                        pathmap.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = pathmap
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let connective_used_score: i64 = if zipper.connective_used { 1 } else { 0 };
 
@@ -581,7 +599,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                                 ps: pars.clone().into_iter().map(|p| p.term).collect(),
                                 locally_free: pathmap.locally_free.clone(),
                                 connective_used: pathmap.connective_used,
-                                remainder: pathmap.remainder,
+                                remainder: pathmap.remainder.clone(),
                             }),
                             current_path: zipper.current_path.clone(),
                             is_write_zipper: zipper.is_write_zipper,
@@ -603,8 +621,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::ETupleBody(tuple) => {
-                    let sorted_pars: Vec<ScoredTerm<Par>> =
-                        tuple.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let sorted_pars: Vec<ScoredTerm<Par>> = tuple
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let connective_used_score: i64 = if tuple.connective_used { 1 } else { 0 };
                     let mut tuple_cloned = tuple.clone();
@@ -630,11 +651,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                     let args: Vec<ScoredTerm<Par>> = em
                         .arguments
                         .iter()
-                        .map(ParSortMatcher::sort_match)
+                        .map(|p| ParSortMatcher::sort_match(p))
                         .collect();
 
                     let sorted_target = ParSortMatcher::sort_match(
-                        em.target
+                        &em.target
                             .as_ref()
                             .expect("target field on EMethod was None, should be Some"),
                     );
@@ -695,23 +716,26 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::GString(gs) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::STRING, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_string(gs.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::STRING,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_string(gs.clone())],
+                    ),
                 },
 
                 ExprInstance::GUri(gu) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::URI, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_string(gu.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::URI,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_string(gu.clone())],
+                    ),
                 },
 
                 ExprInstance::GByteArray(ba) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::EBYTEARR, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(ba.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::EBYTEARR,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(ba.clone())],
+                    ),
                 },
 
                 ExprInstance::GDouble(bits) => ScoredTerm {
@@ -724,25 +748,32 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::GBigInt(bytes) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::BIG_INT,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.clone())],
+                    ),
                 },
 
                 ExprInstance::GBigRat(rat) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_RAT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::BIG_RAT,
+                        vec![
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
+                        ],
+                    ),
                 },
 
                 ExprInstance::GFixedPoint(fp) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::FIXED_POINT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
-                        Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::FIXED_POINT,
+                        vec![
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
+                            Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
+                        ],
+                    ),
                 },
             },
 

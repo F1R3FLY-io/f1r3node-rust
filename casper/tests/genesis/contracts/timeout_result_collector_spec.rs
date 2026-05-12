@@ -1,18 +1,16 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TimeoutResultCollectorSpec.scala
 
+use crate::helper::rho_spec::get_results;
+use crate::util::genesis_builder::GenesisBuilder;
+use casper::rust::helper::test_result_collector::TestResultCollector;
+use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use casper::rust::helper::test_result_collector::TestResultCollector;
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-
-use crate::helper::rho_spec::get_results;
-use crate::util::genesis_builder::GenesisBuilder;
-
 #[tokio::test]
 async fn test_finished_should_be_false_if_execution_hasnt_finished_within_timeout() {
-    let test_object = CompiledRholangSource::load_source("TimeoutResultCollectorTest.rho")
+    let test_object = crate::util::rholang::test_rho_loader::load_test_rho("TimeoutResultCollectorTest.rho")
         .expect("Failed to load TimeoutResultCollectorTest.rho");
 
     let compiled = CompiledRholangSource::new(

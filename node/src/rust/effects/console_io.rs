@@ -1,8 +1,4 @@
 // console_io.rs
-use std::collections::HashSet;
-use std::io::IsTerminal;
-use std::path::PathBuf;
-
 use colored::{ColoredString, Colorize};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -13,6 +9,9 @@ use rustyline::hint::Hinter;
 use rustyline::history::MemHistory;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
+use std::collections::HashSet;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 
 pub fn keywords() -> Vec<&'static str> {
     vec!["stdout", "stdoutack", "stderr", "stderrack", "for", "!!"]
@@ -38,19 +37,35 @@ pub trait ConsolePrintExt {
     fn printlnc(&mut self, s: &ColoredString) -> Result<()>;
 }
 impl<T: ConsoleIO + ?Sized> ConsolePrintExt for T {
-    fn println(&mut self, s: &str) -> Result<()> { self.println_str(s) }
-    fn printlnc(&mut self, s: &ColoredString) -> Result<()> { self.println_colored(s) }
+    fn println(&mut self, s: &str) -> Result<()> {
+        self.println_str(s)
+    }
+    fn printlnc(&mut self, s: &ColoredString) -> Result<()> {
+        self.println_colored(s)
+    }
 }
 
 /// ===== 2) NOP implementation (Scala: NOPConsoleIO[F]) =====
 pub struct NopConsoleIO;
 impl ConsoleIO for NopConsoleIO {
-    fn read_line(&mut self) -> Result<String> { Ok(String::new()) }
-    fn read_password(&mut self, _prompt: &str) -> Result<String> { Ok(String::new()) }
-    fn println_str(&mut self, _s: &str) -> Result<()> { Ok(()) }
-    fn println_colored(&mut self, _s: &ColoredString) -> Result<()> { Ok(()) }
-    fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> { Ok(()) }
-    fn close(&mut self) -> Result<()> { Ok(()) }
+    fn read_line(&mut self) -> Result<String> {
+        Ok(String::new())
+    }
+    fn read_password(&mut self, _prompt: &str) -> Result<String> {
+        Ok(String::new())
+    }
+    fn println_str(&mut self, _s: &str) -> Result<()> {
+        Ok(())
+    }
+    fn println_colored(&mut self, _s: &ColoredString) -> Result<()> {
+        Ok(())
+    }
+    fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> {
+        Ok(())
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// ===== 3) JLine-equivalent using rustyline =====xs
@@ -60,8 +75,12 @@ struct StringsHelper {
     keywords: Vec<String>,
 }
 impl StringsHelper {
-    fn new(keywords: Vec<String>) -> Self { Self { keywords } }
-    fn set_keywords(&mut self, words: Vec<String>) { self.keywords = words; }
+    fn new(keywords: Vec<String>) -> Self {
+        Self { keywords }
+    }
+    fn set_keywords(&mut self, words: Vec<String>) {
+        self.keywords = words;
+    }
 }
 impl Helper for StringsHelper {}
 impl Highlighter for StringsHelper {}
@@ -126,7 +145,9 @@ impl RustConsoleIO {
     }
 
     #[inline]
-    fn helper_mut(&mut self) -> &mut StringsHelper { self.rl.helper_mut().expect("helper is set") }
+    fn helper_mut(&mut self) -> &mut StringsHelper {
+        self.rl.helper_mut().expect("helper is set")
+    }
 }
 
 impl ConsoleIO for RustConsoleIO {

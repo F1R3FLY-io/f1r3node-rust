@@ -8,7 +8,9 @@ pub struct VaultsGenerator {
 }
 
 impl VaultsGenerator {
-    pub fn new(supply: i64, code: String) -> Self { Self { supply, code } }
+    pub fn new(supply: i64, code: String) -> Self {
+        Self { supply, code }
+    }
 
     pub fn create_from_user_vaults(
         user_vaults: Vec<Vault>,

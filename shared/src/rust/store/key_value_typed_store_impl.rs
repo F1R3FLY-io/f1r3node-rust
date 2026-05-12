@@ -1,13 +1,10 @@
 // See shared/src/main/scala/coop/rchain/store/KeyValueTypedStoreCodec.scala
 
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use super::key_value_store::KvStoreError;
-use super::key_value_typed_store::KeyValueTypedStore;
-use crate::rust::store::key_value_store::KeyValueStore;
-use crate::rust::BitVector;
+use crate::rust::{store::key_value_store::KeyValueStore, BitVector};
+
+use super::{key_value_store::KvStoreError, key_value_typed_store::KeyValueTypedStore};
 
 #[derive(Clone)]
 pub struct KeyValueTypedStoreImpl<K, V> {
@@ -60,7 +57,7 @@ where
     pub fn get_batch(&self, keys: &Vec<K>) -> Result<Vec<V>, KvStoreError> {
         self.get(keys)?
             .into_iter()
-            .zip(keys)
+            .zip(keys.into_iter())
             .map(|(value_opt, key)| {
                 value_opt.ok_or(KvStoreError::KeyNotFound(format!(
                     "Error when reading from KeyValueStore: value for key {:?} not found.",
@@ -71,7 +68,7 @@ where
     }
 
     pub fn get_unsafe(&self, key: &K) -> Result<V, KvStoreError> {
-        self.get_one(key)?.ok_or(KvStoreError::KeyNotFound(format!(
+        self.get_one(&key)?.ok_or(KvStoreError::KeyNotFound(format!(
             "Error when reading from KeyValueStore: value for key {:?} not found.",
             key
         )))
@@ -108,7 +105,9 @@ where
     }
 
     pub fn any_value<F>(&self, mut predicate: F) -> Result<bool, KvStoreError>
-    where F: FnMut(&V) -> Result<bool, KvStoreError> {
+    where
+        F: FnMut(&V) -> Result<bool, KvStoreError>,
+    {
         let mut matched = false;
         self.store.iterate_while(&mut |_, value_bytes| {
             let value = self.decode_value(&value_bytes)?;
@@ -187,7 +186,9 @@ where
     }
 
     fn collect<F, T>(&self, mut f: F) -> Result<Vec<T>, KvStoreError>
-    where F: FnMut((&K, &V)) -> Option<T> {
+    where
+        F: FnMut((&K, &V)) -> Option<T>,
+    {
         let store_map = self.store.to_map()?;
         let mut result = Vec::new();
 
@@ -216,5 +217,7 @@ where
         Ok(result)
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+    fn non_empty(&self) -> Result<bool, KvStoreError> {
+        self.store.non_empty()
+    }
 }

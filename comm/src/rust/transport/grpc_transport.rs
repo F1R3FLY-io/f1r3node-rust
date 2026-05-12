@@ -1,21 +1,24 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransport.scala
 
-use std::time::Instant;
-
 use async_trait::async_trait;
-use models::routing::tl_response::Payload;
-use models::routing::transport_layer_client::TransportLayerClient;
-use models::routing::{Chunk, Protocol, TlRequest, TlResponse};
+use std::time::Instant;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
 
-use crate::rust::errors::{self, CommError};
-use crate::rust::metrics_constants::{SEND_METRIC, SEND_TIME_METRIC, TRANSPORT_METRICS_SOURCE};
-use crate::rust::peer_node::PeerNode;
-use crate::rust::transport::chunker::Chunker;
-use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
-use crate::rust::transport::transport_layer::Blob;
+use models::routing::tl_response::Payload;
+use models::routing::transport_layer_client::TransportLayerClient;
+use models::routing::{Chunk, Protocol, TlRequest, TlResponse};
+
+use crate::rust::{
+    errors::{self, CommError},
+    metrics_constants::{SEND_METRIC, SEND_TIME_METRIC, TRANSPORT_METRICS_SOURCE},
+    peer_node::PeerNode,
+    transport::{
+        chunker::Chunker, ssl_session_client_interceptor::SslSessionClientInterceptor,
+        transport_layer::Blob,
+    },
+};
 
 /// Trait for transport layer operations
 #[async_trait]
@@ -25,7 +28,8 @@ pub trait TransportLayerClientTrait {
 
     /// Stream chunks and get a response
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
-    where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static;
+    where
+        S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static;
 }
 
 /// Implementation for the real gRPC client
@@ -37,13 +41,17 @@ impl TransportLayerClientTrait
         self.send(Request::new(request))
             .await
             .map(|response| response.into_inner())
+            .map_err(|status| status)
     }
 
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
-    where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static {
+    where
+        S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static,
+    {
         self.stream(Request::new(input))
             .await
             .map(|response| response.into_inner())
+            .map_err(|status| status)
     }
 }
 
@@ -136,8 +144,9 @@ impl GrpcTransport {
             .record(start.elapsed().as_secs_f64());
 
         // Process the response payload
+        let result = Self::process_response(peer, Ok(response));
 
-        Self::process_response(peer, Ok(response))
+        result
     }
 
     /// Stream a Blob to a peer via gRPC using chunking
@@ -163,12 +172,13 @@ impl GrpcTransport {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::rust::{
+        peer_node::{Endpoint, NodeIdentifier},
+        rp::protocol_helper,
+    };
     use models::routing::{Ack, Header, InternalServerError, Packet};
     use prost::bytes::Bytes;
-
-    use super::*;
-    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
-    use crate::rust::rp::protocol_helper;
 
     fn create_test_peer() -> PeerNode {
         PeerNode {
