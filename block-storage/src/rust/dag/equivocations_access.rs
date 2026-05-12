@@ -7,8 +7,8 @@
 // The trait is the **contract** that a tracker-RMW must run under
 // some lock-protected critical section, excluding all other RMW
 // calls on the same instance. Implementors choose their own lock:
-//   * `BlockDagKeyValueStorage` (production) uses `std::sync::Mutex`
-//     via its `global_lock` field.
+//   * `BlockDagKeyValueStorage` (production) uses `parking_lot::RwLock`
+//     via its `global_lock` field (P2-12 migration).
 //   * Test harnesses can use `loom::sync::Mutex` to exhaustively
 //     enumerate thread interleavings (T-9.2 verification).
 //
@@ -35,6 +35,27 @@ use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 /// on the same instance may interleave with the closure. This is
 /// the type-level expression of the bug-#2 fix: lock-free RMW on
 /// the tracker is forbidden; every RMW routes through this trait.
+///
+/// # Non-reentrancy contract (P2-13)
+///
+/// The closure `f` MUST NOT (directly or transitively) call
+/// `access_equivocations_tracker` again, nor any operation that
+/// acquires the implementor's internal lock — including:
+///
+/// * `BlockDagKeyValueStorage::insert` / `insert_internal`
+/// * `BlockDagKeyValueStorage::record_directly_finalized`
+/// * `BlockDagKeyValueStorage::propagate_ft_to_finalized_blocks`
+/// * `BlockDagKeyValueStorage::get_representation`
+///
+/// Doing so will deadlock the `parking_lot::RwLock<()>`-based
+/// implementation (write guard followed by write/read on the same
+/// thread). The loom test
+/// `block-storage/tests/loom_equivocations_tracker.rs` model-checks
+/// this property for the production implementor.
+///
+/// Reentrant access patterns must instead capture the data they need
+/// from the closure (e.g. clone the relevant tracker entries), drop
+/// the closure, and then re-enter the storage with the captured data.
 pub trait EquivocationsAccess {
     fn access_equivocations_tracker<A>(
         &self,

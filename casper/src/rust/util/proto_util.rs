@@ -304,11 +304,16 @@ pub fn to_justification(
 }
 
 pub fn to_latest_message_hashes(
-    justifications: Vec<Justification>,
+    justifications: &[Justification],
 ) -> std::collections::HashMap<Validator, BlockHash> {
     justifications
-        .into_iter()
-        .map(|justification| (justification.validator, justification.latest_block_hash))
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
         .collect()
 }
 

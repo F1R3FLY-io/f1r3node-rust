@@ -535,6 +535,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let invalid_block_hashes: HashSet<BlockHash> = {
             self.block_dag_storage
                 .get_representation()
+                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
                 .invalid_blocks_map()
                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?
                 .into_keys()

@@ -375,7 +375,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
-            initializing.block_dag_storage.insert(block, false, true)?;
+            initializing.block_dag_storage.insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )?;
 
             initializing.request_approved_state(approved_block).await?;
 
@@ -656,9 +659,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
 
             // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing
-                .block_dag_storage
-                .insert(block, is_invalid, false)?;
+            initializing.block_dag_storage.insert(
+                block,
+                if is_invalid {
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
+                } else {
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
+                },
+            )?;
 
             Ok(())
         }
@@ -723,7 +731,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         tracing::info!("Replaying blocks to populate mergeable channel cache...");
 
         // Get DAG representation for traversal
-        let dag = self.block_dag_storage.get_representation();
+        let dag = self.block_dag_storage.get_representation()?;
 
         // Get all blocks in the DAG that need replay (from minBlockNumber to LFB)
         // We process in topological order (by block number, then by hash for determinism)
@@ -829,7 +837,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let is_genesis = parents.is_empty();
 
         // Get invalid blocks map for replay
-        let dag = self.block_dag_storage.get_representation();
+        let dag = self.block_dag_storage.get_representation()?;
         let invalid_blocks_map = dag.invalid_blocks_map()?;
 
         tracing::debug!(

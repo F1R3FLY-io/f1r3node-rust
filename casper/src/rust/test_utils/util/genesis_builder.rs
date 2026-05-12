@@ -356,7 +356,7 @@ impl GenesisBuilder {
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 
             let block_dag_storage = block_dag_storage_from_dyn(&mut *kvs_manager).await?;
-            block_dag_storage.insert(&genesis, false, true)?;
+            block_dag_storage.insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)?;
 
             genesis
             // ← kvs_manager drops here, closing LMDB handles

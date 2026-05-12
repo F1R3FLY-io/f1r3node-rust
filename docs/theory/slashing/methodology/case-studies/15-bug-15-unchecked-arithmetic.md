@@ -51,14 +51,14 @@ action             = Keep Kani harnesses + libFuzzer target +
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                                                            |
-|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.15 (`BugFixCheckedArithmetic.v` — implicit through Kani harness equivalence)                                                                                     |
+| Layer            | Artifact                                                                                                                                                                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.15 (`BugFixCheckedArithmetic.v` — implicit through Kani harness equivalence)                                                                                                                                                                |
 | Kani harnesses   | `checked_base_seq_rejects_nonpositive`, `checked_base_seq_matches_positive_i32_predecessor`, `checked_next_seq_matches_i32_successor`, `epoch_for_block_number_rejects_invalid_domain`, `epoch_for_block_number_matches_bounded_floor_division` |
-| libFuzzer target | `fuzz/fuzz_targets/slashing_arithmetic.rs`                                                                                                                            |
-| Sage             | `bounded_arithmetic_model.sage` finding #8                                                                                                                            |
-| Rust regression  | `prop_t_9_7_seqnum_density.rs` (post-fix density property)                                                                                                            |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.17`](../../design/09-bug-fixes-and-rationale.md)                                                                    |
+| libFuzzer target | `fuzz/fuzz_targets/slashing_arithmetic.rs`                                                                                                                                                                                                      |
+| Sage             | `bounded_arithmetic_model.sage` finding #8                                                                                                                                                                                                      |
+| Rust regression  | `prop_t_9_7_seqnum_density.rs` (post-fix density property)                                                                                                                                                                                      |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.17`](../../design/09-bug-fixes-and-rationale.md)                                                                                                                                                |
 
 **Stack depth: 4** (Kani + libFuzzer + Sage + Rust + design).
 

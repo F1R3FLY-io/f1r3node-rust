@@ -32,7 +32,74 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::Validator;
 
 use crate::rust::casper::CasperSnapshot;
+use crate::rust::epoch::Epoch;
 use crate::rust::errors::CasperError;
+
+/// Phase 9 (C-6): typed domain-level failure reasons for the epoch
+/// arithmetic primitives. Replaces the prior `Option<i64>` /
+/// `Option<bool>` shapes whose `None` arm conflated multiple causes
+/// (invalid `epoch_length`, negative `block_number`). The new
+/// `Result<_, DomainError>` shape lets callers either disambiguate
+/// or, where the API surface is the same, map cleanly into
+/// `SlashAuthError::InvalidEpochLength`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DomainError {
+    #[error("invalid epoch length {0} (must be > 0)")]
+    InvalidEpochLength(i32),
+    #[error("negative block number {0} (must be >= 0)")]
+    NegativeBlockNumber(i64),
+}
+
+impl From<DomainError> for SlashAuthError {
+    fn from(err: DomainError) -> Self {
+        match err {
+            DomainError::InvalidEpochLength(n) => SlashAuthError::InvalidEpochLength(n),
+            DomainError::NegativeBlockNumber(n) => SlashAuthError::NegativeBlockNumber(n),
+        }
+    }
+}
+
+/// P4-1: typed authorization-failure reasons surfaced by
+/// [`validate_received_slash_deploys`]. Replaces the eight previously
+/// distinct `CasperError::RuntimeError("...")` messages with named
+/// variants that carry the offending block/validator context. Operators
+/// can now match on the variant instead of grepping log strings, and
+/// the conjunctive predicate from Theorem T-9.8 is preserved one
+/// variant per conjunct.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SlashAuthError {
+    #[error("slash deploy issuer does not match block sender (block={block_hash}, issuer={issuer}, sender={sender})")]
+    IssuerMismatch {
+        block_hash: String,
+        issuer: String,
+        sender: String,
+    },
+    #[error("slash deploy targets non-current epoch (target={target}, current={current})")]
+    EpochMismatch { target: Epoch, current: Epoch },
+    #[error("slash deploy references unknown invalid block {hash}")]
+    ReferencesUnknownBlock { hash: String },
+    #[error("slash deploy references a valid block {hash}")]
+    ReferencesValidBlock { hash: String },
+    #[error("invalid epoch length {0}")]
+    InvalidEpochLength(i32),
+    #[error("negative block number {0}")]
+    NegativeBlockNumber(i64),
+    #[error(
+        "slash deploy epoch ({evidence_epoch}) does not match invalid-block evidence epoch ({target_epoch})"
+    )]
+    EvidenceEpochMismatch { evidence_epoch: Epoch, target_epoch: Epoch },
+    #[error("slash deploy target {validator} is not currently bonded")]
+    TargetNotBonded { validator: String },
+    #[error("slash deploy is not authorized by current invalid-block evidence (validator {validator})")]
+    NotAuthorizedByEvidence { validator: String },
+    #[error("duplicate slash deploy target in block (validator {validator}, epoch {epoch})")]
+    DuplicateTarget { validator: String, epoch: Epoch },
+}
+
+// Phase 9 (R-2): `From<SlashAuthError> for CasperError` now lives in
+// `errors.rs` and routes to the new structured `CasperError::SlashAuth`
+// variant — previous stringification at this boundary defeated the
+// typed-error effort.
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizedSlashCandidate {
@@ -43,19 +110,31 @@ pub struct AuthorizedSlashCandidate {
     /// receiver reconstructs it from that evidence (see
     /// `slash_evidence_epoch_matches_target`), so the proposer cannot move the
     /// slash to a different epoch.
-    pub target_activation_epoch: i64,
+    ///
+    /// Phase 10 (C-5): typed [`Epoch`] newtype replaces the raw `i64`;
+    /// conversion at the protobuf boundary uses
+    /// `Epoch::from(slash_deploy.target_activation_epoch)`.
+    pub target_activation_epoch: Epoch,
 }
 
-/// Returns `None` when the configured `epoch_length` is non-positive or the
-/// `block_number` is negative. The caller (`authorized_slash_candidates` /
-/// `validate_received_slash_deploys`) translates that to
-/// `CasperError::RuntimeError("invalid epoch length …")`; never panic here —
-/// shard configuration can legally hand us `epoch_length == 0` at startup.
-pub fn epoch_for_block_number(block_number: i64, epoch_length: i32) -> Option<i64> {
-    if block_number < 0 || epoch_length <= 0 {
-        None
+/// Phase 9 (C-6): returns a typed [`DomainError`] when the input
+/// constraints fail. The two failure modes are now distinguishable:
+/// non-positive `epoch_length` is configuration-derived, while a
+/// negative `block_number` indicates an arithmetic or wire-format bug.
+/// The caller (`authorized_slash_candidates` /
+/// `validate_received_slash_deploys`) maps either into the appropriate
+/// `SlashAuthError` variant; never panic here — shard configuration can
+/// legally hand us `epoch_length == 0` at startup.
+pub fn epoch_for_block_number(
+    block_number: i64,
+    epoch_length: i32,
+) -> Result<Epoch, DomainError> {
+    if epoch_length <= 0 {
+        Err(DomainError::InvalidEpochLength(epoch_length))
+    } else if block_number < 0 {
+        Err(DomainError::NegativeBlockNumber(block_number))
     } else {
-        Some(block_number / i64::from(epoch_length))
+        Ok(Epoch::new(block_number / i64::from(epoch_length)))
     }
 }
 
@@ -85,33 +164,36 @@ pub fn checked_next_seq(max_seq: u64) -> Option<i32> {
 
 pub fn slash_target_epoch_is_current(
     reference_block_number: i64,
-    target_activation_epoch: i64,
+    target_activation_epoch: Epoch,
     epoch_length: i32,
-) -> Option<bool> {
+) -> Result<bool, DomainError> {
     epoch_for_block_number(reference_block_number, epoch_length)
         .map(|current_epoch| target_activation_epoch == current_epoch)
 }
 
 pub fn slash_evidence_epoch_matches_target(
     evidence_block_number: i64,
-    target_activation_epoch: i64,
+    target_activation_epoch: Epoch,
     epoch_length: i32,
-) -> Option<bool> {
+) -> Result<bool, DomainError> {
     epoch_for_block_number(evidence_block_number, epoch_length)
         .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
 }
 
 pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
 
-pub fn slash_target_key(offender: &Validator, target_activation_epoch: i64) -> (Validator, i64) {
+pub fn slash_target_key(
+    offender: &Validator,
+    target_activation_epoch: Epoch,
+) -> (Validator, Epoch) {
     (offender.clone(), target_activation_epoch)
 }
 
 pub fn slash_target_key_collides<T: Eq>(
     left_offender: &T,
-    left_epoch: i64,
+    left_epoch: Epoch,
     right_offender: &T,
-    right_epoch: i64,
+    right_epoch: Epoch,
 ) -> bool {
     left_offender == right_offender && left_epoch == right_epoch
 }
@@ -133,11 +215,11 @@ pub fn slash_target_key_collides<T: Eq>(
 pub fn received_slash_deploy_authorized(
     reference_block_number: i64,
     evidence_block_number: i64,
-    target_activation_epoch: i64,
+    target_activation_epoch: Epoch,
     epoch_length: i32,
     bond: i64,
     invalid: bool,
-) -> Option<bool> {
+) -> Result<bool, DomainError> {
     let current = slash_target_epoch_is_current(
         reference_block_number,
         target_activation_epoch,
@@ -148,10 +230,10 @@ pub fn received_slash_deploy_authorized(
         target_activation_epoch,
         epoch_length,
     )?;
-    Some(current && evidence && slash_target_has_positive_bond(bond) && invalid)
+    Ok(current && evidence && slash_target_has_positive_bond(bond) && invalid)
 }
 
-fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Option<i64> {
+fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, DomainError> {
     epoch_for_block_number(metadata.block_number, epoch_length)
 }
 
@@ -172,10 +254,19 @@ pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    let current_epoch = epoch_for_block_number(snapshot.max_block_num + 1, epoch_length)
-        .ok_or_else(|| {
-            CasperError::RuntimeError(format!("invalid epoch length {}", epoch_length))
-        })?;
+    // P2-9: surface overflow on `max_block_num + 1` as a typed error.
+    let proposed_block_num = snapshot.max_block_num.checked_add(1).ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "max_block_num overflow: {} + 1 wraps i64",
+            snapshot.max_block_num
+        ))
+    })?;
+    // Phase 9 (C-6): `epoch_for_block_number` now returns
+    // `Result<i64, DomainError>`. Map directly to the corresponding
+    // `SlashAuthError` (and on into `CasperError::SlashAuth` via the
+    // `From` impl in `errors.rs`).
+    let current_epoch = epoch_for_block_number(proposed_block_num, epoch_length)
+        .map_err(SlashAuthError::from)?;
 
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
@@ -184,7 +275,11 @@ pub fn authorized_slash_candidates(
         if !metadata.invalid {
             continue;
         }
-        let Some(target_activation_epoch) = evidence_epoch(&metadata, epoch_length) else {
+        // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
+        // domain-invalid block number — protocol invariant says this
+        // can't happen for already-stored blocks, but the typed Result
+        // makes the explicit-skip choice visible.
+        let Ok(target_activation_epoch) = evidence_epoch(&metadata, epoch_length) else {
             continue;
         };
         if target_activation_epoch != current_epoch {
@@ -255,12 +350,22 @@ pub fn validate_received_slash_deploys(
 
     let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
     let current_epoch = epoch_for_block_number(block.body.state.block_number, epoch_length)
-        .ok_or_else(|| {
-            CasperError::RuntimeError(format!("invalid epoch length {}", epoch_length))
-        })?;
+        .map_err(SlashAuthError::from)?;
     // BTreeMap gives deterministic iteration order for the error path; the
     // key `(offender, target_epoch)` is the uniqueness rule from item (7).
-    let mut seen = BTreeMap::<(Validator, i64), BlockHash>::new();
+    // Phase 10 (C-5): typed `Epoch` key replaces raw `i64`.
+    let mut seen = BTreeMap::<(Validator, Epoch), BlockHash>::new();
+
+    // P4-9: defensive check — block sequence numbers must be non-negative
+    // (a negative seq num would indicate a malformed or tampered block; the
+    // protocol invariant is `seq_num >= 0`). We assert here rather than
+    // returning an error because this is a class-of-input bug, not a
+    // protocol-level violation.
+    debug_assert!(
+        block.seq_num >= 0,
+        "block.seq_num must be non-negative; got {}",
+        block.seq_num
+    );
 
     for system_deploy in &block.body.system_deploys {
         let ProcessedSystemDeploy::Succeeded {
@@ -276,40 +381,61 @@ pub fn validate_received_slash_deploys(
             continue;
         };
 
-        if issuer_public_key.bytes != block.sender {
-            return Err(CasperError::RuntimeError(
-                "slash deploy issuer does not match block sender".to_string(),
-            ));
+        // P4-9: issuer public key must be present and well-formed before
+        // we even consider matching it against the sender. A zero-length
+        // key would silently match a malformed `block.sender` of the same
+        // shape; the check below catches the (uncommon) case.
+        if issuer_public_key.bytes.is_empty() {
+            return Err(SlashAuthError::IssuerMismatch {
+                block_hash: hex::encode(&block.block_hash),
+                issuer: "<empty>".to_string(),
+                sender: hex::encode(&block.sender),
+            }
+            .into());
         }
-        if *target_activation_epoch != current_epoch {
-            return Err(CasperError::RuntimeError(
-                "slash deploy targets a non-current epoch".to_string(),
-            ));
+
+        if issuer_public_key.bytes != block.sender {
+            return Err(SlashAuthError::IssuerMismatch {
+                block_hash: hex::encode(&block.block_hash),
+                issuer: hex::encode(&issuer_public_key.bytes),
+                sender: hex::encode(&block.sender),
+            }
+            .into());
+        }
+        // Phase 10 (C-5): convert the protobuf-side raw `i64` to `Epoch`
+        // at the boundary; downstream arithmetic and comparisons are typed.
+        let target_activation_epoch = Epoch::from(*target_activation_epoch);
+        if target_activation_epoch != current_epoch {
+            return Err(SlashAuthError::EpochMismatch {
+                target: target_activation_epoch,
+                current: current_epoch,
+            }
+            .into());
         }
 
         let metadata = snapshot
             .dag
             .lookup(invalid_block_hash)
             .map_err(CasperError::KvStoreError)?
-            .ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "slash deploy references unknown invalid block".to_string(),
-                )
+            .ok_or_else(|| SlashAuthError::ReferencesUnknownBlock {
+                hash: hex::encode(invalid_block_hash),
             })?;
 
         if !metadata.invalid {
-            return Err(CasperError::RuntimeError(
-                "slash deploy references a valid block".to_string(),
-            ));
+            return Err(SlashAuthError::ReferencesValidBlock {
+                hash: hex::encode(invalid_block_hash),
+            }
+            .into());
         }
 
-        let evidence_epoch = evidence_epoch(&metadata, epoch_length).ok_or_else(|| {
-            CasperError::RuntimeError(format!("invalid epoch length {}", epoch_length))
-        })?;
-        if evidence_epoch != *target_activation_epoch {
-            return Err(CasperError::RuntimeError(
-                "slash deploy epoch does not match evidence epoch".to_string(),
-            ));
+        let evidence_epoch =
+            evidence_epoch(&metadata, epoch_length).map_err(SlashAuthError::from)?;
+        if evidence_epoch != target_activation_epoch {
+            return Err(SlashAuthError::EvidenceEpochMismatch {
+                evidence_epoch,
+                target_epoch: target_activation_epoch,
+            }
+            .into());
         }
 
         let bond = snapshot
@@ -319,34 +445,34 @@ pub fn validate_received_slash_deploys(
             .copied()
             .unwrap_or(0);
         if bond <= 0 {
-            return Err(CasperError::RuntimeError(
-                "slash deploy target is not currently bonded".to_string(),
-            ));
+            return Err(SlashAuthError::TargetNotBonded {
+                validator: hex::encode(&metadata.sender),
+            }
+            .into());
         }
-        let Some(authorized) = received_slash_deploy_authorized(
+        let authorized = received_slash_deploy_authorized(
             block.body.state.block_number,
             metadata.block_number,
-            *target_activation_epoch,
+            target_activation_epoch,
             epoch_length,
             bond,
             metadata.invalid,
-        ) else {
-            return Err(CasperError::RuntimeError(format!(
-                "invalid epoch length {}",
-                epoch_length
-            )));
-        };
+        )
+        .map_err(SlashAuthError::from)?;
         if !authorized {
-            return Err(CasperError::RuntimeError(
-                "slash deploy is not authorized by current invalid evidence".to_string(),
-            ));
+            return Err(SlashAuthError::NotAuthorizedByEvidence {
+                validator: hex::encode(&metadata.sender),
+            }
+            .into());
         }
 
-        let key = slash_target_key(&metadata.sender, *target_activation_epoch);
+        let key = slash_target_key(&metadata.sender, target_activation_epoch);
         if seen.insert(key, invalid_block_hash.clone()).is_some() {
-            return Err(CasperError::RuntimeError(
-                "duplicate slash deploy target in block".to_string(),
-            ));
+            return Err(SlashAuthError::DuplicateTarget {
+                validator: hex::encode(&metadata.sender),
+                epoch: target_activation_epoch,
+            }
+            .into());
         }
     }
 

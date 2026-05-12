@@ -41,14 +41,14 @@ action             = Keep epoch_evidence_rollover.rs +
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                          |
-|------------------|---------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.13, T-9.11 (`BugFixSlashAuthorization.v` clauses)                                              |
-| TLA⁺ invariant   | `AuthorizedSlashFlow.tla` `Inv_RebondRejectsStaleEvidence`                                          |
-| Sage             | `epoch_churn_attack_model.sage`                                                                   |
+| Layer            | Artifact                                                                                                                           |
+|------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.13, T-9.11 (`BugFixSlashAuthorization.v` clauses)                                                                              |
+| TLA⁺ invariant   | `AuthorizedSlashFlow.tla` `Inv_RebondRejectsStaleEvidence`                                                                         |
+| Sage             | `epoch_churn_attack_model.sage`                                                                                                    |
 | Kani harnesses   | `received_authorization_requires_evidence_epoch_on_bounded_domain`, `slash_evidence_epoch_matches_target_matches_epoch_projection` |
-| Rust regression  | `epoch_evidence_rollover.rs`, `rebonded_identity_boundary.rs`, `stale_evidence_filtered.rs`        |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.15`](../../design/09-bug-fixes-and-rationale.md) |
+| Rust regression  | `epoch_evidence_rollover.rs`, `rebonded_identity_boundary.rs`, `stale_evidence_filtered.rs`                                        |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.15`](../../design/09-bug-fixes-and-rationale.md)                                   |
 
 **Stack depth: 5** (Rocq + TLA⁺ + Sage + Kani + Rust regression + design).
 

@@ -35,13 +35,13 @@ an economic threat is a behavior the system **can** allow under
 specification but that the adversary is *incentivized* to perform.
 The two are distinct:
 
-| Aspect             | Correctness threat                         | Economic threat                                                           |
-|--------------------|---------------------------------------------|---------------------------------------------------------------------------|
-| Violates protocol? | Yes                                          | No — operates entirely within the specified behavior                       |
-| Defense            | Code fix, theorem strengthening              | Parameter tuning (bond size), incentive redesign, social/operational measures |
-| Verified by        | Rocq / TLA⁺ / Kani / proptest                | Game-theoretic argument; sometimes mechanism-design analysis              |
-| Falsifiable by     | A counterexample trace                       | A profitable deviation in a model                                          |
-| Catastrophic if    | A bug allows a slashing-rule violation       | The bond size is too small relative to the gain from misbehavior         |
+| Aspect             | Correctness threat                     | Economic threat                                                               |
+|--------------------|----------------------------------------|-------------------------------------------------------------------------------|
+| Violates protocol? | Yes                                    | No — operates entirely within the specified behavior                          |
+| Defense            | Code fix, theorem strengthening        | Parameter tuning (bond size), incentive redesign, social/operational measures |
+| Verified by        | Rocq / TLA⁺ / Kani / proptest          | Game-theoretic argument; sometimes mechanism-design analysis                  |
+| Falsifiable by     | A counterexample trace                 | A profitable deviation in a model                                             |
+| Catastrophic if    | A bug allows a slashing-rule violation | The bond size is too small relative to the gain from misbehavior              |
 
 The slashing methodology defends against correctness threats
 *mechanically*. It defends against economic threats by **bounding
@@ -103,12 +103,12 @@ strategy `σ`.
 The slashing development establishes (informally; the formal
 mechanization is partial):
 
-| Strategy class                                | Maximum gain bound                                                   |
-|-----------------------------------------------|----------------------------------------------------------------------|
-| Single equivocation                           | `≤ 1 × block_reward + 1 × MEV_window`                                  |
-| Chain neglect amplification (chain of `k`)    | `≤ k × neglect_reward` — bounded by depth `≤ n − 1` (T-11)             |
-| Withholding evidence within `k` rounds        | `≤ k × proposer_reward` — bounded by detection deadline                |
-| Long-range attack                             | Unbounded in pure protocol; bounded by social-consensus checkpoint     |
+| Strategy class                             | Maximum gain bound                                                 |
+|--------------------------------------------|--------------------------------------------------------------------|
+| Single equivocation                        | `≤ 1 × block_reward + 1 × MEV_window`                              |
+| Chain neglect amplification (chain of `k`) | `≤ k × neglect_reward` — bounded by depth `≤ n − 1` (T-11)         |
+| Withholding evidence within `k` rounds     | `≤ k × proposer_reward` — bounded by detection deadline            |
+| Long-range attack                          | Unbounded in pure protocol; bounded by social-consensus checkpoint |
 
 The bond `B` must exceed the maximum gain across all rows for the
 rational adversary's utility to be negative on every strategy.
@@ -275,23 +275,23 @@ verification.
 
 ### 8.1 Can prove (with citations)
 
-| Claim                                                                                                              | Authority                            |
-|--------------------------------------------------------------------------------------------------------------------|--------------------------------------|
-| Every equivocator with stake at risk is eventually slashed                                                          | T-2 + T-6 (Rocq) + TLA⁺ liveness     |
-| The slash forfeits the entire bond                                                                                  | T-7 (Rocq) + Kani harnesses          |
-| The closure of neglecters is bounded by `n − 1`                                                                     | T-11 (Rocq) + Sage finding #11       |
-| BFT quorum is preserved under `f < n/3`                                                                              | T-12 (Rocq) + TLA⁺ `Inv_BFTBound`    |
-| Authorization rejects every form documented in §4 of the threat model                                                | T-9.8 / T-Auth (Rocq) + Kani         |
+| Claim                                                                 | Authority                         |
+|-----------------------------------------------------------------------|-----------------------------------|
+| Every equivocator with stake at risk is eventually slashed            | T-2 + T-6 (Rocq) + TLA⁺ liveness  |
+| The slash forfeits the entire bond                                    | T-7 (Rocq) + Kani harnesses       |
+| The closure of neglecters is bounded by `n − 1`                       | T-11 (Rocq) + Sage finding #11    |
+| BFT quorum is preserved under `f < n/3`                               | T-12 (Rocq) + TLA⁺ `Inv_BFTBound` |
+| Authorization rejects every form documented in §4 of the threat model | T-9.8 / T-Auth (Rocq) + Kani      |
 
 ### 8.2 Cannot prove
 
-| Claim                                                                                                              | Why                                                                       |
-|--------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
-| The bond size is large enough for any specific adversary                                                            | Depends on adversary preferences; subjective                              |
-| No off-chain bribery succeeds                                                                                      | Requires modeling off-chain communication channels                         |
-| Long-range attacks are economically infeasible                                                                      | Long-range defense is social, not protocol                                |
-| MEV (maximum extractable value) is bounded                                                                          | MEV models depend on application-layer details                            |
-| Validators will not collude socially despite the slashing risk                                                       | Out of model                                                              |
+| Claim                                                          | Why                                                |
+|----------------------------------------------------------------|----------------------------------------------------|
+| The bond size is large enough for any specific adversary       | Depends on adversary preferences; subjective       |
+| No off-chain bribery succeeds                                  | Requires modeling off-chain communication channels |
+| Long-range attacks are economically infeasible                 | Long-range defense is social, not protocol         |
+| MEV (maximum extractable value) is bounded                     | MEV models depend on application-layer details     |
+| Validators will not collude socially despite the slashing risk | Out of model                                       |
 
 The methodology's contribution is to make this distinction
 **explicit** — every claim is either inside the formal scope (with

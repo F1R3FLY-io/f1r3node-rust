@@ -84,22 +84,22 @@ live in [`formal/sage/slashing/`](../../../../../formal/sage/slashing/).
 They are grouped into fourteen families documented in
 [`../sage-models/`](../sage-models/); a brief one-liner per family:
 
-| Family                                                                                            | What it searches                                                                                |
-|---------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
-| [Closure & graph](../sage-models/01-closure-and-graph.md)                                          | Two-level closure, neglect edges, BFT bound                                                     |
-| [Adversarial & damage](../sage-models/02-adversarial-and-damage.md)                                | Adversarial timing, damage optimization, deep-threat                                            |
-| [Arithmetic & projection](../sage-models/03-arithmetic-and-projection.md)                          | Bounded vs. exact arithmetic envelopes                                                          |
-| [Differential & bisimilarity](../sage-models/04-differential-and-bisimilarity.md)                  | Rust/Scala/Rocq-oracle divergence                                                                |
-| [Epoch & lifecycle](../sage-models/05-epoch-and-lifecycle.md)                                      | Epoch boundaries, churn, rebond                                                                 |
-| [Evidence visibility & timing](../sage-models/06-evidence-visibility-and-timing.md)                | Partial visibility, late reports                                                                |
-| [Horizon & objective-frontier](../sage-models/07-horizon-and-objective-frontier.md)                | Long-range adversarial sweeps                                                                   |
-| [Hypothesis stateful search](../sage-models/08-hypothesis-stateful-search.md)                      | Multi-step lifecycle traces with shrinking                                                       |
-| [Pipeline & accounting](../sage-models/09-pipeline-and-accounting.md)                              | Bond accounting, slash idempotence, record normalization                                         |
-| [Quorum intersection](../sage-models/10-quorum-intersection.md)                                    | Weighted quorum intersection                                                                     |
-| [Tracker race](../sage-models/11-tracker-race.md)                                                  | Concurrent tracker schedules                                                                     |
-| [Theorem-assumption counterexamples](../sage-models/12-theorem-assumption-counterexamples.md)      | Witnesses for theorem preconditions                                                              |
-| [Scenario corpus generation](../sage-models/13-scenario-corpus-generation.md)                      | Deterministic fixture corpus                                                                     |
-| [Weighted stake optimization](../sage-models/14-weighted-stake-optimization.md)                    | Stake-weighted attack optimization                                                               |
+| Family                                                                                        | What it searches                                         |
+|-----------------------------------------------------------------------------------------------|----------------------------------------------------------|
+| [Closure & graph](../sage-models/01-closure-and-graph.md)                                     | Two-level closure, neglect edges, BFT bound              |
+| [Adversarial & damage](../sage-models/02-adversarial-and-damage.md)                           | Adversarial timing, damage optimization, deep-threat     |
+| [Arithmetic & projection](../sage-models/03-arithmetic-and-projection.md)                     | Bounded vs. exact arithmetic envelopes                   |
+| [Differential & bisimilarity](../sage-models/04-differential-and-bisimilarity.md)             | Rust/Scala/Rocq-oracle divergence                        |
+| [Epoch & lifecycle](../sage-models/05-epoch-and-lifecycle.md)                                 | Epoch boundaries, churn, rebond                          |
+| [Evidence visibility & timing](../sage-models/06-evidence-visibility-and-timing.md)           | Partial visibility, late reports                         |
+| [Horizon & objective-frontier](../sage-models/07-horizon-and-objective-frontier.md)           | Long-range adversarial sweeps                            |
+| [Hypothesis stateful search](../sage-models/08-hypothesis-stateful-search.md)                 | Multi-step lifecycle traces with shrinking               |
+| [Pipeline & accounting](../sage-models/09-pipeline-and-accounting.md)                         | Bond accounting, slash idempotence, record normalization |
+| [Quorum intersection](../sage-models/10-quorum-intersection.md)                               | Weighted quorum intersection                             |
+| [Tracker race](../sage-models/11-tracker-race.md)                                             | Concurrent tracker schedules                             |
+| [Theorem-assumption counterexamples](../sage-models/12-theorem-assumption-counterexamples.md) | Witnesses for theorem preconditions                      |
+| [Scenario corpus generation](../sage-models/13-scenario-corpus-generation.md)                 | Deterministic fixture corpus                             |
+| [Weighted stake optimization](../sage-models/14-weighted-stake-optimization.md)               | Stake-weighted attack optimization                       |
 
 Each Sage script writes a JSON-serializable witness; the witness is
 consumed by:

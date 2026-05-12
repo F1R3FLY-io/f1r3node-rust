@@ -55,15 +55,15 @@ action             = Keep pre_fix_bug_11.rs + multiple post-fix anchors
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                           |
-|------------------|------------------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.11 (`BugFixDetectorPartiality.v` — detector totality, permutation invariance, bisim under complete pointers)                    |
-| TLA⁺ invariants  | `Inv_FixedDetectorTotal`, `Inv_MissingPointerNonContributing`, `Inv_DuplicateChildNeedsDistinctChildren`, `Inv_TwoDistinctChildrenDetect` |
-| Sage             | `theorem_assumption_counterexamples.sage`                                                                                          |
-| Hypothesis       | `hypothesis_assumption_minimization.rs`                                                                                            |
-| Rust regression  | `pre_fix_bug_11.rs`, `prop_t_9_11_detector_totality.rs`, `prop_t_9_11_detector_permutation_invariance.rs`, `prop_t_9_11_detector_bisim_under_complete_pointers.rs` |
+| Layer            | Artifact                                                                                                                                                                                                                                                                                                                           |
+|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.11 (`BugFixDetectorPartiality.v` — detector totality, permutation invariance, bisim under complete pointers)                                                                                                                                                                                                                   |
+| TLA⁺ invariants  | `Inv_FixedDetectorTotal`, `Inv_MissingPointerNonContributing`, `Inv_DuplicateChildNeedsDistinctChildren`, `Inv_TwoDistinctChildrenDetect`                                                                                                                                                                                          |
+| Sage             | `theorem_assumption_counterexamples.sage`                                                                                                                                                                                                                                                                                          |
+| Hypothesis       | `hypothesis_assumption_minimization.rs`                                                                                                                                                                                                                                                                                            |
+| Rust regression  | `pre_fix_bug_11.rs`, `prop_t_9_11_detector_totality.rs`, `prop_t_9_11_detector_permutation_invariance.rs`, `prop_t_9_11_detector_bisim_under_complete_pointers.rs`                                                                                                                                                                 |
 | Detector tests   | `uc_101_detector_missing_nested_pointer.rs`, `uc_102_detector_order_independence.rs`, `uc_103_detector_preconditioned_bisim.rs`, `uc_104_detector_no_unsafe_lookup.rs`, `uc_105_detector_detected_hash_order.rs`, `uc_106_detector_two_child_order.rs`, `uc_107_detector_validator_churn.rs`, `uc_108_detector_duplicate_child.rs` |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.13`](../../design/09-bug-fixes-and-rationale.md)                                  |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.13`](../../design/09-bug-fixes-and-rationale.md)                                                                                                                                                                                                                                   |
 
 **Stack depth: 5+** (Rocq + TLA⁺ + Sage + Hypothesis + Rust × 10).
 

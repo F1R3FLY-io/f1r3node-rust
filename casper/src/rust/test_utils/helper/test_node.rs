@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
+// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+use parking_lot::Mutex as PlMutex;
+
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -84,7 +87,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
     // Note: Removed comm_util field, will use transport_layer directly
     pub block_retriever: BlockRetriever<TransportLayerTestImpl>,
     // TODO: pub metrics: Metrics,
@@ -1015,9 +1018,9 @@ impl TestNode {
 
         // Store genesis block in DAG storage - required for DAG operations
         block_dag_storage
-            .insert(&genesis, false, true)
+            .insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
             .expect("Failed to insert genesis block into DAG storage in TestNode");
-        let deploy_storage = Arc::new(Mutex::new(
+        let deploy_storage = Arc::new(PlMutex::new(
             KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
         ));
 
@@ -1132,6 +1135,7 @@ impl TestNode {
             quarantine_length: 20000,
             min_phlo_price: 1,
             disable_late_block_filtering: true,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,

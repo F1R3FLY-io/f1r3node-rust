@@ -18,7 +18,7 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
     fn assert_finalized_block(node: &TestNode, expected: &BlockMessage) {
         let last_finalized_block_hash = node
             .block_dag_storage
-            .get_representation()
+            .get_representation().expect("dag representation")
             .last_finalized_block();
 
         // Scala uses withClue to add file:line context to assertions.

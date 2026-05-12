@@ -44,13 +44,13 @@ action             = Keep pre_fix_bug_7.rs + post-fix anchor
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                            |
-|------------------|-----------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.7 (`BugFixSeqnumDensity.v` — implicit in detector totality)                                     |
-| Sage witness     | `closure_certificate_model.sage` finding                                                            |
-| Hypothesis       | `hypothesis_arithmetic_projection_stress.rs`                                                         |
-| Rust regression  | `pre_fix_bug_7.rs`, `prop_t_9_7_seqnum_density.rs`                                                  |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.8`](../../design/09-bug-fixes-and-rationale.md)    |
+| Layer            | Artifact                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.7 (`BugFixSeqnumDensity.v` — implicit in detector totality)                                 |
+| Sage witness     | `closure_certificate_model.sage` finding                                                        |
+| Hypothesis       | `hypothesis_arithmetic_projection_stress.rs`                                                    |
+| Rust regression  | `pre_fix_bug_7.rs`, `prop_t_9_7_seqnum_density.rs`                                              |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.8`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 4** (Rocq + Sage + Rust + design).
 

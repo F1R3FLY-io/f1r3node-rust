@@ -31,14 +31,14 @@ Organization:
 
 STRIDE [HL06] decomposes threats into six categories:
 
-| Letter | Class                  | Slashing-domain meaning                                                                                  |
-|--------|------------------------|----------------------------------------------------------------------------------------------------------|
-| **S**  | Spoofing               | Impersonating a validator's signing key; forging a SlashDeploy by another validator                       |
-| **T**  | Tampering              | Modifying a recorded EquivocationRecord; altering bond amounts outside protocol transitions               |
-| **R**  | Repudiation            | Claiming a validator did not produce a block they did produce                                              |
-| **I**  | Info disclosure        | Leaking validator identities or stake amounts through side channels                                       |
-| **D**  | Denial of service      | Preventing a slash from being recorded; saturating the detector with malformed inputs                      |
-| **E**  | Elevation of privilege | Causing a SlashDeploy from a non-system source to be accepted as a system deploy                          |
+| Letter | Class                  | Slashing-domain meaning                                                                     |
+|--------|------------------------|---------------------------------------------------------------------------------------------|
+| **S**  | Spoofing               | Impersonating a validator's signing key; forging a SlashDeploy by another validator         |
+| **T**  | Tampering              | Modifying a recorded EquivocationRecord; altering bond amounts outside protocol transitions |
+| **R**  | Repudiation            | Claiming a validator did not produce a block they did produce                               |
+| **I**  | Info disclosure        | Leaking validator identities or stake amounts through side channels                         |
+| **D**  | Denial of service      | Preventing a slash from being recorded; saturating the detector with malformed inputs       |
+| **E**  | Elevation of privilege | Causing a SlashDeploy from a non-system source to be accepted as a system deploy            |
 
 Three of these (S, T, E) are *direct* slashing risks; the others
 (R, I, D) become slashing risks through the consensus layer (e.g.
@@ -72,14 +72,14 @@ attack-tree leaves in [§2](#2--attack-trees--building-blocks).
 
 ### 1.2 Example: STRIDE on the `EquivocationsTracker`
 
-| Cat | Threat                                                              | Coverage                                                                |
-|-----|---------------------------------------------------------------------|-------------------------------------------------------------------------|
-| S   | A non-validator inserts a record                                    | Insertion gated on system-deploy auth; covered by `prop_t_auth_check`   |
-| T   | Records are overwritten concurrently                                 | Bug #2; covered by Loom + TLA⁺ `ConcurrentTracker.tla`                  |
-| R   | A validator denies its equivocation                                  | Records are signed by the recording validator; non-repudiable           |
-| I   | Tracker leaks which validators have been observed                    | Out of scope — tracker state is public on the DAG                       |
-| D   | Tracker insertion hangs under load                                   | Bounded-time insertion proven in `prop_t_4_record_uniqueness`           |
-| E   | A non-system deploy modifies the tracker                              | Tracker mutation gated by `system_deploy_data` discriminator             |
+| Cat | Threat                                            | Coverage                                                              |
+|-----|---------------------------------------------------|-----------------------------------------------------------------------|
+| S   | A non-validator inserts a record                  | Insertion gated on system-deploy auth; covered by `prop_t_auth_check` |
+| T   | Records are overwritten concurrently              | Bug #2; covered by Loom + TLA⁺ `ConcurrentTracker.tla`                |
+| R   | A validator denies its equivocation               | Records are signed by the recording validator; non-repudiable         |
+| I   | Tracker leaks which validators have been observed | Out of scope — tracker state is public on the DAG                     |
+| D   | Tracker insertion hangs under load                | Bounded-time insertion proven in `prop_t_4_record_uniqueness`         |
+| E   | A non-system deploy modifies the tracker          | Tracker mutation gated by `system_deploy_data` discriminator          |
 
 Every cell either resolves to a proven property (with citation), a
 covered test, or an out-of-scope clause. The methodology forbids
@@ -200,15 +200,15 @@ A leaf is **atomic** when it represents a single adversary
 capability that cannot meaningfully be decomposed further. The
 methodology's leaves are:
 
-| Atomic capability                                  | Adversary's tool                                            |
-|----------------------------------------------------|-------------------------------------------------------------|
-| Equivocate at a particular `(v, seq)`              | Sign two blocks at `seq` (key control of `v`)               |
-| Withhold a block from a subset of validators       | Network-layer partition or censorship                       |
-| Delay gossip past a deadline                       | Network-layer delay                                          |
-| Replay an old SlashDeploy                          | Re-broadcast a previously-seen system deploy                 |
-| Construct a malformed BlockMessage                 | Bit-level manipulation of the wire format                    |
-| Drive the detector through a particular DAG shape  | Choice of justifications when proposing                      |
-| Cause an arithmetic overflow                       | Choice of seq number / epoch / bond at boundary             |
+| Atomic capability                                 | Adversary's tool                                |
+|---------------------------------------------------|-------------------------------------------------|
+| Equivocate at a particular `(v, seq)`             | Sign two blocks at `seq` (key control of `v`)   |
+| Withhold a block from a subset of validators      | Network-layer partition or censorship           |
+| Delay gossip past a deadline                      | Network-layer delay                             |
+| Replay an old SlashDeploy                         | Re-broadcast a previously-seen system deploy    |
+| Construct a malformed BlockMessage                | Bit-level manipulation of the wire format       |
+| Drive the detector through a particular DAG shape | Choice of justifications when proposing         |
+| Cause an arithmetic overflow                      | Choice of seq number / epoch / bond at boundary |
 
 These leaves are the **inputs** to the structured fuzzing layer (see
 [`../randomized-search/03-coverage-guided-fuzzing.md`](../randomized-search/03-coverage-guided-fuzzing.md))

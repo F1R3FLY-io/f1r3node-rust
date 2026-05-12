@@ -43,13 +43,13 @@ action             = Keep duplicate_neglect_edges.rs +
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                  |
-|------------------|---------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.16 (`BugFixDuplicateJustifications.v` — implicit through detector projection theorems)                                |
-| TLA⁺ model       | `JustificationProjection.tla` `Inv_DuplicateValidatorsRejected`                                                              |
-| Sage             | `differential_bisimilarity_model.sage` finding                                                                              |
-| Rust regression  | `duplicate_neglect_edges.rs`, `uc_108_detector_duplicate_child.rs`, `delimiter_free_record_key_collision.rs`               |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.18`](../../design/09-bug-fixes-and-rationale.md)                          |
+| Layer            | Artifact                                                                                                     |
+|------------------|--------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.16 (`BugFixDuplicateJustifications.v` — implicit through detector projection theorems)                   |
+| TLA⁺ model       | `JustificationProjection.tla` `Inv_DuplicateValidatorsRejected`                                              |
+| Sage             | `differential_bisimilarity_model.sage` finding                                                               |
+| Rust regression  | `duplicate_neglect_edges.rs`, `uc_108_detector_duplicate_child.rs`, `delimiter_free_record_key_collision.rs` |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.18`](../../design/09-bug-fixes-and-rationale.md)             |
 
 **Stack depth: 4** (Rocq + TLA⁺ + Sage + Rust + design).
 

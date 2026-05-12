@@ -88,13 +88,13 @@ to mechanize 6 100+ lines across 14 modules, with peak memory of
 
 The methodology deliberately does **not** use Rocq for:
 
-| Avoided use                                            | Reason                                                                                     | Tool used instead                                  |
-|--------------------------------------------------------|--------------------------------------------------------------------------------------------|----------------------------------------------------|
-| Proto round-trip equality                              | A theorem about byte-level encoding is brittle and provides little semantic insight        | `cargo-fuzz` round-trip targets                    |
-| Bounded numeric overflow                               | Kani proves these in seconds; Rocq would require a custom integer model                    | Kani harnesses + libFuzzer envelope                |
-| Concurrency interleavings                              | Rocq has no native scheduler; the proof would need to encode it from scratch               | Loom (Rust) + TLA⁺ + TLC                           |
-| Quick exploratory hypothesis                           | Cost of one Rocq theorem ≈ 100 proptests; the false-positive rate is irrelevant during exploration | proptest + Hypothesis                              |
-| Findings from Sage that have not yet been classified   | Promoting unclassified witnesses risks mechanizing model artifacts                          | Wait until traceability ledger assigns a status    |
+| Avoided use                                          | Reason                                                                                             | Tool used instead                               |
+|------------------------------------------------------|----------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| Proto round-trip equality                            | A theorem about byte-level encoding is brittle and provides little semantic insight                | `cargo-fuzz` round-trip targets                 |
+| Bounded numeric overflow                             | Kani proves these in seconds; Rocq would require a custom integer model                            | Kani harnesses + libFuzzer envelope             |
+| Concurrency interleavings                            | Rocq has no native scheduler; the proof would need to encode it from scratch                       | Loom (Rust) + TLA⁺ + TLC                        |
+| Quick exploratory hypothesis                         | Cost of one Rocq theorem ≈ 100 proptests; the false-positive rate is irrelevant during exploration | proptest + Hypothesis                           |
+| Findings from Sage that have not yet been classified | Promoting unclassified witnesses risks mechanizing model artifacts                                 | Wait until traceability ledger assigns a status |
 
 The rule of thumb is:
 
@@ -132,12 +132,12 @@ Validator.v                  ← validator identity & bond type
 
 Each module follows a four-section template:
 
-| Section            | Contents                                                                                  |
-|--------------------|-------------------------------------------------------------------------------------------|
-| **Types**          | `Record` / `Inductive` declarations for the layer's data                                  |
-| **Definitions**    | Functions implementing the LTS transitions, predicates, projections                       |
-| **Lemmas**         | Helper facts used by the chapter's main theorems                                          |
-| **Theorems**       | The load-bearing statements cited from `slashing-specification.md`                       |
+| Section         | Contents                                                            |
+|-----------------|---------------------------------------------------------------------|
+| **Types**       | `Record` / `Inductive` declarations for the layer's data            |
+| **Definitions** | Functions implementing the LTS transitions, predicates, projections |
+| **Lemmas**      | Helper facts used by the chapter's main theorems                    |
+| **Theorems**    | The load-bearing statements cited from `slashing-specification.md`  |
 
 The dependency graph is acyclic and shallow (max depth 4). Building
 the development with `coq_makefile -f _CoqProject -o Makefile && make -j1`
@@ -168,13 +168,13 @@ seems convenient but is actively harmful:
 A Rocq theorem is not unconditionally true; it is true *given* the
 trust base. The slashing development's trust base is:
 
-| Trusted artifact                              | Why it is trusted                                                                                                |
-|-----------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| The Rocq kernel itself                        | The De Bruijn criterion — the kernel is small (~10 kLoC), audited, and used by thousands of developments         |
-| Rocq's standard library                       | Stable, audited, widely used                                                                                     |
-| The classical-axiom-free fragment of Rocq     | The slashing development uses no `Axiom`, no `Classical`, no `FunctionalExtensionality`, no `ProofIrrelevance`   |
-| The Rust→Rocq abstraction (informal)          | The Rocq inductives mirror the Rust enum/struct definitions; the mapping is informal but is enforced by the harness/oracle bisimilarity tests in `casper/tests/slashing/oracle_adapter.rs` |
-| `coqc` execution semantics                    | The same kernel binary is used by everyone; reproducible against a pinned version                                |
+| Trusted artifact                          | Why it is trusted                                                                                                                                                                          |
+|-------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| The Rocq kernel itself                    | The De Bruijn criterion — the kernel is small (~10 kLoC), audited, and used by thousands of developments                                                                                   |
+| Rocq's standard library                   | Stable, audited, widely used                                                                                                                                                               |
+| The classical-axiom-free fragment of Rocq | The slashing development uses no `Axiom`, no `Classical`, no `FunctionalExtensionality`, no `ProofIrrelevance`                                                                             |
+| The Rust→Rocq abstraction (informal)      | The Rocq inductives mirror the Rust enum/struct definitions; the mapping is informal but is enforced by the harness/oracle bisimilarity tests in `casper/tests/slashing/oracle_adapter.rs` |
+| `coqc` execution semantics                | The same kernel binary is used by everyone; reproducible against a pinned version                                                                                                          |
 
 **Not** trusted (and therefore not used):
 

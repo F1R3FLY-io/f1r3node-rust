@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -161,7 +161,7 @@ async fn run_block_creator_create_memory_profile() {
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -223,11 +223,11 @@ async fn run_block_creator_create_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(&parent, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage.get_representation().expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -252,7 +252,7 @@ async fn run_block_creator_create_memory_profile() {
     for i in 1..=iterations {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             ds.add(vec![deploy]).expect("Failed to add deploy");
         }
 
@@ -293,7 +293,7 @@ async fn run_block_creator_create_memory_profile() {
         };
 
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             let all = ds.read_all().expect("Failed to read deploy pool");
             if !all.is_empty() {
                 ds.remove(all.into_iter().collect())
@@ -460,11 +460,11 @@ async fn run_block_creator_phase_split_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(&parent, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage.get_representation().expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),

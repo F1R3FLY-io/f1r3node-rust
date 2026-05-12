@@ -1,3 +1,28 @@
+//! Equivocation detection — single-step `check_equivocations` plus the
+//! neglected-equivocation RMW path.
+//!
+//! ## Responsibilities
+//!
+//! * [`EquivocationDetector::check_equivocations`] — checks whether a
+//!   freshly-arrived block equivocates against its sender's prior
+//!   creator-justification.
+//! * [`EquivocationDetector::check_neglected_equivocations_with_update`]
+//!   — atomic RMW over the equivocation tracker that mints
+//!   [`EquivocationRecord`]s for blocks observing equivocations they
+//!   failed to acknowledge (Bug #2 / T-9.2).
+//! * [`NeglectedEquivocationOutcome`] — typed outcome of the neglected-
+//!   equivocation pass (P2-15).
+//!
+//! ## Slashing-protocol position
+//!
+//! This module is the dispatcher between block validation and the
+//! `EquivocationTrackerStore`. It does not mutate validator bonds —
+//! that's the PoS contract's job. It records `EquivocationRecord`s
+//! that the proposer layer later turns into `SlashDeploy`s.
+//!
+//! See `docs/theory/slashing/slashing-verification.md` §6 for the
+//! detector's role in the full slashing protocol.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -19,6 +44,28 @@ use crate::rust::ValidBlockProcessing;
 /// Equivocation detection logic for blockchain consensus
 pub struct EquivocationDetector;
 
+/// P2-15: outcome of one pass of `check_neglected_equivocation`.
+///
+/// Replaces the prior `Result<bool, _>` shape — `bool` was overloaded with
+/// the mutating side-effect (the tracker was updated even on `Ok(false)`),
+/// and callers had to infer which branch fired from a single bit.
+///
+/// * `Neglected` — the block could observe an equivocation it failed to
+///   acknowledge. The proposer is therefore complicit; the block is rejected
+///   with `InvalidBlock::NeglectedEquivocation`.
+/// * `DetectedAndRecorded(records)` — the block correctly observes one or
+///   more equivocations; the tracker has been updated to record the witness.
+///   `records` carries the post-update records for logging / telemetry.
+/// * `Oblivious` — the block had no view of the equivocation (e.g. its
+///   justifications precede the equivocation base). No tracker mutation
+///   occurred. Validation accepts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NeglectedEquivocationOutcome {
+    Neglected,
+    DetectedAndRecorded(Vec<EquivocationRecord>),
+    Oblivious,
+}
+
 /// Memoizes per-justification canonical-child resolution within a single
 /// detection pass. The key is (justification block hash, equivocating
 /// validator, equivocation-base seq); the value is the canonical child hash
@@ -33,7 +80,8 @@ impl EquivocationDetector {
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
     ) -> Result<ValidBlockProcessing, KvStoreError> {
-        tracing::info!("Calculate checkEquivocations.");
+        // P4-5: per-block hot path; demote info!→debug! per slashing audit.
+        tracing::debug!("Calculate checkEquivocations.");
 
         let maybe_latest_message_of_creator_hash = dag.latest_message_hash(&block.sender);
         let maybe_creator_justification = Self::creator_justification_hash(block);
@@ -80,9 +128,10 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
     ) -> Result<ValidBlockProcessing, KvStoreError> {
-        tracing::info!("Calculate checkNeglectedEquivocationsWithUpdate");
+        // P4-5: per-block hot path; demote info!→debug! per slashing audit.
+        tracing::debug!("Calculate checkNeglectedEquivocationsWithUpdate");
 
-        let neglected_equivocation_detected = Self::is_neglected_equivocation_detected_with_update(
+        let outcome = Self::check_neglected_equivocation(
             block,
             dag,
             block_store,
@@ -91,31 +140,49 @@ impl EquivocationDetector {
         )
         .await?;
 
-        let status = if neglected_equivocation_detected {
-            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedEquivocation))
-        } else {
-            Either::Right(ValidBlock::Valid)
+        // P2-15: the outcome enum makes the detect/record/oblivious decision
+        // a first-class value. Callers convert it to a validation verdict;
+        // the storage write happened atomically inside
+        // `check_neglected_equivocation`'s closure.
+        let status = match outcome {
+            NeglectedEquivocationOutcome::Neglected => {
+                Either::Left(BlockError::Invalid(InvalidBlock::NeglectedEquivocation))
+            }
+            NeglectedEquivocationOutcome::DetectedAndRecorded(_)
+            | NeglectedEquivocationOutcome::Oblivious => Either::Right(ValidBlock::Valid),
         };
 
         Ok(status)
     }
 
-    async fn is_neglected_equivocation_detected_with_update(
+    /// P2-15: replaces `is_neglected_equivocation_detected_with_update` (which
+    /// returned `bool` while writing to durable storage — a name that hid the
+    /// mutating side-effect). The returned `NeglectedEquivocationOutcome`
+    /// names the three outcomes explicitly:
+    ///
+    /// * `Neglected` — block ignored an equivocation it was responsible to
+    ///   detect. Validation must reject (`InvalidBlock::NeglectedEquivocation`).
+    /// * `DetectedAndRecorded(records)` — block correctly observed (one or
+    ///   more) equivocations and the tracker was updated to record this
+    ///   witness. Caller receives the list of records that were updated for
+    ///   logging / telemetry. Validation accepts the block.
+    /// * `Oblivious` — block had no view of the equivocation; no tracker
+    ///   mutation occurred. Validation accepts the block.
+    ///
+    /// The entire `tracker.data()` → decide → `tracker.add(...)` flow runs
+    /// inside the `access_equivocations_tracker` closure to preserve Bug #2
+    /// / T-9.2 atomicity.
+    async fn check_neglected_equivocation(
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
-    ) -> Result<bool, KvStoreError> {
-        // Atomic read-modify-write per Theorem T-9.2 (Bug #2). Reading
-        // `tracker.data()` and writing `tracker.add(updated)` must happen
-        // under the same lock so concurrent block processors cannot observe
-        // a half-written record set. The `FnOnce` closure shape is the trait
-        // contract — see `block-storage/src/rust/dag/equivocations_access.rs`
-        // and `formal/rocq/slashing/theories/BugFixAtomicTracker.v`.
+    ) -> Result<NeglectedEquivocationOutcome, KvStoreError> {
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
+            let mut recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
                 let status = Self::get_equivocation_discovery_status(
                     block,
@@ -127,23 +194,33 @@ impl EquivocationDetector {
                 )?;
                 match status {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
-                        return Ok(true);
+                        return Ok(NeglectedEquivocationOutcome::Neglected);
                     }
                     EquivocationDiscoveryStatus::EquivocationDetected => {
                         let mut updated = equivocation_record.clone();
                         updated
                             .equivocation_detected_block_hashes
                             .insert(block.block_hash.clone());
-                        tracker.add(updated)?;
+                        tracker.add(updated.clone())?;
+                        // P4-5: detection is a (rare) consensus event; keep info!
+                        // here so operators see the per-block record but use the
+                        // structured `target: "f1r3fly.slashing"` namespace so
+                        // ops can filter without grepping for the message text.
                         tracing::info!(
-                            "Equivocation detected and tracker updated for block {}",
-                            PrettyPrinter::build_string_no_limit(&block.block_hash)
+                            target: "f1r3fly.slashing",
+                            block = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+                            "Equivocation detected and tracker updated"
                         );
+                        recorded.push(updated);
                     }
                     EquivocationDiscoveryStatus::EquivocationOblivious => {}
                 }
             }
-            Ok(false)
+            if recorded.is_empty() {
+                Ok(NeglectedEquivocationOutcome::Oblivious)
+            } else {
+                Ok(NeglectedEquivocationOutcome::DetectedAndRecorded(recorded))
+            }
         })
     }
 
@@ -173,7 +250,21 @@ impl EquivocationDetector {
                 genesis,
                 canonical_child_cache,
             ),
-            None => Ok(EquivocationDiscoveryStatus::EquivocationDetected),
+            None => {
+                // P5 (slashing audit): a validator absent from the bond map
+                // who appears as an equivocator is a degenerate case — the
+                // detector still classifies as EquivocationDetected, but
+                // operators should be alerted because this can indicate a
+                // bond-map / equivocation-tracker desync (rare; Bug #5 was
+                // the original site of this branch).
+                tracing::warn!(
+                    target: "f1r3fly.slashing",
+                    validator = %hex::encode(&equivocation_record.equivocator),
+                    base_seq = equivocation_record.equivocation_base_block_seq_num,
+                    "unbonded equivocation detected (validator absent from bond map)"
+                );
+                Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+            }
         }
     }
 
@@ -235,7 +326,10 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<bool, KvStoreError> {
-        let mut updated_equivocation_children = equivocation_children.to_vec();
+        // P2-11: mutate a single owned Vec in place instead of returning a
+        // fresh Vec from each helper. Eliminates O(n) clones per
+        // justification (9 sites collapsed into a single allocation).
+        let mut updated_equivocation_children: Vec<BlockMessage> = equivocation_children.to_vec();
         let equivocating_validator = &equivocation_record.equivocator;
         let equivocation_base_block_seq_num = equivocation_record.equivocation_base_block_seq_num;
 
@@ -251,13 +345,13 @@ impl EquivocationDetector {
                 continue;
             };
 
-            updated_equivocation_children = Self::maybe_add_equivocation_child(
+            Self::maybe_add_equivocation_child(
                 dag,
                 block_store,
                 &justification_block,
                 equivocating_validator,
                 equivocation_base_block_seq_num.into(),
-                &updated_equivocation_children,
+                &mut updated_equivocation_children,
                 genesis,
                 canonical_child_cache,
             )?;
@@ -270,21 +364,23 @@ impl EquivocationDetector {
         Ok(false)
     }
 
+    /// P2-11: mutates `equivocation_children` in place — returns `Ok(true)`
+    /// iff a new equivocation child was appended.
     fn maybe_add_equivocation_child(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         justification_block: &BlockMessage,
         equivocating_validator: &Validator,
         equivocation_base_block_seq_num: i64,
-        equivocation_children: &[BlockMessage],
+        equivocation_children: &mut Vec<BlockMessage>,
         genesis: &BlockMessage,
         canonical_child_cache: &mut CanonicalChildCache,
-    ) -> Result<Vec<BlockMessage>, KvStoreError> {
+    ) -> Result<bool, KvStoreError> {
         // Genesis is unconditionally the equivocation root, never a child of
-        // it. Returning the unchanged child set short-circuits the walk and
-        // keeps the (genesis, validator, seq) cache key out of the cache.
+        // it. Returning early keeps the (genesis, validator, seq) cache key
+        // out of the cache.
         if justification_block.block_hash == genesis.block_hash {
-            return Ok(equivocation_children.to_vec());
+            return Ok(false);
         }
 
         if justification_block.sender == *equivocating_validator {
@@ -300,7 +396,7 @@ impl EquivocationDetector {
                     canonical_child_cache,
                 )
             } else {
-                Ok(equivocation_children.to_vec())
+                Ok(false)
             }
         } else {
             let latest_messages =
@@ -330,26 +426,28 @@ impl EquivocationDetector {
                                     canonical_child_cache,
                                 )
                             } else {
-                                Ok(equivocation_children.to_vec())
+                                Ok(false)
                             }
                         }
-                        None => Ok(equivocation_children.to_vec()),
+                        None => Ok(false),
                     }
                 }
-                None => Ok(equivocation_children.to_vec()),
+                None => Ok(false),
             }
         }
     }
 
+    /// P2-11: mutates `equivocation_children` in place — returns `Ok(true)`
+    /// iff a new (deduplicated) equivocation child was appended.
     fn add_equivocation_child(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         justification_block: &BlockMessage,
         equivocating_validator: &Validator,
         equivocation_base_block_seq_num: i64,
-        equivocation_children: &[BlockMessage],
+        equivocation_children: &mut Vec<BlockMessage>,
         canonical_child_cache: &mut CanonicalChildCache,
-    ) -> Result<Vec<BlockMessage>, KvStoreError> {
+    ) -> Result<bool, KvStoreError> {
         let key = (
             justification_block.block_hash.clone(),
             equivocating_validator.clone(),
@@ -372,18 +470,19 @@ impl EquivocationDetector {
         match maybe_equivocation_child_hash {
             Some(equivocation_child_hash) => match block_store.get(&equivocation_child_hash)? {
                 Some(equivocation_child) => {
-                    let mut updated_children = equivocation_children.to_vec();
-                    if !updated_children
+                    let already_present = equivocation_children
                         .iter()
-                        .any(|child| child.block_hash == equivocation_child.block_hash)
-                    {
-                        updated_children.push(equivocation_child);
+                        .any(|child| child.block_hash == equivocation_child.block_hash);
+                    if !already_present {
+                        equivocation_children.push(equivocation_child);
+                        Ok(true)
+                    } else {
+                        Ok(false)
                     }
-                    Ok(updated_children)
                 }
-                None => Ok(equivocation_children.to_vec()),
+                None => Ok(false),
             },
-            None => Ok(equivocation_children.to_vec()),
+            None => Ok(false),
         }
     }
 
@@ -440,7 +539,8 @@ impl EquivocationDetector {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
+    use parking_lot::RwLock;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use models::rust::block_hash;
@@ -556,7 +656,6 @@ mod tests {
             }
             dag.block_metadata_index
                 .write()
-                .unwrap()
                 .add(metadata(block, block_number))
                 .unwrap();
         }
@@ -726,17 +825,21 @@ mod tests {
         let block_store = block_store_with(&[b10.clone(), b11.clone()]);
         let mut cache = CanonicalChildCache::new();
 
-        let children = EquivocationDetector::add_equivocation_child(
+        // P2-11: helper mutates `children` in place; the boolean return
+        // reflects whether anything was appended.
+        let mut children: Vec<BlockMessage> = Vec::new();
+        let added = EquivocationDetector::add_equivocation_child(
             &dag,
             &block_store,
             &b11,
             &sender,
             0,
-            &Vec::new(),
+            &mut children,
             &mut cache,
         )
         .unwrap();
 
+        assert!(added);
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].block_hash, b10.block_hash);
         assert_eq!(

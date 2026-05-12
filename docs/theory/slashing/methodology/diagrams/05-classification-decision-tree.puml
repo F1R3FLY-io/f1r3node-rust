@@ -62,44 +62,44 @@ end note
 
 if (Q1: Does w reproduce on production?) then (YES)
   if (Q2a: Is w already in the bug-fix manifest?) then (YES)
-    #E8F5E9:status = confirmed_fixed_bug
-class  = permitted_bug_fix;
+    :status = confirmed_fixed_bug
+class  = permitted_bug_fix; <<#E8F5E9>>
     stop
   else (NO)
     if (Q3a: Is the bug fixed in the same PR?) then (YES)
-      #C8E6C9:status = confirmed_current_bug
+      :status = confirmed_current_bug
 + fix in same PR
 class  = projection_risk
-or unexpected (reclassify);
+or unexpected (reclassify); <<#C8E6C9>>
       stop
     else (NO)
-      #FFF9C4:status = confirmed_current_bug
+      :status = confirmed_current_bug
 + tracking issue opened
 class  = projection_risk
-or unexpected (reclassify);
+or unexpected (reclassify); <<#FFF9C4>>
       stop
     endif
   endif
 else (NO)
   if (Q2b: Does w describe a behaviour the Rust path explicitly rejects?) then (YES)
-    #E3F2FD:class  = bisimilar
-status = not_reproduced_in_rust;
+    :class  = bisimilar
+status = not_reproduced_in_rust; <<#E3F2FD>>
     stop
   else (NO)
     if (Q3b: Is the witness at a theorem precondition boundary?) then (YES)
-      #F3E5F5:status = assumption_counterexample
-class  = assumption_counterexample;
+      :status = assumption_counterexample
+class  = assumption_counterexample; <<#F3E5F5>>
       stop
     else (NO)
       if (Q4: Is w a model-only projection of a Rust path?) then (YES)
-        #FFECB3:status = projection_risk_guarded
-class  = projection_risk;
+        :status = projection_risk_guarded
+class  = projection_risk; <<#FFECB3>>
         stop
       else (NO)
-        #FFCDD2:HALT — escalate audit
+        :HALT — escalate audit
 class = unexpected
 must be reclassified
-before commit;
+before commit; <<#FFCDD2>>
         end
       endif
     endif

@@ -69,16 +69,16 @@ literal three-line invariant the lock-free version violates.
 The slashing development uses two TLA⁺ engines: TLC for explicit-state
 enumeration, Apalache for SMT-backed symbolic checking.
 
-| Property                     | TLC (explicit-state)                                  | Apalache (symbolic)                                     |
-|------------------------------|-------------------------------------------------------|---------------------------------------------------------|
-| **State representation**     | One concrete state per reachable configuration       | SMT formula over symbolic state                          |
-| **Explores**                 | Every reachable state, breadth-first by default       | Every state up to a depth bound, by SMT search           |
-| **State-space cost**         | Exponential in protocol parameters                    | Sub-exponential in many cases (SMT prunes)              |
-| **Best at**                  | Liveness via Büchi conversion; tight finite bounds     | Wider validator/epoch domains; numerical envelopes      |
-| **Counterexample form**       | Concrete state sequence                                | Concrete state sequence reconstructed from SMT model    |
-| **Liveness checking**        | Yes (via `WF_` / `SF_` fairness, Büchi product)        | Limited; primarily safety                                 |
-| **Practical limit (this work)** | `n ≤ 4, d ≤ 6, b ≤ 2 ⇒ |𝒮| ≤ 10⁶`                  | `n ≤ 8, d ≤ 12, b ≤ 4 ⇒ tractable by SMT`                |
-| **Tool reference**           | [Lam02, Yu99]                                          | Apalache: [KKT19, KKT20]                                 |
+| Property                        | TLC (explicit-state)                               | Apalache (symbolic)                                  |
+|---------------------------------|----------------------------------------------------|------------------------------------------------------|
+| **State representation**        | One concrete state per reachable configuration     | SMT formula over symbolic state                      |
+| **Explores**                    | Every reachable state, breadth-first by default    | Every state up to a depth bound, by SMT search       |
+| **State-space cost**            | Exponential in protocol parameters                 | Sub-exponential in many cases (SMT prunes)           |
+| **Best at**                     | Liveness via Büchi conversion; tight finite bounds | Wider validator/epoch domains; numerical envelopes   |
+| **Counterexample form**         | Concrete state sequence                            | Concrete state sequence reconstructed from SMT model |
+| **Liveness checking**           | Yes (via `WF_` / `SF_` fairness, Büchi product)    | Limited; primarily safety                            |
+| **Practical limit (this work)** | `n ≤ 4, d ≤ 6, b ≤ 2 ⇒ |𝒮| ≤ 10⁶`                  | `n ≤ 8, d ≤ 12, b ≤ 4 ⇒ tractable by SMT`            |
+| **Tool reference**              | [Lam02, Yu99]                                      | Apalache: [KKT19, KKT20]                             |
 
 The default choice in the slashing development is TLC; Apalache is
 *nominated* as the fallthrough for searches where the state space
@@ -104,11 +104,11 @@ against `MC_AuthorizedSlashFlow.tla` and `MC_TwoLevelSlashing.tla`).
 Three configurations have been observed to push TLC into prohibitive
 runtime in this development:
 
-| Configuration                                                          | Reachable states | TLC behavior                                                          |
-|------------------------------------------------------------------------|------------------|-----------------------------------------------------------------------|
-| `EquivocationDetector` with `n = 5, d = 8, b = 3`                       | ~10⁸             | OOM at 32 GB RAM                                                       |
-| `TwoLevelSlashing` with `n = 6, neglect edges allowed = unbounded`     | ~10⁷             | 4 h wall time on 12-core; tight bound used                            |
-| `AuthorizedSlashFlow` with epoch length unconstrained                  | unbounded        | TLC cannot terminate; the prescribed fallthrough is Apalache (see note) |
+| Configuration                                                      | Reachable states | TLC behavior                                                            |
+|--------------------------------------------------------------------|------------------|-------------------------------------------------------------------------|
+| `EquivocationDetector` with `n = 5, d = 8, b = 3`                  | ~10⁸             | OOM at 32 GB RAM                                                        |
+| `TwoLevelSlashing` with `n = 6, neglect edges allowed = unbounded` | ~10⁷             | 4 h wall time on 12-core; tight bound used                              |
+| `AuthorizedSlashFlow` with epoch length unconstrained              | unbounded        | TLC cannot terminate; the prescribed fallthrough is Apalache (see note) |
 
 In each case the bound was tightened so finite TLC exhaustion is
 preserved at the operative bound. The Apalache pathway is the
@@ -121,15 +121,15 @@ work.
 
 The TLA⁺ models in `formal/tlaplus/slashing/` are:
 
-| File                         | Models                                                                                                          | Headline invariant                                                                                  |
-|------------------------------|-----------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
-| `EquivocationDetector.tla`   | The detector LTS                                                                                                | `Inv_DetectionSound ∧ Inv_DetectionComplete ∧ Inv_TaxonomyCorrect`                                  |
-| `ConcurrentTracker.tla`      | The lock-free vs. locked tracker, parameterized by `Locked ∈ BOOLEAN`                                            | `Inv_NoOverwrite` (violated when `Locked = FALSE`; satisfied when `Locked = TRUE`)                  |
-| `SlashFlow.tla`              | End-to-end pipeline (detection → record → propose → SlashDeploy → PoS → fork-choice)                            | `Inv_Pipeline_Reaches_Effect ∧ Inv_NoSlashWithoutRecord`                                            |
-| `TwoLevelSlashing.tla`       | Closure of direct offenders + neglecters                                                                         | `Inv_ClosureTermination ∧ Inv_BFTBound ∧ Inv_QuorumIntersect`                                       |
-| `AuthorizedSlashFlow.tla`    | Slash authorization for current-epoch invalid-block evidence                                                     | `Inv_SlashOnlyIfAuthorized ∧ Inv_RebondRejectsStaleEvidence`                                        |
-| `JustificationProjection.tla`| Justification-validator-projection model                                                                          | `Inv_DuplicateValidatorsRejected`                                                                   |
-| `WithdrawFlow.tla`           | Post-quarantine withdrawal flow modelling Bug #10                                                                | `Inv_TotalFundsConserved ∧ Inv_WithdrawalRetryable`                                                 |
+| File                          | Models                                                                               | Headline invariant                                                                 |
+|-------------------------------|--------------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| `EquivocationDetector.tla`    | The detector LTS                                                                     | `Inv_DetectionSound ∧ Inv_DetectionComplete ∧ Inv_TaxonomyCorrect`                 |
+| `ConcurrentTracker.tla`       | The lock-free vs. locked tracker, parameterized by `Locked ∈ BOOLEAN`                | `Inv_NoOverwrite` (violated when `Locked = FALSE`; satisfied when `Locked = TRUE`) |
+| `SlashFlow.tla`               | End-to-end pipeline (detection → record → propose → SlashDeploy → PoS → fork-choice) | `Inv_Pipeline_Reaches_Effect ∧ Inv_NoSlashWithoutRecord`                           |
+| `TwoLevelSlashing.tla`        | Closure of direct offenders + neglecters                                             | `Inv_ClosureTermination ∧ Inv_BFTBound ∧ Inv_QuorumIntersect`                      |
+| `AuthorizedSlashFlow.tla`     | Slash authorization for current-epoch invalid-block evidence                         | `Inv_SlashOnlyIfAuthorized ∧ Inv_RebondRejectsStaleEvidence`                       |
+| `JustificationProjection.tla` | Justification-validator-projection model                                             | `Inv_DuplicateValidatorsRejected`                                                  |
+| `WithdrawFlow.tla`            | Post-quarantine withdrawal flow modelling Bug #10                                    | `Inv_TotalFundsConserved ∧ Inv_WithdrawalRetryable`                                |
 
 The full list of invariants per model is in the
 [`../slashing-verification.md §10`](../../slashing-verification.md) and

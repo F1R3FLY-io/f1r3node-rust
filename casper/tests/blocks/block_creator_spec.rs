@@ -4,7 +4,7 @@
 // Tests the deploy preparation and cleanup logic.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -127,7 +127,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -160,7 +160,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     // Add both deploys to storage
     {
-        let mut ds = deploy_storage.lock().unwrap();
+        let mut ds = deploy_storage.lock();
         ds.add(vec![expired_deploy.clone(), valid_deploy.clone()])
             .expect("Failed to add deploys");
 
@@ -188,7 +188,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     // Verify: expired deploy removed, valid deploy kept
     {
-        let ds = deploy_storage.lock().unwrap();
+        let ds = deploy_storage.lock();
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
@@ -220,7 +220,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -262,7 +262,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Add all deploys to storage
     {
-        let mut ds = deploy_storage.lock().unwrap();
+        let mut ds = deploy_storage.lock();
         ds.add(vec![
             block_expired_deploy.clone(),
             time_expired_deploy.clone(),
@@ -292,7 +292,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Verify: both expired deploys removed, valid deploy kept
     {
-        let ds = deploy_storage.lock().unwrap();
+        let ds = deploy_storage.lock();
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),

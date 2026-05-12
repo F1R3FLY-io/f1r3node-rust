@@ -35,7 +35,7 @@ where
         let dag = resources::block_dag_storage_from_dyn(&mut *kvm)
             .await
             .unwrap();
-        dag.insert(&genesis_context.genesis_block, false, true)
+        dag.insert(&genesis_context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
             .expect("Failed to insert genesis block into DAG");
 
         let indexed_dag = IndexedBlockDagStorage::new(dag);

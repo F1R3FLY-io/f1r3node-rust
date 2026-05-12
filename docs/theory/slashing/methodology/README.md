@@ -147,7 +147,8 @@ methodology/
     ├── 02-witness-to-promotion.{puml,svg}       ← sequence: model → witness → action
     ├── 03-scientific-method-loop.{puml,svg}     ← activity: hypothesis → experiment
     ├── 04-tool-theorem-coverage.{puml,svg}      ← which tools cover which theorems
-    └── 05-classification-decision-tree.{puml,svg} ← decision tree for the 8 statuses
+    ├── 05-classification-decision-tree.{puml,svg} ← decision tree for the 8 statuses
+    └── 06-differential-divergence-classification.{puml,svg} ← Rust↔Scala δ classification
 ```
 
 ---

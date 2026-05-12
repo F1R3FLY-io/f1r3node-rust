@@ -55,15 +55,15 @@ action             = Keep pre_fix_bug_10.rs + post-fix anchors
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                       |
-|------------------|--------------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorems    | T-9.10, T-9.10′, T-9.10″ (`BugFixWithdrawTransferFailure.v`)                                                                    |
+| Layer            | Artifact                                                                                                                                   |
+|------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| Rocq theorems    | T-9.10, T-9.10′, T-9.10″ (`BugFixWithdrawTransferFailure.v`)                                                                               |
 | TLA⁺ model       | `WithdrawFlow.tla` with `Inv_TotalFundsConserved`, `Inv_WithdrawalRetryable`, `Inv_AllRemovedValidatorsPaid`, `Inv_FairWithdrawerProgress` |
-| Hypothesis       | `hypothesis_bundle_evidence_state_machine.rs`                                                                                   |
-| Rust regression  | `pre_fix_bug_10.rs`, `prop_t_9_10_withdraw_safety.rs`                                                                          |
-| Rholang fix      | `casper/src/main/resources/PoS.rhox` (`payWithdraw` success-gated `computeRemove`)                                              |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.12`](../../design/09-bug-fixes-and-rationale.md)                              |
-| Diagram          | [Diagram 11 — Withdrawal transfer-failure fix](../../diagrams/11-seq-withdrawal-flow-fix.svg)                                  |
+| Hypothesis       | `hypothesis_bundle_evidence_state_machine.rs`                                                                                              |
+| Rust regression  | `pre_fix_bug_10.rs`, `prop_t_9_10_withdraw_safety.rs`                                                                                      |
+| Rholang fix      | `casper/src/main/resources/PoS.rhox` (`payWithdraw` success-gated `computeRemove`)                                                         |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.12`](../../design/09-bug-fixes-and-rationale.md)                                           |
+| Diagram          | [Diagram 11 — Withdrawal transfer-failure fix](../../diagrams/11-seq-withdrawal-flow-fix.svg)                                              |
 
 **Stack depth: 5** (Rocq × 3 + TLA⁺ + Hypothesis + Rust + design + visual).
 

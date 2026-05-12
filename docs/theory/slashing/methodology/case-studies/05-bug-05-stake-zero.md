@@ -52,11 +52,11 @@ action             = Keep pre_fix_bug_5.rs + post-fix anchor
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                              |
-|------------------|---------------------------------------------------------------------------------------|
-| Rocq theorem     | `t_9_5_active_has_positive_bond` (`BugFixStakeZero.v` — implicit through PoS invariants) |
-| Sage model       | `weighted_closure_model.sage`; finding #3                                              |
-| Rust regression  | `pre_fix_bug_5.rs`, `prop_t_9_5_active_has_positive_bond.rs`                            |
+| Layer            | Artifact                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------|
+| Rocq theorem     | `t_9_5_active_has_positive_bond` (`BugFixStakeZero.v` — implicit through PoS invariants)        |
+| Sage model       | `weighted_closure_model.sage`; finding #3                                                       |
+| Rust regression  | `pre_fix_bug_5.rs`, `prop_t_9_5_active_has_positive_bond.rs`                                    |
 | Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.6`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 4** (Rocq + Sage + Rust regression + design).

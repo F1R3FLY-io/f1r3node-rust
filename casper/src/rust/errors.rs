@@ -5,6 +5,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::slashing_authorization::SlashAuthError;
 use super::util::rholang::replay_failure::ReplayFailure;
 use super::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
 
@@ -20,6 +21,11 @@ pub enum CasperError {
     HistoryError(HistoryError),
     StreamError(String),
     LockError(String),
+    /// Phase 9 (R-2): typed `Slash`-deploy authorization failure. Carries
+    /// the [`SlashAuthError`] variant so callers in
+    /// `casper_engine::validation_dispatcher` can `match` on the structured
+    /// reason instead of grepping a stringified error.
+    SlashAuth(SlashAuthError),
     Other(String),
 }
 
@@ -36,9 +42,14 @@ impl fmt::Display for CasperError {
             CasperError::HistoryError(error) => write!(f, "History error: {}", error),
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
+            CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }
+}
+
+impl From<SlashAuthError> for CasperError {
+    fn from(error: SlashAuthError) -> Self { CasperError::SlashAuth(error) }
 }
 
 impl From<InterpreterError> for CasperError {

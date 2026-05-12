@@ -47,7 +47,14 @@ fn put_block(
         .expect("store block");
     fixture
         .dag_storage
-        .insert(block, invalid, false)
+        .insert(
+            block,
+            if invalid {
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
+            } else {
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
+            },
+        )
         .expect("insert block");
 }
 
@@ -63,7 +70,7 @@ fn snapshot_from_fixture(
         .collect::<HashMap<_, _>>();
 
     CasperSnapshot {
-        dag: fixture.dag_storage.get_representation(),
+        dag: fixture.dag_storage.get_representation().expect("dag representation"),
         last_finalized_block: prost::bytes::Bytes::new(),
         lca: prost::bytes::Bytes::new(),
         tips: vec![],
@@ -155,7 +162,8 @@ async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].offender, offender);
-    assert_eq!(candidates[0].target_activation_epoch, 1);
+    // Phase 10 (C-5): typed Epoch newtype — compare via .get() or Epoch::new.
+    assert_eq!(candidates[0].target_activation_epoch.get(), 1);
     assert_eq!(
         candidates[0].invalid_block_hash,
         invalid_a
@@ -396,19 +404,34 @@ proptest! {
         block_number in 0_i64..1_000_000_i64,
         epoch_length in 1_i32..10_000_i32,
     ) {
+        // Phase 9 (C-6) + Phase 10 (C-5): `epoch_for_block_number` returns
+        // `Result<Epoch, DomainError>` — the happy path is `Ok(Epoch::new(...))`.
         prop_assert_eq!(
             epoch_for_block_number(block_number, epoch_length),
-            Some(block_number / i64::from(epoch_length))
+            Ok(casper::rust::epoch::Epoch::new(block_number / i64::from(epoch_length)))
         );
     }
 
     #[test]
     fn epoch_for_block_number_rejects_invalid_domains(
         negative_block_number in i64::MIN..0_i64,
-        epoch_length in any::<i32>(),
+        epoch_length in 1_i32..10_000_i32,
     ) {
-        prop_assert_eq!(epoch_for_block_number(negative_block_number, epoch_length), None);
-        prop_assert_eq!(epoch_for_block_number(0, 0), None);
-        prop_assert_eq!(epoch_for_block_number(0, -1), None);
+        // Phase 9 (C-6): negative block numbers and non-positive
+        // epoch lengths are now distinguishable typed errors.
+        prop_assert_eq!(
+            epoch_for_block_number(negative_block_number, epoch_length),
+            Err(casper::rust::slashing_authorization::DomainError::NegativeBlockNumber(
+                negative_block_number
+            ))
+        );
+        prop_assert_eq!(
+            epoch_for_block_number(0, 0),
+            Err(casper::rust::slashing_authorization::DomainError::InvalidEpochLength(0))
+        );
+        prop_assert_eq!(
+            epoch_for_block_number(0, -1),
+            Err(casper::rust::slashing_authorization::DomainError::InvalidEpochLength(-1))
+        );
     }
 }

@@ -54,15 +54,15 @@ Three reasons:
 The slashing development encodes seven metamorphic relations, each as
 a proptest property:
 
-| Relation                            | Statement                                                                            | File                                                                       |
-|-------------------------------------|--------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
-| **Permutation invariance**          | Record set is invariant under insertion-order permutations                            | `prop_t_9_11_detector_permutation_invariance.rs`                            |
-| **Idempotence**                     | `slash(slash(v)) = slash(v)`                                                          | `prop_t_idem_slash_idempotence.rs`, `uc_24_slash_idempotence_trace.rs`     |
-| **Monotonicity**                    | Record set never shrinks across the trace                                             | `prop_t_5_record_monotonicity.rs`                                           |
-| **Replay determinism**              | Replaying a fixed trace produces the same final state                                 | `replay_determinism.rs`, `uc_14_replay_after_crash.rs`                     |
-| **Validator renaming equivariance** | Renaming all validators consistently does not change observable outcomes              | `prop_t_9_11_detector_bisim_under_complete_pointers.rs` (subsumes)         |
-| **Detector totality**               | Detector terminates on every well-formed view                                         | `prop_t_9_11_detector_totality.rs`                                          |
-| **Frontier monotonicity**           | Closure depth is monotone in the input edge set                                       | `frontier_monotonicity_merge_basis.rs`                                     |
+| Relation                            | Statement                                                                | File                                                                   |
+|-------------------------------------|--------------------------------------------------------------------------|------------------------------------------------------------------------|
+| **Permutation invariance**          | Record set is invariant under insertion-order permutations               | `prop_t_9_11_detector_permutation_invariance.rs`                       |
+| **Idempotence**                     | `slash(slash(v)) = slash(v)`                                             | `prop_t_idem_slash_idempotence.rs`, `uc_24_slash_idempotence_trace.rs` |
+| **Monotonicity**                    | Record set never shrinks across the trace                                | `prop_t_5_record_monotonicity.rs`                                      |
+| **Replay determinism**              | Replaying a fixed trace produces the same final state                    | `replay_determinism.rs`, `uc_14_replay_after_crash.rs`                 |
+| **Validator renaming equivariance** | Renaming all validators consistently does not change observable outcomes | `prop_t_9_11_detector_bisim_under_complete_pointers.rs` (subsumes)     |
+| **Detector totality**               | Detector terminates on every well-formed view                            | `prop_t_9_11_detector_totality.rs`                                     |
+| **Frontier monotonicity**           | Closure depth is monotone in the input edge set                          | `frontier_monotonicity_merge_basis.rs`                                 |
 
 Each relation is small, mechanically checkable, and catches a
 distinct refactor risk.

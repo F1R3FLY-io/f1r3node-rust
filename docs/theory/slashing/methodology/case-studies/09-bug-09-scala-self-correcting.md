@@ -50,11 +50,11 @@ action             = Keep pre_fix_bug_9.rs as the surrogate-Scala
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                          |
-|------------------|---------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.9 (`BugFixSelfCorrecting.v` — implicit in `t_9_9_self_correcting`)                            |
-| Sage witness     | `differential_bisimilarity_model.sage` finding                                                     |
-| Rust regression  | `pre_fix_bug_9.rs`, `prop_t_9_9_self_correcting.rs`, `uc_23_self_correcting.rs`                    |
+| Layer            | Artifact                                                                                         |
+|------------------|--------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.9 (`BugFixSelfCorrecting.v` — implicit in `t_9_9_self_correcting`)                           |
+| Sage witness     | `differential_bisimilarity_model.sage` finding                                                   |
+| Rust regression  | `pre_fix_bug_9.rs`, `prop_t_9_9_self_correcting.rs`, `uc_23_self_correcting.rs`                  |
 | Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.10`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 4** (Rocq + Sage + Rust + design).

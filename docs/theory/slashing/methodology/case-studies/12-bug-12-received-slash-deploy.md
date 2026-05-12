@@ -49,14 +49,14 @@ action             = Keep slash_authorization_regressions.rs + Kani
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                                                                                                  |
-|------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.12, T-Auth (`BugFixSlashAuthorization.v`)                                                                                                                                                              |
-| TLA⁺ model       | `AuthorizedSlashFlow.tla` `Inv_SlashOnlyIfAuthorized`                                                                                                                                                      |
+| Layer            | Artifact                                                                                                                                                                                                                  |
+|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.12, T-Auth (`BugFixSlashAuthorization.v`)                                                                                                                                                                             |
+| TLA⁺ model       | `AuthorizedSlashFlow.tla` `Inv_SlashOnlyIfAuthorized`                                                                                                                                                                     |
 | Kani harnesses   | `received_slash_deploy_authorized_rejects_invalid_domain`, `received_slash_deploy_authorized_is_conjunction_on_bounded_domain`, plus 6 clause-necessity harnesses (`received_authorization_requires_*_on_bounded_domain`) |
-| libFuzzer target | `fuzz/fuzz_targets/slash_authorization_paths.rs`                                                                                                                                                            |
-| Rust regression  | `slash_authorization_regressions.rs`, `prop_t_auth_check.rs`, `uc_21_auth_token_check.rs`                                                                                                                  |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.14`](../../design/09-bug-fixes-and-rationale.md)                                                                                                          |
+| libFuzzer target | `fuzz/fuzz_targets/slash_authorization_paths.rs`                                                                                                                                                                          |
+| Rust regression  | `slash_authorization_regressions.rs`, `prop_t_auth_check.rs`, `uc_21_auth_token_check.rs`                                                                                                                                 |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.14`](../../design/09-bug-fixes-and-rationale.md)                                                                                                                          |
 
 **Stack depth: 5** (Rocq + TLA⁺ + Kani × 8 + libFuzzer + Rust regression + design).
 

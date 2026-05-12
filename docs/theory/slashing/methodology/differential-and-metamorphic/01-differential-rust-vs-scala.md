@@ -48,12 +48,12 @@ A Rust-vs-Scala divergence falls into one of four classes (this is
 the threat-model vocabulary from
 [`../../slashing-threat-model.md §4`](../../slashing-threat-model.md)):
 
-| Class                | Meaning                                                                                                          | Action                                                                                  |
-|----------------------|------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| `bisimilar`          | The two implementations agree on observable behavior; the divergence is in internal state only                   | Record as expected agreement; no source change                                          |
-| `permitted_bug_fix`  | The Rust intentionally diverges to correct a Scala defect documented in the bug-fix manifest                     | Record as permitted divergence; cite bug-fix manifest entry                              |
-| `candidate_boundary` | The divergence is at the boundary of a theorem precondition (e.g. epoch-length 0)                                | Strengthen theorem precondition; document as boundary                                    |
-| `unexpected`         | The divergence is none of the above                                                                              | **Halt and investigate** — every unexpected divergence must be reclassified before commit |
+| Class                | Meaning                                                                                        | Action                                                                                    |
+|----------------------|------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| `bisimilar`          | The two implementations agree on observable behavior; the divergence is in internal state only | Record as expected agreement; no source change                                            |
+| `permitted_bug_fix`  | The Rust intentionally diverges to correct a Scala defect documented in the bug-fix manifest   | Record as permitted divergence; cite bug-fix manifest entry                               |
+| `candidate_boundary` | The divergence is at the boundary of a theorem precondition (e.g. epoch-length 0)              | Strengthen theorem precondition; document as boundary                                     |
+| `unexpected`         | The divergence is none of the above                                                            | **Halt and investigate** — every unexpected divergence must be reclassified before commit |
 
 The methodology forbids leaving any divergence in the `unexpected`
 class; it must be reduced to one of the other three or the audit
@@ -106,35 +106,12 @@ The methodology's classification rule is the **witness rule** from
 [`../01-philosophy.md §4`](../01-philosophy.md) applied to
 differential witnesses. The decision tree is:
 
-```
-                  observed divergence δ
-                          │
-                          ▼
-            ┌──────────────────────────────┐
-            │ Is δ in the bug-fix manifest │
-            │ (../design/09-…) ?           │
-            └──────────────────┬───────────┘
-                  yes          │  no
-                  ▼            ▼
-        ┌─────────────┐  ┌────────────────────────┐
-        │ permitted_  │  │ Is δ at an explicit    │
-        │ bug_fix     │  │ theorem boundary?      │
-        └─────────────┘  └─────────┬──────────────┘
-                              yes  │  no
-                              ▼    ▼
-                  ┌────────────────────┐  ┌───────────────────────┐
-                  │ candidate_boundary │  │ Is δ an internal-only  │
-                  │ — document         │  │ divergence (state,    │
-                  │ precondition       │  │ logs, ids)?            │
-                  └────────────────────┘  └──────────┬────────────┘
-                                              yes    │   no
-                                              ▼      ▼
-                                  ┌─────────────┐  ┌────────────┐
-                                  │ bisimilar   │  │ unexpected │
-                                  │ — record    │  │ — halt &   │
-                                  │ as expected │  │ investigate│
-                                  └─────────────┘  └────────────┘
-```
+[![Divergence classification](../diagrams/06-differential-divergence-classification.svg)](../diagrams/06-differential-divergence-classification.svg)
+
+*Source: [`../diagrams/06-differential-divergence-classification.puml`](../diagrams/06-differential-divergence-classification.puml).
+Outcome leaves are colour-coded by threat-model class; see the legend
+in the diagram itself, and the colour conventions in
+[`../02-glossary-and-notation.md §7`](../02-glossary-and-notation.md).*
 
 ### 3.1 The trap of "obviously bisimilar"
 

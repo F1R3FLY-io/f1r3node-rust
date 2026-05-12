@@ -36,7 +36,7 @@ async fn is_in_main_chain_should_classify_appropriately() {
             &genesis,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage.get_representation().expect("dag representation");
 
         assert!(dag
             .is_in_main_chain(&genesis.block_hash, &b3.block_hash)
@@ -90,7 +90,7 @@ async fn is_in_main_chain_should_classify_diamond_dags_appropriately() {
             &genesis,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage.get_representation().expect("dag representation");
 
         assert!(dag
             .is_in_main_chain(&genesis.block_hash, &b2.block_hash)
@@ -189,7 +189,7 @@ async fn is_in_main_chain_should_classify_complicated_chains_appropriately() {
             v1.clone(),
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage.get_representation().expect("dag representation");
 
         assert!(dag
             .is_in_main_chain(&genesis.block_hash, &b2.block_hash)

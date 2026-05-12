@@ -64,7 +64,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
@@ -880,9 +880,9 @@ impl TestNode {
 
         // Initialize DAG storage with genesis block metadata
         block_dag_storage
-            .insert(&genesis, false, true)
+            .insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
             .expect("Failed to insert genesis into DAG storage in TestNode");
-        let deploy_storage = Arc::new(Mutex::new(
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
             resources::key_value_deploy_storage_from_dyn(&mut *kvm)
                 .await
                 .unwrap(),
@@ -999,7 +999,8 @@ impl TestNode {
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true, // Disabled to prevent deploy loss
+            disable_late_block_filtering: true,
+            deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,

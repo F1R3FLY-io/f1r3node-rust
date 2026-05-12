@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -508,7 +508,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -625,14 +625,14 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {

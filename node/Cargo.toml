@@ -31,6 +31,9 @@ serde_json = { workspace = true }
 itertools = { workspace = true }
 async-trait = { workspace = true }
 hex = { workspace = true }
+# Phase 9 (A-3, slashing audit): deploy_storage Mutex uses parking_lot
+# (no poison propagation).
+parking_lot = "0.12"
 num-bigint = { workspace = true }
 clap = { version = "4.0", features = ["derive"] }
 hocon = "0.9.0"

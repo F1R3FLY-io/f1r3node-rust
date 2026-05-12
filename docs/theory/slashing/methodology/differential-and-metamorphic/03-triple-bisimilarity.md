@@ -113,15 +113,15 @@ query on each implementation after every action and asserts agreement.
 The observable contract is intentionally minimal — only what an
 external observer of the protocol can see:
 
-| Observable                  | Type signature                               |
-|-----------------------------|----------------------------------------------|
-| `bond(v)`                   | `Validator → i64`                            |
-| `is_active(v)`              | `Validator → bool`                            |
-| `has_record(v, base_seq)`   | `(Validator, i64) → bool`                    |
-| `dispatch(h)`               | `BlockHash → Status`                         |
-| `slashed_set()`             | `→ Set(Validator)`                            |
-| `record_set()`              | `→ Set((Validator, i64, Set(BlockHash)))`    |
-| `fork_choice_weights()`     | `→ Map(BlockHash → i64)`                     |
+| Observable                | Type signature                            |
+|---------------------------|-------------------------------------------|
+| `bond(v)`                 | `Validator → i64`                         |
+| `is_active(v)`            | `Validator → bool`                        |
+| `has_record(v, base_seq)` | `(Validator, i64) → bool`                 |
+| `dispatch(h)`             | `BlockHash → Status`                      |
+| `slashed_set()`           | `→ Set(Validator)`                        |
+| `record_set()`            | `→ Set((Validator, i64, Set(BlockHash)))` |
+| `fork_choice_weights()`   | `→ Map(BlockHash → i64)`                  |
 
 Implementation-internal state (heap layout, iteration order, internal
 hash maps) is **deliberately excluded**. Two implementations are
@@ -142,11 +142,11 @@ observer; the contract is the operational form of that requirement.
 
 The slashing test suite includes three triple-bisim properties:
 
-| File                                       | Property                                                                   |
-|--------------------------------------------|----------------------------------------------------------------------------|
-| `prop_t_triple_bisim_dispatch.rs`          | The detector's `dispatch(h)` agrees across all three implementations       |
-| `prop_t_triple_bisim_records.rs`           | The record set agrees across all three implementations after every action |
-| `prop_t_triple_bisim_forkchoice.rs`        | The fork-choice weights agree across all three implementations             |
+| File                                | Property                                                                  |
+|-------------------------------------|---------------------------------------------------------------------------|
+| `prop_t_triple_bisim_dispatch.rs`   | The detector's `dispatch(h)` agrees across all three implementations      |
+| `prop_t_triple_bisim_records.rs`    | The record set agrees across all three implementations after every action |
+| `prop_t_triple_bisim_forkchoice.rs` | The fork-choice weights agree across all three implementations            |
 
 Each property follows the same template:
 
@@ -182,12 +182,12 @@ When the triple-bisim driver reports disagreement, the methodology
 classifies the failure using the **majority rule** — the two that
 agree are presumed correct, the dissenter is the prime suspect.
 
-| H | O | P | Likely defect                                                              | First-pass action                                                              |
-|---|---|---|----------------------------------------------------------------------------|--------------------------------------------------------------------------------|
-| A | A | B | Production adapter or production code path                                  | Audit `production_adapter.rs` and the production Rust path it wraps             |
-| A | B | A | Rocq oracle mirror                                                          | Audit `oracle.rs` against the Rocq theorem it mirrors                            |
-| B | A | A | Harness                                                                    | Audit `harness.rs` against the test-plan contract                                |
-| A | B | C | Multiple defects                                                            | Halt and bisect: which action introduced the third dissent?                     |
+| H | O | P | Likely defect                              | First-pass action                                                   |
+|---|---|---|--------------------------------------------|---------------------------------------------------------------------|
+| A | A | B | Production adapter or production code path | Audit `production_adapter.rs` and the production Rust path it wraps |
+| A | B | A | Rocq oracle mirror                         | Audit `oracle.rs` against the Rocq theorem it mirrors               |
+| B | A | A | Harness                                    | Audit `harness.rs` against the test-plan contract                   |
+| A | B | C | Multiple defects                           | Halt and bisect: which action introduced the third dissent?         |
 
 The methodology requires every triple-bisim failure to result in
 either:

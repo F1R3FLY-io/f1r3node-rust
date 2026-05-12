@@ -43,12 +43,12 @@ action             = Keep pre_fix_bug_4.rs + post-fix anchor uc_13_transfer_fail
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                  |
-|------------------|-----------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | `t_9_4_transfer_failure_safety` (`BugFixTransferFailure.v:40`)                                            |
-| Rust regression  | `pre_fix_bug_4.rs`, `prop_t_9_4_transfer_failure.rs`, `uc_13_transfer_failure.rs`                          |
-| Rholang fix      | `casper/src/main/resources/PoS.rhox` (transfer failure continuation)                                       |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.5`](../../design/09-bug-fixes-and-rationale.md)          |
+| Layer            | Artifact                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------|
+| Rocq theorem     | `t_9_4_transfer_failure_safety` (`BugFixTransferFailure.v:40`)                                  |
+| Rust regression  | `pre_fix_bug_4.rs`, `prop_t_9_4_transfer_failure.rs`, `uc_13_transfer_failure.rs`               |
+| Rholang fix      | `casper/src/main/resources/PoS.rhox` (transfer failure continuation)                            |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.5`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 4** (Rocq + Rust regression + Rholang + design).
 

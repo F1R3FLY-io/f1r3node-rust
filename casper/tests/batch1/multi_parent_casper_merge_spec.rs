@@ -59,15 +59,15 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
 
     assert!(nodes[0]
         .block_dag_storage
-        .get_representation()
+        .get_representation().expect("dag representation")
         .is_finalized(&genesis.genesis_block.block_hash));
     assert!(!nodes[0]
         .block_dag_storage
-        .get_representation()
+        .get_representation().expect("dag representation")
         .is_finalized(&block0.block_hash));
     assert!(!nodes[0]
         .block_dag_storage
-        .get_representation()
+        .get_representation().expect("dag representation")
         .is_finalized(&block1.block_hash));
 
     //multiparent block joining block0 and block1 since they do not conflict
@@ -506,11 +506,11 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
     // Verify divergent finalization state
     assert!(nodes[0]
         .block_dag_storage
-        .get_representation()
+        .get_representation().expect("dag representation")
         .is_finalized(&block0.block_hash));
     assert!(!nodes[1]
         .block_dag_storage
-        .get_representation()
+        .get_representation().expect("dag representation")
         .is_finalized(&block0.block_hash));
 
     // Node2 creates a merge block (node2 has NOT finalized block0 either)

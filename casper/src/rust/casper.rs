@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -182,7 +182,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         estimator,
         block_store,
         block_dag_storage,
-        deploy_storage: Arc::new(Mutex::new(deploy_storage)),
+        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -275,6 +275,12 @@ pub struct CasperShardConf {
     pub min_phlo_price: i64,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
+    /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
+    /// wake so the heartbeat task picks up the new deploy on the next
+    /// tick rather than waiting up to `check_interval` seconds. Defaults
+    /// to `false`; Phase 8 (C-4) lifted this from a hardcoded predicate
+    /// to a configuration knob so operators can opt in.
+    pub deploy_heartbeat_wake_enabled: bool,
     /// Disable validator progress check (for standalone mode)
     pub disable_validator_progress_check: bool,
     /// Enable background garbage collection for mergeable channels.
@@ -297,6 +303,19 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
+    /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
+    /// `compute_last_finalized_block` call. Previously a hardcoded
+    /// 15-second constant in `casper_engine/finalization_runner.rs`;
+    /// lifted to configuration so operators can extend the budget for
+    /// deep-DAG finalization sweeps without recompiling.
+    pub finalizer_blocking_timeout: Duration,
+    /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
+    /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
+    /// constant in `casper_engine/types.rs`; lifted to configuration so
+    /// operators can size the cache for their validator set without
+    /// recompiling. Distinct from the `runtime_manager`'s own 256-entry
+    /// validator-key cache.
+    pub active_validators_cache_max_entries: usize,
 }
 
 impl Default for CasperShardConf {
@@ -323,6 +342,7 @@ impl CasperShardConf {
             quarantine_length: 0,
             min_phlo_price: 0,
             disable_late_block_filtering: true,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
@@ -336,6 +356,8 @@ impl CasperShardConf {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
+            finalizer_blocking_timeout: Duration::from_secs(15),
+            active_validators_cache_max_entries: 4096,
         }
     }
 }
@@ -389,7 +411,8 @@ pub mod test_helpers {
 
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
-            use std::sync::{Arc, RwLock};
+            use std::sync::Arc;
+            use parking_lot::RwLock;
 
             use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;

@@ -209,7 +209,7 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage.get_representation();
+        let dag_representation = block_dag_storage.get_representation().expect("dag representation");
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -267,7 +267,7 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage.get_representation();
+        let dag_representation = block_dag_storage.get_representation().expect("dag representation");
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -325,7 +325,7 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage.get_representation();
+        let dag_representation = block_dag_storage.get_representation().expect("dag representation");
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -383,7 +383,7 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage.get_representation();
+        let dag_representation = block_dag_storage.get_representation().expect("dag representation");
         let casper = Arc::new(NoOpsCasperEffect::new_with_self_created_validation_failure(
             Some(HashMap::new()),
             None,
@@ -432,7 +432,7 @@ async fn proposer_should_execute_propose_effects_if_block_created_successfully_r
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage.get_representation();
+        let dag_representation = block_dag_storage.get_representation().expect("dag representation");
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,

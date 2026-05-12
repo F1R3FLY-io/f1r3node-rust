@@ -60,12 +60,12 @@ test suite; CI runs both.
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                          |
-|------------------|-------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | `bug_fix_ignorable_safety`, `post_fix_ignorable_implies_equivocation` (`BugFixIgnorable.v`)                       |
-| TLA⁺ invariant   | `Inv_TaxonomyCorrect` (`EquivocationDetector.tla`)                                                                |
-| Rust regression  | `pre_fix_bug_1.rs`, `prop_t_9_1_ignorable_safety.rs`, `uc_03_ignorable_unrequested.rs`                            |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.2`](../../design/09-bug-fixes-and-rationale.md)                  |
+| Layer            | Artifact                                                                                                            |
+|------------------|---------------------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | `bug_fix_ignorable_safety`, `post_fix_ignorable_implies_equivocation` (`BugFixIgnorable.v`)                         |
+| TLA⁺ invariant   | `Inv_TaxonomyCorrect` (`EquivocationDetector.tla`)                                                                  |
+| Rust regression  | `pre_fix_bug_1.rs`, `prop_t_9_1_ignorable_safety.rs`, `uc_03_ignorable_unrequested.rs`                              |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.2`](../../design/09-bug-fixes-and-rationale.md)                     |
 | Diagram          | [Diagram 03 — Ignorable-equivocation slash flow (post-fix)](../../diagrams/03-seq-ignorable-equivocation-fixed.svg) |
 
 **Stack depth: 5** (Rocq + TLA⁺ + Rust + design + visual).

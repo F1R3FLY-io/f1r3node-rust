@@ -26,14 +26,14 @@ Organization:
 
 Kani occupies a specific epistemic niche:
 
-| Property class                                                                | Best tool   |
-|-------------------------------------------------------------------------------|-------------|
-| Soundness of a single Rust function on a bounded input domain                 | **Kani**    |
-| Equivalence of a Rust function to a mathematical specification (bounded)      | **Kani**    |
-| Panic-freedom on a bounded input domain                                       | **Kani**    |
-| Soundness under all schedules                                                  | TLA⁺ / Loom |
-| Soundness on an unbounded input domain                                         | Rocq        |
-| Soundness on a structured byte-level input (parsers, protos)                  | libFuzzer   |
+| Property class                                                           | Best tool   |
+|--------------------------------------------------------------------------|-------------|
+| Soundness of a single Rust function on a bounded input domain            | **Kani**    |
+| Equivalence of a Rust function to a mathematical specification (bounded) | **Kani**    |
+| Panic-freedom on a bounded input domain                                  | **Kani**    |
+| Soundness under all schedules                                            | TLA⁺ / Loom |
+| Soundness on an unbounded input domain                                   | Rocq        |
+| Soundness on a structured byte-level input (parsers, protos)             | libFuzzer   |
 
 Kani's strength is that the property is expressed as ordinary Rust
 code (assertions inside a `#[kani::proof]` harness), and the
@@ -70,20 +70,20 @@ The Kani harnesses live in a `#[cfg(kani)] mod kani_proofs` block
 inside [`casper/src/rust/slashing_authorization.rs`](../../../../../casper/src/rust/slashing_authorization.rs).
 The harness count and rationale:
 
-| Harness                                                              | Property checked                                                                                 |
-|----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| `checked_base_seq_rejects_nonpositive`                               | `∀ s ≤ 0. checked_base_seq(s) = None`                                                            |
-| `checked_base_seq_matches_positive_i32_predecessor`                  | `∀ s > 0. checked_base_seq(s) = Some(s − 1)`                                                     |
-| `checked_next_seq_matches_i32_successor`                             | `∀ m ≤ i32::MAX as u64. checked_next_seq(m) = Some(m + 1)`; `∀ m > i32::MAX as u64. = None`     |
-| `epoch_for_block_number_rejects_invalid_domain`                      | `∀ n < 0 ∨ L ≤ 0. epoch_for_block_number(n, L) = None`                                            |
-| `epoch_for_block_number_matches_bounded_floor_division`              | `∀ n ≥ 0, L > 0. = Some(n / L)`                                                                  |
-| `slash_target_epoch_is_current_matches_epoch_projection`             | The epoch predicate matches the epoch projection on a bounded `(n, L)` domain                    |
-| `slash_evidence_epoch_matches_target_matches_epoch_projection`       | The evidence-epoch predicate matches the epoch projection on the same domain                     |
-| `received_slash_deploy_authorized_rejects_invalid_domain`            | Rejects inputs where any argument is out of its declared sub-range                                |
+| Harness                                                             | Property checked                                                                                                            |
+|---------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| `checked_base_seq_rejects_nonpositive`                              | `∀ s ≤ 0. checked_base_seq(s) = None`                                                                                       |
+| `checked_base_seq_matches_positive_i32_predecessor`                 | `∀ s > 0. checked_base_seq(s) = Some(s − 1)`                                                                                |
+| `checked_next_seq_matches_i32_successor`                            | `∀ m ≤ i32::MAX as u64. checked_next_seq(m) = Some(m + 1)`; `∀ m > i32::MAX as u64. = None`                                 |
+| `epoch_for_block_number_rejects_invalid_domain`                     | `∀ n < 0 ∨ L ≤ 0. epoch_for_block_number(n, L) = None`                                                                      |
+| `epoch_for_block_number_matches_bounded_floor_division`             | `∀ n ≥ 0, L > 0. = Some(n / L)`                                                                                             |
+| `slash_target_epoch_is_current_matches_epoch_projection`            | The epoch predicate matches the epoch projection on a bounded `(n, L)` domain                                               |
+| `slash_evidence_epoch_matches_target_matches_epoch_projection`      | The evidence-epoch predicate matches the epoch projection on the same domain                                                |
+| `received_slash_deploy_authorized_rejects_invalid_domain`           | Rejects inputs where any argument is out of its declared sub-range                                                          |
 | `received_slash_deploy_authorized_is_conjunction_on_bounded_domain` | On the bounded domain, the predicate is exactly `(current_epoch ∧ matching_evidence_epoch ∧ positive_bond ∧ invalid_block)` |
-| `slash_target_has_positive_bond_matches_positive`                    | `∀ b ∈ Bonds. slash_target_has_positive_bond(b) ⇔ b > 0`                                          |
-| `received_authorization_requires_*_on_bounded_domain`                | Five harnesses, one per authorization clause, each proving the clause is *necessary*             |
-| `slash_target_key_collides_matches_pair_equality`                    | Duplicate target rejection matches direct pair equality on a bounded validator domain            |
+| `slash_target_has_positive_bond_matches_positive`                   | `∀ b ∈ Bonds. slash_target_has_positive_bond(b) ⇔ b > 0`                                                                    |
+| `received_authorization_requires_*_on_bounded_domain`               | Five harnesses, one per authorization clause, each proving the clause is *necessary*                                        |
+| `slash_target_key_collides_matches_pair_equality`                   | Duplicate target rejection matches direct pair equality on a bounded validator domain                                       |
 
 The full enumeration is in [`../slashing-search-horizon.md §4`](../../slashing-search-horizon.md);
 the runner command is in

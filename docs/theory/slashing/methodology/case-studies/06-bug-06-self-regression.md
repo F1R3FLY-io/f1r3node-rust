@@ -45,11 +45,11 @@ action             = Keep pre_fix_bug_6.rs + post-fix anchors
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                   |
-|------------------|--------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.6 + T-9.4 (transfer-failure related; cross-fix interaction)                            |
-| Rust regression  | `pre_fix_bug_6.rs`, `prop_t_9_6_self_regression.rs`, `uc_06_self_regression.rs`            |
-| DAG-level test   | `uc_37_self_regression_dag_level.rs`                                                       |
+| Layer            | Artifact                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.6 + T-9.4 (transfer-failure related; cross-fix interaction)                                 |
+| Rust regression  | `pre_fix_bug_6.rs`, `prop_t_9_6_self_regression.rs`, `uc_06_self_regression.rs`                 |
+| DAG-level test   | `uc_37_self_regression_dag_level.rs`                                                            |
 | Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.7`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 3** (Rocq + Rust regression + design).

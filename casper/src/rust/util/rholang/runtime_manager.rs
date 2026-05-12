@@ -680,6 +680,12 @@ impl RuntimeManager {
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
 
+        // Phase 9 (G-1): surface persistence failure as a typed
+        // `CasperError` instead of a finalization-task panic. A panic
+        // here would crash the runtime_manager future with an
+        // unhelpful "task panicked" log; the typed Result lets the
+        // caller decide how to react (likely abort the proposal, not
+        // the whole node).
         self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
@@ -687,7 +693,9 @@ impl RuntimeManager {
             mergeable_chs,
             &pre_state_hash,
         )
-        .unwrap_or_else(|e| panic!("Failed to save mergeable channels: {:?}", e));
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
+        })?;
 
         // Cache the result for future replays
         if let Some(ref cache) = self.state_hash_cache {

@@ -35,15 +35,15 @@ The slashing adversary's strategy is a tuple:
 
 The strategy space is the Cartesian product of:
 
-| Coordinate            | Domain                                                          | Cardinality (n=4, depth=4)  |
-|-----------------------|-----------------------------------------------------------------|------------------------------|
-| `equivocators`        | `Subsets(Validators)`                                            | `2⁴ = 16`                    |
-| `neglect_edges`       | `Subsets(Validators × Validators ∖ diag)`                        | `2¹² = 4 096`                |
-| `visibility`          | `Maps(Validator → Subsets(Equivocators))`                        | `2¹⁶ = 65 536`               |
-| `reports`             | `Subsets(Equivocators × Time)`                                   | `2³² ≈ 4 × 10⁹`              |
-| `stake_distribution`  | `Vectors(Validators → ℤ⁺)` bounded to `1..S`                     | `S⁴ = 625` (S=5)             |
-| `gossip_schedule`     | `Permutations(Edges)`                                            | `factorial(12) ≈ 5 × 10⁸`    |
-| `validator_churn`     | `Sequences(Validator → {Bond, Unbond, Rebond})`                  | `unbounded`                  |
+| Coordinate           | Domain                                          | Cardinality (n=4, depth=4) |
+|----------------------|-------------------------------------------------|----------------------------|
+| `equivocators`       | `Subsets(Validators)`                           | `2⁴ = 16`                  |
+| `neglect_edges`      | `Subsets(Validators × Validators ∖ diag)`       | `2¹² = 4 096`              |
+| `visibility`         | `Maps(Validator → Subsets(Equivocators))`       | `2¹⁶ = 65 536`             |
+| `reports`            | `Subsets(Equivocators × Time)`                  | `2³² ≈ 4 × 10⁹`            |
+| `stake_distribution` | `Vectors(Validators → ℤ⁺)` bounded to `1..S`    | `S⁴ = 625` (S=5)           |
+| `gossip_schedule`    | `Permutations(Edges)`                           | `factorial(12) ≈ 5 × 10⁸`  |
+| `validator_churn`    | `Sequences(Validator → {Bond, Unbond, Rebond})` | `unbounded`                |
 
 Product: `≈ 10²⁴` even at modest bounds. Uniform random sampling
 visits a negligible fraction; **uniform sampling is the wrong
@@ -54,13 +54,13 @@ algorithm**.
 The adversary does not want a uniformly random strategy; it wants
 one that **maximizes an objective**:
 
-| Adversary objective                        | Definition                                                                  |
-|--------------------------------------------|-----------------------------------------------------------------------------|
-| Honest validators slashed                  | `|closure(σ)| − |equivocators(σ)|`                                          |
-| Quorum drop                                | `quorum_required − active_after(σ)`                                          |
-| Accountability gap                         | `|full_visibility_closure(σ)| − |partial_visibility_closure(σ)|`           |
-| Delay                                      | `max_rounds_to_closure(σ)`                                                  |
-| Damage ratio                               | `slashed_stake(σ) / direct_offender_stake(σ)`                                |
+| Adversary objective       | Definition                                                       |
+|---------------------------|------------------------------------------------------------------|
+| Honest validators slashed | `|closure(σ)| − |equivocators(σ)|`                               |
+| Quorum drop               | `quorum_required − active_after(σ)`                              |
+| Accountability gap        | `|full_visibility_closure(σ)| − |partial_visibility_closure(σ)|` |
+| Delay                     | `max_rounds_to_closure(σ)`                                       |
+| Damage ratio              | `slashed_stake(σ) / direct_offender_stake(σ)`                    |
 
 The methodology uses these objectives as the **scoring function** for
 the search.
@@ -242,12 +242,12 @@ factored: state-space cost.
 
 ### 5.1 The timing dimensions
 
-| Dimension                | What the adversary controls                                                |
-|--------------------------|----------------------------------------------------------------------------|
-| Evidence release time    | When the offending block is broadcast (immediate, delayed by `k` rounds, withheld) |
-| Report timing            | When a report is submitted that shrinks accountability closure              |
-| Proposer slot timing     | When the adversary's proposer slot arrives (controlled via stake bonding)   |
-| Slash deploy timing      | When the SlashDeploy is included in a block (immediate, next epoch, withheld) |
+| Dimension             | What the adversary controls                                                        |
+|-----------------------|------------------------------------------------------------------------------------|
+| Evidence release time | When the offending block is broadcast (immediate, delayed by `k` rounds, withheld) |
+| Report timing         | When a report is submitted that shrinks accountability closure                     |
+| Proposer slot timing  | When the adversary's proposer slot arrives (controlled via stake bonding)          |
+| Slash deploy timing   | When the SlashDeploy is included in a block (immediate, next epoch, withheld)      |
 
 The Sage model enumerates small combinations of these and finds
 worst-case timing for each adversary objective.

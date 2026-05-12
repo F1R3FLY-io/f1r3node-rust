@@ -67,15 +67,15 @@ action             = Keep pre_fix_bug_2.rs + loom_t_9_2_*.rs
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                                                                                              |
-|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Layer            | Artifact                                                                                                                                                                               |
+|------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Rocq theorem     | `t_9_2_atomic_no_overwrite` (`BugFixAtomicTracker.v:43`), n-thread `t_9_2_atomic_n_threads_arbitrary` (line 130)                                                                       |
-| TLA⁺ invariant   | `Inv_NoOverwrite` (`ConcurrentTracker.tla`); both `Locked = TRUE` (pass) and `Locked = FALSE` (fail) runs are recorded                                                                  |
+| TLA⁺ invariant   | `Inv_NoOverwrite` (`ConcurrentTracker.tla`); both `Locked = TRUE` (pass) and `Locked = FALSE` (fail) runs are recorded                                                                 |
 | Loom test        | `loom_t_9_2_atomic_record.rs`, `loom_t_9_2_n_threads_3.rs`, `loom_t_9_2_n_threads_4.rs`                                                                                                |
-| Sage witness      | `tracker_race_model.sage` output JSON                                                                                                                                                  |
-| Rust regression  | `pre_fix_bug_2.rs`                                                                                                                                                                    |
-| Storage contract | [`block-storage/src/rust/dag/equivocations_access.rs`](../../../../../block-storage/src/rust/dag/equivocations_access.rs) defines `EquivocationsAccess` trait with atomic-RMW contract     |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.3`](../../design/09-bug-fixes-and-rationale.md)                                                                                       |
+| Sage witness     | `tracker_race_model.sage` output JSON                                                                                                                                                  |
+| Rust regression  | `pre_fix_bug_2.rs`                                                                                                                                                                     |
+| Storage contract | [`block-storage/src/rust/dag/equivocations_access.rs`](../../../../../block-storage/src/rust/dag/equivocations_access.rs) defines `EquivocationsAccess` trait with atomic-RMW contract |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.3`](../../design/09-bug-fixes-and-rationale.md)                                                                                        |
 | Diagram          | [Diagram 09 — Tracker race & locking fix](../../diagrams/09-seq-tracker-race-and-fix.svg)                                                                                              |
 
 **Stack depth: 5** (Rocq + TLA⁺ + Loom + Sage + Rust regression).

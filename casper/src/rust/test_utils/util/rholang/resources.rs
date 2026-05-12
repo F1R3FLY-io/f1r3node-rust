@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use parking_lot::RwLock;
 use std::{fs, io};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -268,7 +270,7 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
     let new_dag_storage = block_dag_storage_from_dyn(&mut *new_kvm)
         .await
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
-    new_dag_storage.insert(&genesis_context.genesis_block, false, true)?;
+    new_dag_storage.insert(&genesis_context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)?;
 
     Ok(new_kvm)
 }
@@ -320,7 +322,8 @@ pub async fn block_dag_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
+    use parking_lot::RwLock;
 
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
@@ -388,15 +391,15 @@ pub async fn block_dag_storage_from_dyn(
         BlockHashSerde,
     > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
-    Ok(BlockDagKeyValueStorage {
-        global_lock: Arc::new(std::sync::Mutex::new(())),
-        block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
-        deploy_index: Arc::new(RwLock::new(deploy_index_db)),
-        invalid_blocks_index: invalid_blocks_db,
-        equivocation_tracker_index: equivocation_tracker_store,
-        latest_messages_index: latest_messages_db,
-        dag_generation: Arc::new(AtomicU64::new(0)),
-    })
+    Ok(BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        latest_messages_db,
+        Arc::new(RwLock::new(block_metadata_store)),
+        Arc::new(RwLock::new(deploy_index_db)),
+        invalid_blocks_db,
+        equivocation_tracker_store,
+        Arc::new(AtomicU64::new(0)),
+    ))
 }
 
 pub async fn key_value_deploy_storage_from_dyn(

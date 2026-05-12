@@ -47,13 +47,13 @@ action             = Keep pre_fix_bug_8.rs + post-fix anchor
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                          |
-|------------------|---------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.8 (`BugFixUnbondedProposer.v`)                                                                 |
-| Hypothesis       | `hypothesis_multi_epoch_state_machine.rs`                                                          |
-| Rust regression  | `pre_fix_bug_8.rs`, `prop_t_9_8_unbonded_proposer.rs`, `uc_22_unbonded_proposer.rs`                |
-| Kani harness     | `received_authorization_requires_positive_bond_on_bounded_domain`                                  |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.9`](../../design/09-bug-fixes-and-rationale.md)  |
+| Layer            | Artifact                                                                                        |
+|------------------|-------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.8 (`BugFixUnbondedProposer.v`)                                                              |
+| Hypothesis       | `hypothesis_multi_epoch_state_machine.rs`                                                       |
+| Rust regression  | `pre_fix_bug_8.rs`, `prop_t_9_8_unbonded_proposer.rs`, `uc_22_unbonded_proposer.rs`             |
+| Kani harness     | `received_authorization_requires_positive_bond_on_bounded_domain`                               |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.9`](../../design/09-bug-fixes-and-rationale.md) |
 
 **Stack depth: 5** (Rocq + Hypothesis + Rust + Kani + design).
 

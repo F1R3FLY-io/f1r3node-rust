@@ -1,7 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -53,11 +53,10 @@ async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
 ) -> Result<PreparedUserDeploys, CasperError> {
-    let mut deploy_storage_guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    // Phase 9 (A-3): parking_lot::Mutex — no poison.
+    let mut deploy_storage_guard = deploy_storage.lock();
 
     // Read all unfinalized deploys from storage
     let unfinalized: HashSet<Signed<DeployData>> = deploy_storage_guard.read_all()?;
@@ -350,7 +349,9 @@ async fn prepare_slashing_deploys(
         let slash_deploy = SlashDeploy {
             invalid_block_hash: slash_candidate.invalid_block_hash.clone(),
             pk: validator_identity.public_key.clone(),
-            target_activation_epoch: slash_candidate.target_activation_epoch,
+            // Phase 10 (C-5): convert typed Epoch back to the protobuf
+            // i64 at the wire boundary.
+            target_activation_epoch: slash_candidate.target_activation_epoch.get(),
             initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                 self_id.clone(),
                 seq_num,
@@ -400,16 +401,15 @@ fn extract_deploy_sig_from_refund_failure(msg: &str) -> Option<Vec<u8>> {
 }
 
 fn quarantine_refund_failure_deploy(
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     failure_msg: &str,
 ) -> Result<bool, CasperError> {
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
         return Ok(false);
     };
 
-    let mut guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    // Phase 9 (A-3): parking_lot::Mutex — no poison.
+    let mut guard = deploy_storage.lock();
     guard.remove_by_sig(&sig).map_err(CasperError::KvStoreError)
 }
 
@@ -417,7 +417,7 @@ pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     runtime_manager: &mut RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
@@ -451,7 +451,14 @@ pub async fn create(
         })
         .transpose()?
         .unwrap_or(1);
-    let next_block_num = casper_snapshot.max_block_num + 1;
+    // P2-9: align with T-9.14's checked-arithmetic discipline; surface
+    // overflow as an error instead of silently wrapping around.
+    let next_block_num = casper_snapshot.max_block_num.checked_add(1).ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "max_block_num overflow: {} + 1 wraps i64",
+            casper_snapshot.max_block_num
+        ))
+    })?;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {

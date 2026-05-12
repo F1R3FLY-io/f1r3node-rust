@@ -157,6 +157,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // all validators) are included in merged state. Prevents deploy loss during network
             // partitions or validator catchup. Default is true (disabled).
             disable_late_block_filtering: conf.disable_late_block_filtering,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
@@ -171,6 +172,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
+            // Phase 13: defaults match the previous hardcoded constants
+            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
+            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
+            // gains corresponding fields, plumb them through here.
+            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
+            active_validators_cache_max_entries: 4096,
         };
 
         Self {

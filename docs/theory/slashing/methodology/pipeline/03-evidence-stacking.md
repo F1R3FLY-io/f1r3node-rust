@@ -48,13 +48,13 @@ methodology marks it as such.
 The methodology defines five stacking depths, in increasing order of
 strength:
 
-| Stack depth     | Evidence layers                                                                                  | When acceptable                                                  |
-|-----------------|--------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
-| **1-stacked**   | One layer only (e.g. a single proptest property)                                                 | Exploratory only; never load-bearing                              |
-| **2-stacked**   | One mechanized + one randomized                                                                  | Internal helpers; non-load-bearing utilities                     |
-| **3-stacked**   | One mechanized + one randomized + one of {differential, metamorphic, ledger}                     | Most load-bearing properties                                      |
-| **4-stacked**   | One mechanized + one randomized + one differential/metamorphic + one ledger entry                | Headline properties (T-1, T-2, T-11, T-12, T-15)                  |
-| **5-stacked**   | 4-stacked + a TLA⁺ trace-replay test that re-executes the property on production state            | Bisimilarity (T-15a/b); the headline theorem                      |
+| Stack depth   | Evidence layers                                                                        | When acceptable                                  |
+|---------------|----------------------------------------------------------------------------------------|--------------------------------------------------|
+| **1-stacked** | One layer only (e.g. a single proptest property)                                       | Exploratory only; never load-bearing             |
+| **2-stacked** | One mechanized + one randomized                                                        | Internal helpers; non-load-bearing utilities     |
+| **3-stacked** | One mechanized + one randomized + one of {differential, metamorphic, ledger}           | Most load-bearing properties                     |
+| **4-stacked** | One mechanized + one randomized + one differential/metamorphic + one ledger entry      | Headline properties (T-1, T-2, T-11, T-12, T-15) |
+| **5-stacked** | 4-stacked + a TLA⁺ trace-replay test that re-executes the property on production state | Bisimilarity (T-15a/b); the headline theorem     |
 
 The slashing development's headline theorems — bisimilarity, BFT
 bound, detector soundness/completeness, two-level closure
@@ -72,15 +72,15 @@ Rocq theorem is correct *for all time* given its definitions; the
 proptest is correct *now* given the running code. The two evidence
 layers protect against different failure modes:
 
-| Failure mode                                                            | Caught by                                       |
-|-------------------------------------------------------------------------|-------------------------------------------------|
-| The theorem is mathematically wrong                                     | Re-execution of the Rocq proof                  |
-| The theorem's *definitions* drift from the running code                  | proptest (and triple-bisim)                     |
-| The running code regresses                                              | proptest, libFuzzer, integration test           |
-| The harness (which `prop_t_*` uses) drifts from the production path      | Triple-bisim driver                              |
-| The proto encoding regresses                                             | libFuzzer round-trip                             |
-| Concurrency interleaving regresses                                       | Loom + TLA⁺                                      |
-| The bug recurs after a refactor                                          | Pre-fix regression test                          |
+| Failure mode                                                        | Caught by                             |
+|---------------------------------------------------------------------|---------------------------------------|
+| The theorem is mathematically wrong                                 | Re-execution of the Rocq proof        |
+| The theorem's *definitions* drift from the running code             | proptest (and triple-bisim)           |
+| The running code regresses                                          | proptest, libFuzzer, integration test |
+| The harness (which `prop_t_*` uses) drifts from the production path | Triple-bisim driver                   |
+| The proto encoding regresses                                        | libFuzzer round-trip                  |
+| Concurrency interleaving regresses                                  | Loom + TLA⁺                           |
+| The bug recurs after a refactor                                     | Pre-fix regression test               |
 
 Each evidence layer catches a *different* failure mode; the stack
 catches the *intersection*.
@@ -92,16 +92,16 @@ belief that "if Rocq says so, it's true" or "if it passes the
 fuzz tests, it's safe". Each tool is correct **only on its
 domain** and **only modulo its trust base**:
 
-| Tool       | Trust base                                                | Domain                                                       |
-|------------|-----------------------------------------------------------|--------------------------------------------------------------|
-| Rocq       | Kernel + stdlib                                            | Definitions inside the development                            |
-| TLA⁺ TLC   | TLC binary + the model                                     | Finite bounded instance                                       |
-| Kani       | CBMC + SMT solver                                          | Bounded primitive domain                                       |
-| Sage       | Sage codebase                                              | Exact finite computation                                       |
-| proptest   | Rust toolchain + the harness                                | Random samples within a strategy                              |
-| Hypothesis | Python interpreter + the engine                            | Random samples of stateful traces                              |
-| libFuzzer  | Compiler + libFuzzer                                       | Byte-level input space                                         |
-| Loom       | Loom + Rust toolchain                                      | Schedule space at thread count `N`                            |
+| Tool       | Trust base                      | Domain                             |
+|------------|---------------------------------|------------------------------------|
+| Rocq       | Kernel + stdlib                 | Definitions inside the development |
+| TLA⁺ TLC   | TLC binary + the model          | Finite bounded instance            |
+| Kani       | CBMC + SMT solver               | Bounded primitive domain           |
+| Sage       | Sage codebase                   | Exact finite computation           |
+| proptest   | Rust toolchain + the harness    | Random samples within a strategy   |
+| Hypothesis | Python interpreter + the engine | Random samples of stateful traces  |
+| libFuzzer  | Compiler + libFuzzer            | Byte-level input space             |
+| Loom       | Loom + Rust toolchain           | Schedule space at thread count `N` |
 
 If the property holds in every domain on which it is checked, *and*
 each tool's trust base is sound on its domain, *then* the property
@@ -178,18 +178,18 @@ The methodology's rule:
 The methodology pays for stacking explicitly. Each layer's cost is
 small individually but additive:
 
-| Layer       | Cost per property                          | When marginal                                                |
-|-------------|---------------------------------------------|--------------------------------------------------------------|
-| Rocq theorem| Hours to days                               | Property is unbounded and stable                              |
-| TLA⁺ invariant| Hours                                    | Property is bounded finite-state                              |
-| Kani harness| Minutes                                     | Property is per-function on primitives                        |
-| Sage model  | Hours                                        | Property is exact finite-state with combinatorial structure   |
-| proptest    | Minutes                                     | Property is a one-step property                                |
-| Hypothesis  | Minutes to hours                            | Property is a multi-step lifecycle                            |
-| libFuzzer   | Minutes (setup) + CI time                   | Property is byte-level / structure-aware                      |
-| Loom        | Minutes                                     | Property is concurrency-related                                |
-| Triple-bisim| Minutes (after harness exists)              | Property is observable across implementations                  |
-| Differential| Minutes (after corpus exists)               | Property is cross-implementation                              |
+| Layer          | Cost per property              | When marginal                                               |
+|----------------|--------------------------------|-------------------------------------------------------------|
+| Rocq theorem   | Hours to days                  | Property is unbounded and stable                            |
+| TLA⁺ invariant | Hours                          | Property is bounded finite-state                            |
+| Kani harness   | Minutes                        | Property is per-function on primitives                      |
+| Sage model     | Hours                          | Property is exact finite-state with combinatorial structure |
+| proptest       | Minutes                        | Property is a one-step property                             |
+| Hypothesis     | Minutes to hours               | Property is a multi-step lifecycle                          |
+| libFuzzer      | Minutes (setup) + CI time      | Property is byte-level / structure-aware                    |
+| Loom           | Minutes                        | Property is concurrency-related                             |
+| Triple-bisim   | Minutes (after harness exists) | Property is observable across implementations               |
+| Differential   | Minutes (after corpus exists)  | Property is cross-implementation                            |
 
 For a headline theorem, the total stacking cost is **measured in
 days** — small compared to the cost of a missed bug in production.

@@ -1,5 +1,32 @@
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
 
+//! Block validation — the per-step pipeline a peer block must pass
+//! before being admitted into the DAG.
+//!
+//! ## Pipeline steps (in order)
+//!
+//! 1. `block_summary` — wire-format + parent + justification structural
+//!    checks (T-1, T-2).
+//! 2. `validate_block_checkpoint` — replay deploys against the pre-state
+//!    hash and verify the resulting state matches the block's
+//!    `post_state_hash`.
+//! 3. `bonds_cache` — verify the block's bonds map matches the bonds
+//!    computed from the parent post-state hash.
+//! 4. `neglected_invalid_block` — reject the block if it has invalid
+//!    justifications whose bonded sender is *still* bonded (T-9.7).
+//! 5. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
+//! 6. `phlo_price` — minimum phlo-price check.
+//! 7. `check_equivocations` — direct equivocation check against the
+//!    sender's prior latest message.
+//!
+//! ## Slashing-protocol position
+//!
+//! Steps 4, 5, 7 each surface `InvalidBlock::*Equivocation` /
+//! `NeglectedInvalidBlock` to the dispatcher, which then mints
+//! `EquivocationRecord` evidence and routes the block to the
+//! `casper_engine::validation_dispatcher::dispatch_handle_invalid_block`
+//! path.
+
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,44 +67,65 @@ pub type Signature = Vec<u8>;
 
 const DRIFT: i64 = 15000; // 15 seconds
 
+/// Namespace for the block-validation functions. P4-6 (slashing audit)
+/// originally proposed converting these to module-level free functions,
+/// but the unit-struct-as-namespace pattern is idiomatic Rust for
+/// associated-function clusters with shared documentation, conditional
+/// `cfg`, and call-site disambiguation (`Validate::block_summary` reads
+/// at the call site as "a Validate operation" — moving everything to
+/// `validate::block_summary` would conflict with the module name and
+/// force every caller to either rename its import or use the full path).
+/// 78 call sites gain no readability from the rename. The unit struct
+/// stays.
 pub struct Validate;
 
 impl Validate {
-    //TODO: It should be simplified once we remove &self from the verify function.
-    fn signature_verifiers() -> HashMap<String, Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>>
-    {
-        let mut map: HashMap<String, Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>> =
-            HashMap::new();
-        map.insert(
-            "secp256k1".to_string(),
-            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+    /// Verify a single signature with the named algorithm.
+    ///
+    /// P1-6: previously implemented as a `HashMap<String, Box<dyn Fn>>` rebuilt
+    /// per call; replaced with a `match` dispatch so the hot path
+    /// (`signature`, `block_signature`, `approved_block`) does zero heap work.
+    fn verify_signature(
+        algorithm: &str,
+        data: &Data,
+        signature: &Signature,
+        pub_key: &PublicKey,
+    ) -> bool {
+        match algorithm {
+            "secp256k1" => {
                 let secp256k1 = Secp256k1;
                 secp256k1.verify(data, signature, pub_key)
-            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
-        );
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        map.insert(
-            SchnorrSecp256k1::name(),
-            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+            }
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            a if a == SchnorrSecp256k1::name() => {
                 let schnorr = SchnorrSecp256k1;
                 schnorr.verify(data, signature, pub_key)
-            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
-        );
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        map.insert(
-            FrostSecp256k1::name(),
-            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+            }
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            a if a == FrostSecp256k1::name() => {
                 let frost = FrostSecp256k1;
                 frost.verify(data, signature, pub_key)
-            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
-        );
-        map
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns true iff the named algorithm is supported by `verify_signature`.
+    /// Used to distinguish "unsupported algorithm" from "valid algorithm,
+    /// signature did not verify" at the block-signature surface.
+    fn signature_algorithm_supported(algorithm: &str) -> bool {
+        match algorithm {
+            "secp256k1" => true,
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            a if a == SchnorrSecp256k1::name() => true,
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            a if a == FrostSecp256k1::name() => true,
+            _ => false,
+        }
     }
 
     pub fn signature(d: &Data, sig: &ProtoSignature) -> bool {
-        Self::signature_verifiers()
-            .get(&sig.algorithm)
-            .is_some_and(|verify| verify(d, &sig.sig.to_vec(), &sig.public_key.to_vec()))
+        Self::verify_signature(&sig.algorithm, d, &sig.sig.to_vec(), &sig.public_key.to_vec())
     }
 
     fn ignore(b: &BlockMessage, reason: &str) -> String {
@@ -93,25 +141,20 @@ impl Validate {
             Blake2b256::hash(approved_block.clone().candidate.to_proto().encode_to_vec());
         let required_signatures = approved_block.candidate.required_sigs;
 
-        let signature_verifiers = Self::signature_verifiers();
-
         let signatures: HashSet<Bytes> = approved_block
             .sigs
             .iter()
             .filter_map(|signature| {
-                signature_verifiers
-                    .get(&signature.algorithm)
-                    .and_then(|verify_sig| {
-                        if verify_sig(
-                            &candidate_bytes_digest,
-                            &signature.sig.to_vec(),
-                            &signature.public_key.to_vec(),
-                        ) {
-                            Some(signature.public_key.clone())
-                        } else {
-                            None
-                        }
-                    })
+                if Self::verify_signature(
+                    &signature.algorithm,
+                    &candidate_bytes_digest,
+                    &signature.sig.to_vec(),
+                    &signature.public_key.to_vec(),
+                ) {
+                    Some(signature.public_key.clone())
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -143,19 +186,7 @@ impl Validate {
     }
 
     pub fn block_signature(b: &BlockMessage) -> bool {
-        let result = Self::signature_verifiers()
-            .get(&b.sig_algorithm)
-            .map(|verify| {
-                match verify(&b.block_hash.to_vec(), &b.sig.to_vec(), &b.sender.to_vec()) {
-                    true => true,
-                    false => {
-                        tracing::warn!("{}", Self::ignore(b, "signature is invalid."));
-                        false
-                    }
-                }
-            });
-
-        result.unwrap_or_else(|| {
+        if !Self::signature_algorithm_supported(&b.sig_algorithm) {
             tracing::warn!(
                 "{}",
                 Self::ignore(
@@ -163,8 +194,18 @@ impl Validate {
                     &format!("signature algorithm {} is unsupported.", b.sig_algorithm)
                 )
             );
-            false
-        })
+            return false;
+        }
+        let verified = Self::verify_signature(
+            &b.sig_algorithm,
+            &b.block_hash.to_vec(),
+            &b.sig.to_vec(),
+            &b.sender.to_vec(),
+        );
+        if !verified {
+            tracing::warn!("{}", Self::ignore(b, "signature is invalid."));
+        }
+        verified
     }
 
     pub fn block_sender_has_weight(
@@ -945,17 +986,14 @@ impl Validate {
                 // and new block `b` (potential new Latest Message of sender)
                 let new_sender_block = b;
                 let new_lms =
-                    proto_util::to_latest_message_hashes(new_sender_block.justifications.clone());
+                    proto_util::to_latest_message_hashes(&new_sender_block.justifications);
                 let cur_lms =
-                    proto_util::to_latest_message_hashes(cur_senders_block.justifications.clone());
+                    proto_util::to_latest_message_hashes(&cur_senders_block.justifications);
 
                 // Self-regression is checked here too: include the sender's
                 // self-justification so a block that points back to its own
                 // earlier sequence number is detected as JustificationRegression.
                 // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
-
-                // Check each Latest Message for regression (block seq num goes backwards)
-                let mut remaining_lms: Vec<(Validator, BlockHash)> = new_lms.into_iter().collect();
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
@@ -968,68 +1006,35 @@ impl Validate {
                         tracing::warn!("{}", Self::ignore(b, &msg));
                     };
 
-                loop {
-                    match remaining_lms.as_slice() {
-                        // No more Latest Messages to check
-                        [] => break,
-                        // Check if sender of LatestMessage does justification regression
-                        [new_lm, tail @ ..] => {
-                            let (sender, new_justification_hash) = new_lm;
-                            let no_sender_in_cur_lms = !cur_lms.contains_key(sender);
+                // P1-5: single linear scan over the new latest messages; no
+                // O(n²) Vec rebuilds. The early-return on regression preserves
+                // the prior semantics; the iterator skips senders absent from
+                // `cur_lms` (no justification to compare against).
+                for (sender, new_justification_hash) in &new_lms {
+                    let Some(cur_justification_hash) = cur_lms.get(sender) else {
+                        continue;
+                    };
 
-                            if no_sender_in_cur_lms {
-                                // If there is no justification to compare with - regression is not possible
-                                remaining_lms = tail.to_vec();
-                                continue;
-                            }
-
-                            let cur_justification_hash = &cur_lms[sender];
-
-                            // Compare and check for regression
-                            let new_justification =
-                                match s.dag.lookup_unsafe(new_justification_hash) {
-                                    Ok(metadata) => metadata,
-                                    Err(e) => {
-                                        return Either::Left(BlockError::BlockException(
-                                            CasperError::from(e),
-                                        ))
-                                    }
-                                };
-                            let cur_justification =
-                                match s.dag.lookup_unsafe(cur_justification_hash) {
-                                    Ok(metadata) => metadata,
-                                    Err(e) => {
-                                        return Either::Left(BlockError::BlockException(
-                                            CasperError::from(e),
-                                        ))
-                                    }
-                                };
-
-                            let regression_detected = {
-                                let regression = !new_justification.invalid
-                                    && new_justification.sequence_number
-                                        < cur_justification.sequence_number;
-
-                                if regression {
-                                    log_warn(
-                                        cur_justification_hash,
-                                        new_justification_hash,
-                                        sender,
-                                    );
-                                }
-
-                                regression
-                            };
-
-                            // Exit when regression detected, or continue to check remaining Latest Messages
-                            if regression_detected {
-                                return Either::Left(BlockError::Invalid(
-                                    InvalidBlock::JustificationRegression,
-                                ));
-                            } else {
-                                remaining_lms = tail.to_vec();
-                            }
+                    let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
+                        Ok(metadata) => metadata,
+                        Err(e) => {
+                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
                         }
+                    };
+                    let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
+                        Ok(metadata) => metadata,
+                        Err(e) => {
+                            return Either::Left(BlockError::BlockException(CasperError::from(e)))
+                        }
+                    };
+
+                    if !new_justification.invalid
+                        && new_justification.sequence_number < cur_justification.sequence_number
+                    {
+                        log_warn(cur_justification_hash, new_justification_hash, sender);
+                        return Either::Left(BlockError::Invalid(
+                            InvalidBlock::JustificationRegression,
+                        ));
                     }
                 }
 
@@ -1056,16 +1061,19 @@ impl Validate {
             }
         }
 
+        // P2-10: build a single bonds index up-front (O(B)) so the
+        // any-invalid-justification check is O(J + B) instead of the prior
+        // O(J · B) `.iter().find(...)` linear scan per justification.
         let bonds = proto_util::bonds(block);
+        let bonds_by_validator: HashMap<&Validator, i64> = bonds
+            .iter()
+            .map(|bond| (&bond.validator, bond.stake))
+            .collect();
         let neglected_invalid_justification = invalid_justifications.iter().any(|justification| {
-            let slashed_validator_bond = bonds
-                .iter()
-                .find(|bond| bond.validator == justification.validator);
-
-            match slashed_validator_bond {
-                Some(bond) => bond.stake > 0,
-                None => false,
-            }
+            bonds_by_validator
+                .get(&justification.validator)
+                .copied()
+                .is_some_and(|stake| stake > 0)
         });
 
         // Recovery path: if this block carries slash system deploys, allow it through so

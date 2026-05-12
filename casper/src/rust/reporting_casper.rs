@@ -90,7 +90,10 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let mut dag = self.block_dag_storage.get_representation();
+        let mut dag = self
+            .block_dag_storage
+            .get_representation()
+            .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
 
         let genesis = self
             .block_store

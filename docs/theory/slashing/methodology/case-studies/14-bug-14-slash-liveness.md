@@ -45,13 +45,13 @@ action             = Keep integration_t_neglected_invalid_block.rs +
 
 ## 5 · Evidence stack
 
-| Layer            | Artifact                                                                                                          |
-|------------------|-------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem     | T-9.14, T-LivenessGap (`BugFixSlashLiveness.v` — implicit)                                                          |
-| TLA⁺ invariant   | `AuthorizedSlashFlow.tla` `Inv_InvalidIndexSlashLiveness`                                                          |
-| Hypothesis       | `hypothesis_liveness_as_safety.rs`                                                                                |
-| Rust regression  | `integration_t_neglected_invalid_block.rs`, `uc_27_neglected_invalid_block.rs`, `operational_halt.rs`              |
-| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.16`](../../design/09-bug-fixes-and-rationale.md)                  |
+| Layer            | Artifact                                                                                              |
+|------------------|-------------------------------------------------------------------------------------------------------|
+| Rocq theorem     | T-9.14, T-LivenessGap (`BugFixSlashLiveness.v` — implicit)                                            |
+| TLA⁺ invariant   | `AuthorizedSlashFlow.tla` `Inv_InvalidIndexSlashLiveness`                                             |
+| Hypothesis       | `hypothesis_liveness_as_safety.rs`                                                                    |
+| Rust regression  | `integration_t_neglected_invalid_block.rs`, `uc_27_neglected_invalid_block.rs`, `operational_halt.rs` |
+| Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.16`](../../design/09-bug-fixes-and-rationale.md)      |
 
 **Stack depth: 4** (Rocq + TLA⁺ + Hypothesis + Rust regression + design).
 
