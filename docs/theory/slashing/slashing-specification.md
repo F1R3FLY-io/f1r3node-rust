@@ -14,10 +14,11 @@
 > #11), and five Rust-source-confirmed authorization / projection /
 > liveness / arithmetic / projection-cardinality gaps surfaced by the
 > Sage and Hypothesis traceability passes — and specifies their corrected
-> behavior. Every claim is anchored to a Rocq theorem in
-> `formal/rocq/slashing/` and a TLA+ invariant in `formal/tlaplus/slashing/`,
-> with the proofs translated to mathematical prose in the companion
-> verification document `slashing-verification.md`.
+> behavior. Every claim is anchored to a theorem with its prose proof in
+> the self-contained `slashing-verification.md` mathematical article;
+> the underlying Rocq and TLA+ mechanizations live on the
+> `analysis/slashing` branch under `formal/rocq/slashing/` and
+> `formal/tlaplus/slashing/`.
 
 ---
 
@@ -65,9 +66,10 @@ authorization/projection gaps.
 Without a normative specification, every defect remains encoded only as
 inline `// TODO` markers; without machine-checked verification, no
 implementation change can be audited against an authoritative reference.
-This document, together with `slashing-verification.md` and the formal
-artifacts under `formal/rocq/slashing/` and `formal/tlaplus/slashing/`,
-fills that gap.
+This document, together with `slashing-verification.md` (the
+self-contained proof artifact on this branch), and the formal-methods
+sources preserved on the `analysis/slashing` branch under
+`formal/rocq/slashing/` and `formal/tlaplus/slashing/`, fills that gap.
 
 ### 1.2 Contribution
 
@@ -79,7 +81,9 @@ This work contributes:
    — short form `(D, I, E, B, A, Sl, C)`; cf. §7.1.
    The semantics is realized as a Rocq inductive in
    `formal/rocq/slashing/theories/EquivocationDetector.v` and as a TLA+
-   transition relation in `formal/tlaplus/slashing/SlashFlow.tla`.
+   transition relation in `formal/tlaplus/slashing/SlashFlow.tla`
+   (both preserved on `analysis/slashing`; proofs reproduced in prose
+   in `slashing-verification.md`).
 2. A **bisimilarity proof**: under the sixteen documented bug-fix deltas, the
    Rust implementation is observationally bisimilar to the Scala original
    with respect to all observable barbs (block/state changes, fork-choice
@@ -152,8 +156,8 @@ artifacts may still use the alias.
 |-------------------------------------|-------------------------------------------------|
 | This document                       | ~1,800 lines markdown (incl. embedded diagrams) |
 | `slashing-verification.md`          | ~1,300 lines markdown                           |
-| `formal/rocq/slashing/theories/*.v` | 21 modules / ~3,500 lines                       |
-| `formal/tlaplus/slashing/*.tla`     | 5 base specs + 8 MC instances / ~1,100 lines    |
+| `formal/rocq/slashing/theories/*.v` (on `analysis/slashing`) | 21 modules / ~3,500 lines                       |
+| `formal/tlaplus/slashing/*.tla` (on `analysis/slashing`)     | 5 base specs + 8 MC instances / ~1,100 lines    |
 | PlantUML sources                    | 11 diagrams / ~1,700 lines                      |
 | Total new artifact                  | ~9,500 lines                                    |
 
@@ -595,9 +599,10 @@ the formal account.
 Reads the slashed-validator set from on-chain state and excludes those
 validators' latest messages from the GHOST-style fork-choice computation.
 This is the final step that gives a slashed validator zero influence over
-future block selection. Theorem T-10 in
-`formal/rocq/slashing/theories/ForkChoice.v` states this exclusion
-formally.
+future block selection. Theorem T-10 (stated and proved in
+`slashing-verification.md`; mechanized in
+`formal/rocq/slashing/theories/ForkChoice.v` on `analysis/slashing`)
+states this exclusion formally.
 
 Rust: `casper/src/rust/estimator.rs`. Scala:
 `coop/rchain/casper/Estimator.scala`.
@@ -620,7 +625,8 @@ iff there exist two distinct blocks `b1, b2 ∈ D` with `sender(bᵢ) = v`,
 for the predicate.
 
 The Rocq formalization is `equivocates : DAGState -> Validator -> nat ->
-Prop` in `formal/rocq/slashing/theories/DAGState.v`. The boolean
+Prop` in `formal/rocq/slashing/theories/DAGState.v` (preserved on
+`analysis/slashing`). The boolean
 counterpart `equivocates_b` is the function actually used by the
 detector; the two are equivalent by reflection (`equivocates_dec` in the
 same file).
@@ -1621,7 +1627,7 @@ design*; T-9.9 establishes that the widening is sound.
   apply `reflexivity`. T-9.10″: unfold both nested calls and
   conclude using `wm_remove_commutative` / `rm_remove_commutative`
   (per-validator removal commutes across distinct keys).
-- **TLA+ companion.** `formal/tlaplus/slashing/WithdrawFlow.tla`
+- **TLA+ companion.** `formal/tlaplus/slashing/WithdrawFlow.tla` (preserved on `analysis/slashing`)
   with `MC_WithdrawFlow.cfg` model-checks five invariants
   (`Inv_NoFundsLost`, `Inv_TotalFundsConst`,
   `Inv_RemovedImpliesPaid`, `Inv_RewardsConsistent`,
@@ -1714,7 +1720,8 @@ where
   uc_55_buffer_dag_atomic_transition.rs` (UC-55, 6 tests via the
   `SlashingTestHarness` extension). Rocq mechanization at
   `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`
-  with three theorems: `t_9_20_recon`, `t_9_20_reconcile_idempotent`,
+  (preserved on `analysis/slashing`) with three theorems:
+  `t_9_20_recon`, `t_9_20_reconcile_idempotent`,
   `t_9_20_step_idempotent_on_projection`.
 
 ---
@@ -2222,7 +2229,7 @@ likely objections by stating what is in and out of scope.
 
 | Topic                                                        | Status            | Rationale                                                                                                                                                                                                                    |
 |--------------------------------------------------------------|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Implementing unconfirmed Rust-source changes                 | Out               | `slashing-traceability.md` gates source changes: Sage/Hypothesis witnesses become Rust source work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
+| Implementing unconfirmed Rust-source changes                 | Out               | The traceability ledger (preserved on `analysis/slashing` as `slashing-traceability.md`) gates source changes: Sage/Hypothesis witnesses become Rust source work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
 | Rewriting `test_slash.py` (issue #25 fix 3d)                 | Out               | System-integration concern (`F1R3FLY-io/system-integration#51`); separate repo.                                                                                                                                              |
 | Replacing PoS multi-sig keys (issue #25 fix 3e)              | Out               | Operations / key-management concern; not a code change in `casper/`.                                                                                                                                                         |
 | Graduated/proportional slashing penalties (issue #25 fix 3c) | Out               | Requires protocol-level design decision; this spec covers the existing one-strike model. Future work mentioned at the end of §10.                                                                                            |

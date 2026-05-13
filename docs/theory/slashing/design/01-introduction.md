@@ -126,9 +126,11 @@ itself slashable) which Ethereum FFG does not have.
 - **Not a tutorial.** We assume you already know what a blockchain
   is, what BFT consensus is in broad strokes, and how PoS validators
   earn rewards.
-- **Not a proof.** Proofs live in `formal/rocq/slashing/theories/*.v`
-  and are summarized in `../slashing-verification.md`. This document
-  cites them but does not reproduce them.
+- **Not a proof.** Proofs are presented as a self-contained
+  mathematical article in `../slashing-verification.md`. The mechanized
+  Rocq sources (`formal/rocq/slashing/theories/*.v`) are preserved on
+  the `analysis/slashing` branch. This document cites the theorems but
+  does not reproduce their proofs.
 - **Not an operations manual.** Operating a validator (key generation,
   bond posting, monitoring) is a separate concern handled by
   `node/` and the operations runbooks under

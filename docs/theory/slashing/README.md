@@ -7,6 +7,15 @@ level between the Rust slashing logic in this repository and the Scala original
 from which it was migrated, with explicit, proven *bug-fix deltas* where the
 Scala source is faulty.
 
+> **Audit corpus preserved separately.** The full audit methodology, Sage
+> search corpus, traceability ledger, search-horizon program, and all three
+> mechanized proof stacks (Rocq, TLA+, Sage models) are preserved on the
+> `analysis/slashing` branch. This branch (`feature/slashing`) keeps the
+> normative and design surface plus the self-contained
+> `slashing-verification.md` mathematical article. Citations below that
+> reference the audit corpus or mechanized proofs by file path point at the
+> preserved-on-`analysis/slashing` artifacts.
+
 ## Reading order
 
 1. **`design/`** — *Pedagogical design document set* (17 files:
@@ -25,33 +34,22 @@ Scala source is faulty.
    statement, the bug-fix manifest, and the use-case catalog. Cites theorems
    by name and `file:line` anchor into the verification doc.
 3. **`slashing-verification.md`** — *Proof artifact.* Read third if you are a
-   formal-methods reviewer or certifier. Contains theorem statements, prose
-   proofs translated from Rocq, the TLA+ model summary, the Rocq↔TLA+
-   correspondence table, and the trust base.
+   formal-methods reviewer or certifier. A self-contained mathematical article
+   stating every theorem with its prose proof, the TLA+ model summary, the
+   Rocq↔TLA+ correspondence table, and the trust base. Citations to
+   `formal/rocq/slashing/`, `formal/tlaplus/slashing/`, and
+   `formal/sage/slashing/` point at the mechanized sources preserved on
+   `analysis/slashing`.
 4. **`slashing-threat-model.md`** — *Defensive threat catalog.* Read alongside
-   the verification doc to see every modeled attack surface, the protection
-   mechanism, and the Rust/Rocq/TLA+/Sage artifact that covers it.
-5. **`slashing-traceability.md`** — *Finding ledger.* Read when deciding
-   whether a Sage/Hypothesis finding is a Rust source bug, a confirmed fixed
-   bug, a model boundary, a projection risk, or a proof-strengthening item.
-6. **`slashing-search-horizon.md`** — *Defensive search program.* Read when
-   expanding bug hunting beyond the current proofs and regression tests with
-   fuzzing, symbolic Rust checks, symbolic TLA+, and adversarial system tests.
-7. **`methodology/`** — *Pedagogical bug-hunting & property-discovery methodology.*
-   Read when you want to understand *how* the bugs, vulnerabilities, and
-   interesting properties were *found* — and how to apply the same methodology
-   to a new component, a new property, or a new threat class. Covers the nine
-   techniques (Rocq, TLA⁺/TLC, Apalache, Kani, Sage, proptest, Hypothesis,
-   libFuzzer, Loom), the witness-to-source promotion pipeline, the 14 Sage
-   model families, per-tool tutorials, and a case study per bug. See
-   [`methodology/README.md`](./methodology/README.md) for the reading order.
-8. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
+   the verification doc to see every modeled attack surface and the protection
+   mechanism that covers it. The cross-reference column points at Rust artifacts
+   on this branch; Rocq/TLA+/Sage artifacts cited there live on
+   `analysis/slashing`.
+5. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
    referenced in the spec. Each is embedded inline at its first relevant
    mention in the spec/verification docs; the visuals and the LTS rules
    are designed to stay 1:1.
 
-   | #  | Title                                                                                                  | Embedded at                      |
-   |----|--------------------------------------------------------------------------------------------------------|----------------------------------|
    | #  | Title                                                                                                  | Embedded at                      | Scope                                   |
    |----|--------------------------------------------------------------------------------------------------------|----------------------------------|-----------------------------------------|
    | 01 | [Slashing subsystem topology](./diagrams/01-component-overview.svg)                                    | spec §3                          | **Exhaustive** — 11 components + 2 data artifacts (Bond map, Coop vault) |
@@ -69,11 +67,6 @@ Scala source is faulty.
    Diagram 01 is the **exhaustive** component diagram; Diagram 10 is
    the **proof-bearing subset** (components with Rocq theorems and/or
    TLA+ models). Both are correct, just at different scopes.
-8. **`../../formal/rocq/slashing/`** — Mechanized Rocq proofs. The verification
-   doc translates these to mathematical prose; this is where the kernel-checked
-   evidence lives.
-9. **`../../formal/tlaplus/slashing/`** — TLA+ specs and TLC model-checking
-   instances. Run with `tlc` to verify the invariants.
 
 ## Scope
 
@@ -115,25 +108,26 @@ Scala source is faulty.
   closure certificates, active-quorum intersection, current-validator
   and epoch filtering, evidence visibility/report suppression,
   view-indexed closure, duplicate-edge idempotence, cycle edge cases,
-  projection-risk witnesses, and safe arithmetic envelopes are
-  mechanized in Rocq and mirrored in TLA+ where finite checking applies.
-- **T-12PF / T-5DF.** Hypothesis-backed Sage search reduces proposer
-  evidence-inclusion fairness and delimiter-free record-key collisions
-  to deterministic witnesses before they are promoted to Rocq, TLA+,
-  and specification use cases.
+  projection-risk witnesses, and safe arithmetic envelopes are stated
+  and proved in `slashing-verification.md`; the underlying Rocq and TLA+
+  mechanizations are preserved on `analysis/slashing`.
+- **T-12PF / T-5DF.** Hypothesis-backed Sage search results (preserved on
+  `analysis/slashing`) reduce proposer evidence-inclusion fairness and
+  delimiter-free record-key collisions to deterministic witnesses, promoted
+  to theorems in `slashing-verification.md` and use cases in the spec.
 - **T-12HYP / deep Sage threat modeling.** Hypothesis frontier and Sage
-  threat-ranking scripts explore partition/gossip schedules,
-  objective-guided campaigns, production-shaped DAG traces,
-  defensive adversarial vulnerability campaigns, precondition fuzzing,
-  Rust replay fixtures, graph attack paths, stake damage,
+  threat-ranking results (preserved on `analysis/slashing`) explore
+  partition/gossip schedules, objective-guided campaigns, production-shaped
+  DAG traces, defensive adversarial vulnerability campaigns, precondition
+  fuzzing, Rust replay fixtures, graph attack paths, stake damage,
   retention/pruning, epoch/churn, arithmetic envelopes, exact-vs-runtime
   projection matrices, differential-oracle rows, mutation/metamorphic
-  variants, and objective-frontier fixture selection; all findings must classify as documented
-  boundary, projection-risk, or assumption-counterexample witnesses before
-  promotion.
+  variants, and objective-frontier fixture selection; all findings classify
+  as documented boundary, projection-risk, or assumption-counterexample
+  witnesses on the audit branch before promotion to this branch.
 - **T-9.12–T-9.15.** Current-epoch slash authorization, unknown/stale slash
   evidence no-op behavior, checked sequence arithmetic, and duplicate
-  justification rejection are mechanized in Rocq and mirrored in TLA+.
+  justification rejection are stated and proved in `slashing-verification.md`.
 - **T-15.** Under the documented bug fixes, the Rust implementation is
   observationally bisimilar to the Scala original — i.e., no observable
   divergence remains.
@@ -164,6 +158,9 @@ See `slashing-specification.md` §10 for the full bug-fix manifest and
 
 ## Building and verifying
 
+The mechanized Rocq proofs, TLA+ model-checking instances, and Sage models
+live on the `analysis/slashing` branch. On that branch, build with:
+
 ```sh
 # Rocq proofs (use systemd-run resource limits per CLAUDE.md)
 systemd-run --user --scope -p MemoryMax=96G -p CPUQuota=1800% \
@@ -177,7 +174,12 @@ tlc -workers 12 MC_ConcurrentTracker.tla
 tlc -workers 12 MC_SlashFlow.tla
 tlc -workers 12 MC_TwoLevelSlashing.tla
 tlc -workers 12 MC_AuthorizedSlashFlow.tla
+```
 
+On `feature/slashing` (this branch), only the diagram-rendering and
+cross-link check are runnable:
+
+```sh
 # PlantUML rendering (SVGs are committed; this regenerates them)
 for puml in docs/theory/slashing/diagrams/*.puml; do
   plantuml -tsvg "$puml"
@@ -189,7 +191,7 @@ done
 
 ## Related documents
 
-- GitHub issue [`F1R3FLY-io/f1r3node-rust#25`](https://github.com/F1R3FLY-io/f1r3node-rust/issues/25)
+- GitHub issue [`F1R3FLY-io/f1r3node-rust#25`](https://github.com/F1R3FLY-io/f1r3fly-rust/issues/25)
   — original tracking issue for slashing documentation, test porting, and known gaps.
 - `docs/casper/BYZANTINE_FAULT_TOLERANCE.md` — broader BFT model context.
 - `docs/casper/CONSENSUS_PROTOCOL.md` — overall consensus protocol description.

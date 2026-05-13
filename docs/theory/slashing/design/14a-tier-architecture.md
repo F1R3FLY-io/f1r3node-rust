@@ -206,10 +206,11 @@ test suite is documented as manual and scriptable jobs:
 | **mutation-coverage**      | 3     | scheduled/manual | <240 min |
 | **nightly-extended-proptest** | 2 + 3 | scheduled/manual | <240 min |
 
-Reviewers should run the commands in §14.9 or the corresponding
-`scripts/ci/slashing-search-horizon.sh` modes for the tiers relevant
-to their review. The jobs are not currently active GitHub workflow
-entries.
+Reviewers should run the commands in §14.9 or, for the
+search-horizon program tiers, the corresponding
+`scripts/ci/slashing-search-horizon.sh` modes preserved on the
+`analysis/slashing` branch. The jobs are not currently active GitHub
+workflow entries.
 
 `MC_EquivocationDetector_safety` is the exhaustive detector safety
 TLC model. It is not part of the default PR-gate script because it
@@ -222,7 +223,7 @@ after the bounded frontier and Rust regression suite are stable.
 |---------|---------------------|----------------------|
 | `prop_t_15_triple_bisim_dispatch` fails on bond observable | Production | Compare `compute_bonds` output between two consecutive commits |
 | `prop_t_15_triple_bisim_dispatch` fails on has_record | Harness | Check `dispatch` arm coverage; harness may have skipped a slashable variant |
-| `prop_t_13a_bonds_bisim` fails (no production tier) | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` |
+| `prop_t_13a_bonds_bisim` fails (no production tier) | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` (preserved on `analysis/slashing`) |
 | Surviving mutant in `equivocation_detector.rs` | Coverage gap | Add a UC test or proptest exercising the mutated code path |
 | `loom-interleavings` job times out | Loom budget | Decrease `LOOM_MAX_PREEMPTIONS` or remove a thread from the schedule |
 
@@ -240,7 +241,9 @@ The principled architecture is verified against the constraints:
   implementation; the sequential-shadow fallback is non-
   destructive.
 * **No fabricated tests.** ✓ Every test traces to a §14 line
-  or a Rocq theorem in `formal/rocq/slashing/theories/`.
+  or a Rocq theorem stated in `slashing-verification.md`
+  (mechanization on `analysis/slashing` under
+  `formal/rocq/slashing/theories/`).
 * **Every assertion traceable.** ✓ Each test module is listed in
   §14, the specification use-case table, or the traceability
   ledger with the theorem or finding it protects.
@@ -254,8 +257,8 @@ The principled architecture is verified against the constraints:
 * [§10 Bisimilarity](./10-bisimilarity.md) — the formal
   bisimulation theorem the triple-bisim tests are runtime-
   checking.
-* [`formal/rocq/slashing/theories/Bisimulation.v`](../../../formal/rocq/slashing/theories/Bisimulation.v)
-  — the Rocq mechanization.
+* `formal/rocq/slashing/theories/Bisimulation.v` — the Rocq
+  mechanization (preserved on `analysis/slashing`).
 
 ---
 

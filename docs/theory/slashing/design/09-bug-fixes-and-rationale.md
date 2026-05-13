@@ -512,7 +512,7 @@ of the obligation and cannot retry. Post-fix, the validator stays in
 `withdrawers` until a successful transfer, with the per-validator
 state intact across block boundaries.
 
-**Companion TLA+ model.** `formal/tlaplus/slashing/WithdrawFlow.tla`
+**Companion TLA+ model.** `formal/tlaplus/slashing/WithdrawFlow.tla` (preserved on `analysis/slashing`)
 + `MC_WithdrawFlow.cfg` model the withdrawal pipeline with
 explicit success / fail / retry actions and verify
 `Inv_NoFundsLost`, `Inv_TotalFundsConst`, `Inv_RemovedImpliesPaid`,
@@ -825,7 +825,7 @@ then A.
 
 **Proofs and tests.** Rocq: `t_9_20_recon`,
 `t_9_20_reconcile_idempotent`, `t_9_20_step_idempotent_on_projection`
-(file `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`).
+(file `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`, preserved on `analysis/slashing`).
 Rust integration: `block-storage/tests/atomic_buffer_dag_transition.rs`
 (8 tests against real LMDB stores via `InMemoryStoreManager`). Rust
 model-level: `casper/tests/slashing/uc_55_buffer_dag_atomic_transition.rs`

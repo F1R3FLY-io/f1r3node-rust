@@ -3,17 +3,20 @@
 **Version 1.1 · 2026-05-11**
 
 > **Abstract.** This article is the proof artifact accompanying
-> `slashing-specification.md`. It states every theorem in mathematical
-> prose translated from the Rocq mechanization at
-> `formal/rocq/slashing/theories/`, integrates the TLA+ correctness
-> model from `formal/tlaplus/slashing/`, and tabulates the Sage-driven
-> exploratory verification campaign at `formal/sage/slashing/`. Every
-> load-bearing claim of the specification is proven here.
+> `slashing-specification.md`. It is a **self-contained mathematical
+> presentation**: every theorem appears here with its statement and
+> prose proof. The underlying mechanizations — Rocq theories at
+> `formal/rocq/slashing/theories/`, TLA+ correctness models at
+> `formal/tlaplus/slashing/`, and Sage exploratory verification at
+> `formal/sage/slashing/` — are preserved on the `analysis/slashing`
+> branch and are cited by name for traceability; this article does
+> not require fetching them to verify the proofs.
 >
 > The development is **closed under the global context**: every
 > theorem from `main_bisimilarity_theorem` downward depends only on
 > Rocq's standard library and the slashing theories — zero `Admitted`,
-> zero custom `Axiom`. This is verified via `Print Assumptions` (§14).
+> zero custom `Axiom`. This is verified via `Print Assumptions` (§14)
+> against the mechanization preserved on `analysis/slashing`.
 >
 > **Contributions.** This article proves three principal results:
 > (i) the Rust slashing pipeline is observationally equivalent (weak
@@ -294,7 +297,8 @@ where:
   propose(p, deploys), executeSlash(o, ok), filterFC(v),
   neglectDetect(v, target)}`.
 - **Transitions** `→` are defined per-label by the corresponding
-  component in `formal/rocq/slashing/theories/`.
+  component (Rocq mechanization preserved on `analysis/slashing` under
+  `formal/rocq/slashing/theories/`).
 
 ### 3.1 Reduction rules
 
@@ -1148,8 +1152,9 @@ Hypothesis frontier produced the four-validator chain; the proof
 mechanizes "if you drop the precondition, here is the smallest
 counter-example." ∎
 
-**Counter-example.** `formal/sage/slashing/FINDINGS.md` Finding 2
-(Minimal unweighted quorum drop at n=4).
+**Counter-example.** Sage findings row 2 — Minimal unweighted quorum
+drop at n=4 (preserved on `analysis/slashing` under
+`formal/sage/slashing/FINDINGS.md`).
 
 ### 7.10.AMP Corollary 7.10.AMP (T-12-AMP, Amplification boundary)
 
@@ -1165,8 +1170,8 @@ produces slashed-stake `10 + 20 + 30 = 60` against direct-offender
 stake `10`. The amplification ratio is `6 ×`; the bound is
 unbounded as the chain length grows. ∎
 
-**Counter-example.** `FINDINGS.md` Finding 90 (weighted stake
-amplification boundary).
+**Counter-example.** Sage findings row 90 — weighted stake
+amplification boundary (preserved on `analysis/slashing`).
 
 ### 7.10.PF Corollary 7.10.PF (T-12-PF, Proposer-fairness boundary)
 
@@ -1183,8 +1188,8 @@ offender's evidence at every round produces an infinite trace
 where evidence is observed but never slashed. The minimization
 shows three proposers suffice: each takes turn to exclude. ∎
 
-**Counter-example.** `FINDINGS.md` Finding 88 (evidence-denial
-min-cut).
+**Counter-example.** Sage findings row 88 — evidence-denial min-cut
+(preserved on `analysis/slashing`).
 
 ### 7.10.R Corollary 7.10.R (T-12-R, Report-growth shrinks edges)
 
@@ -1231,7 +1236,8 @@ candidate evidence by comparing `current_block_number` to
 `evidence_block_number`; failures of the inequality short-circuit
 the authorization check before any slash deploy is generated. ∎
 
-**Counter-example.** `FINDINGS.md` Finding 93 (TemporalWindowDivergenceClass).
+**Counter-example.** Sage findings row 93 —
+TemporalWindowDivergenceClass (preserved on `analysis/slashing`).
 
 ### 7.10 Synopsis
 
@@ -1444,8 +1450,9 @@ divergence reasons to its class. The reasons partition into:
   `DRHorizonCampaignBoundary`, `DRHorizonV2Boundary`.
 - **UnexpectedDivergence:** `DRUnexpected` (the catch-all).
 
-Each reason is the head of a Sage-promoted finding family in
-`formal/sage/slashing/FINDINGS.md`.
+Each reason is the head of a Sage-promoted finding family recorded
+in the audit corpus on `analysis/slashing` (under
+`formal/sage/slashing/FINDINGS.md`).
 
 #### 8.8.3 Definition 8.10 (Admissibility)
 
@@ -1539,7 +1546,7 @@ maps to `CandidateBoundaryDivergence` by
 `classify_divergence_reason`. Apply Theorem 8.10 to conclude.
 Similarly for the other two theorems. ∎
 
-**Counter-example.** `FINDINGS.md` Finding 91 (semantic-campaign
+**Counter-example.** Sage findings row 91 — semantic-campaign (preserved on `analysis/slashing` under `formal/sage/slashing/FINDINGS.md`)
 boundary, four-validator partition).
 
 #### 8.8.9 Corollary 8.13 (Bisimilarity is *modulo* a closed class)
@@ -2438,10 +2445,11 @@ inadvertently strong hypotheses.
 `casper/tests/slashing/tla_trace_replay.rs` consume JSON schedules
 under `casper/tests/slashing/tla_traces/*.json`. These JSON traces
 are **hand-authored canonical schedules**, *not* automated `tlc
--dump` output. The workflow at `scripts/ci/dump-tla-traces.sh`
-explains how to obtain a TLC counter-example (by injecting a
-deliberately-false invariant) and then transcribe its action
-sequence into the JSON schema the Rust harness consumes. The reason
+-dump` output. The workflow (preserved on `analysis/slashing` under
+`scripts/ci/dump-tla-traces.sh`) explains how to obtain a TLC
+counter-example (by injecting a deliberately-false invariant) and
+then transcribe its action sequence into the JSON schema the Rust
+harness consumes. The reason
 for hand-curation is twofold: (a) TLC's natural output format is
 not JSON and would require an additional translation pass, and
 (b) hand-curation lets us pin one *canonical* schedule per spec
@@ -2454,9 +2462,10 @@ regenerated manually following the documented workflow.
 
 ## 11 · Sage-driven exploratory verification
 
-The Sage-driven exploratory verification programme at
-`formal/sage/slashing/` complements the deductive Rocq proofs and
-the model-checked TLA+ invariants with a third evidence type:
+The Sage-driven exploratory verification programme (preserved on
+`analysis/slashing` under `formal/sage/slashing/`) complements the
+deductive Rocq proofs and the model-checked TLA+ invariants with a
+third evidence type:
 *finite witnesses*. A Sage model is a Python/Sage script that
 enumerates a parameterised finite search space and either confirms
 the absence of a counter-example up to that bound or returns the
@@ -2488,7 +2497,7 @@ classification), or a documented assumption-counterexample.
 
 ### 11.2 Models by purpose
 
-The thirty-one Sage models in `formal/sage/slashing/` group into
+The thirty-one Sage models (preserved on `analysis/slashing` under `formal/sage/slashing/`) group into
 five families by what they search:
 
 **Closure and graph models** — `closure_model.sage`,
@@ -2538,8 +2547,8 @@ divergence-classification theorems in `Bisimulation.v:669`.
 
 ### 11.3 Promoted findings — overview
 
-The full catalogue of one hundred seventeen findings is at
-[`formal/sage/slashing/FINDINGS.md`](../../formal/sage/slashing/FINDINGS.md).
+The full catalogue of one hundred seventeen findings is preserved on
+the `analysis/slashing` branch under `formal/sage/slashing/FINDINGS.md`.
 Each finding has the shape
 
 ```
@@ -2555,9 +2564,9 @@ Findings 1–84 cover the original threat-modelling pass (closure,
 weighted, retention, projection, detector-totality). Findings
 85–117 cover the frontier-expansion pass (horizon, horizon-v2,
 deep-threat, adversarial-campaign, differential-oracle, semantic-
-campaign). The slashing-traceability document at
-`docs/theory/slashing/slashing-traceability.md` maintains the
-production ledger; here we sketch the headline promotions.
+campaign). The slashing-traceability document (preserved on
+`analysis/slashing` as `docs/theory/slashing/slashing-traceability.md`)
+maintains the production ledger; here we sketch the headline promotions.
 
 **Headline Sage promotions to Rocq theorems.**
 
@@ -2586,7 +2595,7 @@ production ledger; here we sketch the headline promotions.
 
 **Findings classified as assumption-counterexamples.**
 
-`FINDINGS.md` Findings 91, 92, 94, 96, 100, 102, 104 are classified
+Sage findings rows 91, 92, 94, 96, 100, 102, 104 (preserved on `analysis/slashing`) are classified
 as `assumption_counterexample` — they prove that the corresponding
 Rocq theorem hypothesis is not optional. They are not protocol
 defects; they are the negative witnesses that establish the
@@ -2605,22 +2614,25 @@ none of the individual closure or projection models can isolate.
 The campaigns produce no `unexpected` divergences in their
 configured bounds; every observed disagreement classifies as
 `candidate_boundary` and is recorded with a corresponding
-divergence-reason constructor in `Bisimulation.v`. The campaign
-infrastructure is `objective_frontier_model.sage` (objective
-selection), `scenario_schema.sage` (witness shape),
+divergence-reason constructor in `Bisimulation.v` (preserved on
+`analysis/slashing`). The campaign infrastructure is
+`objective_frontier_model.sage` (objective selection),
+`scenario_schema.sage` (witness shape),
 `scenario_search/corpus_generator.sage` (corpus emission), and
 `hypothesis_search/hypothesis_scenario_search.sage` (Hypothesis-
-style search with shrinking).
+style search with shrinking) — all preserved on `analysis/slashing`
+under `formal/sage/slashing/`.
 
 ### 11.5 Sage cross-reference index
 
-For each Sage model, the cross-reference at
-`docs/theory/slashing/slashing-traceability.md` records (a) the
-finding numbers the model produced, (b) the classifications those
-findings received, (c) the Rocq theorems or TLA+ invariants they
-promoted to, and (d) the regression-test fixtures that lock them
-in. This article does not duplicate the cross-reference; it relies
-on the traceability document for the per-model promotion ledger.
+For each Sage model, the cross-reference (preserved on
+`analysis/slashing` as `docs/theory/slashing/slashing-traceability.md`)
+records (a) the finding numbers the model produced, (b) the
+classifications those findings received, (c) the Rocq theorems or
+TLA+ invariants they promoted to, and (d) the regression-test
+fixtures that lock them in. This article does not duplicate the
+cross-reference; it relies on the traceability document for the
+per-model promotion ledger.
 
 ---
 
@@ -2788,6 +2800,8 @@ and Rust file that realize it):
 [![Diagram 10 — Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence: every slashing-subsystem component, annotated with its formal artifacts and implementation source](./diagrams/10-component-formal-correspondence.svg)](./diagrams/10-component-formal-correspondence.svg)
 
 ### 13.1 Files
+
+All directories below are preserved on the `analysis/slashing` branch.
 
 ```
 formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
@@ -2969,12 +2983,12 @@ rather than relying on the BFT bound abstractly).
 
 ## 15 · Traceability
 
-The finding-by-finding promotion ledger is maintained in
-[`slashing-traceability.md`](./slashing-traceability.md). That ledger is
-part of the verification artifact: it records whether each Sage or
-Hypothesis witness is a confirmed fixed Rust bug, a model boundary, a
-projection risk, an assumption counterexample, or a proof/model
-strengthening item.
+The finding-by-finding promotion ledger is maintained on the
+`analysis/slashing` branch under `slashing-traceability.md`. That
+ledger is part of the verification artifact: it records whether each
+Sage or Hypothesis witness is a confirmed fixed Rust bug, a model
+boundary, a projection risk, an assumption counterexample, or a
+proof/model strengthening item.
 
 The verification policy is:
 
@@ -3245,7 +3259,8 @@ by a prose proof, every headline theorem cites a worked example,
 every bug-fix proof exhibits the pre-fix counter-example that
 motivated it, and the divergence calculus of §8.8 makes the "modulo"
 qualifier of T-15 a first-class formal object. The Rocq mechanization
-at `formal/rocq/slashing/theories/` remains the authoritative source
+(preserved on the `analysis/slashing` branch under
+`formal/rocq/slashing/theories/`) remains the authoritative source
 of truth; this article is the English shadow that makes the
 development *readable* without sacrificing *precision*.
 

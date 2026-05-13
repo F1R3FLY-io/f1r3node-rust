@@ -86,9 +86,11 @@ slashing protocol's defensive surface maps as follows:
 
 The STRIDE columns are **inclusive**, not partitioning — many
 threats span multiple buckets. The "Defense" column links to the
-formal artifact in `formal/rocq/slashing/` (Rocq) or
-`formal/tlaplus/slashing/` (TLA+) that discharges the threat. For
-the complete coverage matrix with Rust-test pointers see §3.
+formal artifact in `slashing-verification.md` (the prose theorem;
+mechanizations preserved on `analysis/slashing` under
+`formal/rocq/slashing/` and `formal/tlaplus/slashing/`) that
+discharges the threat. For the complete coverage matrix with
+Rust-test pointers see §3.
 
 > *Citation note.* STRIDE was introduced by M. Howard and D. LeBlanc,
 > *Writing Secure Code* (2nd ed., Microsoft Press, 2003, ISBN
@@ -169,8 +171,8 @@ choose not to play honestly.
 
 ## 3. Threat Coverage Matrix
 
-The traceability status for each finding is maintained in
-[`slashing-traceability.md`](./slashing-traceability.md). A Sage or
+The traceability status for each finding is maintained on the
+`analysis/slashing` branch under `slashing-traceability.md`. A Sage or
 Hypothesis witness is not treated as a Rust vulnerability unless that
 ledger marks it as production-source confirmed. Boundaries and projection
 risks receive formal classifications and regression tests; they do not
@@ -269,7 +271,8 @@ prepare_user_deploys`) reads from that same local storage; no code
 path broadcasts a deploy to peers. A deploy submitted to v2 stays on
 v2 until v2 proposes it. v1 cannot "censor" v2's deploys because v1
 never has them. T-12PF is therefore correctly classified as a
-*boundary assumption* — see `slashing-traceability.md` finding 88
+*boundary assumption* — see the traceability ledger (preserved on
+`analysis/slashing` as `slashing-traceability.md`) finding 88
 (`model_boundary`, "No source bug confirmed"). The boundary status
 is a *positive design finding* about the protocol's author-local-
 mempool semantics, not a deferred TODO. In-tree property tests
@@ -308,13 +311,14 @@ false-positive behaviors are rejected as bugs.
 
 ## 4.1 Vocabulary mapping to traceability ledger
 
-The traceability ledger at `slashing-traceability.md §1` defines an
-eight-status vocabulary used to track each Sage / Hypothesis finding
-from raw witness through promotion. The six classes above are the
-*defensive-classification* projection; the eight statuses are the
-*workflow* projection. The mapping is:
+The traceability ledger (preserved on `analysis/slashing` as
+`slashing-traceability.md §1`) defines an eight-status vocabulary used
+to track each Sage / Hypothesis finding from raw witness through
+promotion. The six classes above are the *defensive-classification*
+projection; the eight statuses are the *workflow* projection. The
+mapping is:
 
-| Threat-model class (this §4) | Traceability status (`slashing-traceability.md`)               |
+| Threat-model class (this §4) | Traceability status (on `analysis/slashing`)                  |
 |------------------------------|----------------------------------------------------------------|
 | `bisimilar`                  | `confirmed_no_change_needed` (and intermediate `under_review`) |
 | `permitted_bug_fix`          | `confirmed_fixed_bug` (after fix is shipped)                   |
