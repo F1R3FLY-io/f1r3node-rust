@@ -16,7 +16,9 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use std::collections::HashSet;
+
+use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
@@ -82,7 +84,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     bonds_map.insert(validator_id.clone(), 100);
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
-    let max_seq_nums: DashMap<ByteString, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
     max_seq_nums.insert(validator_id.clone(), 0);
 
     let on_chain_state = OnChainCasperState {
@@ -100,7 +102,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         lca: Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         max_block_num,

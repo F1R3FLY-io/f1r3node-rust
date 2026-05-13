@@ -61,7 +61,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let latest_msgs_hashes: HashMap<Validator, BlockHash> =
         dag.latest_message_hashes().into_iter().collect();
     let validator_capacity = latest_msgs_hashes.len();
-    let invalid_latest_msgs = dag.invalid_latest_messages_from_hashes(latest_msgs_hashes.clone())?;
+    let invalid_latest_msgs = dag.invalid_latest_messages_from_hashes(&latest_msgs_hashes)?;
     // Phase 12 (PERF-7): each subsequent collection is bounded by the
     // current validator-set cardinality. Preallocating avoids
     // power-of-two HashMap/HashSet/Vec growth and the rehashes that come
@@ -167,47 +167,44 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
-        // Propagate dag.lookup_unsafe errors rather than silently
-        // dropping parents — a `.ok()` discard here could shrink the
-        // GHOST winner set and silently change fork-choice.
+        // C13 / Perf-2: collapse the build-then-max-then-filter triple
+        // pass into a single forward iteration that maintains
+        // `max_block_num` incrementally, followed by an in-place
+        // `retain` on the vector. Eliminates one intermediate Vec
+        // allocation per snapshot and a redundant `.iter()` walk for
+        // the max computation.
         let mut parents_with_meta: Vec<(BlockMessage, models::rust::block_metadata::BlockMetadata)> =
             Vec::with_capacity(parents_after_count_limit.len());
+        let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
+            if meta.block_number > max_block_num {
+                max_block_num = meta.block_number;
+            }
             parents_with_meta.push((b, meta));
         }
 
-        let max_block_num = parents_with_meta
-            .iter()
-            .map(|(_, meta)| meta.block_number)
-            .max()
-            .unwrap_or(0);
-
-        parents_with_meta
-            .into_iter()
-            .filter(|(_, meta)| {
-                max_block_num - meta.block_number <= this.casper_shard_conf.max_parent_depth as i64
-            })
-            .map(|(b, _)| b)
-            .collect()
+        let depth = this.casper_shard_conf.max_parent_depth as i64;
+        parents_with_meta.retain(|(_, meta)| max_block_num - meta.block_number <= depth);
+        parents_with_meta.into_iter().map(|(b, _)| b).collect()
     } else {
         parents_after_count_limit
     };
 
-    // Propagate dag.lookup_unsafe errors for the LCA-input metadata
-    // set — a silent `.ok()` discard here would shrink the LCA input
-    // and possibly change the computed LCA.
-    let mut parent_metas_for_lca: Vec<models::rust::block_metadata::BlockMetadata> =
-        Vec::with_capacity(parents.len());
-    for b in parents.iter() {
-        parent_metas_for_lca.push(dag.lookup_unsafe(&b.block_hash)?);
-    }
+    // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
+    // function performed two passes of `dag.lookup_unsafe` over the
+    // same `parents` set — one to build `parent_metas_for_lca` and
+    // another (via `lookups_unsafe`) to build `parent_metas`. The
+    // batched `lookups_unsafe` is cheaper per parent, so use it once
+    // up-front and borrow into the LCA call.
+    let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
+    let parent_metas = dag.lookups_unsafe(parent_hashes)?;
 
-    let lca = if parent_metas_for_lca.is_empty() {
+    let lca = if parent_metas.is_empty() {
         this.approved_block.block_hash.clone()
     } else {
         crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
-            &parent_metas_for_lca,
+            &parent_metas,
             &dag,
         )
         .await?
@@ -248,11 +245,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                     latest_block_hash: block_metadata.block_hash.clone(),
                 },
             )
-            .collect::<dashmap::DashSet<_>>()
+            .collect::<HashSet<_>>()
     };
 
-    let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
-    let parent_metas = dag.lookups_unsafe(parent_hashes)?;
+    // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
+    // above — no second pass of `dag.lookups_unsafe`.
     let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
     let max_seq_nums = valid_latest_metas
@@ -263,7 +260,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 &models::rust::block_metadata::BlockMetadata,
             )| (validator.clone(), block_metadata.sequence_number as u64),
         )
-        .collect::<dashmap::DashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
 
     let deploys_in_scope = {
         let current_dag_generation = this.block_dag_storage.current_generation();
@@ -380,7 +377,7 @@ pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     let latest_message_hashes: HashMap<Validator, BlockHash> =
         dag.latest_message_hashes().into_iter().collect();
     let invalid_latest_messages =
-        dag.invalid_latest_messages_from_hashes(latest_message_hashes.clone())?;
+        dag.invalid_latest_messages_from_hashes(&latest_message_hashes)?;
 
     let valid_latest: HashMap<Validator, BlockHash> = latest_message_hashes
         .iter()

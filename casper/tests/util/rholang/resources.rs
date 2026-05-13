@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/util/rholang/Resources.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -16,7 +16,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
@@ -519,11 +519,11 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         lca: Bytes::new(),
         tips: Vec::new(),
         parents: Vec::new(),
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
-        max_seq_nums: DashMap::new(),
+        max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),

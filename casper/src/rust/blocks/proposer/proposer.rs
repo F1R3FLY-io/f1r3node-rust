@@ -375,10 +375,12 @@ where
             .get(&self.validator.public_key.bytes)
             .map(|seq| *seq as i64)
             .unwrap_or(0);
+        // C13 / Perf-4: HashMap iteration yields `(&K, &V)` tuples
+        // (vs DashMap's `Ref<T>`-wrapped entries).
         let observed_max_seq = casper_snapshot
             .max_seq_nums
             .iter()
-            .map(|entry| *entry.value())
+            .map(|(_, value)| *value)
             .max()
             .unwrap_or(0) as i64;
         let (block_lag, seq_lag) = match casper_snapshot

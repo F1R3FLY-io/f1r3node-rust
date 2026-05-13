@@ -1782,7 +1782,9 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use std::collections::HashMap;
+
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -1841,7 +1843,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
         let mut snapshot = CasperSnapshot::new(dag_storage.get_representation().expect("dag representation"));
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();

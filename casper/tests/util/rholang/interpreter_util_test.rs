@@ -13,7 +13,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -121,11 +121,11 @@ impl TestContext {
             lca: BlockHash::default(),
             tips: Vec::new(),
             parents: Vec::new(),
-            justifications: DashSet::new(),
+            justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
-            max_seq_nums: DashMap::new(),
+            max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {
                 shard_conf: CasperShardConf::new(),
                 bonds_map: HashMap::new(),

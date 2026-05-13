@@ -321,12 +321,19 @@ impl KeyValueDagRepresentation {
             .map(|(validator, metadata)| (validator, metadata.block_hash))
             .collect();
 
-        self.invalid_latest_messages_from_hashes(latest_message_hashes)
+        self.invalid_latest_messages_from_hashes(&latest_message_hashes)
     }
 
+    // C13 / Perf-1: take `latest_message_hashes` by shared reference.
+    // Callers no longer need to clone a fully-materialized HashMap
+    // (the snapshot path used to do this per snapshot) — the hash
+    // values are only cloned for the (small) set of entries that
+    // actually appear in `invalid_blocks`, so the steady-state work
+    // is proportional to |invalid_latest_messages| rather than
+    // |latest_message_hashes|.
     pub fn invalid_latest_messages_from_hashes(
         &self,
-        latest_message_hashes: HashMap<Validator, BlockHash>,
+        latest_message_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<HashMap<Validator, BlockHash>, KvStoreError> {
         let invalid_blocks = self.invalid_blocks();
         let invalid_block_hashes: HashSet<BlockHash> = invalid_blocks
@@ -335,8 +342,9 @@ impl KeyValueDagRepresentation {
             .collect();
 
         Ok(latest_message_hashes
-            .into_iter()
-            .filter(|(_, block_hash)| invalid_block_hashes.contains(block_hash))
+            .iter()
+            .filter(|(_, block_hash)| invalid_block_hashes.contains(*block_hash))
+            .map(|(validator, block_hash)| (validator.clone(), block_hash.clone()))
             .collect())
     }
 

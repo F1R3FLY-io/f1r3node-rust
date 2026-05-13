@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/Casper.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -221,13 +221,21 @@ pub struct CasperSnapshot {
     pub lca: BlockHash,
     pub tips: Vec<BlockHash>,
     pub parents: Vec<BlockMessage>,
-    pub justifications: DashSet<Justification>,
+    // C13 / Perf-4: `justifications` and `max_seq_nums` are
+    // constructed once per snapshot in `compute_snapshot` and
+    // observed read-only by all downstream consumers (no
+    // production caller mutates either after CasperSnapshot
+    // assembly). DashSet/DashMap's stripe-locking overhead is
+    // pure cost for a zero-contention workload — plain
+    // HashSet/HashMap are strictly cheaper and have the same
+    // iteration/lookup API consumers already use.
+    pub justifications: HashSet<Justification>,
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
     pub deploys_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
-    pub max_seq_nums: DashMap<Validator, u64>,
+    pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
 }
 
@@ -239,11 +247,11 @@ impl CasperSnapshot {
             lca: BlockHash::default(),
             tips: vec![],
             parents: vec![],
-            justifications: DashSet::new(),
+            justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
-            max_seq_nums: DashMap::new(),
+            max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
         }
     }

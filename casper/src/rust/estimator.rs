@@ -84,7 +84,7 @@ impl Estimator {
         latest_messages_hashes: HashMap<Validator, BlockHash>,
     ) -> Result<ForkChoice, KvStoreError> {
         let invalid_latest_messages =
-            dag.invalid_latest_messages_from_hashes(latest_messages_hashes.clone())?;
+            dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
 
         let mut filtered_latest_messages_hashes = latest_messages_hashes;
         filtered_latest_messages_hashes
