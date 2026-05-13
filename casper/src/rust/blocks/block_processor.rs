@@ -355,6 +355,11 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                             .effects_for_invalid_block(casper, block, i, &snapshot)
                             .await
                     }
+                    // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
+                    // routes every is_slashable() variant through the same record-creation path
+                    // as AdmissibleEquivocation, so the slash pipeline fires identically. See
+                    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
+                    // theorem T-9.3 (`t_9_3_dispatch_complete`, BugFixDispatcher.v:41).
                     BlockError::BlockException(ref err) => {
                         tracing::warn!(
                             "Block {} raised BlockException ({}); recording as InvalidTransaction to prevent dependent-block stall.",

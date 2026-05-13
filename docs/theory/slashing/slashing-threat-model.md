@@ -231,6 +231,63 @@ authorize Rust source changes by themselves.
 | Unsafe semantic mutants                                        | Known unsafe mutants are killed by frontier witnesses                                                                                                                                                                                                                 | Sage Finding 94; detector/boundary theorem families                                                                                                         | UC-91, UC-100, UC-109                                       |
 | Cross-implementation drift                                     | Bisimulation and divergence classification                                                                                                                                                                                                                            | T-13–T-15                                                                                                                                                   | UC-39, UC-80, UC-89, UC-100                                 |
 
+### 3.1 Docker / wire-protocol coverage
+
+The "Rust tests" column above lists in-tree (in-process) tests that
+exercise each threat against the consensus logic. Several threats
+additionally have **Docker / wire-protocol** coverage in
+`F1R3FLY-io/system-integration` under
+`integration-tests/test/test_slash.py`. These tests spawn a
+multi-validator shard, ship crafted blocks over the deployed TLS-
+encrypted P2P transport, and assert the receiving validator records
+the offense and slashes the offender on the wire — confirming that
+the deployed binary, gossip layer, gRPC bonds output, and operator-
+observable log lines all handle the offense correctly under real
+network conditions. The mapping:
+
+| Threat class                                | Docker test                                                                            |
+|---------------------------------------------|----------------------------------------------------------------------------------------|
+| Direct equivocation (T-1)                   | `test_slash_admissible_equivocation`                                                   |
+| Ignorable equivocation flooding (T-9.1)     | `test_slash_ignorable_equivocation` (Bug #1 wire-level regression)                     |
+| Slashable invalid block not recorded (T-9.3, Level-2 closure) | `test_slash_neglected_equivocation`, `test_slash_invalid_validator_approve_evil_block` |
+| Self-regression/LMD inconsistency (T-9.6)   | `test_slash_self_regression`                                                           |
+| Self-correcting block (T-9.9, bug #9)       | `test_slash_self_correcting_block_admitted` (admission via bug-#9 widening)            |
+| Evidence visibility and withholding (T-12V, §5.A.5) | `test_slash_late_released_equivocation`                                                |
+| Rebonded identity replay (T-9.12)           | `test_slash_stale_evidence_rebond`                                                     |
+| Unauthorized received slash deploy (T-9.13) | `test_slash_unauthorized_slash_deploy` (rule #3 unknown evidence), `test_slash_references_valid_block` (rule #4 valid-but-not-invalid evidence) |
+| Spoofed system auth token (T-Auth)          | T-Auth itself is not Docker-testable — the auth check lives inside `PoS.rhox`, auth tokens are unforgeable Rholang names. `test_slash_references_valid_block` substitutes a sibling predicate that IS Docker-testable; T-Auth proper stays covered by `uc_21_auth_token_check.rs` in-tree. |
+
+T-37 / T-12PF (Evidence-denial min-cut, censorship — **liveness arm**)
+is intentionally NOT in the Docker suite, and the reason is stronger
+than "no runtime detector exists" — **the conventional censorship
+threat is structurally undefined in this protocol's wire semantics**.
+Deploys are not gossiped: the deploy gRPC endpoint
+(`casper/src/rust/casper_engine/block_admission.rs:60-94 admit_deploy`)
+stores deploys in the local node's `KeyValueDeployStorage`; the block
+creator (`casper/src/rust/blocks/proposer/block_creator.rs:52-130
+prepare_user_deploys`) reads from that same local storage; no code
+path broadcasts a deploy to peers. A deploy submitted to v2 stays on
+v2 until v2 proposes it. v1 cannot "censor" v2's deploys because v1
+never has them. T-12PF is therefore correctly classified as a
+*boundary assumption* — see `slashing-traceability.md` finding 88
+(`model_boundary`, "No source bug confirmed"). The boundary status
+is a *positive design finding* about the protocol's author-local-
+mempool semantics, not a deferred TODO. In-tree property tests
+(`proposer_fairness_boundary.rs`, `hypothesis_adversarial_scheduler.rs`,
+`hypothesis_liveness_as_safety.rs`, and five other UC tests) cover the
+formal threat-model objective for the liveness arm.
+
+The **safety arm** of T-12PF (no *wrongful* slashing under proposer
+unfairness) IS Docker-tested by
+`test_no_false_positive_slash_on_propose_imbalance` (B1). That test
+pins the absence of over-eager behavioral-pattern detectors: it
+exercises proposer dominance (one validator proposes 5+ blocks in a
+row), validator silence (another stays inactive), and asserts that
+no bonds drop. If a future regression introduces an over-eager
+"inactive validator" or "proposer dominance" detector, this test
+catches it immediately. The wire-level "withholding" theme is
+additionally covered by `test_slash_late_released_equivocation`.
+
 ## 4. Classification Policy
 
 Every generated Sage/Hypothesis witness must be classified before it can
