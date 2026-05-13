@@ -95,13 +95,20 @@ impl EquivocationDetector {
                 InvalidBlock::AdmissibleEquivocation,
             )))
         } else {
+            // C15 / Smell-5: render `None` as the literal `<none>` rather
+            // than `unwrap_or_default()` (which prints `BlockHash`'s
+            // default value — an empty `Bytes`, visually indistinguishable
+            // from a zero-hash). Operators reading this log line need to
+            // be able to tell "absent justification" from "all-zero hash".
             let sender = PrettyPrinter::build_string_no_limit(&block.sender);
-            let creator_justification_hash = PrettyPrinter::build_string_no_limit(
-                &maybe_creator_justification.unwrap_or_default(),
-            );
-            let latest_message_of_creator = PrettyPrinter::build_string_no_limit(
-                &maybe_latest_message_of_creator_hash.unwrap_or_default(),
-            );
+            let creator_justification_hash = maybe_creator_justification
+                .as_ref()
+                .map(|hash| PrettyPrinter::build_string_no_limit(hash))
+                .unwrap_or_else(|| "<none>".to_string());
+            let latest_message_of_creator = maybe_latest_message_of_creator_hash
+                .as_ref()
+                .map(|hash| PrettyPrinter::build_string_no_limit(hash))
+                .unwrap_or_else(|| "<none>".to_string());
 
             tracing::warn!(
                 "Ignorable equivocation: sender is {}, creator justification is {}, latest message of creator is {}",

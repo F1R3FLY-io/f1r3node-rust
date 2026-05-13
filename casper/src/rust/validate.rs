@@ -796,11 +796,12 @@ impl Validate {
             hashes => hashes,
         };
 
-        // Check maxNumberOfParents constraint
-        // Note: We use -1 as "unlimited" here (matching config file convention) rather than
-        // Estimator::UNLIMITED_PARENTS (i32::MAX) since this value comes from config parsing.
-        const UNLIMITED_PARENTS: i32 = -1;
-        if max_number_of_parents != UNLIMITED_PARENTS
+        // C15 / Smell-3: shared wire-convention constant — see
+        // `crate::rust::casper::UNLIMITED_PARENTS`. This is the
+        // config-parsing convention `-1`, distinct from
+        // `Estimator::UNLIMITED_PARENTS` (`i32::MAX`) used internally
+        // by the GHOST estimator.
+        if max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS
             && parent_hashes.len() > max_number_of_parents as usize
         {
             let message = format!(

@@ -44,6 +44,16 @@ pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15)
 /// commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 
+/// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
+/// disables the parent-count cap. C15 / Smell-3: hoisted from two
+/// duplicate `const UNLIMITED_PARENTS: i32 = -1;` definitions (one in
+/// `validate.rs` and one in `casper_engine/snapshot.rs`) so the wire
+/// convention has a single source of truth. NOTE: this is the
+/// config-parsing convention; the `Estimator::UNLIMITED_PARENTS`
+/// (`i32::MAX`) sentinel used internally by the GHOST estimator is
+/// a separate concern.
+pub const UNLIMITED_PARENTS: i32 = -1;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),

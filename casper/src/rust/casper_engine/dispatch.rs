@@ -222,55 +222,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         &self,
         snapshot: &CasperSnapshot,
     ) -> Result<bool, CasperError> {
-        let latest_block_number = snapshot.dag.latest_block_number();
-        let earliest_block_number =
-            latest_block_number - snapshot.on_chain_state.shard_conf.deploy_lifespan;
-        // Pre-epoch system clock (operationally impossible on modern
-        // systems, but per-correctness directive: handle the corner). A
-        // silent zero would make every deploy's `is_expired_at(0)` return
-        // false (treating all timestamps as future), masking a corrupt
-        // clock. Propagate as a typed `CasperError::RuntimeError` so the
-        // call site fails loudly instead of silently corrupting deploy
-        // expiration evaluation.
-        let current_time_millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .map_err(|e| {
-                CasperError::RuntimeError(format!(
-                    "system clock is before UNIX_EPOCH ({}); cannot evaluate \
-                     deploy expiration",
-                    e
-                ))
-            })?;
-
-        // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex`.
-        let storage = self.deploy_storage.lock();
-        if !storage.non_empty().map_err(|e| {
-            CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
-        })? {
-            return Ok(false);
-        }
-
-        storage
-            .any(|deploy| {
-                let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-                let time_expired = deploy.data.is_expired_at(current_time_millis);
-                if block_expired || time_expired {
-                    return Ok(false);
-                }
-
-                // `pending_deploy_is_future_for_next_block` is `pub(super)`
-                // in `events`; the call resolves because `traits` is a
-                // sibling sub-module of `events` under `casper_engine`.
-                let is_future = super::events::pending_deploy_is_future_for_next_block(
-                    latest_block_number,
-                    deploy.data.valid_after_block_number,
-                );
-                let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
-                Ok(!is_future && !already_in_scope)
-            })
-            .map_err(|e| {
-                CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e))
-            })
+        // C15 / Arch-3: body extracted to
+        // `block_admission::admit_has_pending_deploys_in_storage_for_snapshot`.
+        // `dispatch.rs` hosts only thin trait delegates per the
+        // module-level doc-comment.
+        super::block_admission::admit_has_pending_deploys_in_storage_for_snapshot(self, snapshot)
+            .await
     }
 }

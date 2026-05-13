@@ -29,6 +29,14 @@ use crate::rust::util::proto_util;
 
 use super::types::MultiParentCasperImpl;
 
+/// C15 / Smell-1: byte-size estimate for a secp256k1 compact-encoded
+/// deploy signature. ~64 bytes signature + 1 byte prefix. Used to
+/// drive the `DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC` gauge — the
+/// gauge is operator-facing memory-pressure telemetry, NOT a
+/// consensus-critical value, so a rounded estimate (rather than a
+/// per-deploy actual-byte sum) is intentional.
+const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
+
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
     metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(dag.dag_set.len() as f64);
@@ -158,9 +166,10 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
     let unfiltered_parents_count = unfiltered_parents.len();
 
-    const UNLIMITED_PARENTS: i32 = -1;
+    // C15 / Smell-3: shared wire-convention constant — see
+    // `crate::rust::casper::UNLIMITED_PARENTS`.
     let mut parents_after_count_limit = unfiltered_parents;
-    if this.casper_shard_conf.max_number_of_parents != UNLIMITED_PARENTS {
+    if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
         parents_after_count_limit.truncate(this.casper_shard_conf.max_number_of_parents as usize);
     }
 
@@ -340,7 +349,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         }
     };
     let deploys_in_scope_len = deploys_in_scope.len();
-    let deploys_in_scope_sig_bytes_estimate = (deploys_in_scope_len as f64) * 65.0;
+    let deploys_in_scope_sig_bytes_estimate =
+        (deploys_in_scope_len as f64) * DEPLOY_SIG_BYTES_ESTIMATE;
     metrics::gauge!(DEPLOYS_IN_SCOPE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(deploys_in_scope_len as f64);
     metrics::gauge!(

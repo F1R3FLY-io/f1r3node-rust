@@ -47,7 +47,22 @@ struct PreparedUserDeploys {
     cap_hit: bool,
 }
 
-fn deploy_selection_reserve_tail_enabled() -> bool { true }
+/// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
+/// hard-coded `true`. Promoted to a `const` so its always-on nature
+/// is explicit and the value is folded at compile time. Kept as a
+/// named constant (rather than inlined `true`) because it is a
+/// feature-flag posture that may yet be moved into `CasperShardConf`
+/// for per-shard control — when that happens the rename target is
+/// already in place.
+const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
+
+/// C15 / Smell-4: extract the deploy-signature pretty-print prefix
+/// used in operator-facing log messages. Previously inlined as
+/// `deploy_sig_prefix(&d.sig)` at four
+/// sites in `log_deploy_pool_filtering`.
+fn deploy_sig_prefix(sig: &Bytes) -> String {
+    hex::encode(&sig[..std::cmp::min(8, sig.len())])
+}
 
 async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
@@ -128,7 +143,7 @@ async fn prepare_user_deploys(
     for d in &future_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (future): validAfterBlockNumber={} >= currentBlock={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
             block_number
         );
@@ -136,7 +151,7 @@ async fn prepare_user_deploys(
     for d in &block_expired_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (block-expired): validAfterBlockNumber={} <= earliestBlock={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
             earliest_block_number
         );
@@ -144,7 +159,7 @@ async fn prepare_user_deploys(
     for d in &time_expired_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (time-expired): expirationTimestamp={:?} <= currentTime={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.expiration_timestamp,
             current_time_millis
         );
@@ -152,7 +167,7 @@ async fn prepare_user_deploys(
     for d in &already_in_scope {
         tracing::warn!(
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())])
+            deploy_sig_prefix(&d.sig)
         );
     }
 
@@ -202,7 +217,7 @@ async fn prepare_user_deploys(
     // the freshest deploy when capping is active. The remaining slots still drain
     // oldest deploys first to preserve fairness.
     let (selected, selection_strategy): (HashSet<Signed<DeployData>>, &'static str) =
-        if deploy_selection_reserve_tail_enabled() {
+        if DEPLOY_SELECTION_RESERVE_TAIL_ENABLED {
             if max_user_deploys == 1 {
                 (
                     ordered.iter().last().cloned().into_iter().collect(),

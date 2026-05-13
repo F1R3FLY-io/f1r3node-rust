@@ -24,14 +24,21 @@
 //! re-exports or via the legacy `multi_parent_casper_impl` shim, which
 //! itself re-exports from here.
 
-pub mod block_admission;
-pub mod buffer_resolver;
-pub mod events;
-pub mod finalization_runner;
-pub mod snapshot;
-pub mod dispatch;
-pub mod types;
-pub mod validation_dispatcher;
+// C15 / Arch-1: encapsulate the sub-modules at crate scope. The
+// intended external API is the explicit `pub use` re-exports below
+// (`MultiParentCasperImpl` and the three event helpers); without
+// this tightening, any `pub` item inside any sub-module was
+// reachable as `casper_engine::<sub_module>::<item>` from outside
+// the crate, defeating the encapsulation intent of the
+// nine-module decomposition.
+pub(crate) mod block_admission;
+pub(crate) mod buffer_resolver;
+pub(crate) mod events;
+pub(crate) mod finalization_runner;
+pub(crate) mod snapshot;
+pub(crate) mod dispatch;
+pub(crate) mod types;
+pub(crate) mod validation_dispatcher;
 
 // Phase 7 (C-1): explicit re-exports replace the previously transitional
 // glob `pub use crate::rust::multi_parent_casper_impl::*;` which formed a
