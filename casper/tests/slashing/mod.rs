@@ -139,6 +139,7 @@ mod uc_49_genesis_edge_cases;
 mod uc_50_multi_slash_in_one_block;
 mod uc_51_53_dag_topologies;
 mod uc_54_record_invariants;
+mod uc_55_buffer_dag_atomic_transition;
 mod uc_101_detector_missing_nested_pointer;
 mod uc_102_detector_order_independence;
 mod uc_103_detector_preconditioned_bisim;

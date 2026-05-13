@@ -28,6 +28,31 @@ use super::types::{
     SlashResult, Status, ValidatorId,
 };
 
+/// Models the casper-buffer's pending-dependency set in the harness.
+/// Used by UC-55 (T-9.20 atomic buffer-DAG transition) to exercise
+/// crash-window drift between the DAG store and the casper buffer.
+/// In production these are separate LMDB stores; here we model both
+/// as in-memory sets and let the test drive the drift explicitly.
+#[derive(Debug, Clone, Default)]
+pub struct BufferState {
+    pub pendants: BTreeSet<BlockHash>,
+}
+
+/// Crash points modeled by T-9.20 (`BugFixAtomicBufferDagTransition.v`).
+/// See `casper/tests/slashing/uc_55_buffer_dag_atomic_transition.rs` for
+/// the property test that uses these to drive the model-level
+/// observational-equivalence assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashPoint {
+    /// Pre-transition: neither dag-insert nor buffer-remove committed.
+    BeforeInsert,
+    /// Drifted state: dag-insert + evidence-record committed,
+    /// buffer-remove did NOT. The (c) drift state per spec §9.20.
+    BetweenInsertAndRemove,
+    /// Post-transition: both committed (no observable crash effect).
+    AfterRemove,
+}
+
 #[derive(Debug, Clone)]
 pub struct SlashingTestHarness {
     pub validator_count: usize,
@@ -35,6 +60,7 @@ pub struct SlashingTestHarness {
     pub dag: DagState,
     pub tracker: EqRecordSet,
     pub pos_state: PoSState,
+    pub buffer: BufferState,
     next_hash: BlockHash,
 }
 
@@ -55,8 +81,77 @@ impl SlashingTestHarness {
             dag: DagState::default(),
             tracker: EqRecordSet::default(),
             pos_state,
+            buffer: BufferState::default(),
             next_hash: 1,
         }
+    }
+
+    /// Adds a pendant to the casper buffer. Used by UC-55 to set up
+    /// the buffer pre-state before driving an atomic transition.
+    pub fn put_buffer_pendant(&mut self, hash: BlockHash) {
+        self.buffer.pendants.insert(hash);
+    }
+
+    pub fn buffer_contains(&self, hash: BlockHash) -> bool {
+        self.buffer.pendants.contains(&hash)
+    }
+
+    /// Drives a dispatch effect with a simulated crash at the given
+    /// point. Mirrors the Rocq `crash_step` function from
+    /// `BugFixAtomicBufferDagTransition.v`:
+    /// - `BeforeInsert`: nothing happens (persistent state unchanged).
+    /// - `BetweenInsertAndRemove`: dag insert + evidence record commit;
+    ///   buffer pendant remains (the (c) drift state).
+    /// - `AfterRemove`: full atomic transition (dag + record + buffer
+    ///   remove); equivalent to no crash.
+    pub fn dispatch_with_crash(
+        &mut self,
+        hash: BlockHash,
+        status: Status,
+        crash_point: CrashPoint,
+    ) {
+        match crash_point {
+            CrashPoint::BeforeInsert => {
+                // No commits to persistent state.
+            }
+            CrashPoint::BetweenInsertAndRemove => {
+                self.apply_dispatch_effect(hash, &status);
+                // Buffer pendant intentionally NOT removed — this is the
+                // drift state.
+            }
+            CrashPoint::AfterRemove => {
+                self.apply_dispatch_effect(hash, &status);
+                self.buffer.pendants.remove(&hash);
+            }
+        }
+    }
+
+    /// Models `reconcile_buffer_against_dag(buffer, dag)` from
+    /// `block-storage/src/rust/dag/buffer_dag_transition.rs`. For
+    /// every pendant whose hash is in the DAG, remove it from the
+    /// buffer. Matches the Rocq `reconcile_one` applied per-pendant.
+    /// Returns the count of purged pendants (mirrors the Rust helper).
+    pub fn reconcile_buffer_against_dag(&mut self) -> usize {
+        let to_purge: Vec<BlockHash> = self
+            .buffer
+            .pendants
+            .iter()
+            .copied()
+            .filter(|h| self.dag.blocks.contains_key(h))
+            .collect();
+        let count = to_purge.len();
+        for h in to_purge {
+            self.buffer.pendants.remove(&h);
+        }
+        count
+    }
+
+    /// Simulates the post-restart resume path: `reconcile_buffer_against_dag`
+    /// followed by replay of any pending dispatch. UC-55 uses this to
+    /// assert post-resume observational equivalence with a no-crash
+    /// run.
+    pub fn simulate_resume(&mut self) -> usize {
+        self.reconcile_buffer_against_dag()
     }
 
     /// Signs a fresh block at `(validator, seq)` and adds it to the DAG.
