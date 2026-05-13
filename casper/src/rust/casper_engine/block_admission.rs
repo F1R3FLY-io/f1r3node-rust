@@ -131,8 +131,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
 
     // Publish BlockAdded event
     this.event_publisher
-        .publish(super::events::added_event(block))
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        .publish(super::events::added_event(block))?;
 
     // Update last finalized block if needed
     this.update_last_finalized_block(block).await?;

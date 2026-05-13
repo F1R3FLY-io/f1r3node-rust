@@ -204,7 +204,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
         self.block_dag_storage
             .get_representation()
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))
+            .map_err(Into::into)
     }
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }

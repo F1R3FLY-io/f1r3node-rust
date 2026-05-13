@@ -530,7 +530,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 }
                 Ok(())
             })
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+?;
         Ok(())
     };
 

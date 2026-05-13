@@ -471,7 +471,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                 casper_buffer_max_prune_batch(),
                 prune_interval_ms,
             )
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+?;
         let approx_nodes = self.casper_buffer.approx_node_count();
 
         metrics::gauge!(CASPER_BUFFER_APPROX_NODES_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
@@ -500,7 +500,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store
             .put_block_message(block)
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+?;
         Ok(())
     }
 
@@ -533,16 +533,16 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                         .collect();
                     Ok(hashes)
                 })
-                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+    ?
         };
         // Invalid blocks are already known/built into Casper state and should not be re-fetched
         // as unresolved dependencies.
         let invalid_block_hashes: HashSet<BlockHash> = {
             self.block_dag_storage
                 .get_representation()
-                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+    ?
                 .invalid_blocks_map()
-                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+    ?
                 .into_keys()
                 .collect()
         };
@@ -649,7 +649,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
                 self.casper_buffer
                     .put_pendant(block_hash_serde)
-                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        ?;
             }
             Some(dependencies) => {
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
@@ -657,7 +657,6 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                     let dep_serde = BlockHashSerde(dep.clone());
                     self.casper_buffer
                         .add_relation(dep_serde, block_hash_serde.clone())
-                        .map_err(|e| CasperError::RuntimeError(e.to_string()))
                 })?;
             }
         }
@@ -670,7 +669,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         self.casper_buffer
             .remove(block_hash_serde)
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+?;
         self.clear_missing_dependency_attempts(&block.block_hash)?;
         self.clear_missing_dependency_quarantine(&block.block_hash)?;
 
@@ -881,7 +880,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                     AdmitHashReason::MissingDependencyRequested,
                 )
                 .await
-                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+    ?;
         }
 
         Ok(())
@@ -897,7 +896,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             self.block_retriever
                 .recover_dependency(dep.clone())
                 .await
-                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+    ?;
         }
 
         Ok(())
@@ -918,7 +917,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         self.block_retriever
             .ack_in_casper(block.block_hash.clone())
             .await
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+?;
 
         Ok(())
     }

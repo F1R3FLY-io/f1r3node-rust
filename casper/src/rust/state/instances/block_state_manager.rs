@@ -16,8 +16,7 @@ impl BlockStateManager {
     pub fn is_empty(&self) -> Result<bool, CasperError> {
         let dag = self
             .block_dag_storage
-            .get_representation()
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+            .get_representation()?;
         let first_hash = dag.topo_sort(0, Some(1))?;
         Ok(first_hash.is_empty())
     }

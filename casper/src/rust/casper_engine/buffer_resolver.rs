@@ -30,15 +30,12 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
                 .cloned()
                 .collect();
             Ok(hashes)
-        })
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        })?;
 
     let invalid_block_hashes: HashSet<BlockHash> = this
         .block_dag_storage
-        .get_representation()
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .invalid_blocks_map()
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+        .get_representation()?
+        .invalid_blocks_map()?
         .into_keys()
         .collect();
 

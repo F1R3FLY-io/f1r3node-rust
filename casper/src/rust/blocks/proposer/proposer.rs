@@ -752,6 +752,6 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         // Publish BlockCreated event
         self.event_publisher
             .publish(multi_parent_casper_impl::created_event(block))
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))
+            .map_err(Into::into)
     }
 }

@@ -35,8 +35,7 @@ pub async fn step(
     block: &BlockMessage,
 ) -> Result<(), CasperError> {
     let dag = block_dag_storage
-        .get_representation()
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        .get_representation()?;
     let (post_b1_state_hash, post_b1_processed_deploys) = compute_block_checkpoint(
         block_store,
         block,

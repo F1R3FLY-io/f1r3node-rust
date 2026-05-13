@@ -126,8 +126,7 @@ pub(crate) async fn compute_last_finalized_block(
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
     let dag = block_dag_storage
-        .get_representation()
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        .get_representation()?;
     let last_finalized_block_hash = dag.last_finalized_block();
     let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
 

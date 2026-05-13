@@ -67,3 +67,25 @@ impl From<ReplayFailure> for CasperError {
 impl From<CommError> for CasperError {
     fn from(error: CommError) -> Self { CasperError::CommError(error) }
 }
+
+/// Conversion from un-typed `String` errors. Used by `?` propagation
+/// from APIs that return `Result<_, String>` (e.g.
+/// `EventPublisher::publish`). The string is wrapped in
+/// `CasperError::RuntimeError` — semantically the same as the explicit
+/// `.map_err(|e| CasperError::RuntimeError(e.to_string()))?` pattern it
+/// replaces, but without the per-site boilerplate.
+impl From<String> for CasperError {
+    fn from(error: String) -> Self { CasperError::RuntimeError(error) }
+}
+
+/// Conversion from `std::time::SystemTimeError`. Wraps the underlying
+/// error message into `CasperError::RuntimeError`. Used by `?`
+/// propagation in `construct_deploy::source_deploy_now` and
+/// `source_deploy_now_full` — both compute deploy timestamps via
+/// `SystemTime::now().duration_since(UNIX_EPOCH)?` which can fail on a
+/// pre-epoch system clock.
+impl From<std::time::SystemTimeError> for CasperError {
+    fn from(error: std::time::SystemTimeError) -> Self {
+        CasperError::RuntimeError(format!("System time error: {}", error))
+    }
+}
