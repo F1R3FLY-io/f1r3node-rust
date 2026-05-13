@@ -74,12 +74,16 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         }
         valid_latest_msgs.insert(validator.clone(), hash.clone());
     }
+    // Storage errors during snapshot construction must propagate: a
+    // silent empty `valid_latest_metas` would feed wrong fork-choice on
+    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
+    // for crash-window drift; same discipline applies to general
+    // storage I/O.
     let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     for (validator, hash) in valid_latest_msgs.iter() {
-        if let Ok(meta) = dag.lookup_unsafe(hash) {
-            valid_latest_metas.insert(validator.clone(), meta);
-        }
+        let meta = dag.lookup_unsafe(hash)?;
+        valid_latest_metas.insert(validator.clone(), meta);
     }
     let mut unique_parent_hashes: HashSet<BlockHash> =
         HashSet::with_capacity(valid_latest_msgs.len());
@@ -88,9 +92,17 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     }
     let mut parent_blocks_list: Vec<BlockMessage> = Vec::with_capacity(unique_parent_hashes.len());
     for hash in unique_parent_hashes.iter() {
-        if let Ok(Some(block)) = this.block_store.get(hash) {
-            parent_blocks_list.push(block);
-        }
+        // Missing parent block here is a real consensus invariant
+        // violation (validator pointed at by latest_messages_map but
+        // not in block_store) — surface as KvStoreError::KeyNotFound
+        // rather than silently dropping the parent.
+        let block = this.block_store.get(hash)?.ok_or_else(|| {
+            shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
+                "parent block referenced by latest_messages missing from block_store: {}",
+                hex::encode(hash)
+            ))
+        })?;
+        parent_blocks_list.push(block);
     }
 
     let mut sorted_parents_list = parent_blocks_list;
@@ -155,11 +167,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
-        let parents_with_meta: Vec<(BlockMessage, models::rust::block_metadata::BlockMetadata)> =
-            parents_after_count_limit
-                .into_iter()
-                .filter_map(|b| dag.lookup_unsafe(&b.block_hash).ok().map(|meta| (b, meta)))
-                .collect();
+        // Propagate dag.lookup_unsafe errors rather than silently
+        // dropping parents — a `.ok()` discard here could shrink the
+        // GHOST winner set and silently change fork-choice.
+        let mut parents_with_meta: Vec<(BlockMessage, models::rust::block_metadata::BlockMetadata)> =
+            Vec::with_capacity(parents_after_count_limit.len());
+        for b in parents_after_count_limit {
+            let meta = dag.lookup_unsafe(&b.block_hash)?;
+            parents_with_meta.push((b, meta));
+        }
 
         let max_block_num = parents_with_meta
             .iter()
@@ -178,10 +194,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parents_after_count_limit
     };
 
-    let parent_metas_for_lca: Vec<models::rust::block_metadata::BlockMetadata> = parents
-        .iter()
-        .filter_map(|b| dag.lookup_unsafe(&b.block_hash).ok())
-        .collect();
+    // Propagate dag.lookup_unsafe errors for the LCA-input metadata
+    // set — a silent `.ok()` discard here would shrink the LCA input
+    // and possibly change the computed LCA.
+    let mut parent_metas_for_lca: Vec<models::rust::block_metadata::BlockMetadata> =
+        Vec::with_capacity(parents.len());
+    for b in parents.iter() {
+        parent_metas_for_lca.push(dag.lookup_unsafe(&b.block_hash)?);
+    }
 
     let lca = if parent_metas_for_lca.is_empty() {
         this.approved_block.block_hash.clone()
@@ -275,11 +295,25 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let earliest_block_number =
                 current_block_number - on_chain_state.shard_conf.deploy_lifespan;
 
-            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Vec<models::rust::block_metadata::BlockMetadata> {
-                proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &dag).unwrap_or_default()
+            // Propagate storage errors out of the BFS neighbor
+            // expansion. Silent `.unwrap_or_default()` here is a
+            // correctness bug: a transient storage failure on a
+            // single parent would shrink `deploys_in_scope`, which
+            // could then admit a duplicate-signature deploy past
+            // `InvalidRepeatDeploy` detection.
+            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata|
+                -> Result<
+                    Vec<models::rust::block_metadata::BlockMetadata>,
+                    shared::rust::store::key_value_store::KvStoreError,
+                > {
+                proto_util::get_parent_metadatas_above_block_number(
+                    block_metadata,
+                    earliest_block_number,
+                    &dag,
+                )
             };
 
-            let traversal_result = dag_ops::bf_traverse(parent_metas, neighbor_fn);
+            let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
             for block_metadata in traversal_result {
