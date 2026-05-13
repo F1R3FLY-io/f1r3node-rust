@@ -9,6 +9,14 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 // Phase 9 (A-3): the deploy-storage handle migrates to
 // `parking_lot::Mutex` (no poison propagation, faster acquire).
 // C16 (this commit) follows through on the same migration for
@@ -26,15 +34,6 @@ use std::sync::Arc;
 // forward the consistency fix now (single mutex type for
 // non-async mutable state) does not preclude it.
 use parking_lot::Mutex as PlMutex;
-
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
@@ -95,7 +94,8 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// `.map_err(|_| CasperError::RuntimeError(...))` boilerplate
     /// at the call sites in `snapshot.rs`. The lock is held purely
     /// synchronously across read-modify-write of the cache cell.
-    pub deploys_in_scope_cache: Arc<PlMutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
+    pub deploys_in_scope_cache:
+        Arc<PlMutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,

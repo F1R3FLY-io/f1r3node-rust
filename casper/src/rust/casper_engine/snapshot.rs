@@ -18,6 +18,7 @@ use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use shared::rust::dag::dag_ops;
 
+use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -26,8 +27,6 @@ use crate::rust::metrics_constants::{
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
 };
 use crate::rust::util::proto_util;
-
-use super::types::MultiParentCasperImpl;
 
 /// C15 / Smell-1: byte-size estimate for a secp256k1 compact-encoded
 /// deploy signature. ~64 bytes signature + 1 byte prefix. Used to
@@ -182,8 +181,10 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         // `retain` on the vector. Eliminates one intermediate Vec
         // allocation per snapshot and a redundant `.iter()` walk for
         // the max computation.
-        let mut parents_with_meta: Vec<(BlockMessage, models::rust::block_metadata::BlockMetadata)> =
-            Vec::with_capacity(parents_after_count_limit.len());
+        let mut parents_with_meta: Vec<(
+            BlockMessage,
+            models::rust::block_metadata::BlockMetadata,
+        )> = Vec::with_capacity(parents_after_count_limit.len());
         let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
@@ -309,11 +310,10 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // single parent would shrink `deploys_in_scope`, which
             // could then admit a duplicate-signature deploy past
             // `InvalidRepeatDeploy` detection.
-            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata|
-                -> Result<
-                    Vec<models::rust::block_metadata::BlockMetadata>,
-                    shared::rust::store::key_value_store::KvStoreError,
-                > {
+            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
+                Vec<models::rust::block_metadata::BlockMetadata>,
+                shared::rust::store::key_value_store::KvStoreError,
+            > {
                 proto_util::get_parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
@@ -325,15 +325,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
             for block_metadata in traversal_result {
-                let block_deploy_sigs =
-                    this.block_store
-                        .deploy_sigs(&block_metadata.block_hash)?
-                        .ok_or_else(|| {
-                            CasperError::RuntimeError(format!(
-                                "Missing block {} during deploys_in_scope traversal",
-                                PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
-                            ))
-                        })?;
+                let block_deploy_sigs = this
+                    .block_store
+                    .deploy_sigs(&block_metadata.block_hash)?
+                    .ok_or_else(|| {
+                    CasperError::RuntimeError(format!(
+                        "Missing block {} during deploys_in_scope traversal",
+                        PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
+                    ))
+                })?;
                 for deploy_sig in block_deploy_sigs {
                     all_deploys.insert(deploy_sig.into());
                 }

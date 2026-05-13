@@ -3,7 +3,7 @@
 // Unit tests for BlockCreator.
 // Tests the deploy preparation and cleanup logic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,8 +16,6 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use std::collections::HashSet;
-
 use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;

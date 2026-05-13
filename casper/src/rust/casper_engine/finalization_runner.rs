@@ -14,9 +14,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-use parking_lot::Mutex;
-
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -24,16 +21,18 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+use parking_lot::Mutex;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::errors::CasperError;
-use crate::rust::finality::finalizer::Finalizer;
 // Phase 7 (C-3): import the struct from its canonical sibling module
 // instead of via the legacy shim — the previous import formed a circular
 // path `casper_engine → multi_parent_casper_impl → casper_engine::types`.
 use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
+use crate::rust::errors::CasperError;
+use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
@@ -74,7 +73,9 @@ pub(crate) struct FinalizationContext {
 /// `traits::last_finalized_block` and the trigger site in
 /// `finalization_runner::run_finalization`. Replaces both literal
 /// constructions so adding/renaming a context field is one edit.
-pub(crate) fn build_finalization_context<T: comm::rust::transport::transport_layer::TransportLayer + Send + Sync>(
+pub(crate) fn build_finalization_context<
+    T: comm::rust::transport::transport_layer::TransportLayer + Send + Sync,
+>(
     this: &crate::rust::casper_engine::types::MultiParentCasperImpl<T>,
 ) -> FinalizationContext {
     FinalizationContext {
@@ -147,8 +148,7 @@ pub(crate) async fn compute_last_finalized_block(
     let finalizer_conf = &finalizer_conf;
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
-    let dag = block_dag_storage
-        .get_representation()?;
+    let dag = block_dag_storage.get_representation()?;
     let last_finalized_block_hash = dag.last_finalized_block();
     let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
 
@@ -317,8 +317,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
         return Ok(());
     }
 
-    if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0
-    {
+    if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0 {
         if this
             .finalizer_task_in_progress
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -344,10 +343,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
         });
         tokio::spawn(async move {
             if let Err(join_err) = handle.await {
-                tracing::error!(
-                    "Finalization task terminated abnormally: {}",
-                    join_err
-                );
+                tracing::error!("Finalization task terminated abnormally: {}", join_err);
             }
         });
     }

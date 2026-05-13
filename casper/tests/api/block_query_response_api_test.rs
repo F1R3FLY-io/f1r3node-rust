@@ -120,18 +120,26 @@ async fn effects_for_simple_casper_setup(
     shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
 ) -> (EngineCell, CliqueOracleImpl) {
     block_dag_storage
-        .insert(&genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .unwrap();
 
     block_dag_storage
-        .insert(&second_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal)
+        .insert(
+            &second_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
         .unwrap();
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
         Arc::new(tokio::sync::Mutex::new(runtime_manager)),
         block_store.clone(),
-        block_dag_storage.get_representation().expect("dag representation"),
+        block_dag_storage
+            .get_representation()
+            .expect("dag representation"),
         shared_kvm_data,
     );
 
@@ -157,12 +165,17 @@ async fn empty_effects(
         None,
         Arc::new(tokio::sync::Mutex::new(runtime_manager)),
         block_store.clone(),
-        block_dag_storage.get_representation().expect("dag representation"),
+        block_dag_storage
+            .get_representation()
+            .expect("dag representation"),
         shared_kvm_data,
     );
 
     block_dag_storage
-        .insert(&genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .unwrap();
 
     let engine = EngineWithCasper::new(Arc::new(casper_effect));

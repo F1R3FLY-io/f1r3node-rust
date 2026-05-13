@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
     Ord,
     Hash,
     Serialize,
-    Deserialize,
+    Deserialize
 )]
 pub struct Epoch(i64);
 

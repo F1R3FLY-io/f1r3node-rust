@@ -258,7 +258,10 @@ async fn multi_parent_casper_should_reject_blocks_not_from_bonded_validators() {
         .await
         .unwrap();
 
-    let dag = node.block_dag_storage.get_representation().expect("dag representation");
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let secp256k1 = Secp256k1;
     let (sk, pk) = secp256k1.new_key_pair();
@@ -1073,7 +1076,10 @@ async fn build_block_with_invalid_justification(
         extra_bytes: Bytes::new(),
     };
 
-    let dag = nodes[1].block_dag_storage.get_representation().expect("dag representation");
+    let dag = nodes[1]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let sender = block_that_points_to_invalid_block.sender.clone();
 

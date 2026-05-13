@@ -223,11 +223,16 @@ async fn run_block_creator_create_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation().expect("dag representation"),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -460,11 +465,16 @@ async fn run_block_creator_phase_split_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation().expect("dag representation"),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),

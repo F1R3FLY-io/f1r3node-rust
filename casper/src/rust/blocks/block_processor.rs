@@ -463,15 +463,12 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         self.casper_buffer_last_prune_ms
             .store(now_ms, Ordering::Relaxed);
 
-        let (stale_pruned, overflow_pruned) = self
-            .casper_buffer
-            .enforce_limits(
-                casper_buffer_max_approx_nodes(),
-                casper_buffer_stale_ttl_ms(),
-                casper_buffer_max_prune_batch(),
-                prune_interval_ms,
-            )
-?;
+        let (stale_pruned, overflow_pruned) = self.casper_buffer.enforce_limits(
+            casper_buffer_max_approx_nodes(),
+            casper_buffer_stale_ttl_ms(),
+            casper_buffer_max_prune_batch(),
+            prune_interval_ms,
+        )?;
         let approx_nodes = self.casper_buffer.approx_node_count();
 
         metrics::gauge!(CASPER_BUFFER_APPROX_NODES_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
@@ -498,9 +495,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
 
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
     pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        self.block_store
-            .put_block_message(block)
-?;
+        self.block_store.put_block_message(block)?;
         Ok(())
     }
 
@@ -532,17 +527,14 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                         .cloned()
                         .collect();
                     Ok(hashes)
-                })
-    ?
+                })?
         };
         // Invalid blocks are already known/built into Casper state and should not be re-fetched
         // as unresolved dependencies.
         let invalid_block_hashes: HashSet<BlockHash> = {
             self.block_dag_storage
-                .get_representation()
-    ?
-                .invalid_blocks_map()
-    ?
+                .get_representation()?
+                .invalid_blocks_map()?
                 .into_keys()
                 .collect()
         };
@@ -647,9 +639,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         match deps {
             None => {
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-                self.casper_buffer
-                    .put_pendant(block_hash_serde)
-        ?;
+                self.casper_buffer.put_pendant(block_hash_serde)?;
             }
             Some(dependencies) => {
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
@@ -667,9 +657,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     /// Equivalent to Scala's: removeFromBuffer = (b: BlockMessage) => casperBuffer.remove(b.blockHash)
     pub async fn remove_from_buffer(&self, block: &BlockMessage) -> Result<(), CasperError> {
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-        self.casper_buffer
-            .remove(block_hash_serde)
-?;
+        self.casper_buffer.remove(block_hash_serde)?;
         self.clear_missing_dependency_attempts(&block.block_hash)?;
         self.clear_missing_dependency_quarantine(&block.block_hash)?;
 
@@ -879,8 +867,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                     None,
                     AdmitHashReason::MissingDependencyRequested,
                 )
-                .await
-    ?;
+                .await?;
         }
 
         Ok(())
@@ -893,10 +880,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         deps: &HashSet<BlockHash>,
     ) -> Result<(), CasperError> {
         for dep in deps {
-            self.block_retriever
-                .recover_dependency(dep.clone())
-                .await
-    ?;
+            self.block_retriever.recover_dependency(dep.clone()).await?;
         }
 
         Ok(())
@@ -916,8 +900,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     pub async fn ack_processed(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_retriever
             .ack_in_casper(block.block_hash.clone())
-            .await
-?;
+            .await?;
 
         Ok(())
     }

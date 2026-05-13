@@ -138,14 +138,9 @@ impl EquivocationDetector {
         // P4-5: per-block hot path; demote info!→debug! per slashing audit.
         tracing::debug!("Calculate checkNeglectedEquivocationsWithUpdate");
 
-        let outcome = Self::check_neglected_equivocation(
-            block,
-            dag,
-            block_store,
-            genesis,
-            block_dag_storage,
-        )
-        .await?;
+        let outcome =
+            Self::check_neglected_equivocation(block, dag, block_store, genesis, block_dag_storage)
+                .await?;
 
         // P2-15: the outcome enum makes the detect/record/oblivious decision
         // a first-class value. Callers convert it to a validation verdict;
@@ -565,7 +560,6 @@ impl EquivocationDetector {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
-    use parking_lot::RwLock;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use models::rust::block_hash;
@@ -573,6 +567,7 @@ mod tests {
     use models::rust::casper::protocol::casper_message::{
         Body, F1r3flyState, Header, Justification,
     };
+    use parking_lot::RwLock;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;

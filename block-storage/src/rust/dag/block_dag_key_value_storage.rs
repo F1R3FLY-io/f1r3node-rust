@@ -38,13 +38,6 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-// Slashing-critical RMW locks are routed through `parking_lot` (P1-3): no
-// poison propagation, faster acquire, and `.lock()` / `.read()` / `.write()`
-// return guards directly without a `Result`. Bug #2 / T-9.2's
-// `access_equivocations_tracker` RMW contract is preserved by holding
-// `global_lock` for the duration of the critical section.
-use parking_lot::RwLock as PlRwLock;
-
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -53,6 +46,12 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::{self, Validator, ValidatorSerde};
+// Slashing-critical RMW locks are routed through `parking_lot` (P1-3): no
+// poison propagation, faster acquire, and `.lock()` / `.read()` / `.write()`
+// return guards directly without a `Result`. Bug #2 / T-9.2's
+// `access_equivocations_tracker` RMW contract is preserved by holding
+// `global_lock` for the duration of the critical section.
+use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -194,7 +193,10 @@ impl KeyValueDagRepresentation {
             (&truncated_hash[..truncated_hash.len() - 1], true)
         };
         let truncated_bytes = hex::decode(decode_target).map_err(|e| {
-            KvStoreError::InvalidArgument(format!("invalid truncated hash {:?}: {}", truncated_hash, e))
+            KvStoreError::InvalidArgument(format!(
+                "invalid truncated hash {:?}: {}",
+                truncated_hash, e
+            ))
         })?;
         if do_full_string_filter {
             Ok(self
@@ -717,11 +719,8 @@ impl BlockDagKeyValueStorage {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
 
-        let invalid_blocks: imbl::HashSet<BlockMetadata> = self
-            .invalid_blocks_index
-            .to_map()?
-            .into_values()
-            .collect();
+        let invalid_blocks: imbl::HashSet<BlockMetadata> =
+            self.invalid_blocks_index.to_map()?.into_values().collect();
 
         let block_metadata_index_guard = self.block_metadata_index.read();
         let dag_state_guard = block_metadata_index_guard.dag_state().read();

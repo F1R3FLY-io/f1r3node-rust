@@ -70,7 +70,12 @@ fn genesis_block() -> BlockMessage {
 async fn create_dag_storage(genesis: &BlockMessage) -> BlockDagKeyValueStorage {
     let mut kvm = InMemoryStoreManager::new();
     let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
-    dag_storage.insert(genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved).unwrap();
+    dag_storage
+        .insert(
+            genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
     dag_storage
 }
 
@@ -106,7 +111,9 @@ fn lookup_elements(
     topo_sort_start_block_number: Option<i64>,
 ) -> LookupResult {
     let topo_sort_start_block_number = topo_sort_start_block_number.unwrap_or(0);
-    let dag = dag_storage.get_representation().expect("dag representation");
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     let list: Vec<(
         Option<BlockMetadata>,
         Option<BlockHash>,
@@ -304,7 +311,9 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
 fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_hash() {
     let genesis = genesis_block();
     let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
-    let dag = dag_storage.get_representation().expect("dag representation");
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     let contains = dag.contains(&prost::bytes::Bytes::new());
     assert_eq!(contains, false);
 }
@@ -477,7 +486,12 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
         None,
         None,
     );
-    dag_storage.insert(&valid_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+    dag_storage
+        .insert(
+            &valid_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let invalid_block = get_random_block(
         Some(2),
@@ -495,9 +509,16 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
         None,
         None,
     );
-    dag_storage.insert(&invalid_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
+    dag_storage
+        .insert(
+            &invalid_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+        )
+        .unwrap();
 
-    let dag = dag_storage.get_representation().expect("dag representation");
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     assert_eq!(
         dag.latest_message_hash(&valid_block.sender),
         Some(valid_block.block_hash.clone())
@@ -554,7 +575,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
 ) {
     let genesis = genesis_block();
     let dag_storage = create_dag_storage(&genesis).await;
-    dag_storage.insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved).unwrap();
+    dag_storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
 
     let b1 = get_random_block(
         Some(1),
@@ -572,7 +598,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b1, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+    dag_storage
+        .insert(
+            &b1,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b2 = get_random_block(
         Some(2),
@@ -590,7 +621,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b2, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+    dag_storage
+        .insert(
+            &b2,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b3 = get_random_block(
         Some(3),
@@ -608,7 +644,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b3, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+    dag_storage
+        .insert(
+            &b3,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b4 = get_random_block(
         Some(4),
@@ -626,7 +667,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    let dag = dag_storage.insert(&b4, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+    let dag = dag_storage
+        .insert(
+            &b4,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     assert_eq!(
         dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized,
@@ -665,7 +711,9 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .await
         .unwrap();
 
-    let dag = dag_storage.get_representation().expect("dag representation");
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
     assert_eq!(dag.is_finalized(&b1.block_hash), true);
     assert_eq!(dag.is_finalized(&b2.block_hash), true);
@@ -704,7 +752,9 @@ fn find_returns_some_for_valid_even_length_truncated_hash() {
     rt.block_on(async {
         let genesis = genesis_block();
         let dag_storage = create_dag_storage(&genesis).await;
-        let dag = dag_storage.get_representation().expect("dag representation");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
         let full_hex = hex::encode(&*genesis.block_hash);
         let prefix = &full_hex[..6];
         match dag.find(prefix) {
@@ -721,7 +771,9 @@ fn find_returns_some_for_valid_odd_length_truncated_hash() {
     rt.block_on(async {
         let genesis = genesis_block();
         let dag_storage = create_dag_storage(&genesis).await;
-        let dag = dag_storage.get_representation().expect("dag representation");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
         let full_hex = hex::encode(&*genesis.block_hash);
         let prefix = &full_hex[..5];
         match dag.find(prefix) {
@@ -738,14 +790,18 @@ fn find_returns_err_for_invalid_hex_input() {
     rt.block_on(async {
         let genesis = genesis_block();
         let dag_storage = create_dag_storage(&genesis).await;
-        let dag = dag_storage.get_representation().expect("dag representation");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
         match dag.find("zzzz") {
             Err(_) => {}
             Ok(other) => panic!("find() should return Err for non-hex input, got {other:?}"),
         }
         match dag.find("zzzzz") {
             Err(_) => {}
-            Ok(other) => panic!("find() should return Err for odd-length non-hex input, got {other:?}"),
+            Ok(other) => {
+                panic!("find() should return Err for odd-length non-hex input, got {other:?}")
+            }
         }
     });
 }
@@ -756,7 +812,9 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
     rt.block_on(async {
         let genesis = genesis_block();
         let dag_storage = create_dag_storage(&genesis).await;
-        let dag = dag_storage.get_representation().expect("dag representation");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
         // "deadbeef" is a valid hex string but extremely unlikely to match
         // the genesis hash prefix.
         match dag.find("deadbeef") {

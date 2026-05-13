@@ -141,11 +141,11 @@ impl Estimator {
                 // `CasperError::ConsensusInvariant` variant, but doing so
                 // would ripple through the estimator's call graph;
                 // documented as a follow-up.
-                let Some((main_hash, secondary_hashes)) = ranked_latest_hashes.split_first()
-                else {
+                let Some((main_hash, secondary_hashes)) = ranked_latest_hashes.split_first() else {
                     return Err(KvStoreError::InvalidArgument(
                         "consensus invariant: rank_forkchoices returned no tips \
-                         (genesis-only DAG?)".to_string(),
+                         (genesis-only DAG?)"
+                            .to_string(),
                     ));
                 };
 

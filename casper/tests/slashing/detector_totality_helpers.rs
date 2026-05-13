@@ -62,7 +62,10 @@ impl DetectorFixture {
             .put_block_message(&genesis)
             .expect("store genesis");
         dag_storage
-            .insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("insert genesis");
         Self {
             block_store,
@@ -77,7 +80,10 @@ impl DetectorFixture {
             .put_block_message(block)
             .expect("store block");
         self.dag_storage
-            .insert(block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal)
+            .insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
             .expect("insert block");
     }
 
@@ -95,7 +101,10 @@ impl DetectorFixture {
     pub async fn check(&self, block: &BlockMessage) -> Either<BlockError, ValidBlock> {
         EquivocationDetector::check_neglected_equivocations_with_update(
             block,
-            &self.dag_storage.get_representation().expect("dag representation"),
+            &self
+                .dag_storage
+                .get_representation()
+                .expect("dag representation"),
             &self.block_store,
             &self.genesis,
             &self.dag_storage,

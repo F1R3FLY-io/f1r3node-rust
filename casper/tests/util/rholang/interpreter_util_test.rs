@@ -463,7 +463,9 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b2");
 
-            let dag = block_dag_storage.get_representation().expect("dag representation");
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
@@ -623,7 +625,9 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b4");
 
-            let dag = block_dag_storage.get_representation().expect("dag representation");
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
@@ -686,7 +690,10 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation().expect("dag representation");
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -767,7 +774,10 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation().expect("dag representation");
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -849,7 +859,9 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             None,
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
         let validate_result = interpreter_util::validate_block_checkpoint(
@@ -895,7 +907,9 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation().expect("dag representation");
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -944,7 +958,9 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation().expect("dag representation");
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1006,7 +1022,9 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation().expect("dag representation");
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1055,7 +1073,9 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation().expect("dag representation");
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1121,7 +1141,9 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None, // uses default key
             );
 
-            let dag1 = block_dag_storage.get_representation().expect("dag representation");
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1170,7 +1192,9 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation().expect("dag representation");
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1232,7 +1256,9 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation().expect("dag representation");
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1281,7 +1307,9 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation().expect("dag representation");
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1335,7 +1363,9 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation().expect("dag representation");
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1385,7 +1415,9 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation().expect("dag representation");
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1429,7 +1461,9 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
             let deploys =
                 TestContext::create_deploys_now(sources.iter().map(|s| s.as_str()).collect(), None);
 
-            let dag1 = block_dag_storage.get_representation().expect("dag representation");
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1494,7 +1528,9 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation().expect("dag representation");
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1556,7 +1592,9 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation().expect("dag representation");
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let now = std::time::SystemTime::now()
@@ -1604,7 +1642,9 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation().expect("dag representation");
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(

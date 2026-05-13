@@ -54,7 +54,8 @@ impl IndexedBlockDagStorage {
         let _lock_guard = self.underlying.global_lock.write();
 
         // Use internal methods to avoid re-acquiring lock
-        self.underlying.insert_internal(genesis, InsertMode::Approved)?;
+        self.underlying
+            .insert_internal(genesis, InsertMode::Approved)?;
         let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
             dag.latest_message(&block.sender)?
@@ -80,7 +81,11 @@ impl IndexedBlockDagStorage {
 
         self.underlying.insert_internal(
             &modified_block,
-            if invalid { InsertMode::Invalid } else { InsertMode::Normal },
+            if invalid {
+                InsertMode::Invalid
+            } else {
+                InsertMode::Normal
+            },
         )?;
         self.id_to_blocks.insert(next_id, modified_block.clone());
         *current_id = next_id;
@@ -99,7 +104,11 @@ impl IndexedBlockDagStorage {
         self.id_to_blocks.insert(index, block.clone());
         self.underlying.insert_internal(
             &block,
-            if invalid { InsertMode::Invalid } else { InsertMode::Normal },
+            if invalid {
+                InsertMode::Invalid
+            } else {
+                InsertMode::Normal
+            },
         )?;
 
         Ok(())

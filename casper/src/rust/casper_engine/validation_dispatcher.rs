@@ -22,6 +22,8 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 
+use super::snapshot::record_dag_cardinality_metrics;
+use super::types::MultiParentCasperImpl;
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
@@ -38,9 +40,6 @@ use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
 use crate::rust::validate::Validate;
 
-use super::snapshot::record_dag_cardinality_metrics;
-use super::types::MultiParentCasperImpl;
-
 async fn timed_step<A, Fut>(
     step_name: &'static str,
     metric_name: &'static str,
@@ -55,8 +54,7 @@ where
     let elapsed = start.elapsed();
     let elapsed_str = format!("{:?}", elapsed);
     let step_time_seconds = elapsed.as_secs_f64();
-    metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
-        .record(step_time_seconds);
+    metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE).record(step_time_seconds);
     tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
     Ok((result, elapsed_str))
 }
@@ -201,13 +199,9 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "simple-equivocation",
         BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
         async {
-            EquivocationDetector::check_equivocations(
-                requested_as_dependency,
-                block,
-                &snapshot.dag,
-            )
-            .await
-            .map_err(CasperError::from)
+            EquivocationDetector::check_equivocations(requested_as_dependency, block, &snapshot.dag)
+                .await
+                .map_err(CasperError::from)
         },
     )
     .await?;
@@ -294,8 +288,10 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
     );
 
     let start = std::time::Instant::now();
-    let val_result =
-        run_validation_steps(this, block, snapshot, /* skip_checkpoint_and_bonds */ false).await?;
+    let val_result = run_validation_steps(
+        this, block, snapshot, /* skip_checkpoint_and_bonds */ false,
+    )
+    .await?;
     let elapsed = start.elapsed();
 
     if let Either::Right(ref status) = val_result {
@@ -364,8 +360,10 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     // security hole. Remaining validators (block_summary, neglected-invalid,
     // neglected-equivocation, phlo-price, simple-equivocation) all run.
     let start = std::time::Instant::now();
-    let val_result =
-        run_validation_steps(this, block, snapshot, /* skip_checkpoint_and_bonds */ true).await?;
+    let val_result = run_validation_steps(
+        this, block, snapshot, /* skip_checkpoint_and_bonds */ true,
+    )
+    .await?;
     let elapsed = start.elapsed();
 
     if let Either::Right(ref status) = val_result {
@@ -390,39 +388,39 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     status: &InvalidBlock,
     dag: &KeyValueDagRepresentation,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
-    let handle_invalid_block_effect =
-        |block_dag_storage: &BlockDagKeyValueStorage,
-         casper_buffer_storage: &CasperBufferKeyValueStorage,
-         status: &InvalidBlock,
-         block: &BlockMessage|
-         -> Result<KeyValueDagRepresentation, CasperError> {
-            tracing::warn!(
-                "Recording invalid block {} for {:?}.",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                status
-            );
+    let handle_invalid_block_effect = |block_dag_storage: &BlockDagKeyValueStorage,
+                                       casper_buffer_storage: &CasperBufferKeyValueStorage,
+                                       status: &InvalidBlock,
+                                       block: &BlockMessage|
+     -> Result<KeyValueDagRepresentation, CasperError> {
+        tracing::warn!(
+            "Recording invalid block {} for {:?}.",
+            PrettyPrinter::build_string_bytes(&block.block_hash),
+            status
+        );
 
-            // Bug #17 / T-9.20: in-process atomic transition of the
-            // (DAG insert, casper-buffer remove) pair via
-            // `atomic_insert_then_buffer`. Distinct LMDB envs mean
-            // cross-store ACID is physically impossible; the helper
-            // documents the lock-order contract (DAG global_lock A,
-            // buffer state_lock B) and the on-resume reconciliation
-            // closes any crash-window drift. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
-            let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-            let updated_dag =
-                block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
-                    block_dag_storage,
-                    block,
-                    InsertMode::Invalid,
-                    casper_buffer_storage,
-                    block_storage::rust::dag::buffer_dag_transition::BufferTransition
-                        ::RemoveFromBuffer(block_hash_serde),
-                )?;
-            record_dag_cardinality_metrics(&updated_dag);
-            Ok(updated_dag)
-        };
+        // Bug #17 / T-9.20: in-process atomic transition of the
+        // (DAG insert, casper-buffer remove) pair via
+        // `atomic_insert_then_buffer`. Distinct LMDB envs mean
+        // cross-store ACID is physically impossible; the helper
+        // documents the lock-order contract (DAG global_lock A,
+        // buffer state_lock B) and the on-resume reconciliation
+        // closes any crash-window drift. See
+        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        let block_hash_serde = BlockHashSerde(block.block_hash.clone());
+        let updated_dag =
+            block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
+                block_dag_storage,
+                block,
+                InsertMode::Invalid,
+                casper_buffer_storage,
+                block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
+                    block_hash_serde,
+                ),
+            )?;
+        record_dag_cardinality_metrics(&updated_dag);
+        Ok(updated_dag)
+    };
 
     // Atomic read-modify-write on the equivocation tracker. See
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
@@ -440,25 +438,22 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         let Some(base_equivocation_block_seq_num) = checked_base_seq(block.seq_num) else {
             return Ok(());
         };
-        block_dag_storage
-            .access_equivocations_tracker(|tracker| {
-                let equivocation_records = tracker.data()?;
-                let record_exists = equivocation_records.iter().any(|record| {
-                    record.equivocator == block.sender
-                        && record.equivocation_base_block_seq_num
-                            == base_equivocation_block_seq_num
-                });
-                if !record_exists {
-                    let new_equivocation_record = EquivocationRecord::new(
-                        block.sender.clone(),
-                        base_equivocation_block_seq_num,
-                        BTreeSet::new(),
-                    );
-                    tracker.add(new_equivocation_record)?;
-                }
-                Ok(())
-            })
-?;
+        block_dag_storage.access_equivocations_tracker(|tracker| {
+            let equivocation_records = tracker.data()?;
+            let record_exists = equivocation_records.iter().any(|record| {
+                record.equivocator == block.sender
+                    && record.equivocation_base_block_seq_num == base_equivocation_block_seq_num
+            });
+            if !record_exists {
+                let new_equivocation_record = EquivocationRecord::new(
+                    block.sender.clone(),
+                    base_equivocation_block_seq_num,
+                    BTreeSet::new(),
+                );
+                tracker.add(new_equivocation_record)?;
+            }
+            Ok(())
+        })?;
         Ok(())
     };
 

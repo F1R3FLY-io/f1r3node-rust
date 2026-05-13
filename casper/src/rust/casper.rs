@@ -443,10 +443,10 @@ pub mod test_helpers {
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
             use std::sync::Arc;
-            use parking_lot::RwLock;
 
             use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+            use parking_lot::RwLock;
             use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
             use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 

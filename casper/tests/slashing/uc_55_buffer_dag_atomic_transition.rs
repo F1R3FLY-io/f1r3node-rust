@@ -73,7 +73,10 @@ fn uc_55_crash_between_yields_drift_that_resume_closes() {
 
     // Resume: reconcile closes the drift.
     let purged = h.simulate_resume();
-    assert_eq!(purged, 1, "reconcile should purge exactly the drifted pendant");
+    assert_eq!(
+        purged, 1,
+        "reconcile should purge exactly the drifted pendant"
+    );
 
     // Post-resume: drift closed; block remains in DAG.
     assert!(h.dag.invalid.contains(&bad));
@@ -114,11 +117,7 @@ fn uc_55_crash_after_remove_is_indistinguishable_from_no_crash() {
     let mut h = SlashingTestHarness::new(3, 100);
     let bad = h.sign_block_distinct("v0", 5);
     h.put_buffer_pendant(bad);
-    h.dispatch_with_crash(
-        bad,
-        Status::IgnorableEquivocation,
-        CrashPoint::AfterRemove,
-    );
+    h.dispatch_with_crash(bad, Status::IgnorableEquivocation, CrashPoint::AfterRemove);
 
     // Pre-resume: steady state — block in DAG, no pendant.
     assert!(h.dag.invalid.contains(&bad));
@@ -126,7 +125,10 @@ fn uc_55_crash_after_remove_is_indistinguishable_from_no_crash() {
 
     // Resume should be a no-op (no drift to close).
     let purged = h.simulate_resume();
-    assert_eq!(purged, 0, "CrashAfterRemove has no drift; reconcile should be a no-op");
+    assert_eq!(
+        purged, 0,
+        "CrashAfterRemove has no drift; reconcile should be a no-op"
+    );
 
     assert_eq!(no_crash.dag.invalid, h.dag.invalid);
     assert_eq!(no_crash.has_record("v0", 4), h.has_record("v0", 4));
@@ -144,11 +146,7 @@ fn uc_55_crash_before_insert_requires_replay() {
     let mut h = SlashingTestHarness::new(3, 100);
     let bad = h.sign_block_distinct("v0", 5);
     h.put_buffer_pendant(bad);
-    h.dispatch_with_crash(
-        bad,
-        Status::IgnorableEquivocation,
-        CrashPoint::BeforeInsert,
-    );
+    h.dispatch_with_crash(bad, Status::IgnorableEquivocation, CrashPoint::BeforeInsert);
 
     // Pre-resume: no persistent change. The block has NOT been
     // dispatched. (Block exists in the DAG because `sign_block_distinct`
@@ -211,7 +209,10 @@ fn uc_55_reconcile_does_not_purge_genuine_pendants() {
     h.put_buffer_pendant(non_existent);
 
     let purged = h.reconcile_buffer_against_dag();
-    assert_eq!(purged, 0, "pendant whose hash is not in DAG must NOT be purged");
+    assert_eq!(
+        purged, 0,
+        "pendant whose hash is not in DAG must NOT be purged"
+    );
     assert!(h.buffer_contains(non_existent));
 
     // The signed block b1 is in dag.blocks, so a pendant for it WOULD

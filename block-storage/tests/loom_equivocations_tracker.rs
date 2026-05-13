@@ -39,8 +39,7 @@
 // types directly. See `casper/tests/slashing/loom_t_9_2_atomic_record.rs`
 // for the broader rationale.
 
-use loom::sync::Arc;
-use loom::sync::RwLock;
+use loom::sync::{Arc, RwLock};
 use loom::thread;
 
 /// Shadow of the production `global_lock` — a parameterless RwLock.
@@ -48,9 +47,7 @@ use loom::thread;
 /// observation point, but the contract under test is purely about
 /// the lock primitive's reentrancy behaviour, not the counter.
 fn shadow_critical_section<F>(lock: &Arc<RwLock<u64>>, f: F)
-where
-    F: FnOnce(&mut u64),
-{
+where F: FnOnce(&mut u64) {
     let mut guard = lock.write().unwrap();
     f(&mut *guard);
 }

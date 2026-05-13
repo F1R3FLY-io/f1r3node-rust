@@ -13,10 +13,10 @@
 //     - leaves pendants whose hash is NOT in the DAG intact
 //     - returns the count of purged pendants
 
+use std::collections::HashSet;
+
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, InsertMode,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::buffer_dag_transition::{
     atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
 };
@@ -26,7 +26,6 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use std::collections::HashSet;
 
 fn make_block() -> BlockMessage {
     get_random_block(
@@ -71,7 +70,9 @@ async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage
     let mut buf_kvm = InMemoryStoreManager::new();
     let buf_store = buf_kvm.store("parents-map".to_string()).await.unwrap();
     let typed_store = KeyValueTypedStoreImpl::new(buf_store);
-    let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await.unwrap();
+    let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store)
+        .await
+        .unwrap();
 
     (dag, buffer)
 }
@@ -85,7 +86,10 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
     // Pre-state: block in buffer as pendant, NOT in DAG.
     buffer.put_pendant(hash_serde.clone()).unwrap();
     assert!(buffer.is_pendant(&hash_serde));
-    assert!(!dag.get_representation().unwrap().contains(&block.block_hash));
+    assert!(!dag
+        .get_representation()
+        .unwrap()
+        .contains(&block.block_hash));
 
     // Atomic transition.
     let updated_dag = atomic_insert_then_buffer(
@@ -165,7 +169,10 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     // after dag.insert but before buffer.remove.
     dag.insert(&block, InsertMode::Invalid).unwrap();
     buffer.put_pendant(hash_serde.clone()).unwrap();
-    assert!(dag.get_representation().unwrap().contains(&block.block_hash));
+    assert!(dag
+        .get_representation()
+        .unwrap()
+        .contains(&block.block_hash));
     assert!(buffer.is_pendant(&hash_serde));
 
     // Reconcile.
@@ -175,7 +182,10 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     // Post-state: drift closed.
     assert_eq!(purged, 1);
     assert!(!buffer.is_pendant(&hash_serde));
-    assert!(dag.get_representation().unwrap().contains(&block.block_hash));
+    assert!(dag
+        .get_representation()
+        .unwrap()
+        .contains(&block.block_hash));
 }
 
 #[tokio::test]
@@ -278,7 +288,9 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
         second.err()
     );
 
-    assert!(dag.get_representation().unwrap().contains(&block.block_hash));
+    assert!(dag
+        .get_representation()
+        .unwrap()
+        .contains(&block.block_hash));
     assert!(!buffer.is_pendant(&hash_serde));
 }
-

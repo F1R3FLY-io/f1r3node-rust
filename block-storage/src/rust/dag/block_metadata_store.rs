@@ -3,15 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 // Slashing-critical DagState lock is held inside the
 // `BlockDagKeyValueStorage::get_representation_internal` RMW chain;
 // migrating to `parking_lot::RwLock` aligns it with the parent
 // crate's parking_lot migration (P1-3, slashing audit).
 use parking_lot::RwLock;
-
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -265,9 +264,7 @@ impl BlockMetadataStore {
 
     pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
 
-    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> {
-        self.dag_state.read().dag_set.clone()
-    }
+    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> { self.dag_state.read().dag_set.clone() }
 
     pub fn contains(&self, hash: &BlockHash) -> bool {
         self.dag_state.read().dag_set.contains(hash)

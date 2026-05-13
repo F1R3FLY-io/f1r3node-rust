@@ -30,7 +30,7 @@ use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::SlashAuthError;
 use casper::rust::validate::Validate;
-use models::rust::casper::protocol::casper_message::{Body, BlockMessage, F1r3flyState, Header};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Body, F1r3flyState, Header};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -97,7 +97,9 @@ fn kv_store_error_routes_to_block_exception_not_slashable() {
     let outcome = Validate::route_slash_validation_outcome(&block, Err(kv_err));
 
     match outcome {
-        Either::Left(BlockError::BlockException(CasperError::KvStoreError(KvStoreError::IoError(msg)))) => {
+        Either::Left(BlockError::BlockException(CasperError::KvStoreError(
+            KvStoreError::IoError(msg),
+        ))) => {
             assert!(
                 msg.contains("simulated transient storage failure"),
                 "BlockException must preserve the underlying KvStoreError payload; got msg={msg:?}"
@@ -114,9 +116,8 @@ fn kv_store_error_routes_to_block_exception_not_slashable() {
 #[test]
 fn runtime_error_routes_to_block_exception_not_slashable() {
     let block = fixture_block();
-    let runtime_err = CasperError::RuntimeError(
-        "simulated runtime fault during slash validation".to_string(),
-    );
+    let runtime_err =
+        CasperError::RuntimeError("simulated runtime fault during slash validation".to_string());
 
     let outcome = Validate::route_slash_validation_outcome(&block, Err(runtime_err));
 

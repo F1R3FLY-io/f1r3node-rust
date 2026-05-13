@@ -1775,6 +1775,8 @@ in {{
 /// empty deployId after finalization (intermittent)"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bridge_query_survives_multi_parent_merge() {
+    use std::collections::HashMap;
+
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use casper::rust::genesis::genesis::Genesis;
@@ -1782,8 +1784,6 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use std::collections::HashMap;
-
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
@@ -1830,7 +1830,10 @@ async fn bridge_query_survives_multi_parent_merge() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -1841,7 +1844,11 @@ async fn bridge_query_survives_multi_parent_merge() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation().expect("dag representation"));
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
@@ -1928,7 +1935,12 @@ async fn bridge_query_survives_multi_parent_merge() {
     block_a.body.system_deploys = sys_pd_a;
     block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage.insert(&block_a, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).expect("dag A");
+    dag_storage
+        .insert(
+            &block_a,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .expect("dag A");
 
     // Verify bridge wrote data and extract queryUri
     let bridge_data = rm
@@ -2001,7 +2013,12 @@ async fn bridge_query_survives_multi_parent_merge() {
     block_b.body.system_deploys = sys_pd_b;
     block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
-    dag_storage.insert(&block_b, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).expect("dag B");
+    dag_storage
+        .insert(
+            &block_b,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .expect("dag B");
 
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];

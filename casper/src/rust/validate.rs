@@ -130,7 +130,12 @@ impl Validate {
     }
 
     pub fn signature(d: &Data, sig: &ProtoSignature) -> bool {
-        Self::verify_signature(&sig.algorithm, d, &sig.sig.to_vec(), &sig.public_key.to_vec())
+        Self::verify_signature(
+            &sig.algorithm,
+            d,
+            &sig.sig.to_vec(),
+            &sig.public_key.to_vec(),
+        )
     }
 
     fn ignore(b: &BlockMessage, reason: &str) -> String {

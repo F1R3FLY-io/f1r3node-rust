@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
-// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-use parking_lot::Mutex as PlMutex;
-
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
@@ -30,6 +27,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+use parking_lot::Mutex as PlMutex;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::history::Either;
@@ -1018,7 +1017,10 @@ impl TestNode {
 
         // Store genesis block in DAG storage - required for DAG operations
         block_dag_storage
-            .insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis block into DAG storage in TestNode");
         let deploy_storage = Arc::new(PlMutex::new(
             KeyValueDeployStorage::new(&mut kvm).await.unwrap(),

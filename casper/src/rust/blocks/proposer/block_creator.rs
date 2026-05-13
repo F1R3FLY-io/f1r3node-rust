@@ -65,9 +65,7 @@ const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
 /// used in operator-facing log messages. Previously inlined as
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
-fn deploy_sig_prefix(sig: &Bytes) -> String {
-    hex::encode(&sig[..std::cmp::min(8, sig.len())])
-}
+fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
 
 async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
@@ -497,12 +495,15 @@ pub async fn create(
         .unwrap_or(1);
     // P2-9: align with T-9.14's checked-arithmetic discipline; surface
     // overflow as an error instead of silently wrapping around.
-    let next_block_num = casper_snapshot.max_block_num.checked_add(1).ok_or_else(|| {
-        CasperError::RuntimeError(format!(
-            "max_block_num overflow: {} + 1 wraps i64",
-            casper_snapshot.max_block_num
-        ))
-    })?;
+    let next_block_num = casper_snapshot
+        .max_block_num
+        .checked_add(1)
+        .ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "max_block_num overflow: {} + 1 wraps i64",
+                casper_snapshot.max_block_num
+            ))
+        })?;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {

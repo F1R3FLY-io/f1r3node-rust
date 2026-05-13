@@ -145,7 +145,9 @@ fn signed_block(
     let secp256k1 = Secp256k1;
     let pk = secp256k1.to_public(private_key);
     let mut block = block_dag_storage.lookup_by_id_unsafe(i as i64);
-    let dag = block_dag_storage.get_representation().expect("dag representation");
+    let dag = block_dag_storage
+        .get_representation()
+        .expect("dag representation");
     let sender = Bytes::copy_from_slice(&pk.bytes);
     let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
     let seq_num =
@@ -355,7 +357,9 @@ async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
             .as_millis() as i64;
         let future_timestamp = current_time + 20000; // 20 seconds in future (> DRIFT of 15 seconds)
 
-        let _dag = block_dag_storage.get_representation().expect("dag representation");
+        let _dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let result_invalid = Validate::timestamp(
             &modified_timestamp_header(&block, future_timestamp),
@@ -383,7 +387,9 @@ async fn timestamp_validation_should_not_accept_blocks_that_were_published_befor
         let block = block_dag_storage.lookup_by_id_unsafe(1);
         let modified_timestamp_header = modified_timestamp_header(&block, -1);
 
-        let _dag = block_dag_storage.get_representation().expect("dag representation");
+        let _dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let result_invalid = Validate::timestamp(&modified_timestamp_header, &mut block_store);
         assert_eq!(
@@ -406,7 +412,9 @@ async fn block_number_validation_should_only_accept_0_as_the_number_for_a_block_
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 1, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(0);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result_invalid =
@@ -431,7 +439,9 @@ async fn block_number_validation_should_return_false_for_non_sequential_numberin
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(1);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result_invalid =
@@ -456,7 +466,9 @@ async fn block_number_validation_should_return_true_for_sequential_numbering() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let n = 6;
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, n, vec![]);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         // Test each block in the chain for sequential numbering
@@ -510,7 +522,10 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
                     .put(block.block_hash.clone(), &block)
                     .expect("Failed to put block");
                 block_dag_storage
-                    .insert(&block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal)
+                    .insert(
+                        &block,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                    )
                     .expect("Failed to insert block");
 
                 block
@@ -541,7 +556,9 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
                 b2.block_hash.clone(),
             ]);
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let s1 = Validate::block_number(&b3, &mut casper_snapshot);
@@ -707,11 +724,8 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploys_shard_identifier_should_accept_blocks_with_all_matching_shard_ids() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(
-            0,
-            Some(SHARD_ID.to_string()),
-        )
-        .unwrap();
+        let deploy =
+            construct_deploy::basic_processed_deploy(0, Some(SHARD_ID.to_string())).unwrap();
         let block = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -734,11 +748,8 @@ async fn deploys_shard_identifier_should_accept_blocks_with_all_matching_shard_i
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploys_shard_identifier_should_reject_blocks_with_a_foreign_deploy_shard_id() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let foreign_deploy = construct_deploy::basic_processed_deploy(
-            0,
-            Some("rogue-shard".to_string()),
-        )
-        .unwrap();
+        let foreign_deploy =
+            construct_deploy::basic_processed_deploy(0, Some("rogue-shard".to_string())).unwrap();
         let block_with_foreign_deploy = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -752,8 +763,7 @@ async fn deploys_shard_identifier_should_reject_blocks_with_a_foreign_deploy_sha
             None,
         );
 
-        let status =
-            Validate::deploys_shard_identifier(&block_with_foreign_deploy, SHARD_ID);
+        let status = Validate::deploys_shard_identifier(&block_with_foreign_deploy, SHARD_ID);
         assert_eq!(
             status,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidShardId))
@@ -804,8 +814,8 @@ async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy()
         let expired_processed_deploy = {
             let mut data = deploy.deploy.data.clone();
             data.expiration_timestamp = Some(1);
-            let signed = create_signed_deploy_with_data(data)
-                .expect("failed to sign expired deploy");
+            let signed =
+                create_signed_deploy_with_data(data).expect("failed to sign expired deploy");
             ProcessedDeploy {
                 deploy: signed,
                 ..deploy
@@ -840,7 +850,9 @@ async fn sequence_number_validation_should_only_accept_0_as_the_number_for_a_blo
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 1, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(0);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let block_with_seq_1 = with_seq_num(&block, 1);
@@ -864,7 +876,9 @@ async fn sequence_number_validation_should_return_false_for_non_sequential_numbe
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(1);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let block_with_seq_1 = with_seq_num(&block, 1);
@@ -891,7 +905,9 @@ async fn sequence_number_validation_should_return_true_for_sequential_numbering(
             n,
             validator_count,
         );
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let condition = (0..n).all(|i| {
@@ -914,7 +930,9 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(0);
         let block2 = block_dag_storage.lookup_by_id_unsafe(1);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &mut block_store, 50);
@@ -961,7 +979,9 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             None,
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &mut block_store, 50);
@@ -988,7 +1008,9 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
         let valid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);
         let invalid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(2), &impostor);
-        let _dag = block_dag_storage.get_representation().expect("dag representation");
+        let _dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let result_genesis =
             Validate::block_sender_has_weight(&genesis, &genesis, &mut block_store);
         assert_eq!(result_genesis.unwrap(), true);
@@ -1049,7 +1071,9 @@ async fn parent_validation_should_allow_first_block_from_new_validator() {
             Some(1),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, false);
@@ -1141,7 +1165,9 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
             Some(2),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::parents(&b3, &genesis, &mut casper_snapshot, -1, false);
@@ -1209,7 +1235,9 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
             Some(2),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, false);
@@ -1283,7 +1311,9 @@ async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_pa
             Some(2),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, false);
@@ -1335,7 +1365,9 @@ async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis(
             Some(1),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, false);
@@ -1449,7 +1481,9 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             Some(2),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         // maxNumberOfParents = 2, but block has 3 parents
@@ -1467,7 +1501,9 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(1);
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let secp256k1 = Secp256k1;
         let (sk, pk) = secp256k1.new_key_pair();
@@ -1688,14 +1724,18 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
         // Test blocks 1 to 6 should return Valid
         let condition = (1..=6).all(|i| {
             let block = block_dag_storage.lookup_by_id_unsafe(i as i64);
-            let _dag = block_dag_storage.get_representation().expect("dag representation");
+            let _dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let result = Validate::justification_follows(&block, &mut block_store);
             result == Either::Right(ValidBlock::Valid)
         });
         assert_eq!(condition, true);
 
         let block_id_7 = block_dag_storage.lookup_by_id_unsafe(7);
-        let _dag = block_dag_storage.get_representation().expect("dag representation");
+        let _dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let result = Validate::justification_follows(&block_id_7, &mut block_store);
         assert_eq!(
             result,
@@ -1795,7 +1835,9 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
 
         let condition = (0..=4).all(|i| {
             let block = block_dag_storage.lookup_by_id_unsafe(i as i64);
-            let dag = block_dag_storage.get_representation().expect("dag representation");
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = mk_casper_snapshot(dag);
             let result = Validate::justification_regressions(&block, &mut casper_snapshot);
             result == Either::Right(ValidBlock::Valid)
@@ -1831,7 +1873,9 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
             Some(Box::new(|block| proto_util::hash_block(&block))),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::justification_regressions(
@@ -1972,7 +2016,9 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
             None,
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         let result = Validate::justification_regressions(
@@ -1993,7 +2039,12 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             .unwrap();
         let genesis = context.genesis_block.clone();
 
-        block_dag_storage.insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved).unwrap();
+        block_dag_storage
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
 
         let mut kvm = mk_test_rnode_store_manager_from_genesis(&context);
 
@@ -2008,7 +2059,9 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         interpreter_util::validate_block_checkpoint(
@@ -2053,9 +2106,14 @@ async fn field_format_validation_should_succeed_on_a_valid_block_and_fail_on_emp
         let (sk, pk) = &context.validator_key_pairs[0];
 
         block_dag_storage
-            .insert(&context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &context.genesis_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .unwrap();
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let sender = Bytes::copy_from_slice(&pk.bytes);
         let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
         let seq_num =
@@ -2097,9 +2155,14 @@ async fn block_hash_format_validation_should_fail_on_invalid_hash() {
         let sender = Bytes::copy_from_slice(&pk.bytes);
 
         block_dag_storage
-            .insert(&context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &context.genesis_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .unwrap();
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
         let seq_num =
@@ -2132,9 +2195,14 @@ async fn block_version_validation_should_work() {
         let sender = Bytes::copy_from_slice(&pk.bytes);
 
         block_dag_storage
-            .insert(&context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &context.genesis_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .unwrap();
-        let dag = block_dag_storage.get_representation().expect("dag representation");
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
         let seq_num =

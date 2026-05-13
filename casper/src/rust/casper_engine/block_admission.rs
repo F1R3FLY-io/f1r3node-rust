@@ -4,6 +4,9 @@
 //! function takes the casper instance as a `&MultiParentCasperImpl<T>`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    DeployId, InsertMode, KeyValueDagRepresentation,
+};
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -11,16 +14,12 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use rspace_plus_plus::rspace::history::Either;
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    DeployId, InsertMode, KeyValueDagRepresentation,
-};
-
-use crate::rust::casper::{CasperSnapshot, DeployError};
-use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::interpreter_util;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
+use crate::rust::casper::{CasperSnapshot, DeployError};
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::interpreter_util;
 
 pub(crate) fn admit_contains<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
@@ -103,15 +102,15 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // third LMDB env with its own atomicity story. See
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-    let updated_dag =
-        block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
-            &this.block_dag_storage,
-            block,
-            InsertMode::Normal,
-            &this.casper_buffer_storage,
-            block_storage::rust::dag::buffer_dag_transition::BufferTransition
-                ::RemoveFromBuffer(block_hash_serde),
-        )?;
+    let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
+        &this.block_dag_storage,
+        block,
+        InsertMode::Normal,
+        &this.casper_buffer_storage,
+        block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
+            block_hash_serde,
+        ),
+    )?;
     record_dag_cardinality_metrics(&updated_dag);
 
     // Remove user deploys from pending deploy storage as soon as the block is
@@ -247,7 +246,5 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
             let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
             Ok(!is_future && !already_in_scope)
         })
-        .map_err(|e| {
-            CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e))
-        })
+        .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
 }

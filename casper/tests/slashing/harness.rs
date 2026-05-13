@@ -88,13 +88,9 @@ impl SlashingTestHarness {
 
     /// Adds a pendant to the casper buffer. Used by UC-55 to set up
     /// the buffer pre-state before driving an atomic transition.
-    pub fn put_buffer_pendant(&mut self, hash: BlockHash) {
-        self.buffer.pendants.insert(hash);
-    }
+    pub fn put_buffer_pendant(&mut self, hash: BlockHash) { self.buffer.pendants.insert(hash); }
 
-    pub fn buffer_contains(&self, hash: BlockHash) -> bool {
-        self.buffer.pendants.contains(&hash)
-    }
+    pub fn buffer_contains(&self, hash: BlockHash) -> bool { self.buffer.pendants.contains(&hash) }
 
     /// Drives a dispatch effect with a simulated crash at the given
     /// point. Mirrors the Rocq `crash_step` function from
@@ -150,9 +146,7 @@ impl SlashingTestHarness {
     /// followed by replay of any pending dispatch. UC-55 uses this to
     /// assert post-resume observational equivalence with a no-crash
     /// run.
-    pub fn simulate_resume(&mut self) -> usize {
-        self.reconcile_buffer_against_dag()
-    }
+    pub fn simulate_resume(&mut self) -> usize { self.reconcile_buffer_against_dag() }
 
     /// Signs a fresh block at `(validator, seq)` and adds it to the DAG.
     /// Returns the assigned hash.

@@ -880,7 +880,10 @@ impl TestNode {
 
         // Initialize DAG storage with genesis block metadata
         block_dag_storage
-            .insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis into DAG storage in TestNode");
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
             resources::key_value_deploy_storage_from_dyn(&mut *kvm)

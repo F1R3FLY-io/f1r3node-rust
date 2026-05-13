@@ -24,14 +24,13 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
+use super::types::MultiParentCasperImpl;
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
 use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-
-use super::types::MultiParentCasperImpl;
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {

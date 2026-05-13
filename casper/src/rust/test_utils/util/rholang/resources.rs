@@ -2,25 +2,22 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
-
-use parking_lot::RwLock;
 use std::{fs, io};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use std::collections::HashSet;
-
 use dashmap::DashSet;
 use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use parking_lot::RwLock;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -272,7 +269,10 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
     let new_dag_storage = block_dag_storage_from_dyn(&mut *new_kvm)
         .await
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
-    new_dag_storage.insert(&genesis_context.genesis_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved)?;
+    new_dag_storage.insert(
+        &genesis_context.genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
 
     Ok(new_kvm)
 }
@@ -325,7 +325,6 @@ pub async fn block_dag_storage_from_dyn(
 > {
     use std::collections::BTreeSet;
     use std::sync::Arc;
-    use parking_lot::RwLock;
 
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
@@ -334,6 +333,7 @@ pub async fn block_dag_storage_from_dyn(
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
+    use parking_lot::RwLock;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {

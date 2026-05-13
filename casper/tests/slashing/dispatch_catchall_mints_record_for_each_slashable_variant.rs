@@ -134,11 +134,7 @@ async fn dispatch_catchall_mints_record_for_each_slashable_variant() {
         );
 
         // Drive the dispatcher's `is_slashable()` catch-all arm.
-        let dag_repr = node
-            .casper
-            .block_dag()
-            .await
-            .expect("dag representation");
+        let dag_repr = node.casper.block_dag().await.expect("dag representation");
         node.casper
             .handle_invalid_block(&synth, variant, &dag_repr)
             .expect("dispatcher catch-all arm must succeed for slashable variant");

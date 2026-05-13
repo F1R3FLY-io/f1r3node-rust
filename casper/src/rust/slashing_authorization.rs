@@ -92,10 +92,15 @@ pub enum SlashAuthError {
     #[error(
         "slash deploy epoch ({evidence_epoch}) does not match invalid-block evidence epoch ({target_epoch})"
     )]
-    EvidenceEpochMismatch { evidence_epoch: Epoch, target_epoch: Epoch },
+    EvidenceEpochMismatch {
+        evidence_epoch: Epoch,
+        target_epoch: Epoch,
+    },
     #[error("slash deploy target {validator} is not currently bonded")]
     TargetNotBonded { validator: String },
-    #[error("slash deploy is not authorized by current invalid-block evidence (validator {validator})")]
+    #[error(
+        "slash deploy is not authorized by current invalid-block evidence (validator {validator})"
+    )]
     NotAuthorizedByEvidence { validator: String },
     #[error("duplicate slash deploy target in block (validator {validator}, epoch {epoch})")]
     DuplicateTarget { validator: String, epoch: Epoch },
@@ -132,10 +137,7 @@ pub struct AuthorizedSlashCandidate {
 /// `validate_received_slash_deploys`) maps either into the appropriate
 /// `SlashAuthError` variant; never panic here — shard configuration can
 /// legally hand us `epoch_length == 0` at startup.
-pub fn epoch_for_block_number(
-    block_number: i64,
-    epoch_length: i32,
-) -> Result<Epoch, DomainError> {
+pub fn epoch_for_block_number(block_number: i64, epoch_length: i32) -> Result<Epoch, DomainError> {
     if epoch_length <= 0 {
         Err(DomainError::InvalidEpochLength(epoch_length))
     } else if block_number < 0 {
@@ -272,8 +274,8 @@ pub fn authorized_slash_candidates(
     // `Result<i64, DomainError>`. Map directly to the corresponding
     // `SlashAuthError` (and on into `CasperError::SlashAuth` via the
     // `From` impl in `errors.rs`).
-    let current_epoch = epoch_for_block_number(proposed_block_num, epoch_length)
-        .map_err(SlashAuthError::from)?;
+    let current_epoch =
+        epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
 
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
@@ -573,7 +575,8 @@ mod kani_proofs {
         let target_activation_epoch_raw = i64::from(target_activation_epoch);
         let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
-        let expected = target_activation_epoch_raw == reference_block_number / i64::from(epoch_length);
+        let expected =
+            target_activation_epoch_raw == reference_block_number / i64::from(epoch_length);
         assert_eq!(
             slash_target_epoch_is_current(
                 reference_block_number,
@@ -594,7 +597,8 @@ mod kani_proofs {
         let target_activation_epoch_raw = i64::from(target_activation_epoch);
         let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
-        let expected = target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length);
+        let expected =
+            target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length);
         assert_eq!(
             slash_evidence_epoch_matches_target(
                 evidence_block_number,
@@ -640,7 +644,8 @@ mod kani_proofs {
         let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
         let bond = i64::from(bond);
-        let expected = target_activation_epoch_raw == reference_block_number / i64::from(epoch_length)
+        let expected = target_activation_epoch_raw
+            == reference_block_number / i64::from(epoch_length)
             && target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length)
             && bond > 0
             && invalid;

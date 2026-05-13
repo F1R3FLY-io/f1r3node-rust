@@ -10,11 +10,10 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
-use crate::rust::errors::CasperError;
-use crate::rust::util::proto_util;
-
 use super::block_admission::admit_dag_contains;
 use super::types::MultiParentCasperImpl;
+use crate::rust::errors::CasperError;
+use crate::rust::util::proto_util;
 
 pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
