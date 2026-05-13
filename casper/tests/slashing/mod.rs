@@ -158,6 +158,7 @@ mod bounded_arithmetic_projection;
 mod closure_fixed_point_certificate;
 mod disconnected_neglect_cycle;
 mod detector_totality_helpers;
+mod dispatch_catchall_mints_record_for_each_slashable_variant;
 mod divergence_class;
 mod duplicate_neglect_edges;
 mod epoch_evidence_rollover;
