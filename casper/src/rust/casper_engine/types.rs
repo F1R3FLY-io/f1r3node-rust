@@ -7,12 +7,24 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // Phase 9 (A-3): the deploy-storage handle migrates to
-// `parking_lot::Mutex` (no poison propagation, faster acquire). The
-// `Mutex` alias above stays `std::sync::Mutex` for `deploys_in_scope_cache`
-// which Phase 12 (PERF-3) migrates to `ArcSwap`.
+// `parking_lot::Mutex` (no poison propagation, faster acquire).
+// C16 (this commit) follows through on the same migration for
+// `deploys_in_scope_cache`, which was previously the lone
+// `std::sync::Mutex` holdout. The two `parking_lot::Mutex`s are
+// reachable via the `PlMutex` alias used in the field
+// declarations below. `runtime_manager` keeps `tokio::sync::Mutex`
+// because the lock is held across `.await` points (see field
+// doc-comment); migrating it would require either an
+// interior-mutability refactor of `RuntimeManager`'s `&mut self`
+// methods or a parking_lot variant that allows holding across
+// `.await` (which the parking_lot guard's `!Send` makes infeasible).
+// An `ArcSwap` migration for the deploys-in-scope cache remains an
+// option for a future read-mostly optimization commit; pulling
+// forward the consistency fix now (single mutex type for
+// non-async mutable state) does not preclude it.
 use parking_lot::Mutex as PlMutex;
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -76,7 +88,14 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation and snapshot LFB.
     /// Including LFB in the key avoids stale scope reuse across finalization advances.
-    pub deploys_in_scope_cache: Arc<Mutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
+    /// C16: migrated from `Arc<std::sync::Mutex<...>>` to
+    /// `Arc<parking_lot::Mutex<...>>` so all three non-async mutex
+    /// types on this struct are uniform (`deploy_storage` already
+    /// uses parking_lot). Eliminates the poison-handling
+    /// `.map_err(|_| CasperError::RuntimeError(...))` boilerplate
+    /// at the call sites in `snapshot.rs`. The lock is held purely
+    /// synchronously across read-modify-write of the cache cell.
+    pub deploys_in_scope_cache: Arc<PlMutex<Option<(u64, BlockHash, Arc<dashmap::DashSet<Bytes>>)>>>,
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,

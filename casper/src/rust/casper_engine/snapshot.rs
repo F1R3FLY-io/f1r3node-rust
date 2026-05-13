@@ -276,9 +276,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         let snapshot_lfb_hash = dag.last_finalized_block();
 
         let cached: Option<Arc<dashmap::DashSet<Bytes>>> = {
-            let cache_guard = this.deploys_in_scope_cache.lock().map_err(|_| {
-                CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
-            })?;
+            // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
+            // no poison propagation, `.lock()` returns the guard
+            // directly. The prior `std::sync::Mutex` migration's
+            // poison-handling branch has been removed.
+            let cache_guard = this.deploys_in_scope_cache.lock();
             cache_guard.as_ref().and_then(|(gen, cached_lfb, set)| {
                 if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
                     Some(set.clone())
@@ -337,9 +339,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 }
             }
 
-            let mut cache_guard = this.deploys_in_scope_cache.lock().map_err(|_| {
-                CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
-            })?;
+            // C16: parking_lot::Mutex — no poison propagation.
+            let mut cache_guard = this.deploys_in_scope_cache.lock();
             *cache_guard = Some((
                 current_dag_generation,
                 snapshot_lfb_hash,
