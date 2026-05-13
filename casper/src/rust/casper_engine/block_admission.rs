@@ -97,8 +97,21 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
-    // Insert block as valid into DAG storage
-    let updated_dag = this.block_dag_storage.insert(block, InsertMode::Normal)?;
+    // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
+    // via the helper. The deploy-storage purge below runs OUTSIDE the
+    // (DAG, buffer) critical section because deploy storage lives in a
+    // third LMDB env with its own atomicity story. See
+    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+    let block_hash_serde = BlockHashSerde(block.block_hash.clone());
+    let updated_dag =
+        block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
+            &this.block_dag_storage,
+            block,
+            InsertMode::Normal,
+            &this.casper_buffer_storage,
+            block_storage::rust::dag::buffer_dag_transition::BufferTransition
+                ::RemoveFromBuffer(block_hash_serde),
+        )?;
     record_dag_cardinality_metrics(&updated_dag);
 
     // Remove user deploys from pending deploy storage as soon as the block is
@@ -124,10 +137,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_number
         );
     }
-
-    // Remove block from casper buffer
-    let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-    this.casper_buffer_storage.remove(block_hash_serde)?;
 
     // Publish BlockAdded event
     this.event_publisher

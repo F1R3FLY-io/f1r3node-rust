@@ -276,7 +276,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Check if block already exists in DAG
                     let dag_contains = casper.dag_contains(&hash);
 
-                    // Log error if block unexpectedly exists in DAG (database inconsistency)
+                    // Resume-time reconciliation closing the (c) drift
+                    // state from Bug #17 / T-9.20. The same purge logic
+                    // is provided as a documented helper at
+                    // `block_storage::rust::dag::buffer_dag_transition::
+                    //  reconcile_buffer_against_dag` — kept inline here
+                    // because we additionally clean up the BlockRetriever's
+                    // hash-tracking state (a launch-specific concern that
+                    // the generic recon helper doesn't know about).
+                    // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
                     if dag_contains {
                         tracing::warn!(
                             "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",

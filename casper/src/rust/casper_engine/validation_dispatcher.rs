@@ -402,20 +402,25 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                 status
             );
 
-            // TODO(known-limitation): the (DAG insert, casper-buffer remove)
-            // pair is not transactional. A crash between the two calls
-            // could leave a block recorded in DAG storage but still in
-            // the casper buffer (or, on the reverse order, vice versa).
-            // Distinct from Bug-9.2 (atomic RMW on equivocation tracker),
-            // which addressed a different store. The protocol survives
-            // restart in either drift state — block_processor's resume
-            // logic re-syncs — but a transactional API would be cleaner.
-            // Replaces the prior stale `- OLD` marker (predated Rust
-            // port; the concern remains live).
-            let updated_dag = block_dag_storage.insert(block, InsertMode::Invalid)?;
-            record_dag_cardinality_metrics(&updated_dag);
+            // Bug #17 / T-9.20: in-process atomic transition of the
+            // (DAG insert, casper-buffer remove) pair via
+            // `atomic_insert_then_buffer`. Distinct LMDB envs mean
+            // cross-store ACID is physically impossible; the helper
+            // documents the lock-order contract (DAG global_lock A,
+            // buffer state_lock B) and the on-resume reconciliation
+            // closes any crash-window drift. See
+            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
             let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-            casper_buffer_storage.remove(block_hash_serde)?;
+            let updated_dag =
+                block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
+                    block_dag_storage,
+                    block,
+                    InsertMode::Invalid,
+                    casper_buffer_storage,
+                    block_storage::rust::dag::buffer_dag_transition::BufferTransition
+                        ::RemoveFromBuffer(block_hash_serde),
+                )?;
+            record_dag_cardinality_metrics(&updated_dag);
             Ok(updated_dag)
         };
 
