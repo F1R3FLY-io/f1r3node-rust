@@ -23,9 +23,10 @@ use std::sync::Arc;
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, checked_base_seq, checked_next_seq, epoch_for_block_number,
-    validate_received_slash_deploys,
+    validate_received_slash_deploys, SlashAuthError,
 };
 use casper::rust::validate::Validate;
 use crypto::rust::public_key::PublicKey;
@@ -197,6 +198,14 @@ async fn received_stale_slash_deploy_is_rejected_before_replay() {
     slash_block.body.system_deploys = vec![slash_deploy(invalid.block_hash.clone(), proposer, 0)];
 
     let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject stale");
+    // Per-variant pattern match (regression hardening: prior `.contains()`
+    // assertion would silently pass any error whose Display includes
+    // "non-current epoch", masking a wrong-variant rerouting).
+    assert!(
+        matches!(err, CasperError::SlashAuth(SlashAuthError::EpochMismatch { .. })),
+        "expected SlashAuthError::EpochMismatch, got {err:?}"
+    );
+    // Operator-diagnostic-text stability check kept as a paired assertion.
     assert!(
         err.to_string().contains("non-current epoch"),
         "expected stale epoch rejection, got {err}"
@@ -247,6 +256,10 @@ async fn received_slash_deploy_rejects_issuer_mismatch() {
     );
 
     let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject issuer");
+    assert!(
+        matches!(err, CasperError::SlashAuth(SlashAuthError::IssuerMismatch { .. })),
+        "expected SlashAuthError::IssuerMismatch, got {err:?}"
+    );
     assert!(err.to_string().contains("issuer does not match"));
 }
 
@@ -267,6 +280,13 @@ async fn received_slash_deploy_rejects_unknown_invalid_hash() {
     );
 
     let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject unknown");
+    assert!(
+        matches!(
+            err,
+            CasperError::SlashAuth(SlashAuthError::ReferencesUnknownBlock { .. })
+        ),
+        "expected SlashAuthError::ReferencesUnknownBlock, got {err:?}"
+    );
     assert!(err.to_string().contains("unknown invalid block"));
 }
 
@@ -290,6 +310,13 @@ async fn received_slash_deploy_rejects_valid_block_reference() {
     );
 
     let err = validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject valid");
+    assert!(
+        matches!(
+            err,
+            CasperError::SlashAuth(SlashAuthError::ReferencesValidBlock { .. })
+        ),
+        "expected SlashAuthError::ReferencesValidBlock, got {err:?}"
+    );
     assert!(err.to_string().contains("valid block"));
 }
 
@@ -314,6 +341,10 @@ async fn received_slash_deploy_rejects_unbonded_target() {
 
     let err =
         validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject unbonded");
+    assert!(
+        matches!(err, CasperError::SlashAuth(SlashAuthError::TargetNotBonded { .. })),
+        "expected SlashAuthError::TargetNotBonded, got {err:?}"
+    );
     assert!(err.to_string().contains("not currently bonded"));
 }
 
@@ -342,6 +373,10 @@ async fn received_slash_deploy_rejects_duplicate_target_in_one_block() {
 
     let err =
         validate_received_slash_deploys(&slash_block, &snapshot).expect_err("reject duplicate");
+    assert!(
+        matches!(err, CasperError::SlashAuth(SlashAuthError::DuplicateTarget { .. })),
+        "expected SlashAuthError::DuplicateTarget, got {err:?}"
+    );
     assert!(err.to_string().contains("duplicate slash deploy target"));
 }
 
