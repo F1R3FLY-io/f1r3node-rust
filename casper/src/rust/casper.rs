@@ -31,6 +31,19 @@ use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+/// Default for `CasperShardConf::finalizer_blocking_timeout`. The
+/// finalizer-run timeout was originally hardcoded at two call sites
+/// (`casper.rs::CasperShardConf::new` and
+/// `node/src/rust/runtime/setup.rs`). Centralizing prevents two-way
+/// drift. When `CasperConf` gains a corresponding field, the
+/// constant becomes the documented fallback.
+pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
+
+/// Default for `CasperShardConf::active_validators_cache_max_entries`.
+/// Mirrors `FINALIZER_BLOCKING_TIMEOUT_DEFAULT`'s rationale — see
+/// commit centralizing Phase 13 hardcoded defaults.
+pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),
@@ -356,8 +369,8 @@ impl CasperShardConf {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
-            finalizer_blocking_timeout: Duration::from_secs(15),
-            active_validators_cache_max_entries: 4096,
+            finalizer_blocking_timeout: FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
+            active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
 }

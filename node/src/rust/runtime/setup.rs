@@ -831,12 +831,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
-            // Phase 13: defaults match the previous hardcoded constants
-            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
-            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains corresponding fields, plumb them through here.
-            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
-            active_validators_cache_max_entries: 4096,
+            // Phase 13 defaults centralized as named consts in
+            // `casper::rust::casper`. When `CasperConf` gains corresponding
+            // fields, plumb them through here; the consts are then the
+            // documented fallback.
+            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
+            active_validators_cache_max_entries:
+                casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
         Some(Arc::new(
