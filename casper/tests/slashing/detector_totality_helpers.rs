@@ -1,3 +1,8 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // Shared fixtures for the detector-totality test family (UC-101..UC-108,
 // UC-112, prop_t_9_11_*, pre_fix_bug_11).
 //

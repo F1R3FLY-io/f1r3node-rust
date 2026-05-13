@@ -1,3 +1,8 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // Local type definitions for the SlashingTestHarness state machine.
 //
 // These mirror the abstract LTS state from

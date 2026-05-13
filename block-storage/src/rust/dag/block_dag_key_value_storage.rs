@@ -27,6 +27,11 @@
 //! See `docs/theory/slashing/slashing-verification.md` for the
 //! protocol-level theorems whose witnesses are recorded here.
 
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};

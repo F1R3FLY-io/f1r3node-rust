@@ -1,3 +1,8 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // UC-96 — Epoch-churn identity attack: stale evidence under a fresh epoch.
 //
 // Maps to: docs/theory/slashing/slashing-specification.md §12 UC-96.

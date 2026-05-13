@@ -1,3 +1,8 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // Property-based test for T-9.5 corollary: active_implies_bonded.
 //
 // Theorem: T-9.5 corollary (`t_9_5_active_has_positive_bond`,
