@@ -303,9 +303,16 @@ pub fn to_justification(
         .collect()
 }
 
+/// Project a list of justifications into a per-validator latest-message
+/// map. Returns `BTreeMap` (not `HashMap`) so iteration is deterministic
+/// across nodes — consensus-critical for the operator-visible audit trail
+/// emitted by `validate.rs::justification_regressions`, whose "first
+/// regression detected" log line is logged at the moment of early return;
+/// HashMap entropy would make different nodes report different regressors
+/// for the same offending block, fragmenting the audit trail.
 pub fn to_latest_message_hashes(
     justifications: &[Justification],
-) -> std::collections::HashMap<Validator, BlockHash> {
+) -> std::collections::BTreeMap<Validator, BlockHash> {
     justifications
         .iter()
         .map(|justification| {

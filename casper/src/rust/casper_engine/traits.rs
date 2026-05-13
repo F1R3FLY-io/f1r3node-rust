@@ -236,10 +236,23 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         let latest_block_number = snapshot.dag.latest_block_number();
         let earliest_block_number =
             latest_block_number - snapshot.on_chain_state.shard_conf.deploy_lifespan;
+        // Pre-epoch system clock (operationally impossible on modern
+        // systems, but per-correctness directive: handle the corner). A
+        // silent zero would make every deploy's `is_expired_at(0)` return
+        // false (treating all timestamps as future), masking a corrupt
+        // clock. Propagate as a typed `CasperError::RuntimeError` so the
+        // call site fails loudly instead of silently corrupting deploy
+        // expiration evaluation.
         let current_time_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_err(|e| {
+                CasperError::RuntimeError(format!(
+                    "system clock is before UNIX_EPOCH ({}); cannot evaluate \
+                     deploy expiration",
+                    e
+                ))
+            })?;
 
         // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex`.
         let storage = self.deploy_storage.lock();

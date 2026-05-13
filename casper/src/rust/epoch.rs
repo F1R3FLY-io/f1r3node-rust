@@ -25,6 +25,14 @@ use serde::{Deserialize, Serialize};
 /// Phase 9.5 (R-5): added `Default` (for `BTreeMap::Entry::or_default()`),
 /// `Serialize` / `Deserialize` (for any future state snapshots or wire
 /// formats), and `From<i32>` (shard config carries `epoch_length: i32`).
+///
+/// Inner field is private: anyone outside this module must construct an
+/// `Epoch` via `Epoch::new(...)` / `From<i64>` / `From<i32>` and project
+/// back via `.get()`. The `pub i64` of the prior design defeated the
+/// newtype's value proposition — any caller could write `Epoch(some_height)`
+/// without a compiler warning, silently mixing epoch numbers and block
+/// heights. The private field forces the type system to enforce the
+/// epoch-vs-height distinction.
 #[derive(
     Copy,
     Clone,
@@ -38,7 +46,7 @@ use serde::{Deserialize, Serialize};
     Serialize,
     Deserialize,
 )]
-pub struct Epoch(pub i64);
+pub struct Epoch(i64);
 
 impl Epoch {
     /// Construct an epoch from a raw integer at a protobuf boundary.
@@ -53,6 +61,27 @@ impl Epoch {
     /// epochs, even if it would take centuries of block production).
     pub const fn checked_add(self, rhs: i64) -> Option<Self> {
         match self.0.checked_add(rhs) {
+            Some(v) => Some(Epoch(v)),
+            None => None,
+        }
+    }
+
+    /// Checked subtraction. Returns `None` on underflow (e.g. asking for
+    /// the predecessor of epoch 0 or beyond `i64::MIN`). Mirror of
+    /// `checked_add` for the docstring's "checked-by-default" claim.
+    pub const fn checked_sub(self, rhs: i64) -> Option<Self> {
+        match self.0.checked_sub(rhs) {
+            Some(v) => Some(Epoch(v)),
+            None => None,
+        }
+    }
+
+    /// Checked multiplication. Returns `None` on overflow. Used in
+    /// boundary arithmetic that converts between epoch numbers and
+    /// block numbers (the epoch-to-block-number multiplication of the
+    /// epoch by `epoch_length`).
+    pub const fn checked_mul(self, rhs: i64) -> Option<Self> {
+        match self.0.checked_mul(rhs) {
             Some(v) => Some(Epoch(v)),
             None => None,
         }

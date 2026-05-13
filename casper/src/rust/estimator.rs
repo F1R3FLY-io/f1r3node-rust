@@ -129,10 +129,23 @@ impl Estimator {
                 // `rank_forkchoices` returns an empty list (e.g.,
                 // genesis-only DAG). Surface as a typed error so the
                 // consensus hot path doesn't panic on an empty tip set.
+                //
+                // The variant choice — `KvStoreError::InvalidArgument` —
+                // is a layering compromise: this function returns
+                // `Result<_, KvStoreError>` (from the surrounding
+                // estimator API), so we encode the consensus-invariant
+                // violation as a precondition-violation on this function's
+                // input. The error message identifies the source clearly
+                // for operator diagnosis. A future cross-crate error
+                // refactor could promote this to a typed
+                // `CasperError::ConsensusInvariant` variant, but doing so
+                // would ripple through the estimator's call graph;
+                // documented as a follow-up.
                 let Some((main_hash, secondary_hashes)) = ranked_latest_hashes.split_first()
                 else {
                     return Err(KvStoreError::InvalidArgument(
-                        "rank_forkchoices returned no tips".to_string(),
+                        "consensus invariant: rank_forkchoices returned no tips \
+                         (genesis-only DAG?)".to_string(),
                     ));
                 };
 
