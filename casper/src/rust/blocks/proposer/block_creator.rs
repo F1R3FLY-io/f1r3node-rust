@@ -684,7 +684,7 @@ pub async fn create(
     let unsigned_block = package_block(
         &block_data,
         parents.iter().map(|p| p.block_hash.clone()).collect(),
-        justifications.iter().map(|j| j.clone()).collect(),
+        justifications.iter().cloned().collect(),
         pre_state_hash,
         post_state_hash,
         processed_deploys,
