@@ -69,6 +69,28 @@ pub(crate) struct FinalizationContext {
     pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
 
+/// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
+/// source of truth for the 10-field clone — previously duplicated at
+/// `traits::last_finalized_block` and the trigger site in
+/// `finalization_runner::run_finalization`. Replaces both literal
+/// constructions so adding/renaming a context field is one edit.
+pub(crate) fn build_finalization_context<T: comm::rust::transport::transport_layer::TransportLayer + Send + Sync>(
+    this: &crate::rust::casper_engine::types::MultiParentCasperImpl<T>,
+) -> FinalizationContext {
+    FinalizationContext {
+        block_dag_storage: this.block_dag_storage.clone(),
+        block_store: this.block_store.clone(),
+        deploy_storage: this.deploy_storage.clone(),
+        runtime_manager: this.runtime_manager.clone(),
+        event_publisher: this.event_publisher.clone(),
+        finalization_in_progress: this.finalization_in_progress.clone(),
+        enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
+        fault_tolerance_threshold: this.casper_shard_conf.fault_tolerance_threshold,
+        finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
+        finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
+    }
+}
+
 pub(crate) async fn run_queued_finalizer(
     ctx: FinalizationContext,
     finalizer_task_in_progress: Arc<AtomicBool>,
@@ -304,23 +326,25 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
                 return Ok(());
             }
 
-            let ctx = FinalizationContext {
-                block_dag_storage: self.block_dag_storage.clone(),
-                block_store: self.block_store.clone(),
-                deploy_storage: self.deploy_storage.clone(),
-                runtime_manager: self.runtime_manager.clone(),
-                event_publisher: self.event_publisher.clone(),
-                finalization_in_progress: self.finalization_in_progress.clone(),
-                enable_mergeable_channel_gc: self.casper_shard_conf.enable_mergeable_channel_gc,
-                fault_tolerance_threshold: self.casper_shard_conf.fault_tolerance_threshold,
-                finalizer_conf: self.casper_shard_conf.finalizer_conf.clone(),
-                finalizer_blocking_timeout: self.casper_shard_conf.finalizer_blocking_timeout,
-            };
+            let ctx = build_finalization_context(self);
             let finalizer_task_in_progress = self.finalizer_task_in_progress.clone();
             let finalizer_task_queued = self.finalizer_task_queued.clone();
 
-            tokio::spawn(async move {
+            // Capture the JoinHandle so a panic inside `run_queued_finalizer`
+            // surfaces in the logs instead of being silently dropped. The
+            // RAII `FinalizationGuard` in run_queued_finalizer prevents the
+            // in-progress flag from sticking even if the task panics, so
+            // there's no deadlock — but silent panics mask real bugs.
+            let handle = tokio::spawn(async move {
                 run_queued_finalizer(ctx, finalizer_task_in_progress, finalizer_task_queued).await;
+            });
+            tokio::spawn(async move {
+                if let Err(join_err) = handle.await {
+                    tracing::error!(
+                        "Finalization task terminated abnormally: {}",
+                        join_err
+                    );
+                }
             });
         }
         Ok(())

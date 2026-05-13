@@ -185,18 +185,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
         super::finalization_runner::compute_last_finalized_block(
-            super::finalization_runner::FinalizationContext {
-                block_dag_storage: self.block_dag_storage.clone(),
-                block_store: self.block_store.clone(),
-                deploy_storage: self.deploy_storage.clone(),
-                runtime_manager: self.runtime_manager.clone(),
-                event_publisher: self.event_publisher.clone(),
-                finalization_in_progress: self.finalization_in_progress.clone(),
-                enable_mergeable_channel_gc: self.casper_shard_conf.enable_mergeable_channel_gc,
-                fault_tolerance_threshold: self.casper_shard_conf.fault_tolerance_threshold,
-                finalizer_conf: self.casper_shard_conf.finalizer_conf.clone(),
-                finalizer_blocking_timeout: self.casper_shard_conf.finalizer_blocking_timeout,
-            },
+            super::finalization_runner::build_finalization_context(self),
         )
         .await
     }
