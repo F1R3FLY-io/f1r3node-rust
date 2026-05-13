@@ -767,9 +767,90 @@ restores the cardinality invariant `Inv_AcceptedProjectionCardinality`.
 "validation rejects duplicate-validator justifications" guard at the
 detector projection boundary.
 
-## 9.19 Summary
+## 9.19 Bug #17 — Non-transactional buffer-DAG transition
 
-The sixteen fixes restore the slashing subsystem to audit-grade
+**Origin.** Rust-source confirmed (companion to Bug #2 / T-9.2; distinct
+hazard).
+
+**Cause.** Five sites in the validation pipeline mutated
+`BlockDagKeyValueStorage` and `CasperBufferKeyValueStorage` as a
+non-atomic pair: `dag.insert(block, mode)` followed by
+`buffer.remove(block_hash)`. The two stores live in distinct LMDB
+environments (`dagstorage` and `casperbuffer`); no single LMDB
+transaction spans them. A process crash between the two calls left
+the system in a transient drift state.
+
+**Pre-fix behavior.** Three observable post-restart states were
+reachable:
+
+* (a) DAG insert succeeded, buffer removed — steady state;
+* (b) Neither succeeded — pre-transition steady state, validation
+  reruns on resume;
+* (c) DAG insert succeeded, buffer remove did not — drift state.
+
+State (c) was self-healed by `casper_launch.rs::send_buffer_pendants_to_casper`,
+which purged any pendant whose hash was already in the DAG. The block
+was **not reprocessed** because the launch path filtered it; no
+equivocation record was minted twice and no slash deploy was emitted
+twice (both surfaces are already idempotent — `BlockDagKeyValueStorage::insert_internal`'s
+`block_exists` short-circuit and `validation_dispatcher.rs`'s
+`record_exists` check). The residual concern was code smell,
+observability noise, and the lack of a contract-level guarantee that
+future mutators of the pair preserved the recon-on-resume property.
+
+**Post-fix behavior.** A new `AtomicBufferDagTransition` API in
+`block-storage/src/rust/dag/buffer_dag_transition.rs` exposes a single
+helper `atomic_insert_then_buffer(dag, block, mode, buffer, buffer_op)`
+that acquires the DAG `global_lock` (write) and the buffer `state_lock`
+(write) in a documented order, performs the DAG insert and the buffer
+op back-to-back, and releases both locks. The five call sites collapse
+to one helper call each. The recon contract that was previously
+implicit in `casper_launch.rs::send_buffer_pendants_to_casper` is
+promoted to a documented function `reconcile_buffer_against_dag` in
+the same module and cross-referenced from both the launch path and
+this design entry.
+
+**Theorem T-9.20.** *(`t_9_20_recon`,
+`BugFixAtomicBufferDagTransition.v`.)* For every block `B` and every
+crash point during `atomic_insert_then_buffer(B)`, applying
+`reconcile_buffer_against_dag` on resume yields the same slashing
+projection as the no-crash run.
+
+**Lock-order contract.** DAG `global_lock` (lock A) is acquired
+before `CasperBufferKeyValueStorage::state_lock` (lock B). All code
+paths that hold both must take them in this order to prevent
+process-local deadlock. Existing call sites either take both in this
+order (via this helper) or take exactly one. No code path takes B
+then A.
+
+**Proofs and tests.** Rocq: `t_9_20_recon`,
+`t_9_20_reconcile_idempotent`, `t_9_20_step_idempotent_on_projection`
+(file `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`).
+Rust integration: `block-storage/tests/atomic_buffer_dag_transition.rs`
+(8 tests against real LMDB stores via `InMemoryStoreManager`). Rust
+model-level: `casper/tests/slashing/uc_55_buffer_dag_atomic_transition.rs`
+(UC-55, 6 tests via `SlashingTestHarness` extension).
+
+**Why this matters.** Cross-store ACID is physically impossible
+(distinct LMDB envs), so the fix is in-process best-effort: hold both
+locks in documented order, accept that a crash inside the critical
+section leaves the (c) drift state, close that drift on resume via
+the documented reconcile contract. The pre-fix code was *behaviorally
+correct* (idempotent primitives + self-healing launch path) but the
+contract was implicit and vulnerable to silent regression. The fix
+makes the contract type-enforced and centrally located, so future
+mutators of the pair (e.g., new buffer-DAG patterns) thread through
+the helper or the `BufferTransition` enum rather than re-implementing
+the lock pair.
+
+**Worked example:** §11.18 (new). **Diagram:** new Diagram 17 — a
+sequence diagram of the pre-fix (c) drift state being closed by the
+post-restart reconcile, alongside the post-fix in-process atomic
+transition.
+
+## 9.20 Summary
+
+The seventeen fixes restore the slashing subsystem to audit-grade
 correctness:
 
 - Nine Scala-inherited bugs are documented with proven fixes.
@@ -779,11 +860,14 @@ correctness:
 - Five Rust-source confirmed vulnerabilities or hardening gaps (#12–#16)
   are fixed by authorized slash evidence, epoch-scoped evidence, checked
   arithmetic, and duplicate-justification rejection.
+- One hardening of an implicit contract (#17) is documented with proven
+  recon-on-resume properties.
 
-The bisimilarity claim (T-15, §10) holds modulo these sixteen
+The bisimilarity claim (T-15, §10) holds modulo these seventeen
 deltas: convergence fixes, vault-conservation fixes, Rust-only
-regression fixes, one deliberate widening, and the authorization fixes that
-intentionally reject unsafe legacy behavior.
+regression fixes, one deliberate widening, the authorization fixes that
+intentionally reject unsafe legacy behavior, and the explicit
+atomic-transition contract that documents resume-time reconciliation.
 
 ---
 

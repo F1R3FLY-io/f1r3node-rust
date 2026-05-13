@@ -1258,6 +1258,7 @@ Hypothesis traceability passes, mechanized by `T-9.12`..`T-9.15`,
 | #14 | T-LivenessGap (`deploy_epoch_matches_target`)            | Rust-source confirmed | Permitted bug fix (proposer derives candidates from authorized invalid-block evidence index) |
 | #15 | T-9.14  | Rust-source confirmed                                    | Permitted bug fix (checked sequence arithmetic at boundary)                |
 | #16 | T-9.15  | Rust-source confirmed                                    | Permitted bug fix (duplicate justifications rejected pre-projection)       |
+| #17 | T-9.20  | Rust-source confirmed                                    | Preserving (closes Rust-only crash-window drift via documented recon contract) |
 
 "Preserving" = the fix restores Rust↔Scala convergence (or, for #2,
 fixes a Rust-only deviation). "Deliberate widening" = the fix is a
@@ -1659,6 +1660,62 @@ detectable(view) ≜ detected_hash_seen(view) ∨ |distinct_child_hashes(view)| 
   positives.
 - **Tests.** UC-101 through UC-108 plus property tests
   `prop_t_9_11_detector_*`.
+
+### 10.12 Bug #17 — Non-transactional buffer-DAG transition
+
+- **Origin.** Rust-source confirmed (companion to Bug #2 / T-9.2;
+  distinct hazard).
+- **Cause.** `BlockDagKeyValueStorage` and `CasperBufferKeyValueStorage`
+  live in distinct LMDB environments. Five validation-pipeline sites
+  performed a non-atomic pair `(dag.insert(block, mode),
+  buffer.remove(block_hash))`. A process crash between the two calls
+  left the system in a transient drift state (block in DAG, pendant
+  still in buffer).
+- **Pre-fix behavior.** The drift was self-healed by
+  `casper_launch.rs::send_buffer_pendants_to_casper` on every restart,
+  via the launch path's pendant-purge loop. Combined with the
+  idempotent dispatch primitives (`insert_internal`'s short-circuit,
+  `record_evidence`'s record-exists check), no double-slashing or
+  duplicate equivocation records were possible. The residual concern
+  was contract-implicitness: future mutators of the pair could
+  silently regress without compiler-enforced ordering.
+- **Fix.** Introduce `AtomicBufferDagTransition` API in
+  `block-storage/src/rust/dag/buffer_dag_transition.rs`. The helper
+  `atomic_insert_then_buffer(...)` acquires both stores' write locks
+  in documented order (DAG global_lock, then buffer state_lock) and
+  performs the (insert, remove) pair under one critical section.
+  Promote the launch-time reconcile to a documented function
+  `reconcile_buffer_against_dag(...)`. Cross-store ACID is physically
+  impossible (distinct envs); the fix is in-process best-effort plus
+  documented on-resume reconciliation.
+- **Theorem.** T-9.20 — `t_9_20_recon` in
+  `BugFixAtomicBufferDagTransition.v`.
+- **Statement.**
+
+```
+∀ s h c. slashing_proj(resume_step s h c) = slashing_proj(Step s h)
+where
+  Step s h            = remove_buffer (insert_dag s h) h
+  reconcile_one s h   = if (dag h ∧ buffer h) then remove_buffer s h else s
+  resume_step s h c   = Step (reconcile_one (crash_step s h c) h) h
+  slashing_proj s     = s.dag
+```
+
+  For every crash point, applying the resume operation (reconcile +
+  replay) yields the same slashing projection as the no-crash atomic
+  step.
+- **Bisimilarity impact.** Preserving — the fix closes a Rust-only
+  crash-window gap. Pre-fix and post-fix systems produce the same
+  observable behavior; the post-fix system additionally makes the
+  recon contract type-enforced.
+- **Tests.** Unit/integration tests at `block-storage/tests/
+  atomic_buffer_dag_transition.rs` (8 tests against real LMDB stores).
+  Model-level property tests at `casper/tests/slashing/
+  uc_55_buffer_dag_atomic_transition.rs` (UC-55, 6 tests via the
+  `SlashingTestHarness` extension). Rocq mechanization at
+  `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`
+  with three theorems: `t_9_20_recon`, `t_9_20_reconcile_idempotent`,
+  `t_9_20_step_idempotent_on_projection`.
 
 ---
 
