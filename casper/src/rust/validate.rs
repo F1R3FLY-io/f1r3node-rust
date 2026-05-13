@@ -425,11 +425,32 @@ impl Validate {
       let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
 
       let duplicated_deploys = proto_util::deploys(&duplicated_block);
-      let duplicated_deploy = duplicated_deploys
+      // Convert the previously-panicking `.expect("Duplicated deploy
+      // should exist")` into a typed BlockException. The
+      // duplicate-deploy index claimed this block carries a matching
+      // signature; if the block's own deploy list does NOT contain
+      // such a deploy, the index is corrupt — surface as infrastructure
+      // failure rather than panicking the validator on hostile or
+      // corrupted state.
+      let duplicated_deploy = match duplicated_deploys
         .iter()
         .map(|processed_deploy| &processed_deploy.deploy)
         .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-        .expect("Duplicated deploy should exist");
+      {
+        Some(d) => d,
+        None => {
+          tracing::error!(
+            "InvalidRepeatDeploy duplicate-deploy invariant violated: deploy-index claims block {} carries a deploy whose signature collides with current block {}, but no such deploy exists in that block's deploy list",
+            block_hash_string,
+            current_block_hash_string
+          );
+          return BlockError::BlockException(CasperError::RuntimeError(format!(
+            "InvalidRepeatDeploy duplicate-deploy invariant violated: block {} indexed as duplicate-deploy carrier for current block {} contains no matching deploy",
+            block_hash_string,
+            current_block_hash_string,
+          )));
+        }
+      };
 
       let term = &duplicated_deploy.data.term;
       let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
@@ -453,10 +474,18 @@ impl Validate {
 
     // This is not a slashable offence
     pub fn timestamp(b: &BlockMessage, block_store: &KeyValueBlockStore) -> ValidBlockProcessing {
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        // Pre-epoch system clock is an infrastructure failure, not a
+        // block defect. Surfacing it as BlockException (rather than
+        // silently defaulting to 0 — which would then accept any
+        // 0..+DRIFT timestamp regardless of true wall time) matches
+        // the C3 fix for `traits.rs` and keeps the validator honest
+        // on a broken clock.
+        let current_time = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as i64,
+            Err(e) => {
+                return Either::Left(BlockError::BlockException(CasperError::from(e)));
+            }
+        };
 
         let timestamp = b.header.timestamp;
 
