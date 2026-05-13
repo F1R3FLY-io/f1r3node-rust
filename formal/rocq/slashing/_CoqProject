@@ -80,5 +80,6 @@ theories/BugFixDuplicateJustifications.v
 theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
+theories/BugFixAtomicBufferDagTransition.v
 theories/Bisimulation.v
 theories/MainTheorem.v
