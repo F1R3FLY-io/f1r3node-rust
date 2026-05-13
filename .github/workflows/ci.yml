@@ -206,10 +206,13 @@ jobs:
     # The system-integration pytest suite (~47 tests, boots a full
     # 4-node Docker shard for each scenario, 1-3 min per test) has
     # organically grown past the prior 30-minute budget — the dev
-    # branch's recent runs were also being cancelled at 30:00. 60
-    # leaves headroom for ARM64's `--timeout-scale=2.0` runs while
-    # still gating against a runaway hang.
-    timeout-minutes: 60
+    # branch's recent runs were also being cancelled at 30:00. The
+    # 60-min budget covered ~89% on amd64; bumped to 120 to (a) let
+    # the suite run to completion as a data-collection baseline,
+    # and (b) cover ARM64's `--timeout-scale=2.0` per-test budget
+    # multiplier. Still caps any genuine hang at ~2× the realistic
+    # completion time.
+    timeout-minutes: 120
     concurrency:
       group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
