@@ -4,11 +4,10 @@
 //! function takes the casper instance as a `&MultiParentCasperImpl<T>`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use crate::rust::errors::CasperError;
@@ -52,25 +51,28 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
         candidate_hashes.insert(BlockHash::from(child_hash.0.clone()));
     }
 
-    // Keep only candidates that exist in block store.
-    let mut candidates_stored = Vec::new();
+    // C14 / Perf-5: read each candidate block from store exactly once
+    // and reuse the materialized `BlockMessage` across the dependency
+    // check and the final result construction. Prior to this commit
+    // every candidate was read three times — once for `.is_some()`,
+    // once to inspect `dependencies_hashes_of`, and once to build the
+    // result Vec. The middle read also carried a defensive "block
+    // disappeared from store between is_some() and get()" branch that
+    // was unreachable (the buffer's state lock isn't held across the
+    // gap; a concurrent eviction is in principle observable) but
+    // becomes trivially unreachable when each block is read only
+    // once.
+    let mut blocks_in_store: HashMap<BlockHash, BlockMessage> =
+        HashMap::with_capacity(candidate_hashes.len());
     for candidate_hash in candidate_hashes {
-        if this.block_store.get(&candidate_hash)?.is_some() {
-            candidates_stored.push(candidate_hash);
+        if let Some(block) = this.block_store.get(&candidate_hash)? {
+            blocks_in_store.insert(candidate_hash, block);
         }
     }
 
-    // Filter to dependency-free candidates by real block dependencies.
-    let mut dep_free_pendants = Vec::new();
-    for candidate_hash in candidates_stored {
-        // P2-7: surface missing block as a typed error.
-        let block = this.block_store.get(&candidate_hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "block {} disappeared from store between is_some() and get()",
-                PrettyPrinter::build_string_bytes(&candidate_hash)
-            ))
-        })?;
-        let all_deps = proto_util::dependencies_hashes_of(&block);
+    let mut dep_free_keys: Vec<BlockHash> = Vec::with_capacity(blocks_in_store.len());
+    for (candidate_hash, block) in &blocks_in_store {
+        let all_deps = proto_util::dependencies_hashes_of(block);
         let all_deps_available = all_deps.into_iter().all(|dep| {
             admit_dag_contains(this, &dep)
                 || equivocation_hashes.contains(&dep)
@@ -78,16 +80,16 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
         });
 
         if all_deps_available {
-            dep_free_pendants.push(candidate_hash);
+            dep_free_keys.push(candidate_hash.clone());
         }
     }
 
-    // Get the actual BlockMessages.
-    let result = dep_free_pendants
-        .into_iter()
-        .map(|hash| this.block_store.get(&hash))
-        .collect::<Result<Option<Vec<_>>, _>>()?
-        .ok_or_else(|| CasperError::RuntimeError("Failed to get blocks from store".to_string()))?;
+    let mut result: Vec<BlockMessage> = Vec::with_capacity(dep_free_keys.len());
+    for hash in dep_free_keys {
+        if let Some(block) = blocks_in_store.remove(&hash) {
+            result.push(block);
+        }
+    }
 
     Ok(result)
 }

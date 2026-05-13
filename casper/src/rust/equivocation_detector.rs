@@ -31,7 +31,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::equivocation_record::{EquivocationDiscoveryStatus, EquivocationRecord};
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
@@ -179,18 +179,28 @@ impl EquivocationDetector {
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
     ) -> Result<NeglectedEquivocationOutcome, KvStoreError> {
+        // C14 / Perf-6: hoist `latest_messages` and `bonds` out of the
+        // per-equivocation-record loop. Both are computed solely from
+        // `block`; recomputing them inside the loop is O(B+J) work per
+        // record, for total O((B+J)·|records|). Hoisting collapses
+        // this to O(B+J+|records|·setup) and removes a per-iteration
+        // BTreeMap construction.
+        let latest_messages = Self::to_latest_message_hashes(&block.justifications);
+        let bonds = proto_util::bonds(block);
+
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
             let mut recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
                 let status = Self::get_equivocation_discovery_status(
-                    block,
                     dag,
                     block_store,
                     &equivocation_record,
                     genesis,
                     &mut canonical_child_cache,
+                    &latest_messages,
+                    &bonds,
                 )?;
                 match status {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
@@ -224,28 +234,30 @@ impl EquivocationDetector {
         })
     }
 
+    // C14 / Perf-6: `block` is no longer needed here — `latest_messages`
+    // and `bonds` (both derived from `block`) are precomputed once
+    // by the caller (`check_neglected_equivocation`) and passed in.
     fn get_equivocation_discovery_status(
-        block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         equivocation_record: &EquivocationRecord,
         genesis: &BlockMessage,
         canonical_child_cache: &mut CanonicalChildCache,
+        latest_messages: &BTreeMap<Validator, BlockHash>,
+        bonds: &[Bond],
     ) -> Result<EquivocationDiscoveryStatus, KvStoreError> {
         let equivocating_validator = &equivocation_record.equivocator;
-        let latest_messages = Self::to_latest_message_hashes(&block.justifications);
-        let bonds = proto_util::bonds(block);
 
         let maybe_equivocating_validator_bond = bonds
             .iter()
-            .find(|bond| bond.validator == equivocating_validator);
+            .find(|bond| bond.validator == *equivocating_validator);
 
         match maybe_equivocating_validator_bond {
             Some(bond) => Self::get_equivocation_discovery_status_for_bonded_validator(
                 dag,
                 block_store,
                 equivocation_record,
-                &latest_messages,
+                latest_messages,
                 bond.stake,
                 genesis,
                 canonical_child_cache,
