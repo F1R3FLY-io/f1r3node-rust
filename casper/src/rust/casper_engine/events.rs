@@ -7,7 +7,7 @@
 //!   external callers (e.g. `blocks/proposer/proposer.rs`) import them
 //!   through the `multi_parent_casper_impl::` re-export shim.
 //! * `pending_deploy_is_future_for_next_block` — `pub(super)` so the
-//!   sibling `traits` module's `has_pending_deploys_in_storage_for_snapshot`
+//!   sibling `dispatch` module's `has_pending_deploys_in_storage_for_snapshot`
 //!   can call it without exposing it crate-wide.
 
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -16,7 +16,7 @@ use shared::rust::shared::f1r3fly_event::{DeployEvent, F1r3flyEvent};
 /// Returns `true` when a pending deploy's `valid_after_block_number`
 /// strictly exceeds the latest block in the DAG — i.e. the deploy cannot
 /// yet be included in the *next* block. Caller:
-/// [`super::traits::MultiParentCasper::has_pending_deploys_in_storage_for_snapshot`].
+/// [`super::dispatch::MultiParentCasper::has_pending_deploys_in_storage_for_snapshot`].
 ///
 /// `pub(super)` because the only caller is in a sibling sub-module of
 /// `casper_engine`. Phase 7 (C-2) demoted this from `pub(crate)` once the

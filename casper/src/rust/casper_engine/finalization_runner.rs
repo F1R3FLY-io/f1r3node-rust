@@ -301,52 +301,55 @@ pub(crate) async fn compute_last_finalized_block(
     Ok(block_message)
 }
 
-impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
-    /// P2-15 / Phase 3: inherent method invoked by
-    /// `block_admission::admit_handle_valid_block` (cross-sub-module call).
-    /// Promoted to `pub(crate)` for the cross-sub-module access.
-    pub(crate) async fn update_last_finalized_block(
-        &self,
-        new_block: &BlockMessage,
-    ) -> Result<(), CasperError> {
-        if self.casper_shard_conf.finalization_rate <= 0 {
+/// Trigger a finalization run if the new block crosses the finalization
+/// rate boundary. Free function (matches the rest of `casper_engine/*`
+/// module idiom — every other operation in this sub-module is a free
+/// function taking `this: &MultiParentCasperImpl<T>`).
+///
+/// Promoted from inherent `impl` block during the casper_engine
+/// refactor (Phase-3+ cleanup). Caller:
+/// `block_admission::admit_handle_valid_block`.
+pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    new_block: &BlockMessage,
+) -> Result<(), CasperError> {
+    if this.casper_shard_conf.finalization_rate <= 0 {
+        return Ok(());
+    }
+
+    if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0
+    {
+        if this
+            .finalizer_task_in_progress
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            if !this.finalizer_task_queued.swap(true, Ordering::SeqCst) {
+                tracing::debug!("Finalizer already running; queued follow-up finalization run");
+            }
             return Ok(());
         }
 
-        if new_block.body.state.block_number % self.casper_shard_conf.finalization_rate as i64 == 0
-        {
-            if self
-                .finalizer_task_in_progress
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
-                if !self.finalizer_task_queued.swap(true, Ordering::SeqCst) {
-                    tracing::debug!("Finalizer already running; queued follow-up finalization run");
-                }
-                return Ok(());
+        let ctx = build_finalization_context(this);
+        let finalizer_task_in_progress = this.finalizer_task_in_progress.clone();
+        let finalizer_task_queued = this.finalizer_task_queued.clone();
+
+        // Capture the JoinHandle so a panic inside `run_queued_finalizer`
+        // surfaces in the logs instead of being silently dropped. The
+        // RAII `FinalizationGuard` in run_queued_finalizer prevents the
+        // in-progress flag from sticking even if the task panics, so
+        // there's no deadlock — but silent panics mask real bugs.
+        let handle = tokio::spawn(async move {
+            run_queued_finalizer(ctx, finalizer_task_in_progress, finalizer_task_queued).await;
+        });
+        tokio::spawn(async move {
+            if let Err(join_err) = handle.await {
+                tracing::error!(
+                    "Finalization task terminated abnormally: {}",
+                    join_err
+                );
             }
-
-            let ctx = build_finalization_context(self);
-            let finalizer_task_in_progress = self.finalizer_task_in_progress.clone();
-            let finalizer_task_queued = self.finalizer_task_queued.clone();
-
-            // Capture the JoinHandle so a panic inside `run_queued_finalizer`
-            // surfaces in the logs instead of being silently dropped. The
-            // RAII `FinalizationGuard` in run_queued_finalizer prevents the
-            // in-progress flag from sticking even if the task panics, so
-            // there's no deadlock — but silent panics mask real bugs.
-            let handle = tokio::spawn(async move {
-                run_queued_finalizer(ctx, finalizer_task_in_progress, finalizer_task_queued).await;
-            });
-            tokio::spawn(async move {
-                if let Err(join_err) = handle.await {
-                    tracing::error!(
-                        "Finalization task terminated abnormally: {}",
-                        join_err
-                    );
-                }
-            });
-        }
-        Ok(())
+        });
     }
+    Ok(())
 }

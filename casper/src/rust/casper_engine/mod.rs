@@ -5,7 +5,7 @@
 //! (Layout C of the second Plan-agent design):
 //!
 //! * [`types`] — `pub struct MultiParentCasperImpl` + module constants.
-//! * [`traits`] — `impl Casper` + `impl MultiParentCasper` (thin delegates).
+//! * [`dispatch`] — `impl Casper` + `impl MultiParentCasper` (thin delegates).
 //! * [`snapshot`] — `compute_snapshot`, `get_on_chain_state`,
 //!   `record_dag_cardinality_metrics`, `estimator`.
 //! * [`validation_dispatcher`] — `validate`, `validate_self_created`,
@@ -29,7 +29,7 @@ pub mod buffer_resolver;
 pub mod events;
 pub mod finalization_runner;
 pub mod snapshot;
-pub mod traits;
+pub mod dispatch;
 pub mod types;
 pub mod validation_dispatcher;
 

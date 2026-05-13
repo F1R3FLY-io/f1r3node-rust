@@ -134,7 +134,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         .publish(super::events::added_event(block))?;
 
     // Update last finalized block if needed
-    this.update_last_finalized_block(block).await?;
+    super::finalization_runner::update_last_finalized_block(this, block).await?;
 
     // Wake heartbeat immediately when a new peer block is accepted.
     if let Some(validator_id) = &this.validator_id {
