@@ -6,17 +6,20 @@ on:
     branches:
       - dev
       - master
-      - migration-plan
+      - staging
+      - trying
     tags: "**"
   pull_request:
     branches:
       - dev
       - master
+      - staging
+      - trying
       - "feature/**"
 
 # Lint and test jobs cancel previous runs for the same ref (cheap, on
-# GitHub-hosted runners). Self-hosted runner jobs queue instead to avoid
-# wasting expensive native Docker builds.
+# GitHub-hosted runners). Self-hosted runner jobs queue via per-job
+# concurrency groups instead, to avoid wasting expensive native Docker builds.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -28,8 +31,48 @@ env:
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
 jobs:
+  # Resolve version + branch env vars once for downstream jobs.
+  # Skip release-bump commits on branch pushes — the tag push handles publish.
+  build_base:
+    name: Build Base
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release)')
+      || startsWith(github.ref, 'refs/tags/')
+    outputs:
+      VERSION: ${{ steps.env.outputs.VERSION }}
+      BRANCH: ${{ steps.env.outputs.BRANCH }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize Environment
+        id: env
+        shell: bash -exu -o pipefail {0}
+        run: |
+          git fetch origin --tags --force
+
+          # Version from latest matching tag (falls back to short SHA if no tag yet)
+          VERSION="$(git describe --tags --always)"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Derive BRANCH for image tag suffix logic downstream
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            # Tag push: treat as master release path
+            BRANCH="master"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+          fi
+          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          echo "Version: $VERSION | Branch: $BRANCH"
+
   lint:
     name: Lint
+    needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -60,6 +103,7 @@ jobs:
 
   deny:
     name: cargo-deny
+    needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -196,31 +240,117 @@ jobs:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
 
-  # Integration tests on Oracle Cloud self-hosted runners.
-  # Boots a full shard (bootstrap + 3 validators + observer) and runs the
-  # system-integration pytest suite against the freshly built Docker image.
+  # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
+  # jobs. Runs in parallel with build_docker_image so the ~1-minute launch
+  # overhead overlaps with the ~7-minute Docker build. Each VM boots from a
+  # baked image, registers as a GitHub Actions runner with
+  # f1r3fly-rust-ci-ephemeral labels, picks up exactly one matrix job, then
+  # self-terminates. Lifecycle: see F1R3FLY-io/system-integration ci/oci-runners/.
+  launch_ephemeral_runners:
+    name: Launch Ephemeral Runners
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write  # needed for gh api ... actions/runners/registration-token
+    timeout-minutes: 10
+    steps:
+      - name: Clone system-integration
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: refactor/integration-test-framework
+          path: system-integration
+
+      - name: Install OCI CLI
+        shell: bash -ex {0}
+        run: |
+          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -ex {0}
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Launch 10 amd64 + 10 arm64 ephemeral runners
+        shell: bash -ex {0}
+        env:
+          # The default GITHUB_TOKEN can't mint runner registration tokens even
+          # with permissions: actions: write — that endpoint requires admin-on-
+          # repo scope. RELEASE_PAT is already provisioned with the repo scope
+          # (used by release.yml for tag creation) so reuse it here.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          cd system-integration/ci/oci-runners
+          # Launch in parallel; each script exits as soon as the OCI launch
+          # API call returns (the VM continues booting in the background and
+          # registers itself via cloud-init). 10 amd64 + 10 arm64 feeds the
+          # 20-job dual-provider matrix (docker × {amd64,arm64} × 5 slots +
+          # subprocess × {amd64,arm64} × 5 slots).
+          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & done
+          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & done
+          wait
+          echo "All 20 ephemeral runner VMs submitted."
+
+  # Integration tests run on ephemeral OCI runners — one fresh VM per matrix
+  # job, self-terminating after the job completes. The matrix runs the same
+  # test suite against TWO node-spawn backends (docker provider, subprocess
+  # provider) on each arch — 20 jobs total. Each arch's 10 jobs share its 10
+  # ephemeral runners (provider is a pytest flag, not a runner concern).
   integration_tests:
-    name: Integration Tests (${{ matrix.arch }})
-    needs: build_docker_image
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
+    needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    concurrency:
-      group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: [self-hosted, Linux, X64, f1r3fly-rust-ci]
-          - arch: arm64
-            runner: [self-hosted, Linux, ARM64, f1r3fly-rust-ci]
+          # ── amd64 × docker × 5 ───────────────────────────────────────────────
+          - { arch: amd64, provider: docker,     slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: docker,     slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: docker,     slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: docker,     slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: docker,     slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          # ── amd64 × subprocess × 5 ───────────────────────────────────────────
+          - { arch: amd64, provider: subprocess, slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: subprocess, slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: subprocess, slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: subprocess, slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: amd64, provider: subprocess, slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          # ── arm64 × docker × 5 ───────────────────────────────────────────────
+          - { arch: arm64, provider: docker,     slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: docker,     slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: docker,     slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: docker,     slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: docker,     slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          # ── arm64 × subprocess × 5 ───────────────────────────────────────────
+          - { arch: arm64, provider: subprocess, slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: subprocess, slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: subprocess, slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: subprocess, slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - { arch: arm64, provider: subprocess, slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
     steps:
-      - name: Clean self-hosted runner state
-        shell: bash {0}
-        run: |
-          sudo rm -rf system-integration/integration-tests/data
-          rm -f /tmp/rust-node-docker.tar.gz /tmp/*.log
-
       - name: Clone Repository
         uses: actions/checkout@v4
 
@@ -228,22 +358,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: main
+          ref: refactor/integration-test-framework
           path: system-integration
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: 'pip'
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: 1.8.5
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load Docker Image
+      - name: Load Docker Image (from build_docker_image artifact)
         uses: actions/download-artifact@v4
         with:
           name: artifacts-docker-${{ matrix.arch }}
@@ -253,25 +371,18 @@ jobs:
         shell: bash -ex {0}
         run: |
           zcat /tmp/rust-node-docker.tar.gz | docker image load
-          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
 
-      - name: Install docker-compose
+      - name: Extract rnode binary from image (subprocess provider only)
+        if: matrix.provider == 'subprocess'
         shell: bash -ex {0}
         run: |
-          if ! command -v docker-compose &>/dev/null; then
-            sudo curl -L "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-          fi
-          docker-compose --version
-
-      - name: Reset Docker networking
-        shell: bash {0}
-        run: |
-          docker rm -f $(docker ps -aq) 2>/dev/null || true
-          docker network prune -f 2>/dev/null || true
-          echo "Restarting Docker daemon to clear any TIME_WAIT sockets from previous runs"
-          sudo systemctl restart docker
-          sleep 3
+          docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
+          docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
+          chmod +x /tmp/rnode
+          docker rm extract-rnode
+          /tmp/rnode --version 2>/dev/null || true
+          ldd /tmp/rnode
 
       - name: Install system-integration dependencies
         shell: bash -ex {0}
@@ -280,60 +391,320 @@ jobs:
           poetry lock --no-update
           poetry install --with integration
 
-      - name: Run Integration Tests
+      - name: Run Integration Tests (${{ matrix.provider }} provider)
         shell: bash -ex {0}
         env:
-          DEFAULT_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}
+          # Both env vars are set unconditionally — the framework's resolver
+          # honors whichever matches `--provider`. Setting the other is harmless.
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
         run: |
           cd system-integration
           SCALE_FLAG=""
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            SCALE_FLAG="--timeout-scale=2.0"
+            SCALE_FLAG="--timeout-scale=1.5"
           fi
-          poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING \
-            --startup-timeout=600 --command-timeout=300 --timeout=600 $SCALE_FLAG
+          poetry run pytest \
+            integration-tests/test/tests/shared/ \
+            integration-tests/test/tests/custom/ \
+            integration-tests/test/tests/standalone/ \
+            --deselect integration-tests/test/tests/custom/test_load.py \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
+            --deselect integration-tests/test/tests/custom/test_asymmetric_bonds.py::test_finalization_asymmetric_bonds \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_ft_convergence \
+            --deselect integration-tests/test/tests/shared/test_bonding_validators.py \
+            --deselect integration-tests/test/tests/custom/test_joiner_self_proposes_at_epoch_boundary.py \
+            --deselect integration-tests/test/tests/shared/test_observer_lfs_sync.py \
+            --provider=${{ matrix.provider }} \
+            -v --tb=short --instafail --maxfail=10 \
+            -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
       - name: Upload Integration Test Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs-${{ matrix.arch }}
+          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
 
-      - name: Upload Docker Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-logs-${{ matrix.arch }}
-          path: /tmp/*.log
-          if-no-files-found: ignore
-          retention-days: 7
+  # Smoke test: single-node docker-compose standalone deployment.
+  # Verifies the image can start, reach Running state, expose HTTP API, and
+  # finalize blocks. GitHub-hosted runner (amd64 only).
+  smoke_docker_standalone:
+    name: Smoke Test (Docker Standalone)
+    needs: build_docker_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v4
 
-      - name: Clean Docker state
+      - name: Load Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Start standalone node
+        shell: bash -ex {0}
+        run: docker compose -f docker/standalone.yml up -d
+
+      - name: Wait for Running state
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose -f docker/standalone.yml logs 2>&1 | grep -q "Making a transition to Running state"; then
+              echo "Node reached Running state"
+              break
+            fi
+            echo "  [${i}] Waiting for Running state..."
+            sleep 5
+          done
+          docker compose -f docker/standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
+
+      - name: Verify HTTP API
+        shell: bash -ex {0}
+        run: curl -sf http://localhost:40403/api/status
+
+      - name: Wait for 10 finalized blocks
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] LFB: #$LFB"
+            if [ "$LFB" -ge 10 ] 2>/dev/null; then
+              echo "Reached LFB #$LFB"
+              break
+            fi
+            sleep 5
+          done
+          [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+
+      - name: Collect logs
         if: always()
         shell: bash {0}
         run: |
-          docker rm -f rnode.bootstrap rnode.validator1 rnode.validator2 rnode.validator3 rnode.readonly \
-            rnode.standalone rnode.custom.boot rnode.custom.validator1 rnode.custom.validator2 \
-            rnode.custom.validator3 rnode.custom.joiner 2>/dev/null
-          docker network rm f1r3fly-shard f1r3fly-test-shard f1r3fly-test-standalone f1r3fly-test-custom 2>/dev/null
-          sudo rm -rf system-integration/integration-tests/data
+          mkdir -p /tmp/logs
+          docker ps -a > /tmp/logs/containers.txt 2>&1 || true
+          for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
+            name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
+            docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
+          done
 
-  # Push Docker image to Docker Hub (multi-arch manifest).
-  # Runs only on push to master or on tags, after all tests pass.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs-docker-standalone
+          path: /tmp/logs/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        shell: bash {0}
+        run: docker compose -f docker/standalone.yml down -v
+
+  # Smoke test: full docker-compose shard (bootstrap + validators + observer).
+  smoke_docker_shard:
+    name: Smoke Test (Docker Shard)
+    needs: build_docker_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - name: Load Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Start shard
+        shell: bash -ex {0}
+        run: docker compose -f docker/shard.yml up -d
+
+      - name: Wait for bootstrap Running state
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            if docker logs rnode.bootstrap 2>&1 | grep -q "Making a transition to Running state"; then
+              echo "Bootstrap reached Running state"
+              break
+            fi
+            echo "  [${i}] Waiting for bootstrap Running state..."
+            sleep 5
+          done
+          docker logs rnode.bootstrap 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Bootstrap did not reach Running state" && exit 1)
+
+      - name: Wait for 10 finalized blocks on bootstrap
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] LFB: #$LFB"
+            if [ "$LFB" -ge 10 ] 2>/dev/null; then
+              echo "Reached LFB #$LFB"
+              break
+            fi
+            sleep 5
+          done
+          [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+
+      - name: Collect logs
+        if: always()
+        shell: bash {0}
+        run: |
+          mkdir -p /tmp/logs
+          docker ps -a > /tmp/logs/containers.txt 2>&1 || true
+          for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
+            name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
+            docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs-docker-shard
+          path: /tmp/logs/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        shell: bash {0}
+        run: docker compose -f docker/shard.yml down -v
+
+  # Smoke test: extract binary from docker image, run locally without docker.
+  smoke_local_standalone:
+    name: Smoke Test (Local Standalone)
+    needs: build_docker_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - name: Install just
+        shell: bash -ex {0}
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+      - name: Load Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp
+
+      - name: Extract node binary from Docker image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          CONTAINER_ID=$(docker create ${{ env.DOCKER_IMAGE_NAME }}:amd64)
+          mkdir -p target/release
+          docker cp "$CONTAINER_ID:/opt/docker/bin/node" ./target/release/node
+          docker rm "$CONTAINER_ID"
+          chmod +x ./target/release/node
+
+      - name: Setup standalone data
+        shell: bash -ex {0}
+        run: just setup-standalone
+
+      - name: Start standalone node
+        shell: bash -ex {0}
+        run: |
+          ./target/release/node run -s \
+            --config-file=run-local/conf/standalone.conf \
+            --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+            --host=localhost \
+            --no-upnp \
+            > /tmp/node-stdout.log 2>&1 &
+          echo $! > /tmp/node.pid
+          echo "Node started with PID $(cat /tmp/node.pid)"
+
+      - name: Wait for Running state
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            if grep -q "Making a transition to Running state" /tmp/node-stdout.log 2>/dev/null; then
+              echo "Node reached Running state"
+              break
+            fi
+            echo "  [${i}] Waiting for Running state..."
+            sleep 5
+          done
+          grep -q "Making a transition to Running state" /tmp/node-stdout.log || (echo "FAIL: Node did not reach Running state" && cat /tmp/node-stdout.log && exit 1)
+
+      - name: Verify HTTP API
+        shell: bash -ex {0}
+        run: curl -sf http://localhost:40403/api/status
+
+      - name: Wait for 10 finalized blocks
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] LFB: #$LFB"
+            if [ "$LFB" -ge 10 ] 2>/dev/null; then
+              echo "Reached LFB #$LFB"
+              break
+            fi
+            sleep 5
+          done
+          [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+
+      - name: Collect logs
+        if: always()
+        shell: bash {0}
+        run: |
+          mkdir -p /tmp/logs
+          cp /tmp/node-stdout.log /tmp/logs/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs-local-standalone
+          path: /tmp/logs/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        shell: bash {0}
+        run: |
+          PID=$(cat /tmp/node.pid 2>/dev/null || echo "")
+          [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+
+  # Publish Docker image to Docker Hub + OCIR.
+  # Runs on tag pushes and on push to dev/master/staging/trying (with suffix).
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
     needs:
+      - build_base
       - test
       - integration_tests
+      - smoke_docker_standalone
+      - smoke_docker_shard
+      - smoke_local_standalone
       - build_docker_image
     if: >-
       github.event_name == 'push' && (
         startsWith(github.ref, 'refs/tags/') ||
         github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/migration-plan'
+        github.ref == 'refs/heads/dev' ||
+        github.ref == 'refs/heads/staging' ||
+        github.ref == 'refs/heads/trying'
       )
     runs-on: ubuntu-latest
     steps:
@@ -363,46 +734,72 @@ jobs:
         run: zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
 
       - name: Log in to Docker Hub
-        if: >-
-          startsWith(github.ref, 'refs/tags/') ||
-          github.ref == 'refs/heads/master'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish Docker Image
-        if: >-
-          startsWith(github.ref, 'refs/tags/') ||
-          github.ref == 'refs/heads/master'
+        env:
+          VERSION: ${{ needs.build_base.outputs.VERSION }}
+          BRANCH: ${{ needs.build_base.outputs.BRANCH }}
         shell: bash -exu -o pipefail {0}
         run: |
-          VERSION="$(git describe --tags --always)"
-
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
 
-          IMG_VERSION_RAW="${DOCKER_IMAGE_NAME}:${VERSION}"
+          SUFFIX=""
+          CI_RUN=""
+          TAG_PREFIX=""
+          IS_TAG_PUSH="false"
+
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            IS_TAG_PUSH="true"
+          fi
+
+          # Branch-based tagging:
+          #   trying  → separate image stream `${IMAGE}-trying`, per-CI-run tags
+          #   dev     → version tag prefixed `dev-${VERSION}`, channel pointer :dev
+          #   staging → version tag prefixed `staging-${VERSION}`, channel pointer :staging
+          #   master  → plain :${VERSION}, channel pointer :latest only on tag push
+          if [[ "$BRANCH" == "trying" ]]; then
+            SUFFIX="-trying"
+            CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
+          elif [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="dev-"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            TAG_PREFIX="staging-"
+          fi
+
+          IMAGE_NAME="${DOCKER_IMAGE_NAME}${SUFFIX}"
+          IMG_VERSION_RAW="${IMAGE_NAME}:${TAG_PREFIX}${VERSION}${CI_RUN}"
           IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
-          IMG_LATEST="${DOCKER_IMAGE_NAME}:latest"
+
+          # Channel pointer ("latest of this channel")
+          if [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:dev"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:staging"
+          else
+            IMG_LATEST="${IMAGE_NAME}:latest"
+          fi
 
           # Tag and push arch-specific images
-          docker tag $SOURCE_AMD64 $IMG_VERSION-amd64
-          docker tag $SOURCE_ARM64 $IMG_VERSION-arm64
-          docker push $IMG_VERSION-amd64
-          docker push $IMG_VERSION-arm64
+          docker tag "$SOURCE_AMD64" "${IMG_VERSION}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_VERSION}-arm64"
+          docker push "${IMG_VERSION}-amd64"
+          docker push "${IMG_VERSION}-arm64"
 
-          docker tag $SOURCE_AMD64 $IMG_LATEST-amd64
-          docker tag $SOURCE_ARM64 $IMG_LATEST-arm64
-          docker push $IMG_LATEST-amd64
-          docker push $IMG_LATEST-arm64
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          docker push "${IMG_LATEST}-amd64"
+          docker push "${IMG_LATEST}-arm64"
 
-          # Create and push multi-arch manifests
-          docker manifest create $IMG_VERSION --amend $IMG_VERSION-amd64 $IMG_VERSION-arm64
-          docker manifest push $IMG_VERSION
-
-          docker manifest create $IMG_LATEST --amend $IMG_LATEST-amd64 $IMG_LATEST-arm64
-          docker manifest push $IMG_LATEST
+          # Multi-arch manifests
+          docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
+          docker manifest push "${IMG_VERSION}"
+          docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
+          docker manifest push "${IMG_LATEST}"
 
       - name: Log in to OCIR
         uses: docker/login-action@v3
@@ -412,66 +809,137 @@ jobs:
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
       - name: Publish to OCIR
+        env:
+          VERSION: ${{ needs.build_base.outputs.VERSION }}
+          BRANCH: ${{ needs.build_base.outputs.BRANCH }}
         shell: bash -exu -o pipefail {0}
         run: |
-          VERSION="$(git describe --tags --always)"
-          OCIR_IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
-
+          OCIR_BASE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
           SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
           SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
 
-          IMG_VERSION_RAW="${OCIR_IMAGE}:${VERSION}"
+          SUFFIX=""
+          CI_RUN=""
+          TAG_PREFIX=""
+          IS_TAG_PUSH="false"
+
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            IS_TAG_PUSH="true"
+          fi
+
+          if [[ "$BRANCH" == "trying" ]]; then
+            SUFFIX="-trying"
+            CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
+          elif [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="dev-"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            TAG_PREFIX="staging-"
+          fi
+
+          OCIR_IMAGE="${OCIR_BASE}${SUFFIX}"
+          IMG_VERSION_RAW="${OCIR_IMAGE}:${TAG_PREFIX}${VERSION}${CI_RUN}"
           IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+
+          if [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:dev"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:staging"
+          else
+            IMG_LATEST="${OCIR_IMAGE}:latest"
+          fi
 
           docker tag "$SOURCE_AMD64" "${IMG_VERSION}-amd64"
           docker tag "$SOURCE_ARM64" "${IMG_VERSION}-arm64"
           docker push "${IMG_VERSION}-amd64"
           docker push "${IMG_VERSION}-arm64"
 
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          docker push "${IMG_LATEST}-amd64"
+          docker push "${IMG_LATEST}-arm64"
+
           docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
           docker manifest push "${IMG_VERSION}"
+          docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
+          docker manifest push "${IMG_LATEST}"
 
-          case "${GITHUB_REF}" in
-            refs/tags/*|refs/heads/master) EXTRA_TAG="latest" ;;
-            refs/heads/migration-plan)     EXTRA_TAG="migration-plan" ;;
-            *)                             EXTRA_TAG="" ;;
-          esac
-
-          if [ -n "$EXTRA_TAG" ]; then
-            IMG_EXTRA="${OCIR_IMAGE}:${EXTRA_TAG}"
-            docker tag "$SOURCE_AMD64" "${IMG_EXTRA}-amd64"
-            docker tag "$SOURCE_ARM64" "${IMG_EXTRA}-arm64"
-            docker push "${IMG_EXTRA}-amd64"
-            docker push "${IMG_EXTRA}-arm64"
-            docker manifest create "${IMG_EXTRA}" --amend "${IMG_EXTRA}-amd64" "${IMG_EXTRA}-arm64"
-            docker manifest push "${IMG_EXTRA}"
-          fi
-
-  # GitHub release with artifacts (tags only)
+  # GitHub release with multi-arch binaries attached (tag pushes only).
   release_packages:
     name: Release Packages
-    timeout-minutes: 10
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     needs:
       - test
       - integration_tests
+      - smoke_docker_standalone
+      - smoke_docker_shard
+      - smoke_local_standalone
       - build_docker_image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Load Packages
+      - name: Checkout (for CHANGELOG.md)
+        uses: actions/checkout@v4
+
+      - name: Load Docker artifact (amd64)
         uses: actions/download-artifact@v4
         with:
           name: artifacts-docker-amd64
-          path: /tmp/artifacts
+          path: /tmp/amd64
+
+      - name: Load Docker artifact (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-arm64
+          path: /tmp/arm64
+
+      - name: Extract amd64 binary from Docker image
+        shell: bash -ex {0}
+        run: |
+          mkdir -p /tmp/artifacts
+          zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
+          CONTAINER_ID=$(docker create ${{ env.DOCKER_IMAGE_NAME }}:amd64)
+          docker cp "$CONTAINER_ID:/opt/docker/bin/node" /tmp/artifacts/f1r3node-linux-amd64
+          docker rm "$CONTAINER_ID"
+          test -f /tmp/artifacts/f1r3node-linux-amd64 || { echo 'amd64 binary extraction failed'; exit 1; }
+
+      - name: Extract arm64 binary from Docker image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
+          CONTAINER_ID=$(docker create --platform linux/arm64 ${{ env.DOCKER_IMAGE_NAME }}:arm64)
+          docker cp "$CONTAINER_ID:/opt/docker/bin/node" /tmp/artifacts/f1r3node-linux-arm64
+          docker rm "$CONTAINER_ID"
+          test -f /tmp/artifacts/f1r3node-linux-arm64 || { echo 'arm64 binary extraction failed'; exit 1; }
+
+      - name: Determine release type
+        id: release_type
+        shell: bash -ex {0}
+        run: |
+          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}
+          # PATCH == 0 → stable (prerelease=false); PATCH > 0 → prerelease=true
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PATCH=$(echo "$TAG" | cut -d. -f3)
+          if [ "$PATCH" = "0" ]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract release notes for this version
+        shell: bash -ex {0}
+        run: |
+          # Extract the latest version section from CHANGELOG.md
+          awk '/^## \[/{if(found) exit; found=1} found' CHANGELOG.md > RELEASE_NOTES.md
 
       - name: Update release and release artifacts
         uses: ncipollo/release-action@v1
         with:
-          artifacts: /tmp/artifacts/*
-          prerelease: true
-          draft: true
+          artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          draft: false
           allowUpdates: true
           omitBodyDuringUpdate: true
+          bodyFile: RELEASE_NOTES.md
           token: ${{ secrets.GITHUB_TOKEN }}

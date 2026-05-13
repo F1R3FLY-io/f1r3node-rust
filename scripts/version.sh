@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-TAG_PREFIX="rust-v"
-TAG_PATTERN="rust-v*"
+TAG_PREFIX="v"
+TAG_PATTERN="v*"
 
 # Discover the current version from the latest matching tag
 get_current_version() {
