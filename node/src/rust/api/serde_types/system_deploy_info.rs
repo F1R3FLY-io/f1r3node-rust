@@ -367,6 +367,16 @@ mod tests {
 
     #[test]
     fn slash_system_deploy_json_defaults_missing_target_activation_epoch() {
+        // Back-compat: legacy JSON payloads that pre-date the
+        // target_activation_epoch field deserialize with default 0. The
+        // back-compat default must NOT silently widen the slashable
+        // surface — when current_epoch > 0 the receive-side predicate
+        // must reject the slash as EpochMismatch. That contract is pinned
+        // by `received_stale_slash_deploy_is_rejected_before_replay` in
+        // `casper/tests/slashing/slash_authorization_regressions.rs:177-194`,
+        // which constructs a slash deploy with target_activation_epoch=0
+        // at block_number=11 (current_epoch=1 under epoch_length=10) and
+        // verifies the resulting error contains "non-current epoch".
         let json = r#"{"invalidBlockHash":"AQID","issuerPublicKey":"BAUG"}"#;
         let serde: SlashSystemDeployDataSerde = serde_json::from_str(json).unwrap();
 

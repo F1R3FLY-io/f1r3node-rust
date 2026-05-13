@@ -276,7 +276,11 @@ impl Validate {
         }
     }
 
-    //TODO: Scala message -> Double check ordering of validity checks
+    // Validator ordering inside `block_summary` is consensus-critical and
+    // has been audited as of `feature/slashing`. The order encoded below
+    // matches the spec in docs/theory/slashing/slashing-specification.md
+    // and is the same ordering proven correct in the corresponding Rocq
+    // theorems for the `T-9.x` family.
     pub async fn block_summary(
         block: &BlockMessage,
         genesis: &BlockMessage,
@@ -456,7 +460,15 @@ impl Validate {
 
         let timestamp = b.header.timestamp;
 
-        let before_future = current_time + DRIFT >= timestamp;
+        // Checked addition: a corrupt or far-future system clock could push
+        // `current_time + DRIFT` past i64::MAX (operationally ~292 years
+        // out). Overflow ⇒ we treat the block as "outside the acceptable
+        // future window" and reject. Matches the new "checked-everywhere"
+        // discipline in `block_creator.rs`.
+        let before_future = match current_time.checked_add(DRIFT) {
+            Some(deadline) => deadline >= timestamp,
+            None => false,
+        };
 
         let latest_parent_timestamp =
             proto_util::parent_hashes(b)
@@ -928,21 +940,56 @@ impl Validate {
     }
 
     /// Tier-2 validation gate for received `Slash` system deploys. Delegates
-    /// to `slashing_authorization::validate_received_slash_deploys`; any
-    /// rule violation collapses to `InvalidBlock::UnauthorizedSlashDeploy`,
-    /// which is itself slashable (see `block_status::is_slashable`).
+    /// to `slashing_authorization::validate_received_slash_deploys` and
+    /// distinguishes two failure classes:
+    ///
+    /// * `CasperError::SlashAuth(_)` — the receive-side authorization
+    ///   predicate (4-conjunct check) rejected the slash deploy. The block
+    ///   author is Byzantine; collapse to
+    ///   `InvalidBlock::UnauthorizedSlashDeploy`, which is itself slashable
+    ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
+    /// * any other `CasperError` (storage I/O, runtime, history) — the local
+    ///   node experienced an infrastructure failure unrelated to the block
+    ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
+    ///   do NOT slash the block sender for a fault attributable to local
+    ///   infrastructure. Bug-fix rationale: see
+    ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
     ) -> ValidBlockProcessing {
-        match validate_received_slash_deploys(block, s) {
+        Self::route_slash_validation_outcome(block, validate_received_slash_deploys(block, s))
+    }
+
+    /// Routes the outcome of `validate_received_slash_deploys` into the
+    /// validator's `Either` shape. Exposed `pub` so the dispatching logic —
+    /// which distinguishes Byzantine-author errors from local-infrastructure
+    /// errors — can be unit-tested from integration tests.
+    ///
+    /// See `slash_deploy_authorization` for the full rationale and
+    /// docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
+    /// ("Error routing") for the design contract this helper enforces.
+    pub fn route_slash_validation_outcome(
+        block: &BlockMessage,
+        result: Result<(), CasperError>,
+    ) -> ValidBlockProcessing {
+        match result {
             Ok(()) => Either::Right(ValidBlock::Valid),
-            Err(e) => {
+            Err(CasperError::SlashAuth(auth_err)) => {
                 tracing::warn!(
                     "{}",
-                    Self::ignore(block, &format!("unauthorized slash deploy: {}", e))
+                    Self::ignore(block, &format!("unauthorized slash deploy: {}", auth_err))
                 );
                 Either::Left(BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy))
+            }
+            Err(infra_err) => {
+                tracing::warn!(
+                    "slash-deploy authorization failed for block {} with infrastructure error: {}; \
+                     propagating as BlockException (NOT slashing the block sender)",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    infra_err
+                );
+                Either::Left(BlockError::BlockException(infra_err))
             }
         }
     }

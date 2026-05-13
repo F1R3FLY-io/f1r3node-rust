@@ -501,6 +501,14 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
                            block: &BlockMessage|
      -> Result<(), CasperError> {
+        // `checked_base_seq(block.seq_num)` returns `None` when
+        // `seq_num <= 0`. The seq_num == 0 case is the genesis block: the
+        // protocol disallows equivocation evidence against genesis (it has
+        // no predecessor seqNum to base the EquivocationRecord on), and
+        // any seq_num < 0 is a corrupted record that should not exist
+        // post-validation. Skipping is correct in both cases — genesis is
+        // special, and the negative case is already rejected upstream by
+        // `validate_received_slash_deploys::NegativeSequenceNumber`.
         let Some(base_equivocation_block_seq_num) = checked_base_seq(block.seq_num) else {
             return Ok(());
         };

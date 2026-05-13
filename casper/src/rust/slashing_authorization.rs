@@ -94,6 +94,8 @@ pub enum SlashAuthError {
     NotAuthorizedByEvidence { validator: String },
     #[error("duplicate slash deploy target in block (validator {validator}, epoch {epoch})")]
     DuplicateTarget { validator: String, epoch: Epoch },
+    #[error("negative block sequence number {seq_num} (block {block_hash})")]
+    NegativeSequenceNumber { block_hash: String, seq_num: i32 },
 }
 
 // Phase 9 (R-2): `From<SlashAuthError> for CasperError` now lives in
@@ -278,9 +280,23 @@ pub fn authorized_slash_candidates(
         // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
         // domain-invalid block number — protocol invariant says this
         // can't happen for already-stored blocks, but the typed Result
-        // makes the explicit-skip choice visible.
-        let Ok(target_activation_epoch) = evidence_epoch(&metadata, epoch_length) else {
-            continue;
+        // makes the explicit-skip choice visible. We `warn!` because a
+        // hit here means either the configured `epoch_length` is invalid
+        // (operator misconfiguration) or the metadata store contains a
+        // domain-invalid record (corruption). Silently producing an empty
+        // slash list would mask both modes.
+        let target_activation_epoch = match evidence_epoch(&metadata, epoch_length) {
+            Ok(epoch) => epoch,
+            Err(e) => {
+                tracing::warn!(
+                    "authorized_slash_candidates: skipping invalid-block metadata for {} \
+                     (sender {}): {}; check `epoch_length` configuration",
+                    hex::encode(&metadata.block_hash),
+                    hex::encode(&metadata.sender),
+                    e
+                );
+                continue;
+            }
         };
         if target_activation_epoch != current_epoch {
             continue;
@@ -356,16 +372,21 @@ pub fn validate_received_slash_deploys(
     // Phase 10 (C-5): typed `Epoch` key replaces raw `i64`.
     let mut seen = BTreeMap::<(Validator, Epoch), BlockHash>::new();
 
-    // P4-9: defensive check — block sequence numbers must be non-negative
-    // (a negative seq num would indicate a malformed or tampered block; the
-    // protocol invariant is `seq_num >= 0`). We assert here rather than
-    // returning an error because this is a class-of-input bug, not a
-    // protocol-level violation.
-    debug_assert!(
-        block.seq_num >= 0,
-        "block.seq_num must be non-negative; got {}",
-        block.seq_num
-    );
+    // Defensive check — block sequence numbers must be non-negative.
+    // `debug_assert!` would compile out in release; a tampered wire-protocol
+    // block with `seq_num < 0` would then propagate into
+    // `received_slash_deploy_authorized` (whose `epoch_for_block_number`
+    // checks `block_number`, not `seq_num`). Returning a typed error makes
+    // the rejection release-safe — and the `From<SlashAuthError>` impl at
+    // `errors.rs:52` routes it correctly through `slash_deploy_authorization`
+    // so the block is recorded as `UnauthorizedSlashDeploy`.
+    if block.seq_num < 0 {
+        return Err(SlashAuthError::NegativeSequenceNumber {
+            block_hash: hex::encode(&block.block_hash),
+            seq_num: block.seq_num,
+        }
+        .into());
+    }
 
     for system_deploy in &block.body.system_deploys {
         let ProcessedSystemDeploy::Succeeded {

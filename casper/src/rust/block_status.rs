@@ -181,6 +181,13 @@ impl BlockStatus {
 
 impl InvalidBlock {
     pub fn is_slashable(&self) -> bool {
+        // Exhaustive match (no catch-all). Adding a new `InvalidBlock`
+        // variant without updating this function would silently default
+        // to non-slashable under a `_ => false` wildcard; the explicit
+        // enumeration forces a compiler error and a deliberate decision
+        // about whether the new variant is slashable. This is the
+        // future-correctness footgun protection T-9.3 depends on at the
+        // dispatcher catch-all.
         match self {
             InvalidBlock::AdmissibleEquivocation
             | InvalidBlock::DeployNotSigned
@@ -206,7 +213,27 @@ impl InvalidBlock {
             // evidence. The dispatcher (`multi_parent_casper_impl::handle_*`)
             // now mints an EquivocationRecord whenever this branch fires.
             | InvalidBlock::IgnorableEquivocation => true,
-            _ => false,
+
+            // Non-slashable variants — listed explicitly so the compiler
+            // catches new additions to the enum. Each represents a failure
+            // attributable to the block's wire format or local node state,
+            // NOT to Byzantine behavior the network can attribute and slash:
+            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
+            //     wire data; the sender is not identifiable (Signature) or
+            //     the sender's identity can't be verified (Sender).
+            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
+            //     consensus offense.
+            //   • NotOfInterest: local node filtering decision.
+            //   • LowDeployCost: per-deploy cost threshold; rejected at
+            //     admission, not on-chain accountable.
+            InvalidBlock::InvalidFormat
+            | InvalidBlock::InvalidSignature
+            | InvalidBlock::InvalidSender
+            | InvalidBlock::InvalidVersion
+            | InvalidBlock::InvalidTimestamp
+            | InvalidBlock::InvalidRejectedDeploy
+            | InvalidBlock::NotOfInterest
+            | InvalidBlock::LowDeployCost => false,
         }
     }
 }

@@ -602,6 +602,23 @@ locally-checked precondition for replaying any `SlashDeploy`.
 invalid-block dispatch) with the new pre-replay authorization filter
 at the `replay_runtime` boundary.
 
+**Error routing.** The validation-pipeline entry point
+`Validate::slash_deploy_authorization` (`casper/src/rust/validate.rs`)
+distinguishes between *authorization-predicate failures* (the
+4-conjunct check returning a `SlashAuthError` variant) and
+*infrastructure failures* (storage I/O, runtime errors, malformed wire
+data not caught by `format_of_fields`). The former are slashable:
+a Byzantine block author who emits an unauthorized slash deploy is
+themselves slashable under `InvalidBlock::UnauthorizedSlashDeploy`.
+The latter map to `BlockError::BlockException`, which propagates up
+the dispatcher without slashing the block sender — an honest validator
+whose node experiences a transient `KvStoreError` during slash
+validation must not be slashed for a fault attributable to its own
+infrastructure. The split is implemented as a `match` on
+`CasperError::SlashAuth(_)` vs other variants; downstream the
+dispatcher's T-9.3 catch-all still mints an `EquivocationRecord` for
+the `UnauthorizedSlashDeploy` arm.
+
 ## 9.15 Bug #13 — Same-key rebond could inherit stale evidence
 
 **Origin.** Rust-source confirmed vulnerability.

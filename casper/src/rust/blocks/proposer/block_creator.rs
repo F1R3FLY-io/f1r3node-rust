@@ -295,6 +295,14 @@ async fn prepare_slashing_deploys(
     // the deploy at replay time). Skip emission to avoid wasted work and to
     // satisfy the proven-correct theorem T-9.8 — see
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+    //
+    // Symmetry note: the receive-side predicate
+    // `validate_received_slash_deploys` does NOT require the block sender to
+    // be bonded — it only checks the slash *target* is bonded (rule 6). The
+    // block-sender-bonded invariant is enforced upstream by
+    // `block_sender_has_weight` (validate.rs); this proposer-side filter is
+    // an optimization, not an authorization predicate. The two cannot
+    // diverge in a way that admits unauthorized slashes.
     let proposer_bond = casper_snapshot
         .on_chain_state
         .bonds_map
@@ -306,6 +314,22 @@ async fn prepare_slashing_deploys(
     }
 
     let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
+
+    // `authorized_slash_candidates` documents an at-most-one-per-offender
+    // invariant via its `BTreeMap<Validator, …>` accumulator
+    // (slashing_authorization.rs:253-317). Pin the contract at the boundary
+    // so a future refactor of that helper can't silently produce duplicates.
+    debug_assert!(
+        {
+            let mut offenders: Vec<&prost::bytes::Bytes> =
+                slash_candidates.iter().map(|c| &c.offender).collect();
+            offenders.sort();
+            let original_len = offenders.len();
+            offenders.dedup();
+            offenders.len() == original_len
+        },
+        "authorized_slash_candidates must produce unique offenders; got duplicates"
+    );
 
     // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
     // this is correct by design (not a TODO).

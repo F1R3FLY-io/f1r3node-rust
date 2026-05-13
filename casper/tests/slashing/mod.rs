@@ -38,6 +38,7 @@ mod integration_t_invalid_sequence_number;
 mod integration_t_invalid_shard_id;
 mod integration_t_invalid_transaction;
 mod integration_t_invalid_transaction_block_exception;
+mod integration_t_slash_auth_storage_error;
 mod integration_t_neglected_invalid_block;
 mod integration_t_valid_no_record;
 mod loom_t_9_2_atomic_record;

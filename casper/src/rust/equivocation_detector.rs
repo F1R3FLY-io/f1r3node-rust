@@ -528,7 +528,13 @@ impl EquivocationDetector {
                     candidate_hash = parent_hash.clone();
                     current_hash = parent_hash;
                 }
-                _ => break,
+                Ok(_) => break,
+                // Storage failure during canonical-child walk: propagate
+                // rather than absorbing as a normal walk termination — the
+                // previous `_ => break` would silently truncate the search
+                // and produce an incorrect canonical child, defeating the
+                // detector's totality claim (T-9.11).
+                Err(e) => return Err(e),
             }
         }
 

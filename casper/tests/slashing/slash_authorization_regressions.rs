@@ -175,6 +175,16 @@ async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
 
 #[tokio::test]
 async fn received_stale_slash_deploy_is_rejected_before_replay() {
+    // Doubles as the JSON-back-compat negative-path test: a legacy JSON
+    // payload that omits the `target_activation_epoch` field deserializes
+    // with default 0 (see
+    // `node/src/rust/api/serde_types/system_deploy_info.rs::tests::
+    //  slash_system_deploy_json_defaults_missing_target_activation_epoch`).
+    // The contract pinned here is that the default value must NOT widen
+    // the slashable surface — when `current_epoch > 0` the receive-side
+    // predicate rejects the slash as EpochMismatch, propagating up as
+    // `InvalidBlock::UnauthorizedSlashDeploy` (slashing the proposer, not
+    // the target).
     let fixture = DetectorFixture::new().await;
     let offender = fixture.validators[0].clone();
     let proposer = fixture.validators[1].clone();
