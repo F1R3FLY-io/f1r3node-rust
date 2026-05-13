@@ -698,6 +698,142 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
     .await
 }
 
+// C10 / Test-1: cover `Validate::deploys_shard_identifier` — the
+// 14-step block_summary validator chain entry that rejects blocks
+// whose deploys carry a foreign shard_id. Prior to this commit the
+// validator had zero direct test callers, so a regression renaming
+// the field or short-circuiting the per-deploy check would not be
+// caught by any add_block / slashing integration test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploys_shard_identifier_should_accept_blocks_with_all_matching_shard_ids() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(
+            0,
+            Some(SHARD_ID.to_string()),
+        )
+        .unwrap();
+        let block = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            Some(SHARD_ID.to_string()),
+            None,
+            None,
+        );
+
+        let status = Validate::deploys_shard_identifier(&block, SHARD_ID);
+        assert_eq!(status, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploys_shard_identifier_should_reject_blocks_with_a_foreign_deploy_shard_id() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let foreign_deploy = construct_deploy::basic_processed_deploy(
+            0,
+            Some("rogue-shard".to_string()),
+        )
+        .unwrap();
+        let block_with_foreign_deploy = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![foreign_deploy]),
+            None,
+            Some(SHARD_ID.to_string()),
+            None,
+            None,
+        );
+
+        let status =
+            Validate::deploys_shard_identifier(&block_with_foreign_deploy, SHARD_ID);
+        assert_eq!(
+            status,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidShardId))
+        );
+    })
+    .await
+}
+
+// C10 / Test-2: cover `Validate::time_based_expiration` — the
+// validator that rejects blocks containing time-expired deploys
+// (i.e. deploys whose `expiration_timestamp` is set and is less than
+// the block timestamp). Prior to this commit it had zero direct
+// test callers; a regression would silently accept time-expired
+// deploys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn time_based_expiration_should_accept_blocks_with_unexpired_deploys() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        // No expiration_timestamp (None) ⇒ deploy never time-expires.
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let block = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let status = Validate::time_based_expiration(&block);
+        assert_eq!(status, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+
+        // Force `expiration_timestamp = 1` — strictly less than the
+        // block's `header.timestamp` (set to current wall time by
+        // `create_genesis_block`). The deploy is therefore time-expired
+        // for any block created after the unix epoch.
+        let expired_processed_deploy = {
+            let mut data = deploy.deploy.data.clone();
+            data.expiration_timestamp = Some(1);
+            let signed = create_signed_deploy_with_data(data)
+                .expect("failed to sign expired deploy");
+            ProcessedDeploy {
+                deploy: signed,
+                ..deploy
+            }
+        };
+
+        let block_with_time_expired_deploy = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![expired_processed_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let status = Validate::time_based_expiration(&block_with_time_expired_deploy);
+        assert_eq!(
+            status,
+            Either::Left(BlockError::Invalid(InvalidBlock::ContainsTimeExpiredDeploy))
+        );
+    })
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sequence_number_validation_should_only_accept_0_as_the_number_for_a_block_with_no_parents()
 {
