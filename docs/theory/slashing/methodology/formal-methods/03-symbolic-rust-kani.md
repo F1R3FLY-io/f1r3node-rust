@@ -51,13 +51,21 @@ The functions in this module:
 
 - `checked_base_seq(seq_num: i32) -> Option<i32>` — predecessor of a
   validator's sequence number; the boundary `seq_num ≤ 0` is **the
-  bug** fixed in commit `db0b979`.
+  bug** fixed in commit `db0b979`. Returns `Option` (the `i32`
+  invariants live in this signature unchanged).
 - `checked_next_seq(max_seq: u64) -> Option<i32>` — successor with
   double-checked saturation (`u64::checked_add` then `i32::try_from`).
-- `epoch_for_block_number(block_number: i64, epoch_length: i32) -> Option<i64>`
-  — floor-division with explicit handling of `epoch_length ≤ 0`.
+- `epoch_for_block_number(block_number: i64, epoch_length: i32) -> Result<Epoch, DomainError>`
+  — floor-division with explicit `DomainError` routing
+  (`InvalidEpochLength` for `epoch_length ≤ 0`,
+  `NegativeBlockNumber` for `block_number < 0`). Returns the typed
+  [`Epoch`](../../../../../casper/src/rust/epoch.rs) newtype.
+- `slash_target_epoch_is_current(…)` and
+  `slash_evidence_epoch_matches_target(…)` — return
+  `Result<bool, DomainError>`. Propagate the `DomainError` from
+  `epoch_for_block_number`.
 - `received_slash_deploy_authorized(…)` — conjunctive predicate
-  proven sufficient by Theorem T-9.8.
+  proven sufficient by Theorem T-9.8. Returns `Result<bool, DomainError>`.
 
 These are pure functions of bounded-range inputs. They are exactly
 the shape Kani exists for.
@@ -75,8 +83,8 @@ The harness count and rationale:
 | `checked_base_seq_rejects_nonpositive`                              | `∀ s ≤ 0. checked_base_seq(s) = None`                                                                                       |
 | `checked_base_seq_matches_positive_i32_predecessor`                 | `∀ s > 0. checked_base_seq(s) = Some(s − 1)`                                                                                |
 | `checked_next_seq_matches_i32_successor`                            | `∀ m ≤ i32::MAX as u64. checked_next_seq(m) = Some(m + 1)`; `∀ m > i32::MAX as u64. = None`                                 |
-| `epoch_for_block_number_rejects_invalid_domain`                     | `∀ n < 0 ∨ L ≤ 0. epoch_for_block_number(n, L) = None`                                                                      |
-| `epoch_for_block_number_matches_bounded_floor_division`             | `∀ n ≥ 0, L > 0. = Some(n / L)`                                                                                             |
+| `epoch_for_block_number_rejects_invalid_domain`                     | `∀ n < 0 ∨ L ≤ 0. epoch_for_block_number(n, L) = Err(DomainError)`; also pins variant routing (`InvalidEpochLength` vs `NegativeBlockNumber`) |
+| `epoch_for_block_number_matches_bounded_floor_division`             | `∀ n ≥ 0, L > 0. = Ok(Epoch::new(n / L))`                                                                                   |
 | `slash_target_epoch_is_current_matches_epoch_projection`            | The epoch predicate matches the epoch projection on a bounded `(n, L)` domain                                               |
 | `slash_evidence_epoch_matches_target_matches_epoch_projection`      | The evidence-epoch predicate matches the epoch projection on the same domain                                                |
 | `received_slash_deploy_authorized_rejects_invalid_domain`           | Rejects inputs where any argument is out of its declared sub-range                                                          |

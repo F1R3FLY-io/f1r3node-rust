@@ -500,6 +500,10 @@ pub fn validate_received_slash_deploys(
     Ok(())
 }
 
+// Kani proofs — symbolic-model-check the boundary helpers against the
+// post-Phase-9 typed API. Production functions now return
+// `Result<_, DomainError>` (where applicable) and use the `Epoch` newtype.
+// CI does not currently run kani; run locally with `cargo kani -p casper`.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
@@ -508,6 +512,7 @@ mod kani_proofs {
     fn checked_base_seq_rejects_nonpositive() {
         let seq: i32 = kani::any();
         kani::assume(seq <= 0);
+        // Still `Option`-typed in production — i32 invariants live here.
         assert_eq!(checked_base_seq(seq), None);
     }
 
@@ -530,7 +535,14 @@ mod kani_proofs {
         let block_number: i64 = kani::any();
         let epoch_length: i32 = kani::any();
         kani::assume(block_number < 0 || epoch_length <= 0);
-        assert_eq!(epoch_for_block_number(block_number, epoch_length), None);
+        let result = epoch_for_block_number(block_number, epoch_length);
+        assert!(result.is_err());
+        // Phase 9 (C-6) typed DomainError variants — assert specific routing.
+        if epoch_length <= 0 {
+            assert!(matches!(result, Err(DomainError::InvalidEpochLength(_))));
+        } else {
+            assert!(matches!(result, Err(DomainError::NegativeBlockNumber(_))));
+        }
     }
 
     #[kani::proof]
@@ -542,7 +554,7 @@ mod kani_proofs {
         let epoch_length = i32::from(epoch_length);
         assert_eq!(
             epoch_for_block_number(block_number, epoch_length),
-            Some(block_number / i64::from(epoch_length))
+            Ok(Epoch::new(block_number / i64::from(epoch_length)))
         );
     }
 
@@ -553,16 +565,17 @@ mod kani_proofs {
         let epoch_length: u8 = kani::any();
         kani::assume(epoch_length > 0);
         let reference_block_number = i64::from(reference_block_number);
-        let target_activation_epoch = i64::from(target_activation_epoch);
+        let target_activation_epoch_raw = i64::from(target_activation_epoch);
+        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
-        let expected = target_activation_epoch == reference_block_number / i64::from(epoch_length);
+        let expected = target_activation_epoch_raw == reference_block_number / i64::from(epoch_length);
         assert_eq!(
             slash_target_epoch_is_current(
                 reference_block_number,
                 target_activation_epoch,
                 epoch_length
             ),
-            Some(expected)
+            Ok(expected)
         );
     }
 
@@ -573,16 +586,17 @@ mod kani_proofs {
         let epoch_length: u8 = kani::any();
         kani::assume(epoch_length > 0);
         let evidence_block_number = i64::from(evidence_block_number);
-        let target_activation_epoch = i64::from(target_activation_epoch);
+        let target_activation_epoch_raw = i64::from(target_activation_epoch);
+        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
-        let expected = target_activation_epoch == evidence_block_number / i64::from(epoch_length);
+        let expected = target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length);
         assert_eq!(
             slash_evidence_epoch_matches_target(
                 evidence_block_number,
                 target_activation_epoch,
                 epoch_length
             ),
-            Some(expected)
+            Ok(expected)
         );
     }
 
@@ -595,17 +609,15 @@ mod kani_proofs {
         let bond: i64 = kani::any();
         let invalid: bool = kani::any();
         kani::assume(reference_block_number < 0 || evidence_block_number < 0 || epoch_length <= 0);
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                target_activation_epoch,
-                epoch_length,
-                bond,
-                invalid
-            ),
-            None
-        );
+        assert!(received_slash_deploy_authorized(
+            reference_block_number,
+            evidence_block_number,
+            Epoch::new(target_activation_epoch),
+            epoch_length,
+            bond,
+            invalid
+        )
+        .is_err());
     }
 
     #[kani::proof]
@@ -619,11 +631,12 @@ mod kani_proofs {
         kani::assume(epoch_length > 0);
         let reference_block_number = i64::from(reference_block_number);
         let evidence_block_number = i64::from(evidence_block_number);
-        let target_activation_epoch = i64::from(target_activation_epoch);
+        let target_activation_epoch_raw = i64::from(target_activation_epoch);
+        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
         let bond = i64::from(bond);
-        let expected = target_activation_epoch == reference_block_number / i64::from(epoch_length)
-            && target_activation_epoch == evidence_block_number / i64::from(epoch_length)
+        let expected = target_activation_epoch_raw == reference_block_number / i64::from(epoch_length)
+            && target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length)
             && bond > 0
             && invalid;
         assert_eq!(
@@ -635,7 +648,7 @@ mod kani_proofs {
                 bond,
                 invalid
             ),
-            Some(expected)
+            Ok(expected)
         );
     }
 
@@ -656,18 +669,18 @@ mod kani_proofs {
         let reference_block_number = i64::from(reference_block_number);
         let evidence_block_number = i64::from(evidence_block_number);
         let epoch_length = i32::from(epoch_length);
-        let target_activation_epoch = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_activation_epoch == evidence_block_number / i64::from(epoch_length));
+        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
+        kani::assume(target_epoch_raw == evidence_block_number / i64::from(epoch_length));
         assert_eq!(
             received_slash_deploy_authorized(
                 reference_block_number,
                 evidence_block_number,
-                target_activation_epoch,
+                Epoch::new(target_epoch_raw),
                 epoch_length,
                 i64::from(bond),
                 true
             ),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -682,18 +695,18 @@ mod kani_proofs {
         let reference_block_number = i64::from(reference_block_number);
         let evidence_block_number = i64::from(evidence_block_number);
         let epoch_length = i32::from(epoch_length);
-        let target_activation_epoch = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_activation_epoch == evidence_block_number / i64::from(epoch_length));
+        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
+        kani::assume(target_epoch_raw == evidence_block_number / i64::from(epoch_length));
         assert_eq!(
             received_slash_deploy_authorized(
                 reference_block_number,
                 evidence_block_number,
-                target_activation_epoch,
+                Epoch::new(target_epoch_raw),
                 epoch_length,
                 i64::from(bond),
                 false
             ),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -708,19 +721,19 @@ mod kani_proofs {
         kani::assume(bond > 0);
         let reference_block_number = i64::from(reference_block_number);
         let evidence_block_number = i64::from(evidence_block_number);
-        let target_activation_epoch = i64::from(target_activation_epoch);
+        let target_epoch_raw = i64::from(target_activation_epoch);
         let epoch_length = i32::from(epoch_length);
-        kani::assume(target_activation_epoch != reference_block_number / i64::from(epoch_length));
+        kani::assume(target_epoch_raw != reference_block_number / i64::from(epoch_length));
         assert_eq!(
             received_slash_deploy_authorized(
                 reference_block_number,
                 evidence_block_number,
-                target_activation_epoch,
+                Epoch::new(target_epoch_raw),
                 epoch_length,
                 i64::from(bond),
                 true
             ),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -735,18 +748,18 @@ mod kani_proofs {
         let reference_block_number = i64::from(reference_block_number);
         let evidence_block_number = i64::from(evidence_block_number);
         let epoch_length = i32::from(epoch_length);
-        let target_activation_epoch = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_activation_epoch != evidence_block_number / i64::from(epoch_length));
+        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
+        kani::assume(target_epoch_raw != evidence_block_number / i64::from(epoch_length));
         assert_eq!(
             received_slash_deploy_authorized(
                 reference_block_number,
                 evidence_block_number,
-                target_activation_epoch,
+                Epoch::new(target_epoch_raw),
                 epoch_length,
                 i64::from(bond),
                 true
             ),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -759,9 +772,9 @@ mod kani_proofs {
         assert_eq!(
             slash_target_key_collides(
                 &left_offender,
-                i64::from(left_epoch),
+                Epoch::new(i64::from(left_epoch)),
                 &right_offender,
-                i64::from(right_epoch)
+                Epoch::new(i64::from(right_epoch))
             ),
             left_offender == right_offender && left_epoch == right_epoch
         );
