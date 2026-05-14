@@ -46,7 +46,7 @@ Requires Nix or a Rust toolchain. Build a local Docker image:
 
 Then start with the local image:
 ```bash
-F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local docker compose -f shard.yml up -d
+F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f shard.yml up -d
 ```
 
 ## Standalone Node (Single Validator)
