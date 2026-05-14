@@ -129,7 +129,6 @@ jobs:
         with:
           args: >-
             --no-progress
-            --exclude-mail
             --exclude-loopback
             --max-retries 2
             --retry-wait-time 5
