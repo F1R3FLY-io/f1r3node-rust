@@ -290,7 +290,7 @@ pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
 
 pub fn to_list_cost(size: i64) -> Cost { Cost::create(size, "to_list") }
 
-pub fn parsing_cost(term: &str) -> Cost { Cost::create(term.as_bytes().len() as i64, "parsing") }
+pub fn parsing_cost(term: &str) -> Cost { Cost::create(term.len() as i64, "parsing") }
 
 pub fn nth_method_call_cost() -> Cost { Cost::create(10, "nth method call") }
 

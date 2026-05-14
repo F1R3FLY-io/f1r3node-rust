@@ -131,6 +131,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
     pub fn len(&self) -> usize { self.d.len() }
 
+    pub fn is_empty(&self) -> bool { self.d.is_empty() }
+
     pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
 }
 
@@ -236,8 +238,8 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
         // the importer can validate keys against contents internally.
         let history_count = history_items.len();
         let data_count = data_items.len();
-        let _ = self.state_importer.set_history_items(history_items);
-        let _ = self.state_importer.set_data_items(data_items);
+        self.state_importer.set_history_items(history_items);
+        self.state_importer.set_data_items(data_items);
 
         // Update per-root progress for every root sharing this chunk.
         {

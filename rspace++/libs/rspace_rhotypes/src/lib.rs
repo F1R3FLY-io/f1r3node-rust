@@ -1,3 +1,10 @@
+// FFI boundary -- raw pointer args are required by the Scala JNA caller
+// surface. clippy::not_unsafe_ptr_arg_deref would otherwise force every
+// extern "C" wrapper to be marked unsafe, which would change the Scala
+// side too. This file is slated for removal in the FFI cleanup PR
+// (see docs/sync-todo.md TODO 2).
+#![allow(clippy::not_unsafe_ptr_arg_deref, clippy::unnecessary_unwrap)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::runtime::Runtime;
@@ -65,8 +72,7 @@ pub extern "C" fn space_new(path: *const c_char) -> *mut Space {
             // let mut kvm = mk_rspace_store_manager(lmdb_path.into(), 1 * GB);
             // let store = kvm.r_space_stores().await.unwrap();
 
-            let mut kvm =
-                mk_rspace_store_manager((&format!("{}/rspace++/", data_dir)).into(), 1 * GB);
+            let mut kvm = mk_rspace_store_manager((&format!("{}/rspace++/", data_dir)).into(), GB);
             let store = kvm.r_space_stores().await.unwrap();
 
             // println!("\nhistory store: {:?}",
@@ -109,12 +115,12 @@ pub extern "C" fn space_new_replay(rspace: *mut Space) -> *mut ReplaySpace {
 }
 
 #[no_mangle]
-pub extern "C" fn space_print(rspace: *mut Space) -> () {
+pub extern "C" fn space_print(rspace: *mut Space) {
     unsafe { (*rspace).rspace.lock().unwrap().get_store().print() }
 }
 
 #[no_mangle]
-pub extern "C" fn space_clear(rspace: *mut Space) -> () {
+pub extern "C" fn space_clear(rspace: *mut Space) {
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
     blocking_runtime().block_on(async {
         space
@@ -634,7 +640,7 @@ pub extern "C" fn to_map(rspace: *mut Space) -> *const u8 {
                     peeks: wk
                         .peeks
                         .into_iter()
-                        .map(|peek| SortedSetElement { value: peek as i32 })
+                        .map(|peek| SortedSetElement { value: peek })
                         .collect(),
                     source: Some(ConsumeProto {
                         channel_hashes: wk
@@ -1395,7 +1401,7 @@ pub extern "C" fn get_history_and_data(
         .map(|path_element| {
             (
                 Blake2b256Hash::from_bytes(path_element.key_hash),
-                if path_element.optional_byte.len() > 0 {
+                if !path_element.optional_byte.is_empty() {
                     Some(path_element.optional_byte[0])
                 } else {
                     None
@@ -1588,7 +1594,7 @@ pub extern "C" fn validate_state_items(
     rspace: *mut Space,
     payload_pointer: *const u8,
     payload_bytes_len: usize,
-) -> () {
+) {
     let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
     let params = ValidateStateParams::decode(payload_slice).unwrap();
 
@@ -1614,7 +1620,7 @@ pub extern "C" fn validate_state_items(
         .map(|path_element| {
             (
                 Blake2b256Hash::from_bytes(path_element.key_hash),
-                if path_element.optional_byte.len() > 0 {
+                if !path_element.optional_byte.is_empty() {
                     Some(path_element.optional_byte[0])
                 } else {
                     None
@@ -1632,7 +1638,7 @@ pub extern "C" fn validate_state_items(
             .importer()
     };
 
-    let _ = RSpaceImporterInstance::validate_state_items(
+    RSpaceImporterInstance::validate_state_items(
         history_items,
         data_items,
         start_path,
@@ -1647,7 +1653,7 @@ pub extern "C" fn set_history_items(
     rspace: *mut Space,
     payload_pointer: *const u8,
     payload_bytes_len: usize,
-) -> () {
+) {
     let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
     let items_proto = ItemsProto::decode(payload_slice).unwrap();
 
@@ -1662,7 +1668,7 @@ pub extern "C" fn set_history_items(
         })
         .collect();
 
-    let _ = unsafe {
+    unsafe {
         let space = (*rspace).rspace.lock().unwrap();
         space
             .get_history_repository()
@@ -1676,7 +1682,7 @@ pub extern "C" fn set_data_items(
     rspace: *mut Space,
     payload_pointer: *const u8,
     payload_bytes_len: usize,
-) -> () {
+) {
     let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
     let items_proto = ItemsProto::decode(payload_slice).unwrap();
 
@@ -1691,7 +1697,7 @@ pub extern "C" fn set_data_items(
         })
         .collect();
 
-    let _ = unsafe {
+    unsafe {
         let space = (*rspace).rspace.lock().unwrap();
         space
             .get_history_repository()
@@ -1701,11 +1707,7 @@ pub extern "C" fn set_data_items(
 }
 
 #[no_mangle]
-pub extern "C" fn set_root(
-    rspace: *mut Space,
-    root_pointer: *const u8,
-    root_bytes_len: usize,
-) -> () {
+pub extern "C" fn set_root(rspace: *mut Space, root_pointer: *const u8, root_bytes_len: usize) {
     let root_slice = unsafe { std::slice::from_raw_parts(root_pointer, root_bytes_len) };
     let root = Blake2b256Hash::from_bytes(root_slice.to_vec());
 
@@ -1884,7 +1886,7 @@ pub extern "C" fn get_history_waiting_continuations(
                 peeks: wk
                     .peeks
                     .into_iter()
-                    .map(|peek| SortedSetElement { value: peek as i32 })
+                    .map(|peek| SortedSetElement { value: peek })
                     .collect(),
                 source: Some(ConsumeProto {
                     channel_hashes: wk
@@ -2144,7 +2146,7 @@ pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
                     peeks: {
                         comm.peeks
                             .into_iter()
-                            .map(|peek| SortedSetElement { value: peek as i32 })
+                            .map(|peek| SortedSetElement { value: peek })
                             .collect()
                     },
                     times_repeated: {
@@ -2228,7 +2230,7 @@ pub extern "C" fn replay_create_checkpoint(rspace: *mut Space) -> *const u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn replay_clear(rspace: *mut Space) -> () {
+pub extern "C" fn replay_clear(rspace: *mut Space) {
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
     blocking_runtime().block_on(async {
         space
@@ -2414,7 +2416,7 @@ pub extern "C" fn deallocate_memory(ptr: *mut u8, len: usize) {
     // block allocated by Rust, and that `len` is the correct size of the block.
     unsafe {
         // Convert the raw pointer back to a Box to allow Rust to deallocate the memory.
-        let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
         // The Box goes out of scope here, and Rust automatically deallocates
         // the memory.
     }

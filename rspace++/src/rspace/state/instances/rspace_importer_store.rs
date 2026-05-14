@@ -45,7 +45,7 @@ impl RSpaceImporter for RSpaceImporterImpl {
 }
 
 impl TrieImporter for RSpaceImporterImpl {
-    fn set_history_items(&self, data: Vec<(KeyHash, Value)>) -> () {
+    fn set_history_items(&self, data: Vec<(KeyHash, Value)>) {
         self.history_store
             .put(
                 data.iter()
@@ -55,7 +55,7 @@ impl TrieImporter for RSpaceImporterImpl {
             .expect("Rspace Importer: failed to put in history store");
     }
 
-    fn set_data_items(&self, data: Vec<(KeyHash, Value)>) -> () {
+    fn set_data_items(&self, data: Vec<(KeyHash, Value)>) {
         self.value_store
             .put(
                 data.iter()
@@ -65,7 +65,7 @@ impl TrieImporter for RSpaceImporterImpl {
             .expect("Rspace Importer: failed to put in value store")
     }
 
-    fn set_root(&self, key: &KeyHash) -> () {
+    fn set_root(&self, key: &KeyHash) {
         let roots = RootsStoreInstances::roots_store(self.roots_store.clone());
         roots
             .record_root(key)

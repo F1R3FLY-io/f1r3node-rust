@@ -293,7 +293,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Save in height map
             let mut new_height_map = self.height_map.clone();
-            let height_keys = new_height_map.entry(height).or_insert_with(HashSet::new);
+            let height_keys = new_height_map.entry(height).or_default();
             height_keys.insert(k.clone());
 
             // Calculate new minimum height if latest message
@@ -920,7 +920,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         request_rx,
         request_tx,
         response_hash_rx,
-        &initial_response_messages,
+        initial_response_messages,
         response_message_receiver,
         response_queue_pending,
         mergeable_response_receiver,

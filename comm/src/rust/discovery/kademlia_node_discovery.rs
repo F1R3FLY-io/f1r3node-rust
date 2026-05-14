@@ -92,7 +92,7 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
             let mut target = id.key.to_vec();
             let byte_index = dist / 8;
             let different_bit = 1 << (dist % 8);
-            target[byte_index] = target[byte_index] ^ different_bit; // A key at a distance dist from me
+            target[byte_index] ^= different_bit; // A key at a distance dist from me
 
             let peers = self.rpc.lookup(&target, peer_set.first().unwrap()).await?;
             let filtered = self.filter(&peers, potentials, id)?;

@@ -898,7 +898,7 @@ fn package_block(
         header,
         justifications,
         shard_id,
-        Some(block_data.seq_num as i32),
+        Some(block_data.seq_num),
     )
 }
 

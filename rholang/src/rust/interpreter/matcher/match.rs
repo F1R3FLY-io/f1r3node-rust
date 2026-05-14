@@ -32,7 +32,8 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
 
         // println!("\nmatch_result: {:?}", match_result);
 
-        let result = match match_result {
+        // println!("\nresult: {:?}", result);
+        match match_result {
             Some((mut free_map, caught_rem)) => {
                 let remainder_map = match pattern.remainder {
                     Some(Var {
@@ -57,9 +58,6 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
                 })
             }
             None => None,
-        };
-
-        // println!("\nresult: {:?}", result);
-        result
+        }
     }
 }

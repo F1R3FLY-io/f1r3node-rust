@@ -1034,8 +1034,8 @@ async fn clear_connections_loop(
         // Dynamic IP check - detect and handle external IP address changes
         if node_conf.protocol_server.dynamic_ip {
             match comm::rust::who_am_i::check_local_peer_node(
-                node_conf.protocol_server.port as u16,
-                node_conf.peers_discovery.port as u16,
+                node_conf.protocol_server.port,
+                node_conf.peers_discovery.port,
                 &rp_conf.local,
             )
             .await

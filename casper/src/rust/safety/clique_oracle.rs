@@ -156,7 +156,9 @@ impl CliqueOracle {
                 if hash == stopper {
                     break;
                 }
-                if idx % yield_check_interval == 0 && last_yield.elapsed() >= yield_timeslice {
+                if idx.is_multiple_of(yield_check_interval)
+                    && last_yield.elapsed() >= yield_timeslice
+                {
                     tokio::task::yield_now().await;
                     last_yield = Instant::now();
                 }
@@ -290,7 +292,7 @@ impl CliqueOracle {
                 for j in (i + 1)..pairwise_validators.len() {
                     // Keep this loop cooperative so higher-level timeouts can preempt
                     // expensive clique evaluation on deep DAGs.
-                    if pair_idx % yield_check_interval == 0
+                    if pair_idx.is_multiple_of(yield_check_interval)
                         && last_yield.elapsed() >= yield_timeslice
                     {
                         tokio::task::yield_now().await;

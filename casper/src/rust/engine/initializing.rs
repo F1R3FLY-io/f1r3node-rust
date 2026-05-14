@@ -594,7 +594,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
             lfs_block_requester::stream(
-                &approved_block,
+                approved_block,
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
@@ -604,7 +604,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &mut block_requester,
             ),
             lfs_tuple_space_requester::stream(
-                &approved_block,
+                approved_block,
                 tuple_space_rx,
                 self.tuple_space_queue_pending.clone(),
                 lfs_request_timeout,
@@ -760,7 +760,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(&approved_block)
+        self.create_casper_and_transition_to_running(approved_block)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -909,7 +909,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            &*self.engine_cell,
+            &self.engine_cell,
             &self.event_publisher,
         )
         .await?;
@@ -960,7 +960,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrapper<'_, T> {
     async fn request_for_block(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
         self.transport_layer
-            .broadcast_request_for_block(&self.connections_cell, &self.rp_conf_ask, block_hash)
+            .broadcast_request_for_block(self.connections_cell, self.rp_conf_ask, block_hash)
             .await?;
         Ok(())
     }
@@ -978,7 +978,7 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         block_hash: BlockHash,
         block: &BlockMessage,
     ) -> Result<(), CasperError> {
-        Ok(self.block_store.put(block_hash, &block)?)
+        Ok(self.block_store.put(block_hash, block)?)
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
@@ -989,8 +989,8 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         };
         self.transport_layer
             .send_message_to_peers(
-                &self.connections_cell,
-                &self.rp_conf_ask,
+                self.connections_cell,
+                self.rp_conf_ask,
                 Arc::new(req.to_proto()),
                 None,
             )
@@ -1093,7 +1093,7 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         let message_proto = message.to_proto();
 
         self.transport_layer
-            .send_to_bootstrap(&self.rp_conf_ask, Arc::new(message_proto))
+            .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
     }
@@ -1107,14 +1107,15 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
         skip: i32,
         get_from_history: Arc<dyn RSpaceImporter>,
     ) -> Result<(), CasperError> {
-        Ok(RSpaceImporterInstance::validate_state_items(
+        RSpaceImporterInstance::validate_state_items(
             history_items,
             data_items,
             start_path,
             page_size,
             skip,
             get_from_history,
-        ))
+        );
+        Ok(())
     }
 }
 
@@ -1153,7 +1154,7 @@ impl<T: TransportLayer + Send + Sync>
         };
         let message_proto = message.to_proto();
         self.transport_layer
-            .send_to_bootstrap(&self.rp_conf_ask, Arc::new(message_proto))
+            .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
     }

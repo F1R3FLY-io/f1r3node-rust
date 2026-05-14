@@ -40,8 +40,8 @@ impl RadixHistory {
 
     pub fn empty_root_node_hash() -> Blake2b256Hash {
         let node_hash_bytes = hash_node(&empty_node()).0;
-        let node_hash = Blake2b256Hash::from_bytes(node_hash_bytes);
-        node_hash
+
+        Blake2b256Hash::from_bytes(node_hash_bytes)
     }
 
     fn has_no_duplicates(&self, actions: &Vec<HistoryAction>) -> bool {

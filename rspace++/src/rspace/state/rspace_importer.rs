@@ -27,7 +27,7 @@ impl RSpaceImporterInstance {
         chunk_size: i32,
         skip: i32,
         get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> () {
+    ) {
         let received_history_size = history_items.len() as i32;
         let is_end = || received_history_size < chunk_size;
 
@@ -98,7 +98,7 @@ impl RSpaceImporterInstance {
                         None => panic!(
                             "RSpace Importer: Trie hash not found in received items or in history \
                              store, hash: {}",
-                            hex::encode(Blake2b256Hash::new(&hash).bytes())
+                            hex::encode(Blake2b256Hash::new(hash).bytes())
                         ),
                     }
                 }

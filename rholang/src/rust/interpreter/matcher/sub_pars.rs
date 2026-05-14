@@ -156,7 +156,7 @@ pub fn sub_pars(
             .collect()
     }
 
-    let result = min_max_subsets(&par.sends, send_min, send_max)
+    min_max_subsets(&par.sends, send_min, send_max)
         .into_iter()
         .cartesian_product(min_max_subsets(&par.receives, receive_min, receive_max).into_iter())
         .cartesian_product(min_max_subsets(&par.news, new_min, new_max).into_iter())
@@ -196,7 +196,5 @@ pub fn sub_pars(
                     },
                 )
             },
-        );
-
-    result
+        )
 }

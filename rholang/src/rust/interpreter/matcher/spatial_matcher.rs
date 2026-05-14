@@ -86,13 +86,13 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 
             Some(ConnOrBody(connective_body)) => {
                 // println!("\nhit ConnOrBody");
-                let all_matches = connective_body.ps.into_iter().find_map(|p| {
+
+                connective_body.ps.into_iter().find_map(|p| {
                     let matches = self.free_map.clone();
                     self.spatial_match(target.clone(), p)?;
                     self.free_map = matches;
                     Some(())
-                });
-                all_matches
+                })
             }
 
             Some(ConnNotBody(p)) => {
@@ -287,15 +287,11 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             let remainder = connectives_with_bounds.iter().try_fold(
                 target,
-                |acc, &(ref connective, ref bounds1, ref bounds2)| {
+                |acc, &(connective, bounds1, bounds2)| {
                     match_connective_with_bounds(
                         self,
                         acc,
-                        (
-                            (*connective).clone(),
-                            (*bounds1).clone(),
-                            (*bounds2).clone(),
-                        ),
+                        (connective.clone(), bounds1.clone(), bounds2.clone()),
                     )
                 },
             )?;

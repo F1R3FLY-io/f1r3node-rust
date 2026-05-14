@@ -54,7 +54,7 @@ impl ParMap {
     }
 
     fn update_locally_free(ps: &Vec<(Par, Par)>) -> Vec<u8> {
-        ps.into_iter().fold(Vec::new(), |acc, (key, value)| {
+        ps.iter().fold(Vec::new(), |acc, (key, value)| {
             union(
                 acc,
                 union(key.locally_free.clone(), value.locally_free.clone()),

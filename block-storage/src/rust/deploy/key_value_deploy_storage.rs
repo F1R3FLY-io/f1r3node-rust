@@ -60,9 +60,7 @@ impl KeyValueDeployStorage {
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store
-            .to_map()
-            .map(|map| map.into_iter().map(|(_, v)| v).collect())
+        self.store.to_map().map(|map| map.into_values().collect())
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.

@@ -12,13 +12,13 @@ impl Sortable<Match> for MatchSortMatcher {
     fn sort_match(m: &Match) -> ScoredTerm<Match> {
         fn sort_case(match_case: &MatchCase) -> ScoredTerm<MatchCase> {
             let sorted_pattern = ParSortMatcher::sort_match(
-                &match_case
+                match_case
                     .pattern
                     .as_ref()
                     .expect("pattern field on MatchCase was None, should be Some"),
             );
             let sorted_body = ParSortMatcher::sort_match(
-                &match_case
+                match_case
                     .source
                     .as_ref()
                     .expect("source field on MatchCase was None, should be Some"),
@@ -41,7 +41,7 @@ impl Sortable<Match> for MatchSortMatcher {
         }
 
         let sorted_value = ParSortMatcher::sort_match(
-            &m.target
+            m.target
                 .as_ref()
                 .expect("target field on Match was None, should be Some"),
         );

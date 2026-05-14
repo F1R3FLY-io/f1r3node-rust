@@ -206,7 +206,7 @@ impl HostnameTrustManagerFactory {
                     let pkcs8_bytes = key_der.secret_pkcs8_der();
 
                     let secret_key: p256::SecretKey =
-                        p256::SecretKey::from_pkcs8_der(&pkcs8_bytes).unwrap();
+                        p256::SecretKey::from_pkcs8_der(pkcs8_bytes).unwrap();
 
                     // Re-encode using p256's PKCS#8 encoding to get rustls-compatible format
                     let rustls_compatible_pkcs8 = secret_key.to_pkcs8_der().unwrap();
@@ -358,13 +358,10 @@ impl HostnameTrustManager {
                         {
                             if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) = &extension.parsed_extension() {
                                 for name in &san.general_names {
-                                    match name {
-                                        x509_parser::extensions::GeneralName::DNSName(dns_name) => {
-                                            if dns_name == &host {
-                                                return Ok(());
-                                            }
+                                    if let x509_parser::extensions::GeneralName::DNSName(dns_name) = name {
+                                        if dns_name == &host {
+                                            return Ok(());
                                         }
-                                        _ => {}
                                     }
                                 }
                             }

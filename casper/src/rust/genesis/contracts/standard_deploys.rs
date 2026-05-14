@@ -235,7 +235,7 @@ pub fn token_metadata(
 
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.minimum_bond <= pos.maximum_bond);
-    assert!(pos.validators.len() > 0);
+    assert!(!pos.validators.is_empty());
 
     to_deploy(
         CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[

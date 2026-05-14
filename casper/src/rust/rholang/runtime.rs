@@ -214,9 +214,10 @@ impl RuntimeOps {
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
                 } => {
-                    return Err(CasperError::RuntimeError(format!(
+                    return Err(CasperError::RuntimeError(
                         "Unreachable code path. This is likely caused by a bug in the runtime."
-                    )))
+                            .to_string(),
+                    ))
                 }
             }
         }
@@ -623,7 +624,7 @@ impl RuntimeOps {
         let ch_values = self.runtime.get_data(channel).await;
 
         if ch_values.is_empty() {
-            return Ok(None);
+            Ok(None)
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
@@ -681,7 +682,7 @@ impl RuntimeOps {
         system_deploy: &mut S,
     ) -> Result<SystemDeployResult<S::Result>, CasperError> {
         self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(&state_hash))
+            .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
 
         let (event_log, result, mergeable_channels) =
@@ -890,7 +891,7 @@ impl RuntimeOps {
         term: String,
         hash: &StateHash,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        let deploy_result = (|| async {
+        let deploy_result = async {
             let deploy = construct_deploy::source_deploy(
                 term,
                 0,
@@ -913,7 +914,7 @@ impl RuntimeOps {
             // Execute deploy on top of specified block hash
             self.capture_results_with_name(hash, &deploy, &return_name)
                 .await
-        })();
+        };
 
         deploy_result.await
     }
@@ -1261,7 +1262,7 @@ impl RuntimeOps {
         }
 
         let validators = Self::to_validator_vec(validators_pars[0].to_owned())?;
-        let vlds: Vec<String> = validators.iter().map(|v| hex::encode(&v)).collect();
+        let vlds: Vec<String> = validators.iter().map(|v| hex::encode(v)).collect();
         tracing::info!(
             "*** ACTIVE VALIDATORS FOR StateHash {}: {}",
             hex::encode(start_hash),
@@ -1345,22 +1346,21 @@ impl RuntimeOps {
             _ => SortedParHashSet::create_from_empty(),
         };
 
-        Ok(ps
-            .map_iter(|v| {
-                if v.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Validator in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else {
-                    match v.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GByteArray in validator data".to_string(),
-                        )),
-                    }
+        ps.map_iter(|v| {
+            if v.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Validator in bonds map wasn't a single string.".to_string(),
+                ))
+            } else {
+                match v.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GByteArray in validator data".to_string(),
+                    )),
                 }
-            })
-            .collect::<Result<Vec<_>, _>>()?)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
     }
 
     fn to_bond_vec(bonds_map: Par) -> Result<Vec<Bond>, CasperError> {
@@ -1373,38 +1373,37 @@ impl RuntimeOps {
             _ => SortedParMap::create_from_empty(),
         };
 
-        Ok(ps
-            .map_iter(|(validator, bond)| {
-                if validator.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Validator in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else if bond.exprs.len() != 1 {
-                    Err(CasperError::RuntimeError(
-                        "Stake in bonds map wasn't a single string.".to_string(),
-                    ))
-                } else {
-                    let validator_name = match validator.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GByteArray in validator data".to_string(),
-                        )),
-                    }?;
+        ps.map_iter(|(validator, bond)| {
+            if validator.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Validator in bonds map wasn't a single string.".to_string(),
+                ))
+            } else if bond.exprs.len() != 1 {
+                Err(CasperError::RuntimeError(
+                    "Stake in bonds map wasn't a single string.".to_string(),
+                ))
+            } else {
+                let validator_name = match validator.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GByteArray(g_byte_array) => Ok(g_byte_array.clone().into()),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GByteArray in validator data".to_string(),
+                    )),
+                }?;
 
-                    let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                        ExprInstance::GInt(g_int) => Ok(*g_int),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GInt in stake data".to_string(),
-                        )),
-                    }?;
+                let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
+                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    _ => Err(CasperError::RuntimeError(
+                        "Expected GInt in stake data".to_string(),
+                    )),
+                }?;
 
-                    Ok(Bond {
-                        validator: validator_name,
-                        stake: stake_amount,
-                    })
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?)
+                Ok(Bond {
+                    validator: validator_name,
+                    stake: stake_amount,
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
     }
 }
 

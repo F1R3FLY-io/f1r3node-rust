@@ -45,13 +45,8 @@ impl IsComparison {
         if let Some(expr) = single_expr(&p) {
             match expr.expr_instance.unwrap() {
                 ExprInstance::ETupleBody(etuple) => match etuple.ps.as_slice() {
-                    [expected_par, operator_par, actual_par] => {
-                        if let Some(operator) = RhoString::unapply(operator_par) {
-                            Some((expected_par.clone(), operator, actual_par.clone()))
-                        } else {
-                            None
-                        }
-                    }
+                    [expected_par, operator_par, actual_par] => RhoString::unapply(operator_par)
+                        .map(|operator| (expected_par.clone(), operator, actual_par.clone())),
                     _ => None,
                 },
 
@@ -69,11 +64,7 @@ impl IsSetFinished {
     pub fn unapply(p: Vec<Par>) -> Option<bool> {
         match p.as_slice() {
             [has_finished_par] => {
-                if let Some(has_finished) = RhoBoolean::unapply(has_finished_par) {
-                    Some(has_finished)
-                } else {
-                    None
-                }
+                RhoBoolean::unapply(has_finished_par).map(|has_finished| has_finished)
             }
             _ => None,
         }
@@ -238,7 +229,7 @@ impl TestResultCollector {
                         self.update(new_test_result);
 
                         if let Err(e) = produce(
-                            &vec![new_gbool_par(assertion.is_success(), Vec::new(), false)],
+                            &[new_gbool_par(assertion.is_success(), Vec::new(), false)],
                             &ack_channel.clone(),
                         )
                         .await
@@ -260,7 +251,7 @@ impl TestResultCollector {
                         self.update(new_test_result);
 
                         if let Err(e) = produce(
-                            &vec![new_gbool_par(assertion.is_success(), Vec::new(), false)],
+                            &[new_gbool_par(assertion.is_success(), Vec::new(), false)],
                             &ack_channel.clone(),
                         )
                         .await
@@ -269,7 +260,6 @@ impl TestResultCollector {
                         }
                     } else {
                         println!("\nreturning Unit");
-                        ()
                     }
                 } else if let Some(condition) = RhoBoolean::unapply(&assertion) {
                     println!("\ncondition: {:?}", condition);
@@ -284,7 +274,7 @@ impl TestResultCollector {
                     self.update(new_test_result);
 
                     if let Err(e) = produce(
-                        &vec![new_gbool_par(condition, Vec::new(), false)],
+                        &[new_gbool_par(condition, Vec::new(), false)],
                         &ack_channel.clone(),
                     )
                     .await
@@ -304,7 +294,7 @@ impl TestResultCollector {
                     self.update(new_test_result);
 
                     if let Err(e) = produce(
-                        &vec![new_gbool_par(false, Vec::new(), false)],
+                        &[new_gbool_par(false, Vec::new(), false)],
                         &ack_channel.clone(),
                     )
                     .await
@@ -320,7 +310,6 @@ impl TestResultCollector {
                 self.update(new_test_result);
             } else {
                 println!("\nreturning Unit");
-                ()
             }
         } else {
             panic!("SystemProcesses: is_contract_call failed");

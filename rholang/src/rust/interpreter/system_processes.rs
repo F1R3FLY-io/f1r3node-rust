@@ -57,7 +57,7 @@ pub type Name = Par;
 pub type Arity = i32;
 pub type Remainder = Option<Var>;
 pub type BodyRef = i64;
-pub type Contract = dyn Fn(Vec<ListParWithRandom>) -> ();
+pub type Contract = dyn Fn(Vec<ListParWithRandom>);
 
 #[derive(Clone)]
 pub struct InvalidBlocks {
@@ -1322,7 +1322,7 @@ impl SystemProcesses {
                     let output = vec![new_gbool_par(condition, Vec::new(), false)];
                     produce(&output, &ack_channel).await?;
 
-                    assert_eq!(condition, true, "{}", clue_msg(clue, attempt));
+                    assert!(condition, "{}", clue_msg(clue, attempt));
                     Ok(output)
                 } else {
                     let output = vec![new_gbool_par(false, Vec::new(), false)];
@@ -1404,7 +1404,7 @@ impl SystemProcesses {
                     ) {
                         if deployer_id_str == "deployerId" {
                             let output = vec![RhoDeployerId::create_par(public_key)];
-                            produce(&output, &ack_channel).await?;
+                            produce(&output, ack_channel).await?;
                             Ok(output)
                         } else {
                             Err(illegal_argument_error("deployer_id_make"))
@@ -1451,7 +1451,7 @@ impl SystemProcesses {
                         let result_par = new_gbytearray_par(der_bytes, Vec::new(), false);
 
                         let output = vec![result_par];
-                        produce(&output, &ack_channel).await?;
+                        produce(&output, ack_channel).await?;
                         Ok(output)
                     } else {
                         Err(illegal_argument_error("secp256k1_sign"))
@@ -1476,7 +1476,7 @@ impl SystemProcesses {
                     let auth_token = new_gsys_auth_token_par(Vec::new(), false);
 
                     let output = vec![auth_token];
-                    produce(&output, &ack_channel).await?;
+                    produce(&output, ack_channel).await?;
                     Ok(output)
                 }
                 _ => Err(illegal_argument_error("sys_auth_token_make")),
@@ -1506,7 +1506,7 @@ impl SystemProcesses {
                                     drop(block_data);
 
                                     let result_par = vec![Par::default()];
-                                    produce(&result_par, &ack_channel).await?;
+                                    produce(&result_par, ack_channel).await?;
                                     Ok(result_par)
                                 } else {
                                     Err(illegal_argument_error("block_data_set"))
@@ -1519,7 +1519,7 @@ impl SystemProcesses {
                                     drop(block_data);
 
                                     let result_par = vec![Par::default()];
-                                    produce(&result_par, &ack_channel).await?;
+                                    produce(&result_par, ack_channel).await?;
                                     Ok(result_par)
                                 } else {
                                     Err(illegal_argument_error("block_data_set"))
@@ -1552,7 +1552,7 @@ impl SystemProcesses {
                     *invalid_blocks_lock = new_invalid_blocks_par.clone();
 
                     let result_par = vec![Par::default()];
-                    produce(&result_par, &ack_channel).await?;
+                    produce(&result_par, ack_channel).await?;
                     Ok(result_par)
                 }
                 _ => Err(illegal_argument_error("casper_invalid_blocks_set")),
@@ -1903,13 +1903,8 @@ impl IsComparison {
         if let Some(expr) = single_expr(&p) {
             match expr.expr_instance.unwrap() {
                 ExprInstance::ETupleBody(etuple) => match etuple.ps.as_slice() {
-                    [expected_par, operator_par, actual_par] => {
-                        if let Some(operator) = RhoString::unapply(operator_par) {
-                            Some((expected_par.clone(), operator, actual_par.clone()))
-                        } else {
-                            None
-                        }
-                    }
+                    [expected_par, operator_par, actual_par] => RhoString::unapply(operator_par)
+                        .map(|operator| (expected_par.clone(), operator, actual_par.clone())),
                     _ => None,
                 },
 
@@ -1927,11 +1922,7 @@ impl IsSetFinished {
     pub fn unapply(p: Vec<Par>) -> Option<bool> {
         match p.as_slice() {
             [has_finished_par] => {
-                if let Some(has_finished) = RhoBoolean::unapply(has_finished_par) {
-                    Some(has_finished)
-                } else {
-                    None
-                }
+                RhoBoolean::unapply(has_finished_par).map(|has_finished| has_finished)
             }
             _ => None,
         }

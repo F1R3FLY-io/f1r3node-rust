@@ -118,10 +118,7 @@ pub fn normalize_p_bundle<'ast>(
         };
 
         Ok(ProcVisitOutputs {
-            par: {
-                let updated_bundle = prepend_bundle(input.par.clone(), new_bundle);
-                updated_bundle
-            },
+            par: { prepend_bundle(input.par.clone(), new_bundle) },
             free_map: input.free_map.clone(),
         })
     };

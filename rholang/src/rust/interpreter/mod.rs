@@ -34,7 +34,7 @@ pub mod util;
 pub fn unwrap_option_safe<A: Clone + std::fmt::Debug>(
     opt: Option<A>,
 ) -> Result<A, InterpreterError> {
-    opt.map(|x| x.clone()).ok_or_else(|| {
+    opt.ok_or_else(|| {
         InterpreterError::UndefinedRequiredProtobufFieldError(format!(
             "{:?}",
             std::any::type_name::<A>()

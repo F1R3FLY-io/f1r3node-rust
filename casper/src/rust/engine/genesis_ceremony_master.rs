@@ -128,7 +128,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 )?;
 
                 let casper = Self::create_casper_from_storage(
-                    &event_publisher,
+                    event_publisher,
                     &runtime_manager,
                     &estimator,
                     &block_store,
@@ -162,8 +162,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
-                    &*engine_cell,
-                    &event_publisher,
+                    &engine_cell,
+                    event_publisher,
                 )
                 .await?;
 

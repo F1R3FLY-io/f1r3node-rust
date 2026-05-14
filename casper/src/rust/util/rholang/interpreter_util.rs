@@ -166,7 +166,7 @@ pub async fn validate_block_checkpoint(
 
     tracing::info!(
         "Computed parents post state for {}.",
-        PrettyPrinter::build_string_block_message(&block, false)
+        PrettyPrinter::build_string_block_message(block, false)
     );
 
     match computed_parents_info {
@@ -187,7 +187,7 @@ pub async fn validate_block_checkpoint(
                     PrettyPrinter::build_string_bytes(&incoming_pre_state_hash)
                 );
 
-                return Ok(Either::Right(None));
+                Ok(Either::Right(None))
             } else if rejected_deploy_ids != block_rejected_deploy_sigs {
                 // Detailed logging for InvalidRejectedDeploy mismatch
                 let extra_in_computed: Vec<_> = rejected_deploy_ids
@@ -317,7 +317,7 @@ pub async fn validate_block_checkpoint(
                     block_rejected_deploy_sigs.len()
                 );
 
-                return Ok(Either::Left(BlockStatus::invalid_rejected_deploy()));
+                Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
             } else {
                 tracing::debug!(target: "f1r3fly.casper.replay-block", "before-process-pre-state-hash");
                 // Using tracing events for async - Span[F] equivalent from Scala
@@ -333,9 +333,7 @@ pub async fn validate_block_checkpoint(
                 handle_errors(proto_util::post_state_hash(block), replay_result)
             }
         }
-        Err(ex) => {
-            return Ok(Either::Left(BlockStatus::exception(ex)));
-        }
+        Err(ex) => Ok(Either::Left(BlockStatus::exception(ex))),
     }
 }
 
@@ -411,7 +409,7 @@ async fn replay_block(
     let seen_invalid_blocks_set: Vec<_> = invalid_blocks_set
         .iter()
         .filter(|invalid_block| !unseen_blocks_set.contains(&invalid_block.block_hash))
-        .map(|invalid_block| invalid_block.clone())
+        .cloned()
         .collect();
     // TODO: Write test in which switching this to .filter makes it fail
 
@@ -586,7 +584,7 @@ fn handle_errors(
 }
 
 pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
-    let deploy_info = PrettyPrinter::build_string_sig(&deploy_sig);
+    let deploy_info = PrettyPrinter::build_string_sig(deploy_sig);
     let error_messages: String = errors
         .iter()
         .map(|e| e.to_string())

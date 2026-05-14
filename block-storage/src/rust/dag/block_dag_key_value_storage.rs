@@ -112,12 +112,12 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn find(&self, truncated_hash: &str) -> Option<BlockHash> {
-        if truncated_hash.len() % 2 == 0 {
+        if truncated_hash.len().is_multiple_of(2) {
             let truncated_bytes = hex::decode(truncated_hash).expect("invalid truncated hash");
             self.dag_set
                 .iter()
                 .find(|hash| hash.starts_with(&truncated_bytes))
-                .map(|v| v.clone())
+                .cloned()
         } else {
             // if truncatedHash is odd length string we cannot convert it to ByteString with 8 bit resolution
             // because each symbol has 4 bit resolution. Need to make a string of even length by removing the last symbol,
@@ -128,7 +128,7 @@ impl KeyValueDagRepresentation {
                 .iter()
                 .filter(|hash| hash.starts_with(&truncated_bytes))
                 .find(|hash| hex::encode(&**hash).starts_with(truncated_hash))
-                .map(|v| v.clone())
+                .cloned()
         }
     }
 
@@ -175,7 +175,7 @@ impl KeyValueDagRepresentation {
             Ok(Some(metadata)) => Ok(metadata),
             _ => Err(KvStoreError::InvalidArgument(format!(
                 "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(&block_hash)
+                PrettyPrinter::build_string_bytes(block_hash)
             ))),
         }
     }
@@ -202,7 +202,7 @@ impl KeyValueDagRepresentation {
             Some(hash) => Ok(hash),
             None => Err(KvStoreError::InvalidArgument(format!(
                 "No latest message for validator {}",
-                PrettyPrinter::build_string_bytes(&validator)
+                PrettyPrinter::build_string_bytes(validator)
             ))),
         }
     }
@@ -344,7 +344,7 @@ impl KeyValueDagRepresentation {
         loop {
             let current_height = self.block_number_unsafe(&current_hash)?;
             if current_height <= stop_height {
-                return Ok(&current_hash == ancestor);
+                return Ok(current_hash == ancestor);
             }
 
             let Some(main_parent) = self.main_parent(&current_hash) else {
@@ -554,8 +554,7 @@ impl BlockDagKeyValueStorage {
             .invalid_blocks_index
             .to_map()
             .expect("Failed to convert invalid_blocks_index to map")
-            .into_iter()
-            .map(|(_, v)| v)
+            .into_values()
             .collect();
 
         let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
@@ -624,11 +623,11 @@ impl BlockDagKeyValueStorage {
 
         let log_already_stored = format!(
             "Block {} is already stored.",
-            PrettyPrinter::build_string_block_message(&block, true)
+            PrettyPrinter::build_string_block_message(block, true)
         );
         let log_empty_sender = format!(
             "Block {} sender is empty.",
-            PrettyPrinter::build_string_block_message(&block, true)
+            PrettyPrinter::build_string_block_message(block, true)
         );
 
         // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
@@ -697,8 +696,8 @@ impl BlockDagKeyValueStorage {
 
         let block_exists = {
             let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
-            let exists = block_metadata_index_guard.contains(&block.block_hash);
-            exists
+
+            block_metadata_index_guard.contains(&block.block_hash)
         };
 
         if block_exists {
@@ -727,7 +726,7 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
-            let block_metadata = BlockMetadata::from_block(&block, invalid, None, None);
+            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write().unwrap();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
@@ -858,7 +857,7 @@ impl BlockDagKeyValueStorage {
 
                 let indirectly_finalized = dag
                     .ancestors(directly_finalized_hash.clone(), |hash| {
-                        !dag.is_finalized(&hash)
+                        !dag.is_finalized(hash)
                     })?;
 
                 let mut all_finalized = indirectly_finalized.clone();

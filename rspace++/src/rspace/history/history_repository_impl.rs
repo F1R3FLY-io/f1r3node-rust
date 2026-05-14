@@ -75,7 +75,7 @@ where
         actions_len >= Self::checkpoint_parallel_actions_threshold()
     }
 
-    fn measure(&self, actions: &Vec<HotStoreAction<C, P, A, K>>) -> () {
+    fn measure(&self, actions: &Vec<HotStoreAction<C, P, A, K>>) {
         if !tracing::enabled!(Level::DEBUG) {
             return;
         }
@@ -321,7 +321,7 @@ where
             return self.checkpoint_noop_clone();
         }
 
-        let _ = self.measure(&actions);
+        self.measure(&actions);
 
         let trie_actions: Vec<_> = if Self::should_parallelize_checkpoint_actions(actions.len()) {
             actions
@@ -378,7 +378,7 @@ where
         };
 
         // store cold data
-        let store_leaves = {
+        {
             let serialized_cold_actions = cold_actions
                 .into_iter()
                 .map(|(key, value)| {
@@ -408,7 +408,7 @@ where
         let new_root = new_history.root();
         store_root(&new_root).expect("History Repository Impl: Unable to store root");
 
-        let _ = store_leaves;
+        ();
 
         Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(new_history)),
@@ -462,7 +462,7 @@ where
             .current_history
             .lock()
             .expect("History Repository Impl: Unable to acquire history lock");
-        let history_repo = history_lock.reset(&state_hash)?;
+        let history_repo = history_lock.reset(state_hash)?;
         Ok(Box::new(RSpaceHistoryReaderImpl::new(history_repo, self.leaf_store.clone())))
     }
 

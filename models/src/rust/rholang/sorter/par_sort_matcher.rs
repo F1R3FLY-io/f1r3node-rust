@@ -129,7 +129,7 @@ impl Sortable<Par> for ParSortMatcher {
 
         let connective_used_score: i64 = if par.connective_used { 1 } else { 0 };
         let par_score = Tree::<ScoreAtom>::create_node_from_i32(
-            Score::PAR as i32,
+            Score::PAR,
             send_scores
                 .into_iter()
                 .map(|s| s)

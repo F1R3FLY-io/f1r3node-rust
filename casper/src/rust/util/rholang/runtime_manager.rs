@@ -327,7 +327,7 @@ impl RuntimeManager {
             .collect();
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&start_hash);
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
 
         // Save mergeable channels to store
@@ -666,7 +666,7 @@ impl RuntimeManager {
             .await?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
-        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&start_hash);
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
 
         self.save_mergeable_channels(

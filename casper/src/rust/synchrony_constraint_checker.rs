@@ -377,7 +377,7 @@ pub async fn check(
                     other_validators_weight,
                 );
 
-                let threshold_f64 = synchrony_constraint_threshold as f64;
+                let threshold_f64 = synchrony_constraint_threshold;
 
                 tracing::warn!(
                     "Seen {} senders with weight {} out of total {} ({:.2} out of {:.2} needed)",
@@ -402,7 +402,7 @@ pub async fn check(
                     let can_use_finalized = can_use_finalized_baseline(
                         last_proposed_block_meta.block_number,
                         last_finalized_block_meta.block_number,
-                        shard_conf.height_constraint_threshold as i64,
+                        shard_conf.height_constraint_threshold,
                         shard_conf.synchrony_finalized_baseline_max_distance,
                     );
 
@@ -521,7 +521,7 @@ fn calculate_seen_senders_since(
         let present_in_justifications = last_proposed
             .justifications
             .iter()
-            .any(|j| &j.validator == validator);
+            .any(|j| j.validator == validator);
         if present_in_justifications {
             continue;
         }

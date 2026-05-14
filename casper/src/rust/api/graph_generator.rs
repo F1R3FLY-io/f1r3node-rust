@@ -18,16 +18,9 @@ pub struct ValidatorBlock {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct GraphConfig {
     pub show_justification_lines: bool,
-}
-
-impl Default for GraphConfig {
-    fn default() -> Self {
-        Self {
-            show_justification_lines: false,
-        }
-    }
 }
 
 pub type ValidatorsBlocks = HashMap<i64, Vec<ValidatorBlock>>;
@@ -195,15 +188,9 @@ impl GraphzGenerator {
 
         // Equivalent to acc.validators |+| Foldable[List].fold(validators)
         for (block_sender_hash, blocks_map) in validators.into_iter().flat_map(|m| m.into_iter()) {
-            let acc_validator = acc
-                .validators
-                .entry(block_sender_hash)
-                .or_insert_with(HashMap::new);
+            let acc_validator = acc.validators.entry(block_sender_hash).or_default();
             for (ts, blocks) in blocks_map {
-                acc_validator
-                    .entry(ts)
-                    .or_insert_with(Vec::new)
-                    .extend(blocks);
+                acc_validator.entry(ts).or_default().extend(blocks);
             }
         }
 

@@ -160,7 +160,7 @@ where
                     channels,
                     continuation: cont.clone(),
                     continuation_index: *index,
-                    data_candidates: data_candidates.into_iter().filter_map(|x| x).collect(),
+                    data_candidates: data_candidates.into_iter().flatten().collect(),
                 });
             }
 

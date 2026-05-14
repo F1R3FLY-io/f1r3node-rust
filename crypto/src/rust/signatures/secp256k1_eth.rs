@@ -27,7 +27,7 @@ impl SignaturesAlg for Secp256k1Eth {
         let sig_der = Secp256k1.sign(data, sec);
         let rs_signature = decode_signature_der_to_rs(&sig_der);
 
-        rs_signature.unwrap_or_else(Vec::new)
+        rs_signature.unwrap_or_default()
     }
 
     fn to_public(&self, sec: &PrivateKey) -> PublicKey { Secp256k1.to_public(sec) }

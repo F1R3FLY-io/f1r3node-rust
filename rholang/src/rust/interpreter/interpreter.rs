@@ -67,7 +67,7 @@ impl Interpreter for InterpreterImpl {
                     mark = "started-set-initial-cost",
                     "inj_attempt"
                 );
-                let _ = self.c.set(initial_phlo.clone());
+                self.c.set(initial_phlo.clone());
                 event!(
                     Level::DEBUG,
                     mark = "finished-set-initial-cost",
@@ -124,29 +124,29 @@ impl Interpreter for InterpreterImpl {
                     mark = "started-build-normalized-term",
                     "inj_attempt"
                 );
-                let result =
-                    match Compiler::source_to_adt_with_normalizer_env(&term, normalizer_env) {
-                        Ok(p) => {
-                            event!(
-                                Level::DEBUG,
-                                mark = "finished-build-normalized-term",
-                                "inj_attempt"
-                            );
-                            Ok(p)
-                        }
-                        Err(e) => {
-                            event!(
-                                Level::DEBUG,
-                                mark = "failed-build-normalized-term",
-                                "inj_attempt"
-                            );
-                            Err(self.handle_error(
-                                initial_phlo.clone(),
-                                parsing_cost.clone(),
-                                InterpreterError::ParserError(e.to_string()),
-                            ))
-                        }
-                    };
+                let result = match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
+                {
+                    Ok(p) => {
+                        event!(
+                            Level::DEBUG,
+                            mark = "finished-build-normalized-term",
+                            "inj_attempt"
+                        );
+                        Ok(p)
+                    }
+                    Err(e) => {
+                        event!(
+                            Level::DEBUG,
+                            mark = "failed-build-normalized-term",
+                            "inj_attempt"
+                        );
+                        Err(self.handle_error(
+                            initial_phlo.clone(),
+                            parsing_cost.clone(),
+                            InterpreterError::ParserError(e.to_string()),
+                        ))
+                    }
+                };
                 metrics::histogram!(
                     INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC,
                     "source" => INTERPRETER_METRICS_SOURCE

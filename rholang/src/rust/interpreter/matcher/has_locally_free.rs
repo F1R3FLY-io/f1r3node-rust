@@ -253,7 +253,7 @@ impl HasLocallyFree<VarInstance> for SpatialMatcherContext {
         match v {
             BoundVar(index) => {
                 if depth == 0 {
-                    create_bit_vector(&vec![index as usize])
+                    create_bit_vector(&[index as usize])
                 } else {
                     Default::default()
                 }
@@ -331,7 +331,7 @@ impl HasLocallyFree<Connective> for SpatialMatcherContext {
                 depth: var_depth,
             })) => {
                 if depth == var_depth {
-                    create_bit_vector(&vec![idx as usize])
+                    create_bit_vector(&[idx as usize])
                 } else {
                     Default::default()
                 }
@@ -354,7 +354,7 @@ impl HasLocallyFree<VarInstance> for VarInstance {
         match v {
             BoundVar(index) => {
                 if depth == 0 {
-                    create_bit_vector(&vec![index as usize])
+                    create_bit_vector(&[index as usize])
                 } else {
                     Default::default()
                 }
@@ -566,7 +566,7 @@ impl HasLocallyFree<Connective> for Connective {
                 depth: var_depth,
             })) => {
                 if depth == var_depth {
-                    create_bit_vector(&vec![idx as usize])
+                    create_bit_vector(&[idx as usize])
                 } else {
                     Default::default()
                 }

@@ -668,7 +668,7 @@ impl BlockCreator for ProductionBlockCreator {
             dummy_deploy_opt,
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            &mut self.runtime_manager,
+            &self.runtime_manager,
             &mut self.block_store,
             allow_empty_blocks,
         )

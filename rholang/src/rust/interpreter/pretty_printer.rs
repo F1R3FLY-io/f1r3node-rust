@@ -410,7 +410,7 @@ impl PrettyPrinter {
                     }
 
                     result.push_str(&self.build_remainder_string(remainder));
-                    result.push_str("}");
+                    result.push('}');
 
                     Ok(result)
                 }
@@ -463,19 +463,19 @@ impl PrettyPrinter {
                                 // Decode S-expression to get readable format
                                 SExpr::decode(segment)
                                     .ok()
-                                    .and_then(|sexpr| {
+                                    .map(|sexpr| {
                                         // For simple symbols, the string may already have quotes
                                         // (e.g., from Rholang strings like "books")
                                         match sexpr {
                                             SExpr::Symbol(s) => {
                                                 // If it's already quoted, use as-is; otherwise add quotes
                                                 if s.starts_with('"') && s.ends_with('"') {
-                                                    Some(s)
+                                                    s
                                                 } else {
-                                                    Some(format!("\"{}\"", s))
+                                                    format!("\"{}\"", s)
                                                 }
                                             }
-                                            SExpr::List(_) => Some(sexpr.to_string()),
+                                            SExpr::List(_) => sexpr.to_string(),
                                         }
                                     })
                                     .unwrap_or_else(|| format!("0x{}", hex::encode(segment)))
@@ -594,7 +594,7 @@ impl PrettyPrinter {
                 Some(VarInstance::Wildcard(_)) => String::from("..._"),
                 None => String::from("...Nil"),
             },
-            None => format!(""),
+            None => String::new(),
         }
     }
 
@@ -641,7 +641,7 @@ impl PrettyPrinter {
                             Some(v) => match &v.var_instance {
                                 Some(instance) => match instance {
                                     VarInstance::BoundVar(level) => PrettyPrinter::is_new_var(
-                                        &level,
+                                        level,
                                         news_shift_indices,
                                         bound_shift,
                                     ),
@@ -740,8 +740,7 @@ impl PrettyPrinter {
 
                     string.push_str(
                         &self._build_channel_string(
-                            &bind
-                                .source
+                            bind.source
                                 .as_ref()
                                 .expect("source field on bind was None, should be Some"),
                             indent,
@@ -759,7 +758,7 @@ impl PrettyPrinter {
                 },
             )?;
 
-            self.bound_shift = self.bound_shift + totally_free;
+            self.bound_shift += totally_free;
             let body_str = self.build_string_from_message(
                 r.body
                     .as_ref()
@@ -799,7 +798,7 @@ impl PrettyPrinter {
                 self.build_variables(n.bind_count),
                 self.indent_string().repeat(indent + 1),
                 {
-                    self.bound_shift = self.bound_shift + n.bind_count;
+                    self.bound_shift += n.bind_count;
                     self.news_shift_indices = self
                         .news_shift_indices
                         .clone()
@@ -1028,11 +1027,7 @@ impl PrettyPrinter {
     }
 
     fn increment(&self, id: String) -> String {
-        fn inc_char(char_id: char) -> char {
-            let new_char = ((char_id as u8 + 1 - b'a') % 26 + b'a') as char;
-
-            new_char
-        }
+        fn inc_char(char_id: char) -> char { ((char_id as u8 + 1 - b'a') % 26 + b'a') as char }
 
         let new_id = inc_char(id.chars().last().unwrap());
 
@@ -1049,11 +1044,7 @@ impl PrettyPrinter {
 
     fn rotate(&self, id: String) -> String {
         id.chars()
-            .map(|char| {
-                let new_char = ((char as u8 + self.rotation as u8 - b'a') % 26 + b'a') as char;
-
-                new_char
-            })
+            .map(|char| ((char as u8 + self.rotation as u8 - b'a') % 26 + b'a') as char)
             .collect()
     }
 
@@ -1120,7 +1111,7 @@ impl PrettyPrinter {
             )?,
             open_brace,
             {
-                self.bound_shift = self.bound_shift + pattern_free;
+                self.bound_shift += pattern_free;
                 self._build_string_from_message(
                     match_case
                         .source

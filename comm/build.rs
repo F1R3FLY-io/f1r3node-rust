@@ -28,10 +28,10 @@ fn main() {
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
-        .btree_map(&".")
+        .btree_map(".")
         .message_attribute(".", "#[repr(C)]")
         .enum_attribute(".", "#[repr(C)]")
-        .bytes(&".")
+        .bytes(".")
         .compile_protos(&absolute_proto_files, &[
             proto_src_dir,
             manifest_dir,

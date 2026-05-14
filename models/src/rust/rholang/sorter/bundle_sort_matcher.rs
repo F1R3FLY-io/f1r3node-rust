@@ -20,7 +20,7 @@ impl Sortable<Bundle> for BundleSortMatcher {
         };
 
         let sorted_par = ParSortMatcher::sort_match(
-            &b.body.as_ref().expect("body was None, should be Some(Par)"),
+            b.body.as_ref().expect("body was None, should be Some(Par)"),
         );
 
         ScoredTerm {

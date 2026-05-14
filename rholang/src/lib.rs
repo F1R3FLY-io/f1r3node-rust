@@ -73,7 +73,7 @@ pub extern "C" fn rholang_reset_allocated_bytes() {
 #[no_mangle]
 pub extern "C" fn rholang_deallocate_memory(ptr: *mut u8, len: usize) {
     unsafe {
-        let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
     }
     RHOLANG_ALLOCATED_BYTES.fetch_sub(len, Ordering::SeqCst);
 }
@@ -222,11 +222,7 @@ extern "C" fn evaluate(
 }
 
 #[no_mangle]
-extern "C" fn inj(
-    runtime_ptr: *mut RhoRuntime,
-    params_ptr: *const u8,
-    params_bytes_len: usize,
-) -> () {
+extern "C" fn inj(runtime_ptr: *mut RhoRuntime, params_ptr: *const u8, params_bytes_len: usize) {
     let params_slice = unsafe { std::slice::from_raw_parts(params_ptr, params_bytes_len) };
     let params = InjParams::decode(params_slice).unwrap();
 
@@ -299,7 +295,7 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
                     peeks: wk
                         .peeks
                         .into_iter()
-                        .map(|peek| SortedSetElement { value: peek as i32 })
+                        .map(|peek| SortedSetElement { value: peek })
                         .collect(),
                     source: Some(ConsumeProto {
                         channel_hashes: wk
@@ -328,7 +324,7 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
             peeks: value
                 .peeks
                 .into_iter()
-                .map(|peek| SortedSetElement { value: peek as i32 })
+                .map(|peek| SortedSetElement { value: peek })
                 .collect(),
             source: Some(ConsumeProto {
                 channel_hashes: value
@@ -429,7 +425,7 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
                     peeks: {
                         comm.peeks
                             .into_iter()
-                            .map(|peek| SortedSetElement { value: peek as i32 })
+                            .map(|peek| SortedSetElement { value: peek })
                             .collect()
                     },
                     times_repeated: {
@@ -536,7 +532,7 @@ extern "C" fn revert_to_soft_checkpoint(
     runtime_ptr: *mut RhoRuntime,
     payload_pointer: *const u8,
     payload_bytes_len: usize,
-) -> () {
+) {
     let payload_slice = unsafe { std::slice::from_raw_parts(payload_pointer, payload_bytes_len) };
     let soft_checkpoint_proto = SoftCheckpointProto::decode(payload_slice).unwrap();
     let cache_snapshot_proto = soft_checkpoint_proto.cache_snapshot.unwrap();
@@ -830,7 +826,7 @@ extern "C" fn create_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 {
                     peeks: {
                         comm.peeks
                             .into_iter()
-                            .map(|peek| SortedSetElement { value: peek as i32 })
+                            .map(|peek| SortedSetElement { value: peek })
                             .collect()
                     },
                     times_repeated: {
@@ -1089,7 +1085,7 @@ extern "C" fn get_waiting_continuations(
                 peeks: wk
                     .peeks
                     .into_iter()
-                    .map(|peek| SortedSetElement { value: peek as i32 })
+                    .map(|peek| SortedSetElement { value: peek })
                     .collect(),
                 source: Some(ConsumeProto {
                     channel_hashes: wk
@@ -1125,7 +1121,7 @@ extern "C" fn set_block_data(
     runtime_ptr: *mut RhoRuntime,
     params_ptr: *const u8,
     params_bytes_len: usize,
-) -> () {
+) {
     let params_slice = unsafe { std::slice::from_raw_parts(params_ptr, params_bytes_len) };
     let params = BlockDataProto::decode(params_slice).unwrap();
     let block_data = BlockData {
@@ -1147,7 +1143,7 @@ extern "C" fn set_invalid_blocks(
     runtime_ptr: *mut RhoRuntime,
     params_ptr: *const u8,
     params_bytes_len: usize,
-) -> () {
+) {
     let params_slice = unsafe { std::slice::from_raw_parts(params_ptr, params_bytes_len) };
     let params = InvalidBlocksProto::decode(params_slice).unwrap();
     let invalid_blocks = params
@@ -1200,7 +1196,7 @@ extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
                     peeks: wk
                         .peeks
                         .into_iter()
-                        .map(|peek| SortedSetElement { value: peek as i32 })
+                        .map(|peek| SortedSetElement { value: peek })
                         .collect(),
                     source: Some(ConsumeProto {
                         channel_hashes: wk
@@ -1239,7 +1235,7 @@ extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
 }
 
 #[no_mangle]
-extern "C" fn set_cost_to_max(runtime_ptr: *mut RhoRuntime) -> () {
+extern "C" fn set_cost_to_max(runtime_ptr: *mut RhoRuntime) {
     unsafe {
         (*runtime_ptr).runtime.cost.set(Cost::unsafe_max());
     }
@@ -1252,7 +1248,7 @@ extern "C" fn rig(
     runtime_ptr: *mut ReplayRhoRuntime,
     log_pointer: *const u8,
     log_bytes_len: usize,
-) -> () {
+) {
     let log_slice = unsafe { std::slice::from_raw_parts(log_pointer, log_bytes_len) };
     let log_proto = LogProto::decode(log_slice).unwrap();
 
@@ -1365,7 +1361,7 @@ extern "C" fn rig(
 }
 
 #[no_mangle]
-extern "C" fn check_replay_data(runtime_ptr: *mut ReplayRhoRuntime) -> () {
+extern "C" fn check_replay_data(runtime_ptr: *mut ReplayRhoRuntime) {
     // TODO: FFI not used — block_on wrapper for async ISpace methods
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -1504,7 +1500,7 @@ extern "C" fn create_replay_runtime(
 }
 
 #[no_mangle]
-extern "C" fn bootstrap_registry(runtime_ptr: *mut RhoRuntime) -> () {
+extern "C" fn bootstrap_registry(runtime_ptr: *mut RhoRuntime) {
     let runtime = unsafe { (*runtime_ptr).runtime.clone() };
     let tokio_runtime = tokio::runtime::Runtime::new().unwrap();
     tokio_runtime.block_on(async {

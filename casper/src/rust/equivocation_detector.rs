@@ -169,7 +169,7 @@ impl EquivocationDetector {
         // Find the bond for the equivocating validator
         let maybe_equivocating_validator_bond = bonds
             .iter()
-            .find(|bond| &bond.validator == equivocating_validator);
+            .find(|bond| bond.validator == equivocating_validator);
 
         match maybe_equivocating_validator_bond {
             Some(bond) => Self::get_equivocation_discovery_status_for_bonded_validator(

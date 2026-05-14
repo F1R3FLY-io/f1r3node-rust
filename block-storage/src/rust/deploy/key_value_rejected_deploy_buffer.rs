@@ -77,9 +77,7 @@ impl KeyValueRejectedDeployBuffer {
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store
-            .to_map()
-            .map(|map| map.into_iter().map(|(_, v)| v).collect())
+        self.store.to_map().map(|map| map.into_values().collect())
     }
 
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }

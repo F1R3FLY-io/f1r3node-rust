@@ -40,7 +40,7 @@ impl Sortable<Expr> for ExprSortMatcher {
             Some(expr) => match expr {
                 ExprInstance::ENegBody(en) => {
                     let sorted_par = ParSortMatcher::sort_match(
-                        &en.p.as_ref().expect("par field was None, should be Some"),
+                        en.p.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -55,7 +55,7 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EVarBody(ev) => {
                     let sorted_var = VarSortMatcher::sort_match(
-                        &ev.v.as_ref().expect("var field was None, should be Some"),
+                        ev.v.as_ref().expect("var field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -70,7 +70,7 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::ENotBody(en) => {
                     let sorted_par = ParSortMatcher::sort_match(
-                        &en.p.as_ref().expect("par field was None, should be Some"),
+                        en.p.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -85,10 +85,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EMultBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &em.p1.as_ref().expect("par field was None, should be Some"),
+                        em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &em.p2.as_ref().expect("par field was None, should be Some"),
+                        em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -105,10 +105,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EDivBody(ed) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ed.p1.as_ref().expect("par field was None, should be Some"),
+                        ed.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ed.p2.as_ref().expect("par field was None, should be Some"),
+                        ed.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -125,10 +125,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EModBody(ed) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ed.p1.as_ref().expect("par field was None, should be Some"),
+                        ed.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ed.p2.as_ref().expect("par field was None, should be Some"),
+                        ed.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -145,10 +145,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EPlusBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ep.p1.as_ref().expect("par field was None, should be Some"),
+                        ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ep.p2.as_ref().expect("par field was None, should be Some"),
+                        ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -165,10 +165,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EMinusBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &em.p1.as_ref().expect("par field was None, should be Some"),
+                        em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &em.p2.as_ref().expect("par field was None, should be Some"),
+                        em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -185,10 +185,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::ELtBody(el) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &el.p1.as_ref().expect("par field was None, should be Some"),
+                        el.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &el.p2.as_ref().expect("par field was None, should be Some"),
+                        el.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -205,10 +205,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::ELteBody(el) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &el.p1.as_ref().expect("par field was None, should be Some"),
+                        el.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &el.p2.as_ref().expect("par field was None, should be Some"),
+                        el.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -225,10 +225,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EGtBody(eg) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &eg.p1.as_ref().expect("par field was None, should be Some"),
+                        eg.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &eg.p2.as_ref().expect("par field was None, should be Some"),
+                        eg.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -245,10 +245,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EGteBody(eg) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &eg.p1.as_ref().expect("par field was None, should be Some"),
+                        eg.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &eg.p2.as_ref().expect("par field was None, should be Some"),
+                        eg.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -265,10 +265,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EEqBody(ee) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ee.p1.as_ref().expect("par field was None, should be Some"),
+                        ee.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ee.p2.as_ref().expect("par field was None, should be Some"),
+                        ee.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -285,10 +285,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::ENeqBody(en) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &en.p1.as_ref().expect("par field was None, should be Some"),
+                        en.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &en.p2.as_ref().expect("par field was None, should be Some"),
+                        en.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -305,10 +305,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EAndBody(ea) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ea.p1.as_ref().expect("par field was None, should be Some"),
+                        ea.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ea.p2.as_ref().expect("par field was None, should be Some"),
+                        ea.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -325,10 +325,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EOrBody(eo) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &eo.p1.as_ref().expect("par field was None, should be Some"),
+                        eo.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &eo.p2.as_ref().expect("par field was None, should be Some"),
+                        eo.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -345,12 +345,12 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EMatchesBody(em) => {
                     let sorted_target = ParSortMatcher::sort_match(
-                        &em.target
+                        em.target
                             .as_ref()
                             .expect("target field was None, should be Some"),
                     );
                     let sorted_pattern = ParSortMatcher::sort_match(
-                        &em.pattern
+                        em.pattern
                             .as_ref()
                             .expect("pattern field was None, should be Some"),
                     );
@@ -369,10 +369,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EPercentPercentBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ep.p1.as_ref().expect("par field was None, should be Some"),
+                        ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ep.p2.as_ref().expect("par field was None, should be Some"),
+                        ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -389,10 +389,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EPlusPlusBody(ep) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &ep.p1.as_ref().expect("par field was None, should be Some"),
+                        ep.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &ep.p2.as_ref().expect("par field was None, should be Some"),
+                        ep.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -409,10 +409,10 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EMinusMinusBody(em) => {
                     let sorted_par1 = ParSortMatcher::sort_match(
-                        &em.p1.as_ref().expect("par field was None, should be Some"),
+                        em.p1.as_ref().expect("par field was None, should be Some"),
                     );
                     let sorted_par2 = ParSortMatcher::sort_match(
-                        &em.p2.as_ref().expect("par field was None, should be Some"),
+                        em.p2.as_ref().expect("par field was None, should be Some"),
                     );
 
                     construct_expr(
@@ -646,7 +646,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                         .collect();
 
                     let sorted_target = ParSortMatcher::sort_match(
-                        &em.target
+                        em.target
                             .as_ref()
                             .expect("target field on EMethod was None, should be Some"),
                     );

@@ -948,11 +948,11 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().filter_map(|x| x).collect())
+            Some(results.into_iter().flatten().collect())
         }
     }
 
-    fn restore_installs(&self) -> () {
+    fn restore_installs(&self) {
         // Move out the install map to avoid cloning the whole structure on each
         // restore.
         let installs = {
@@ -1028,7 +1028,7 @@ where
     fn create_new_hot_store(
         &self,
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
-    ) -> () {
+    ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
@@ -1079,16 +1079,15 @@ where
                     datum_index,
                 } = consume_candidate;
 
-                if *datum_index >= 0 && !persist {
-                    if self
-                        .get_store()
-                        .remove_datum(&channel, *datum_index)
+                if *datum_index >= 0 &&
+                    !persist &&
+                    self.get_store()
+                        .remove_datum(channel, *datum_index)
                         .is_err()
-                    {
-                        return None;
-                    }
+                {
+                    return None;
                 }
-                self.get_store().remove_join(&channel, &channels);
+                self.get_store().remove_join(channel, channels);
 
                 Some(())
             })
@@ -1097,7 +1096,7 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().filter_map(|x| x).collect())
+            Some(results.into_iter().flatten().collect())
         }
     }
 

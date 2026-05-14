@@ -29,19 +29,19 @@ pub fn create_event_log_index(
     mergeable_chs: NumberChannelsDiff,
 ) -> EventLogIndex {
     let pre_state_reader = history_repository
-        .get_history_reader(&pre_state_hash)
+        .get_history_reader(pre_state_hash)
         .unwrap();
 
     let produce_exists_in_pre_state = |p: &Produce| {
         pre_state_reader
             .get_data(&p.channel_hash)
-            .map_or(false, |data| data.iter().any(|d| d.source == *p))
+            .is_ok_and(|data| data.iter().any(|d| d.source == *p))
     };
 
     let produce_touches_pre_state_join = |p: &Produce| {
         pre_state_reader
             .get_joins(&p.channel_hash)
-            .map_or(false, |joins| joins.iter().any(|j| j.len() > 1))
+            .is_ok_and(|joins| joins.iter().any(|j| j.len() > 1))
     };
 
     EventLogIndex::new(

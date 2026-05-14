@@ -670,7 +670,7 @@ where
                         );
 
                         let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
-                        let _ = self.remove_bindings_for(comm_ref);
+                        self.remove_bindings_for(comm_ref);
                         Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
                     }
                 }
@@ -736,12 +736,10 @@ where
             channel_to_indexed_data_list.into_iter().collect();
 
         let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns.into_iter()).collect();
-        let result = self
-            .extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
-            .into_iter()
-            .collect::<Option<Vec<_>>>();
 
-        result
+        self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
     }
 
     fn locked_produce(
@@ -792,7 +790,7 @@ where
                             .produces
                             .into_iter()
                             .find(|p| p.hash == produce_ref.hash);
-                        (consume_result.0, consume_result.1, p.unwrap_or_else(|| produce_ref))
+                        (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
                     })),
                     None => Ok(self.store_data(channel, data, persist, produce_ref)),
                 }
@@ -880,8 +878,8 @@ where
     fn matches(&self, comm: COMM, datum_with_index: (Datum<A>, i32)) -> bool {
         let datum = datum_with_index.0;
         let x = comm.produces.contains(&datum.source);
-        let res = x && self.was_repeated_enough_times(comm, datum);
-        res
+
+        x && self.was_repeated_enough_times(comm, datum)
     }
 
     fn was_repeated_enough_times(&self, comm: COMM, datum: Datum<A>) -> bool {
@@ -946,11 +944,11 @@ where
         }
 
         let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
-        let _ = self.remove_bindings_for(comm_ref);
+        self.remove_bindings_for(comm_ref);
         self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
     }
 
-    fn remove_bindings_for(&self, comm_ref: COMM) -> () {
+    fn remove_bindings_for(&self, comm_ref: COMM) {
         let replay_data = self.replay_data.lock().expect("replay data lock");
         replay_data.remove_binding_in_place(&IOEvent::Consume(comm_ref.consume.clone()), &comm_ref);
 
@@ -1128,11 +1126,11 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().filter_map(|x| x).collect())
+            Some(results.into_iter().flatten().collect())
         }
     }
 
-    fn restore_installs(&self) -> () {
+    fn restore_installs(&self) {
         // Move out the install map to avoid cloning the whole structure on each
         // restore.
         let installs = {
@@ -1210,7 +1208,7 @@ where
     fn create_new_hot_store(
         &self,
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
-    ) -> () {
+    ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
@@ -1261,14 +1259,13 @@ where
                 } = consume_candidate;
 
                 let channels_clone = channels.clone();
-                if datum_index >= 0 && !persist {
-                    if self
-                        .get_store()
+                if datum_index >= 0 &&
+                    !persist &&
+                    self.get_store()
                         .remove_datum(&channel, datum_index)
                         .is_err()
-                    {
-                        return None;
-                    }
+                {
+                    return None;
                 }
                 self.get_store().remove_join(&channel, &channels_clone);
 
@@ -1279,7 +1276,7 @@ where
         if results.iter().any(|res| res.is_none()) {
             None
         } else {
-            Some(results.into_iter().filter_map(|x| x).collect())
+            Some(results.into_iter().flatten().collect())
         }
     }
 

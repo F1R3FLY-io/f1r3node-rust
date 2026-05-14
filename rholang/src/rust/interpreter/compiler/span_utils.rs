@@ -105,13 +105,13 @@ impl SpanContext {
             .iter()
             .map(|s| s.start)
             .min()
-            .unwrap_or_else(|| rholang_parser::SourcePos { line: 1, col: 1 });
+            .unwrap_or(rholang_parser::SourcePos { line: 1, col: 1 });
 
         let end = spans
             .iter()
             .map(|s| s.end)
             .max()
-            .unwrap_or_else(|| rholang_parser::SourcePos { line: 1, col: 1 });
+            .unwrap_or(rholang_parser::SourcePos { line: 1, col: 1 });
 
         rholang_parser::SourceSpan { start, end }
     }
@@ -164,7 +164,7 @@ impl SpanContext {
     ) -> rholang_parser::SourceSpan {
         // Offset slightly to distinguish synthetic variables while maintaining context
         let mut start = binding_span.start;
-        start.col = start.col.saturating_add(var_index as usize); // Prevent overflow
+        start.col = start.col.saturating_add(var_index); // Prevent overflow
         rholang_parser::SourceSpan { start, end: start }
     }
 

@@ -168,13 +168,9 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Option<CasperError> {
-        match self
-            .replay_deploy_e(with_cost_accounting, processed_deploy)
+        self.replay_deploy_e(with_cost_accounting, processed_deploy)
             .await
-        {
-            Ok(_) => None,
-            Err(err) => Some(err),
-        }
+            .err()
     }
 
     #[tracing::instrument(
@@ -195,10 +191,10 @@ impl ReplayRuntimeOps {
             .record(rig_start.elapsed().as_secs_f64());
 
         let eval_successful = if with_cost_accounting {
-            self.process_deploy_with_cost_accounting(&processed_deploy, &mut mergeable_channels)
+            self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
         } else {
-            self.process_deploy_without_cost_accounting(&processed_deploy, &mut mergeable_channels)
+            self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
         };
 
@@ -570,8 +566,7 @@ impl ReplayRuntimeOps {
 
     pub async fn rig(&self, processed_deploy: &ProcessedDeploy) -> Result<(), CasperError> {
         let rig_start = Instant::now();
-        let result = self
-            .runtime_ops
+        self.runtime_ops
             .runtime
             .rig(
                 processed_deploy
@@ -583,7 +578,7 @@ impl ReplayRuntimeOps {
             .await?;
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
-        Ok(result)
+        Ok(())
     }
 
     pub async fn rig_system_deploy(
@@ -601,7 +596,7 @@ impl ReplayRuntimeOps {
             .rig(
                 event_list
                     .iter()
-                    .map(|event: &Event| event_converter::to_rspace_event(&event))
+                    .map(|event: &Event| event_converter::to_rspace_event(event))
                     .collect(),
             )
             .await?)

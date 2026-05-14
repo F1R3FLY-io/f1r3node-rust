@@ -17,10 +17,10 @@ pub fn normalize_p_if<'ast>(
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
     let target_result =
-        normalize_ann_proc(&condition, ProcVisitInputs { ..input.clone() }, env, parser)?;
+        normalize_ann_proc(condition, ProcVisitInputs { ..input.clone() }, env, parser)?;
 
     let true_case_body = normalize_ann_proc(
-        &if_true,
+        if_true,
         ProcVisitInputs {
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),

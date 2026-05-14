@@ -988,7 +988,7 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
 
-    all_processes.extend(extra_system_processes.drain(..));
+    all_processes.append(extra_system_processes);
 
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
@@ -1166,7 +1166,7 @@ where
         + Sync
         + 'static,
 {
-    let maps_and_refs = setup_maps_and_refs(&extra_system_processes);
+    let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
     // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
@@ -1233,11 +1233,11 @@ fn bootstrap_rand() -> Blake2b512Random {
 pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
     let rand = bootstrap_rand();
     let cost = runtime.cost().get();
-    let _ = runtime
+    runtime
         .cost()
         .set(Cost::create(i64::MAX, "bootstrap registry".to_string()));
     runtime.inj(ast(), Env::new(), rand).await.unwrap();
-    let _ = runtime.cost().set(Cost::create_from_cost(cost));
+    runtime.cost().set(Cost::create_from_cost(cost));
 }
 
 async fn create_runtime<T>(

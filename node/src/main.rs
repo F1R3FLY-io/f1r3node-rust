@@ -132,7 +132,7 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
         Some(command) => match command {
             OptionsSubCommand::Eval(eval_options) => {
                 ReplRuntime::new().eval_program(
-                    &rt,
+                    rt,
                     &mut console_io()?,
                     &repl_client,
                     eval_options.file_names,
@@ -143,7 +143,7 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok::<(), eyre::Error>(())
             }
             OptionsSubCommand::Repl => {
-                ReplRuntime::new().repl_program(&rt, &mut console_io()?, &repl_client)?;
+                ReplRuntime::new().repl_program(rt, &mut console_io()?, &repl_client)?;
 
                 Ok(())
             }

@@ -72,9 +72,7 @@ fn maybe_trim_allocator_after_block() {
         return;
     }
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if n % interval != 0 {
-        return;
-    }
+    if !n.is_multiple_of(interval) {}
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {

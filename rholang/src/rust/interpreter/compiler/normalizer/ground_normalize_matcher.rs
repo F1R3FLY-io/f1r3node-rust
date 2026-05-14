@@ -79,9 +79,9 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_guri_expr(stripped_value))
         }
 
-        _ => Err(InterpreterError::BugFoundError(format!(
-            "Expected a ground type in new AST, found unsupported variant"
-        ))),
+        _ => Err(InterpreterError::BugFoundError(
+            "Expected a ground type in new AST, found unsupported variant".to_string(),
+        )),
     }
 }
 

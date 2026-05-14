@@ -50,7 +50,7 @@ pub fn normalize_p_let<'ast>(
                     proc: parser.ast_builder().alloc_send(
                         SendType::Single,
                         Name::NameVar(Var::Id(Id {
-                            name: parser.ast_builder().alloc_str(&variable_name),
+                            name: parser.ast_builder().alloc_str(variable_name),
                             pos: variable_span.start,
                         })),
                         &[rhs[0]],
@@ -77,7 +77,7 @@ pub fn normalize_p_let<'ast>(
                     proc: parser.ast_builder().alloc_send(
                         SendType::Single,
                         Name::NameVar(Var::Id(Id {
-                            name: parser.ast_builder().alloc_str(&variable_name),
+                            name: parser.ast_builder().alloc_str(variable_name),
                             pos: variable_span.start,
                         })),
                         rhs,
@@ -115,7 +115,7 @@ pub fn normalize_p_let<'ast>(
                     },
                     rhs: Source::Simple {
                         name: Name::NameVar(Var::Id(Id {
-                            name: parser.ast_builder().alloc_str(&variable_name),
+                            name: parser.ast_builder().alloc_str(variable_name),
                             pos: variable_span.start,
                         })),
                     },
@@ -126,7 +126,7 @@ pub fn normalize_p_let<'ast>(
                 // RHOLANG-RS IMPROVEMENT: For Multiple bindings, lhs is Var<'ast>, not AnnName<'ast>
                 // Could extract precise position from Var::Id(id) => id.pos, vs Var::Wildcard (no position)
                 // Currently deriving from first rhs, but should distinguish between these cases
-                let lhs_span = rhs.get(0).map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
+                let lhs_span = rhs.first().map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
                 let variable_span = SpanContext::variable_span_from_binding(lhs_span, i);
 
                 // Create bind: use lhs names from binding, add wildcards for extra values
@@ -146,7 +146,7 @@ pub fn normalize_p_let<'ast>(
                     },
                     rhs: Source::Simple {
                         name: Name::NameVar(Var::Id(Id {
-                            name: parser.ast_builder().alloc_str(&variable_name),
+                            name: parser.ast_builder().alloc_str(variable_name),
                             pos: variable_span.start,
                         })),
                     },
@@ -291,7 +291,7 @@ pub fn normalize_p_let<'ast>(
             // RHOLANG-RS IMPROVEMENT: Could leverage lhs position data more precisely
             // For Var::Id(id), use id.pos directly; for Var::Wildcard, no position available
             // Currently using first rhs as context, but could be more semantic
-            let lhs_span = rhs.get(0).map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
+            let lhs_span = rhs.first().map(|r| r.span).unwrap_or(let_span); // Use first rhs or let span
             let rhs_list_span = if rhs.len() > 1 {
                 SpanContext::merge_two_spans(rhs[0].span, rhs[rhs.len() - 1].span)
             } else if rhs.len() == 1 {

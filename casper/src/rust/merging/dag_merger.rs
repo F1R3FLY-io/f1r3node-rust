@@ -420,7 +420,7 @@ pub fn merge(
     let apply_trie_actions_fn = |actions| {
         history_repository
             .reset(lfb_post_state)
-            .and_then(|reset_repo| Ok(reset_repo.do_checkpoint(actions)))
+            .map(|reset_repo| reset_repo.do_checkpoint(actions))
             .map(|checkpoint| checkpoint.root())
             .map_err(|e| e.into())
     };
@@ -464,6 +464,9 @@ pub fn merge(
                 .collect();
 
         // Event-log conflicts: races, potential COMMs, base-join touches.
+        // `mutable_key_type` is a false positive here: prost::bytes::Bytes uses an
+        // internal Arc, not interior mutability, but clippy can't distinguish.
+        #[allow(clippy::mutable_key_type)]
         let mut conflict_map =
             merging_logic::compute_conflict_map_event_indexed(&branches_owned, &event_logs);
 
@@ -477,7 +480,7 @@ pub fn merge(
                 deploy_to_branches.entry(d.clone()).or_default().push(idx);
             }
         }
-        for (_deploy_id, branch_ids) in &deploy_to_branches {
+        for branch_ids in deploy_to_branches.values() {
             if branch_ids.len() < 2 {
                 continue;
             }
@@ -507,6 +510,7 @@ pub fn merge(
             let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
             let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
                 chains_vec.iter().map(|c| &c.event_log_index).collect();
+            #[allow(clippy::mutable_key_type)]
             let depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
             merging_logic::gather_related_sets(&depends_map)

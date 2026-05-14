@@ -71,7 +71,7 @@ impl SortedParHashSet {
 
     pub fn length(&self) -> usize { self.sorted_ps.len() }
 
-    pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(&par).term.clone() }
+    pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
 }
 
 impl PartialEq for SortedParHashSet {

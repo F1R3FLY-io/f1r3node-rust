@@ -81,7 +81,7 @@ impl KeyValueBlockStore {
     pub fn get_unsafe(&self, block_hash: &BlockHash) -> BlockMessage {
         let err_msg = format!(
             "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(&block_hash),
+            PrettyPrinter::build_string_bytes(block_hash),
         );
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
@@ -193,7 +193,7 @@ impl KeyValueBlockStore {
     ) -> bool {
         let err_msg = format!(
             "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(&block_hash),
+            PrettyPrinter::build_string_bytes(block_hash),
         );
         self.has_any_deploy_sig(block_hash, deploy_sigs)
             .expect(&err_msg)

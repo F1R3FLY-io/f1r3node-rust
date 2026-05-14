@@ -70,8 +70,8 @@ impl DeployChainIndex {
                 EventLogIndex::combine(&acc, &deploy.event_log_index)
             })?;
 
-        let pre_history_reader = history_repository.get_history_reader_struct(&pre_state_hash)?;
-        let post_history_reader = history_repository.get_history_reader_struct(&post_state_hash)?;
+        let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
+        let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
 
         let state_changes =
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;

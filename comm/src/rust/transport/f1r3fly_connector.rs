@@ -114,7 +114,7 @@ impl F1r3flyConnector {
         match addr_str.parse::<SocketAddr>() {
             Ok(addr) => Ok(addr),
             Err(_) => {
-                let resolved_addr = resolve_hostname_to_ip(&host, port as u32)
+                let resolved_addr = resolve_hostname_to_ip(host, port as u32)
                     .await
                     .map_err(|e| F1r3flyConnectorError::DnsResolutionError(e.to_string()))?;
 

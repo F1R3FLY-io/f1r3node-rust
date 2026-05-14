@@ -27,7 +27,7 @@ pub fn unpack_tuple<C, P, K: Clone, R: Clone>(
     match tuple {
         (ContResult { continuation, .. }, data) => (
             continuation.clone(),
-            data.into_iter()
+            data.iter()
                 .map(|result| result.matched_datum.clone())
                 .collect(),
         ),
@@ -40,7 +40,7 @@ pub fn unpack_produce_tuple<C, P, K: Clone, R: Clone>(
     match tuple {
         (ContResult { continuation, .. }, data, previous) => (
             continuation.clone(),
-            data.into_iter()
+            data.iter()
                 .map(|result| result.matched_datum.clone())
                 .collect(),
             previous.clone(),

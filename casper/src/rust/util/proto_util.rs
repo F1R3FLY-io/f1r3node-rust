@@ -219,12 +219,7 @@ pub fn weight_from_sender(
 }
 
 pub fn parent_hashes(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
-    block
-        .header
-        .parents_hash_list
-        .iter()
-        .map(|bytes| bytes.clone())
-        .collect()
+    block.header.parents_hash_list.to_vec()
 }
 
 pub fn get_parents(block_store: &KeyValueBlockStore, block: &BlockMessage) -> Vec<BlockMessage> {

@@ -110,7 +110,7 @@ impl SortedParMap {
         self.ps.is_empty() && self.sorted_list.is_empty() && self.sorted_map.is_empty()
     }
 
-    fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(&par).term.clone() }
+    fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
 }
 
 impl IntoIterator for SortedParMap {

@@ -47,7 +47,7 @@ impl LastFinalizedKeyValueStorage {
     /// Check if migration from old LastFinalizedStorage format is required
     pub fn require_migration(&self) -> Result<bool, KvStoreError> {
         let value = self.get()?;
-        Ok(value.map_or(false, |hash| hash != Self::DONE))
+        Ok(value.is_some_and(|hash| hash != Self::DONE))
     }
 
     /// Migrate LastFinalizedStorage to BlockDagStorage
@@ -118,7 +118,7 @@ impl LastFinalizedKeyValueStorage {
                         .cloned()
                         .collect()
                 })
-                .unwrap_or_else(Vec::new)
+                .unwrap_or_default()
         });
 
         tracing::info!(

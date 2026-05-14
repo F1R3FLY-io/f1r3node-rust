@@ -138,9 +138,8 @@ impl GrpcTransport {
             .record(start.elapsed().as_secs_f64());
 
         // Process the response payload
-        let result = Self::process_response(peer, Ok(response));
 
-        result
+        Self::process_response(peer, Ok(response))
     }
 
     /// Stream a Blob to a peer via gRPC using chunking

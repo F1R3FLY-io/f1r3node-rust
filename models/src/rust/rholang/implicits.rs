@@ -51,7 +51,7 @@ pub fn single_expr(p: &Par) -> Option<Expr> {
         && p.bundles.is_empty()
     {
         match &p.exprs {
-            vec if vec.len() == 1 => vec.get(0).cloned(),
+            vec if vec.len() == 1 => vec.first().cloned(),
             _ => None,
         }
     } else {
@@ -69,7 +69,7 @@ pub fn single_bundle(p: &Par) -> Option<Bundle> {
         && p.connectives.is_empty()
     {
         match &p.bundles {
-            vec if vec.len() == 1 => vec.get(0).cloned(),
+            vec if vec.len() == 1 => vec.first().cloned(),
             _ => None,
         }
     } else {
@@ -87,7 +87,7 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
         && p.connectives.is_empty()
     {
         match &p.unforgeables {
-            vec if vec.len() == 1 => vec.get(0).cloned(),
+            vec if vec.len() == 1 => vec.first().cloned(),
             _ => None,
         }
     } else {

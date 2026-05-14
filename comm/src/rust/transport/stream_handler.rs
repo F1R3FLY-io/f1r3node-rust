@@ -473,7 +473,7 @@ impl StreamHandler {
                 let mut existing_data = cache
                     .get(&streamed.key)
                     .map(|entry| entry.value().clone())
-                    .unwrap_or_else(Vec::new);
+                    .unwrap_or_default();
 
                 existing_data.extend_from_slice(&received_bytes);
                 cache.insert(streamed.key.clone(), existing_data);

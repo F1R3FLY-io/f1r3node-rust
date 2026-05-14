@@ -56,6 +56,6 @@ impl SafetyOracle for CliqueOracleImpl {
         block_dag: &KeyValueDagRepresentation,
         candidate_block_hash: &BlockHash,
     ) -> Result<f32, KvStoreError> {
-        CliqueOracle::normalized_fault_tolerance(&candidate_block_hash, &block_dag).await
+        CliqueOracle::normalized_fault_tolerance(candidate_block_hash, block_dag).await
     }
 }

@@ -49,7 +49,7 @@ impl StreamObservable {
         let count = STREAM_CACHE_ENQUEUES.fetch_add(1, Ordering::Relaxed) + 1;
         let len = self.cache.len();
         let should_run = len >= STREAM_CACHE_HARD_MAX_ENTRIES
-            || count % STREAM_CACHE_CLEANUP_EVERY_ENQUEUES == 0;
+            || count.is_multiple_of(STREAM_CACHE_CLEANUP_EVERY_ENQUEUES);
         if !should_run {
             return;
         }

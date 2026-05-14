@@ -60,7 +60,7 @@ where
     pub fn get_batch(&self, keys: &Vec<K>) -> Result<Vec<V>, KvStoreError> {
         self.get(keys)?
             .into_iter()
-            .zip(keys.into_iter())
+            .zip(keys)
             .map(|(value_opt, key)| {
                 value_opt.ok_or(KvStoreError::KeyNotFound(format!(
                     "Error when reading from KeyValueStore: value for key {:?} not found.",
@@ -71,7 +71,7 @@ where
     }
 
     pub fn get_unsafe(&self, key: &K) -> Result<V, KvStoreError> {
-        self.get_one(&key)?.ok_or(KvStoreError::KeyNotFound(format!(
+        self.get_one(key)?.ok_or(KvStoreError::KeyNotFound(format!(
             "Error when reading from KeyValueStore: value for key {:?} not found.",
             key
         )))

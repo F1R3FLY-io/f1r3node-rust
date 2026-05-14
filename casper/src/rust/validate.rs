@@ -76,9 +76,7 @@ impl Validate {
     pub fn signature(d: &Data, sig: &ProtoSignature) -> bool {
         Self::signature_verifiers()
             .get(&sig.algorithm)
-            .map_or(false, |verify| {
-                verify(d, &sig.sig.to_vec(), &sig.public_key.to_vec())
-            })
+            .is_some_and(|verify| verify(d, &sig.sig.to_vec(), &sig.public_key.to_vec()))
     }
 
     fn ignore(b: &BlockMessage, reason: &str) -> String {
@@ -485,7 +483,7 @@ impl Validate {
             init_parents,
             |block_metadata| {
                 proto_util::get_parent_metadatas_above_block_number(
-                    &block_metadata,
+                    block_metadata,
                     earliest_block_number,
                     &s.dag,
                 )
@@ -1116,7 +1114,7 @@ impl Validate {
                                     }
                                 };
                             let cur_justification =
-                                match s.dag.lookup_unsafe(&cur_justification_hash) {
+                                match s.dag.lookup_unsafe(cur_justification_hash) {
                                     Ok(metadata) => metadata,
                                     Err(e) => {
                                         return Either::Left(BlockError::BlockException(
@@ -1132,7 +1130,7 @@ impl Validate {
 
                                 if regression {
                                     log_warn(
-                                        &cur_justification_hash,
+                                        cur_justification_hash,
                                         new_justification_hash,
                                         sender,
                                     );
@@ -1171,7 +1169,7 @@ impl Validate {
                 Ok(opt) => opt,
                 Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
             };
-            if latest_block_opt.map_or(false, |block_metadata| block_metadata.invalid) {
+            if latest_block_opt.is_some_and(|block_metadata| block_metadata.invalid) {
                 invalid_justifications.push(justification);
             }
         }

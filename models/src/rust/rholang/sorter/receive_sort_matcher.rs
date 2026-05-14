@@ -22,7 +22,7 @@ impl ReceiveSortMatcher {
         let sorted_channel = ParSortMatcher::sort_match(&source);
         let sorted_remainder = match &bind.remainder {
             Some(bind_remainder) => {
-                let scored_var = VarSortMatcher::sort_match(&bind_remainder);
+                let scored_var = VarSortMatcher::sort_match(bind_remainder);
                 ScoredTerm {
                     term: Some(scored_var.term),
                     score: scored_var.score,

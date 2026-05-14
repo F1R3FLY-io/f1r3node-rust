@@ -119,11 +119,11 @@ impl BlockDependencyDag {
         self.dependency_free.remove(&element);
 
         for parent in &orphaned_parents {
-            if self.child_to_parent_adjacency_list.contains_key(&parent) {
+            if self.child_to_parent_adjacency_list.contains_key(parent) {
                 continue;
             }
 
-            self.dependency_free.remove(&parent);
+            self.dependency_free.remove(parent);
         }
 
         Ok((children_affected, children_removed, orphaned_parents))

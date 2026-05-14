@@ -349,7 +349,7 @@ impl EventLogIndex {
                     .cloned()
                     .collect(),
             ),
-            produces_copied_by_peek: combine_produces_copied_by_peek(&x, &y),
+            produces_copied_by_peek: combine_produces_copied_by_peek(x, y),
             //TODO this joins combination is very restrictive. Join might be originated inside
             // aggregated event log - OLD
             produces_touching_base_joins: HashableSet(

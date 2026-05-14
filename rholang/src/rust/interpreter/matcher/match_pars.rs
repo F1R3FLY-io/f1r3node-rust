@@ -22,7 +22,7 @@ pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
         .iter()
         .zip(b.binds.iter())
         .all(|(t, p)| compare_receive_binds_without_locally_free(t, p))
-        && match_pars(&a.body.as_ref().unwrap(), &b.body.as_ref().unwrap())
+        && match_pars(a.body.as_ref().unwrap(), b.body.as_ref().unwrap())
         && a.persistent == b.persistent
         && a.peek == b.peek
         && a.bind_count == b.bind_count
@@ -31,7 +31,7 @@ pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
 
 pub fn compare_news_without_locally_free(a: &New, b: &New) -> bool {
     a.bind_count == b.bind_count
-        && match_pars(&a.p.as_ref().unwrap(), &b.p.as_ref().unwrap())
+        && match_pars(a.p.as_ref().unwrap(), b.p.as_ref().unwrap())
         && a.uri == b.uri
         && a.injections == b.injections
 }
@@ -61,7 +61,7 @@ pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBi
         .iter()
         .zip(b.patterns.iter())
         .all(|(t, p)| match_pars(t, p))
-        && match_pars(&a.source.as_ref().unwrap(), &b.source.as_ref().unwrap())
+        && match_pars(a.source.as_ref().unwrap(), b.source.as_ref().unwrap())
         && a.remainder == b.remainder
         && a.free_count == b.free_count
 }

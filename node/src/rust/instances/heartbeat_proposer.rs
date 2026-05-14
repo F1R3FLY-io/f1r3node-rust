@@ -266,10 +266,10 @@ async fn do_heartbeat_check(
 
     if !is_bonded {
         tracing::info!("Heartbeat: Validator is not bonded, skipping heartbeat propose");
-        return Ok(HeartbeatCheckResult::default());
+        Ok(HeartbeatCheckResult::default())
     } else {
         tracing::debug!("Heartbeat: Validator is bonded, checking LFB age");
-        return Ok(check_lfb_and_propose(
+        return check_lfb_and_propose(
             casper.clone(),
             snapshot,
             trigger_propose,
@@ -278,7 +278,7 @@ async fn do_heartbeat_check(
             standalone,
             deploy_grace_active,
         )
-        .await?);
+        .await;
     }
 }
 
@@ -306,7 +306,7 @@ async fn check_lfb_and_propose(
     // Check if LFB is stale
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u128)
+        .map(|d| d.as_millis())
         .unwrap_or(0);
 
     // Avoid running heavyweight finalizer path from heartbeat loop.
@@ -571,9 +571,7 @@ async fn check_lfb_and_propose(
                 effective_frontier_chase_cap
             )
         } else if self_recently_proposed && !has_new_parents {
-            format!(
-                "LFB is stale but validator is already ahead of finalized height (cooling down stale-LFB recovery)"
-            )
+            "LFB is stale but validator is already ahead of finalized height (cooling down stale-LFB recovery)".to_string()
         } else if !standalone && !has_new_parents {
             format!(
                 "LFB is stale ({}ms old, threshold: {}ms) and no new parents (recovery heartbeat)",
@@ -596,11 +594,11 @@ async fn check_lfb_and_propose(
         match result {
             ProposerResult::Empty => {
                 tracing::debug!("Heartbeat: Propose already in progress, will retry next check");
-                return Ok(HeartbeatCheckResult {
+                Ok(HeartbeatCheckResult {
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
-                });
+                })
             }
             ProposerResult::Failure(status, seq_num) => {
                 tracing::warn!(
@@ -610,27 +608,27 @@ async fn check_lfb_and_propose(
                 );
                 // Only escalate backoff for explicit bug failures.
                 // Recoverable propose races should retry on the normal heartbeat cadence.
-                return Ok(HeartbeatCheckResult {
+                Ok(HeartbeatCheckResult {
                     bug_failure: matches!(status, ProposeStatus::Failure(ProposeFailure::BugError)),
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
-                });
+                })
             }
             ProposerResult::Success(_, _) => {
                 tracing::info!("Heartbeat: Successfully created block");
-                return Ok(HeartbeatCheckResult {
+                Ok(HeartbeatCheckResult {
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
-                });
+                })
             }
             ProposerResult::Started(seq_num) => {
                 tracing::info!("Heartbeat: Async propose started (seqNum {})", seq_num);
-                return Ok(HeartbeatCheckResult {
+                Ok(HeartbeatCheckResult {
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
-                });
+                })
             }
         }
     } else {
@@ -726,10 +724,10 @@ async fn check_lfb_and_propose(
             "unknown".to_string()
         };
         tracing::debug!("Heartbeat: No action needed - reason: {}", reason);
-        return Ok(HeartbeatCheckResult {
+        Ok(HeartbeatCheckResult {
             bug_failure: false,
             refresh_deploy_grace_window: has_pending_deploys || has_new_parent_with_user_deploys,
-        });
+        })
     }
 }
 

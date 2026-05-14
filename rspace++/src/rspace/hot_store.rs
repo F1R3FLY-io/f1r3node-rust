@@ -377,7 +377,7 @@ where
         }
     }
 
-    fn put_datum(&self, channel: &C, d: Datum<A>) -> () {
+    fn put_datum(&self, channel: &C, d: Datum<A>) {
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_DATUM_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
@@ -546,7 +546,7 @@ where
                 .installed_continuations
                 .get(join)
                 .map(|c| vec![c.clone()])
-                .unwrap_or_else(Vec::new);
+                .unwrap_or_default();
             conts.extend(
                 state
                     .continuations
@@ -992,7 +992,7 @@ where
         let result = match entry {
             Entry::Occupied(o) => o.get().clone(),
             Entry::Vacant(v) => {
-                let joins = self.history_reader_base.get_joins(&channel);
+                let joins = self.history_reader_base.get_joins(channel);
                 v.insert(joins.clone());
                 joins
             }

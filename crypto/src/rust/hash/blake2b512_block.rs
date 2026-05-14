@@ -115,7 +115,7 @@ impl Blake2b512Block {
 
     fn long_vec_to_little_endian(&self, values: &[i64], output: &mut [i8], offset: usize) {
         for (i, &value) in values.iter().enumerate() {
-            self.long_to_little_endian(value as i64, output, offset + i * 8);
+            self.long_to_little_endian(value, output, offset + i * 8);
         }
     }
 
@@ -286,9 +286,9 @@ impl Blake2b512Block {
         let rotr64 = |x: i64, rot: u32| {
             // println!("\nx: {:?}", x);
             // println!("rot: {:?}", rot);
-            let result = x.rotate_right(rot);
+
             // println!("result: {:?}", result);
-            result
+            x.rotate_right(rot)
         };
 
         internal_state[pos_a] = internal_state[pos_a]
@@ -348,7 +348,7 @@ impl Blake2b512Block {
     // Inner length = 32 bytes
     const PARAM_VALUE_2: i64 = 0x2000;
 
-    pub fn debug_str(&self) -> () {
+    pub fn debug_str(&self) {
         println!(
             "Blake2b512Block {{\n  chain_value: {:?},\n  t0: {},\n  t1: {}\n}}",
             self.chain_value, self.t0, self.t1

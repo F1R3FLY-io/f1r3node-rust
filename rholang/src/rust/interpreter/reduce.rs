@@ -926,7 +926,7 @@ impl DebruijnInterpreter {
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.clone().v.unwrap(), &env)?;
+                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
                         self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -943,9 +943,9 @@ impl DebruijnInterpreter {
                         other
                     ))),
                 },
-                None => Err(InterpreterError::BugFoundError(format!(
-                    "Undefined term, expr_instance was None"
-                ))),
+                None => Err(InterpreterError::BugFoundError(
+                    "Undefined term, expr_instance was None".to_string(),
+                )),
             },
         }
     }
@@ -1102,7 +1102,7 @@ impl DebruijnInterpreter {
         }
 
         self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(&mat.target.as_ref().unwrap(), env)?;
+        let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
@@ -1427,14 +1427,14 @@ impl DebruijnInterpreter {
                 }),
 
                 ExprInstance::ENotBody(enot) => {
-                    let b = self.eval_to_bool(&enot.p.as_ref().unwrap(), env)?;
+                    let b = self.eval_to_bool(enot.p.as_ref().unwrap(), env)?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(!b)),
                     })
                 }
 
                 ExprInstance::ENegBody(eneg) => {
-                    let v = self.eval_single_expr(&eneg.p.as_ref().unwrap(), env)?;
+                    let v = self.eval_single_expr(eneg.p.as_ref().unwrap(), env)?;
                     match v.expr_instance.unwrap() {
                         ExprInstance::GInt(i) => {
                             let result = i.checked_neg().ok_or_else(|| {
@@ -1946,7 +1946,7 @@ impl DebruijnInterpreter {
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
                     &p1.clone().unwrap(),
                     &p2.clone().unwrap(),
-                    |b1: bool, b2: bool| b1 < b2,
+                    |b1: bool, b2: bool| !b1 & b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
@@ -1962,7 +1962,7 @@ impl DebruijnInterpreter {
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
                     &p1.clone().unwrap(),
                     &p2.clone().unwrap(),
-                    |b1: bool, b2: bool| b1 > b2,
+                    |b1: bool, b2: bool| b1 & !b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
@@ -2084,9 +2084,10 @@ impl DebruijnInterpreter {
                                 )))
                             }
 
-                            _ => Err(InterpreterError::ReduceError(format!(
+                            _ => Err(InterpreterError::ReduceError(
                                 "Error: interpolation Map should only contain String keys"
-                            ))),
+                                    .to_string(),
+                            )),
                         }
                     }
 
@@ -2440,7 +2441,7 @@ impl DebruijnInterpreter {
                     ..
                 }) => {
                     self.cost.charge(method_call_cost())?;
-                    let evaled_target = self.eval_expr(&target.as_ref().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let evaled_args = arguments
                         .iter()
                         .map(|arg| self.eval_expr(arg, env))
@@ -2511,7 +2512,7 @@ impl DebruijnInterpreter {
                     ExprInstance::ETupleBody(ETuple { ps, .. }) => self.local_nth(&ps, nth),
                     ExprInstance::GByteArray(bs) => {
                         if nth < bs.len() {
-                            let b = bs[nth] & 0xff; // Convert to unsigned;
+                            let b = bs[nth]; // Convert to unsigned;
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
@@ -2588,11 +2589,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("hexToBytes"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match unwrap_option_safe(expr.expr_instance)? {
@@ -2635,11 +2636,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("bytesToHex"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
@@ -2682,11 +2683,11 @@ impl DebruijnInterpreter {
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toUtf8Bytes"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
@@ -2695,7 +2696,7 @@ impl DebruijnInterpreter {
 
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
-                                        utf8_string.as_str().as_bytes().to_vec(),
+                                        utf8_string.as_bytes().to_vec(),
                                     )),
                                 }]))
                             }
@@ -2823,11 +2824,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("union"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -2947,11 +2948,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("diff"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -3021,11 +3022,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("intersection"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_par = &args[0];
@@ -3096,11 +3097,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("restriction"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_par = &args[0];
@@ -3200,11 +3201,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("dropHead"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_par = &args[0];
@@ -3252,11 +3253,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("run"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let other_expr = self.outer.eval_single_expr(&args[0], env)?;
@@ -5603,11 +5604,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("add"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5686,11 +5687,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("delete"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5752,11 +5753,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("contains"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
@@ -5806,11 +5807,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5865,11 +5866,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get_or_else"),
                         expected: 2,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5928,11 +5929,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("set"),
                         expected: 2,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
@@ -5989,11 +5990,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("keys"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     self.outer.cost.charge(keys_method_cost())?;
@@ -6051,11 +6052,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("size"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.size(base_expr)?;
@@ -6105,11 +6106,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("length"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     self.outer.cost.charge(length_method_cost())?;
@@ -6193,11 +6194,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 2 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("slice"),
                         expected: 2,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let from_arg = self.outer.eval_to_i64(&args[0], env)?;
@@ -6256,11 +6257,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if args.len() != 1 {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("take"),
                         expected: 1,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_arg = self.outer.eval_to_i64(&args[0], env)?;
@@ -6367,11 +6368,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_list"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_list(base_expr)?;
@@ -6459,11 +6460,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_set"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_set(base_expr)?;
@@ -6563,11 +6564,11 @@ impl DebruijnInterpreter {
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.to_map(base_expr)?;
@@ -6612,11 +6613,11 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToStringMethod<'a> {
             fn apply(&self, p: Par, args: Vec<Par>, _: &Env<Par>) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
-                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                    Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
                         expected: 0,
                         actual: args.len(),
-                    });
+                    })
                 } else {
                     let un = self.outer.eval_single_unforgeable(&p)?;
                     let result = self.to_string(un)?;
@@ -6702,7 +6703,7 @@ impl DebruijnInterpreter {
             )))
         } else {
             match p.exprs.as_slice() {
-                [e] => Ok(self.eval_expr_to_expr(&e, env)?),
+                [e] => Ok(self.eval_expr_to_expr(e, env)?),
 
                 _ => Err(InterpreterError::ReduceError(
                     "Error: Multiple expressions given.".to_string(),
@@ -6761,7 +6762,7 @@ impl DebruijnInterpreter {
                 }
 
                 [e] => {
-                    let evaled = self.eval_expr_to_expr(&e, env)?;
+                    let evaled = self.eval_expr_to_expr(e, env)?;
 
                     match evaled.expr_instance {
                         Some(expr_instance) => match expr_instance {
@@ -6810,7 +6811,7 @@ impl DebruijnInterpreter {
                 }
 
                 [e] => {
-                    let evaled = self.eval_expr_to_expr(&e, env)?;
+                    let evaled = self.eval_expr_to_expr(e, env)?;
 
                     match evaled.expr_instance {
                         Some(expr_instance) => match expr_instance {
@@ -7020,8 +7021,8 @@ fn par_contains_nan_double(par: &Par) -> bool {
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
-            kv.key.as_ref().map_or(false, par_contains_nan_double)
-                || kv.value.as_ref().map_or(false, par_contains_nan_double)
+            kv.key.as_ref().is_some_and(par_contains_nan_double)
+                || kv.value.as_ref().is_some_and(par_contains_nan_double)
         }),
         _ => false,
     })

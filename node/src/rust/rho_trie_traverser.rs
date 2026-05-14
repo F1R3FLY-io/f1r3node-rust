@@ -100,7 +100,7 @@ impl RhoTrieTraverser {
         if let Some(expr) = p.exprs.first() {
             if let Some(ExprInstance::GByteArray(bs)) = &expr.expr_instance {
                 if nth < bs.len() {
-                    return (bs[nth] & 0xff) as i32; // convert to unsigned
+                    return bs[nth] as i32; // convert to unsigned
                 }
             }
         }

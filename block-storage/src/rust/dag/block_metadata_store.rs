@@ -367,7 +367,7 @@ impl BlockMetadataStore {
             && state_guard
                 .last_finalized_block
                 .as_ref()
-                .map_or(true, |&(_, height)| height <= block_info.block_num)
+                .is_none_or(|&(_, height)| height <= block_info.block_num)
         {
             state_guard.last_finalized_block = Some((hash.clone(), block_info.block_num));
         }

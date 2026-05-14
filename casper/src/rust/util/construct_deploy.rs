@@ -47,7 +47,7 @@ pub fn source_deploy(
     let phlo_limit = phlo_limit.unwrap_or(90000);
     let phlo_price = phlo_price.unwrap_or(1);
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
-    let shard_id = shard_id.unwrap_or_else(|| "".to_string());
+    let shard_id = shard_id.unwrap_or_default();
 
     let data = DeployData {
         term: source,

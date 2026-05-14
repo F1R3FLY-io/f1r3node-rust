@@ -21,23 +21,19 @@ pub fn new_key_value_store_manager(
 
 // RSpace
 fn rspace_history_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("rspace/history".to_string(), 1 * TB)
+    LmdbEnvConfig::new("rspace/history".to_string(), TB)
 }
 
-fn rspace_cold_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("rspace/cold".to_string(), 1 * TB)
-}
+fn rspace_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("rspace/cold".to_string(), TB) }
 
 // RSpace evaluator
-fn eval_history_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("eval/history".to_string(), 1 * TB)
-}
+fn eval_history_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/history".to_string(), TB) }
 
-fn eval_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/cold".to_string(), 1 * TB) }
+fn eval_cold_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("eval/cold".to_string(), TB) }
 
 // Blocks
 fn block_storage_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("blockstorage".to_string(), 1 * TB)
+    LmdbEnvConfig::new("blockstorage".to_string(), TB)
 }
 
 fn dag_storage_env_config() -> LmdbEnvConfig {
@@ -45,23 +41,21 @@ fn dag_storage_env_config() -> LmdbEnvConfig {
 }
 
 fn deploy_storage_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("deploystorage".to_string(), 1 * GB)
+    LmdbEnvConfig::new("deploystorage".to_string(), GB)
 }
 
 // Temporary storage / cache
 fn casper_buffer_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("casperbuffer".to_string(), 1 * GB)
+    LmdbEnvConfig::new("casperbuffer".to_string(), GB)
 }
 
 fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_string(), 10 * TB) }
 
-fn transaction_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("transaction".to_string(), 1 * GB)
-}
+fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
 
 // Legacy RSpace paths
 fn legacy_env_config(dir: &str) -> LmdbEnvConfig {
-    LmdbEnvConfig::new(format!("{}/{}", "rspace/casper/v2", dir), 1 * TB)
+    LmdbEnvConfig::new(format!("{}/{}", "rspace/casper/v2", dir), TB)
 }
 
 // Database name to store instance name mapping (sub-folder for LMDB store)

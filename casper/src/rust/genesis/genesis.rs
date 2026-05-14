@@ -104,7 +104,7 @@ impl Genesis {
             native_token_decimals,
             shard_id,
         );
-        let pos_generator = standard_deploys::pos_generator(&pos_params, shard_id);
+        let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
         let mut all_deploys = Vec::with_capacity(11 + vault_deploys.len());
         all_deploys.push(registry);

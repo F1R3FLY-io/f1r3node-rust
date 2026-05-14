@@ -355,7 +355,7 @@ impl From<F1r3flyTlsTransportError> for io::Error {
     fn from(err: F1r3flyTlsTransportError) -> Self {
         match err {
             F1r3flyTlsTransportError::Io(io_err) => io_err,
-            _ => io::Error::new(io::ErrorKind::Other, err.to_string()),
+            _ => io::Error::other(err.to_string()),
         }
     }
 }

@@ -121,11 +121,11 @@ impl<T: KademliaRPC> PeerTable<T> {
 
         if let Some(bucket_mutex) = bucket {
             // Try to add/update or pick old peer
-            let old_peer_candidate = self.add_update_or_pick_old_peer(&bucket_mutex, peer)?;
+            let old_peer_candidate = self.add_update_or_pick_old_peer(bucket_mutex, peer)?;
 
             // If we have an old peer to ping, do so
             if let Some(old_entry) = old_peer_candidate {
-                self.ping_and_update(&bucket_mutex, peer, old_entry).await?;
+                self.ping_and_update(bucket_mutex, peer, old_entry).await?;
             }
         }
 

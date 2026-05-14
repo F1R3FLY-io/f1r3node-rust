@@ -100,7 +100,7 @@ impl RholangMergingLogic {
         // None = channel doesn't exist yet (treat as 0); Err = invariant
         // violation (non-numeric or multi-value pre-state) — propagate so the
         // merge is rejected rather than silently substituting 0.
-        let init_num = Self::convert_to_read_number(get_base_data)(&channel_hash)?.unwrap_or(0);
+        let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
         let new_val = match merge_type {
             MergeType::IntegerAdd => init_num.wrapping_add(diff),
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
@@ -133,7 +133,7 @@ impl RholangMergingLogic {
         };
 
         // Create final merged value
-        let datum_encoded = Self::create_datum_encoded(&channel_hash, new_val, new_rnd);
+        let datum_encoded = Self::create_datum_encoded(channel_hash, new_val, new_rnd);
 
         // Create update store action
         Ok(HotStoreTrieAction::TrieInsertAction(
@@ -146,8 +146,8 @@ impl RholangMergingLogic {
 
     fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
         let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
-        let rnd = Blake2b512Random::from_bytes(&datum.a.random_state);
-        rnd
+
+        Blake2b512Random::from_bytes(&datum.a.random_state)
     }
 
     /// Returns the i64 + RNG pair for a single-Par integer channel value, or

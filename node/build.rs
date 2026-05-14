@@ -37,9 +37,9 @@ fn main() {
         .file_descriptor_set_path("build/descriptors/reflection_protos.bin")
         .build_client(true)
         .build_server(true)
-        .btree_map(&".")
+        .btree_map(".")
         .message_attribute(".", "#[repr(C)]")
-        .bytes(&".")
+        .bytes(".")
         .compile_protos(&proto_files, &[
             proto_src_dir.clone(),
             proto_src_models_dir.clone(),
@@ -49,7 +49,7 @@ fn main() {
         .expect("Failed to compile proto files");
 
     let git_hash = Command::new("git")
-        .args(&["rev-parse", "--short=7", "HEAD"])
+        .args(["rev-parse", "--short=7", "HEAD"])
         .output()
         .ok()
         .and_then(|output| String::from_utf8(output.stdout).ok())

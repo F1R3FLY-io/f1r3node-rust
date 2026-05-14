@@ -51,7 +51,7 @@ impl ReplGrpcServiceImpl {
             Err(e) => {
                 // Return error as successful response, matching Scala's ReplGrpcService behavior
                 // Scala: case _: InterpreterError => Sync[F].delay(s"Error: ${er.toString}")
-                let error_msg = format!("Error: {}", e.to_string());
+                let error_msg = format!("Error: {}", e);
                 return Ok(ReplResponse { output: error_msg });
             }
         };
@@ -65,9 +65,9 @@ impl ReplGrpcServiceImpl {
             .await?;
 
         let pretty_storage = if print_unmatched_sends_only {
-            storage_printer::pretty_print_unmatched_sends(&*self.runtime).await
+            storage_printer::pretty_print_unmatched_sends(&self.runtime).await
         } else {
-            storage_printer::pretty_print(&*self.runtime).await
+            storage_printer::pretty_print(&self.runtime).await
         };
 
         let error_str = if errors.is_empty() {

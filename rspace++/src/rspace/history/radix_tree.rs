@@ -717,7 +717,7 @@ pub fn sequential_export(
         }
     });
 
-    fn init_conditions_exception() -> () {
+    fn init_conditions_exception() {
         panic!("Export error: invalid initial conditions (skipSize, takeSize)==(0,0).")
     }
 
@@ -733,7 +733,7 @@ pub fn sequential_export(
         let root_params = NodePathData {
             hash: root_hash.clone(),
             node_prefix: Vec::new(),
-            rest_prefix: last_prefix.clone().unwrap_or(Vec::new()),
+            rest_prefix: last_prefix.clone().unwrap_or_default(),
             path: Vec::new(),
         };
 
@@ -845,7 +845,7 @@ impl RadixTreeImpl {
      * Load and decode serializing data from KVDB.
      */
     fn load_node_from_store(&self, node_ptr: &ByteVector) -> Result<Option<Node>, RadixTreeError> {
-        let get_result = self.store.get_one(&node_ptr)?;
+        let get_result = self.store.get_one(node_ptr)?;
 
         match get_result {
             Some(bytes) => {
@@ -935,7 +935,7 @@ impl RadixTreeImpl {
     /**
      * Clear [[cacheR]] (cache for storing read nodes).
      */
-    pub fn clear_read_cache(&self) -> () {
+    pub fn clear_read_cache(&self) {
         self.cache_r.clear();
         self.cache_r.shrink_to_fit();
     }
@@ -1042,7 +1042,7 @@ impl RadixTreeImpl {
     /**
      * Clear [[cacheW]] (cache for storing data to write in KVDB).
      */
-    pub fn clear_write_cache(&self) -> () {
+    pub fn clear_write_cache(&self) {
         self.cache_w.clear();
         self.cache_w.shrink_to_fit();
     }
@@ -1527,10 +1527,8 @@ impl RadixTreeImpl {
             //     new_node_opt.clone().unwrap().len()
             // );
 
-            let new_item = match new_node_opt {
-                Some(new_node) => Some(self.save_node_and_create_item(new_node, Vec::new(), true)),
-                None => None,
-            };
+            let new_item = new_node_opt
+                .map(|new_node| self.save_node_and_create_item(new_node, Vec::new(), true));
 
             // println!("\nnew_item: {:?}", new_item);
 
@@ -1598,10 +1596,7 @@ impl RadixTreeImpl {
                         ));
                     }
                 };
-                groups
-                    .entry(first_byte)
-                    .or_insert_with(Vec::new)
-                    .push(action);
+                groups.entry(first_byte).or_default().push(action);
             }
             Ok(groups.into_iter().collect())
         }
@@ -1645,7 +1640,7 @@ impl RadixTreeImpl {
 
     pub fn print_tree(&self, node: &Node, prefix: Vec<u8>) -> Result<String, RadixTreeError> {
         let mut output = String::new();
-        for (_, item) in node.iter().enumerate() {
+        for item in node.iter() {
             match item {
                 Item::EmptyItem => {
                     // Skip empty items
@@ -1669,7 +1664,7 @@ impl RadixTreeImpl {
 
                     // Retrieve the serialized child node using the store's get method
                     let serialized_child_nodes = self.store.get(&vec![ptr.clone()])?;
-                    if let Some(serialized_child_node) = serialized_child_nodes.get(0) {
+                    if let Some(serialized_child_node) = serialized_child_nodes.first() {
                         if let Some(child_node_bytes) = serialized_child_node {
                             let child_node = bincode::deserialize::<Node>(
                                 child_node_bytes.as_ref(),

@@ -254,7 +254,7 @@ mod duration_secs {
     }
 
     fn parse_duration_string(s: &str) -> Result<Duration, String> {
-        let parts: Vec<&str> = s.trim().split_whitespace().collect();
+        let parts: Vec<&str> = s.split_whitespace().collect();
         if parts.len() != 2 {
             return Err(format!("invalid duration: {}", s));
         }

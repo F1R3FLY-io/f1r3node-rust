@@ -120,7 +120,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             );
         }
 
-        let mut dag = self.block_dag_storage.get_representation();
+        let dag = self.block_dag_storage.get_representation();
 
         // Parent selection: Use latest block from EACH bonded validator.
         // Every block should have one parent per validator to ensure all deploy effects
@@ -156,13 +156,13 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let mut sorted_parents_list = parent_blocks_list;
         let max_parent_block_number = sorted_parents_list
             .iter()
-            .map(|b| b.body.state.block_number as i64)
+            .map(|b| b.body.state.block_number)
             .max()
             .unwrap_or(0);
         let near_tip_tolerance_blocks: i64 = 0;
         sorted_parents_list.sort_by(|a, b| {
-            let a_num = a.body.state.block_number as i64;
-            let b_num = b.body.state.block_number as i64;
+            let a_num = a.body.state.block_number;
+            let b_num = b.body.state.block_number;
             let a_is_near_tip =
                 max_parent_block_number.saturating_sub(a_num) <= near_tip_tolerance_blocks;
             let b_is_near_tip =
@@ -367,10 +367,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     current_block_number - on_chain_state.shard_conf.deploy_lifespan;
 
                 let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Vec<models::rust::block_metadata::BlockMetadata> {
-                    match proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &mut dag) {
-                        Ok(parents) => parents,
-                        Err(_) => vec![],
-                    }
+                    proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &dag).unwrap_or_default()
                 };
 
                 let traversal_result = dag_ops::bf_traverse(parent_metas, neighbor_fn);
@@ -538,26 +535,24 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         block: &BlockMessage,
         snapshot: &mut CasperSnapshot,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        fn timed_step<A, Fut>(
+        async fn timed_step<A, Fut>(
             step_name: &'static str,
             metric_name: &'static str,
             future: Fut,
-        ) -> impl std::future::Future<Output = Result<(Either<BlockError, A>, String), CasperError>>
+        ) -> Result<(Either<BlockError, A>, String), CasperError>
         where
             Fut: std::future::Future<Output = Result<Either<BlockError, A>, CasperError>>,
         {
-            async move {
-                tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
-                let start = std::time::Instant::now();
-                let result = future.await?;
-                let elapsed = start.elapsed();
-                let elapsed_str = format!("{:?}", elapsed);
-                let step_time_seconds = elapsed.as_secs_f64();
-                metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
-                    .record(step_time_seconds);
-                tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
-                Ok((result, elapsed_str))
-            }
+            tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
+            let start = std::time::Instant::now();
+            let result = future.await?;
+            let elapsed = start.elapsed();
+            let elapsed_str = format!("{:?}", elapsed);
+            let step_time_seconds = elapsed.as_secs_f64();
+            metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
+                .record(step_time_seconds);
+            tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
+            Ok((result, elapsed_str))
         }
 
         tracing::info!(
@@ -764,26 +759,24 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         pre_state_hash: Bytes,
         post_state_hash: Bytes,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-        fn timed_step<A, Fut>(
+        async fn timed_step<A, Fut>(
             step_name: &'static str,
             metric_name: &'static str,
             future: Fut,
-        ) -> impl std::future::Future<Output = Result<(Either<BlockError, A>, String), CasperError>>
+        ) -> Result<(Either<BlockError, A>, String), CasperError>
         where
             Fut: std::future::Future<Output = Result<Either<BlockError, A>, CasperError>>,
         {
-            async move {
-                tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
-                let start = std::time::Instant::now();
-                let result = future.await?;
-                let elapsed = start.elapsed();
-                let elapsed_str = format!("{:?}", elapsed);
-                let step_time_seconds = elapsed.as_secs_f64();
-                metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
-                    .record(step_time_seconds);
-                tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
-                Ok((result, elapsed_str))
-            }
+            tracing::debug!(target: "f1r3fly.casper", "before-{}", step_name);
+            let start = std::time::Instant::now();
+            let result = future.await?;
+            let elapsed = start.elapsed();
+            let elapsed_str = format!("{:?}", elapsed);
+            let step_time_seconds = elapsed.as_secs_f64();
+            metrics::histogram!(metric_name, "source" => CASPER_METRICS_SOURCE)
+                .record(step_time_seconds);
+            tracing::debug!(target: "f1r3fly.casper", "after-{}", step_name);
+            Ok((result, elapsed_str))
         }
 
         tracing::info!(
@@ -1220,8 +1213,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let dag = self.casper_buffer_storage.to_doubly_linked_dag();
         let all_hashes = dag
             .child_to_parent_adjacency_list
-            .iter()
-            .map(|(hash, _)| BlockHash::from(hash.clone()));
+            .keys()
+            .map(|hash| BlockHash::from(hash.clone()));
 
         let mut blocks = Vec::new();
         for hash in all_hashes {

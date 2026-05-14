@@ -39,10 +39,7 @@ impl RootsStoreInstances {
 
                 let bytes = self.store.get_one(&current_root_name)?;
 
-                let maybe_decoded = match bytes {
-                    Some(b) => Some(Blake2b256Hash::from_bytes(b)),
-                    None => None,
-                };
+                let maybe_decoded = bytes.map(Blake2b256Hash::from_bytes);
 
                 Ok(maybe_decoded)
             }

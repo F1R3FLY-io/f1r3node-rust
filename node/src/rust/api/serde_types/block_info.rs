@@ -11,6 +11,7 @@ use crate::rust::api::serde_types::deploy_info::DeployInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Default)]
 pub struct BlockInfoSerde {
     #[serde(rename = "blockInfo")]
     pub block_info: LightBlockInfoSerde,
@@ -57,15 +58,6 @@ pub fn deserialize_block_info<'de, D>(deserializer: D) -> Result<BlockInfo, D::E
 where D: Deserializer<'de> {
     let json_block = BlockInfoSerde::deserialize(deserializer)?;
     Ok(json_block.into())
-}
-
-impl Default for BlockInfoSerde {
-    fn default() -> Self {
-        Self {
-            block_info: LightBlockInfoSerde::default(),
-            deploys: None,
-        }
-    }
 }
 
 impl BlockInfoSerde {

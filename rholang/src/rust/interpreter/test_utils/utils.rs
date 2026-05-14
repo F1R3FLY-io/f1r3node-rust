@@ -58,12 +58,11 @@ pub fn proc_visit_inputs_with_updated_bound_map_chain(
 ) -> ProcVisitInputs {
     ProcVisitInputs {
         bound_map_chain: {
-            let updated_bound_map_chain = input.bound_map_chain.put_pos((
+            input.bound_map_chain.put_pos((
                 name.to_string(),
                 vs_type,
                 SourcePos { line: 1, col: 1 }, // Use 1-based indexing
-            ));
-            updated_bound_map_chain
+            ))
         },
         ..input.clone()
     }
@@ -80,10 +79,9 @@ pub fn proc_visit_inputs_with_updated_vec_bound_map_chain(
 
     ProcVisitInputs {
         bound_map_chain: {
-            let updated_bound_map_chain = input
+            input
                 .bound_map_chain
-                .put_all_pos(bindings_with_default_positions);
-            updated_bound_map_chain
+                .put_all_pos(bindings_with_default_positions)
         },
         ..input.clone()
     }

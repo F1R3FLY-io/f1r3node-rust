@@ -153,7 +153,7 @@ pub fn normalize_ann_proc<'ast>(
         | Proc::FloatLiteral { .. }
         | Proc::FixedPointLiteral { .. }
         | Proc::StringLiteral(_)
-        | Proc::UriLiteral(_) => normalize_p_ground(&proc.proc, input),
+        | Proc::UriLiteral(_) => normalize_p_ground(proc.proc, input),
 
         Proc::SimpleType(simple_type) => normalize_simple_type(simple_type, input),
 
@@ -176,7 +176,7 @@ pub fn normalize_ann_proc<'ast>(
         Proc::UnaryExp { op, arg } => match op {
             rholang_parser::ast::UnaryExpOp::Negation => {
                 use crate::rust::interpreter::compiler::normalizer::processes::p_negation_normalizer::normalize_p_negation;
-                normalize_p_negation(&arg.proc, arg.span, input, _env, parser)
+                normalize_p_negation(arg.proc, arg.span, input, _env, parser)
             }
             rholang_parser::ast::UnaryExpOp::Not => {
                 use models::rhoapi::ENot;

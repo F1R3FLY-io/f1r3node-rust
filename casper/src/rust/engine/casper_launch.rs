@@ -147,7 +147,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             finalization_rate: conf.finalization_rate,
             max_number_of_parents: conf.max_number_of_parents,
             max_parent_depth: conf.max_parent_depth,
-            synchrony_constraint_threshold: conf.synchrony_constraint_threshold as f32,
+            synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
             casper_version: 1,
@@ -411,7 +411,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            &*self.engine_cell,
+            &self.engine_cell,
             &self.event_publisher,
         )
         .await?;

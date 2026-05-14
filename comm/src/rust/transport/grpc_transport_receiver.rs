@@ -43,7 +43,7 @@ fn calculate_hash(bytes: &[u8]) -> u64 {
 
 // Circuit breaker parameters for thread-local storage
 thread_local! {
-    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<(String, u64)>> = std::cell::RefCell::new(None);
+    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Circuit breaker function that uses thread-local parameters
@@ -211,7 +211,7 @@ impl TransportLayerService {
 
     async fn maybe_cleanup_stale_peer_buffers(&self) {
         let activity = PEER_BUFFER_ACTIVITY_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let should_periodic = activity % PEER_BUFFER_CLEANUP_EVERY_REQUESTS == 0;
+        let should_periodic = activity.is_multiple_of(PEER_BUFFER_CLEANUP_EVERY_REQUESTS);
 
         let (evict_peers, pre_len) = {
             let buffers_map = self.buffers_map.lock().await;

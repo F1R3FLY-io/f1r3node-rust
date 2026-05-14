@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     runtime.block_on(async move {
         let stores = get_or_create_rspace_store(&data_dir.to_string_lossy(), conf.map_size)?;
-        let matcher_impl = Matcher::default();
+        let matcher_impl = Matcher;
         let matcher: Arc<
             Box<dyn rspace_plus_plus::rspace::r#match::Match<BindPattern, ListParWithRandom>>,
         > = Arc::new(Box::new(matcher_impl));

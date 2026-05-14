@@ -314,13 +314,13 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
         // Create history import task (Scala: stateImporter.setHistoryItems(...))
         let history_start = std::time::Instant::now();
-        let _ = self.state_importer.set_history_items(history_items);
+        self.state_importer.set_history_items(history_items);
         let history_duration = history_start.elapsed();
         tracing::debug!("History import completed in {:?}", history_duration);
 
         // Create data import task (Scala: stateImporter.setDataItems(...))
         let data_start = std::time::Instant::now();
-        let _ = self.state_importer.set_data_items(data_items);
+        self.state_importer.set_data_items(data_items);
         let data_duration = data_start.elapsed();
         tracing::debug!("Data import completed in {:?}", data_duration);
 

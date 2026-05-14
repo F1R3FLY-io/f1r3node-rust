@@ -102,7 +102,7 @@ impl RhoNumber {
     pub fn create_par(i: i64) -> Par { Par::default().with_exprs(vec![RhoNumber::create_expr(i)]) }
 
     pub fn unapply(p: &Par) -> Option<i64> {
-        if let Some(expr) = single_expr(&p) {
+        if let Some(expr) = single_expr(p) {
             if let Expr {
                 expr_instance: Some(ExprInstance::GInt(v)),
             } = expr
@@ -128,7 +128,7 @@ impl RhoTuple2 {
     }
 
     pub fn unapply(p: &Par) -> Option<(Par, Par)> {
-        if let Some(expr) = single_expr(&p) {
+        if let Some(expr) = single_expr(p) {
             if let Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple { ps, .. })),
             } = expr
@@ -159,7 +159,7 @@ impl RhoList {
     }
 
     pub fn unapply(p: &Par) -> Option<Vec<Par>> {
-        if let Some(expr) = single_expr(&p) {
+        if let Some(expr) = single_expr(p) {
             if let Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList { ps, .. })),
             } = expr
@@ -183,7 +183,7 @@ impl RhoMap {
     }
 
     pub fn unapply(p: &Par) -> Option<HashMap<Par, Par>> {
-        if let Some(expr) = single_expr(&p) {
+        if let Some(expr) = single_expr(p) {
             if let Expr {
                 expr_instance: Some(ExprInstance::EMapBody(emap)),
             } = expr
@@ -205,7 +205,7 @@ impl RhoUri {
     }
 
     pub fn unapply(p: &Par) -> Option<String> {
-        if let Some(expr) = single_expr(&p) {
+        if let Some(expr) = single_expr(p) {
             if let Expr {
                 expr_instance: Some(ExprInstance::GUri(s)),
             } = expr
@@ -229,7 +229,7 @@ impl RhoDeployerId {
     }
 
     pub fn unapply(p: &Par) -> Option<Vec<u8>> {
-        if let Some(expr) = single_unforgeable(&p) {
+        if let Some(expr) = single_unforgeable(p) {
             if let GUnforgeable {
                 unf_instance: Some(UnfInstance::GDeployerIdBody(id)),
             } = expr
@@ -251,7 +251,7 @@ impl RhoDeployId {
     }
 
     pub fn unapply(p: &Par) -> Option<Vec<u8>> {
-        if let Some(expr) = single_unforgeable(&p) {
+        if let Some(expr) = single_unforgeable(p) {
             if let GUnforgeable {
                 unf_instance: Some(UnfInstance::GDeployIdBody(id)),
             } = expr
@@ -273,7 +273,7 @@ impl RhoName {
     }
 
     pub fn unapply(p: &Par) -> Option<GPrivate> {
-        if let Some(expr) = single_unforgeable(&p) {
+        if let Some(expr) = single_unforgeable(p) {
             if let GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(gprivate)),
             } = expr
@@ -313,7 +313,7 @@ impl RhoSysAuthToken {
     }
 
     pub fn unapply(p: &Par) -> Option<GSysAuthToken> {
-        if let Some(expr) = single_unforgeable(&p) {
+        if let Some(expr) = single_unforgeable(p) {
             if let GUnforgeable {
                 unf_instance: Some(UnfInstance::GSysAuthTokenBody(token)),
             } = expr
@@ -473,10 +473,8 @@ where
     fn unapply(p: &Par) -> Option<Self::RustType> {
         if let Some(b) = B::unapply(p) {
             Some(Either::Right(b))
-        } else if let Some(a) = A::unapply(p) {
-            Some(Either::Left(a))
         } else {
-            None
+            A::unapply(p).map(Either::Left)
         }
     }
 }

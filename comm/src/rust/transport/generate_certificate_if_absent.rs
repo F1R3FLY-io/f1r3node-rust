@@ -73,20 +73,20 @@ async fn write_cert(
 
     if let Some(parent) = tls.certificate_path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
-            CertificateError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to create certificate directory: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to create certificate directory: {}",
+                e
+            )))
         })?;
     }
 
     fs::write(&tls.certificate_path, cert_pem)
         .await
         .map_err(|e| {
-            CertificateError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to write certificate: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to write certificate: {}",
+                e
+            )))
         })?;
 
     Ok(())
@@ -97,18 +97,15 @@ async fn write_key(tls: &TlsConf, secret_key: &P256SecretKey) -> Result<(), Cert
 
     if let Some(parent) = tls.key_path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
-            CertificateError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to create key directory: {}", e),
-            ))
+            CertificateError::Io(std::io::Error::other(format!(
+                "Failed to create key directory: {}",
+                e
+            )))
         })?;
     }
 
     fs::write(&tls.key_path, key_pem).await.map_err(|e| {
-        CertificateError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to write key: {}", e),
-        ))
+        CertificateError::Io(std::io::Error::other(format!("Failed to write key: {}", e)))
     })?;
 
     Ok(())

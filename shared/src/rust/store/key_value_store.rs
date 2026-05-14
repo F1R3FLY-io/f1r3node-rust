@@ -29,10 +29,7 @@ pub trait KeyValueStore: Send + Sync {
     fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
         let results = self.get(keys)?;
 
-        Ok(results
-            .into_iter()
-            .map(|result| !result.is_none())
-            .collect())
+        Ok(results.into_iter().map(|result| result.is_some()).collect())
     }
 
     // See shared/src/main/scala/coop/rchain/store/KeyValueStoreSyntax.scala

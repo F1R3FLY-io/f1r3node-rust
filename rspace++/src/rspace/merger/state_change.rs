@@ -284,7 +284,7 @@ impl StateChange {
         // stored corresponds to channels, this index have to be maintained
         let joins_map = DashMap::new();
 
-        let produces_affected = produces_affected(&event_log_index);
+        let produces_affected = produces_affected(event_log_index);
 
         // Deduplicate by channel hash before processing
         // Without this, if multiple Produces have the same channel_hash, we'd compute
@@ -295,7 +295,7 @@ impl StateChange {
             .map(|produce| produce.channel_hash.clone())
             .collect();
 
-        let channels_of_consumes_affected = consumes_affected(&event_log_index)
+        let channels_of_consumes_affected = consumes_affected(event_log_index)
             .0
             .into_iter()
             .map(|consume| consume.channel_hashes)

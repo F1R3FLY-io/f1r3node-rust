@@ -76,7 +76,7 @@ impl GrpcReplClient {
     fn process_error(error: Status) -> eyre::Report {
         // Extract the root cause if available
         let message = error.message().to_string();
-        eyre::Report::new(std::io::Error::new(std::io::ErrorKind::Other, message))
+        eyre::Report::new(std::io::Error::other(message))
     }
 }
 
@@ -101,7 +101,7 @@ impl ReplClientService for GrpcReplClient {
         print_unmatched_sends_only: bool,
         language: String,
     ) -> Vec<eyre::Result<String>> {
-        join_all(file_names.into_iter().map(|file_name| async {
+        join_all(file_names.iter().map(|file_name| async {
             self.eval_file(
                 file_name.clone(),
                 print_unmatched_sends_only,

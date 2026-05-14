@@ -87,7 +87,7 @@ pub fn depends(target: &EventLogIndex, source: &EventLogIndex) -> bool {
 
 /// If two event logs are conflicting.
 pub fn are_conflicting(a: &EventLogIndex, b: &EventLogIndex) -> bool {
-    conflicts(a, b).0.is_empty() == false
+    !conflicts(a, b).0.is_empty()
 }
 
 /// Debug version that returns the reason for conflict.
@@ -965,7 +965,7 @@ pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
     ) -> HashSet<RejectionOption<A>> {
         let mut result = HashSet::new();
 
-        for (_, to_reject) in conflicts_map {
+        for to_reject in conflicts_map.values() {
             // keeping each key - reject conflicting values
             let mut remaining_conflicts_map = HashMap::new();
 

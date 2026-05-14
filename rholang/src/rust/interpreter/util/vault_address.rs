@@ -35,17 +35,15 @@ impl VaultAddress {
     }
 
     pub fn from_public_key(pk: &PublicKey) -> Option<VaultAddress> {
-        match tools().from_public_key(pk) {
-            Some(address) => Some(VaultAddress { address }),
-            None => None,
-        }
+        tools()
+            .from_public_key(pk)
+            .map(|address| VaultAddress { address })
     }
 
     pub fn from_eth_address(eth_address: &str) -> Option<VaultAddress> {
-        match tools().from_eth_address(eth_address) {
-            Some(address) => Some(VaultAddress { address }),
-            None => None,
-        }
+        tools()
+            .from_eth_address(eth_address)
+            .map(|address| VaultAddress { address })
     }
 
     pub fn from_unforgeable(gprivate: &GPrivate) -> VaultAddress {

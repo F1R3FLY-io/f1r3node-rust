@@ -212,8 +212,7 @@ impl Blake2b512Random {
                         let blank_length = (4 - quad.len()) * 32;
                         if blank_length > 0 {
                             let mut blank = Blake2b512Random::BLANK_BLOCK;
-                            let chain_block_i8: Vec<i8> =
-                                chain_block.iter().map(|&b| b as i8).collect();
+                            let chain_block_i8: Vec<i8> = chain_block.to_vec();
                             let chain_block_u8: Vec<u8> =
                                 chain_block_i8.iter().map(|&b| b as u8).collect();
                             blank
@@ -222,7 +221,7 @@ impl Blake2b512Random {
                                 .copy_from_slice(&chain_block_u8[quad.len() * 32..]);
                         }
                     }
-                    let chain_block_i8: Vec<i8> = chain_block.iter().map(|&b| b as i8).collect();
+                    let chain_block_i8: Vec<i8> = chain_block.to_vec();
                     result.digest.update(&chain_block_i8, 0);
                 }
                 squashed_builder.push(result.clone());
@@ -236,7 +235,7 @@ impl Blake2b512Random {
 
     const BLANK_BLOCK: [u8; 128] = [0; 128];
 
-    pub fn debug_str(&self) -> () {
+    pub fn debug_str(&self) {
         let rot_position = ((self.position - 1) & 0x3f) + 1;
         self.digest.debug_str();
         println!("last_block: {:?}", self.last_block);

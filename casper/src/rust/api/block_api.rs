@@ -55,7 +55,7 @@ pub struct DeployNotFoundError {
 // Look at shared/src/main/scala/coop/rchain/shared/Base16.scala
 // Scala Base16.decode pads odd-length hex strings with leading zero
 fn pad_hex_string(hash: &str) -> String {
-    if hash.len() % 2 == 0 {
+    if hash.len().is_multiple_of(2) {
         hash.to_string()
     } else {
         format!("0{}", hash)
@@ -842,9 +842,7 @@ impl BlockAPI {
 
             let topo_sort = dag.topo_sort(latest_block_number - depth as i64, None)?;
 
-            let result = do_it((casper, topo_sort));
-
-            result
+            do_it((casper, topo_sort))
         }
 
         let effective_depth = clamp_depth(depth, max_depth_limit, "toposort-dag");
@@ -985,8 +983,7 @@ impl BlockAPI {
 
             let lfb_hash = dag.last_finalized_block();
 
-            let _visualizer_result =
-                visualizer(topo_sort_dag, PrettyPrinter::build_string_bytes(&lfb_hash)).await?;
+            visualizer(topo_sort_dag, PrettyPrinter::build_string_bytes(&lfb_hash)).await?;
 
             // result <- serialize
             let result = serialize.await?;
@@ -1424,7 +1421,7 @@ impl BlockAPI {
         timestamp: i64,
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
-        let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(&deployer), timestamp);
+        let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
         let safe_qty = std::cmp::min(name_qty, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())

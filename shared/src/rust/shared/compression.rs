@@ -52,10 +52,7 @@ impl Compression {
         let compressed_data = &compressed[cursor.position() as usize..];
 
         // Decompress with the decoded length
-        match lz4_flex::decompress(compressed_data, decompressed_length) {
-            Ok(decompressed) => Some(decompressed),
-            Err(_) => None,
-        }
+        lz4_flex::decompress(compressed_data, decompressed_length).ok()
     }
 }
 
