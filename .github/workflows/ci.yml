@@ -229,6 +229,10 @@ jobs:
         run: |
           sudo rm -rf system-integration/integration-tests/data
           rm -f /tmp/rust-node-docker.tar.gz /tmp/*.log
+          # Drop any stale `f1r3fly-rust-node:latest` cached on the
+          # runner so the compose default points unambiguously at the
+          # image we're about to load. See "Import Docker Image" below.
+          docker rmi -f f1r3flyindustries/f1r3fly-rust-node:latest 2>/dev/null || true
 
       - name: Clone Repository
         uses: actions/checkout@v4
@@ -263,6 +267,19 @@ jobs:
         run: |
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}
+          # The system-integration `docker-compose.rust.yml` references
+          # `f1r3flyindustries/f1r3fly-rust-node:latest` via
+          # `${F1R3FLY_RUST_IMAGE:-…}`. Our CI does not set that env var
+          # (it sets `DEFAULT_IMAGE`, which compose does not read), so
+          # compose falls back to its default `f1r3fly-rust-node` name —
+          # a DIFFERENT repository from what we tag above (`f1r3fly-rust`).
+          # Without this extra tag, compose silently resolves to whatever
+          # stale `f1r3fly-rust-node:latest` happens to be on the
+          # self-hosted runner, and the integration tests run against the
+          # wrong binary. Tagging the freshly-loaded image under that
+          # name makes compose pick up THIS build.
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
+                     f1r3flyindustries/f1r3fly-rust-node:latest
 
       - name: Install docker-compose
         shell: bash -ex {0}
