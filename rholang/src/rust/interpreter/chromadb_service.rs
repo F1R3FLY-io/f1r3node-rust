@@ -455,9 +455,10 @@ impl ChromaDBService {
                         .ok_or(InterpreterError::ChromaDBError(format!(
                         "Expected field documents in query result; for collection {collection_name}"
                     )))?;
-                let metadatas_per_text = raw_res
-                    .metadatas
-                    .ok_or(InterpreterError::ChromaDBError(format!(
+                let metadatas_per_text =
+                    raw_res
+                        .metadatas
+                        .ok_or(InterpreterError::ChromaDBError(format!(
                     "Expected field metadatas in query result; for collection {collection_name}"
                 )))?;
                 let entries_per_text = izip!(doc_ids_per_text, docs_per_text, metadatas_per_text)

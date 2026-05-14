@@ -578,6 +578,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         &self.casper_shard_conf.shard_name,
                         self.casper_shard_conf.deploy_lifespan as i32,
                         self.casper_shard_conf.max_number_of_parents,
+                        self.casper_shard_conf.max_parent_depth,
+                        self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                         &self.block_store,
                         self.casper_shard_conf.disable_validator_progress_check,
                     )
@@ -829,6 +831,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         &self.casper_shard_conf.shard_name,
                         self.casper_shard_conf.deploy_lifespan as i32,
                         self.casper_shard_conf.max_number_of_parents,
+                        self.casper_shard_conf.max_parent_depth,
+                        self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                         &self.block_store,
                         self.casper_shard_conf.disable_validator_progress_check,
                     )

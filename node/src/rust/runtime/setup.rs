@@ -1,13 +1,9 @@
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
 // Imports needed for function signature and return type
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
