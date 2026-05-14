@@ -28,6 +28,7 @@ ignore = [
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
     "RUSTSEC-2024-0437", # protobuf 2.x stack overflow on untrusted input (transitive via rust-bert -> rust_tokenizers; rust-bert hasn't bumped)
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (transitive via indicatif; upstream uses it for human-readable byte formatting)
     "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
     "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
     "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)

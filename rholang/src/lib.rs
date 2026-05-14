@@ -1125,8 +1125,8 @@ extern "C" fn set_block_data(
     let params_slice = unsafe { std::slice::from_raw_parts(params_ptr, params_bytes_len) };
     let params = BlockDataProto::decode(params_slice).unwrap();
     let block_data = BlockData {
-        time_stamp: params.time_stamp as i64,
-        block_number: params.block_number as i64,
+        time_stamp: params.time_stamp,
+        block_number: params.block_number,
         sender: PublicKey::from_bytes(&params.public_key),
         seq_num: params.seq_num,
     };
