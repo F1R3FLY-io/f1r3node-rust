@@ -20,6 +20,7 @@ ignore = [
     # reachable only after signature verification and require certificate
     # misissuance to exploit. Cannot be patched without bumping hocon /
     # opentelemetry — out of scope for this sync.
+    "RUSTSEC-2026-0049", # CRL distributionPoint matching (multi-dp certs ignore all but first)
     "RUSTSEC-2026-0098", # URI name constraints
     "RUSTSEC-2026-0099", # wildcard-name constraints
     "RUSTSEC-2026-0104", # CRL parsing panic
