@@ -1,5 +1,4 @@
 # RNode API
-[Use it live!](https://developer.rchain.coop/rnode-api)
 
 `rnode` communicates primarily using gRPC but
 it also has a Web API that supports use directly from browsers, `curl`, etc.

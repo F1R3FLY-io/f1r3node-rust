@@ -148,7 +148,7 @@ F1R3FLY's consensus mechanism is based on **CBC Casper** (Correct-by-Constructio
 
 **Key Resources:**
 - [CBC Protocol Documentation](https://rholang.org/docs/cbc-protocol/) - Technical overview of the Correct-by-Construction Casper protocol
-- [RChain Whitepaper](https://rchain.coop/whitepaper.html) - Complete technical specification and research foundations
+- RChain Whitepaper - Complete technical specification and research foundations
 
 ### RSpace Tuple Space
 

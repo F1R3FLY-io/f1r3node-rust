@@ -8,11 +8,10 @@ Table of contents are preliminary and subject to change.
 * [Primitive Types and Operators](primitives/)
 * [Unforgeable Names](unforgeable_names/)
 * [New](new/)
-* [Registry](registry/)
+* Registry
 * [System Powerbox](system_powerbox/)
 * [Conditionals](conditionals/)
 * [Bundles](bundles/)
-* [Patterns](patterns/)
 * [Shadowing](shadowing/)
 * [Pattern Matching](pattern_matching/)
 * [Match](match/)
@@ -20,5 +19,5 @@ Table of contents are preliminary and subject to change.
 * [Data Structures](data_structures/)
 
 ## Related Resources
-* Rholang's [Formal Symantics](https://github.com/rchain/rchain/tree/dev/rholang/src/main/formal_verification/k) in K-Framework.
+* Rholang's Formal Semantics in K-Framework.
 * A gentler [rholang tutorial](https://github.com/JoshOrndorff/LearnRholangByExample)
