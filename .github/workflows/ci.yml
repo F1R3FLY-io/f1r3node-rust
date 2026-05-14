@@ -115,6 +115,28 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  markdown_link_check:
+    name: Markdown Link Check
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Link Checker
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude-mail
+            --exclude-loopback
+            --max-retries 2
+            --retry-wait-time 5
+            --accept 200..=299,429
+            './**/*.md'
+          fail: true
+
   test:
     name: Test (${{ matrix.crate }})
     needs: lint
@@ -692,6 +714,9 @@ jobs:
     timeout-minutes: 15
     needs:
       - build_base
+      - lint
+      - deny
+      - markdown_link_check
       - test
       - integration_tests
       - smoke_docker_standalone
@@ -870,6 +895,9 @@ jobs:
     permissions:
       contents: write
     needs:
+      - lint
+      - deny
+      - markdown_link_check
       - test
       - integration_tests
       - smoke_docker_standalone
