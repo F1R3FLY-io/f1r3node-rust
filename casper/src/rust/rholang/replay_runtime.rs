@@ -220,8 +220,13 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashSet<Par>,
     ) -> Result<bool, CasperError> {
+        let total_phlo_charge = processed_deploy
+            .deploy
+            .data
+            .checked_total_phlo_charge()
+            .map_err(CasperError::RuntimeError)?;
         let mut pre_charge_deploy = PreChargeDeploy {
-            charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
+            charge_amount: total_phlo_charge,
             pk: processed_deploy.deploy.pk.clone(),
             rand: system_deploy_util::generate_pre_charge_deploy_random_seed(
                 &processed_deploy.deploy,
@@ -268,8 +273,11 @@ impl ReplayRuntimeOps {
 
             tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-started");
             let refund_start = Instant::now();
+            let refund_amount = processed_deploy
+                .try_refund_amount()
+                .map_err(CasperError::RuntimeError)?;
             let mut refund_deploy = RefundDeploy {
-                refund_amount: processed_deploy.refund_amount(),
+                refund_amount,
                 rand: system_deploy_util::generate_refund_deploy_random_seed(
                     &processed_deploy.deploy,
                 ),

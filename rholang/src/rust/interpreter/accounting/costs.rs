@@ -1,11 +1,7 @@
 use std::borrow::Cow;
 use std::ops::{Add, Mul, Sub};
 
-use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, ListParWithRandom, PCost, Par, ParWithRandom, TaggedContinuation,
-};
-use rspace_plus_plus::rspace::hashing::blake2b256_hash;
+use models::rhoapi::{PCost, Par};
 use shared::rust::ByteString;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
@@ -75,10 +71,12 @@ impl Cost {
 
     pub fn unsafe_max() -> Self { Cost::create(i64::MAX, "unsafe_max creation") }
 
-    // TODO: Fix to remove conversion to u64
     pub fn to_proto(cost: Cost) -> PCost {
+        // PCost is a wire-compatibility type whose field remains unsigned.
+        // Runtime accounting keeps signed admission values internally, but
+        // only non-negative consumed token counts are serialized.
         PCost {
-            cost: cost.value as u64,
+            cost: u64::try_from(cost.value).unwrap_or(0),
         }
     }
 }
@@ -289,8 +287,6 @@ pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
 
 pub fn to_list_cost(size: i64) -> Cost { Cost::create(size, "to_list") }
 
-pub fn parsing_cost(term: &str) -> Cost { Cost::create(term.len() as i64, "parsing") }
-
 pub fn nth_method_call_cost() -> Cost { Cost::create(10, "nth method call") }
 
 pub fn keys_method_cost() -> Cost { Cost::create(10, "keys method") }
@@ -323,51 +319,3 @@ pub fn new_bindings_cost(n: i64) -> Cost {
 }
 
 pub fn match_eval_cost() -> Cost { Cost::create(12, "match eval") }
-
-pub fn storage_cost_consume(
-    channels: Vec<Par>,
-    patterns: Vec<BindPattern>,
-    continuation: TaggedContinuation,
-) -> Cost {
-    let body_cost = Some(continuation).and_then(|cont| {
-        if let Some(TaggedCont::ParBody(ParWithRandom { body, .. })) = cont.tagged_cont {
-            Some(storage_cost(&[body.unwrap()]))
-        } else {
-            None
-        }
-    });
-
-    let total_cost = storage_cost(&channels).value
-        + storage_cost(&patterns).value
-        + body_cost.unwrap_or(Cost::create(0, "")).value;
-
-    Cost::create(total_cost, "consume storage")
-}
-
-pub fn storage_cost_produce(channel: Par, data: ListParWithRandom) -> Cost {
-    Cost::create(
-        storage_cost(&[channel]).value + storage_cost(&data.pars).value,
-        "produces storage",
-    )
-}
-
-pub fn comm_event_storage_cost(channels_involved: i64) -> Cost {
-    let consume_cost = event_storage_cost(channels_involved);
-    let produce_costs = event_storage_cost(1).value * channels_involved;
-    Cost::create(
-        consume_cost.value + produce_costs,
-        "comm event storage cost",
-    )
-}
-
-pub fn event_storage_cost(channels_involved: i64) -> Cost {
-    Cost::create(
-        blake2b256_hash::LENGTH + channels_involved * blake2b256_hash::LENGTH,
-        "event storage cost",
-    )
-}
-
-fn storage_cost<A: prost::Message>(as_: &[A]) -> Cost {
-    let total_size: usize = as_.iter().map(|a| a.encoded_len()).sum();
-    Cost::create(total_size as i64, "storage cost")
-}

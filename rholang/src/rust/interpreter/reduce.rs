@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -33,9 +34,7 @@ use models::rust::utils::{
 use prost::Message;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
-use tokio::task::JoinHandle;
 
-use super::accounting::_cost;
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -46,10 +45,12 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::RuntimeBudget;
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::matcher::has_locally_free::HasLocallyFree;
+use super::metering::MeteredMachine;
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
@@ -113,7 +114,7 @@ pub struct DebruijnInterpreter {
     pub urn_map: Arc<HashMap<String, Par>>,
     pub merge_chs: Arc<RwLock<HashSet<Par>>>,
     pub mergeable_tag_name: Par,
-    pub cost: _cost,
+    pub metering: MeteredMachine,
     pub substitute: Substitute,
 }
 
@@ -135,6 +136,14 @@ trait Method {
  * @param persistent  True if the write should remain in the tuplespace indefinitely.
  */
 impl DebruijnInterpreter {
+    fn with_metering_child(&self, component: usize) -> Self {
+        let metering = self.metering.child(component.min(u32::MAX as usize) as u32);
+        let mut child = self.clone();
+        child.metering = metering.clone();
+        child.substitute = Substitute { metering };
+        child
+    }
+
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -221,14 +230,15 @@ impl DebruijnInterpreter {
                 Pin<
                     Box<
                         dyn futures::Future<Output = Result<(), InterpreterError>>
-                            + std::marker::Send,
+                            + std::marker::Send
+                            + 'static,
                     >,
                 >,
             > = terms
                 .iter()
                 .enumerate()
                 .map(|(index, term)| {
-                    let self_clone = self.clone();
+                    let self_clone = self.with_metering_child(index);
                     let term_clone = term.clone();
                     let env_clone = env.clone();
                     let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
@@ -240,7 +250,8 @@ impl DebruijnInterpreter {
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<(), InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >
                 })
@@ -250,27 +261,39 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
                 .increment(futures.len() as u64);
 
-            let spawn_start = std::time::Instant::now();
-            let handles: Vec<JoinHandle<Result<(), InterpreterError>>> =
-                futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
-            metrics::counter!("reducer.eval_par.spawn_ns", "source" => "rholang")
-                .increment(spawn_start.elapsed().as_nanos() as u64);
-
             let join_start = std::time::Instant::now();
-            let mut flattened_results: Vec<InterpreterError> = Vec::new();
-            for handle in handles {
-                match handle.await {
-                    Ok(Err(err)) => flattened_results.push(err),
-                    Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                        format!("task panicked: {}", join_err),
-                    )),
+            let mut unordered = FuturesUnordered::new();
+            for (index, fut) in futures.into_iter().enumerate() {
+                // Spawn each branch as its own task. This preserves actual runtime
+                // parallelism and gives deeply recursive branches an independent
+                // task stack while still reporting errors in source order below.
+                let handle = tokio::spawn(async move { fut.await });
+                unordered.push(async move { (index, handle.await) });
+            }
+
+            let mut flattened_results: Vec<(usize, InterpreterError)> = Vec::new();
+            while let Some((index, joined)) = unordered.next().await {
+                match joined {
                     Ok(Ok(())) => {}
+                    Ok(Err(err)) => flattened_results.push((index, err)),
+                    Err(join_error) => flattened_results.push((
+                        index,
+                        InterpreterError::ReduceError(format!(
+                            "parallel eval task failed: {join_error}"
+                        )),
+                    )),
                 }
             }
             metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
                 .increment(join_start.elapsed().as_nanos() as u64);
 
-            match self.aggregate_evaluator_errors(flattened_results) {
+            flattened_results.sort_by_key(|(index, _)| *index);
+            let stable_errors = flattened_results
+                .into_iter()
+                .map(|(_, err)| err)
+                .collect::<Vec<_>>();
+
+            match self.aggregate_evaluator_errors(stable_errors) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -451,8 +474,8 @@ impl DebruijnInterpreter {
             Some((continuation, data_list, peek)) => {
                 if persistent {
                     // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
+                    let self_clone1 = self.with_metering_child(0);
+                    let self_clone2 = self.with_metering_child(1);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
@@ -465,7 +488,8 @@ impl DebruijnInterpreter {
                         Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >,
                     > = vec![];
@@ -483,7 +507,8 @@ impl DebruijnInterpreter {
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >);
 
@@ -495,7 +520,8 @@ impl DebruijnInterpreter {
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >);
 
@@ -503,28 +529,13 @@ impl DebruijnInterpreter {
                     // peeked data on other channels was removed by RSpace. Re-issue it
                     // to preserve peek semantics (data should remain after peek read).
                     if peek {
-                        futures.extend(self.produce_peeks(data_list).await);
+                        futures.extend(self.produce_peeks(data_list, 2).await);
                     }
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    self.run_parallel_dispatches(futures).await
                 } else if peek {
                     // dispatchAndRun
-                    let self_clone = self.clone();
+                    let self_clone = self.with_metering_child(0);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
@@ -533,7 +544,8 @@ impl DebruijnInterpreter {
                         Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >,
                     > = vec![Box::pin(async move {
@@ -546,24 +558,9 @@ impl DebruijnInterpreter {
                             )
                             .await
                     })];
-                    futures.extend(self.produce_peeks(data_list).await);
+                    futures.extend(self.produce_peeks(data_list, 1).await);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    self.run_parallel_dispatches(futures).await
                 } else {
                     self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
                         .await
@@ -594,8 +591,8 @@ impl DebruijnInterpreter {
             Some((continuation, data_list, _peek)) => {
                 if persistent {
                     // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
+                    let self_clone1 = self.with_metering_child(0);
+                    let self_clone2 = self.with_metering_child(1);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
@@ -609,7 +606,8 @@ impl DebruijnInterpreter {
                         Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >,
                     > = vec![];
@@ -627,7 +625,8 @@ impl DebruijnInterpreter {
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >);
 
@@ -639,29 +638,15 @@ impl DebruijnInterpreter {
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    self.run_parallel_dispatches(futures).await
                 } else if _peek {
                     // dispatchAndRun
-                    let self_clone = self.clone();
+                    let self_clone = self.with_metering_child(0);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
@@ -670,7 +655,8 @@ impl DebruijnInterpreter {
                         Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
+                                    + std::marker::Send
+                                    + 'static,
                             >,
                         >,
                     > = vec![Box::pin(async move {
@@ -683,24 +669,9 @@ impl DebruijnInterpreter {
                             )
                             .await
                     })];
-                    futures.extend(self.produce_peeks(data_list).await);
+                    futures.extend(self.produce_peeks(data_list, 1).await);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<JoinHandle<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(|fut| tokio::spawn(fut)).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    self.run_parallel_dispatches(futures).await
                 } else {
                     self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
                         .await
@@ -748,28 +719,71 @@ impl DebruijnInterpreter {
     async fn produce_peeks(
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        start_component: usize,
     ) -> Vec<
         Pin<
             Box<
                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                    + std::marker::Send,
+                    + std::marker::Send
+                    + 'static,
             >,
         >,
     > {
         data_list
             .into_iter()
             .filter(|(_, _, _, persist)| !persist)
-            .map(|(chan, _, removed_data, _)| {
-                let self_clone = self.clone();
+            .enumerate()
+            .map(|(index, (chan, _, removed_data, _))| {
+                let self_clone = self.with_metering_child(start_component + index);
                 Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
                     as Pin<
                         Box<
                             dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                + std::marker::Send,
+                                + std::marker::Send
+                                + 'static,
                         >,
                     >
             })
             .collect()
+    }
+
+    async fn run_parallel_dispatches(
+        &self,
+        futures: Vec<
+            Pin<
+                Box<
+                    dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
+                        + std::marker::Send
+                        + 'static,
+                >,
+            >,
+        >,
+    ) -> Result<DispatchType, InterpreterError> {
+        let mut unordered = FuturesUnordered::new();
+        for (index, fut) in futures.into_iter().enumerate() {
+            // Persistent/peek continuations must progress independently; spawning
+            // preserves parallel execution and isolates deep recursive branches.
+            let handle = tokio::spawn(async move { fut.await });
+            unordered.push(async move { (index, handle.await) });
+        }
+
+        let mut errors = Vec::new();
+        while let Some((index, joined)) = unordered.next().await {
+            match joined {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => errors.push((index, err)),
+                Err(join_error) => errors.push((
+                    index,
+                    InterpreterError::ReduceError(format!(
+                        "parallel dispatch task failed: {join_error}"
+                    )),
+                )),
+            }
+        }
+
+        errors.sort_by_key(|(index, _)| *index);
+        let stable_errors = errors.into_iter().map(|(_, err)| err).collect();
+        self.aggregate_evaluator_errors(stable_errors)
     }
 
     /* Collect mergeable channels */
@@ -898,7 +912,7 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.cost.charge(send_eval_cost())?;
+        self.metering.reserve_source_step(send_eval_cost())?;
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
@@ -941,7 +955,7 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.cost.charge(receive_eval_cost())?;
+        self.metering.reserve_source_step(receive_eval_cost())?;
         let binds = receive
             .binds
             .clone()
@@ -996,7 +1010,7 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.cost.charge(var_eval_cost())?;
+        self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
                 Some(p) => Ok(p),
@@ -1074,7 +1088,7 @@ impl DebruijnInterpreter {
             },
         );
 
-        self.cost.charge(match_eval_cost())?;
+        self.metering.reserve_source_step(match_eval_cost())?;
         let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
         let subst_target = self
             .substitute
@@ -1162,7 +1176,8 @@ impl DebruijnInterpreter {
             })
         };
 
-        self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
+        self.metering
+            .reserve_source_step(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
             Ok(env) => {
                 self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)
@@ -1211,7 +1226,7 @@ impl DebruijnInterpreter {
                 Ok(evaled_p)
             }
             ExprInstance::EMethodBody(emethod) => {
-                self.cost.charge(method_call_cost())?;
+                self.metering.reserve_primitive(method_call_cost())?;
                 let evaled_target = self.eval_expr(&unwrap_option_safe(emethod.target)?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
@@ -1249,28 +1264,28 @@ impl DebruijnInterpreter {
                 v2.expr_instance.clone().unwrap(),
             ) {
                 (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.metering.reserve_primitive(comparison_cost())?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopb(b1, b2))),
                     })
                 }
 
                 (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.metering.reserve_primitive(comparison_cost())?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopi(i1, i2))),
                     })
                 }
 
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.metering.reserve_primitive(comparison_cost())?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relops(s1, s2))),
                     })
                 }
 
                 (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.metering.reserve_primitive(comparison_cost())?;
                     let f1 = f64::from_bits(d1);
                     let f2 = f64::from_bits(d2);
                     if f1.is_nan() || f2.is_nan() {
@@ -1288,8 +1303,8 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                    self.cost
-                        .charge(bigint_comparison_cost(b1.len(), b2.len()))?;
+                    self.metering
+                        .reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
                     let cmp = compare_twos_complement_bytes(&b1, &b2);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
@@ -1297,7 +1312,7 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                    self.cost.charge(bigrat_comparison_cost(
+                    self.metering.reserve_primitive(bigrat_comparison_cost(
                         r1.numerator.len(),
                         r1.denominator.len(),
                         r2.numerator.len(),
@@ -1310,7 +1325,7 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                    self.cost.charge(bigint_comparison_cost(
+                    self.metering.reserve_primitive(bigint_comparison_cost(
                         fp1.unscaled.len(),
                         fp2.unscaled.len(),
                     ))?;
@@ -1392,12 +1407,13 @@ impl DebruijnInterpreter {
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
-                            self.cost.charge(bigint_negation_cost(bytes.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_negation_cost(bytes.len()))?;
                             make_bigint_expr(negate_twos_complement(&bytes), "negation")
                         }
                         ExprInstance::GBigRat(rat) => {
-                            self.cost
-                                .charge(bigrat_negation_cost(rat.numerator.len()))?;
+                            self.metering
+                                .reserve_primitive(bigrat_negation_cost(rat.numerator.len()))?;
                             make_bigrat_expr(
                                 models::rhoapi::GBigRational {
                                     numerator: negate_twos_complement(&rat.numerator),
@@ -1407,7 +1423,8 @@ impl DebruijnInterpreter {
                             )
                         }
                         ExprInstance::GFixedPoint(fp) => {
-                            self.cost.charge(bigint_negation_cost(fp.unscaled.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_negation_cost(fp.unscaled.len()))?;
                             make_fixedpoint_expr(
                                 models::rhoapi::GFixedPoint {
                                     unscaled: negate_twos_complement(&fp.unscaled),
@@ -1429,7 +1446,7 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.cost.charge(multiplication_cost())?;
+                            self.metering.reserve_primitive(multiplication_cost())?;
                             let result = lhs.checked_mul(rhs).ok_or_else(|| {
                                 InterpreterError::ReduceError(
                                     "Arithmetic overflow in multiplication".to_string(),
@@ -1440,19 +1457,21 @@ impl DebruijnInterpreter {
                             })
                         }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.cost.charge(multiplication_cost())?;
+                            self.metering.reserve_primitive(multiplication_cost())?;
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost
-                                .charge(bigint_multiplication_cost(b1.len(), b2.len()))?;
+                            self.metering.reserve_primitive(bigint_multiplication_cost(
+                                b1.len(),
+                                b2.len(),
+                            ))?;
                             make_bigint_expr(multiply_twos_complement(&b1, &b2), "multiplication")
                         }
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.cost.charge(bigrat_multiplication_cost(
+                            self.metering.reserve_primitive(bigrat_multiplication_cost(
                                 r1.numerator.len(),
                                 r1.denominator.len(),
                                 r2.numerator.len(),
@@ -1468,7 +1487,7 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_multiplication_cost(
+                            self.metering.reserve_primitive(bigint_multiplication_cost(
                                 fp1.unscaled.len(),
                                 fp2.unscaled.len(),
                             ))?;
@@ -1502,7 +1521,7 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.cost.charge(division_cost())?;
+                            self.metering.reserve_primitive(division_cost())?;
                             if rhs == 0 {
                                 return Err(InterpreterError::ReduceError(
                                     "Division by zero".to_string(),
@@ -1518,14 +1537,15 @@ impl DebruijnInterpreter {
                             })
                         }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.cost.charge(division_cost())?;
+                            self.metering.reserve_primitive(division_cost())?;
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost.charge(bigint_division_cost(b1.len(), b2.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
                                 return Err(InterpreterError::ReduceError(
                                     "Division by zero".to_string(),
@@ -1534,7 +1554,7 @@ impl DebruijnInterpreter {
                             make_bigint_expr(divide_twos_complement(&b1, &b2), "division")
                         }
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.cost.charge(bigrat_division_cost(
+                            self.metering.reserve_primitive(bigrat_division_cost(
                                 r1.numerator.len(),
                                 r1.denominator.len(),
                                 r2.numerator.len(),
@@ -1555,7 +1575,7 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_division_cost(
+                            self.metering.reserve_primitive(bigint_division_cost(
                                 fp1.unscaled.len(),
                                 fp2.unscaled.len(),
                             ))?;
@@ -1591,7 +1611,7 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.cost.charge(modulo_cost())?;
+                            self.metering.reserve_primitive(modulo_cost())?;
                             if rhs == 0 {
                                 return Err(InterpreterError::ReduceError(
                                     "Modulo by zero".to_string(),
@@ -1612,7 +1632,8 @@ impl DebruijnInterpreter {
                             ))
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost.charge(bigint_modulo_cost(b1.len(), b2.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
                                 return Err(InterpreterError::ReduceError(
                                     "Modulo by zero".to_string(),
@@ -1643,7 +1664,7 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_modulo_cost(
+                            self.metering.reserve_primitive(bigint_modulo_cost(
                                 fp1.unscaled.len(),
                                 fp2.unscaled.len(),
                             ))?;
@@ -1688,14 +1709,14 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.cost.charge(sum_cost())?;
+                            self.metering.reserve_primitive(sum_cost())?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs.wrapping_add(rhs))),
                             })
                         }
 
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.cost.charge(sum_cost())?;
+                            self.metering.reserve_primitive(sum_cost())?;
                             let result = f64::from_bits(d1) + f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
@@ -1703,12 +1724,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost.charge(bigint_sum_cost(b1.len(), b2.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_sum_cost(b1.len(), b2.len()))?;
                             make_bigint_expr(add_twos_complement(&b1, &b2), "+")
                         }
 
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.cost.charge(bigrat_sum_cost(
+                            self.metering.reserve_primitive(bigrat_sum_cost(
                                 r1.numerator.len(),
                                 r1.denominator.len(),
                                 r2.numerator.len(),
@@ -1725,8 +1747,10 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost
-                                .charge(bigint_sum_cost(fp1.unscaled.len(), fp2.unscaled.len()))?;
+                            self.metering.reserve_primitive(bigint_sum_cost(
+                                fp1.unscaled.len(),
+                                fp2.unscaled.len(),
+                            ))?;
                             make_fixedpoint_expr(
                                 models::rhoapi::GFixedPoint {
                                     unscaled: add_twos_complement(&fp1.unscaled, &fp2.unscaled),
@@ -1737,7 +1761,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::ESetBody(lhs), rhs) => {
-                            self.cost.charge(op_call_cost())?;
+                            self.metering.reserve_primitive(op_call_cost())?;
                             let result_par = self.add_method().apply(
                                 Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::ESetBody(lhs)),
@@ -1777,14 +1801,14 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.cost.charge(subtraction_cost())?;
+                            self.metering.reserve_primitive(subtraction_cost())?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
                             })
                         }
 
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.cost.charge(subtraction_cost())?;
+                            self.metering.reserve_primitive(subtraction_cost())?;
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
@@ -1792,13 +1816,13 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.cost
-                                .charge(bigint_subtraction_cost(b1.len(), b2.len()))?;
+                            self.metering
+                                .reserve_primitive(bigint_subtraction_cost(b1.len(), b2.len()))?;
                             make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
                         }
 
                         (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.cost.charge(bigrat_subtraction_cost(
+                            self.metering.reserve_primitive(bigrat_subtraction_cost(
                                 r1.numerator.len(),
                                 r1.denominator.len(),
                                 r2.numerator.len(),
@@ -1815,7 +1839,7 @@ impl DebruijnInterpreter {
                                     other_type: format!("FixedPoint(p{})", fp2.scale),
                                 });
                             }
-                            self.cost.charge(bigint_subtraction_cost(
+                            self.metering.reserve_primitive(bigint_subtraction_cost(
                                 fp1.unscaled.len(),
                                 fp2.unscaled.len(),
                             ))?;
@@ -1832,7 +1856,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::EMapBody(lhs), rhs) => {
-                            self.cost.charge(op_call_cost())?;
+                            self.metering.reserve_primitive(op_call_cost())?;
                             let result_par = self.delete_method().apply(
                                 Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::EMapBody(lhs)),
@@ -1848,7 +1872,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::ESetBody(lhs), rhs) => {
-                            self.cost.charge(op_call_cost())?;
+                            self.metering.reserve_primitive(op_call_cost())?;
                             let result_par = self.delete_method().apply(
                                 Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::ESetBody(lhs)),
@@ -1920,7 +1944,8 @@ impl DebruijnInterpreter {
                     // TODO: build an equality operator that takes in an environment. - OLD
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.cost.charge(equality_check_cost(&sv1, &sv2))?;
+                    self.metering
+                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         false
@@ -1937,7 +1962,8 @@ impl DebruijnInterpreter {
                     let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.cost.charge(equality_check_cost(&sv1, &sv2))?;
+                    self.metering
+                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         true
@@ -1952,7 +1978,7 @@ impl DebruijnInterpreter {
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
                     let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
                     let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
-                    self.cost.charge(boolean_and_cost())?;
+                    self.metering.reserve_primitive(boolean_and_cost())?;
 
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(b1 && b2)),
@@ -1962,7 +1988,7 @@ impl DebruijnInterpreter {
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
                     let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
                     let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
-                    self.cost.charge(boolean_or_cost())?;
+                    self.metering.reserve_primitive(boolean_or_cost())?;
 
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(b1 || b2)),
@@ -2056,7 +2082,7 @@ impl DebruijnInterpreter {
                         result
                     }
 
-                    self.cost.charge(op_call_cost())?;
+                    self.metering.reserve_primitive(op_call_cost())?;
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
@@ -2075,7 +2101,7 @@ impl DebruijnInterpreter {
                                     })
                                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                                self.cost.charge(interpolate_cost(
+                                self.metering.reserve_primitive(interpolate_cost(
                                     lhs.len() as i64,
                                     rhs.length() as i64,
                                 ))?;
@@ -2109,21 +2135,24 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
-                    self.cost.charge(op_call_cost())?;
+                    self.metering.reserve_primitive(op_call_cost())?;
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
-                            self.cost
-                                .charge(string_append_cost(lhs.len() as i64, rhs.len() as i64))?;
+                            self.metering.reserve_primitive(string_append_cost(
+                                lhs.len() as i64,
+                                rhs.len() as i64,
+                            ))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GString(lhs + &rhs)),
                             })
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.clone()))?;
+                            self.metering
+                                .reserve_primitive(byte_array_append_cost(lhs.clone()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs).collect(),
@@ -2132,7 +2161,8 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
-                            self.cost.charge(list_append_cost(lhs.clone().ps))?;
+                            self.metering
+                                .reserve_primitive(list_append_cost(lhs.clone().ps))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
                                     ps: lhs.ps.into_iter().chain(rhs.ps).collect(),
@@ -2211,7 +2241,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
-                    self.cost.charge(op_call_cost())?;
+                    self.metering.reserve_primitive(op_call_cost())?;
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
@@ -2379,7 +2409,7 @@ impl DebruijnInterpreter {
                     arguments,
                     ..
                 }) => {
-                    self.cost.charge(method_call_cost())?;
+                    self.metering.reserve_primitive(method_call_cost())?;
                     let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let evaled_args = arguments
                         .iter()
@@ -2442,7 +2472,9 @@ impl DebruijnInterpreter {
                     });
                 }
 
-                self.outer.cost.charge(nth_method_call_cost())?;
+                self.outer
+                    .metering
+                    .reserve_primitive(nth_method_call_cost())?;
                 let nth = self.outer.eval_to_i64(&args[0], env)? as usize;
                 let v = self.outer.eval_single_expr(&p, env)?;
 
@@ -2503,7 +2535,9 @@ impl DebruijnInterpreter {
                         .substitute
                         .substitute_and_charge(&expr_evaled, 0, env)?;
 
-                self.outer.cost.charge(to_byte_array_cost(&expr_subst))?;
+                self.outer
+                    .metering
+                    .reserve_primitive(to_byte_array_cost(&expr_subst))?;
                 let ba = self.serialize(&expr_subst)?;
 
                 Ok(Par::default().with_exprs(vec![Expr {
@@ -2537,7 +2571,9 @@ impl DebruijnInterpreter {
                     match single_expr(&p) {
                         Some(expr) => match unwrap_option_safe(expr.expr_instance)? {
                             ExprInstance::GString(encoded) => {
-                                self.outer.cost.charge(hex_to_bytes_cost(&encoded))?;
+                                self.outer
+                                    .metering
+                                    .reserve_primitive(hex_to_bytes_cost(&encoded))?;
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
                                         StringOps::unsafe_decode_hex(encoded),
@@ -2584,7 +2620,9 @@ impl DebruijnInterpreter {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
                             ExprInstance::GByteArray(bytes) => {
-                                self.outer.cost.charge(bytes_to_hex_cost(&bytes))?;
+                                self.outer
+                                    .metering
+                                    .reserve_primitive(bytes_to_hex_cost(&bytes))?;
 
                                 let str =
                                     bytes.iter().map(|byte| format!("{:02x}", byte)).collect();
@@ -2631,7 +2669,9 @@ impl DebruijnInterpreter {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
                             ExprInstance::GString(utf8_string) => {
-                                self.outer.cost.charge(hex_to_bytes_cost(&utf8_string))?;
+                                self.outer
+                                    .metering
+                                    .reserve_primitive(hex_to_bytes_cost(&utf8_string))?;
 
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
@@ -2676,8 +2716,8 @@ impl DebruijnInterpreter {
                         let other_ps = other_par_set.ps;
 
                         self.outer
-                            .cost
-                            .charge(union_cost(other_ps.length() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(other_ps.length() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::ESetBody(
@@ -2703,8 +2743,8 @@ impl DebruijnInterpreter {
                         let other_sorted_par_map = other_par_map.ps;
 
                         self.outer
-                            .cost
-                            .charge(union_cost(other_map.kvs.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(other_map.kvs.len() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EMapBody(
@@ -2731,8 +2771,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(other_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.join(&other_rmap.map);
 
                         Ok(Expr {
@@ -2801,8 +2841,8 @@ impl DebruijnInterpreter {
                         // diff is implemented in terms of foldLeft that at each step
                         // removes one element from the collection.
                         self.outer
-                            .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
+                            .metering
+                            .reserve_primitive(diff_cost(other_ps.length() as i64))?;
 
                         let base_sorted_pars_set: HashSet<Par> =
                             base_ps.sorted_pars.into_iter().collect();
@@ -2830,8 +2870,8 @@ impl DebruijnInterpreter {
                         let other_ps = other_par_map.ps;
 
                         self.outer
-                            .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
+                            .metering
+                            .reserve_primitive(diff_cost(other_ps.length() as i64))?;
 
                         let new_par_map = ParMap::create_from_sorted_par_map(
                             base_ps.remove_multiple(other_ps.keys()),
@@ -2854,8 +2894,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(diff_cost(other_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(diff_cost(other_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.subtract(&other_rmap.map);
 
                         Ok(Expr {
@@ -2928,8 +2968,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(other_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.meet(&other_rmap.map);
 
                         Ok(Expr {
@@ -3003,8 +3043,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(other_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.restrict(&other_rmap.map);
 
                         Ok(Expr {
@@ -3070,7 +3110,7 @@ impl DebruijnInterpreter {
                                 n
                             )));
                         }
-                        self.outer.cost.charge(union_cost(n))?;
+                        self.outer.metering.reserve_primitive(union_cost(n))?;
 
                         // For dropHead, we need to return a new EPathMap with modified path elements
                         // Instead of using PathMap, directly construct the result elements
@@ -3167,7 +3207,7 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EPathmapBody(base_pathmap) => {
                         // For run method, we ignore the other parameter and return self
-                        self.outer.cost.charge(union_cost(1))?;
+                        self.outer.metering.reserve_primitive(union_cost(1))?;
 
                         // Simply return the base PathMap unchanged
                         Ok(Expr {
@@ -3254,7 +3294,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.create_read_zipper(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3324,7 +3364,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.create_read_zipper_at(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3377,7 +3417,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.create_write_zipper(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3444,7 +3484,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.create_write_zipper_at(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3503,7 +3543,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.descend_to(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3589,7 +3629,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(lookup_cost())?;
+                self.outer.metering.reserve_primitive(lookup_cost())?;
                 self.get_leaf(&base_expr)
             }
         }
@@ -3670,7 +3710,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(lookup_cost())?;
+                self.outer.metering.reserve_primitive(lookup_cost())?;
                 self.get_subtrie(&base_expr)
             }
         }
@@ -3727,7 +3767,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let value = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(add_cost())?;
+                self.outer.metering.reserve_primitive(add_cost())?;
                 let result = self.set_leaf(&base_expr, &value)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4027,7 +4067,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.set_subtrie(&base_expr, &source_par)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4107,7 +4147,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(remove_cost())?;
+                self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.remove_leaf(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4208,7 +4248,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(remove_cost())?;
+                self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.remove_branches(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4316,7 +4356,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_expr = self.outer.eval_single_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.graft(&base_expr, &source_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4357,8 +4397,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(source_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4386,8 +4426,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(source_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4416,8 +4456,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(source_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4443,8 +4483,8 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
 
                         self.outer
-                            .cost
-                            .charge(union_cost(source_pathmap.ps.len() as i64))?;
+                            .metering
+                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4482,7 +4522,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_expr = self.outer.eval_single_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.join_into(&base_expr, &source_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4576,7 +4616,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.at_path(&base_expr, &path_par)
             }
         }
@@ -4646,7 +4686,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.path_exists(&base_expr)?;
 
                 // Return as GBool
@@ -4724,7 +4764,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.create_path(&base_expr, &path_par)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4814,7 +4854,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(remove_cost())?;
+                self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.prune_path(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4862,7 +4902,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let result = self.reset(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4916,7 +4956,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.ascend_one(&base_expr)
             }
         }
@@ -4992,7 +5032,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let steps_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.ascend(&base_expr, &steps_par)
             }
         }
@@ -5089,7 +5129,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 let count = self.child_count(&base_expr)?;
 
                 Ok(Par::default().with_exprs(vec![Expr {
@@ -5178,7 +5218,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.descend_first(&base_expr)
             }
         }
@@ -5286,7 +5326,7 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let idx_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.descend_indexed(&base_expr, &idx_par)
             }
         }
@@ -5385,7 +5425,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.to_next_sibling(&base_expr)
             }
         }
@@ -5484,7 +5524,7 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.cost.charge(union_cost(1))?;
+                self.outer.metering.reserve_primitive(union_cost(1))?;
                 self.to_prev_sibling(&base_expr)
             }
         }
@@ -5550,7 +5590,7 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
-                    self.outer.cost.charge(add_cost())?;
+                    self.outer.metering.reserve_primitive(add_cost())?;
                     let result = self.add(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5634,7 +5674,7 @@ impl DebruijnInterpreter {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
                     //TODO(mateusz.gorski): think whether deletion of an element from the collection should dependent on the collection type/size - OLD
-                    self.outer.cost.charge(remove_cost())?;
+                    self.outer.metering.reserve_primitive(remove_cost())?;
                     let result = self.delete(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5699,7 +5739,7 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let element = self.outer.eval_expr(&args[0], env)?;
-                    self.outer.cost.charge(lookup_cost())?;
+                    self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.contains(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5753,7 +5793,7 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
-                    self.outer.cost.charge(lookup_cost())?;
+                    self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.get(base_expr, key)?;
                     Ok(result)
                 }
@@ -5813,7 +5853,7 @@ impl DebruijnInterpreter {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
                     let default = self.outer.eval_expr(&args[1], env)?;
-                    self.outer.cost.charge(lookup_cost())?;
+                    self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.get_or_else(base_expr, key, default)?;
                     Ok(result)
                 }
@@ -5876,7 +5916,7 @@ impl DebruijnInterpreter {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let key = self.outer.eval_expr(&args[0], env)?;
                     let value = self.outer.eval_expr(&args[1], env)?;
-                    self.outer.cost.charge(add_cost())?;
+                    self.outer.metering.reserve_primitive(add_cost())?;
                     let result = self.set(base_expr, key, value)?;
                     Ok(result)
                 }
@@ -5935,7 +5975,7 @@ impl DebruijnInterpreter {
                     })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    self.outer.cost.charge(keys_method_cost())?;
+                    self.outer.metering.reserve_primitive(keys_method_cost())?;
                     let result = self.keys(base_expr)?;
                     Ok(result)
                 }
@@ -5998,7 +6038,9 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let result = self.size(base_expr)?;
-                    self.outer.cost.charge(size_method_cost(result.0))?;
+                    self.outer
+                        .metering
+                        .reserve_primitive(size_method_cost(result.0))?;
                     Ok(result.1)
                 }
             }
@@ -6051,7 +6093,9 @@ impl DebruijnInterpreter {
                     })
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    self.outer.cost.charge(length_method_cost())?;
+                    self.outer
+                        .metering
+                        .reserve_primitive(length_method_cost())?;
                     let result = self.length(base_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -6141,7 +6185,7 @@ impl DebruijnInterpreter {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let from_arg = self.outer.eval_to_i64(&args[0], env)?;
                     let to_arg = self.outer.eval_to_i64(&args[1], env)?;
-                    self.outer.cost.charge(slice_cost(to_arg))?;
+                    self.outer.metering.reserve_primitive(slice_cost(to_arg))?;
                     let result = self.slice(
                         base_expr,
                         if from_arg > 0 { from_arg as usize } else { 0 },
@@ -6203,7 +6247,7 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_arg = self.outer.eval_to_i64(&args[0], env)?;
-                    self.outer.cost.charge(take_cost(n_arg))?;
+                    self.outer.metering.reserve_primitive(take_cost(n_arg))?;
                     let result = self.take(base_expr, n_arg as usize)?;
                     Ok(result)
                 }
@@ -6230,7 +6274,9 @@ impl DebruijnInterpreter {
 
                         ExprInstance::ESetBody(eset) => {
                             let ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(to_list_cost(ps.length() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6244,7 +6290,9 @@ impl DebruijnInterpreter {
 
                         ExprInstance::EMapBody(emap) => {
                             let ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(to_list_cost(ps.length() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6272,7 +6320,9 @@ impl DebruijnInterpreter {
 
                         ExprInstance::ETupleBody(etuple) => {
                             let ps = etuple.ps;
-                            self.outer.cost.charge(to_list_cost(ps.len() as i64))?;
+                            self.outer
+                                .metering
+                                .reserve_primitive(to_list_cost(ps.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6879,7 +6929,7 @@ impl DebruijnInterpreter {
         urn_map: Arc<HashMap<String, Par>>,
         merge_chs: Arc<RwLock<HashSet<Par>>>,
         mergeable_tag_name: Par,
-        cost: _cost,
+        cost: RuntimeBudget,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -6887,14 +6937,15 @@ impl DebruijnInterpreter {
             reducer: reducer_cell.clone(),
         });
 
+        let metering = MeteredMachine::new(cost.clone());
         let reducer = Arc::new(DebruijnInterpreter {
             space,
             dispatcher: dispatcher.clone(),
             urn_map,
             merge_chs,
             mergeable_tag_name,
-            cost: cost.clone(),
-            substitute: Substitute { cost: cost.clone() },
+            metering: metering.clone(),
+            substitute: Substitute { metering },
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

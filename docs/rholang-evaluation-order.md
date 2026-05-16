@@ -19,17 +19,19 @@ and event log. Every validator must replay that deploy and produce the EXACT
 same result. The non-determinism is resolved at the implementation level:
 
 1. **Evaluation order**: The `eval(Par)` term vector ordering (sends first,
-   receives second) determines which `tokio::spawn` tasks are created first
+   receives second) determines stable branch source paths and task registration
 2. **Candidate matching**: `Random.shuffle` with a deploy-derived seed selects
    the same candidate deterministically
 3. **Replay oracle**: `ReplayRSpace` uses the play event log to force the
    exact same COMMs during replay, regardless of evaluation order
 
-## Implementation: tokio::spawn with FIFO Per-Channel Locks
+## Implementation: FuturesUnordered Branch Draining
 
 The Rust node uses `tokio::spawn` for parallel Par branch evaluation, matching
-Scala's `parTraverse`. Per-channel locks use `tokio::sync::Mutex` which
-guarantees FIFO ordering for waiters, matching Scala's cats-effect `Semaphore`.
+Scala's `parTraverse`, and drains the branch tasks with `FuturesUnordered` so
+completion order does not impose a sequential join barrier. Per-channel locks
+use `tokio::sync::Mutex` which guarantees FIFO ordering for waiters, matching
+Scala's cats-effect `Semaphore`.
 
 Both `RSpace` and `ReplayRSpace` have per-channel two-phase locks, matching
 Scala's `RSpaceOps` which provides locks to both via inheritance.
@@ -54,18 +56,20 @@ confirmed across 4 independent runs:
   with overlapping join patterns. Joins like `for(<- x & <- x)` are explicitly
   blocked with `ReceiveOnSameChannelsError`.
 
-## Cost Accounting (ChargingRSpace)
+## Cost Accounting (Source Tokens)
 
-The `ChargingRSpace` wrapper uses order-independent charging:
+The reducer reserves source-token events before executing metered Rholang work.
+Parser failures consume zero tokens because no metered source state exists yet.
+RSpace is not a metering wrapper; it only records tuple-space state, matching,
+cleanup, and replay logs. This keeps play/replay costs independent from which
+parallel task happens to trigger a COMM.
 
-1. Pre-charge storage cost before each `produce`/`consume`
-2. When COMM fires: refund all pre-charges, charge unified COMM cost, re-charge
-   persistent items
-3. When no COMM: no additional event storage charge (removed for order-independence)
-
-Persistent operation re-issues (from `continue_consume_process` /
-`continue_produce_process`) are pre-credited in the reducer to make the net
-cost of re-installation zero.
+Metering uses explicit work frames (`MeteredMachine`) rather than recursive
+charging. Each live billable frame is keyed by deploy id, branch-derived source
+path, redex id, and local index, then drained in canonical order before
+atomically reserving tokens from `RuntimeBudget`. This preserves maximum branch
+parallelism: spawned Par tasks do not serialize on evaluation, only on the short
+budget reservation CAS.
 
 ## References
 

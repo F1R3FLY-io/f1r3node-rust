@@ -1,17 +1,23 @@
 //See rholang/src/test/scala/coop/rchain/rholang/interpreter/accounting/CostAccountingSpec.scala from main branch
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::option::Option;
 use std::sync::Arc;
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rand::Rng;
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::{
+    BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, Sig, SignatureChannel, SignedProcess,
+    SourcePath, Token,
+};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::rho_runtime::{
     create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
 };
@@ -26,7 +32,7 @@ async fn evaluate_with_cost_log(
     initial_phlo: i64,
     contract: String,
 ) -> (EvaluateResult, Vec<Cost>) {
-    // Cost logging is enabled in test builds via cfg!(test) in CostManager.
+    // The diagnostic cost log mirrors successful token reservations.
 
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
@@ -210,58 +216,38 @@ fn from_long(index: i64) -> String {
     result.join(" | ")
 }
 
-fn contracts() -> Vec<(String, i64)> {
+fn contracts() -> Vec<String> {
     vec![
-      (String::from("@0!(2)"), 97),
-      (String::from("@0!(2) | @1!(1)"), 197),
-      (String::from("for(x <- @0){ Nil }"), 128),
-      (String::from("for(x <- @0){ Nil } | @0!(2)"), 329),
-      (String::from("@0!!(0) | for (_ <- @0) { 0 }"), 342),
-      (String::from("@0!!(0) | for (x <- @0) { 0 }"), 342),
-      (String::from("@0!!(0) | for (@0 <- @0) { 0 }"), 336),
-      (String::from("@0!!(0) | @0!!(0) | for (_ <- @0) { 0 }"), 443),
-      (String::from("@0!!(0) | @1!!(1) | for (_ <- @0 & _ <- @1) { 0 }"), 596),
-      (String::from("@0!(0) | for (_ <- @0) { 0 }"), 333),
-      (String::from("@0!(0) | for (x <- @0) { 0 }"), 333),
-      (String::from("@0!(0) | for (@0 <- @0) { 0 }"), 327),
-      (String::from("@0!(0) | for (_ <= @0) { 0 }"), 354),
-      (String::from("@0!(0) | for (x <= @0) { 0 }"), 356),
-      (String::from("@0!(0) | for (@0 <= @0) { 0 }"), 341),
-      (String::from("@0!(0) | @0!(0) | for (_ <= @0) { 0 }"), 574),
-      (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (_ <- @0) { 0 }"), 663),
-      (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (@1 <- @0) { 0 }"), 551),
-      (String::from("@0!(0) | for (_ <<- @0) { 0 }"), 406),
-      (String::from("@0!!(0) | for (_ <<- @0) { 0 }"), 343),
-      (String::from("@0!!(0) | @0!!(0) | for (_ <<- @0) { 0 }"), 444),
-      (String::from("new loop in {\n  contract loop(@n) = {\n    match n {\n      0 => Nil\n      _ => loop!(n-1)\n    }\n  } |\n  loop!(10)\n}"), 3846),
-      (String::from("42 | @0!(2) | for (x <- @0) { Nil }"), 336),
-      (String::from("@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 => Nil\n          42 =>\n@3!(42)\n        }\n     "), 1264),
-      (String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"), 782),
+      String::from("@0!(2)"),
+      String::from("@0!(2) | @1!(1)"),
+      String::from("for(x <- @0){ Nil }"),
+      String::from("for(x <- @0){ Nil } | @0!(2)"),
+      String::from("@0!!(0) | for (_ <- @0) { 0 }"),
+      String::from("@0!!(0) | for (x <- @0) { 0 }"),
+      String::from("@0!!(0) | for (@0 <- @0) { 0 }"),
+      String::from("@0!!(0) | @0!!(0) | for (_ <- @0) { 0 }"),
+      String::from("@0!!(0) | @1!!(1) | for (_ <- @0 & _ <- @1) { 0 }"),
+      String::from("@0!(0) | for (_ <- @0) { 0 }"),
+      String::from("@0!(0) | for (x <- @0) { 0 }"),
+      String::from("@0!(0) | for (@0 <- @0) { 0 }"),
+      String::from("@0!(0) | for (_ <= @0) { 0 }"),
+      String::from("@0!(0) | for (x <= @0) { 0 }"),
+      String::from("@0!(0) | for (@0 <= @0) { 0 }"),
+      String::from("@0!(0) | @0!(0) | for (_ <= @0) { 0 }"),
+      String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (_ <- @0) { 0 }"),
+      String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (@1 <- @0) { 0 }"),
+      String::from("@0!(0) | for (_ <<- @0) { 0 }"),
+      String::from("@0!!(0) | for (_ <<- @0) { 0 }"),
+      String::from("@0!!(0) | @0!!(0) | for (_ <<- @0) { 0 }"),
+      String::from("new loop in {\n  contract loop(@n) = {\n    match n {\n      0 => Nil\n      _ => loop!(n-1)\n    }\n  } |\n  loop!(10)\n}"),
+      String::from("42 | @0!(2) | for (x <- @0) { Nil }"),
+      String::from("@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 => Nil\n          42 =>\n@3!(42)\n        }\n     "),
+      String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"),
     ]
 }
 
-fn element_counts(list: &[Cost]) -> HashSet<(Cost, usize)> {
-    let mut counts = HashMap::new();
-    for c in list {
-        *counts.entry(c.clone()).or_insert(0) += 1;
-    }
-    counts.into_iter().collect()
-}
-
-async fn check_phlo_limit_exceeded(
-    contract: String,
-    initial_phlo: i64,
-    expected_costs: Vec<Cost>,
-) -> bool {
+async fn check_phlo_limit_exceeded(contract: String, initial_phlo: i64) -> bool {
     let (evaluate_result, cost_log) = evaluate_with_cost_log(initial_phlo, contract).await;
-    let expected_sum: i64 = expected_costs.iter().map(|cost| cost.value).sum();
-
-    assert!(
-        expected_sum <= initial_phlo,
-        "We must not expect more costs than initialPhlo allows (duh!): {} > {}",
-        expected_sum,
-        initial_phlo
-    );
 
     assert_eq!(
         evaluate_result.errors,
@@ -269,34 +255,202 @@ async fn check_phlo_limit_exceeded(
         "Expected list of OutOfPhlogistonsError"
     );
 
-    for cost in &expected_costs {
-        assert!(
-            cost_log.contains(cost),
-            "CostLog does not contain expected cost: {:?}",
-            cost
-        );
-    }
-
     assert_eq!(
-        {
-            element_counts(&cost_log)
-                .difference(&element_counts(&expected_costs))
-                .count()
-        },
-        1,
-        "Exactly one cost should be logged past the expected ones"
+        evaluate_result.cost.value, initial_phlo,
+        "Out-of-phlo must commit exactly the exhausted token budget"
     );
     assert!(
-        evaluate_result.cost.value >= initial_phlo,
-        "Total cost value should be >= initialPhlo"
+        cost_log.iter().map(|cost| cost.value).sum::<i64>() <= initial_phlo,
+        "Successful charge events may not exceed the token budget"
     );
 
     true
 }
 
+fn token_event(local_index: u64, weight: u64) -> BillableTokenEvent {
+    BillableTokenEvent {
+        deploy_id: [7; 32],
+        source_path: SourcePath(vec![local_index as u32]),
+        redex_id: RedexId(local_index),
+        local_index,
+        kind: BillableKind::SourceStep,
+        weight,
+    }
+}
+
+#[test]
+fn runtime_budget_initializes_from_signed_token_annotation() {
+    let sig = Sig::Hash(vec![1, 2, 3]);
+    let annotated = SignedProcess::metered(Par::default(), sig.clone(), 7);
+    let budget = RuntimeBudget::new(Cost::create(0, "empty budget"));
+
+    budget.reset_from_signed_process(&annotated);
+
+    assert_eq!(budget.signature(), sig);
+    assert_eq!(budget.remaining().value, 7);
+    assert_eq!(budget.total_cost().value, 0);
+}
+
+#[test]
+fn coalesced_token_budget_refines_nested_gate_stack() {
+    let sig = Sig::Hash(vec![9]);
+    let nested = Token::gate(
+        sig.clone(),
+        Token::gate(sig.clone(), Token::coalesced(sig.clone(), 3)),
+    );
+    let coalesced = Token::coalesced(sig.clone(), 5);
+
+    assert_eq!(nested.signature(), sig);
+    assert_eq!(nested.remaining_units(), coalesced.remaining_units());
+}
+
+#[test]
+fn runtime_budget_matches_unit_token_expansion() {
+    let weighted = RuntimeBudget::new(Cost::create(10, "weighted budget"));
+    weighted.reserve_canonical(token_event(0, 3)).unwrap();
+
+    let expanded = RuntimeBudget::new(Cost::create(10, "expanded budget"));
+    for index in 0..3 {
+        expanded.reserve_canonical(token_event(index, 1)).unwrap();
+    }
+
+    assert_eq!(weighted.total_cost().value, expanded.total_cost().value);
+    assert_eq!(weighted.remaining().value, expanded.remaining().value);
+}
+
+#[test]
+fn runtime_budget_commits_to_limit_on_depletion() {
+    let budget = RuntimeBudget::new(Cost::create(5, "bounded budget"));
+    budget.reserve_canonical(token_event(0, 3)).unwrap();
+
+    let err = budget.reserve_canonical(token_event(1, 3)).unwrap_err();
+
+    assert_eq!(err, InterpreterError::OutOfPhlogistonsError);
+    assert_eq!(budget.total_cost().value, 5);
+    assert_eq!(budget.remaining().value, 0);
+}
+
+#[test]
+fn runtime_budget_unmetered_mode_does_not_consume_tokens() {
+    let budget = RuntimeBudget::new(Cost::create(5, "bounded budget"));
+    budget.set_unmetered(true);
+
+    budget.reserve_canonical(token_event(0, 100)).unwrap();
+
+    assert_eq!(budget.total_cost().value, 0);
+    assert_eq!(budget.remaining().value, i64::MAX);
+}
+
+#[test]
+fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
+    let budget = RuntimeBudget::new(Cost::create(10, "typed event budget"));
+    let machine = MeteredMachine::new(budget.clone());
+
+    machine
+        .reserve_source_step(Cost::create(1, "send eval"))
+        .unwrap();
+    machine
+        .reserve_primitive(Cost::create(2, "method call"))
+        .unwrap();
+    machine
+        .reserve_substitution(Cost::create(3, "substitution"))
+        .unwrap();
+
+    let kinds = budget
+        .get_event_log()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+
+    assert_eq!(kinds, vec![
+        BillableKind::SourceStep,
+        BillableKind::Primitive("method call".to_string()),
+        BillableKind::Substitution
+    ]);
+    assert_eq!(budget.total_cost().value, 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evaluation_records_only_typed_billable_events() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (mut runtime, _, _) =
+        create_runtimes_with_cost_log(store, Some(false), Some(&mut Vec::new())).await;
+
+    let result = runtime
+        .evaluate_with_phlo("@0!(2)", Cost::create(1000, "typed event eval"))
+        .await
+        .unwrap();
+
+    assert!(result.errors.is_empty());
+    let event_log = runtime.get_cost_event_log();
+    assert!(!event_log.is_empty());
+    assert!(event_log
+        .iter()
+        .any(|event| matches!(event.kind, BillableKind::SourceStep)));
+    assert!(event_log
+        .iter()
+        .any(|event| matches!(event.kind, BillableKind::Substitution)));
+}
+
+#[test]
+fn signature_channels_are_deploy_isolated() {
+    let left = SignatureChannel::from_sig(&Sig::Hash(vec![1]));
+    let right = SignatureChannel::from_sig(&Sig::Hash(vec![2]));
+    let combined = SignatureChannel::from_sig(&Sig::And(
+        Box::new(Sig::Hash(vec![1])),
+        Box::new(Sig::Hash(vec![2])),
+    ));
+    let reversed = SignatureChannel::from_sig(&Sig::And(
+        Box::new(Sig::Hash(vec![2])),
+        Box::new(Sig::Hash(vec![1])),
+    ));
+
+    assert_ne!(left, right);
+    assert_ne!(combined, left);
+    assert_ne!(combined, right);
+    assert_eq!(combined, reversed);
+}
+
+#[test]
+fn deploy_signature_scope_is_domain_separated_from_raw_signature_bytes() {
+    let raw_signature = vec![1, 2, 3, 4];
+    let budget = RuntimeBudget::new(Cost::create(10, "signature scope"));
+
+    budget.set_deploy_signature(&raw_signature);
+
+    let raw_hash = Blake2b256::hash(raw_signature.clone());
+    assert_ne!(budget.deploy_id().to_vec(), raw_hash);
+
+    let scoped_signature = budget.signature();
+    match &scoped_signature {
+        Sig::Hash(bytes) => assert_eq!(bytes.as_slice(), budget.deploy_id().as_slice()),
+        _ => panic!("deploy signatures must map to hash-scoped accounting signatures"),
+    }
+
+    assert_ne!(
+        SignatureChannel::from_sig(&scoped_signature),
+        SignatureChannel::from_sig(&Sig::Hash(raw_signature))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn structurally_equivalent_parallel_order_has_same_token_cost() {
+    let left = evaluate_with_cost_log(1000, "@0!(0) | @1!(1)".to_string())
+        .await
+        .0;
+    let right = evaluate_with_cost_log(1000, "@1!(1) | @0!(0)".to_string())
+        .await
+        .0;
+
+    assert!(left.errors.is_empty());
+    assert!(right.errors.is_empty());
+    assert_eq!(left.cost, right.cost);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the_log() {
-    for (contract, expected_cost) in contracts() {
+    for contract in contracts() {
         let initial_phlo = 10000i64;
         let (eval_result, cost_log) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
         assert_eq!(
@@ -305,15 +459,15 @@ async fn total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the
             "Contract errored: {}",
             contract
         );
+        let logged_cost = cost_log.iter().map(|c| c.value).sum::<i64>();
         assert_eq!(
-            eval_result.cost.value, expected_cost,
-            "Cost mismatch for '{}': expected={}, got={}",
-            contract, expected_cost, eval_result.cost.value
+            eval_result.cost.value, logged_cost,
+            "Cost mismatch for '{}': logged={}, got={}",
+            contract, logged_cost, eval_result.cost.value
         );
-        assert_eq!(
-            cost_log.iter().map(|c| c.value).sum::<i64>(),
-            expected_cost,
-            "Cost log sum mismatch for: {}",
+        assert!(
+            eval_result.cost.value > 0,
+            "Non-empty metered contract should consume tokens: {}",
             contract
         );
     }
@@ -321,7 +475,7 @@ async fn total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cost_should_be_deterministic() {
-    for (contract, _) in contracts() {
+    for contract in contracts() {
         let mut first_cost: Option<i64> = None;
         for i in 0..20 {
             let (result, _log) = evaluate_with_cost_log(i32::MAX as i64, contract.clone()).await;
@@ -419,51 +573,57 @@ async fn cost_should_be_repeatable_when_generated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn running_out_of_phlogistons_should_stop_evaluation_upon_cost_depletion_in_a_single_execution_branch(
 ) {
-    let parsing_cost = 6;
-
-    check_phlo_limit_exceeded("@1!(1)".to_string(), parsing_cost, vec![Cost::create(
-        parsing_cost,
-        "parsing".to_string(),
-    )])
-    .await;
+    check_phlo_limit_exceeded("@1!(1)".to_string(), 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn should_not_attempt_reduction_when_there_was_not_enough_phlo_for_parsing() {
-    let parsing_cost = 6;
+async fn malformed_source_should_not_consume_tokens_before_metered_state_exists() {
+    let (evaluate_result, cost_log) =
+        evaluate_with_cost_log(1, "new f, x in { f(x) }".to_string()).await;
 
-    check_phlo_limit_exceeded("@1!(1)".to_string(), parsing_cost - 1, vec![]).await;
+    assert!(!evaluate_result.errors.is_empty());
+    assert_eq!(evaluate_result.cost.value, 0);
+    assert!(cost_log.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_runs_out_of_phlo() {
-    let parsing_cost = 24;
-    let first_step_cost = 11;
-    check_phlo_limit_exceeded(
-        "@1!(1) | @2!(2) | @3!(3)".to_string(),
-        parsing_cost + first_step_cost,
-        vec![
-            Cost::create(parsing_cost, "parsing".to_string()),
-            Cost::create(first_step_cost, "send eval".to_string()),
-        ],
-    )
-    .await;
+    check_phlo_limit_exceeded("@1!(1) | @2!(2) | @3!(3)".to_string(), 20).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_runs_out_of_phlo_with_a_more_sophisticated_contract(
 ) {
     let mut rng = rand::thread_rng();
-    for (contract, expected_total_cost) in contracts() {
-        let initial_phlo = rng.gen_range(1..expected_total_cost);
-
-        let (result, _) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
-
+    for contract in contracts() {
+        let (full_result, _) = evaluate_with_cost_log(i32::MAX as i64, contract.clone()).await;
         assert!(
-            result.cost.value >= initial_phlo,
-            "Total cost value should be >= initialPhlo, but got {} < {}",
-            result.cost.value,
-            initial_phlo
+            full_result.errors.is_empty(),
+            "Contract errored with full budget: {}",
+            contract
+        );
+        if full_result.cost.value <= 1 {
+            continue;
+        }
+        let initial_phlo = rng.gen_range(1..full_result.cost.value);
+
+        let (result, cost_log) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
+
+        assert_eq!(
+            result.errors,
+            vec![InterpreterError::OutOfPhlogistonsError],
+            "Expected out-of-phlo for {} with initial budget {} below full cost {}",
+            contract,
+            initial_phlo,
+            full_result.cost.value
+        );
+        assert_eq!(
+            result.cost.value, initial_phlo,
+            "Out-of-phlo must commit exactly the exhausted token budget"
+        );
+        assert!(
+            cost_log.iter().map(|cost| cost.value).sum::<i64>() <= initial_phlo,
+            "Successful charge events may not exceed the token budget"
         );
     }
 }

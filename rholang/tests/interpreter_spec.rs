@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use models::rhoapi::{expr, Expr, Par};
-use rholang::rust::interpreter::accounting::costs::{parsing_cost, subtraction_cost_with_value};
+use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -197,24 +197,23 @@ async fn interpreter_should_signal_syntax_errors_to_the_caller() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_capture_parsing_errors_and_charge_for_parsing() {
+async fn interpreter_should_capture_parsing_errors_without_token_charge() {
     with_runtime("parsing-error-spec-", |mut runtime| async move {
         let bad_rholang = r#"for(@x <- @"x"; @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!("hi") "#;
 
         let result = execute(&mut runtime, bad_rholang).await.unwrap();
 
         assert!(!result.errors.is_empty());
-
-        assert_eq!(result.cost, parsing_cost(bad_rholang));
+        assert_eq!(result.cost.value, 0);
     })
     .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_charge_for_parsing_even_when_not_enough_phlo() {
-    with_runtime("parsing-cost-spec-", |mut runtime| async move {
+async fn interpreter_should_exhaust_budget_on_first_metered_reduction() {
+    with_runtime("metered-reduction-spec-", |mut runtime| async move {
         let send_rho = "@{0}!(0)";
-        let initial_phlo = parsing_cost(send_rho) - subtraction_cost_with_value(1);
+        let initial_phlo = Cost::create(1, "single token budget");
 
         let result = runtime
             .evaluate_with_phlo(send_rho, initial_phlo.clone())

@@ -555,8 +555,19 @@ pub struct ProcessedDeploy {
 }
 
 impl ProcessedDeploy {
+    pub fn try_refund_amount(&self) -> Result<i64, String> {
+        let token_cost = i64::try_from(self.cost.cost).map_err(|_| {
+            format!(
+                "Token cost {} exceeds the supported i64 settlement range.",
+                self.cost.cost
+            )
+        })?;
+        self.deploy.data.refund_amount_for_token_cost(token_cost)
+    }
+
     pub fn refund_amount(&self) -> i64 {
-        (self.deploy.data.phlo_limit - self.cost.cost as i64).max(0) * self.deploy.data.phlo_price
+        self.try_refund_amount()
+            .expect("deploy phlo terms must be validated before refund settlement")
     }
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
@@ -809,7 +820,69 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> i64 { self.phlo_limit * self.phlo_price }
+    pub fn validate_phlo(&self, min_phlo_price: i64) -> Result<(), String> {
+        if self.phlo_limit < 0 {
+            return Err(format!(
+                "Phlo limit {} must be non-negative.",
+                self.phlo_limit
+            ));
+        }
+        if self.phlo_price < 0 {
+            return Err(format!(
+                "Phlo price {} must be non-negative.",
+                self.phlo_price
+            ));
+        }
+        if self.phlo_price < min_phlo_price {
+            return Err(format!(
+                "Phlo price {} is less than minimum price {}.",
+                self.phlo_price, min_phlo_price
+            ));
+        }
+        self.checked_total_phlo_charge().map(|_| ())
+    }
+
+    pub fn checked_total_phlo_charge(&self) -> Result<i64, String> {
+        if self.phlo_limit < 0 {
+            return Err(format!(
+                "Phlo limit {} must be non-negative.",
+                self.phlo_limit
+            ));
+        }
+        if self.phlo_price < 0 {
+            return Err(format!(
+                "Phlo price {} must be non-negative.",
+                self.phlo_price
+            ));
+        }
+        self.phlo_limit.checked_mul(self.phlo_price).ok_or_else(|| {
+            format!(
+                "Phlo charge overflows i64: limit={}, price={}",
+                self.phlo_limit, self.phlo_price
+            )
+        })
+    }
+
+    pub fn total_phlo_charge(&self) -> i64 {
+        self.checked_total_phlo_charge()
+            .expect("deploy phlo terms must be validated before settlement")
+    }
+
+    pub fn refund_amount_for_token_cost(&self, token_cost: i64) -> Result<i64, String> {
+        if token_cost < 0 {
+            return Err(format!("Token cost {} must be non-negative.", token_cost));
+        }
+        self.checked_total_phlo_charge()?;
+        let refundable_tokens = self.phlo_limit.saturating_sub(token_cost).max(0);
+        refundable_tokens
+            .checked_mul(self.phlo_price)
+            .ok_or_else(|| {
+                format!(
+                    "Deploy refund overflows i64: refundable_tokens={}, price={}",
+                    refundable_tokens, self.phlo_price
+                )
+            })
+    }
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -1225,5 +1298,82 @@ impl StoreItemsMessage {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use crypto::rust::signatures::signed::Signed;
+
+    use super::*;
+
+    fn deploy_data(phlo_limit: i64, phlo_price: i64) -> DeployData {
+        DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 0,
+            phlo_price,
+            phlo_limit,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        }
+    }
+
+    fn signed_deploy(data: DeployData) -> Signed<DeployData> {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let (sk, _) = alg.new_key_pair();
+        Signed::create(data, alg, sk).expect("signed deploy")
+    }
+
+    #[test]
+    fn checked_total_phlo_charge_rejects_invalid_or_overflowing_inputs() {
+        assert_eq!(deploy_data(5, 2).checked_total_phlo_charge(), Ok(10));
+        assert!(deploy_data(i64::MAX, 2)
+            .checked_total_phlo_charge()
+            .is_err());
+        assert!(deploy_data(-1, 2).checked_total_phlo_charge().is_err());
+        assert!(deploy_data(10, -1).checked_total_phlo_charge().is_err());
+        assert!(deploy_data(10, 1).validate_phlo(2).is_err());
+    }
+
+    #[test]
+    fn refund_amount_is_bounded_by_valid_escrow() {
+        let partial = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(5, 2)),
+            cost: PCost { cost: 1 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
+        assert_eq!(partial.try_refund_amount(), Ok(8));
+
+        let exhausted = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(5, 2)),
+            cost: PCost { cost: 10 },
+            deploy_log: Vec::new(),
+            is_failed: true,
+            system_deploy_error: None,
+        };
+        assert_eq!(exhausted.try_refund_amount(), Ok(0));
+
+        let negative_price = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(10, -1)),
+            cost: PCost { cost: 1 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
+        assert!(negative_price.try_refund_amount().is_err());
+
+        let oversized_cost = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(10, 1)),
+            cost: PCost { cost: u64::MAX },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
+        assert!(oversized_cost.try_refund_amount().is_err());
     }
 }

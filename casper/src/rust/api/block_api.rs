@@ -410,16 +410,7 @@ impl BlockAPI {
                     Ok(())
                 }
             })
-            .and_then(|_| {
-                if d.data.phlo_price < min_phlo_price {
-                    Err(format!(
-                        "Phlo price {} is less than minimum price {}.",
-                        d.data.phlo_price, min_phlo_price
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
+            .and_then(|_| d.data.validate_phlo(min_phlo_price))
             .and_then(|_| {
                 // Check if deploy has already expired based on expirationTimestamp
                 let now = std::time::SystemTime::now()

@@ -1213,12 +1213,12 @@ impl Validate {
         }
     }
 
-    /// All of deploys must have greater or equal phloPrice than minPhloPrice
+    /// All deploys must have valid phlo terms and a price >= minPhloPrice.
     pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
         if b.body
             .deploys
             .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
+            .all(|deploy| deploy.deploy.data.validate_phlo(min_phlo_price).is_ok())
         {
             Either::Right(ValidBlock::Valid)
         } else {

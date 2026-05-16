@@ -411,7 +411,11 @@ in {
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
                         for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount > 0) {
+                          if (refundAmount < 0) {
+                            return!((false, "Invalid refund amount"))
+                          } else if (refundAmount > initialPaymentAmount) {
+                            return!((false, "Refund exceeds initial deploy payment"))
+                          } else if (refundAmount > 0) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
                               for (@deployerVaultAddress <- vaultAddressCh) {

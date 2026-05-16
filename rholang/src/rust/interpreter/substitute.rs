@@ -23,10 +23,10 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
 
-use super::accounting::_cost;
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::metering::MeteredMachine;
 use super::unwrap_option_safe;
 use super::util::{prepend_connective, prepend_expr};
 
@@ -44,7 +44,7 @@ pub trait SubstituteTrait<A> {
 
 #[derive(Clone)]
 pub struct Substitute {
-    pub cost: _cost,
+    pub metering: MeteredMachine,
 }
 
 impl Substitute {
@@ -61,15 +61,17 @@ impl Substitute {
         // scala 'charge' function built in here
         match self.substitute(term.clone(), depth, env) {
             Ok(subst_term) => {
-                self.cost.charge(Cost::create(
+                self.metering.reserve_substitution(Cost::create(
                     subst_term.encoded_len() as i64,
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.metering.reserve_substitution(Cost::create(
+                    term.encoded_len() as i64,
+                    "substitution",
+                ))?;
                 Err(th)
             }
         }
@@ -88,15 +90,17 @@ impl Substitute {
         // scala 'charge' function built in here
         match self.substitute_no_sort(term.clone(), depth, env) {
             Ok(subst_term) => {
-                self.cost.charge(Cost::create(
+                self.metering.reserve_substitution(Cost::create(
                     subst_term.encoded_len() as i64,
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
-                self.cost
-                    .charge(Cost::create(term.encoded_len() as i64, ""))?;
+                self.metering.reserve_substitution(Cost::create(
+                    term.encoded_len() as i64,
+                    "substitution",
+                ))?;
                 Err(th)
             }
         }

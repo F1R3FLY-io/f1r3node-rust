@@ -1,6 +1,6 @@
 # Cost Model
 
-Every Rholang operation consumes phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges costs as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`.
+Every metered Rholang reduction consumes source-token phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges token events as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`.
 
 ## Charging Mechanism
 
@@ -9,7 +9,14 @@ Total Phlo Charge = phlo_limit * phlo_price
 Refund = (phlo_limit - cost_used) * phlo_price
 ```
 
-The deployer pays for the full limit upfront. Unused phlogiston is refunded after execution.
+The deployer pays for the full limit upfront. Unused phlogiston is refunded after execution. Parser failures occur before a metered source state exists, so they consume zero tokens.
+
+`phlo_limit` and `phlo_price` must be non-negative and their product must
+fit in `i64`; deploy admission and block validation reject values that
+violate those bounds. The precharge/refund contracts are fee settlement
+only: they move balances before and after evaluation, but they do not
+mutate the in-flight runtime budget or add fuel back to a running deploy.
+Refunds are bounded by the deploy's recorded precharge.
 
 Default limits (from `construct_deploy.rs`):
 - Standard deploy: 90,000
@@ -82,7 +89,6 @@ Where `max_len = max(na, da, nb, db)`.
 | hexToBytes | `len(hex_string)` |
 | bytesToHex | `len(byte_array)` |
 | toList | collection size |
-| Parsing | `len(source)` in bytes |
 | toByteArray | protobuf encoded size |
 
 ## Cost Table: Evaluation
@@ -102,16 +108,31 @@ Where `max_len = max(na, da, nb, db)`.
 | `new` binding | 2 per binding + 10 base |
 | Match evaluation | 12 |
 
-## Cost Table: Storage (RSpace)
+## Storage and COMM Accounting
 
-Storage costs are proportional to protobuf-encoded sizes.
+RSpace operations are no longer charged by a storage wrapper. The reducer records the
+source-level work that leads to sends, receives, substitutions, primitive calls, and
+COMM continuation execution. RSpace remains responsible for deterministic matching
+and replay logs, while `RuntimeBudget` owns token reservation and exhaustion.
 
-| Operation | Formula |
-|-----------|---------|
-| Produce (send) | `encoded_size(channel) + encoded_size(data)` |
-| Consume (receive) | `sum(encoded_size(channels)) + sum(encoded_size(patterns)) + encoded_size(continuation)` |
-| Event storage | `32 + (channels * 32)` bytes |
-| Comm event | `event_storage(channels) + event_storage(1) * channels` |
+## Source-Token Events
+
+The runtime represents billable work as typed events:
+
+| Event kind | Runtime source |
+|------------|----------------|
+| `SourceStep` | Structural Rholang reductions such as send, receive, `new`, and `match` |
+| `Substitution` | De Bruijn substitution over normalized `Par` terms |
+| `Primitive(name)` | Expression operators, method calls, collection operations, and variable lookup |
+
+`MeteredMachine` is the reducer-facing entry point. It builds billable frames,
+drains them in canonical `(source_path, redex_id, local_index)` order, then asks
+`RuntimeBudget` to reserve the weighted source-token event with one atomic compare
+and swap. This makes the metering path stack-safe and lets parallel Rholang
+branches execute concurrently while racing only on the shared budget counter.
+
+Normal evaluation records only `SourceStep`, `Substitution`, or `Primitive`
+events. Legacy `cost.charge(...)` calls are not part of the user-deploy path.
 
 ## Equality Cost
 
@@ -126,7 +147,7 @@ Equality is bounded by the smaller operand since the comparison can short-circui
 1. **Avoid large BigInt multiplication** -- cost is quadratic: `a_len * b_len`
 2. **Use `fastUnsafeGet` for TreeHashMap** when you know the key exists -- avoids the existence check
 3. **Minimize string interpolation on large maps** -- cost is `str_len * map_size`
-4. **Prefer peek (`<<-`) over consume+resend** for read-only access -- saves storage costs
+4. **Prefer peek (`<<-`) over consume+resend** for read-only access -- avoids extra continuation work
 5. **Keep deploys focused** -- unused phlogiston is refunded, but overly broad deploys waste resources
 6. **Use smaller phlo limits** when testing -- start with 90,000 and increase as needed
 

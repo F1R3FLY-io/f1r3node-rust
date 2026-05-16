@@ -39,6 +39,7 @@ use super::rspace_interface::{
 };
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -222,10 +223,13 @@ where
 
     async fn consume_result(
         &self,
-        _channel: Vec<C>,
-        _pattern: Vec<P>,
+        channel: Vec<C>,
+        pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        panic!("\nERROR: RSpace consume_result should not be called here");
+        let consume_res = self
+            .consume(channel, pattern, K::default(), false, BTreeSet::new())
+            .await?;
+        Ok(unpack_option(&consume_res))
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
@@ -235,6 +239,24 @@ where
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_data(channel).len();
+        for index in (0..len).rev() {
+            self.get_store().remove_datum(channel, index as i32)?;
+        }
+        Ok(())
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_continuations(&channels).len();
+        for index in (0..len).rev() {
+            let _ = self
+                .get_store()
+                .remove_continuation(&channels, index as i32);
+        }
+        Ok(())
+    }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await

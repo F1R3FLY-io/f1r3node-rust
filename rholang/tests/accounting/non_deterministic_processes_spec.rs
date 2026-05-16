@@ -361,14 +361,27 @@ async fn replay_gpt4_produces_consistent_costs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_completion(&"a".repeat(1_000_000)),
-        None,
+    let term = r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#;
+    let completion = "a".repeat(1_000_000);
+    let full_cost_services =
+        create_test_external_services(OpenAIMockConfig::single_completion(&completion), None);
+
+    let (full_cost_play, _) = evaluate_and_replay(
+        term,
+        Cost::create(i64::MAX, "full-cost probe".to_string()),
+        full_cost_services,
+    )
+    .await;
+    assert!(
+        full_cost_play.cost.value > 1,
+        "GPT4 mock term should consume tokens before it can exhaust a smaller budget"
     );
 
+    let external_services =
+        create_test_external_services(OpenAIMockConfig::single_completion(&completion), None);
     let (play, replay) = evaluate_and_replay(
-        r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
-        Cost::create(1000, "test".to_string()),
+        term,
+        Cost::create(full_cost_play.cost.value - 1, "test".to_string()),
         external_services,
     )
     .await;

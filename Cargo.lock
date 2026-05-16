@@ -4257,6 +4257,7 @@ dependencies = [
  "itertools 0.14.0",
  "k256",
  "lazy_static",
+ "loom 0.7.2",
  "metrics 0.24.3",
  "models",
  "num-bigint",

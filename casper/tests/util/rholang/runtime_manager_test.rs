@@ -24,7 +24,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
-use rholang::rust::interpreter::accounting::costs::{self, Cost};
+use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -363,6 +363,60 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let user_pk = construct_deploy::DEFAULT_PUB.clone();
+            let state_hash = compare_successful_system_deploys(
+                &mut runtime_manager,
+                &genesis_context,
+                &genesis_block.body.state.post_state_hash,
+                &mut PreChargeDeploy {
+                    charge_amount: 100,
+                    pk: user_pk,
+                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                },
+                &mut PreChargeDeploy {
+                    charge_amount: 100,
+                    pk: construct_deploy::DEFAULT_PUB.clone(),
+                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                },
+                |_| true,
+            )
+            .await
+            .unwrap();
+
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 0,
+                    sender: genesis_context.validator_pks()[0].clone(),
+                    seq_num: 0,
+                })
+                .await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+            let result = runtime_ops
+                .play_system_deploy(&state_hash, &mut RefundDeploy {
+                    refund_amount: 101,
+                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                })
+                .await
+                .unwrap();
+
+            match result {
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
+                } => assert!(error_msg.contains("Refund exceeds initial deploy payment")),
+                _ => panic!("over-refund must fail as a system deploy user error"),
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn close_block_should_make_epoch_change_and_reward_validator() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
@@ -469,11 +523,7 @@ async fn compute_state_should_capture_rholang_errors() {
     .unwrap();
 }
 
-// TODO: Flaky — GasRefundFailure("Insufficient funds") on some runs.
-// The deployer vault balance becomes insufficient for the second block's
-// refund when scheduling produces a higher deploy cost in block 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore]
 async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
@@ -641,7 +691,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
+async fn compute_state_should_capture_rholang_parsing_errors_without_token_charge() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let bad_rholang =
@@ -665,7 +715,7 @@ async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_pars
             .await;
 
             assert!(result.1.is_failed == true);
-            assert!(result.1.cost.cost == costs::parsing_cost(bad_rholang).value as u64);
+            assert_eq!(result.1.cost.cost, 0);
         },
     )
     .await
@@ -673,7 +723,7 @@ async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_pars
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_charge_for_parsing_and_execution() {
+async fn compute_state_should_charge_for_execution_tokens() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let correct_rholang =
@@ -697,8 +747,6 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             let phlos_left = runtime.cost.get();
             let reduction_cost = inital_phlo - phlos_left;
 
-            let parsing_cost = costs::parsing_cost(correct_rholang);
-
             let result = compute_state(
                 &mut runtime_manager,
                 &genesis_context,
@@ -707,7 +755,7 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             )
             .await;
 
-            assert!(result.1.cost.cost == (reduction_cost + parsing_cost).value as u64);
+            assert!(result.1.cost.cost == reduction_cost.value as u64);
         },
     )
     .await
@@ -1280,8 +1328,11 @@ async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cos
             initial_cost,
             replay_cost,
         })) => {
-            assert_eq!(initial_cost, 322);
-            assert_eq!(replay_cost, 323);
+            // The test corrupts the recorded deploy cost by one token. Exact
+            // totals belong to the reducer's source-token schedule, while the
+            // replay contract here is that the mismatch is detected exactly.
+            assert!(initial_cost > 0);
+            assert_eq!(replay_cost, initial_cost + 1);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }
@@ -1296,8 +1347,10 @@ async fn replaycomputestate_should_not_catch_discrepancies_in_initial_and_replay
             initial_cost,
             replay_cost,
         })) => {
-            assert_eq!(initial_cost, 9999);
-            assert_eq!(replay_cost, 10000);
+            // User execution errors are rollback-safe, but replay must still
+            // reject a processed deploy whose charged token count was forged.
+            assert!(initial_cost > 0);
+            assert_eq!(replay_cost, initial_cost + 1);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }

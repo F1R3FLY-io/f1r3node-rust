@@ -6,6 +6,7 @@ use std::time::Duration;
 use casper::rust::engine::approve_block_protocol::{
     ApproveBlockProtocolFactory, ApproveBlockProtocolImpl,
 };
+use casper::rust::metrics_constants::{APPROVE_BLOCK_METRICS_SOURCE, GENESIS_METRIC};
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::rp::rp_conf::ClearConnectionsConf;
@@ -16,6 +17,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use metrics_util::debugging::DebuggingRecorder;
+use metrics_util::MetricKind;
 use models::casper::Signature as ProtoSignature;
 use models::rust::casper::protocol::casper_message::{ApprovedBlockCandidate, BlockApproval};
 use prost::{bytes, Message};
@@ -161,18 +163,36 @@ fn setup_metrics_recorder() -> metrics_util::debugging::Snapshotter {
 }
 
 fn get_genesis_counter(snapshotter: &metrics_util::debugging::Snapshotter) -> u64 {
+    // These tests assert exact deltas on the process-global `genesis` approval counter.
+    // That is intentionally narrower than the behavior assertions below: `cargo test
+    // -p casper --test mod` runs all tests in this integration-test binary in one process,
+    // so another concurrently running approval-flow test can increment the same counter
+    // between this test's baseline and final snapshot. Run these exact-delta checks with
+    // nextest, which executes each test in its own process and gives each test an isolated
+    // global metrics recorder.
+    //
+    // TODO: Verify whether this global delta statistic is still operationally useful. If it
+    // is not, remove or replace it with fixture-local approval events/signature counts.
     let snapshot = snapshotter.snapshot();
-    let metrics_map = snapshot.into_hashmap();
+    snapshot
+        .into_vec()
+        .into_iter()
+        .find_map(|(composite_key, _, _, value)| {
+            let key = composite_key.key();
+            let is_approval_genesis_counter = composite_key.kind() == MetricKind::Counter
+                && key.name() == GENESIS_METRIC
+                && key.labels().any(|label| {
+                    label.key() == "source" && label.value() == APPROVE_BLOCK_METRICS_SOURCE
+                });
 
-    for (key, (_, _, value)) in metrics_map.iter() {
-        let key_str = format!("{:?}", key);
-        if key_str.contains("genesis") {
-            if let metrics_util::debugging::DebugValue::Counter(count) = value {
-                return *count;
+            match (is_approval_genesis_counter, value) {
+                // The recorder is process-global, so match the exact approval-protocol counter
+                // rather than any metric whose debug representation happens to contain "genesis".
+                (true, metrics_util::debugging::DebugValue::Counter(count)) => Some(count),
+                _ => None,
             }
-        }
-    }
-    0
+        })
+        .unwrap_or(0)
 }
 
 fn get_baseline_genesis_counter(snapshotter: &metrics_util::debugging::Snapshotter) -> u64 {

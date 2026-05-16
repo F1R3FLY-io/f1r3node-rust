@@ -1833,8 +1833,12 @@ async fn replay_should_match_in_case_of_user_execution_error() {
     );
 
     let deploy_cost = b.body.deploys[0].cost.cost;
-    assert_eq!(
-        deploy_cost, 300000,
-        "Deploy should consume all phlos (300000)"
+    assert!(
+        b.body.deploys[0].is_failed,
+        "Deploy should fail with user error"
+    );
+    assert!(
+        deploy_cost > 0 && deploy_cost < 300000,
+        "User execution errors should report consumed tokens without exhausting the full budget"
     );
 }

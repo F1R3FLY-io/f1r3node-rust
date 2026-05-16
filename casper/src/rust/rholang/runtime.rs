@@ -407,6 +407,10 @@ impl RuntimeOps {
         let deploy_sig_hex = hex::encode(&deploy.sig);
         let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
         let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
+        let total_phlo_charge = deploy
+            .data
+            .checked_total_phlo_charge()
+            .map_err(CasperError::RuntimeError)?;
 
         // Evaluates Pre-charge system deploy
         let pre_charge_result = {
@@ -415,12 +419,12 @@ impl RuntimeOps {
             tracing::debug!(
                 "PreCharging {} for {}",
                 deploy_pk_hex.as_str(),
-                deploy.data.total_phlo_charge()
+                total_phlo_charge
             );
             log_mem_step("before_precharge_internal");
             let (event_log, result, mergeable_channels) = self
                 .play_system_deploy_internal(&mut PreChargeDeploy {
-                    charge_amount: deploy.data.total_phlo_charge(),
+                    charge_amount: total_phlo_charge,
                     pk: deploy.pk.clone(),
                     rand: pre_charge_rand,
                 })
@@ -448,6 +452,7 @@ impl RuntimeOps {
                     }
                 };
                 log_mem_step("after_user_deploy");
+                let refund_amount = pd.try_refund_amount().map_err(CasperError::RuntimeError)?;
 
                 // Evaluates Refund system deploy
                 let refund_result = {
@@ -456,11 +461,11 @@ impl RuntimeOps {
                     tracing::debug!(
                         "Refunding {} with {}",
                         deploy_pk_hex.as_str(),
-                        pd.refund_amount()
+                        refund_amount
                     );
                     let (event_log, result, mergeable_channels) = self
                         .play_system_deploy_internal(&mut RefundDeploy {
-                            refund_amount: pd.refund_amount(),
+                            refund_amount,
                             rand: refund_rand,
                         })
                         .await?;
@@ -488,7 +493,6 @@ impl RuntimeOps {
                     Either::Left(error) => {
                         // If Pre-charge succeeds and Refund fails, it's a platform error.
                         // Include deploy identifiers so operators can quickly isolate toxic deploys.
-                        let refund_amount = pd.refund_amount();
                         let failure_context = format!(
                             "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
                             error.error_message,
@@ -999,7 +1003,7 @@ impl RuntimeOps {
             })),
         }]);
 
-        let (data, _cost) = self
+        let (data, _token_cost) = self
             .capture_results_with_name(start, deploy, &return_name)
             .await?;
         Ok(data)
@@ -1049,6 +1053,8 @@ impl RuntimeOps {
     ) -> Result<EvaluateResult, CasperError> {
         let deploy_data = SystemProcessDeployData::from_deploy(deploy);
         self.runtime.set_deploy_data(deploy_data).await;
+        self.runtime.cost.set_unmetered(false);
+        self.runtime.cost.set_deploy_signature(&deploy.sig);
 
         let result = self
             .runtime
@@ -1112,6 +1118,7 @@ impl RuntimeOps {
         let rand = system_deploy.rand().clone();
         log_mem_step("after_clone_rand");
         log_mem_step("before_runtime_evaluate");
+        self.runtime.cost.set_unmetered(true);
         let result = self
             .runtime
             .evaluate(
@@ -1121,7 +1128,9 @@ impl RuntimeOps {
                 // TODO: Review this clone and whether to pass mut ref down into evaluate
                 rand,
             )
-            .await?;
+            .await;
+        self.runtime.cost.set_unmetered(false);
+        let result = result?;
         log_mem_step("after_runtime_evaluate");
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(eval_start.elapsed().as_secs_f64());

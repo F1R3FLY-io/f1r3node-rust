@@ -87,7 +87,7 @@ async fn multi_parent_casper_should_fail_when_deploying_with_insufficient_phlos(
     let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
 
     let deploy_data = construct_deploy::source_deploy_now_full(
-        "Nil".to_string(),
+        "@0!(0)".to_string(),
         Some(1),
         None,
         None,

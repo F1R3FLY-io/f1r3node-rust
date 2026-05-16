@@ -67,6 +67,10 @@ pub trait ISpace<
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>>;
 
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError>;
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError>;
+
     /** Clears the store.  Does not affect the history trie.
      */
     async fn clear(&self) -> Result<(), RSpaceError>;
