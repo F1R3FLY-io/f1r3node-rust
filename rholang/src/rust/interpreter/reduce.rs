@@ -2101,10 +2101,11 @@ impl DebruijnInterpreter {
                                     })
                                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                                self.metering.reserve_primitive(interpolate_cost(
-                                    lhs.len() as i64,
-                                    rhs.length() as i64,
-                                ))?;
+                                self.metering
+                                    .reserve_incremental_primitive(interpolate_cost(
+                                        lhs.len() as i64,
+                                        rhs.length() as i64,
+                                    ))?;
 
                                 Ok(Expr {
                                     expr_instance: Some(ExprInstance::GString(interpolate(
@@ -2141,10 +2142,11 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
-                            self.metering.reserve_primitive(string_append_cost(
-                                lhs.len() as i64,
-                                rhs.len() as i64,
-                            ))?;
+                            self.metering
+                                .reserve_incremental_primitive(string_append_cost(
+                                    lhs.len() as i64,
+                                    rhs.len() as i64,
+                                ))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GString(lhs + &rhs)),
                             })
@@ -2152,7 +2154,9 @@ impl DebruijnInterpreter {
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
                             self.metering
-                                .reserve_primitive(byte_array_append_cost(lhs.clone()))?;
+                                .reserve_incremental_primitive(byte_array_append_cost(
+                                    lhs.clone(),
+                                ))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs).collect(),
@@ -2162,7 +2166,7 @@ impl DebruijnInterpreter {
 
                         (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
                             self.metering
-                                .reserve_primitive(list_append_cost(lhs.clone().ps))?;
+                                .reserve_incremental_primitive(list_append_cost(lhs.clone().ps))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
                                     ps: lhs.ps.into_iter().chain(rhs.ps).collect(),
@@ -2537,7 +2541,7 @@ impl DebruijnInterpreter {
 
                 self.outer
                     .metering
-                    .reserve_primitive(to_byte_array_cost(&expr_subst))?;
+                    .reserve_incremental_primitive(to_byte_array_cost(&expr_subst))?;
                 let ba = self.serialize(&expr_subst)?;
 
                 Ok(Par::default().with_exprs(vec![Expr {
@@ -2573,7 +2577,7 @@ impl DebruijnInterpreter {
                             ExprInstance::GString(encoded) => {
                                 self.outer
                                     .metering
-                                    .reserve_primitive(hex_to_bytes_cost(&encoded))?;
+                                    .reserve_incremental_primitive(hex_to_bytes_cost(&encoded))?;
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
                                         StringOps::unsafe_decode_hex(encoded),
@@ -2622,7 +2626,7 @@ impl DebruijnInterpreter {
                             ExprInstance::GByteArray(bytes) => {
                                 self.outer
                                     .metering
-                                    .reserve_primitive(bytes_to_hex_cost(&bytes))?;
+                                    .reserve_incremental_primitive(bytes_to_hex_cost(&bytes))?;
 
                                 let str =
                                     bytes.iter().map(|byte| format!("{:02x}", byte)).collect();
@@ -2669,9 +2673,9 @@ impl DebruijnInterpreter {
                     match single_expr(&p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
                             ExprInstance::GString(utf8_string) => {
-                                self.outer
-                                    .metering
-                                    .reserve_primitive(hex_to_bytes_cost(&utf8_string))?;
+                                self.outer.metering.reserve_incremental_primitive(
+                                    hex_to_bytes_cost(&utf8_string),
+                                )?;
 
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::GByteArray(
@@ -2717,7 +2721,7 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(other_ps.length() as i64))?;
+                            .reserve_incremental_primitive(union_cost(other_ps.length() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::ESetBody(
@@ -2744,7 +2748,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(other_map.kvs.len() as i64))?;
+                            .reserve_incremental_primitive(
+                                union_cost(other_map.kvs.len() as i64),
+                            )?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EMapBody(
@@ -2772,7 +2778,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                other_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.join(&other_rmap.map);
 
                         Ok(Expr {
@@ -2842,7 +2850,7 @@ impl DebruijnInterpreter {
                         // removes one element from the collection.
                         self.outer
                             .metering
-                            .reserve_primitive(diff_cost(other_ps.length() as i64))?;
+                            .reserve_incremental_primitive(diff_cost(other_ps.length() as i64))?;
 
                         let base_sorted_pars_set: HashSet<Par> =
                             base_ps.sorted_pars.into_iter().collect();
@@ -2871,7 +2879,7 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(diff_cost(other_ps.length() as i64))?;
+                            .reserve_incremental_primitive(diff_cost(other_ps.length() as i64))?;
 
                         let new_par_map = ParMap::create_from_sorted_par_map(
                             base_ps.remove_multiple(other_ps.keys()),
@@ -2895,7 +2903,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(diff_cost(other_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(diff_cost(
+                                other_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.subtract(&other_rmap.map);
 
                         Ok(Expr {
@@ -2969,7 +2979,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                other_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.meet(&other_rmap.map);
 
                         Ok(Expr {
@@ -3044,7 +3056,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(other_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                other_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.restrict(&other_rmap.map);
 
                         Ok(Expr {
@@ -3110,7 +3124,9 @@ impl DebruijnInterpreter {
                                 n
                             )));
                         }
-                        self.outer.metering.reserve_primitive(union_cost(n))?;
+                        self.outer
+                            .metering
+                            .reserve_incremental_primitive(union_cost(n))?;
 
                         // For dropHead, we need to return a new EPathMap with modified path elements
                         // Instead of using PathMap, directly construct the result elements
@@ -3207,7 +3223,9 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EPathmapBody(base_pathmap) => {
                         // For run method, we ignore the other parameter and return self
-                        self.outer.metering.reserve_primitive(union_cost(1))?;
+                        self.outer
+                            .metering
+                            .reserve_incremental_primitive(union_cost(1))?;
 
                         // Simply return the base PathMap unchanged
                         Ok(Expr {
@@ -3294,7 +3312,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.create_read_zipper(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3364,7 +3384,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.create_read_zipper_at(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3417,7 +3439,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.create_write_zipper(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3484,7 +3508,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.create_write_zipper_at(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -3543,7 +3569,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.descend_to(&base_expr, &path)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4067,7 +4095,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.set_subtrie(&base_expr, &source_par)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4356,7 +4386,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_expr = self.outer.eval_single_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.graft(&base_expr, &source_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4398,7 +4430,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                source_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4427,7 +4461,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                source_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4457,7 +4493,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                source_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4484,7 +4522,9 @@ impl DebruijnInterpreter {
 
                         self.outer
                             .metering
-                            .reserve_primitive(union_cost(source_pathmap.ps.len() as i64))?;
+                            .reserve_incremental_primitive(union_cost(
+                                source_pathmap.ps.len() as i64
+                            ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
                         Ok(Expr {
@@ -4522,7 +4562,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let source_expr = self.outer.eval_single_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.join_into(&base_expr, &source_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4616,7 +4658,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.at_path(&base_expr, &path_par)
             }
         }
@@ -4686,7 +4730,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.path_exists(&base_expr)?;
 
                 // Return as GBool
@@ -4764,7 +4810,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let path_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.create_path(&base_expr, &path_par)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4902,7 +4950,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let result = self.reset(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
             }
@@ -4956,7 +5006,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.ascend_one(&base_expr)
             }
         }
@@ -5032,7 +5084,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let steps_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.ascend(&base_expr, &steps_par)
             }
         }
@@ -5129,7 +5183,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 let count = self.child_count(&base_expr)?;
 
                 Ok(Par::default().with_exprs(vec![Expr {
@@ -5218,7 +5274,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.descend_first(&base_expr)
             }
         }
@@ -5326,7 +5384,9 @@ impl DebruijnInterpreter {
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
                 let idx_par = self.outer.eval_expr(&args[0], env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.descend_indexed(&base_expr, &idx_par)
             }
         }
@@ -5425,7 +5485,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.to_next_sibling(&base_expr)
             }
         }
@@ -5524,7 +5586,9 @@ impl DebruijnInterpreter {
                     });
                 }
                 let base_expr = self.outer.eval_single_expr(&p, env)?;
-                self.outer.metering.reserve_primitive(union_cost(1))?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
                 self.to_prev_sibling(&base_expr)
             }
         }
@@ -6040,7 +6104,7 @@ impl DebruijnInterpreter {
                     let result = self.size(base_expr)?;
                     self.outer
                         .metering
-                        .reserve_primitive(size_method_cost(result.0))?;
+                        .reserve_incremental_primitive(size_method_cost(result.0))?;
                     Ok(result.1)
                 }
             }
@@ -6185,12 +6249,12 @@ impl DebruijnInterpreter {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let from_arg = self.outer.eval_to_i64(&args[0], env)?;
                     let to_arg = self.outer.eval_to_i64(&args[1], env)?;
-                    self.outer.metering.reserve_primitive(slice_cost(to_arg))?;
-                    let result = self.slice(
-                        base_expr,
-                        if from_arg > 0 { from_arg as usize } else { 0 },
-                        if to_arg > 0 { to_arg as usize } else { 0 },
-                    )?;
+                    let from = from_arg.max(0) as usize;
+                    let until = to_arg.max(0) as usize;
+                    self.outer
+                        .metering
+                        .reserve_incremental_primitive(slice_cost(until as i64))?;
+                    let result = self.slice(base_expr, from, until)?;
                     Ok(result)
                 }
             }
@@ -6247,8 +6311,11 @@ impl DebruijnInterpreter {
                 } else {
                     let base_expr = self.outer.eval_single_expr(&p, env)?;
                     let n_arg = self.outer.eval_to_i64(&args[0], env)?;
-                    self.outer.metering.reserve_primitive(take_cost(n_arg))?;
-                    let result = self.take(base_expr, n_arg as usize)?;
+                    let n = n_arg.max(0) as usize;
+                    self.outer
+                        .metering
+                        .reserve_incremental_primitive(take_cost(n as i64))?;
+                    let result = self.take(base_expr, n)?;
                     Ok(result)
                 }
             }
@@ -6276,7 +6343,7 @@ impl DebruijnInterpreter {
                             let ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
                             self.outer
                                 .metering
-                                .reserve_primitive(to_list_cost(ps.length() as i64))?;
+                                .reserve_incremental_primitive(to_list_cost(ps.length() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6292,7 +6359,7 @@ impl DebruijnInterpreter {
                             let ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
                             self.outer
                                 .metering
-                                .reserve_primitive(to_list_cost(ps.length() as i64))?;
+                                .reserve_incremental_primitive(to_list_cost(ps.length() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
@@ -6322,7 +6389,7 @@ impl DebruijnInterpreter {
                             let ps = etuple.ps;
                             self.outer
                                 .metering
-                                .reserve_primitive(to_list_cost(ps.len() as i64))?;
+                                .reserve_incremental_primitive(to_list_cost(ps.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {

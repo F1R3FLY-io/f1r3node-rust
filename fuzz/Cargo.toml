@@ -25,6 +25,7 @@ imbl = "7"
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 models = { path = "../models" }
 prost = "0.14"
+rholang = { path = "../rholang" }
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
 
@@ -61,5 +62,59 @@ doc = false
 [[bin]]
 name = "slash_lifecycle_trace"
 path = "fuzz_targets/slash_lifecycle_trace.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "runtime_budget_admission"
+path = "fuzz_targets/runtime_budget_admission.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cost_trace_roundtrip"
+path = "fuzz_targets/cost_trace_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "processed_deploy_settlement"
+path = "fuzz_targets/processed_deploy_settlement.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "replay_payload_cost_fields"
+path = "fuzz_targets/replay_payload_cost_fields.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cost_accounting_lifecycle_trace"
+path = "fuzz_targets/cost_accounting_lifecycle_trace.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cost_accounting_stateful_campaign"
+path = "fuzz_targets/cost_accounting_stateful_campaign.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "replay_settlement_differential"
+path = "fuzz_targets/replay_settlement_differential.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "source_descriptor_resource_campaign"
+path = "fuzz_targets/source_descriptor_resource_campaign.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "block_replay_auth_mutation"
+path = "fuzz_targets/block_replay_auth_mutation.rs"
 test = false
 doc = false

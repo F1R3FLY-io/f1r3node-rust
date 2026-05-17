@@ -552,6 +552,8 @@ pub struct ProcessedDeploy {
     pub deploy_log: Vec<Event>,
     pub is_failed: bool,
     pub system_deploy_error: Option<String>,
+    pub cost_trace_digest: ByteString,
+    pub cost_trace_event_count: u64,
 }
 
 impl ProcessedDeploy {
@@ -577,6 +579,8 @@ impl ProcessedDeploy {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
         }
     }
 
@@ -619,6 +623,8 @@ impl ProcessedDeploy {
                     Some(proto.system_deploy_error)
                 }
             },
+            cost_trace_digest: proto.cost_trace_digest,
+            cost_trace_event_count: proto.cost_trace_event_count,
         })
     }
 
@@ -629,6 +635,8 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            cost_trace_digest: self.cost_trace_digest,
+            cost_trace_event_count: self.cost_trace_event_count,
         }
     }
 }
@@ -820,6 +828,26 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
+    fn checked_total_phlo_charge_value(phlo_limit: i64, phlo_price: i64) -> Option<i64> {
+        if phlo_limit < 0 || phlo_price < 0 {
+            return None;
+        }
+        phlo_limit.checked_mul(phlo_price)
+    }
+
+    fn refund_amount_for_token_cost_value(
+        phlo_limit: i64,
+        phlo_price: i64,
+        token_cost: i64,
+    ) -> Option<i64> {
+        if phlo_limit < 0 || phlo_price < 0 || token_cost < 0 {
+            return None;
+        }
+        Self::checked_total_phlo_charge_value(phlo_limit, phlo_price)?;
+        let refundable_tokens = phlo_limit.saturating_sub(token_cost).max(0);
+        refundable_tokens.checked_mul(phlo_price)
+    }
+
     pub fn validate_phlo(&self, min_phlo_price: i64) -> Result<(), String> {
         if self.phlo_limit < 0 {
             return Err(format!(
@@ -855,7 +883,7 @@ impl DeployData {
                 self.phlo_price
             ));
         }
-        self.phlo_limit.checked_mul(self.phlo_price).ok_or_else(|| {
+        Self::checked_total_phlo_charge_value(self.phlo_limit, self.phlo_price).ok_or_else(|| {
             format!(
                 "Phlo charge overflows i64: limit={}, price={}",
                 self.phlo_limit, self.phlo_price
@@ -874,8 +902,7 @@ impl DeployData {
         }
         self.checked_total_phlo_charge()?;
         let refundable_tokens = self.phlo_limit.saturating_sub(token_cost).max(0);
-        refundable_tokens
-            .checked_mul(self.phlo_price)
+        Self::refund_amount_for_token_cost_value(self.phlo_limit, self.phlo_price, token_cost)
             .ok_or_else(|| {
                 format!(
                     "Deploy refund overflows i64: refundable_tokens={}, price={}",
@@ -1301,11 +1328,66 @@ impl StoreItemsMessage {
     }
 }
 
+#[cfg(kani)]
+mod kani_cost_accounting {
+    use super::*;
+
+    #[kani::proof]
+    fn checked_total_phlo_charge_rejects_negative_inputs() {
+        let phlo_limit: i64 = kani::any();
+        let phlo_price: i64 = kani::any();
+        kani::assume(phlo_limit < 0 || phlo_price < 0);
+
+        let result = DeployData::checked_total_phlo_charge_value(phlo_limit, phlo_price);
+
+        assert!(result.is_none());
+    }
+
+    #[kani::proof]
+    fn checked_total_phlo_charge_matches_product_on_small_valid_domain() {
+        let phlo_limit_raw: u8 = kani::any();
+        let phlo_price_raw: u8 = kani::any();
+        let phlo_limit = i64::from(phlo_limit_raw);
+        let phlo_price = i64::from(phlo_price_raw);
+
+        let result = DeployData::checked_total_phlo_charge_value(phlo_limit, phlo_price);
+
+        assert_eq!(result.unwrap(), phlo_limit * phlo_price);
+    }
+
+    #[kani::proof]
+    fn refund_amount_is_bounded_on_small_valid_domain() {
+        let phlo_limit_raw: u8 = kani::any();
+        let phlo_price_raw: u8 = kani::any();
+        let token_cost_raw: u8 = kani::any();
+        kani::assume(phlo_limit_raw <= 15);
+        kani::assume(phlo_price_raw <= 15);
+        kani::assume(token_cost_raw <= 20);
+        let phlo_limit = i64::from(phlo_limit_raw);
+        let phlo_price = i64::from(phlo_price_raw);
+        let token_cost = i64::from(token_cost_raw);
+
+        let refund =
+            DeployData::refund_amount_for_token_cost_value(phlo_limit, phlo_price, token_cost)
+                .expect("bounded valid domain");
+        let escrow = phlo_limit * phlo_price;
+
+        assert!(refund >= 0);
+        assert!(refund <= escrow);
+        if token_cost <= phlo_limit {
+            assert_eq!(refund + token_cost * phlo_price, escrow);
+        } else {
+            assert_eq!(refund, 0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -1346,6 +1428,8 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
         };
         assert_eq!(partial.try_refund_amount(), Ok(8));
 
@@ -1355,6 +1439,8 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: true,
             system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
         };
         assert_eq!(exhausted.try_refund_amount(), Ok(0));
 
@@ -1364,6 +1450,8 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
         };
         assert!(negative_price.try_refund_amount().is_err());
 
@@ -1373,7 +1461,85 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
         };
         assert!(oversized_cost.try_refund_amount().is_err());
+    }
+
+    #[test]
+    fn settlement_edge_cases_are_total_and_deterministic() {
+        assert_eq!(deploy_data(10, 0).checked_total_phlo_charge(), Ok(0));
+        assert_eq!(deploy_data(10, 0).refund_amount_for_token_cost(5), Ok(0));
+        assert_eq!(deploy_data(0, 10).checked_total_phlo_charge(), Ok(0));
+        assert_eq!(deploy_data(0, 10).refund_amount_for_token_cost(0), Ok(0));
+        assert_eq!(deploy_data(5, 2).refund_amount_for_token_cost(5), Ok(0));
+        assert_eq!(deploy_data(5, 2).refund_amount_for_token_cost(8), Ok(0));
+        assert!(deploy_data(5, 2).refund_amount_for_token_cost(-1).is_err());
+        assert_eq!(
+            deploy_data(i64::MAX, 1).checked_total_phlo_charge(),
+            Ok(i64::MAX)
+        );
+        assert_eq!(
+            deploy_data(i64::MAX, 1).refund_amount_for_token_cost(i64::MAX),
+            Ok(0)
+        );
+        assert!(deploy_data(i64::MAX, 2)
+            .checked_total_phlo_charge()
+            .is_err());
+    }
+
+    #[test]
+    fn processed_deploy_cost_trace_fields_roundtrip_through_proto() {
+        let processed = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(5, 2)),
+            cost: PCost { cost: 3 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cost_trace_digest: vec![9; 32].into(),
+            cost_trace_event_count: 4,
+        };
+
+        let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
+
+        assert_eq!(decoded.cost_trace_digest, processed.cost_trace_digest);
+        assert_eq!(
+            decoded.cost_trace_event_count,
+            processed.cost_trace_event_count
+        );
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn refund_amount_property_is_bounded_by_valid_escrow(
+            phlo_limit in 0i64..1_000_000,
+            phlo_price in 0i64..1_000_000,
+            token_cost in 0u64..2_000_000,
+        ) {
+            let processed = ProcessedDeploy {
+                deploy: signed_deploy(deploy_data(phlo_limit, phlo_price)),
+                cost: PCost { cost: token_cost },
+                deploy_log: Vec::new(),
+                is_failed: false,
+                system_deploy_error: None,
+                cost_trace_digest: ByteString::new(),
+                cost_trace_event_count: 0,
+            };
+
+            let refund = processed.try_refund_amount().unwrap();
+            let escrow = phlo_limit.checked_mul(phlo_price).unwrap();
+            prop_assert!(refund >= 0);
+            prop_assert!(refund <= escrow);
+
+            let token_cost_i64 = i64::try_from(token_cost).unwrap();
+            if token_cost_i64 <= phlo_limit {
+                prop_assert_eq!(refund + token_cost_i64 * phlo_price, escrow);
+            } else {
+                prop_assert_eq!(refund, 0);
+            }
+        }
     }
 }

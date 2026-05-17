@@ -65,6 +65,21 @@ impl MeteredMachine {
         self.reserve_cost(BillableKind::Primitive(operation), amount)
     }
 
+    pub fn reserve_incremental_primitive(&self, amount: Cost) -> Result<(), InterpreterError> {
+        if amount.value < 0 {
+            return Err(InterpreterError::BugFoundError(format!(
+                "Incremental billable primitive cost must be non-negative for {}",
+                amount.operation
+            )));
+        }
+
+        if amount.value == 0 {
+            return Ok(());
+        }
+
+        self.reserve_primitive(amount)
+    }
+
     pub fn reserve_substitution(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Substitution, amount)
     }
@@ -76,6 +91,13 @@ impl MeteredMachine {
         // canonical key order, and the budget reservation is a single atomic CAS.
         // Keeping live queues local preserves error ownership when independent
         // evaluator branches race only on token reservation.
+        if amount.value <= 0 {
+            return Err(InterpreterError::BugFoundError(format!(
+                "Billable metering cost must be positive for {}",
+                amount.operation
+            )));
+        }
+
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
         let source_path = self.event_source_path(local_index);
         let event = BillableTokenEvent {
@@ -84,7 +106,7 @@ impl MeteredMachine {
             redex_id: RedexId(local_index),
             local_index,
             kind,
-            weight: amount.value.max(0) as u64,
+            weight: amount.value as u64,
         };
 
         self.drain_frames(vec![MeteredFrame::BillableCost { event, amount }])
@@ -211,13 +233,39 @@ mod tests {
         machine.enqueue_billable(SourcePath(vec![0]), BillableKind::SourceStep, 2);
 
         assert!(machine
-            .reserve_source_step(Cost::create(0, "live branch"))
+            .reserve_source_step(Cost::create(1, "live branch"))
             .is_ok());
         assert_eq!(
             machine.drain_canonical(),
             Err(InterpreterError::OutOfPhlogistonsError)
         );
         assert_eq!(budget.total_cost().value, 1);
+    }
+
+    #[test]
+    fn zero_incremental_primitive_work_is_non_billable() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+
+        machine
+            .reserve_incremental_primitive(Cost::create(0, "empty append"))
+            .unwrap();
+
+        assert!(budget.get_event_log().is_empty());
+        assert_eq!(budget.total_cost().value, 0);
+        assert_eq!(budget.cost_trace_event_count(), 0);
+    }
+
+    #[test]
+    fn negative_incremental_primitive_work_is_rejected() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget);
+
+        let err = machine
+            .reserve_incremental_primitive(Cost::create(-1, "invalid incremental work"))
+            .unwrap_err();
+
+        assert!(matches!(err, InterpreterError::BugFoundError(_)));
     }
 
     #[test]
@@ -256,5 +304,27 @@ mod tests {
             budget.last_oop_event().map(|event| event.source_path),
             Some(SourcePath(vec![2]))
         );
+    }
+
+    #[test]
+    fn nonbillable_frames_do_not_enter_cost_trace() {
+        let budget = RuntimeBudget::new(Cost::create(10, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+        let before = budget.cost_trace_digest();
+        let key = ContinuationKey {
+            deploy_id: [0; 32],
+            source_path: SourcePath(vec![0]),
+            redex_id: RedexId(0),
+        };
+
+        machine.enqueue_frame(MeteredFrame::InstallGate(key));
+        machine.drain_canonical().unwrap();
+        machine.drain_canonical().unwrap();
+        machine.drain_canonical().unwrap();
+
+        assert_eq!(budget.total_cost().value, 0);
+        assert_eq!(budget.remaining().value, 10);
+        assert_eq!(budget.cost_trace_event_count(), 0);
+        assert_eq!(budget.cost_trace_digest(), before);
     }
 }

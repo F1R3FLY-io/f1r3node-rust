@@ -52,6 +52,17 @@ impl Interpreter for InterpreterImpl {
         // Using tracing events for async context
         // Scala spans: "set-initial-cost", "build-normalized-term", "reduce-term"
         // Implemented as debug events since this is an async function
+        if initial_phlo.value < 0 {
+            return Ok(EvaluateResult {
+                cost: Cost::create(0, "invalid initial phlo"),
+                errors: vec![InterpreterError::IllegalArgumentError(format!(
+                    "Initial phlo must be non-negative, got {}",
+                    initial_phlo.value
+                ))],
+                mergeable: HashSet::new(),
+            });
+        }
+
         let evaluation_result: Result<EvaluateResult, InterpreterError> = {
             // Trace: build-normalized-term (matching Scala's Span[F].traceI("build-normalized-term"))
             let parsed = {

@@ -265,7 +265,7 @@ impl ReplayRuntimeOps {
             // Run the user deploy in a transaction
             let evaluate_start = Instant::now();
             let (_, successful) = self
-                .run_user_deploy(processed_deploy, mergeable_channels)
+                .run_user_deploy(processed_deploy, mergeable_channels, true)
                 .await?;
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(evaluate_start.elapsed().as_secs_f64());
@@ -321,7 +321,7 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashSet<Par>,
     ) -> Result<bool, CasperError> {
-        self.run_user_deploy(processed_deploy, mergeable_channels)
+        self.run_user_deploy(processed_deploy, mergeable_channels, false)
             .await
             .map(|(_, eval_successful)| eval_successful)
     }
@@ -330,6 +330,7 @@ impl ReplayRuntimeOps {
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashSet<Par>,
+        require_cost_trace: bool,
     ) -> Result<(EvaluateResult, bool), CasperError> {
         // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
         // so pre-charge context remains available for refund replay.
@@ -339,6 +340,7 @@ impl ReplayRuntimeOps {
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
+        let replay_cost_trace = self.runtime_ops.runtime.cost.cost_trace_digest();
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")
@@ -373,6 +375,35 @@ impl ReplayRuntimeOps {
                     user_eval_result.cost.value as u64,
                 ),
             ));
+        }
+
+        let expected_digest = processed_deploy.cost_trace_digest.to_vec();
+        let has_recorded_cost_trace =
+            !expected_digest.is_empty() || processed_deploy.cost_trace_event_count != 0;
+        if require_cost_trace && expected_digest.is_empty() {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_cost_trace_mismatch(
+                    expected_digest,
+                    replay_cost_trace.digest,
+                    processed_deploy.cost_trace_event_count,
+                    replay_cost_trace.event_count,
+                ),
+            ));
+        }
+
+        if require_cost_trace || has_recorded_cost_trace {
+            if expected_digest != replay_cost_trace.digest
+                || processed_deploy.cost_trace_event_count != replay_cost_trace.event_count
+            {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_cost_trace_mismatch(
+                        expected_digest,
+                        replay_cost_trace.digest,
+                        processed_deploy.cost_trace_event_count,
+                        replay_cost_trace.event_count,
+                    ),
+                ));
+            }
         }
 
         Ok((user_eval_result, eval_successful))

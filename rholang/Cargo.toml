@@ -7,6 +7,9 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [[bin]]
 name = "rholang-cli"
 path = "src/rholang_cli.rs"
@@ -68,3 +71,4 @@ cc = "1.0"
 
 [dev-dependencies]
 loom = "=0.7.2"
+proptest = "1.6.0"

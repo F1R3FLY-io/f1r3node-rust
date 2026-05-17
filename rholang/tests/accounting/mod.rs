@@ -1,2 +1,3 @@
 mod cost_accounting_spec;
+mod cost_accounting_frontier;
 mod non_deterministic_processes_spec;

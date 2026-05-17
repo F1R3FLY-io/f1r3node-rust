@@ -552,6 +552,7 @@ impl RuntimeOps {
         let eval_result = self.evaluate(&deploy).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
+        let cost_trace = self.runtime.cost.cost_trace_digest();
 
         let eval_succeeded = eval_result.errors.is_empty();
         let deploy_sig = deploy.sig.clone();
@@ -565,6 +566,8 @@ impl RuntimeOps {
                 .collect(),
             is_failed: !eval_succeeded,
             system_deploy_error: None,
+            cost_trace_digest: cost_trace.digest.into(),
+            cost_trace_event_count: cost_trace.event_count,
         };
 
         if !eval_succeeded {
@@ -1118,18 +1121,24 @@ impl RuntimeOps {
         let rand = system_deploy.rand().clone();
         log_mem_step("after_clone_rand");
         log_mem_step("before_runtime_evaluate");
-        self.runtime.cost.set_unmetered(true);
-        let result = self
-            .runtime
-            .evaluate(
-                S::source(),
-                Cost::unsafe_max(),
-                env,
-                // TODO: Review this clone and whether to pass mut ref down into evaluate
-                rand,
-            )
-            .await;
-        self.runtime.cost.set_unmetered(false);
+        let result = {
+            // System deploys perform protocol maintenance and settlement work
+            // outside user-runtime metering. The scoped guard is deliberately
+            // used here so panics, early returns, and async errors cannot leak
+            // unmetered mode into the next user deploy.
+            let _unmetered_scope = self.runtime.cost.enter_unmetered_scope();
+            self.runtime
+                .evaluate(
+                    S::source(),
+                    Cost::unsafe_max(),
+                    env,
+                    // `evaluate` owns the random seed state for this run, so the
+                    // cloned deploy seed is passed by value with the rest of the
+                    // immutable system-deploy inputs.
+                    rand,
+                )
+                .await
+        };
         let result = result?;
         log_mem_step("after_runtime_evaluate");
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)

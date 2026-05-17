@@ -62,14 +62,14 @@ impl Substitute {
         match self.substitute(term.clone(), depth, env) {
             Ok(subst_term) => {
                 self.metering.reserve_substitution(Cost::create(
-                    subst_term.encoded_len() as i64,
+                    (subst_term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
                 self.metering.reserve_substitution(Cost::create(
-                    term.encoded_len() as i64,
+                    (term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Err(th)
@@ -91,14 +91,14 @@ impl Substitute {
         match self.substitute_no_sort(term.clone(), depth, env) {
             Ok(subst_term) => {
                 self.metering.reserve_substitution(Cost::create(
-                    subst_term.encoded_len() as i64,
+                    (subst_term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Ok(subst_term)
             }
             Err(th) => {
                 self.metering.reserve_substitution(Cost::create(
-                    term.encoded_len() as i64,
+                    (term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Err(th)

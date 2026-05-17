@@ -16,6 +16,7 @@ use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use prost::Message;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
@@ -145,13 +146,29 @@ impl RuntimeManager {
             bytes.extend_from_slice(data);
         }
 
+        #[inline]
+        fn push_event_log(bytes: &mut Vec<u8>, event_log: &[Event]) {
+            bytes.extend_from_slice(&(event_log.len() as u64).to_le_bytes());
+            let mut encoded_events = event_log
+                .iter()
+                .map(|event| event.to_proto().encode_to_vec())
+                .collect::<Vec<_>>();
+            encoded_events.sort();
+            for encoded in encoded_events {
+                push_len_prefixed(bytes, &encoded);
+            }
+        }
+
         // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
         for pd in usr_processed {
             push_len_prefixed(&mut bytes, &pd.deploy.sig);
             bytes.extend_from_slice(&pd.cost.cost.to_le_bytes());
+            push_len_prefixed(&mut bytes, &pd.cost_trace_digest);
+            bytes.extend_from_slice(&pd.cost_trace_event_count.to_le_bytes());
             bytes.push(u8::from(pd.is_failed));
+            push_event_log(&mut bytes, &pd.deploy_log);
             match &pd.system_deploy_error {
                 Some(err) => {
                     bytes.push(1);
@@ -163,8 +180,12 @@ impl RuntimeManager {
         bytes.extend_from_slice(&(sys_processed.len() as u64).to_le_bytes());
         for psd in sys_processed {
             match psd {
-                ProcessedSystemDeploy::Succeeded { system_deploy, .. } => {
+                ProcessedSystemDeploy::Succeeded {
+                    event_list,
+                    system_deploy,
+                } => {
                     bytes.push(0);
+                    push_event_log(&mut bytes, event_list);
                     match system_deploy {
                         SystemDeployData::Slash {
                             invalid_block_hash,
@@ -188,8 +209,12 @@ impl RuntimeManager {
                         }
                     }
                 }
-                ProcessedSystemDeploy::Failed { error_msg, .. } => {
+                ProcessedSystemDeploy::Failed {
+                    event_list,
+                    error_msg,
+                } => {
                     bytes.push(1);
+                    push_event_log(&mut bytes, event_list);
                     push_len_prefixed(&mut bytes, error_msg.as_bytes());
                 }
             }
@@ -1156,5 +1181,360 @@ impl RuntimeManager {
         let store = kvm.store("mergeable-channel-cache".to_string()).await?;
 
         Ok(KeyValueTypedStoreImpl::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crypto::rust::public_key::PublicKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::PCost;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProduceEvent,
+    };
+
+    use super::*;
+
+    fn deploy_data() -> DeployData {
+        DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 0,
+            phlo_price: 1,
+            phlo_limit: 10,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        }
+    }
+
+    fn signed_deploy() -> Signed<DeployData> {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let (sk, _) = alg.new_key_pair();
+        Signed::create(deploy_data(), alg, sk).expect("signed deploy")
+    }
+
+    fn produce_event(tag: u8) -> Event {
+        Event::Produce(ProduceEvent {
+            channels_hash: vec![tag].into(),
+            hash: vec![tag, tag].into(),
+            persistent: false,
+            times_repeated: 0,
+            is_deterministic: true,
+            output_value: vec![vec![tag, tag, tag].into()],
+            failed: false,
+        })
+    }
+
+    fn processed_deploy(
+        deploy: Signed<DeployData>,
+        cost: u64,
+        deploy_log: Vec<Event>,
+    ) -> ProcessedDeploy {
+        ProcessedDeploy {
+            deploy,
+            cost: PCost { cost },
+            deploy_log,
+            is_failed: false,
+            system_deploy_error: None,
+            cost_trace_digest: Default::default(),
+            cost_trace_event_count: 0,
+        }
+    }
+
+    fn block_with_processed_deploy(deploy: ProcessedDeploy) -> BlockMessage {
+        BlockMessage {
+            block_hash: Vec::<u8>::new().into(),
+            header: Header {
+                parents_hash_list: Vec::new(),
+                timestamp: 0,
+                version: 1,
+                extra_bytes: Vec::<u8>::new().into(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: vec![0; 32].into(),
+                    post_state_hash: vec![1; 32].into(),
+                    bonds: Vec::new(),
+                    block_number: 0,
+                },
+                deploys: vec![deploy],
+                rejected_deploys: Vec::new(),
+                system_deploys: Vec::new(),
+                extra_bytes: Vec::<u8>::new().into(),
+            },
+            justifications: Vec::new(),
+            sender: vec![7].into(),
+            seq_num: 0,
+            sig: Vec::<u8>::new().into(),
+            sig_algorithm: "secp256k1".to_string(),
+            shard_id: "root".to_string(),
+            extra_bytes: Vec::<u8>::new().into(),
+        }
+    }
+
+    fn slash_system_deploy(tag: u8) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(tag)],
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: vec![tag; 32].into(),
+                issuer_public_key: PublicKey::from_bytes(&[tag, tag + 1]),
+                target_activation_epoch: tag as i64,
+            },
+        }
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_cost_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_cost_trace_digest_changes() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        left.cost_trace_digest = vec![1; 32].into();
+        left.cost_trace_event_count = 2;
+        right.cost_trace_digest = vec![2; 32].into();
+        right.cost_trace_event_count = 2;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_cost_trace_event_count_changes() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        left.cost_trace_digest = vec![1; 32].into();
+        left.cost_trace_event_count = 1;
+        right.cost_trace_digest = vec![1; 32].into();
+        right.cost_trace_event_count = 2;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_cost_trace_digest_is_missing() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        left.cost_trace_digest = Vec::<u8>::new().into();
+        left.cost_trace_event_count = 0;
+        right.cost_trace_digest = vec![1; 32].into();
+        right.cost_trace_event_count = 0;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn block_hash_changes_when_processed_deploy_cost_trace_digest_changes() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        left.cost_trace_digest = vec![1; 32].into();
+        left.cost_trace_event_count = 1;
+        right.cost_trace_digest = vec![2; 32].into();
+        right.cost_trace_event_count = 1;
+
+        assert_ne!(
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
+        );
+    }
+
+    #[test]
+    fn block_hash_changes_when_processed_deploy_cost_trace_event_count_changes() {
+        let deploy = signed_deploy();
+        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        left.cost_trace_digest = vec![1; 32].into();
+        left.cost_trace_event_count = 1;
+        right.cost_trace_digest = vec![1; 32].into();
+        right.cost_trace_event_count = 2;
+
+        assert_ne!(
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
+        );
+    }
+
+    #[test]
+    fn block_hash_changes_when_processed_deploy_cost_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
+
+        assert_ne!(
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
+            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_signature_changes() {
+        let left = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_failure_status_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.is_failed = true;
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_system_error_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+        right.system_deploy_error = Some("forged settlement".to_string());
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_user_deploy_log_changes() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+        let right = processed_deploy(deploy, 3, vec![produce_event(2)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_canonicalizes_user_deploy_log_order() {
+        let deploy = signed_deploy();
+        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1), produce_event(2)]);
+        let right = processed_deploy(deploy, 3, vec![produce_event(2), produce_event(1)]);
+
+        assert_eq!(
+            RuntimeManager::replay_payload_hash(&[left], &[], false),
+            RuntimeManager::replay_payload_hash(&[right], &[], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_deploy_log_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(2)],
+            system_deploy: SystemDeployData::Empty,
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_canonicalizes_system_deploy_log_order() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1), produce_event(2)],
+            system_deploy: SystemDeployData::Empty,
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(2), produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+        };
+
+        assert_eq!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_deploy_kind_changes() {
+        let left = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::Empty,
+        };
+        let right = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![produce_event(1)],
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_slash_fields_change() {
+        let left = slash_system_deploy(1);
+        let right = slash_system_deploy(2);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_system_error_changes() {
+        let left = ProcessedSystemDeploy::Failed {
+            event_list: vec![produce_event(1)],
+            error_msg: "left".to_string(),
+        };
+        let right = ProcessedSystemDeploy::Failed {
+            event_list: vec![produce_event(1)],
+            error_msg: "right".to_string(),
+        };
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &[left], false),
+            RuntimeManager::replay_payload_hash(&[], &[right], false)
+        );
+    }
+
+    #[test]
+    fn replay_payload_hash_changes_when_genesis_flag_changes() {
+        let deploy = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[deploy.clone()], &[], false),
+            RuntimeManager::replay_payload_hash(&[deploy], &[], true)
+        );
     }
 }

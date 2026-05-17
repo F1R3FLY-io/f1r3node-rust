@@ -157,6 +157,8 @@ message ProcessedDeployProto {
     repeated EventProto deployLog = 3; //the new terms and comm. rule reductions from this deploy
     bool errored                  = 5; //true if deploy encountered a user error
     string systemDeployError      = 6;
+    bytes costTraceDigest         = 7; //canonical digest of cost-accounting source-token events
+    uint64 costTraceEventCount    = 8; //successful billable events plus optional OOP boundary
 }
 
 message SlashSystemDeployDataProto {

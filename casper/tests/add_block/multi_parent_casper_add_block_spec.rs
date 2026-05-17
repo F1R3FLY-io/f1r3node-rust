@@ -674,6 +674,8 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             deploy_log: vec![],
             is_failed: false,
             system_deploy_error: None,
+            cost_trace_digest: Default::default(),
+            cost_trace_event_count: 0,
         })
         .collect();
 

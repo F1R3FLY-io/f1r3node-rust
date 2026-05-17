@@ -80,6 +80,8 @@ async fn integration_t_invalid_repeat_deploy() {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
+        cost_trace_digest: Default::default(),
+        cost_trace_event_count: 0,
     };
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
         b.body.deploys = vec![d1_processed];

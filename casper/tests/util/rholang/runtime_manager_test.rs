@@ -1154,6 +1154,100 @@ async fn compute_state_should_charge_deploys_separately() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn system_settlement_use_case_does_not_change_user_runtime_cost() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            // Keep the user COMM on a deploy-local channel so this test isolates
+            // fee-settlement system deploys from public-channel application effects.
+            let source = "new x in { x!(0) | for(@0 <- x){ Nil } }";
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let block_data = BlockData {
+                time_stamp: time,
+                block_number: 0,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 0,
+            };
+
+            let deploy_without_settlement = construct_deploy::source_deploy(
+                source.to_string(),
+                123,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let deploy_with_settlement = construct_deploy::source_deploy(
+                source.to_string(),
+                123,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let (_, user_only, _) = runtime_manager
+                .compute_state(
+                    &gen_post_state,
+                    vec![deploy_without_settlement],
+                    Vec::new(),
+                    block_data.clone(),
+                    Some(HashMap::new()),
+                )
+                .await
+                .unwrap();
+
+            let (_, with_settlement, _) = runtime_manager
+                .compute_state(
+                    &gen_post_state,
+                    vec![deploy_with_settlement],
+                    vec![
+                        casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                            CloseBlockDeploy {
+                                initial_rand:
+                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                        block_data.sender.clone(),
+                                        block_data.seq_num,
+                                    ),
+                            },
+                        ),
+                    ],
+                    block_data,
+                    Some(HashMap::new()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(user_only.len(), 1);
+            assert_eq!(with_settlement.len(), 1);
+            assert_eq!(user_only[0].cost, with_settlement[0].cost);
+            assert_eq!(user_only[0].is_failed, with_settlement[0].is_failed);
+            assert_eq!(
+                user_only[0].cost_trace_digest,
+                with_settlement[0].cost_trace_digest
+            );
+            assert_eq!(
+                user_only[0].cost_trace_event_count,
+                with_settlement[0].cost_trace_event_count
+            );
+            assert_eq!(
+                user_only[0].deploy_log.len(),
+                with_settlement[0].deploy_log.len()
+            );
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_just_work() {
     with_runtime_manager(|mut runtime_manager, genesis_context, genesis_block| async move {
       let gen_post_state = genesis_block.body.state.post_state_hash;
@@ -1317,6 +1411,251 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
         },
     )
     .await?
+}
+
+#[derive(Clone, Copy)]
+enum CostTraceMutation {
+    Digest,
+    Count,
+    Missing,
+}
+
+async fn invalid_replay_cost_trace(
+    source: String,
+    phlo_limit: i64,
+    mutation: CostTraceMutation,
+) -> Result<StateHash, CasperError> {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let deploy = construct_deploy::source_deploy_now_full(
+                source,
+                Some(phlo_limit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let block_data = BlockData {
+                time_stamp: time,
+                block_number: 0,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 0,
+            };
+
+            let invalid_blocks = HashMap::new();
+
+            let (_, processed_deploys, processed_system_deploys) = runtime_manager
+                .compute_state(
+                    &gen_post_state,
+                    vec![deploy],
+                    Vec::new(),
+                    block_data.clone(),
+                    Some(invalid_blocks.clone()),
+                )
+                .await
+                .unwrap();
+            let mut invalid_processed_deploy = processed_deploys.into_iter().next().unwrap();
+            assert!(!invalid_processed_deploy.cost_trace_digest.is_empty());
+            match mutation {
+                CostTraceMutation::Digest => {
+                    let mut invalid_digest = invalid_processed_deploy.cost_trace_digest.to_vec();
+                    invalid_digest[0] ^= 0x80;
+                    invalid_processed_deploy.cost_trace_digest = invalid_digest.into();
+                }
+                CostTraceMutation::Count => {
+                    invalid_processed_deploy.cost_trace_event_count += 1;
+                }
+                CostTraceMutation::Missing => {
+                    invalid_processed_deploy.cost_trace_digest = Vec::<u8>::new().into();
+                    invalid_processed_deploy.cost_trace_event_count = 0;
+                }
+            }
+
+            runtime_manager
+                .replay_compute_state(
+                    &gen_post_state,
+                    vec![invalid_processed_deploy],
+                    processed_system_deploys,
+                    &block_data,
+                    Some(invalid_blocks),
+                    false,
+                )
+                .await
+        },
+    )
+    .await?
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaycomputestate_should_catch_cost_trace_digest_mismatch() {
+    let result = invalid_replay_cost_trace(
+        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+        10000,
+        CostTraceMutation::Digest,
+    )
+    .await;
+    match result {
+        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
+            initial_digest,
+            replay_digest,
+            initial_event_count,
+            replay_event_count,
+        })) => {
+            assert_ne!(initial_digest, replay_digest);
+            assert_eq!(initial_event_count, replay_event_count);
+            assert!(initial_event_count > 0);
+        }
+        _ => panic!("Expected ReplayCostTraceMismatch error"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaycomputestate_should_require_cost_trace_after_activation() {
+    let result = invalid_replay_cost_trace(
+        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+        10000,
+        CostTraceMutation::Missing,
+    )
+    .await;
+    match result {
+        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
+            initial_digest,
+            replay_digest,
+            initial_event_count,
+            replay_event_count,
+        })) => {
+            assert!(initial_digest.is_empty());
+            assert!(!replay_digest.is_empty());
+            assert_eq!(initial_event_count, 0);
+            assert!(replay_event_count > 0);
+        }
+        _ => panic!("Expected ReplayCostTraceMismatch error for missing cost trace"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaycomputestate_should_catch_cost_trace_event_count_mismatch() {
+    let result = invalid_replay_cost_trace(
+        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+        10000,
+        CostTraceMutation::Count,
+    )
+    .await;
+    match result {
+        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
+            initial_digest,
+            replay_digest,
+            initial_event_count,
+            replay_event_count,
+        })) => {
+            assert_eq!(initial_digest, replay_digest);
+            assert_ne!(initial_event_count, replay_event_count);
+        }
+        _ => panic!("Expected ReplayCostTraceMismatch error for cost trace count"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oop_replay_cost_trace_survives_failed_deploy_rollback() {
+    let result = invalid_replay_cost_trace("@1!(1)".to_string(), 1, CostTraceMutation::Count).await;
+    match result {
+        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
+            initial_digest,
+            replay_digest,
+            initial_event_count,
+            replay_event_count,
+        })) => {
+            assert_eq!(initial_digest, replay_digest);
+            assert!(replay_event_count > 0);
+            assert_eq!(initial_event_count, replay_event_count + 1);
+        }
+        _ => panic!("Expected ReplayCostTraceMismatch error for failed deploy cost trace"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let success = construct_deploy::source_deploy_now_full(
+                "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
+                Some(10000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let oop = construct_deploy::source_deploy_now_full(
+                "@1!(1)".to_string(),
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let block_data = BlockData {
+                time_stamp: time,
+                block_number: 0,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 0,
+            };
+
+            let (play_state, processed_deploys, processed_system_deploys) = runtime_manager
+                .compute_state(
+                    &gen_post_state,
+                    vec![success, oop],
+                    Vec::new(),
+                    block_data.clone(),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(processed_deploys.len(), 2);
+            assert_eq!(
+                processed_deploys
+                    .iter()
+                    .filter(|deploy| deploy.is_failed)
+                    .count(),
+                1
+            );
+            for processed in &processed_deploys {
+                assert!(!processed.cost_trace_digest.is_empty());
+                assert!(processed.cost_trace_event_count > 0);
+            }
+
+            let replay_state = runtime_manager
+                .replay_compute_state(
+                    &gen_post_state,
+                    processed_deploys,
+                    processed_system_deploys,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(play_state, replay_state);
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

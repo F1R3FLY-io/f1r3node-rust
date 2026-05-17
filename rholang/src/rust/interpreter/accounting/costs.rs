@@ -81,6 +81,13 @@ impl Cost {
     }
 }
 
+fn positive_billable_value(value: i64) -> i64 { value.max(1) }
+
+fn non_negative_work(value: i64) -> i64 {
+    debug_assert!(value >= 0, "measured work must not be negative");
+    value.max(0)
+}
+
 pub fn sum_cost() -> Cost { Cost::create(3, "sum") }
 
 pub fn subtraction_cost() -> Cost { Cost::create(3, "subtraction") }
@@ -93,7 +100,7 @@ pub fn equality_check_cost<T: prost::Message, P: prost::Message>(x: &T, y: &P) -
     let min_size = std::cmp::min(size_x, size_y);
 
     Cost {
-        value: min_size as i64,
+        value: positive_billable_value(min_size as i64),
         operation: Cow::Borrowed("equality check"),
     }
 }
@@ -223,15 +230,18 @@ pub fn remove_cost() -> Cost { Cost::create(3, "remove") }
 pub fn add_cost() -> Cost { Cost::create(3, "addition") }
 
 // decoding to bytes is linear with respect to the length of the string
-pub fn hex_to_bytes_cost(str: &String) -> Cost { Cost::create(str.len() as i64, "hex to bytes") }
+pub fn hex_to_bytes_cost(str: &String) -> Cost {
+    Cost::create(non_negative_work(str.len() as i64), "hex to bytes")
+}
 
 // encoding to hex is linear with respect to the length of the byte array
 pub fn bytes_to_hex_cost(bytes: &Vec<u8>) -> Cost {
-    Cost::create(bytes.len() as i64, "bytes to hex")
+    Cost::create(non_negative_work(bytes.len() as i64), "bytes to hex")
 }
 
 // Both Set#remove and Map#remove have complexity of eC
 pub fn diff_cost(num_elements: i64) -> Cost {
+    let num_elements = non_negative_work(num_elements);
     Cost::create(
         remove_cost().value * num_elements,
         format!("{} elements diff cost", num_elements),
@@ -240,6 +250,7 @@ pub fn diff_cost(num_elements: i64) -> Cost {
 
 // Both Set#add and Map#add have complexity of eC
 pub fn union_cost(num_elements: i64) -> Cost {
+    let num_elements = non_negative_work(num_elements);
     Cost::create(
         add_cost().value * num_elements,
         format!("{} union cost", num_elements),
@@ -253,39 +264,52 @@ pub fn byte_array_append_cost(left: ByteString) -> Cost {
         Cost::create(0, "byte array append")
     } else {
         let size = left.len() as f64;
-        Cost::create(size.log(10.0) as i64, "byte array append")
+        Cost::create(
+            non_negative_work(size.log(10.0) as i64),
+            "byte array append",
+        )
     }
 }
 
 // According to scala doc Vector#append is eC so it's n*eC.
-pub fn list_append_cost(right: Vec<Par>) -> Cost { Cost::create(right.len() as i64, "list append") }
+pub fn list_append_cost(right: Vec<Par>) -> Cost {
+    Cost::create(non_negative_work(right.len() as i64), "list append")
+}
 
 // String append creates a char[] of size n + m and then copies all elements to it.
-pub fn string_append_cost(n: i64, m: i64) -> Cost { Cost::create(n + m, "string append") }
+pub fn string_append_cost(n: i64, m: i64) -> Cost {
+    Cost::create(non_negative_work(n) + non_negative_work(m), "string append")
+}
 
 // To interpolate we traverse whole base string and for each placeholder
 // we look for matching key in the interpolation map
 pub fn interpolate_cost(str_length: i64, map_size: i64) -> Cost {
-    Cost::create(str_length * map_size, "interpolate")
+    Cost::create(
+        non_negative_work(str_length) * non_negative_work(map_size),
+        "interpolate",
+    )
 }
 
 // serializing any Par into a Array[Byte]:
 // + allocates byte array of the same size as `serializedSize`
 // + then it copies all elements of the Par
 pub fn to_byte_array_cost(message: &impl prost::Message) -> Cost {
-    Cost::create(message.encoded_len() as i64, "to byte array")
+    Cost::create(
+        non_negative_work(message.encoded_len() as i64),
+        "to byte array",
+    )
 }
 
-pub fn size_method_cost(size: i64) -> Cost { Cost::create(size, "size") }
+pub fn size_method_cost(size: i64) -> Cost { Cost::create(non_negative_work(size), "size") }
 
 // slice(from, to) needs to drop `from` elements and then append `to - from` elements
 // we charge proportionally to `to` and fail if the method call is incorrect, for example
 // if underlying string is shorter then the `to` value.
-pub fn slice_cost(to: i64) -> Cost { Cost::create(to, "slice") }
+pub fn slice_cost(to: i64) -> Cost { Cost::create(non_negative_work(to), "slice") }
 
-pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
+pub fn take_cost(to: i64) -> Cost { Cost::create(non_negative_work(to), "take") }
 
-pub fn to_list_cost(size: i64) -> Cost { Cost::create(size, "to_list") }
+pub fn to_list_cost(size: i64) -> Cost { Cost::create(non_negative_work(size), "to_list") }
 
 pub fn nth_method_call_cost() -> Cost { Cost::create(10, "nth method call") }
 
