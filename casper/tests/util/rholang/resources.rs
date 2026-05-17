@@ -24,7 +24,7 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
+    Db, GB, LmdbDirStoreManager, LmdbEnvConfig,
 };
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tempfile::{Builder, TempDir};
@@ -121,7 +121,12 @@ pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
 ) -> impl KeyValueStoreManager {
-    let limit_size = 500 * MB;
+    // Cap on the shared LMDB env's map_size. heed 0.22's env cache locks the
+    // map_size at first open per path, so the entire casper test suite shares
+    // one env at this size — not 500 MB per test like legacy heed 0.11. Bumped
+    // to 4 GB to give the suite headroom (virtual address space; real disk
+    // usage matches data written).
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -199,7 +204,9 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     rspace_scope: String,
 ) -> impl KeyValueStoreManager {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    let limit_size = 100 * MB;
+    // Dual-scope variant — same shared-env consideration as
+    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
+    let limit_size = 1 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
