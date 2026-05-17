@@ -453,6 +453,62 @@ jobs:
           path: system-integration/integration-tests/
           retention-days: 7
 
+  # Per-arch aggregators. The branch ruleset requires status checks named
+  # exactly `Integration Tests (amd64)` and `Integration Tests (arm64)`, but
+  # the matrix above emits 10 per-arch slot names (with provider+slot suffix).
+  # Each aggregator queries the run's job list and fails if any slot for its
+  # arch did not succeed — collapsing the 10-job matrix into one ruleset gate
+  # per arch without needing to maintain 20 entries in the ruleset.
+  integration_tests_amd64:
+    name: Integration Tests (amd64)
+    needs: integration_tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check amd64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | startswith("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "amd64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All amd64 integration test slots succeeded"
+
+  integration_tests_arm64:
+    name: Integration Tests (arm64)
+    needs: integration_tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check arm64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | startswith("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "arm64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All arm64 integration test slots succeeded"
+
   # Smoke test: single-node docker-compose standalone deployment.
   # Verifies the image can start, reach Running state, expose HTTP API, and
   # finalize blocks. GitHub-hosted runner (amd64 only).
