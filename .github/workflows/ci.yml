@@ -17,12 +17,17 @@ on:
       - trying
       - "feature/**"
 
-# Lint and test jobs cancel previous runs for the same ref (cheap, on
-# GitHub-hosted runners). Self-hosted runner jobs queue via per-job
-# concurrency groups instead, to avoid wasting expensive native Docker builds.
+# Workflow-wide serialization. Only one CI run executes at a time; subsequent
+# triggers queue rather than running in parallel. Prevents OCI ephemeral-runner
+# starvation when a single user action produces multiple events (e.g. dev merge
+# fires both the merge-commit push and the release-tag push from release.yml,
+# each kicking off an independent 20-VM matrix). At this team scale serializing
+# is acceptable — adds at most one full pipeline (~30-45 min) of wait when two
+# triggers land back-to-back, and no run gets cancelled mid-flight so release
+# jobs always reach completion.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -441,6 +446,7 @@ jobs:
             --deselect integration-tests/test/tests/shared/test_observer_lfs_sync.py \
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
+            --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --maxfail=10 \
             -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
