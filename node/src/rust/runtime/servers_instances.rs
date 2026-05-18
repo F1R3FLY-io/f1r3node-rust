@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 // See node/src/main/scala/coop/rchain/node/runtime/ServersInstances.scala
 
 use std::future::Future;

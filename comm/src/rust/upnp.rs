@@ -435,8 +435,8 @@ async fn discover() -> Result<UPnPDevices, CommError> {
                 let gateway_ip = gateway_arc.addr.ip();
 
                 // Only add if we haven't seen this gateway before
-                if let std::collections::hash_map::Entry::Vacant(e) = all.entry(gateway_ip) {
-                    e.insert(gateway_arc.clone());
+                if !all.contains_key(&gateway_ip) {
+                    all.insert(gateway_ip, gateway_arc.clone());
                     gateways.push(gateway_arc.clone());
 
                     // First gateway found becomes the valid gateway

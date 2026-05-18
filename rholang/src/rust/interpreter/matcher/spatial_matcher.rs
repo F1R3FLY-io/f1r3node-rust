@@ -1,9 +1,3 @@
-#![allow(
-    clippy::match_like_matches_macro,
-    clippy::match_single_binding,
-    clippy::type_complexity
-)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -40,10 +34,6 @@ pub trait SpatialMatcher<T, P> {
 #[derive(Clone)]
 pub struct SpatialMatcherContext {
     pub free_map: FreeMap,
-}
-
-impl Default for SpatialMatcherContext {
-    fn default() -> Self { Self::new() }
 }
 
 impl SpatialMatcherContext {
@@ -226,12 +216,12 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             // println!("wildcard: {:?}", wildcard);
 
-            let filtered_pattern = no_frees(pattern.clone());
+            let filtered_pattern = no_frees(&pattern);
             // println!("filtered_pattern: {:?}", filtered_pattern);
-            let pc = ParCount::new(filtered_pattern.clone());
+            let pc = ParCount::new(&filtered_pattern);
             // println!("pc: {:?}", pc);
             let min_rem = pc.clone();
-            let max_rem = if wildcard || var_level.is_some() {
+            let max_rem = if wildcard || !var_level.is_none() {
                 pc._max()
             } else {
                 pc.clone()
@@ -335,7 +325,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             .and_then(|_| {
                 self.list_match_single_(
                     remainder.exprs,
-                    no_frees_exprs(pattern.exprs),
+                    no_frees_exprs(&pattern.exprs),
                     &|p, s| p.with_exprs(s),
                     var_level,
                     wildcard,
@@ -446,7 +436,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 })),
             ) => {
                 // println!("\n calling fold_match in ElistBody");
-                let matched_rem = self.fold_match(tlist, plist, rem)?;
+                let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
                 // println!("\nmatched_rem: {:?}", matched_rem);
 
                 // println!("\ncurrent free_map: {:#?}", self.free_map);

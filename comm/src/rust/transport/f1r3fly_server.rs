@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_pattern_matching)]
-
 // F1r3fly Server for tonic's gRPC server with custom TLS acceptor
 //
 // This module provides F1r3flyServer::builder() to create tonic servers

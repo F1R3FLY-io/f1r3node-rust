@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 // See models/src/main/scala/coop/rchain/models/ParMap.scala
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

@@ -1,5 +1,3 @@
-#![allow(clippy::match_like_matches_macro, clippy::type_complexity)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PInputNormalizer.scala
 
 use std::collections::{HashMap, HashSet};
@@ -112,12 +110,12 @@ pub fn normalize_p_input<'ast>(
                                 Source::ReceiveSend { name, .. } => {
                                     // ReceiveSend desugaring: x <- name?() becomes x, temp <- name & temp!()
                                     let mut new_names = lhs.names.clone();
-                                    new_names.push(temp_var);
+                                    new_names.push(temp_var.clone());
 
                                     list_linear_bind.push(Bind::Linear {
                                         lhs: rholang_parser::ast::Names {
                                             names: new_names,
-                                            remainder: lhs.remainder,
+                                            remainder: lhs.remainder.clone(),
                                         },
                                         rhs: Source::Simple { name: *name },
                                     });
@@ -155,7 +153,9 @@ pub fn normalize_p_input<'ast>(
 
                                     list_linear_bind.push(Bind::Linear {
                                         lhs: lhs.clone(),
-                                        rhs: Source::Simple { name: temp_var },
+                                        rhs: Source::Simple {
+                                            name: temp_var.clone(),
+                                        },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -391,6 +391,7 @@ pub fn normalize_p_input<'ast>(
                 .clone()
                 .into_iter()
                 .zip(sources_par)
+                .into_iter()
                 .map(|((a, b, c, _), e)| (a, b, e, c))
                 .collect(),
         )?;

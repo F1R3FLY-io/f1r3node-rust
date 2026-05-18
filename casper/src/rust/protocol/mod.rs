@@ -1,5 +1,3 @@
-#![allow(clippy::empty_line_after_doc_comments)]
-
 // See casper/src/main/scala/coop/rchain/casper/protocol/package.scala
 // See models/src/main/scala/coop/rchain/casper/protocol/PacketTypeTag.scala
 
@@ -7,8 +5,9 @@ use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-    HasBlockRequestProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
-    StoreItemsMessageRequestProto, UnapprovedBlockProto,
+    HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
+    NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
+    UnapprovedBlockProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -72,6 +71,8 @@ pub enum CasperMessageProto {
     NoApprovedBlockAvailable(NoApprovedBlockAvailableProto),
     StoreItemsMessageRequest(StoreItemsMessageRequestProto),
     StoreItemsMessage(StoreItemsMessageProto),
+    MergeableEntryRequest(MergeableEntryRequestProto),
+    MergeableEntryResponse(MergeableEntryResponseProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -95,6 +96,8 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "NoApprovedBlockAvailable" => convert_no_approved_block_available(packet),
         "StoreItemsMessageRequest" => convert_store_items_message_request(packet),
         "StoreItemsMessage" => convert_store_items_message(packet),
+        "MergeableEntryRequest" => convert_mergeable_entry_request(packet),
+        "MergeableEntryResponse" => convert_mergeable_entry_response(packet),
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
 }
@@ -128,6 +131,12 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         }
         CasperMessageProto::StoreItemsMessage(proto) => {
             Ok(CasperMessage::from_store_items_message(proto))
+        }
+        CasperMessageProto::MergeableEntryRequest(proto) => {
+            Ok(CasperMessage::from_mergeable_entry_request(proto))
+        }
+        CasperMessageProto::MergeableEntryResponse(proto) => {
+            Ok(CasperMessage::from_mergeable_entry_response(proto))
         }
     }
 }
@@ -185,6 +194,16 @@ fn convert_store_items_message_request(packet: &Packet) -> PacketParseResult<Cas
 
 fn convert_store_items_message(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<StoreItemsMessageProto>(packet).map(CasperMessageProto::StoreItemsMessage)
+}
+
+fn convert_mergeable_entry_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<MergeableEntryRequestProto>(packet)
+        .map(CasperMessageProto::MergeableEntryRequest)
+}
+
+fn convert_mergeable_entry_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<MergeableEntryResponseProto>(packet)
+        .map(CasperMessageProto::MergeableEntryResponse)
 }
 
 /// Generic function to parse a packet into a specific protobuf message type

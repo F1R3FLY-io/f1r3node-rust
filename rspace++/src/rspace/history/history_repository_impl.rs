@@ -1,5 +1,3 @@
-#![allow(clippy::no_effect)]
-
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
@@ -494,6 +492,14 @@ where
             .lock()
             .expect("History Repository Impl: Unable to acquire roots_repository lock");
         roots_repo.commit(root).map_err(HistoryError::from)
+    }
+
+    fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
+        let roots_repo = self
+            .roots_repository
+            .lock()
+            .expect("History Repository Impl: Unable to acquire roots_repository lock");
+        roots_repo.contains_root(root).map_err(HistoryError::from)
     }
 }
 

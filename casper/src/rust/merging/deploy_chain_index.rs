@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -22,17 +23,16 @@ pub struct DeployIdWithCost {
 }
 
 /** index of deploys depending on each other inside a single block (state transition) */
-#[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
-    pre_state_hash: Blake2b256Hash,
     post_state_hash: Blake2b256Hash,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
-    // caching hash code helps a lot to increase performance of computing rejection options
-    // TODO mysterious speedup of merging benchmark when setting this to some fixed value - OLD
-    hash_code: i32,
+    // Source block identity. Allows the merge algorithm to identify chains
+    // whose diffs were computed against a block that was subsequently rejected.
+    pub source_block_hash: BlockHash,
+    pub source_block_number: i64,
 }
 
 impl DeployChainIndex {
@@ -41,6 +41,8 @@ impl DeployChainIndex {
         pre_state_hash: &Blake2b256Hash,
         post_state_hash: &Blake2b256Hash,
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        source_block_hash: BlockHash,
+        source_block_number: i64,
     ) -> Result<Self, HistoryError>
     where
         C: std::clone::Clone
@@ -64,9 +66,9 @@ impl DeployChainIndex {
 
         let event_log_index = deploys
             .into_iter()
-            .fold(EventLogIndex::empty(), |acc, deploy| {
+            .try_fold(EventLogIndex::empty(), |acc, deploy| {
                 EventLogIndex::combine(&acc, &deploy.event_log_index)
-            });
+            })?;
 
         let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
         let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
@@ -74,47 +76,44 @@ impl DeployChainIndex {
         let state_changes =
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for deploy in &deploys_with_cost {
-            std::hash::Hash::hash(&deploy.deploy_id, &mut hasher);
-        }
-        let hash_code = std::hash::Hasher::finish(&hasher) as i32;
-
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
-            pre_state_hash: pre_state_hash.clone(),
             post_state_hash: post_state_hash.clone(),
             event_log_index,
             state_changes,
-            hash_code,
+            source_block_hash,
+            source_block_number,
         })
     }
 
     /// Construct a DeployChainIndex directly from its parts (for testing).
     pub fn from_parts(
         deploys_with_cost: HashableSet<DeployIdWithCost>,
-        pre_state_hash: Blake2b256Hash,
         post_state_hash: Blake2b256Hash,
         event_log_index: EventLogIndex,
         state_changes: StateChange,
+        source_block_hash: BlockHash,
+        source_block_number: i64,
     ) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        deploys_with_cost.hash(&mut hasher);
-        let hash_code = hasher.finish() as i32;
         DeployChainIndex {
             deploys_with_cost,
-            pre_state_hash,
             post_state_hash,
             event_log_index,
             state_changes,
-            hash_code,
+            source_block_hash,
+            source_block_number,
         }
     }
 }
 
 impl PartialEq for DeployChainIndex {
     fn eq(&self, other: &Self) -> bool { self.deploys_with_cost == other.deploys_with_cost }
+}
+
+// Hash is hand-rolled to match PartialEq (the derived Hash would cover all
+// fields and violate the k1 == k2 => hash(k1) == hash(k2) contract).
+impl std::hash::Hash for DeployChainIndex {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.deploys_with_cost.hash(state); }
 }
 
 impl Eq for DeployChainIndex {}
@@ -207,11 +206,11 @@ mod tests {
 
         DeployChainIndex {
             deploys_with_cost: HashableSet(deploys_with_cost),
-            pre_state_hash: Blake2b256Hash::from_bytes(vec![0u8; 32]),
             post_state_hash: Blake2b256Hash::from_bytes(vec![post_state_seed; 32]),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
-            hash_code: 0,
+            source_block_hash: Bytes::from(vec![post_state_seed; 32]),
+            source_block_number: 0,
         }
     }
 

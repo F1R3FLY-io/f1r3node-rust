@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
-
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportClient.scala
 
 use std::collections::HashMap;

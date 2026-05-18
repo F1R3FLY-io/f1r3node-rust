@@ -134,7 +134,6 @@ impl Repl for ReplGrpcServiceImpl {
 mod tests {
     use std::sync::Arc;
 
-    use models::rhoapi::Par;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
@@ -149,7 +148,7 @@ mod tests {
         let store = kvm.r_space_stores().await.unwrap();
         let runtime = create_runtime_from_kv_store(
             store,
-            Par::default(),
+            Arc::new(std::collections::HashMap::new()),
             true,
             &mut test_framework_contracts(),
             Arc::new(Box::new(Matcher)),

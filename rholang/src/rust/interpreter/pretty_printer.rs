@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_match, clippy::manual_try_fold, clippy::ptr_arg)]
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
 use models::rhoapi::connective::ConnectiveInstance;
@@ -29,10 +27,6 @@ pub struct PrettyPrinter {
     pub rotation: i32,
     pub max_var_count: i32,
     pub is_building_channel: bool,
-}
-
-impl Default for PrettyPrinter {
-    fn default() -> Self { Self::new() }
 }
 
 impl PrettyPrinter {

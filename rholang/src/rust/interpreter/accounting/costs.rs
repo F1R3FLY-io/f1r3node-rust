@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 use std::borrow::Cow;
 use std::ops::{Add, Mul, Sub};
 
@@ -7,6 +5,7 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, ListParWithRandom, PCost, Par, ParWithRandom, TaggedContinuation,
 };
+use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash;
 use shared::rust::ByteString;
 
@@ -327,30 +326,26 @@ pub fn new_bindings_cost(n: i64) -> Cost {
 pub fn match_eval_cost() -> Cost { Cost::create(12, "match eval") }
 
 pub fn storage_cost_consume(
-    channels: Vec<Par>,
-    patterns: Vec<BindPattern>,
-    continuation: TaggedContinuation,
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
 ) -> Cost {
-    let body_cost = Some(continuation).and_then(|cont| {
-        if let Some(TaggedCont::ParBody(ParWithRandom { body, .. })) = cont.tagged_cont {
-            Some(storage_cost(&[body.unwrap()]))
-        } else {
-            None
-        }
-    });
+    let body_cost = match continuation.tagged_cont.as_ref() {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => body.encoded_len() as i64,
+        _ => 0,
+    };
 
-    let total_cost = storage_cost(&channels).value
-        + storage_cost(&patterns).value
-        + body_cost.unwrap_or(Cost::create(0, "")).value;
+    let total_cost = storage_cost(channels).value + storage_cost(patterns).value + body_cost;
 
     Cost::create(total_cost, "consume storage")
 }
 
-pub fn storage_cost_produce(channel: Par, data: ListParWithRandom) -> Cost {
-    Cost::create(
-        storage_cost(&[channel]).value + storage_cost(&data.pars).value,
-        "produces storage",
-    )
+pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
+    let channel_cost = channel.encoded_len() as i64;
+    let data_cost: i64 = data.pars.iter().map(|p| p.encoded_len() as i64).sum();
+    Cost::create(channel_cost + data_cost, "produces storage")
 }
 
 pub fn comm_event_storage_cost(channels_involved: i64) -> Cost {

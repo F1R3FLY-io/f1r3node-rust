@@ -1,5 +1,3 @@
-#![allow(clippy::while_let_loop)]
-
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -600,9 +598,13 @@ impl BlockDagKeyValueStorage {
         invalid: bool,
         approved: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let __insert_start = std::time::Instant::now();
         // Acquire global lock to ensure atomic insert operation
         let _lock_guard = self.global_lock.lock().unwrap();
-        self.insert_internal(block, invalid, approved)
+        let result = self.insert_internal(block, invalid, approved);
+        metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
+            .record(__insert_start.elapsed().as_secs_f64());
+        result
     }
 
     /// Internal method to insert without acquiring lock.
@@ -628,11 +630,40 @@ impl BlockDagKeyValueStorage {
             PrettyPrinter::build_string_block_message(block, true)
         );
 
+        // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
+        // (and other invalid blocks) advance the sender's latest message and
+        // register newly-bonded validators just like valid blocks. This matches
+        // the Scala source-of-truth (`BlockDagKeyValueStorage.scala`, where
+        // `newLatestMessages` and `shouldAddAsLatest` never reference `invalid`).
+        //
+        // Safety argument:
+        //   - Fork choice and finalization are unaffected. Parent selection filters
+        //     `latest_messages` through `invalid_latest_messages_from_hashes` to
+        //     produce `valid_latest_msgs` (see
+        //     `multi_parent_casper_impl.rs::create_block_data`, ~line 160). Only
+        //     valid-latest validators contribute candidate parents; invalid blocks
+        //     therefore cannot become parents, cannot enter the ancestor chain of
+        //     any parent, and cannot influence the Estimator's fork-choice scoring
+        //     or finalization depth.
+        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
+        //     detector reads `invalid_latest_messages` and feeds it to
+        //     `prepare_slashing_deploys`. The pre-fix `if invalid { return empty }`
+        //     guard had no Scala counterpart and silently disabled the slashing
+        //     pipeline (no slashes ever issued, equivocators never punished).
+        //   - `justification_follows` validation requires every bonded validator
+        //     to appear in a new block's justifications. Without the LMM advancing
+        //     on invalid blocks, validators whose latest is invalid would be
+        //     missing from the creator's view and `justification_follows` would
+        //     reject otherwise-valid blocks.
+        //
+        // Companion sites that depend on this invariant:
+        //   - `multi_parent_casper_impl.rs::create_block_data` (justifications
+        //     and max_seq_nums both read the unfiltered `latest_msgs_hashes`).
+        //   - The
+        //     `dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender`
+        //     test in `block-storage/tests/block_dag_storage_test.rs` exercises
+        //     this directly.
         let new_latest_messages = || -> Result<HashMap<Validator, BlockHash>, KvStoreError> {
-            if invalid {
-                return Ok(HashMap::new());
-            }
-
             let block_hash: BlockHash = block.block_hash.clone();
 
             let newly_bonded_set: HashSet<_> = block
@@ -674,7 +705,7 @@ impl BlockDagKeyValueStorage {
             Ok(self.get_representation_internal())
         } else {
             let block_hash = block.block_hash.clone();
-            let block_hash_is_invalid = block_hash.len() != block_hash::LENGTH;
+            let block_hash_is_invalid = !(block_hash.len() == block_hash::LENGTH);
 
             if sender_has_invalid_format {
                 return Err(KvStoreError::InvalidArgument(format!(
@@ -720,7 +751,7 @@ impl BlockDagKeyValueStorage {
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
-            let new_latest_from_sender = if !sender_is_empty && !invalid {
+            let new_latest_from_sender = if !sender_is_empty {
                 // Add LM either if there is no existing message for the sender, or if sequence number advances
                 // - assumes block sender is not valid hash
                 if match self

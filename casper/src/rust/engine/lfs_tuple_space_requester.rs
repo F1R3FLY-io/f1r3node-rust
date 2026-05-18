@@ -1,5 +1,3 @@
-#![allow(clippy::doc_lazy_continuation)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
 use std::collections::HashMap;
@@ -251,7 +249,7 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             // Use non-blocking send to avoid deadlock. The biased select with response-first
             // ordering ensures fair scheduling between request and response processing.
             // If the channel is full (capacity 2), requests are already queued for processing.
-            if self.request_tx.try_send(false).is_err() {
+            if let Err(_) = self.request_tx.try_send(false) {
                 tracing::debug!("Request queue full - requests already pending");
             }
 
@@ -264,7 +262,7 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
             // Trigger request processing again after marking chunk as done (Scala: requestQueue.enqueue1(false))
             // Use non-blocking send to avoid deadlock when producer and consumer are in the same task
-            if self.request_tx.try_send(false).is_err() {
+            if let Err(_) = self.request_tx.try_send(false) {
                 tracing::debug!(
                     "Failed to trigger request processing - channel may be closed or full"
                 );
@@ -728,9 +726,9 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         final_stats.0, final_stats.1);
 
                     if final_stats.1 {
-                        tracing::info!("✅ LFS Tuple Space Requester completed successfully - all required state downloaded");
+                        tracing::info!("LFS Tuple Space Requester completed successfully - all required state downloaded");
                     } else {
-                        tracing::warn!("⚠️ LFS Tuple Space Requester terminated with incomplete state - some state may be missing");
+                        tracing::warn!("LFS Tuple Space Requester terminated with incomplete state - some state may be missing");
                     }
 
                     Some(state.clone())

@@ -1,5 +1,3 @@
-#![allow(clippy::module_inception)]
-
 pub mod approve_block_protocol;
 pub mod block_approver_protocol;
 pub mod block_retriever;
@@ -11,5 +9,6 @@ pub mod genesis_ceremony_master;
 pub mod genesis_validator;
 pub mod initializing;
 pub mod lfs_block_requester;
+pub mod lfs_horizon_requester;
 pub mod lfs_tuple_space_requester;
 pub mod running;

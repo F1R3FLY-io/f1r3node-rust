@@ -1,13 +1,3 @@
-#![allow(
-    clippy::assertions_on_constants,
-    clippy::collapsible_match,
-    clippy::empty_line_after_doc_comments,
-    clippy::manual_memcpy,
-    clippy::match_single_binding,
-    clippy::type_complexity,
-    clippy::unnecessary_unwrap
-)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/history/RadixTree.scala
 
 use std::collections::BTreeMap;
@@ -1003,7 +993,7 @@ impl RadixTreeImpl {
             .store
             .contains(&kv_pairs.clone().into_iter().map(|(k, _)| k).collect_vec())?;
         let kv_if_absent: Vec<((ByteVector, ByteVector), bool)> =
-            kv_pairs.into_iter().zip(if_absent).collect();
+            kv_pairs.into_iter().zip(if_absent.into_iter()).collect();
 
         let kv_exist: Vec<(ByteVector, ByteVector)> = kv_if_absent
             .iter()
@@ -1020,13 +1010,13 @@ impl RadixTreeImpl {
             .zip(
                 value_exist_in_store
                     .into_iter()
-                    .map(|v| v.unwrap_or_else(Vec::new)),
+                    .map(|v| v.unwrap_or_else(|| Vec::new())),
             )
             .collect();
 
         let kv_collision: Vec<(ByteVector, ByteVector)> = kvv_exist
             .into_iter()
-            .filter(|kvv| kvv.0.1 != kvv.1)
+            .filter(|kvv| !(kvv.0.1 == kvv.1))
             .map(|(kv, _)| kv)
             .collect();
 
@@ -1040,7 +1030,10 @@ impl RadixTreeImpl {
             .map(|(kv, _)| kv)
             .collect();
 
-        let serialized_kv_absent = kv_absent.into_iter().collect();
+        let serialized_kv_absent = kv_absent
+            .into_iter()
+            .map(|(key, value)| (key, value))
+            .collect();
 
         self.store.put(serialized_kv_absent)?;
         Ok(())

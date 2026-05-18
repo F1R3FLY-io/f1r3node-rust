@@ -1,9 +1,3 @@
-#![allow(
-    clippy::cloned_ref_to_slice_refs,
-    clippy::type_complexity,
-    clippy::unnecessary_unwrap
-)]
-
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
 use std::collections::{HashMap, HashSet};
@@ -716,7 +710,7 @@ impl BlockAPI {
 
     async fn get_data_with_block_info(
         casper: &dyn MultiParentCasper,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         sorted_listening_name: &Par,
         block: &BlockMessage,
     ) -> ApiErr<Option<DataWithBlockInfo>> {
@@ -724,14 +718,12 @@ impl BlockAPI {
         if BlockAPI::is_listening_name_reduced(block, &[sorted_listening_name.clone()]) {
             let state_hash = proto_util::post_state_hash(block);
             let data = runtime_manager
-                .lock()
-                .await
                 .get_data(state_hash, sorted_listening_name)
                 .await?;
             let block_info = BlockAPI::get_light_block_info(casper, block).await?;
             Ok(Some(DataWithBlockInfo {
                 post_block_data: data,
-                block: Some(block_info),
+                block: Some(block_info).into(),
             }))
         } else {
             Ok(None)
@@ -740,7 +732,7 @@ impl BlockAPI {
 
     async fn get_continuations_with_block_info(
         casper: &dyn MultiParentCasper,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         sorted_listening_names: &[Par],
         block: &BlockMessage,
     ) -> ApiErr<Option<ContinuationsWithBlockInfo>> {
@@ -748,8 +740,6 @@ impl BlockAPI {
             let state_hash = proto_util::post_state_hash(block);
 
             let continuations = runtime_manager
-                .lock()
-                .await
                 .get_continuation(state_hash, sorted_listening_names.to_vec())
                 .await?;
 
@@ -766,7 +756,7 @@ impl BlockAPI {
             let block_info = BlockAPI::get_light_block_info(casper, block).await?;
             Ok(Some(ContinuationsWithBlockInfo {
                 post_block_continuations: continuation_infos,
-                block: Some(block_info),
+                block: Some(block_info).into(),
             }))
         } else {
             Ok(None)
@@ -800,7 +790,7 @@ impl BlockAPI {
             RspaceEvent::IoEvent(IOEvent::Consume(consume)) => {
                 let mut expected_hashes: Vec<_> = sorted_listening_name
                     .iter()
-                    .map(stable_hash_provider::hash)
+                    .map(|name| stable_hash_provider::hash(name))
                     .collect();
                 expected_hashes.sort();
 
@@ -813,7 +803,7 @@ impl BlockAPI {
             RspaceEvent::Comm(comm) => {
                 let mut expected_hashes: Vec<_> = sorted_listening_name
                     .iter()
-                    .map(stable_hash_provider::hash)
+                    .map(|name| stable_hash_provider::hash(name))
                     .collect();
                 expected_hashes.sort();
 
@@ -1366,7 +1356,7 @@ impl BlockAPI {
             .collect();
 
         BlockInfo {
-            block_info: Some(light_block_info),
+            block_info: Some(light_block_info).into(),
             deploys,
         }
     }
@@ -1486,6 +1476,56 @@ impl BlockAPI {
         }
     }
 
+    /// Query the finalization status of a deploy by its signature. Clients
+    /// should prefer this over block-hash finalization polling: after the
+    /// merge fix, a block can finalize while some of its deploys' effects
+    /// were dropped during merge — polling by block hash returns a
+    /// misleading `true`. Polling by deploy sig via this API correctly
+    /// reports the effect's canonical-state presence.
+    ///
+    /// Thin wrapper around
+    /// `deploy_finalization_status::resolve` that unwraps the engine cell.
+    /// The pure resolver is reused by the catchup gate in
+    /// `compute_parents_post_state` to avoid gating buffer population on
+    /// already-finalized sigs.
+    pub async fn deploy_finalization_status(
+        engine_cell: &EngineCell,
+        sig: &[u8],
+    ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
+        let error_message =
+            "Could not compute deploy finalization status, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let dag = casper.block_dag().await?;
+        match crate::rust::api::deploy_finalization_status::resolve(
+            &dag,
+            casper.block_store(),
+            casper.casper_shard_conf().deploy_lifespan,
+            sig,
+        ) {
+            Ok(status) => Ok(status),
+            Err(err) => {
+                // Convert deploy-index inconsistency to `pending_unknown`
+                // so HTTP/gRPC callers see a tractable response. The
+                // resolver returns `Err` so the consensus path
+                // (`repeat_deploy`) conservative-fails on the same
+                // inconsistency. Genuine I/O failures keep propagating.
+                if err
+                    .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
+                    .is_some()
+                {
+                    Ok(crate::rust::api::deploy_finalization_status::DeployFinalizationStatus::pending_unknown())
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
         let error_message =
             "Could not check if validator is bonded, casper instance was not available yet.";
@@ -1494,11 +1534,7 @@ impl BlockAPI {
             let last_finalized_block = casper.last_finalized_block().await?;
             let runtime_manager = casper.runtime_manager();
             let post_state_hash = &last_finalized_block.body.state.post_state_hash;
-            let bonds = runtime_manager
-                .lock()
-                .await
-                .compute_bonds(post_state_hash)
-                .await?;
+            let bonds = runtime_manager.compute_bonds(post_state_hash).await?;
             let validator_bond_opt = bonds.iter().find(|bond| bond.validator == *public_key);
             Ok(validator_bond_opt.is_some())
         } else {
@@ -1557,14 +1593,14 @@ impl BlockAPI {
                             "exploratoryDeploy: Computing merged state from {} parents",
                             parents.len()
                         );
-                        let runtime_guard = runtime_manager.lock().await;
-                        let (merged_state_hash, _rejected) =
+                        let (merged_state_hash, _rejected, _rejected_slashes) =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),
                                 &snapshot,
-                                &runtime_guard,
+                                &runtime_manager,
                                 Some(true), // disable_late_block_filtering = true for exploratory deploy
+                                None,       // exploratory deploy: no buffer populate needed
                             )?;
                         merged_state_hash
                     };
@@ -1602,8 +1638,6 @@ impl BlockAPI {
                 match target_block {
                     Some(b) => {
                         let (res, cost) = runtime_manager
-                            .lock()
-                            .await
                             .play_exploratory_deploy(term, &state_hash)
                             .await?;
                         let light_block_info =
@@ -1632,7 +1666,8 @@ impl BlockAPI {
                 eyre::eyre!("{}", LatestBlockMessageError::ValidatorReadOnlyError)
             })?;
             let dag = casper.block_dag().await?;
-            let latest_message_opt = dag.latest_message(&validator.public_key.bytes.clone())?;
+            let latest_message_opt =
+                dag.latest_message(&validator.public_key.bytes.clone().into())?;
             let latest_message = latest_message_opt
                 .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)

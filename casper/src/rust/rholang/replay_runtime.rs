@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeReplaySyntax.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::Instant;
 
@@ -18,7 +18,7 @@ use rholang::rust::interpreter::system_processes::{
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
+use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
 use super::runtime::{RuntimeOps, SysEvalResult};
 use crate::rust::errors::CasperError;
@@ -55,7 +55,7 @@ impl ReplayRuntimeOps {
         }
     }
 
-    async fn discard_event_log(&mut self, phase: &str, error_path: bool) {
+    pub async fn discard_event_log(&mut self, phase: &str, error_path: bool) {
         let drained = self.runtime_ops.runtime.take_event_log().await;
         if error_path {
             tracing::warn!(
@@ -183,7 +183,7 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
-        let mut mergeable_channels = HashSet::new();
+        let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
         let rig_start = Instant::now();
         self.rig(processed_deploy).await?;
@@ -218,7 +218,7 @@ impl ReplayRuntimeOps {
     async fn process_deploy_with_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
@@ -311,17 +311,17 @@ impl ReplayRuntimeOps {
     async fn process_deploy_without_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
         self.run_user_deploy(processed_deploy, mergeable_channels)
             .await
             .map(|(_, eval_successful)| eval_successful)
     }
 
-    async fn run_user_deploy(
+    pub async fn run_user_deploy(
         &mut self,
         processed_deploy: &ProcessedDeploy,
-        mergeable_channels: &mut HashSet<Par>,
+        mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<(EvaluateResult, bool), CasperError> {
         // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
         // so pre-charge context remains available for refund replay.
@@ -352,7 +352,7 @@ impl ReplayRuntimeOps {
         }
 
         // Verify that our execution matches the expected result
-        if processed_deploy.is_failed == eval_successful {
+        if processed_deploy.is_failed != !eval_successful {
             return Err(CasperError::ReplayFailure(
                 ReplayFailure::replay_status_mismatch(processed_deploy.is_failed, !eval_successful),
             ));
@@ -403,6 +403,7 @@ impl ReplayRuntimeOps {
                     initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                         block_data.sender.bytes.clone(),
                         block_data.seq_num,
+                        invalid_block_hash,
                     ),
                 };
 

@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_pattern_matching)]
-
 // See node/src/main/scala/coop/rchain/node/instances/ProposerInstance.scala
 
 use std::sync::atomic::{AtomicUsize, Ordering};

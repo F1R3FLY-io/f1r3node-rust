@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 //! REPL client module
 
 //! REPL client for F1r3fly node
@@ -85,7 +83,7 @@ impl GrpcReplClient {
 #[async_trait::async_trait]
 impl ReplClientService for GrpcReplClient {
     async fn run(&self, line: String) -> eyre::Result<String> {
-        let req = CmdRequest { line };
+        let req = CmdRequest { line: line.into() };
 
         // Call the RPC
         match self.client.clone().run(req).await {

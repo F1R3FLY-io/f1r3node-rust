@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-
 // See block-storage/src/main/scala/coop/rchain/blockstorage/util/DoublyLinkedDagOperations.scala
 
 use std::collections::{HashMap, HashSet};

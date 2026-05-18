@@ -1,5 +1,3 @@
-#![allow(clippy::nonminimal_bool, clippy::ptr_arg)]
-
 // See casper/src/main/scala/coop/rchain/casper/util/ProtoUtil.scala
 
 use std::collections::HashSet;
@@ -370,7 +368,7 @@ pub fn unsigned_block_proto(
     };
 
     let hash = hash_block(&block);
-    block.block_hash = hash;
+    block.block_hash = hash.into();
     block
 }
 
@@ -382,12 +380,12 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
         .to_proto()
         .encode_to_vec()
         .into_iter()
-        .chain(block.body.to_proto().encode_to_vec())
-        .chain(block.sender.clone())
-        .chain(block.sig_algorithm.as_bytes().to_vec())
-        .chain(block.seq_num.to_le_bytes())
-        .chain(block.shard_id.as_bytes().to_vec())
-        .chain(block.extra_bytes.clone())
+        .chain(block.body.to_proto().encode_to_vec().into_iter())
+        .chain(block.sender.clone().into_iter())
+        .chain(block.sig_algorithm.as_bytes().to_vec().into_iter())
+        .chain(block.seq_num.to_le_bytes().into_iter())
+        .chain(block.shard_id.as_bytes().to_vec().into_iter())
+        .chain(block.extra_bytes.clone().into_iter())
         .collect();
 
     Blake2b256::hash(bytes).into()

@@ -1,5 +1,3 @@
-#![allow(clippy::cloned_ref_to_slice_refs)]
-
 // See comm/src/test/scala/coop/rchain/p2p/EffectsTestInstances.scala
 
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -20,10 +18,6 @@ pub const NETWORK_ID: &str = "test";
 
 pub struct NodeDiscoveryStub {
     pub nodes: Vec<PeerNode>,
-}
-
-impl Default for NodeDiscoveryStub {
-    fn default() -> Self { Self::new() }
 }
 
 impl NodeDiscoveryStub {
@@ -73,10 +67,6 @@ pub type Responses = Box<dyn Fn(&PeerNode, &Protocol) -> Result<(), CommError> +
 pub struct TransportLayerStub {
     reqresp: Arc<Mutex<Option<Arc<Responses>>>>,
     requests: Arc<Mutex<Vec<Request>>>,
-}
-
-impl Default for TransportLayerStub {
-    fn default() -> Self { Self::new() }
 }
 
 impl TransportLayerStub {

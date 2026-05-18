@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/util/comm/FairRoundRobinDispatcher.scala
 
 use std::collections::{HashMap, VecDeque};

@@ -160,11 +160,10 @@ To build a local image:
 | [models/README.md](models/README.md) | Protobuf model generation and schema helpers |
 | [rholang/README.md](rholang/README.md) | Rholang interpreter, CLI, examples |
 | [rspace++/README.md](rspace++/README.md) | Tuple space storage and replay support |
-| [block-storage/README.md](block-storage/README.md) | Block and deploy persistence |
-| [shared/README.md](shared/README.md) | Shared utilities and storage primitives |
+| [docs/block-storage/README.md](docs/block-storage/README.md) | Block and deploy persistence |
+| [docs/shared/README.md](docs/shared/README.md) | Shared utilities and storage primitives |
 | [graphz/README.md](graphz/README.md) | DOT and graph helpers |
 | [scripts/README.md](scripts/README.md) | Helper scripts used from the repo root |
-| [examples/README.md](examples/README.md) | Top-level examples and how to run them |
 | [docs/rnode-api/README.md](docs/rnode-api/README.md) | API documentation source notes |
 
 ## Default Ports

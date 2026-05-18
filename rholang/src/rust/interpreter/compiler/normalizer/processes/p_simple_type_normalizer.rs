@@ -1,5 +1,3 @@
-#![allow(clippy::extra_unused_lifetimes)]
-
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::Connective;
 use rholang_parser::ast::SimpleType;

@@ -9,7 +9,7 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn vault_address_spec() {
-    let test_object = CompiledRholangSource::load_source("VaultAddressTest.rho")
+    let test_object = crate::util::rholang::test_rho_loader::load_test_rho("VaultAddressTest.rho")
         .expect("Failed to load VaultAddressTest.rho");
 
     // NormalizerEnv.withDeployerId(deployerPk)

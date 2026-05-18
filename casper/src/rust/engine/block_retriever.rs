@@ -1,5 +1,3 @@
-#![allow(clippy::if_same_then_else)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/BlockRetriever.scala
 
 use std::collections::{HashMap, HashSet};
@@ -566,8 +564,10 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             deduped
         };
 
-        if let std::collections::hash_map::Entry::Vacant(e) = init_state.entry(hash) {
-            e.insert(RequestState {
+        if init_state.contains_key(&hash) {
+            false // Request already exists
+        } else {
+            init_state.insert(hash, RequestState {
                 timestamp: now,
                 initial_timestamp: now,
                 peers: HashSet::new(),
@@ -577,8 +577,6 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 peer_requery_cursor: 0,
             });
             true
-        } else {
-            false // Request already exists
         }
     }
 

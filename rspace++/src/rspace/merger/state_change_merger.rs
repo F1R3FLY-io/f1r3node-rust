@@ -1,5 +1,3 @@
-#![allow(clippy::borrowed_box)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/merger/StateChangeMerger.scala
 
 use shared::rust::ByteVector;

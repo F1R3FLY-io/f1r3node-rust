@@ -19,7 +19,9 @@ use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
+use crate::rust::casper::{
+    Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::test_utils::util::test_mocks::MockKeyValueStore;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -27,12 +29,13 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct NoOpsCasperEffect {
     estimator_func: Vec<BlockHash>,
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     block_store: KeyValueBlockStore,
     // Shared data for block store to ensure clones can access the same blocks
     shared_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
+    shard_conf: CasperShardConf,
 }
 
 // For testing purposes, we'll implement Clone manually by creating stub instances
@@ -59,6 +62,7 @@ impl Clone for NoOpsCasperEffect {
             shared_block_data: self.shared_block_data.clone(),
             shared_approved_block_data: self.shared_approved_block_data.clone(),
             block_dag_storage: self.block_dag_storage.clone(),
+            shard_conf: self.shard_conf.clone(),
         }
     }
 }
@@ -69,7 +73,7 @@ impl NoOpsCasperEffect {
     pub fn new(
         _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
     ) -> Self {
@@ -94,6 +98,7 @@ impl NoOpsCasperEffect {
             shared_block_data,
             shared_approved_block_data,
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 
@@ -101,7 +106,7 @@ impl NoOpsCasperEffect {
     /// This ensures all storages use the SAME kvm (like Scala's InMemoryStoreManager)
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -120,6 +125,7 @@ impl NoOpsCasperEffect {
             shared_block_data: shared_kvm_data.clone(),
             shared_approved_block_data: shared_kvm_data.clone(),
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 }
@@ -145,13 +151,13 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
-        self.runtime_manager.clone()
-    }
+    fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
 }

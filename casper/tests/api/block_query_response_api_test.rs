@@ -129,7 +129,7 @@ async fn effects_for_simple_casper_setup(
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         block_dag_storage.get_representation(),
         shared_kvm_data,
@@ -155,7 +155,7 @@ async fn empty_effects(
 ) -> (EngineCell, CliqueOracleImpl) {
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         block_dag_storage.get_representation(),
         shared_kvm_data,

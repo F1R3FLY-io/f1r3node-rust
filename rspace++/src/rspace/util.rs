@@ -1,5 +1,3 @@
-#![allow(clippy::match_single_binding, clippy::type_complexity)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/util/package.scala
 
 use super::rspace_interface::{ContResult, RSpaceResult};

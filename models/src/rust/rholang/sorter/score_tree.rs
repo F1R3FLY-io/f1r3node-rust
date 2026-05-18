@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ScoreTree.scala
 
 use shared::rust::ByteString;

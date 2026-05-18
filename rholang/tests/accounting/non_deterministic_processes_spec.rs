@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
 use rholang::rust::interpreter::interpreter::EvaluateResult;
@@ -34,6 +35,7 @@ fn create_test_external_services(
         openai_enabled: true,
         ollama_enabled: false,
         is_validator: true,
+        chroma: create_noop_chromadb_service(),
     }
 }
 
@@ -47,6 +49,7 @@ fn create_test_external_services_grpc(grpc_mock: GrpcClientMockConfig) -> Extern
         openai_enabled: false,
         ollama_enabled: false,
         is_validator: true,
+        chroma: create_noop_chromadb_service(),
     }
 }
 

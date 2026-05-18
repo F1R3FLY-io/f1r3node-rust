@@ -46,7 +46,7 @@ impl PacketHandler for CasperPacketHandler {
         }
 
         let message = casper_message_from_proto(parse_result.unwrap())
-            .map_err(CommError::UnexpectedMessage)?;
+            .map_err(|e| CommError::UnexpectedMessage(e))?;
 
         let engine = self.engine_cell.get().await;
 
@@ -230,7 +230,7 @@ impl PacketHandler for FairDispatcherPacketHandler {
         }
 
         let message = casper_message_from_proto(parse_result.unwrap())
-            .map_err(CommError::UnexpectedMessage)?;
+            .map_err(|e| CommError::UnexpectedMessage(e))?;
 
         tracing::debug!("Received message {:?} from {}", message, peer);
 

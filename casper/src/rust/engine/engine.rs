@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
-
 // See casper/src/main/scala/coop/rchain/casper/engine/Engine.scala
 
 use std::future::Future;
@@ -10,6 +8,7 @@ use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -18,7 +17,8 @@ use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
+    ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryResponse, NoApprovedBlockAvailable,
+    StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
@@ -283,19 +283,22 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
     deploy_storage: &KeyValueDeployStorage,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: &CasperBufferKeyValueStorage,
     rspace_state_manager: &RSpaceStateManager,
     event_publisher: F1r3flyEvents,
     block_retriever: BlockRetriever<U>,
     engine_cell: &Arc<EngineCell>,
-    runtime_manager_arc: &Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
-    // Scala uses size-50 bounded queues in both cases.
+    // Scala uses size-50 bounded queues; we add a third for the
+    // mergeable-channels store sync.
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
+    let (mergeable_tx, mergeable_rx) = mpsc::channel::<MergeableEntryResponse>(50);
 
     // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead of taking
     let runtime_manager = runtime_manager_arc.clone();
@@ -308,6 +311,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_store.clone(),
         block_dag_storage.clone(),
         deploy_storage.clone(),
+        rejected_deploy_buffer.clone(),
         casper_buffer_storage.clone(),
         rspace_state_manager.clone(),
         block_processing_queue_tx.clone(),
@@ -319,6 +323,8 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_rx,
         tuple_tx.clone(),
         tuple_rx,
+        mergeable_tx.clone(),
+        mergeable_rx,
         trim_state,
         disable_state_exporter,
         event_publisher.clone(),

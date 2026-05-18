@@ -1,10 +1,3 @@
-#![allow(
-    clippy::ptr_arg,
-    clippy::redundant_iter_cloned,
-    clippy::type_complexity,
-    clippy::unnecessary_sort_by
-)]
-
 // See rspace/src/main/scala/coop/rchain/rspace/RSpace.scala
 
 // NOTE: Manual marks are used instead of trace_i()/with_marks() because
@@ -420,9 +413,9 @@ where
                             .iter()
                             .map(|(k, v)| {
                                 if k.hash == produce_ref.hash {
-                                    (produce_ref.clone(), *v)
+                                    (produce_ref.clone(), v.clone())
                                 } else {
-                                    (k.clone(), *v)
+                                    (k.clone(), v.clone())
                                 }
                             })
                             .collect(),
@@ -578,12 +571,12 @@ where
             .map(|p| {
                 (
                     p.clone(),
-                    *self
-                        .produce_counter
+                    self.produce_counter
                         .lock()
                         .expect("produce counter lock")
                         .get(&p)
-                        .unwrap_or(&0),
+                        .unwrap_or(&0)
+                        .clone(),
                 )
             })
             .collect()

@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-
 use crate::rspace::errors::HistoryError;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 

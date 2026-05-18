@@ -10,10 +10,6 @@ use crate::rust::effects::repl_client::ReplClientService;
 /// --- ReplRuntime translation ---
 pub struct ReplRuntime;
 
-impl Default for ReplRuntime {
-    fn default() -> Self { Self::new() }
-}
-
 impl ReplRuntime {
     const LOGO: &'static str = r#"
   ╦═╗┌─┐┬ ┬┌─┐┬┌┐┌  ╔╗╔┌─┐┌┬┐┌─┐  ╦═╗╔═╗╔═╗╦  
@@ -117,7 +113,8 @@ impl ReplRuntime {
         let results =
             rt_handle.block_on(repl.eval_files(&file_names, print_unmatched_sends_only, language));
 
-        let labeled: Vec<(String, Result<String>)> = file_names.into_iter().zip(results).collect();
+        let labeled: Vec<(String, Result<String>)> =
+            file_names.into_iter().zip(results.into_iter()).collect();
 
         print_results(console, &labeled)?;
         Ok(())

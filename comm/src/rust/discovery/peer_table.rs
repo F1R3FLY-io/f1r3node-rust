@@ -199,6 +199,7 @@ impl<T: KademliaRPC> PeerTable<T> {
             .kademlia_rpc
             .ping(&old_entry.entry)
             .await
+            .map(|result| result)
             .unwrap_or(false);
 
         let mut entries = bucket.lock().map_err(|_| {

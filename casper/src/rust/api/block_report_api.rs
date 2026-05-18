@@ -95,7 +95,7 @@ impl BlockReportAPI {
             .reporting_casper
             .trace(block)
             .await
-            .map_err(BlockReportError::ReplayFailed)?;
+            .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
@@ -108,7 +108,7 @@ impl BlockReportAPI {
 
         let post_state_hash_bytes: Bytes = report_result.post_state_hash.into();
         Ok(BlockEventInfo {
-            block_info: Some(light_block),
+            block_info: Some(light_block).into(),
             deploys,
             system_deploys: sys_deploys,
             post_state_hash: post_state_hash_bytes,
@@ -152,7 +152,7 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash_bytes: ByteString = block.block_hash.to_vec();
+        let block_hash_bytes: ByteString = block.block_hash.to_vec().into();
         let cached = self
             .report_store
             .get(&vec![block_hash_bytes.clone()])
@@ -230,7 +230,7 @@ impl BlockReportAPI {
                     .collect();
 
                 SystemDeployInfoWithEventData {
-                    system_deploy: Some(system_deploy_proto),
+                    system_deploy: Some(system_deploy_proto).into(),
                     report,
                 }
             })
@@ -266,7 +266,7 @@ impl BlockReportAPI {
                     .collect();
 
                 DeployInfoWithEventData {
-                    deploy_info: Some(deploy_info),
+                    deploy_info: Some(deploy_info).into(),
                     report,
                 }
             })
