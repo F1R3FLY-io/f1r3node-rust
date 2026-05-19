@@ -1,0 +1,78 @@
+' Proof Layers — the five-layer stack of the cost-accounted-rho
+' formalization, with per-module line and theorem counts.
+'
+' Source of truth for Figure 7.1 in docs/theory/cost-accounted-rho-verification.md.
+' Each layer is a UML package containing its modules as components.
+' Inter-layer edges show the monotone dependency direction.
+'
+' Properties preserved:
+'   * Layers 1–3 are the consensus-critical stack.
+'   * Layers 4–5 were added alongside the replication-encoding support
+'     work (2026-04-20) and do not propagate down into Layers 1–3.
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/proof-layers.puml
+
+@startuml proof-layers
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<L1>> #EEF2FF
+  BackgroundColor<<L2>> #EEF7FF
+  BackgroundColor<<L3>> #FFF7EE
+  BackgroundColor<<L4>> #EEFAF1
+  BackgroundColor<<L5>> #FBEEF5
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+
+package "Layer 1 — Syntactic Foundation" <<L1>> {
+  component "RhoSyntax\n855 lines · 41 thms\nsubst_lift_zero, head_count_se"                            as RhoSyntax
+  component "StructEquivInversion\n253 lines · 7 thms\nhead_count, count_* functions"                   as SEI
+  component "StructEquivHeads\n1,470 lines · 47 thms\nheads, list_equiv, perm_equiv,\nse_P*_inj, only_replicate (§8.7)" as SEH
+  component "RhoReduction\n442 lines · 22 thms\nrho_step, rho_reachable,\nbarb + input_barb/output_barb (§3.6)"          as RhoRed
+}
+
+package "Layer 2 — Cost-Accounting & Translation" <<L2>> {
+  component "CostAccountedSyntax\n231 lines · 7 thms\nsig, token, system"                               as CAS
+  component "CostAccountedReduction\n283 lines · 5 thms\nca_step (5 rules), ca_reachable"              as CAR
+  component "Translation\n580 lines · 24 thms\nN_tr, T_tr, P_tr, S_tr,\nSplit, Join"                   as Trans
+  component "TokenConservation\n234 lines · 9 thms\ntoken_monotone_step / _reachable"                 as TokCon
+}
+
+package "Layer 3 — Faithfulness & Strong Bisimulation" <<L3>> {
+  component "TranslationFaithfulness\n4,183 lines · 84 thms\ncontextual reachability,\nper-step reverse,\nphased + recursive reflection" as TF
+  component "FuelGateSafety\n357 lines · 14 thms\nno_send_on, capability security"                      as FGS
+  component "Bisimulation\n1,248 lines · 37 thms\nbisim (coind.), post_gate_bisim,\nmulti_stuck_residue_bisim"              as Bisim
+}
+
+package "Layer 4 — Weak Barbed Observables   [added 2026-04-20]" <<L4>> {
+  component "WeakBarbedEquiv\n261 lines · 17 thms\nweak_barb_input, weak_barb_output,\nweak_barbed_equiv_except x (§6.6)"   as WBE
+}
+
+package "Layer 5 — Replication Encoding Support (leaf)   [added 2026-04-20]" <<L5>> {
+  component "Replication\n2,075 lines · 62 thms\nbang_encoding, D_encoding,\nbang_encoding_unfolds,\nstep-inversion machinery (§8.7),\nreplication_encoding_forward_barb_sound (§6.6)"    as Rep
+}
+
+' Monotone dependency: layers only depend downward.
+RhoSyntax -down-> CAS
+RhoRed    -down-> Trans
+Trans     -down-> TF
+Trans     -down-> FGS
+TokCon    -down-> TF
+TF        -down-> Bisim
+RhoRed    -down-> WBE
+Bisim     -down-> Rep
+WBE       -down-> Rep
+
+note right of Rep
+  Replication support
+  lives here and cannot
+  propagate into Layers 1–3.
+end note
+
+@enduml

@@ -1,0 +1,102 @@
+' Recursive Metered Gate Protocol — end-to-end lifecycle of one selected
+' source step in the cost-accounted rho calculus implementation target.
+'
+' Source of truth for Figure 4.4 in docs/theory/cost-accounting-migration.md.
+' Shows the five protocol stages as explicit RSpace events:
+'   Stage 1 — authorization marker deposit (produce)
+'   Stage 2 — fuel gate registration (consume, waiting)
+'   Stage 3 — COMM fires (match) + canonical token-budget reservation
+'   Stage 4 — recursively metered continuation resumes
+'   Stage 5 — any next source step installs its own gate
+'
+' End-to-end participants:
+'   Deployer -> Metering pipeline -> Evaluator -> TokenBudget / RSpace
+' Closing the loop: Evaluator queries consumed source-token units from
+' TokenBudget and returns the cost to the Deployer.
+'
+' Color palette (consistent with deploy-execution-sequence.puml):
+'   Actor / Deployer     : salmon       (#F8C3B8)
+'   Metering pipeline    : lavender     (#D4C4E8)
+'   Evaluator (control)  : amber        (#FFECB3)
+'   Cost accountant      : mint         (#C8E6C9)
+'   Tuple space          : blue         (#BBDEFB)
+'
+' Semantic arrow colors:
+'   Fuel-decrement (cost event): red-ish (#C62828)
+'
+' (LMDB persistence is abstracted behind RSpace; not surfaced here.)
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/fuel-gate-protocol.puml
+
+@startuml fuel-gate-protocol
+!theme plain
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  GroupBorderColor        #333333
+  GroupHeaderFontColor    #222222
+  DividerBackgroundColor  #ECEFF1
+  DividerFontColor        #1A237E
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 12
+
+autonumber
+
+actor       "Deployer"                                                        as D    #F8C3B8
+participant "Metering pipeline\n(Parser + Normalizer + SigAnnotator)"          as T   #D4C4E8
+participant "Evaluator"                                                       as E    #FFECB3
+participant "TokenBudget"                                                     as CM   #C8E6C9
+database    "RSpace"                                                          as R    #BBDEFB
+
+D -> T ++ : submit Rholang source + signature s
+note over T #EDE7F6
+parse → normalize → annotate P with s
+→ build well_reflected metered state
+end note
+T --> E ++ : metered work item =\nrecursive_metered_gate(K)
+deactivate T
+
+E -> CM ++ : init(initial_tokens = phlo_limit)
+CM --> E -- : ok
+
+== Stage 1 — Authorization deposit (cost 0) ==
+E -> R ++ : produce Quote(K)!(0)
+R --> E -- : stored, pending match
+
+== Stage 2 — Metered gate registration (cost 0) ==
+E -> R ++ : consume for(t ← Quote(K)){ resume(K) ∣ *t }
+R --> E -- : stored, waiting
+
+== Stage 3 — COMM fires on Quote(K)  (cost = event.weight) ==
+note over R #E3F2FD
+match authorization ↔ recursive gate
+bind t := @0 and release continuation K
+end note
+R -[#C62828]->> CM : reserve_canonical(event)
+R -> E : match → continuation K ∣ 0
+
+== Stage 4 — Recursively metered continuation resumes ==
+note over E #FFF8E1 : K is a well_reflected image of the source successor
+
+== Stage 5 — Next ready source step, if any ==
+E -> R ++ : register next recursive_metered_gate(K')
+R --> E -- : pending or matched independently
+
+E -> CM ++ : total_cost()
+CM --> E -- : consumed = Σ event.weight
+E --> D -- : deploy result, cost = consumed source-token units
+
+note over D, R #E8F5E9
+The sole cost event is Stage 3 (highlighted in red).
+All other stages — authorization deposit, gate registration,
+continuation scheduling, and pending registration — are not
+billable unless they fire another recursive metered gate.
+end note
+
+@enduml

@@ -74,7 +74,7 @@ Scala source is faulty.
 |---------------------------------------------------------------|------------------------------------------------------------------------|
 | Equivocation detection (admissible, ignorable, neglected)     | Cordial Miners / RGB PSSM / Casanova consensus paths (Casper CBC only) |
 | `EquivocationRecord` persistence and monotonicity             | Replay protocol details                                                |
-| `SlashDeploy` system deploy and `@PoS!("slash", …)` Rholang   | Unconfirmed Rust-source changes from model-only findings               |
+| `SlashDeploy` system deploy and `@PoS!("slash", …)` Rholang   | Unconfirmed Rust implementation changes from model-only findings               |
 | Two-level slashing (Level 1 + Level 2)                        | Rewriting `test_slash.py` (see `system-integration#51`)                |
 | Fork-choice exclusion of slashed validators                   | Replacing PoS multi-sig keys (operations concern)                      |
 | Bisimilarity between Rust and Scala (modulo proven bug fixes) | Graduated/proportional slashing penalties (future protocol design)     |
@@ -196,4 +196,4 @@ done
 - `docs/casper/BYZANTINE_FAULT_TOLERANCE.md` — broader BFT model context.
 - `docs/casper/CONSENSUS_PROTOCOL.md` — overall consensus protocol description.
 - Cost-accounting precedent — methodologically modeled on
-  `/home/dylon/Workspace/f1r3fly.io/f1r3node-cost-accounted-rho-calc/docs/theory/cost-accounted-rho-verification.md`.
+  `docs/theory/cost-accounted-rho-verification.md`.

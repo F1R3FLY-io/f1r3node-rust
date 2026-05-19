@@ -2994,7 +2994,7 @@ The verification policy is:
 
 ```
 finite witness ≠ proof authority
-finite witness ≠ Rust source bug
+finite witness ≠ Rust implementation bug
 ```
 
 A witness can justify a production Rust source change only after it is

@@ -113,7 +113,7 @@ distributed systems (Wilcox et al.'s Verdi framework [WWPTWEA15];
 [CBCCoq20] on Coq formalization of CBC Casper). The bisimilarity argument
 follows the standard pattern from [Mil89, MR05a, San98]. We also adapt
 the documentation methodology from the cost-accounting verification
-artifact at `f1r3node-cost-accounted-rho-calc/docs/theory/cost-accounted-rho-verification.md`.
+artifact at `docs/theory/cost-accounted-rho-verification.md`.
 
 ### 1.4 Outline
 
@@ -2229,7 +2229,7 @@ likely objections by stating what is in and out of scope.
 
 | Topic                                                        | Status            | Rationale                                                                                                                                                                                                                    |
 |--------------------------------------------------------------|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Implementing unconfirmed Rust-source changes                 | Out               | The traceability ledger (preserved on `analysis/slashing` as `slashing-traceability.md`) gates source changes: Sage/Hypothesis witnesses become Rust source work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
+| Implementing unconfirmed Rust implementation changes                 | Out               | The traceability ledger (preserved on `analysis/slashing` as `slashing-traceability.md`) gates implementation changes: Sage/Hypothesis witnesses become Rust implementation work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
 | Rewriting `test_slash.py` (issue #25 fix 3d)                 | Out               | System-integration concern (`F1R3FLY-io/system-integration#51`); separate repo.                                                                                                                                              |
 | Replacing PoS multi-sig keys (issue #25 fix 3e)              | Out               | Operations / key-management concern; not a code change in `casper/`.                                                                                                                                                         |
 | Graduated/proportional slashing penalties (issue #25 fix 3c) | Out               | Requires protocol-level design decision; this spec covers the existing one-strike model. Future work mentioned at the end of §10.                                                                                            |

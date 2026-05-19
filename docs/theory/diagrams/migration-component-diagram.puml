@@ -1,0 +1,62 @@
+' Migration Component Diagram — new architecture for the cost-accounted-rho
+' runtime, with three top-level packages: Deploy Pipeline, Evaluator, and
+' Persistent Infrastructure.
+'
+' Source of truth for Figure 5.6 in docs/theory/cost-accounting-migration.md.
+' This is a proper UML component diagram: each node is a <<component>> (or
+' <<artifact>> where appropriate), containment is shown via nested
+' packages, and data-flow / use dependencies are arrows (-->).
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/migration-component-diagram.puml
+
+@startuml migration-component-diagram
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<Pipeline>>       #EEF2FF
+  BackgroundColor<<Evaluator>>      #FFF7EE
+  BackgroundColor<<Infrastructure>> #EEFAF1
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+
+package "Deploy Pipeline" <<Pipeline>> {
+  component "Parser + Normalizer"     <<component>> as Parser
+  component "Signature Annotator"     <<component>> as SigAnnot
+  component "Recursive Metering\nPass"       <<component>> as Translator
+
+  Parser --> SigAnnot  : Plain Par
+  SigAnnot --> Translator : SignedProcess
+}
+
+package "Evaluator (reduce.rs)" <<Evaluator>> {
+  component "DebruijnInterpreter\n(eval_inner, FuturesUnordered)" <<component>> as Interp
+  component "TokenBudget\n(weighted reservations)"          <<component>> as TokCost
+  component "RSpace (ISpace)\n— raw + metered hook"         <<component>> as RSpace
+  component "LMDB Backing Store"                            <<artifact>>  as LMDB
+
+  Interp <--> RSpace   : produce / consume
+  Interp --> TokCost   : reserve source events / total_cost
+  RSpace --> LMDB      : persistent store
+}
+
+package "Persistent Infrastructure" <<Infrastructure>> {
+  component "Split(s₁, s₂)\nmediator procs"     <<component>> as Split
+  component "Join(s₁, s₂)\nmediator procs"      <<component>> as Join
+  note right of Join
+    Installed once at genesis.
+    Persistent under PReplicate;
+    no per-deploy cost.
+  end note
+}
+
+Translator --> Interp : Metered Work Queue
+RSpace --> Split : reads on N⟦s₁ & s₂⟧
+RSpace --> Join  : reads on N⟦s₁⟧, N⟦s₂⟧
+
+@enduml

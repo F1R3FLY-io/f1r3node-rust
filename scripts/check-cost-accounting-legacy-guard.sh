@@ -28,7 +28,7 @@ fi
 if rg -n \
   'clear_event_log[(]' \
   "$ROOT/casper/src/rust"; then
-  echo "error: Casper must not clear diagnostic logs during replay/finalization; the consensus cost trace is finalized by RuntimeBudget reset" >&2
+  echo "error: Casper must not clear diagnostic logs during replay/finalization; RuntimeBudget finalization reads the completed consensus trace and deploy reset clears retained trace state" >&2
   exit 1
 fi
 

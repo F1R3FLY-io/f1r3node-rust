@@ -505,6 +505,29 @@ fn runtime_budget_reset_from_token_clears_oop_boundary() {
 }
 
 #[test]
+fn runtime_budget_reset_from_token_clears_success_trace_window() {
+    let sig = Sig::Hash(vec![4, 5, 6]);
+    let budget = RuntimeBudget::new(Cost::create(5, "reset budget"));
+
+    budget.reserve_canonical(token_event(0, 2)).unwrap();
+    let before_reset = budget.cost_trace_digest();
+    assert_eq!(before_reset.event_count, 1);
+    assert_eq!(budget.cost_trace_event_count(), 1);
+
+    budget.reset_from_token(&Token::coalesced(sig.clone(), 9));
+    let after_reset = budget.cost_trace_digest();
+
+    assert_eq!(budget.signature(), sig);
+    assert_eq!(budget.total_cost().value, 0);
+    assert_eq!(budget.remaining().value, 9);
+    assert_eq!(budget.cost_trace_event_count(), 0);
+    assert!(budget.get_event_log().is_empty());
+    assert_eq!(budget.last_oop_event(), None);
+    assert_eq!(after_reset.event_count, 0);
+    assert_ne!(before_reset.digest, after_reset.digest);
+}
+
+#[test]
 fn empty_cost_trace_still_has_consensus_digest() {
     let budget = RuntimeBudget::new(Cost::create(5, "empty trace digest"));
     let digest = budget.cost_trace_digest();
@@ -876,6 +899,35 @@ fn zero_weight_billable_event_is_rejected_without_trace_entry() {
     assert_eq!(budget.remaining().value, 10);
     assert!(budget.get_event_log().is_empty());
     assert_eq!(budget.cost_trace_event_count(), 0);
+}
+
+#[test]
+fn max_sized_trace_descriptors_are_admitted_at_boundary() {
+    let budget = RuntimeBudget::new(Cost::create(3, "descriptor boundary budget"));
+    let primitive = token_event_with(
+        1,
+        vec![0],
+        0,
+        0,
+        BillableKind::Primitive("x".repeat(MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES)),
+        1,
+    );
+    let source_path = token_event_with(
+        1,
+        vec![0; MAX_COST_TRACE_SOURCE_PATH_COMPONENTS],
+        1,
+        0,
+        BillableKind::SourceStep,
+        1,
+    );
+
+    budget.reserve_canonical(primitive).unwrap();
+    budget.reserve_canonical(source_path).unwrap();
+
+    assert_eq!(budget.total_cost().value, 2);
+    assert_eq!(budget.remaining().value, 1);
+    assert_eq!(budget.get_event_log().len(), 2);
+    assert_eq!(budget.cost_trace_event_count(), 2);
 }
 
 #[test]

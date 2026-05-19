@@ -1,0 +1,101 @@
+' Module Dependency Graph — C4 Component variant
+'
+' C4 Level-3 (Component) rendering of the 18 Rocq modules organized
+' into 5 proof-layer tiers. Alternative to module-dependency-graph.puml
+' (raw UML component diagram) using the C4-PlantUML stdlib for cleaner
+' architectural documentation aesthetics.
+'
+' Container_Boundary = proof-layer tier
+' Component          = individual Rocq module (.v file)
+' Rel(A, B, ...)     = "B imports A"  (dependency edge)
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/module-dependency-graph-c4.puml
+
+@startuml module-dependency-graph-c4
+!include <C4/C4_Component>
+
+LAYOUT_TOP_DOWN()
+HIDE_STEREOTYPE()
+
+title Module Dependency Graph — C4 Component View\n(18 modules, 5 dependency tiers)
+
+Container_Boundary(l1, "Layer 1 — Syntactic Foundation") {
+  Component(RhoSyntax, "RhoSyntax",            "Rocq theory",  "Syntax, substitution, lifting, structural equivalence")
+  Component(SEI,       "StructEquivInversion", "Rocq theory",  "head_count, count_* counting functions")
+  Component(SEH,       "StructEquivHeads",     "Rocq theory",  "heads lists, permutation characterization, only_* predicates")
+  Component(RhoRed,    "RhoReduction",         "Rocq theory",  "rho_step, rho_reachable, barb + input/output_barb, stuck lemmas")
+}
+
+Container_Boundary(l2, "Layer 2 — Cost-Accounting and Translation") {
+  Component(CAS,    "CostAccountedSyntax",     "Rocq theory",  "sig, token, system, size functions")
+  Component(CAR,    "CostAccountedReduction",  "Rocq theory",  "ca_step (5 rules), ca_reachable")
+  Component(Trans,  "Translation",             "Rocq theory",  "N_tr, T_tr, P_tr, S_tr, Split, Join")
+  Component(ChSep,  "ChannelSeparation",       "Rocq theory",  "Signature channel invariance, N_tr_is_Quote")
+  Component(TokCon, "TokenConservation",       "Rocq theory",  "token_monotone_step / _reachable")
+  Component(FED,    "FuelEventDecomposition",  "Rocq theory",  "Fuel event multiset determinism")
+  Component(SN,     "StrongNormalization",     "Rocq theory",  "ca_strongly_normalizing, ca_max_steps_bound")
+  Component(Conf,   "Confluence",              "Rocq theory",  "Newman's lemma, ca_confluent, cost determinism")
+  Component(SD,     "StepDeterminism",         "Rocq theory",  "ca_step_deterministic, single_token_path_unique")
+}
+
+Container_Boundary(l3, "Layer 3 — Faithfulness and Strong Bisimulation") {
+  Component(TF,    "TranslationFaithfulness", "Rocq theory",  "Contextual reachability, per-step reverse,\nphased and recursive reflection")
+  Component(FGS,   "FuelGateSafety",          "Rocq theory",  "no_send_on, capability security")
+  Component(Bisim, "Bisimulation",            "Rocq theory",  "bisim (coind.), post_gate_bisim, multi_stuck_residue_bisim")
+}
+
+Container_Boundary(l4, "Layer 4 — Weak Barbed Observables   [added 2026-04-20]") {
+  Component(WBE, "WeakBarbedEquiv", "Rocq theory", "weak_barb_input/output, weak_barbed_equiv_except x (§6.6)")
+}
+
+Container_Boundary(l5, "Layer 5 — Replication Encoding Support — leaf of the DAG   [added 2026-04-20]") {
+  Component(Rep, "Replication", "Rocq theory", "bang_encoding, D_encoding, bang_encoding_unfolds,\nstep-inversion machinery (§8.7),\nreplication_encoding_forward_barb_sound (§6.6)")
+}
+
+' --- Intra-Layer 1 ---
+Rel(RhoSyntax, SEI,    "imports")
+Rel(SEI,       SEH,    "imports")
+Rel(RhoSyntax, RhoRed, "imports")
+Rel(SEI,       RhoRed, "imports")
+Rel(SEH,       RhoRed, "imports")
+
+' --- Layer 1 → Layer 2 ---
+Rel(RhoSyntax, CAS,   "imports")
+Rel(CAS,       CAR,   "imports")
+Rel(RhoSyntax, Trans, "imports")
+Rel(SEI,       Trans, "imports")
+Rel(SEH,       Trans, "imports")
+Rel(RhoRed,    Trans, "imports")
+Rel(CAS,       Trans, "imports")
+Rel(CAS,       ChSep, "imports")
+Rel(CAR,       TokCon,"imports")
+Rel(CAR,       FED,   "imports")
+Rel(TokCon,    SN,    "imports")
+Rel(SN,        Conf,  "imports")
+Rel(CAR,       Conf,  "imports")
+Rel(Conf,      SD,    "imports")
+
+' --- Layer 2 → Layer 3 ---
+Rel(Trans,  TF,    "imports")
+Rel(TokCon, TF,    "imports")
+Rel(Trans,  FGS,   "imports")
+Rel(TF,     Bisim, "imports")
+Rel(Trans,  Bisim, "imports")
+
+' --- Layer 1 → Layer 4 ---
+Rel(RhoSyntax, WBE, "imports")
+Rel(SEI,       WBE, "imports")
+Rel(RhoRed,    WBE, "imports")
+
+' --- Layer 3 + Layer 4 → Layer 5 (Replication is a leaf) ---
+Rel(RhoSyntax, Rep, "imports")
+Rel(SEI,       Rep, "imports")
+Rel(SEH,       Rep, "imports")
+Rel(RhoRed,    Rep, "imports")
+Rel(Bisim,     Rep, "imports")
+Rel(WBE,       Rep, "imports")
+
+SHOW_LEGEND()
+
+@enduml

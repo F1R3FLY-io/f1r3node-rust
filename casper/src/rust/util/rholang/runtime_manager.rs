@@ -1284,6 +1284,113 @@ mod tests {
         }
     }
 
+    #[derive(serde::Deserialize)]
+    struct V12FixtureSet {
+        fixtures: Vec<V12Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V12Fixture {
+        id: String,
+        oracle_surface: String,
+        oracle_kind: String,
+        mutation_axis: String,
+        expected_total_cost: i64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V13FixtureSet {
+        fixtures: Vec<V13Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V13Fixture {
+        id: String,
+        #[serde(default)]
+        semantic_oracle: String,
+        #[serde(default)]
+        expected_disposition: String,
+        #[serde(default)]
+        expected_total_cost: i64,
+        #[serde(default)]
+        expected_event_count: u64,
+        #[serde(default)]
+        settlement: serde_json::Value,
+        #[serde(default)]
+        replay_mutations: Vec<String>,
+        #[serde(default)]
+        source_surface_status: String,
+        #[serde(default)]
+        source_facets: Vec<String>,
+        #[serde(default)]
+        source_anchor_digest: String,
+        #[serde(default)]
+        cross_surface_role: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V14FixtureSet {
+        fixtures: Vec<V14Fixture>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct V14Fixture {
+        id: String,
+        #[serde(default)]
+        security_surface: String,
+        #[serde(default)]
+        expected_disposition: String,
+        #[serde(default)]
+        expected_total_cost: i64,
+        #[serde(default)]
+        expected_event_count: u64,
+        #[serde(default)]
+        replay_mutations: Vec<String>,
+        #[serde(default)]
+        source_anchor_digest: String,
+        #[serde(default)]
+        source_anchor_status: String,
+        #[serde(default)]
+        auth_boundary: String,
+        #[serde(default)]
+        replay_boundary: String,
+        #[serde(default)]
+        dependency_advisory_id: String,
+        #[serde(default)]
+        secret_material_touched: bool,
+    }
+
+    fn horizon_v12_fixtures() -> Vec<V12Fixture> {
+        serde_json::from_str::<V12FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v12_fixtures.json"
+        ))
+        .expect("embedded horizon v12 fixture schema")
+        .fixtures
+    }
+
+    fn horizon_v13_fixtures() -> Vec<V13Fixture> {
+        serde_json::from_str::<V13FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v13_fixtures.json"
+        ))
+        .expect("embedded horizon v13 fixture schema")
+        .fixtures
+    }
+
+    fn horizon_v14_fixtures() -> Vec<V14Fixture> {
+        serde_json::from_str::<V14FixtureSet>(include_str!(
+            "../../../../../rholang/tests/accounting/horizon_v14_fixtures.json"
+        ))
+        .expect("embedded horizon v14 fixture schema")
+        .fixtures
+    }
+
+    fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
+    }
+
     #[test]
     fn replay_payload_hash_changes_when_user_cost_changes() {
         let deploy = signed_deploy();
@@ -1536,5 +1643,320 @@ mod tests {
             RuntimeManager::replay_payload_hash(&[deploy.clone()], &[], false),
             RuntimeManager::replay_payload_hash(&[deploy], &[], true)
         );
+    }
+
+    #[test]
+    fn cost_accounting_v12_casper_replay_payload_oracles_hold() {
+        let fixtures = horizon_v12_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.oracle_surface == "casper_replay")
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert_eq!(fixture.oracle_kind, "casper_replay_payload_hash");
+            let deploy = signed_deploy();
+            let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
+            let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+
+            match fixture.mutation_axis.as_str() {
+                "cost_trace_digest" => {
+                    left.cost_trace_digest = vec![1; 32].into();
+                    left.cost_trace_event_count = 1;
+                    right.cost_trace_digest = vec![2; 32].into();
+                    right.cost_trace_event_count = 1;
+                }
+                "signature" => {
+                    right = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+                }
+                other => panic!(
+                    "unexpected v12 casper mutation axis {other} in {}",
+                    fixture.id
+                ),
+            }
+
+            assert_ne!(
+                RuntimeManager::replay_payload_hash(&[left], &[], false),
+                RuntimeManager::replay_payload_hash(&[right], &[], false),
+                "v12 casper replay fixture {} must reject mutation axis {}",
+                fixture.id,
+                fixture.mutation_axis
+            );
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v12_slashing_replay_oracles_hold() {
+        let fixtures = horizon_v12_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.oracle_surface == "slashing")
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            match fixture.oracle_kind.as_str() {
+                "slashing_replay_payload_hash" => {
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v12 slashing fixture {} must authenticate slashing fields",
+                        fixture.id
+                    );
+                }
+                "slashing_post_eval_isolation" => {
+                    let user_deploy = processed_deploy(
+                        signed_deploy(),
+                        fixture.expected_total_cost as u64,
+                        vec![produce_event(1)],
+                    );
+                    let with_slash = RuntimeManager::replay_payload_hash(
+                        &[user_deploy.clone()],
+                        &[slash_system_deploy(1)],
+                        false,
+                    );
+                    let without_slash =
+                        RuntimeManager::replay_payload_hash(&[user_deploy.clone()], &[], false);
+
+                    assert_ne!(
+                        with_slash, without_slash,
+                        "v12 slashing fixture {} must include system-deploy evidence",
+                        fixture.id
+                    );
+                    assert_eq!(
+                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
+                        "v12 slashing fixture {} must not mutate user deploy cost",
+                        fixture.id
+                    );
+                }
+                other => panic!(
+                    "unexpected v12 slashing oracle kind {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v13_source_semantic_replay_payload_oracles_hold() {
+        let fixtures = horizon_v13_fixtures()
+            .into_iter()
+            .filter(|fixture| {
+                matches!(
+                    fixture.semantic_oracle.as_str(),
+                    "runtime_to_replay_trace_commitment" | "replay_to_slashing_authentication"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert!(!fixture.cross_surface_role.is_empty());
+            assert!(fixture
+                .replay_mutations
+                .iter()
+                .any(|field| field == "cost_trace_digest" || field == "slash_fields"));
+
+            match fixture.semantic_oracle.as_str() {
+                "runtime_to_replay_trace_commitment" => {
+                    let deploy = signed_deploy();
+                    let mut left =
+                        processed_deploy(deploy.clone(), fixture.expected_total_cost as u64, vec![
+                            produce_event(1),
+                        ]);
+                    let mut right =
+                        processed_deploy(deploy, fixture.expected_total_cost as u64, vec![
+                            produce_event(1),
+                        ]);
+                    left.cost_trace_digest = vec![1; 32].into();
+                    left.cost_trace_event_count = fixture.expected_event_count;
+                    right.cost_trace_digest = vec![2; 32].into();
+                    right.cost_trace_event_count = fixture.expected_event_count;
+
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[left], &[], false),
+                        RuntimeManager::replay_payload_hash(&[right], &[], false),
+                        "v13 fixture {} must authenticate runtime trace commitment in replay payload",
+                        fixture.id
+                    );
+                }
+                "replay_to_slashing_authentication" => {
+                    for field in ["slash_fields", "block_hash", "signature"] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v13 fixture {} must include replay/slashing mutation field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v13 fixture {} must authenticate slashing fields in replay payload",
+                        fixture.id
+                    );
+                }
+                other => panic!("unexpected v13 replay oracle {other} in {}", fixture.id),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v13_settlement_slashing_legacy_oracles_hold() {
+        let fixtures = horizon_v13_fixtures()
+            .into_iter()
+            .filter(|fixture| {
+                matches!(
+                    fixture.semantic_oracle.as_str(),
+                    "runtime_to_settlement_fuel_isolation" | "legacy_to_runtime_quarantine"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert!(!fixture.cross_surface_role.is_empty());
+            match fixture.semantic_oracle.as_str() {
+                "runtime_to_settlement_fuel_isolation" => {
+                    let deploy = DeployData {
+                        term: "v13-source-semantic".to_string(),
+                        time_stamp: 0,
+                        phlo_price: fixture_i64(&fixture.settlement, "phlo_price"),
+                        phlo_limit: fixture_i64(&fixture.settlement, "phlo_limit"),
+                        valid_after_block_number: 0,
+                        shard_id: "root".to_string(),
+                        expiration_timestamp: None,
+                    };
+                    let token_cost = fixture_i64(&fixture.settlement, "token_cost");
+                    let refund = deploy
+                        .refund_amount_for_token_cost(token_cost)
+                        .expect("v13 settlement refund");
+                    assert_eq!(refund, fixture_i64(&fixture.settlement, "refund"));
+                    assert!(refund <= deploy.checked_total_phlo_charge().unwrap());
+
+                    let user_deploy = processed_deploy(
+                        signed_deploy(),
+                        fixture.expected_total_cost as u64,
+                        vec![produce_event(1)],
+                    );
+                    assert_eq!(
+                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
+                        "v13 fixture {} settlement refund must not mutate runtime cost evidence",
+                        fixture.id
+                    );
+                }
+                "legacy_to_runtime_quarantine" => {
+                    assert_eq!(fixture.source_surface_status, "absent");
+                    assert_eq!(fixture.expected_disposition, "source_absent");
+                    assert!(fixture
+                        .source_facets
+                        .iter()
+                        .any(|facet| facet == "legacy_quarantine"));
+                    assert!(fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|field| field == "cost_trace_present"));
+                }
+                other => panic!(
+                    "unexpected v13 settlement/legacy oracle {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn cost_accounting_v14_replay_slashing_oracles_hold() {
+        let fixtures = horizon_v14_fixtures()
+            .into_iter()
+            .filter(|fixture| {
+                matches!(
+                    fixture.security_surface.as_str(),
+                    "api_to_runtime_replay"
+                        | "replay_cache_payload_binding"
+                        | "slashing_authorization"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!fixtures.is_empty());
+
+        for fixture in fixtures {
+            assert!(!fixture.source_anchor_digest.is_empty());
+            assert_eq!(fixture.source_anchor_status, "present");
+            assert!(!fixture.auth_boundary.is_empty());
+            assert!(!fixture.replay_boundary.is_empty());
+            assert!(fixture.dependency_advisory_id.is_empty());
+            assert!(!fixture.secret_material_touched);
+
+            match fixture.security_surface.as_str() {
+                "api_to_runtime_replay" | "replay_cache_payload_binding" => {
+                    assert!(
+                        fixture
+                            .replay_mutations
+                            .iter()
+                            .any(|field| field == "cost_trace_digest"),
+                        "v14 fixture {} must authenticate cost trace digest",
+                        fixture.id
+                    );
+                    assert!(
+                        fixture
+                            .replay_mutations
+                            .iter()
+                            .any(|field| field == "cost_trace_event_count"),
+                        "v14 fixture {} must authenticate cost trace event count",
+                        fixture.id
+                    );
+
+                    let deploy = signed_deploy();
+                    let mut left =
+                        processed_deploy(deploy.clone(), fixture.expected_total_cost as u64, vec![
+                            produce_event(1),
+                        ]);
+                    let mut right =
+                        processed_deploy(deploy, fixture.expected_total_cost as u64, vec![
+                            produce_event(1),
+                        ]);
+                    left.cost_trace_digest = vec![1; 32].into();
+                    left.cost_trace_event_count = fixture.expected_event_count;
+                    right.cost_trace_digest = vec![2; 32].into();
+                    right.cost_trace_event_count = fixture.expected_event_count + 1;
+
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[left], &[], false),
+                        RuntimeManager::replay_payload_hash(&[right], &[], false),
+                        "v14 fixture {} must bind runtime cost evidence to replay payload",
+                        fixture.id
+                    );
+                }
+                "slashing_authorization" => {
+                    assert_eq!(fixture.expected_disposition, "replay_invalid");
+                    for field in ["slash_epoch", "slash_fields", "block_hash", "signature"] {
+                        assert!(
+                            fixture
+                                .replay_mutations
+                                .iter()
+                                .any(|mutation| mutation == field),
+                            "v14 fixture {} must include replay/slashing mutation field {}",
+                            fixture.id,
+                            field
+                        );
+                    }
+                    assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
+                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
+                        "v14 fixture {} must authenticate slashing payload fields",
+                        fixture.id
+                    );
+                }
+                other => panic!(
+                    "unexpected v14 replay/slashing surface {other} in {}",
+                    fixture.id
+                ),
+            }
+        }
     }
 }

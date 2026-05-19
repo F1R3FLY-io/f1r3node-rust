@@ -1,0 +1,358 @@
+# Cost-Accounted Rho Threat Model
+
+**Status:** Implementation-aligned security and thread-safety model
+**Scope:** Cost-accounted rho calculus, runtime-budget refinement,
+Casper replay/settlement integration, and slashing composition.
+
+This document applies the slashing threat-model style to the
+cost-accounted rho migration. It records the adversary model, the
+security and concurrency vectors that matter for cost accounting, the
+formal theorem that protects each vector, and the Rust/TLA+ tests that
+exercise the production boundary.
+
+The publication draft is not the source of implementation authority for
+this document. The authority chain is: repo-local Rocq/TLA+ formal
+models, this design and threat model, then the `f1r3node-rust`
+implementation.
+
+## 1. Terms
+
+| Term | Meaning |
+|---|---|
+| Runtime fuel | The per-deploy source-token budget used during Rholang evaluation. |
+| Settlement balance | Casper account arithmetic used before and after evaluation for precharge and refund. |
+| Cost trace | Consensus commitment to successful billable source-token events plus the optional out-of-phlo boundary event. |
+| Diagnostic log | Bounded observability data that is not consensus evidence. Clearing it cannot affect cost or replay. |
+| Cost-invalid evidence | Replay-visible evidence that a block's cost accounting fields are invalid and may feed slashing. |
+| Legacy replay | Pre-activation compatibility mode. It may accept absent cost traces only under the explicit legacy mode. |
+| Cost-accounted replay | Post-activation replay mode. It requires an explicit cost-trace commitment and event count. |
+| Thread vector | A concurrency vector in which evaluator workers race on frame queues, budget reservation, OOP ownership, or trace finalization. |
+
+## 2. Adversary Model
+
+The adversary may:
+
+- Submit validly signed deploys with adversarial source terms, phlo
+  limits, phlo prices, timestamps, and signatures.
+- Attempt to forge or replay cost-trace fields in processed deploys,
+  block payloads, replay-cache keys, and serialized wire messages.
+- Control evaluator scheduling indirectly through deploy structure,
+  causing concurrent branches to race on budget reservation and OOP
+  boundaries.
+- Cause deploy failures, parser failures, out-of-phlo failures,
+  rollback paths, and mixed success/failure blocks.
+- Submit blocks with low prices, missing traces, mutated costs,
+  stale cost-invalid evidence, or unauthorized fee-settlement effects.
+- Attempt downgrade attacks at the legacy/cost-accounted activation
+  boundary.
+- Attempt denial of service with oversized event weights, large event
+  descriptors, many deploys, and long finalization windows.
+
+The adversary may not:
+
+- Break the cryptographic hash and signature assumptions used by block
+  signatures, deploy signatures, and domain-separated signature channels.
+- Mutate private validator state without passing through consensus or
+  replay validation.
+- Bypass the slashing protocol's independently verified authorization
+  rules. This threat model imports those rules as the slashing boundary.
+
+## 3. STRIDE Classification
+
+STRIDE classifies threats into six inclusive buckets: **S**poofing,
+**T**ampering, **R**epudiation, **I**nformation disclosure, **D**enial
+of service, and **E**levation of privilege. The labels in the §5 matrix
+are inclusive, not partitioning; a single cost-accounting threat may carry
+more than one bucket when the attack crosses replay, settlement, or source
+boundaries.
+
+| STRIDE bucket | Cost-accounting vector | Representative defense |
+|---|---|---|
+| **S** | Forged fuel channels, replayed deploy signatures, cross-deploy token reuse, spoofed source provenance | Domain-separated deploy signature channels, fuel-gate safety, source-anchor metadata. |
+| **T** | Mutated processed-deploy cost, digest, event count, replay payload, block hash, settlement, slashing, source, or model fields | Replay mismatch checks, replay payload hashing, block hash tests, settlement proofs, and production-oracle fixtures. |
+| **R** | Proposer or model output denies cost-invalid evidence, replay mismatch, source-witness status, or promotion traceability | Replay-failure records, source-anchor digests, witness classification, and promotion-gate tests. |
+| **I** | Diagnostic data, API/source metadata, private-key debug surfaces, dependency advisory policy, or TLS key-path disclosure | Non-consensus diagnostic separation, audit classifications, TLS/source-graph fixtures, and dependency policy review. |
+| **D** | Oversized weights, descriptor growth, trace/cache pressure, unbounded search, scheduler pressure, or CI resource exhaustion | Reject-before-mutation admission, production event caps, cache bounds, and bounded search envelopes. |
+| **E** | System deploy authority leaks into user deploys, settlement replenishes runtime fuel, legacy activation bypasses replay, or slashing authority is spoofed | Scoped unmetered mode, post-evaluation settlement, activation guards, and slashing authorization checks. |
+
+## 4. Attack Tree
+
+Root: violate cost-accounted rho safety, replay determinism, settlement
+authority, or parallelism.
+
+1. Execute without fuel.
+   - Forge signature channel.
+   - Reuse another deploy's token.
+   - Enter user execution through legacy charging.
+2. Make validators disagree on cost.
+   - Exploit parallel scheduling.
+   - Exploit OOP race ownership.
+   - Mutate cost trace or event count.
+   - Exploit nondeterministic primitive descriptors or source-path identities.
+3. Hide tampering from replay.
+   - Drop trace fields.
+   - Reuse replay cache after mutation.
+   - Serialize through a default/empty trace field after activation.
+   - Mutate block fields not covered by the hash/signature payload.
+4. Manipulate settlement.
+   - Refund during evaluation.
+   - Over-refund after evaluation.
+   - Use unauthorized system deploys.
+   - Accept low deploy price as cost-valid.
+5. Abuse slashing composition.
+   - Present stale cost-invalid evidence.
+   - Forge low-price or unauthorized-settlement evidence.
+   - Apply slashing effects that mutate runtime fuel.
+6. Exhaust validator resources.
+   - Submit oversized event weights.
+   - Produce large cost-trace descriptors.
+   - Retain traces beyond finalization.
+   - Force many mixed success/OOP deploys.
+
+## 5. Threat Coverage Matrix
+
+The coverage matrix uses cost-accounting categories plus inclusive STRIDE
+labels. Category labels are review lenses; STRIDE labels describe the
+security failure mode.
+
+| Category | Review lens |
+|---|---|
+| `CA-CAP` | Capability, auth, signature, and system-authority boundaries. |
+| `CA-BUDGET` | Runtime fuel, admission, producer routing, trace-slot, and OOP accounting. |
+| `CA-TRACE` | Cost-trace identity, digest, canonicalization, and deterministic semantics. |
+| `CA-REPLAY` | Replay, replay cache, block authentication, activation, and legacy downgrade. |
+| `CA-SETTLE` | Precharge, refund, fee settlement, and fuel-isolation boundaries. |
+| `CA-SLASH` | Cost-invalid evidence and slashing composition. |
+| `CA-RESOURCE` | Descriptor, trace-window, cache, validator, CI, and search resource pressure. |
+| `CA-EXT` | External service, API, source-corpus, and production semantic boundaries. |
+| `CA-SEARCH` | Model/search/frontier promotion and traceability governance. |
+| `CA-SOURCE` | Current-source anchoring and source-graph security surfaces. |
+
+| Category | Representative rows |
+|---|---|
+| `CA-CAP` | TM-CA-001, TM-CA-002, TM-CA-027, TM-CA-042, TM-CA-043 |
+| `CA-BUDGET` | TM-CA-003, TM-CA-004, TM-CA-013, TM-CA-033, TM-CA-050, TM-CA-051, TM-CA-109 |
+| `CA-TRACE` | TM-CA-005, TM-CA-007, TM-CA-014, TM-CA-031, TM-CA-066, TM-CA-111 |
+| `CA-REPLAY` | TM-CA-006, TM-CA-009, TM-CA-010, TM-CA-011, TM-CA-045, TM-CA-080, TM-CA-119 |
+| `CA-SETTLE` | TM-CA-016, TM-CA-017, TM-CA-018, TM-CA-028, TM-CA-053, TM-CA-095 |
+| `CA-SLASH` | TM-CA-021, TM-CA-022, TM-CA-054, TM-CA-078, TM-CA-090, TM-CA-138 |
+| `CA-RESOURCE` | TM-CA-024, TM-CA-025, TM-CA-038, TM-CA-040, TM-CA-069, TM-CA-074 |
+| `CA-EXT` | TM-CA-026, TM-CA-030, TM-CA-055, TM-CA-093, TM-CA-107, TM-CA-113 |
+| `CA-SEARCH` | TM-CA-049, TM-CA-057, TM-CA-062, TM-CA-085, TM-CA-108, TM-CA-142 |
+| `CA-SOURCE` | TM-CA-124, TM-CA-128, TM-CA-132, TM-CA-136, TM-CA-137, TM-CA-140, TM-CA-141 |
+
+| ID | Category | STRIDE | Threat / thread vector | Status | Formal anchor | Rust/TLA+ coverage |
+|---|---|---|---|---|---|---|
+| TM-CA-001 | `CA-CAP` | **S + E** | Forged fuel capability or synthetic billing token | Protected | `fuel_gate_no_app_channel_overlap`, `uc_ca_003_signature_channel_separation` | `signature_channels_are_deploy_isolated`, domain-separated signature tests |
+| TM-CA-002 | `CA-CAP` | **S + T** | Signature channel collision or cross-deploy token reuse | Protected | `uc_ca_003_signature_channel_separation`, `rb_full_replay_payload_signature_change_detected` | `deploy_signature_scope_is_domain_separated_from_raw_signature_bytes` |
+| TM-CA-003 | `CA-BUDGET` | **T + D** | Runtime budget overspend under parallel evaluation | Protected | `rb_total_remaining_conservation`, `uc_ca_024_reservation_batch_preserves_budget_conservation` | `concurrent_runtime_budget_reservations_are_linearizable`, `RuntimeBudgetReplay.tla` |
+| TM-CA-004 | `CA-BUDGET` | **T + R** | Misattributed OOP failure across live branches | Protected | `uc_ca_025_reservation_batch_has_at_most_one_oop`, `uc_ca_063_threaded_oop_boundary_ownership` | `loom_metering_ownership`, stress tests |
+| TM-CA-005 | `CA-TRACE` | **T** | Schedule-dependent cost total or digest | Protected | `ca_cost_deterministic`, `uc_ca_051_parallel_trace_and_cost_determinism` | parallel permutation and repeatability tests |
+| TM-CA-006 | `CA-REPLAY` | **T + R** | Cost-trace truncation, event-count mismatch, or missing digest | Protected | `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_040_full_replay_payload_authenticates_cost_trace_fields` | replay cost-trace mismatch tests |
+| TM-CA-007 | `CA-TRACE` | **T** | Digest canonicalization collision, duplicate omission, or domain confusion | Protected | `uc_ca_053_cost_trace_domain_separation_and_multiplicity` | descriptor, kind, multiplicity, and OOP digest tests |
+| TM-CA-008 | `CA-REPLAY` | **T** | Processed deploy scalar cost tampering | Protected | `uc_ca_010_replay_cost_mismatch_sound` | replay cost mismatch tests |
+| TM-CA-009 | `CA-REPLAY` | **T + R** | Replay cache or state-hash cache masks tampering | Protected | `uc_ca_048_replay_cache_key_authenticates_cost_trace_payload` | replay payload hash and replay mismatch tests |
+| TM-CA-010 | `CA-REPLAY` | **T + R** | Block signature/hash omits cost fields | Protected | `uc_ca_047_block_authenticates_cost_trace_payload`, `uc_ca_062_block_validation_authenticates_cost_fields` | block hash mutation tests |
+| TM-CA-011 | `CA-REPLAY` | **T + E** | Wire/protobuf downgrade accepts absent trace after activation | Protected | `uc_ca_054_activation_replay_rejects_absent_commitment` | proto roundtrip and missing-trace replay tests |
+| TM-CA-012 | `CA-REPLAY` | **T + E** | Legacy cost path bypasses new runtime budget | Protected | `uc_ca_038_legacy_metering_quarantine`, `uc_ca_049_legacy_replay_quarantines_absent_cost_trace` | legacy guard script |
+| TM-CA-013 | `CA-BUDGET` | **T** | Admission failure consumes or refunds incorrectly | Protected | `uc_ca_007_no_metered_step_without_token` | malformed source no-consumption tests |
+| TM-CA-014 | `CA-TRACE` | **T** | Primitive/substitution weight nondeterminism | Protected | `uc_ca_050_billable_reservation_enters_cost_trace`, `uc_ca_059_deterministic_billable_descriptor_sensitivity` | typed billable event tests |
+| TM-CA-015 | `CA-TRACE` | **T** | Host/order/path normalization divergence | Protected | `uc_ca_059_deterministic_billable_descriptor_sensitivity` | parallel permutation and descriptor-sensitivity tests |
+| TM-CA-016 | `CA-SETTLE` | **T + E** | Precharge/refund overflow, underflow, or minting | Protected | `uc_ca_009_refund_is_bounded_by_escrow`, `uc_ca_027_settlement_exhaustion_and_zero_price` | refund boundary property tests |
+| TM-CA-017 | `CA-SETTLE` | **T + E** | Refund mutates runtime fuel during evaluation | Protected | `uc_ca_009_post_evaluation_settlement_mints_no_fuel`, `uc_ca_058_refund_cannot_replenish_runtime_fuel` | settlement and unmetered-mode tests |
+| TM-CA-018 | `CA-SETTLE` | **T + E** | Unauthorized fee settlement or system deploy authority leak | Protected | `uc_ca_055_unauthorized_settlement_and_budget_mutation_are_cost_invalid` | unauthorized boundary tests and threat-model adequacy proof |
+| TM-CA-019 | `CA-CAP` | **E** | Unmetered system mode leaks into user deploys | Protected | `uc_ca_035_unmetered_system_mode_restoration`, `uc_ca_061_system_mode_cannot_leak_into_user_metering` | system mode restoration tests |
+| TM-CA-020 | `CA-SETTLE` | **T + R** | Low deploy price accepted as cost-valid execution | Protected | `uc_ca_056_low_deploy_price_is_cost_invalid_evidence` | low-price evidence model and validation tests |
+| TM-CA-021 | `CA-SLASH` | **T + R + E** | Cost-invalid slashing evidence is stale, forged, or unauthenticated | Protected | `uc_ca_057_stale_cost_invalid_evidence_is_rejected` | slashing boundary tests |
+| TM-CA-022 | `CA-SLASH` | **T + E** | Slashing effects alter user runtime cost or settlement | Protected | `uc_ca_012_slashing_preserves_settlement_accounting`, `uc_ca_028_slashing_after_evaluation_cannot_add_fuel` | slashing replay/hash tests |
+| TM-CA-023 | `CA-TRACE` | **I + T** | Diagnostic log affects consensus | Boundary protected | `uc_ca_036_diagnostic_retention_is_non_consensus` | diagnostic clearing tests |
+| TM-CA-024 | `CA-RESOURCE` | **D + R** | Finalization-window trace retention leaks memory or loses evidence | Protected | `uc_ca_031_finalization_reads_completed_cost_trace`, `uc_ca_060_reset_clears_retained_trace_after_finalization` | RuntimeBudget finalization-read model, deploy-reset trace clearing, and TLA+ `RuntimeBudgetReplay` |
+| TM-CA-025 | `CA-RESOURCE` | **D** | Huge descriptors/events cause DoS before charging | Protected | `uc_ca_044_oversized_weight_rejection_preserves_trace`, `uc_ca_060_reset_clears_retained_trace_after_finalization` | oversized event rejection tests |
+| TM-CA-026 | `CA-EXT` | **T + R** | Nondeterministic external service output changes replay cost | Boundary protected | `uc_ca_064_external_nondeterminism_requires_replay_evidence` | nondeterministic-service replay fixtures |
+| TM-CA-027 | `CA-CAP` | **T + E** | Unsafe FFI/API can set unlimited cost in consensus path | Protected by quarantine | `uc_ca_038_legacy_metering_quarantine`, `uc_ca_054_activation_replay_rejects_absent_commitment` | legacy guard script and unsafe escape-hatch audit |
+| TM-CA-028 | `CA-SETTLE` | **T** | Multi-deploy block settlement cross-contaminates budgets | Protected | `uc_ca_034_multi_deploy_budget_isolation_and_settlement_sum`, `uc_ca_043_mixed_deploy_block_trace_and_settlement_isolation` | mixed success/OOP deploy tests |
+| TM-CA-029 | `CA-REPLAY` | **T + R** | Add-block validation fails to enforce replay cost fields | Protected | `uc_ca_062_block_validation_authenticates_cost_fields` | block hash and replay mutation tests |
+| TM-CA-030 | `CA-EXT` | **T** | Generated term replay diverges from production execution | Protected | `uc_ca_005_well_reflected_replay_step_sound` | bounded generated play/replay tests |
+| TM-CA-031 | `CA-TRACE` | **T** | Trace sequence omits tie-breaker data needed for deterministic replay | Protected | `uc_ca_053_cost_trace_domain_separation_and_multiplicity`, `uc_ca_059_deterministic_billable_descriptor_sensitivity` | source-path/redex/local-index digest tests |
+| TM-CA-032 | `CA-SETTLE` | **T + R** | Precharge/refund weakens signatures or authentication | Protected | `uc_ca_022_replay_payload_signature_change_detected`, `uc_ca_058_refund_cannot_replenish_runtime_fuel` | signature and settlement tests |
+| TM-CA-033 | `CA-BUDGET` | **T + D** | Zero-weight billable event grows authenticated trace without fuel | Protected | `uc_ca_065_zero_weight_billable_event_rejected` | zero-weight reservation rejection tests |
+| TM-CA-034 | `CA-BUDGET` | **T** | Generic cost normalization hides invalid producers | Protected | `uc_ca_068_admitted_success_has_positive_bounded_weight` | `MeteredMachine` rejects zero billable source costs |
+| TM-CA-035 | `CA-BUDGET` | **T** | Variable-work primitive has no work but still emits trace evidence | Protected | `uc_ca_045_nonbillable_frames_do_not_enter_cost_trace`, `uc_ca_068_admitted_success_has_positive_bounded_weight` | incremental primitive zero-work tests |
+| TM-CA-036 | `CA-BUDGET` | **T** | Negative user method argument becomes negative or wrapped cost | Protected | `uc_ca_068_admitted_success_has_positive_bounded_weight` | normalized `slice`/`take` producer tests |
+| TM-CA-037 | `CA-BUDGET` | **T** | Empty/default substitution produces zero-weight billable event | Protected | `uc_ca_068_admitted_success_has_positive_bounded_weight` | substitution producer floors standalone billable work |
+| TM-CA-038 | `CA-RESOURCE` | **D** | Primitive descriptor memory amplification before replay hashing | Protected | `uc_ca_066_oversized_billable_event_rejected`, `rb_oversized_primitive_descriptor_admission_rejection_preserves_trace`, `uc_ca_059_deterministic_billable_descriptor_sensitivity` | descriptor bound rejection and exact-boundary admission tests |
+| TM-CA-039 | `CA-RESOURCE` | **D** | Source-path descriptor memory amplification | Protected | `uc_ca_066_oversized_billable_event_rejected`, `rb_oversized_source_path_admission_rejection_preserves_trace`, `uc_ca_059_deterministic_billable_descriptor_sensitivity` | source-path bound rejection and exact-boundary admission tests |
+| TM-CA-040 | `CA-RESOURCE` | **D** | Full cost-trace vector grows without retention bound | Protected | `uc_ca_067_trace_cap_rejection_preserves_budget`, `uc_ca_060_reset_clears_retained_trace_after_finalization` | Rust `MAX_COST_TRACE_EVENTS`, reset clearing, and `RuntimeBudgetReplay.tla` retention bound |
+| TM-CA-041 | `CA-TRACE` | **R + I** | Public diagnostic-clear API erases replay evidence | Protected | `uc_ca_036_diagnostic_retention_is_non_consensus` | diagnostic clearing leaves cost trace unchanged |
+| TM-CA-042 | `CA-CAP` | **E** | Manual unmetered flag leaks after error return | Protected | `uc_ca_061_system_mode_cannot_leak_into_user_metering` | scoped unmetered guard test |
+| TM-CA-043 | `CA-CAP` | **T + E** | Unsafe unlimited budget reaches consensus replay/add-block path | Protected by quarantine | `uc_ca_038_legacy_metering_quarantine`, `uc_ca_054_activation_replay_rejects_absent_commitment` | legacy guard and replay payload checks |
+| TM-CA-044 | `CA-BUDGET` | **T** | Negative initial phlo silently maps to zero budget | Protected | `uc_ca_068_admitted_success_has_positive_bounded_weight` | negative initial phlo rejection test |
+| TM-CA-045 | `CA-REPLAY` | **T + R** | Replay-cache eviction accepts stale trace without recomputation | Protected | `uc_ca_048_replay_cache_key_authenticates_cost_trace_payload` | replay cache payload field tests |
+| TM-CA-046 | `CA-BUDGET` | **T + R** | Finalization observes budget before workers finish trace append | Protected | `uc_ca_041_concurrent_finalization_trace_completeness` | parallel digest/count tests and finalization documentation |
+| TM-CA-047 | `CA-BUDGET` | **T + R** | OOP or user error hides the cost-invalid trace boundary | Protected | `uc_ca_042_oop_trace_survives_failed_deploy_boundary`, `uc_ca_063_threaded_oop_boundary_ownership` | OOP rollback and loom ownership tests |
+| TM-CA-048 | `CA-SETTLE` | **T + E** | Malformed deploy precharge/refund path mutates runtime fuel | Protected | `uc_ca_058_refund_cannot_replenish_runtime_fuel`, `uc_ca_009_charged_plus_refund_equals_escrow` | settlement edge-case tests |
+| TM-CA-049 | `CA-SEARCH` | **R** | Generated witness is treated as an implementation bug before Rust traceability | Protected by classification rule | `CostAccountingSearchFrontier.tla` | search-horizon witness classification model |
+| TM-CA-050 | `CA-BUDGET` | **T** | Producer routing regresses and sends zero-capable work through strict billable reservation | Guarded-safe projection risk | `uc_ca_069_producer_routing_search_frontier` | Sage guard label `projection_risk_zero_weight_strict_route_rejects_before_trace_mutation`, Rust `projection_risk_witnesses_have_guarded_safe_disposition`, and zero-weight Rocq rejection |
+| TM-CA-051 | `CA-BUDGET` | **T + D** | Trace-slot reservation leaks capacity after repeated OOP or invalid admission races | Protected / strengthened | `uc_ca_070_trace_slot_linearizability_frontier` | Loom trace-slot shadow model and runtime-budget fuzz |
+| TM-CA-052 | `CA-REPLAY` | **T + R** | Replay field mutation is missed by generated frontier fixtures | Protected | `uc_ca_071_replay_mutation_frontier` | replay mutation Sage/TLA model and fuzz target |
+| TM-CA-053 | `CA-SETTLE` | **T** | Multi-deploy block settlement aggregates non-locally and contaminates another deploy's refund | Protected / strengthened | `uc_ca_072_multi_deploy_settlement_frontier` | settlement Sage model and generated Rust fixture |
+| TM-CA-054 | `CA-SLASH` | **T + E** | Cost-invalid slashing evidence mutates runtime fuel instead of staying post-evaluation evidence | Protected | `uc_ca_073_slashing_composition_frontier` | threat model plus slashing composition bridge tests |
+| TM-CA-055 | `CA-EXT` | **T + R** | External service result changes cost, errors, or trace without replay-authenticated evidence | Boundary protected | `uc_ca_064_external_nondeterminism_requires_replay_evidence` | nondeterministic-service replay fixtures |
+| TM-CA-056 | `CA-RESOURCE` | **D** | Descriptor, source path, or lifecycle trace causes resource exhaustion in search frontier | Protected | `uc_ca_074_resource_exhaustion_frontier`, `RuntimeBudgetReplay.ValidEvent` | descriptor/source-path bounds and cost lifecycle fuzz |
+| TM-CA-057 | `CA-SEARCH` | **R** | Search objective over-focus hides lower-severity but novel vectors | Protected by frontier ranking | `CostAccountingSearchFrontier.tla` | Sage objective-frontier Pareto ranking |
+| TM-CA-058 | `CA-SEARCH` | **T + R** | Kani/proptest/fuzz harness proves only a shadow helper and drifts from production source | Guarded by witness rule | `CostAccountingSearchFrontier.tla` | production-path replay requirement in search-horizon doc |
+| TM-CA-059 | `CA-SEARCH` | **R** | Optional frontier tools silently skip all meaningful checks | Boundary protected | Search-horizon run metadata | smoke runner requires nextest and records skipped optional tools |
+| TM-CA-060 | `CA-REPLAY` | **T + E** | Legacy broad cost path reappears outside the static guard | Protected by quarantine | `uc_ca_038_legacy_metering_quarantine` | legacy guard plus producer-routing guard |
+| TM-CA-061 | `CA-TRACE` | **T** | Cost trace digest remains stable under a replay-relevant frontier mutation | Protected | `uc_ca_071_replay_mutation_frontier` | replay payload and digest field-sensitivity tests |
+| TM-CA-062 | `CA-SEARCH` | **R** | Frontier fixture corpus grows without deterministic minimized promotion | Protected by promotion rule | Search-horizon promotion rules | deterministic fixture replay and generated JSON summaries |
+| TM-CA-063 | `CA-SEARCH` | **R** | Sage/TLA witness is dismissed as a model artifact while violating production invariant | Protected by witness rule | `CostAccountingSearchFrontier.tla` | classification requires Rust or invariant traceability |
+| TM-CA-064 | `CA-SEARCH` | **T + R** | Source changes are made from an unclassified witness | Protected by classification invariant | `NoSourceFixWithoutRustOrInvariantEvidence` | `CostAccountingSearchFrontier.tla` |
+| TM-CA-065 | `CA-BUDGET` | **T + R** | Stateful lifecycle search finds finalization before worker trace completion | Guarded-safe projection risk | `uc_ca_041_concurrent_finalization_trace_completeness`, `uc_ca_070_trace_slot_linearizability_frontier` | Sage guard label `projection_risk_parallel_evaluation_result_waits_for_complete_cost_trace`, generated replay fixtures, Rust join-before-digest behavior, and `RuntimeBudgetReplay.tla` |
+| TM-CA-066 | `CA-TRACE` | **T** | Metamorphic event permutation changes cost or digest when it should be canonicalized | Protected | `uc_ca_051_parallel_trace_and_cost_determinism` | generated metamorphic replay test |
+| TM-CA-067 | `CA-TRACE` | **T** | Duplicate or descriptor-mutated event is incorrectly canonicalized away | Protected | `uc_ca_053_cost_trace_domain_separation_and_multiplicity`, `uc_ca_059_deterministic_billable_descriptor_sensitivity` | generated metamorphic replay test |
+| TM-CA-068 | `CA-SEARCH` | **R** | Generated corpus fixture loses its terminal classification over time | Protected by corpus replay | `ClassifiedWitnessHasPromotionTarget` | persistent corpus replay via search-horizon runner |
+| TM-CA-069 | `CA-RESOURCE` | **D** | Optional deepening tools create unbounded resource pressure in CI | Boundary protected | Search-horizon run metadata and 32GB memory caps | `SEARCH_RSS_LIMIT`, `TLC_MAX_HEAP`, `SYSTEMD_CPU_QUOTA`, `ALLOW_UNBOUNDED_SEARCH` |
+| TM-CA-070 | `CA-SEARCH` | **R** | Objective-guided search overweights easy replay cases and misses settlement or slashing composition | Protected by objective selection | Sage objective/frontier schema | `SAGE_OBJECTIVES` and coverage summaries |
+| TM-CA-071 | `CA-SEARCH` | **T + R** | Cross-product interactions hide a bug not visible in isolated budget, replay, settlement, or slashing checks | Protected by v2 horizon classification | Sage v2 cross-product frontier | generated differential Rust replay fixtures |
+| TM-CA-072 | `CA-EXT` | **T** | Real Rholang source paths, primitive descriptors, or size profiles differ from synthetic search fixtures | Protected by source-aware seed replay | Sage v2 source-seed frontier | source-derived generated Rust replay fixtures |
+| TM-CA-073 | `CA-SEARCH` | **T + R** | Replay-cache substitution, refund replenishment, slashing/refund confusion, descriptor inflation, or rollback/finalization campaigns bypass classification | Protected by exploit-campaign buckets | Sage v2 exploit campaign frontier | generated differential replay and threat ledger |
+| TM-CA-074 | `CA-RESOURCE` | **D** | Deep search silently exceeds validator or CI memory limits and masks useful failures | Protected by enforced RSS cap | Search-horizon runner memory envelope | `systemd-run --user` `MemoryMax=32G`, `MemorySwapMax=0`, and `TLC_MAX_HEAP=28g` |
+| TM-CA-075 | `CA-SEARCH` | **R** | Stateful campaign witnesses are promoted without naming operation steps, oracle, or production path | Protected by v3 frontier metadata invariants | `CostAccountingSearchFrontier.tla` and Sage v3 stateful search | `generated_frontier_stateful_campaign_fixtures_hold` |
+| TM-CA-076 | `CA-SEARCH` | **T + R** | Production-path differential search drifts into shadow-helper-only evidence | Protected by v3 production-path metadata and production-shaped Rust replay tests | Sage v3 production-path records | `generated_frontier_stateful_campaign_fixtures_hold` |
+| TM-CA-077 | `CA-EXT` | **T** | Source-corpus descriptors expose cost-trace behavior not covered by synthetic fixtures | Protected by v3 source-corpus projection | Sage v3 source-corpus records | generated stateful campaign replay fixtures |
+| TM-CA-078 | `CA-SLASH` | **T + R + E** | Slashing, refund, replay authentication, and resource bounds fail only when composed together | Protected by v3 exploit cross-product search plus composed replay/block/settlement hardening coverage | Sage v3 exploit cross-product frontier | Rust `generated_frontier_stateful_campaign_fixtures_hold`; Sage guard labels `cross_product_replay_payload_and_block_hash_authenticates_user_cost_trace_and_slash_fields`, `refund_uses_scalar_cost_without_mutating_authenticated_trace_fields` |
+| TM-CA-079 | `CA-BUDGET` | **T** | Repeated OOP or invalid billable events mutate trace or budget after the rejection boundary | Protected by v4 adversarial budget fixtures | Sage v4 adversarial horizon | `generated_frontier_adversarial_fixtures_hold` |
+| TM-CA-080 | `CA-REPLAY` | **T + R** | Replay payload mutation across digest, count, signature, status, or block hash is not authenticated | Protected by v4 adversarial replay fixtures and composed Casper hash tests | Sage v4 adversarial horizon | `generated_frontier_adversarial_fixtures_hold` |
+| TM-CA-081 | `CA-SETTLE` | **T + E** | Casper refund is treated as runtime fuel after settlement | Protected by v4 adversarial settlement fixtures | Sage v4 adversarial horizon | `generated_frontier_adversarial_fixtures_hold` |
+| TM-CA-082 | `CA-SLASH` | **T + R + E** | Stale cost-invalid slashing evidence is replayed across a boundary | Guarded-safe projection risk | Sage v4 adversarial slashing fixtures and `stale_cost_evidence_sound` | Rust `generated_frontier_adversarial_fixtures_hold`; Sage guard labels `stale_slashing_evidence_fields_are_replay_and_block_hash_authenticated`, `stale_cost_invalid_evidence_cannot_reslash_or_mutate_user_cost_trace` |
+| TM-CA-083 | `CA-BUDGET` | **T + R** | Finalization occurs before worker trace completion or rollback/reserve ordering is ambiguous | Guarded-safe projection risk | Sage v4 adversarial lifecycle fixtures and TLA+ runtime-budget replay | Rust `generated_frontier_adversarial_fixtures_hold`; Sage guard labels `projection_risk_parallel_evaluation_result_waits_for_complete_cost_trace`, `projection_risk_lifecycle_campaign_does_not_leak_budget_or_trace` |
+| TM-CA-084 | `CA-EXT` | **T** | Real source-corpus descriptors collide or hide descriptor mutation sensitivity | Protected by v4 adversarial source-corpus fixtures | Sage v4 adversarial horizon | `generated_frontier_adversarial_fixtures_hold` |
+| TM-CA-085 | `CA-SEARCH` | **R** | A mined candidate invariant is accepted without production replay evidence | Protected by v5 property fixture metadata | Sage v5 property/security horizon | `generated_frontier_property_fixtures_hold` requires candidate property, oracle strength, replay command, and classification metadata. |
+| TM-CA-086 | `CA-REPLAY` | **T + R** | Negative replay-authentication mutations omit a cost-relevant signed field | Protected by v5 negative-auth mutation matrix | Sage v5 negative-auth horizon | `generated_frontier_negative_auth_fixtures_hold` replays digest, count, scalar cost, signature, block hash, status, slash, genesis, and trace-presence mutations. |
+| TM-CA-087 | `CA-EXT` | **T** | Real source shapes differ from generated fixtures enough to hide path or primitive-descriptor bugs | Protected by v5 source-shape corpus replay | Sage v5 source-shape horizon | `generated_frontier_source_shape_fixtures_hold` requires source-seed evidence and production-shaped RuntimeBudget replay. |
+| TM-CA-088 | `CA-TRACE` | **T** | Same primitive descriptor/path in different deploys collapses trace identity or settlement | Protected by v5 cross-deploy property fixtures | Sage v5 cross-deploy horizon | `generated_frontier_property_fixtures_hold` checks deploy-domain separation and deploy-local settlement witnesses. |
+| TM-CA-089 | `CA-BUDGET` | **T + D** | Scheduler joins, rollbacks, and finalization preserve correctness only by serializing evaluation | Protected by v5 scheduler fixtures plus existing join guards | Sage v5 scheduler horizon and `RuntimeBudgetReplay.tla` | Scheduler witnesses require completion-before-finalization metadata while preserving parallel evaluation before the join boundary. |
+| TM-CA-090 | `CA-SLASH` | **T + R + E** | Settlement, slashing, and replay-cache evidence compose into a stale or duplicate slash vector | Guarded-safe projection risk | Sage v5 settlement/slashing/cache horizon and slashing proof bridge | Confirmed-safe cache composition is replayed by v5 fixtures; duplicate stale evidence remains `guarded_safe` via Sage stale-evidence guard labels and `stale_cost_evidence_sound`. |
+| TM-CA-091 | `CA-RESOURCE` | **D** | Replay-cache churn or descriptor boundaries consume unbounded memory before rejection | Protected by v5 cache/resource fixtures | Sage v5 cache/resource horizon | Property fixtures cover bounded cache churn and descriptor-boundary/overflow admission behavior. |
+| TM-CA-092 | `CA-SEARCH` | **T + R** | Model-only witnesses drift from the real RuntimeBudget production path | Protected by v6 production differential replay | Sage v6 production frontier | `generated_frontier_production_fixtures_hold` compares generated cost, digest, count, OOP, and invalid-admission outcomes against RuntimeBudget. |
+| TM-CA-093 | `CA-EXT` | **T** | Generated Rholang source shape evaluates differently from the fixture projection | Protected by v6 Rholang evaluation replay | Sage v6 production frontier | `generated_frontier_rholang_eval_fixtures_hold` evaluates `rho_source` through `RhoRuntime::evaluate_with_term` before promotion. |
+| TM-CA-094 | `CA-REPLAY` | **T + R + E** | Cost-accounted replay is downgraded by removing trace presence or mutating signed payload fields | Protected by v6 replay-downgrade fixtures | Sage v6 production frontier | Casper-boundary fixtures require digest, count, trace-presence, signature, and block-hash differential axes. |
+| TM-CA-095 | `CA-SETTLE` | **T + E** | Casper settlement evidence mutates runtime fuel after production replay | Protected by v6 settlement isolation fixture | Sage v6 production frontier | Production-frontier settlement fixtures assert escrow/refund arithmetic without RuntimeBudget replenishment. |
+| TM-CA-096 | `CA-SLASH` | **T + R + E** | Duplicate stale slashing evidence re-enters as valid user-cost mutation | Guarded-safe projection risk | Sage v6 production frontier and slashing guard tests | V6 stale duplicate evidence remains `guarded_safe` through stale slashing evidence tests and `stale_cost_evidence_sound`. |
+| TM-CA-097 | `CA-BUDGET` | **T + R** | Scheduler finalization correctness relies on serializing evaluation instead of joining before finalization | Protected by v6 scheduler production frontier | Sage v6 production frontier and `RuntimeBudgetReplay.tla` | Scheduler witnesses compare join-before-finalize evidence while preserving parallelism before the join boundary. |
+| TM-CA-098 | `CA-BUDGET` | **T** | Invalid admission mutates production cost or trace before rejection | Protected by v6 production resource boundary | Sage v6 production frontier | Invalid-admission fixtures reject before RuntimeBudget cost, digest, or event-count mutation. |
+| TM-CA-099 | `CA-EXT` | **T** | Non-Nil Rholang source evaluates differently from the generated cost-trace projection | Protected by v7 production semantic eval | Sage v7 production semantic frontier | `generated_frontier_semantic_eval_fixtures_hold` evaluates non-trivial sources through `RhoRuntime::evaluate_with_phlo` and checks cost, digest, count, and errors. |
+| TM-CA-100 | `CA-REPLAY` | **T + R** | Play/replay preserves state effects but loses or changes cost evidence | Protected by v7 play/replay frontier | Sage v7 production semantic frontier and `RuntimeBudgetReplay.tla` | `generated_frontier_play_replay_fixtures_hold` compares play and replay cost, digest, event count, and error classification after replay data is consumed. |
+| TM-CA-101 | `CA-EXT` | **T + R** | Real source-corpus shapes remain metadata-only and never exercise production semantics | Protected by v7 source-corpus semantic replay | Sage v7 production semantic frontier | Source-seed metadata must be attached to a non-Nil `rho_source` that evaluates successfully before promotion. |
+| TM-CA-102 | `CA-EXT` | **T + R** | Finite-phlo, user-abort, or parser-error boundaries are mistaken for cost-valid success | Protected by v7 error-boundary fixtures | Sage v7 production semantic frontier | `generated_frontier_phlo_boundary_fixtures_hold` requires explicit error-kind classification and cost-trace evidence. |
+| TM-CA-103 | `CA-REPLAY` | **T + R** | State-root replay evidence is accepted without checking replay data consumption | Protected by v7 state-root fixtures | Sage v7 production semantic frontier | `generated_frontier_state_root_fixtures_hold` uses production event-log rigging and `check_replay_data`. |
+| TM-CA-104 | `CA-REPLAY` | **T + R** | Replay-authenticated Casper payload axes drift from actual production eval cost evidence | Protected by v7 auth-composition fixtures | Sage v7 production semantic frontier | `generated_frontier_auth_composition_fixtures_hold` ties eval cost evidence to cost, digest, count, signature, block-hash, trace-presence, and refund axes. |
+| TM-CA-105 | `CA-EXT` | **T** | Curated semantic fixtures miss generated grammar-family bugs | Protected by v8 generative semantic fixtures | Sage v8 generative semantic frontier | `generated_frontier_generative_semantic_fixtures_hold` covers bounded send, receive/join, arithmetic, auth/settlement/slashing, and OOP-boundary families. |
+| TM-CA-106 | `CA-TRACE` | **T** | Source rewrites or parallel permutations alter cost evidence unexpectedly | Protected by v8 metamorphic fixtures | Sage v8 generative semantic frontier | `generated_frontier_semantic_metamorphic_fixtures_hold` checks canonical event digest permutation and semantic success/error preservation for source variants. |
+| TM-CA-107 | `CA-EXT` | **T + R** | External nondeterminism hides replay or cost-trace drift | Protected by v8 mocked external-service replay | Sage v8 generative semantic frontier | `generated_frontier_external_service_replay_fixtures_hold` replays GPT/gRPC mock success and error cases and compares cost, digest, count, and error classification. |
+| TM-CA-108 | `CA-SEARCH` | **R** | Search broadening silently loses required coverage | Protected by v8 adequacy gate | Sage v8 generative semantic frontier | `generated_frontier_coverage_adequacy_holds` fails if required families, features, or classifications are absent. |
+| TM-CA-109 | `CA-BUDGET` | **T + D** | RuntimeBudget accepts generated event sequences with unsound cost, count, OOP, or digest behavior | Protected by v8 property test | Sage v8 generative semantic frontier and Rust proptest | `runtime_budget_event_sequence_properties_hold` generates valid event sequences and checks monotonic cost, bounded fuel, OOP ownership, and digest recomputation. |
+| TM-CA-110 | `CA-EXT` | **T + R** | Source-corpus records are promoted without executable production semantics | Protected by v9 corpus semantic fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_corpus_semantic_fixtures_hold` requires source-seed/corpus-case evidence and production evaluation axes. |
+| TM-CA-111 | `CA-TRACE` | **T** | Grammar rewrites hide schedule-dependent cost or error behavior | Protected by v9 grammar mutation fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_grammar_mutation_fixtures_hold` checks variant evaluation classification and canonical digest stability for regrouped independent events. |
+| TM-CA-112 | `CA-SEARCH` | **T + R** | Differential oracles drift from production play/replay or error classification | Protected by v9 differential oracle fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_differential_oracle_fixtures_hold` compares production play/replay projections and parser-error classification. |
+| TM-CA-113 | `CA-EXT` | **T + R** | External-service classes are under-sampled or replay-unstable | Protected by v9 external-service matrix fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_external_service_matrix_fixtures_hold` covers GPT, DALL-E, TTS, and gRPC mock success/error replay cases. |
+| TM-CA-114 | `CA-REPLAY` | **T + R** | Casper authenticated payload fields or settlement/slashing axes are omitted from frontier replay | Protected by v9 Casper security matrix fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_casper_security_matrix_fixtures_hold` requires cost, digest, count, signature, block hash, trace presence, refund, slashing, and settlement evidence. |
+| TM-CA-115 | `CA-TRACE` | **T** | Multi-deploy trace interleavings collapse deploy identity or become schedule-dependent | Protected by v9 runtime trace interleaving fixtures | Sage v9 differential corpus/security frontier | `generated_frontier_runtime_trace_interleaving_properties_hold` checks canonical order stability and deploy-domain mutation sensitivity. |
+| TM-CA-116 | `CA-SEARCH` | **R** | Search adequacy no longer covers corpus, grammar, production, service, Casper, and trace axes together | Protected by v9 adequacy gate | Sage v9 differential corpus/security frontier | `generated_frontier_v9_coverage_adequacy_holds` fails if required v9 families, coverage features, classifications, or bounded search-budget metadata disappear. |
+| TM-CA-117 | `CA-SEARCH` | **R** | Fuzz or Kani witnesses are treated as implementation bugs without production replay traceability | Protected by V10 promotion-gate metadata | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_fuzz_seed_fixtures_hold` requires bounded depth, replay target, promotion gate, and terminal classification metadata. |
+| TM-CA-118 | `CA-BUDGET` | **T + R** | Lifecycle fuzzing misses finalize/replay/settlement ordering hazards | Protected by V10 lifecycle trace fixtures | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_lifecycle_trace_fixtures_hold` keeps campaign steps explicit and verifies runtime fuel is not replenished. |
+| TM-CA-119 | `CA-REPLAY` | **T + R** | Replay-payload fuzzing omits digest, count, or trace-presence mutation axes | Protected by V10 replay payload matrix fixtures | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_replay_payload_matrix_fixtures_hold` requires replay or negative mutations tied to cost-trace axes. |
+| TM-CA-120 | `CA-REPLAY` | **T + R** | Casper block authentication fuzzing omits refund or slashing composition | Protected by V10 Casper block-auth fixtures | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_casper_block_auth_fixtures_hold` checks signature, block hash, trace presence, refund projection, and slash evidence together. |
+| TM-CA-121 | `CA-BUDGET` | **T** | Parallel schedule stress becomes order-dependent or collapses deploy identity | Protected by V10 parallel schedule fixtures | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_parallel_schedule_stress_fixtures_hold` checks permutation digest stability and deploy-domain mutation sensitivity. |
+| TM-CA-122 | `CA-EXT` | **T + R** | Semantic corpus fuzzing promotes metadata-only source mutations | Protected by V10 semantic corpus fixtures | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_semantic_corpus_mutation_fixtures_hold` evaluates primary and variant Rholang sources and preserves source-corpus evidence. |
+| TM-CA-123 | `CA-SEARCH` | **R** | Search expansion drops fuzz, Kani, lifecycle, replay, Casper, settlement, slashing, or legacy coverage | Protected by V10 adequacy gate | Sage v10 hybrid fuzz/security frontier | `generated_frontier_v10_coverage_adequacy_holds` fails if required V10 families, features, classifications, replay targets, or promotion gates are absent. |
+| TM-CA-124 | `CA-SOURCE` | **T + R** | Search witnesses drift away from current `f1r3node-rust` source surfaces | Protected by V11 source anchoring | Sage v11 source-anchored frontier | `generated_frontier_v11_source_anchored_fixtures_hold` requires file, symbol, line, surface, risk, reachability, and source-presence metadata for every source-anchored witness. |
+| TM-CA-125 | `CA-SOURCE` | **T + R** | Runtime, metering, or parallel implementation changes silently invalidate model assumptions | Protected by V11 runtime-source checks | Sage v11 source-anchored frontier | `generated_frontier_v11_runtime_budget_source_risks_hold` ties admission, OOP, trace-slot, unmetered, pending-queue, local-index, and parallel scheduling risks to current Rust anchors. |
+| TM-CA-126 | `CA-SOURCE` | **T + R** | Casper replay, settlement, slashing, or legacy quarantine changes are not reflected in the frontier | Protected by V11 Casper/source checks | Sage v11 source-anchored frontier | `generated_frontier_v11_casper_settlement_slashing_source_risks_hold` binds replay digest/count, replay payload hashing, refund arithmetic, slashing evidence, and absent legacy metering to current Rust anchors. |
+| TM-CA-127 | `CA-SOURCE` | **R** | Source-anchored search omits a required cost surface | Protected by V11 adequacy gate | Sage v11 source-anchored frontier | `generated_frontier_v11_coverage_adequacy_holds` fails if runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing, or legacy-quarantine surfaces are missing. |
+| TM-CA-128 | `CA-SOURCE` | **R** | Source-anchored production-oracle witness is promoted without native Rust replay | Protected by V12 production-oracle replay | Sage v12 production-oracle frontier | `generated_frontier_v12_production_oracle_fixtures_hold` requires every v12 witness to carry oracle surface, mutation axis, expected disposition, and source-anchor metadata. |
+| TM-CA-129 | `CA-SOURCE` | **T + R** | RuntimeBudget, metering, or parallel source anchors pass metadata checks while native behavior regresses | Protected by V12 runtime/metering/parallel oracles | Sage v12 production-oracle frontier | `generated_frontier_v12_runtime_metering_parallel_oracles_hold` checks accepted reservations, reject-before-mutation, OOP boundary commitment, canonical billable drain order, non-billable exclusion, and parallel digest stability. |
+| TM-CA-130 | `CA-SOURCE` | **T + R** | Casper replay, settlement, slashing, or legacy quarantine source anchors pass metadata checks while production authentication or fuel isolation regresses | Protected by V12 Casper/settlement/slashing oracles | Sage v12 production-oracle frontier | `generated_frontier_v12_casper_settlement_slashing_oracles_hold`, `cost_accounting_v12_casper_replay_payload_oracles_hold`, and `cost_accounting_v12_slashing_replay_oracles_hold` check replay hash mutation sensitivity, bounded settlement, slashing isolation, and absent legacy broad charging. |
+| TM-CA-131 | `CA-SOURCE` | **R** | Production-oracle search omits required surfaces, dispositions, or mutation axes | Protected by V12 adequacy gate | Sage v12 production-oracle frontier | `generated_frontier_v12_coverage_adequacy_holds` fails if runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing, legacy quarantine, expected dispositions, replay targets, or promotion gates are missing. |
+| TM-CA-132 | `CA-SOURCE` | **R** | Cross-surface source-semantic witness is promoted without source facets or source-anchor digest | Protected by V13 metadata gate | Sage v13 source-semantic frontier and TLA+ `CostAccountingSearchFrontier` | `generated_frontier_v13_source_semantic_oracles_hold` and `SourceSemanticWitnessHasFacets` require semantic oracle, source facets, source-anchor digest, cross-surface role, production path, oracle, and Rust reproducer metadata. |
+| TM-CA-133 | `CA-SOURCE` | **T + R** | Runtime trace evidence reaches replay or settlement with stale source assumptions | Protected by V13 runtime/replay/settlement oracles | Sage v13 source-semantic frontier | `generated_frontier_v13_runtime_metering_parallel_oracles_hold`, `cost_accounting_v13_source_semantic_replay_payload_oracles_hold`, and `cost_accounting_v13_settlement_slashing_legacy_oracles_hold` check runtime-to-replay trace authentication and runtime-to-settlement fuel isolation against current Rust surfaces. |
+| TM-CA-134 | `CA-SOURCE` | **T + R** | Metering or parallel scheduling regressions are hidden by source-anchor-only checks | Protected by V13 metering/parallel oracle | Sage v13 source-semantic frontier | `generated_frontier_v13_runtime_metering_parallel_oracles_hold` checks canonical billable drain order and completion-order digest stability while preserving maximum parallel evaluation before finalization. |
+| TM-CA-135 | `CA-SOURCE` | **T + R + E** | Replay/slashing authentication or legacy quarantine regresses after V12 native oracles pass | Protected by V13 replay/slashing/legacy oracles | Sage v13 source-semantic frontier | `generated_frontier_v13_casper_settlement_slashing_oracles_hold`, `cost_accounting_v13_source_semantic_replay_payload_oracles_hold`, and `cost_accounting_v13_settlement_slashing_legacy_oracles_hold` bind slashing fields to replay payload hashing and keep the legacy runtime metering surface absent. |
+| TM-CA-136 | `CA-SOURCE` | **S + T + R** | API ingress, runtime cost evidence, and replay payload hashing drift apart from current source anchors | Protected by V14 source-graph oracle | Sage v14 source-graph frontier | `generated_frontier_v14_source_graph_oracles_hold` and `cost_accounting_v14_replay_slashing_oracles_hold` bind API ingress to runtime/replay cost evidence. |
+| TM-CA-137 | `CA-SOURCE` | **T + R** | Replay-cache payload binding is promoted without cost-trace digest/count mutation evidence | Protected by V14 source-graph oracle | Sage v14 source-graph frontier | `generated_frontier_v14_source_graph_oracles_hold` and `cost_accounting_v14_replay_slashing_oracles_hold` check replay-cache and payload-hash axes. |
+| TM-CA-138 | `CA-SLASH` | **T + R + E** | Slashing authorization omits epoch, slash-field, block-hash, or signature payload binding | Protected by V14 source-graph oracle | Sage v14 source-graph frontier and slashing authorization boundary | `generated_frontier_v14_slashing_security_oracles_hold` and `cost_accounting_v14_replay_slashing_oracles_hold` require replay-invalid slashing mutation axes. |
+| TM-CA-139 | `CA-SOURCE` | **S + I** | TLS peer-certificate or key-path boundary becomes only implicit source metadata | Protected by V14 node-security fixture | Sage v14 source-graph frontier | `generated_frontier_v14_node_security_oracles_hold` retains peer-certificate and TLS key-path anchors outside runtime fuel mutation. |
+| TM-CA-140 | `CA-SOURCE` | **I** | Private-key debug exposure is treated as a confirmed bug without source audit | Audit-classified by V14 source-graph oracle | Sage v14 source-graph frontier | `generated_frontier_v14_node_security_oracles_hold` keeps `crypto_key_material` as `needs_source_audit`. |
+| TM-CA-141 | `CA-SOURCE` | **I + R** | Accepted RustSec advisory policy is hidden from source-graph security review | Audit-classified by V14 source-graph oracle | Sage v14 source-graph frontier | `generated_frontier_v14_node_security_oracles_hold` keeps `dependency_advisory` and `RUSTSEC-2026-0098` as `needs_source_audit`. |
+| TM-CA-142 | `CA-SEARCH` | **R** | Source-graph search omits required runtime, replay-cache, slashing, TLS, crypto, API, or dependency surfaces | Protected by V14 adequacy gate | Sage v14 source-graph frontier | `generated_frontier_v14_coverage_adequacy_holds` fails if required source-graph surfaces or promotion metadata disappear. |
+
+## 6. Classification Policy
+
+Every generated Sage, TLA+, fuzz, Kani, or Rust replay witness must be
+classified before it can motivate a source change:
+
+| Class | Meaning | Action |
+|---|---|---|
+| `confirmed_safe` | The searched behavior is protected by the current source, proof, or replay oracle. | Keep as regression or coverage evidence. |
+| `bisimilar` | Model and production projection agree. | Record or promote as a replay fixture. |
+| `projection_risk` | A bounded model-to-code projection can diverge while production remains guarded. | Add or retain a guarded-safe regression. |
+| `assumption_counterexample` | A theorem precondition is necessary. | Keep the assumption explicit in proof and docs. |
+| `proof_or_model_strengthening` | The property is true but underrepresented in formal artifacts. | Promote to a theorem, invariant, or model check. |
+| `needs_source_audit` | The witness touches production behavior, but reproduction is inconclusive or policy-driven. | Audit before changing source. |
+| `confirmed_current_bug` | The witness reproduces on production Rust or violates a production invariant. | Fix Rust and add deterministic regression coverage. |
+
+No generated witness may remain unclassified after promotion, and no source
+change is authorized by model-only evidence.
+
+## 7. Failure Modes and Recovery
+
+| Failure | Required behavior |
+|---|---|
+| Cost scalar mismatch | Reject replay with cost-invalid evidence; do not alter settlement arithmetic. |
+| Cost trace digest mismatch | Reject replay and expose recorded/observed digest and event count. |
+| Cost trace count mismatch | Reject replay even if digest bytes match. |
+| Missing trace after activation | Reject as cost-accounted replay failure. |
+| Missing trace in legacy replay | Accept only in legacy mode; never use it to authorize new cost-accounted execution. |
+| Out-of-phlo rollback | Roll back tuple-space effects while retaining OOP boundary trace evidence. |
+| Unauthorized fee settlement | Classify as cost-invalid evidence; system deploy authority remains required. |
+| Low deploy price | Classify as cost-invalid evidence before treating execution as cost-valid. |
+| Stale cost-invalid evidence | Reject at the slashing boundary. |
+| Diagnostic log truncation | Leave consensus digest, event count, cost, remaining fuel, and OOP evidence unchanged. |
+| Zero-weight billable event | Reject before appending to the cost trace or consuming tokens. |
+| Oversized weight | Reject before appending to the cost trace or consuming tokens. |
+| Oversized descriptor or trace window | Reject before appending to replay evidence or consuming tokens. |
+| Worker race at OOP boundary | Commit exactly one boundary event and attribute the returned failure to the branch that crossed the boundary. |
+
+## 8. Tier Architecture
+
+| Tier | Role | Artifacts |
+|---|---|---|
+| Formal specification | Proves unbounded semantic invariants and bounded replay/threat state machines | Rocq theories, `RuntimeBudgetReplay.tla`, `CostAccountingThreats.tla` |
+| Oracle and harness | Exercises generated terms, replay fixtures, concurrency races, and digest mutation campaigns | Rust property tests, loom shadow model, TLA+ model checking |
+| Production | Enforces invariants at runtime, replay, block hashing, settlement, and slashing boundaries | `RuntimeBudget`, `RuntimeManager`, Casper processed deploys, replay cache, block hash/signature payloads |
+
+## 9. Security Conclusions
+
+The cost-accounted model is protected against the practical security
+vectors that follow from moving cost from an external RSpace wrapper into
+the calculus:
+
+- Runtime fuel is capability-scoped and cannot be minted by refund or
+  slashing effects.
+- Replay authenticates cost, trace digest, trace count, failure status,
+  deploy signature, system deploy kind, slashing fields, event logs, and
+  genesis mode.
+- Parallel evaluation preserves total cost and canonical trace
+  commitments while keeping OOP boundary ownership stable.
+- Legacy compatibility is explicit and quarantined; it cannot authorize
+  post-activation cost-accounted replay without a trace commitment.
+- Slashing consumes cost-invalid evidence as a post-evaluation system
+  effect and does not mutate user fuel or settlement inputs.
+- Resource-exhaustion vectors are bounded by oversized-event rejection,
+  diagnostic/non-consensus separation, the production trace-event cap, and
+  deploy-reset trace clearing after replay commitment recording.
+
+The remaining trust base is cryptographic collision resistance,
+signature validity, the independently verified slashing authorization
+suite, and faithful execution of the Rust production paths tested by the
+implementation harness.

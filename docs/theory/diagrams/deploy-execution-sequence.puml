@@ -1,0 +1,123 @@
+' Deploy Execution Sequence — F1R3Node's current externalized deploy flow
+' (in the f1r3node-rust repository).
+'
+' Source of truth for Figure 3.3 in docs/theory/cost-accounting-migration.md.
+' Illustrates F1R3Node's current order-independent cost-accounting strategy:
+' each per-term future is spawned via tokio::spawn (reduce.rs:255) with the
+' resulting JoinHandles awaited sequentially, and ChargingRSpace wraps every
+' produce/consume to apply pre-charge / refund-on-COMM / unified-COMM-cost.
+' The cost is deterministic by this strategy
+' (rholang/tests/accounting/cost_accounting_spec.rs:323,474 guard this
+' empirically). The internalized model proposed in §4 makes the determinism
+' machine-checked, removes the per-task ChargingRSpace overhead, and replaces
+' the tokio::spawn-per-term + JoinHandle::await pattern with a single
+' FuturesUnordered driver (Section 5.4).
+'
+' End-to-end:
+'   Deployer/RNode  -> Evaluator -> CostManager
+'                                -> ChargingRSpace -> RSpace (ISpace)
+'   Closing the loop: Evaluator queries CostManager for the final cost
+'   and returns the deploy result to the Deployer.
+'
+' Color palette (consistent with fuel-gate-protocol.puml):
+'   Actor / Deployer    : salmon        (#F8C3B8)
+'   Evaluator (control) : amber         (#FFECB3)
+'   Cost accountant     : mint          (#C8E6C9)
+'   Wrapper / middleware: teal          (#B2DFDB)
+'   Tuple space         : blue          (#BBDEFB)
+'
+' Semantic arrow colors:
+'   Cost charge (fuel out): red-ish     (#C62828)
+'   Cost refund (fuel back): green-ish  (#2E7D32)
+'
+' (LMDB persistence is abstracted behind RSpace; not surfaced here.)
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/deploy-execution-sequence.puml
+
+@startuml deploy-execution-sequence
+!theme plain
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  GroupBorderColor        #333333
+  GroupHeaderFontColor    #222222
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 12
+
+autonumber
+
+actor       "Deployer / RNode"   as D   #F8C3B8
+participant "Evaluator"          as Ev  #FFECB3
+participant "CostManager"        as CM  #C8E6C9
+participant "ChargingRSpace"     as CR  #B2DFDB
+database    "RSpace (ISpace)"    as RS  #BBDEFB
+
+D -> Ev ++ : deploy(P ∣ Q, initial_cost)
+Ev -> CM ++ : init(initial_cost)
+CM --> Ev -- : ok
+note over Ev #FFF3E0
+Evaluator spawns each per-term future via
+tokio::spawn (reduce.rs:255) — one task
+per term. Awaits the resulting JoinHandles
+sequentially (reduce.rs:260-269).
+end note
+
+group #E3F2FD f₀ — produce(ch_a, d1)  [tokio::spawn'd task]
+    Ev -> CR ++ : produce(ch_a, d1)
+    CR -[#C62828]->> CM : pre-charge storage_cost_produce
+    CR -> RS ++ : space.produce(ch_a, d1)  [interior RSpace sync]
+    RS --> CR -- : COMM match → (cont_a, data_a)
+    CR -[#2E7D32]->> CM : refund storage_cost_consume (continuation removed)
+    CR -[#2E7D32]->> CM : refund storage_cost_produce (datum removed)
+    CR -[#C62828]->> CM : charge unified COMM cost
+    CR --> Ev -- : match → (cont_a, data_a)
+end
+
+note over Ev #E8F5E9
+ChargingRSpace::handle_result has applied
+the pre-charge / refund / unified-COMM
+sequence atomically. The net charge for
+this COMM is determined by what was
+matched, not by which side triggered it.
+end note
+
+Ev -> Ev : eval(body_a)  [dispatched inline by f₀'s tokio task]
+
+group #FFF8E1 f₁ — consume(ch_b, pat, body_b)  [independent tokio task]
+    Ev -> CR ++ : consume(ch_b, pat, body_b)
+    CR -[#C62828]->> CM : pre-charge storage_cost_consume
+    CR -> RS ++ : space.consume(ch_b, pat, body_b)  [interior RSpace sync]
+    RS --> CR -- : no match → continuation parked
+    CR --> Ev -- : no-match (parked; no event_cost charged)
+end
+
+note over Ev : All tokio::spawn'd JoinHandles awaited
+
+Ev -> CM ++ : query total_cost()
+CM --> Ev -- : accumulated cost c (deterministic)
+Ev --> D -- : deploy result, cost = c
+
+note over D, RS #E8F5E9
+Cost is determined by the deploy, not by scheduling.
+ChargingRSpace's pre-charge / refund / unified-COMM
+strategy makes the externalized model order-independent
+(empirically verified by cost_should_be_deterministic at
+rholang/tests/accounting/cost_accounting_spec.rs:323).
+
+The internalized model proposed in §4 upgrades this
+to a mechanized theorem (ca_cost_deterministic in
+Confluence.v), removes the per-task ChargingRSpace
+overhead, and replaces this per-term tokio::spawn +
+JoinHandle::await pattern with a single FuturesUnordered
+driver (Section 5.4) — higher fan-out, completion-order
+draining, and short-circuit error propagation via `?`.
+end note
+
+@enduml

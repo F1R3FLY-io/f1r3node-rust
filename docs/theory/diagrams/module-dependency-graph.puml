@@ -1,0 +1,116 @@
+' Module Dependency Graph — 18 Rocq modules of the cost-accounted-rho
+' formalization, organized into 5 proof-layer tiers.
+'
+' Source of truth for Figure 1.7 in docs/theory/cost-accounted-rho-verification.md.
+' Arrows point from dependency to dependent (A --> B reads "B imports A").
+'
+' Properties preserved:
+'   * WeakBarbedEquiv.v is present (added 2026-04-20 alongside
+'     the replication-encoding support work).
+'   * Replication.v is a LEAF of the DAG (nothing imports it).
+'   * Replication-specific proof infrastructure therefore cannot
+'     propagate into consensus-critical results.
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/module-dependency-graph.puml
+
+@startuml module-dependency-graph
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<Tier1>>   #EEF2FF
+  BackgroundColor<<Tier2>>   #EEF7FF
+  BackgroundColor<<Tier3>>   #FFF7EE
+  BackgroundColor<<Tier4>>   #EEFAF1
+  BackgroundColor<<Tier5>>   #FBEEF5
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+
+package "Layer 1 — Syntactic Foundation" <<Tier1>> {
+  component "RhoSyntax"             as RhoSyntax
+  component "StructEquivInversion"  as SEI
+  component "StructEquivHeads"      as SEH
+  component "RhoReduction"          as RhoRed
+}
+
+package "Layer 2 — Cost-Accounting &\nTranslation" <<Tier2>> {
+  component "CostAccountedSyntax"    as CAS
+  component "CostAccountedReduction" as CAR
+  component "Translation"            as Trans
+  component "ChannelSeparation"      as ChSep
+  component "TokenConservation"      as TokCon
+  component "FuelEventDecomposition" as FED
+  component "StrongNormalization"    as SN
+  component "Confluence"             as Conf
+  component "StepDeterminism"        as SD
+}
+
+package "Layer 3 — Faithfulness &\nStrong Bisimulation" <<Tier3>> {
+  component "TranslationFaithfulness" as TF
+  component "FuelGateSafety"          as FGS
+  component "Bisimulation"            as Bisim
+}
+
+package "Layer 4 — Weak Barbed Observables" <<Tier4>> {
+  component "WeakBarbedEquiv" as WBE
+}
+
+package "Layer 5 — Replication Encoding\nSupport (leaf)" <<Tier5>> {
+  component "Replication" as Rep
+  note right of Rep
+    Leaf of the DAG.
+    Replication support
+    lives here and cannot
+    propagate upstream.
+  end note
+}
+
+' --- Layer-1 internal edges ---
+RhoSyntax --> SEI
+SEI       --> SEH
+RhoSyntax --> RhoRed
+SEI       --> RhoRed
+SEH       --> RhoRed
+
+' --- Layer-1 → Layer-2 ---
+RhoSyntax --> CAS
+CAS       --> CAR
+RhoSyntax --> Trans
+SEI       --> Trans
+SEH       --> Trans
+RhoRed    --> Trans
+CAS       --> Trans
+CAS       --> ChSep
+CAR       --> TokCon
+CAR       --> FED
+TokCon    --> SN
+SN        --> Conf
+CAR       --> Conf
+Conf      --> SD
+
+' --- Layer-2 → Layer-3 ---
+Trans  --> TF
+TokCon --> TF
+Trans  --> FGS
+TF     --> Bisim
+Trans  --> Bisim
+
+' --- Layer-1 → Layer-4 ---
+RhoSyntax --> WBE
+SEI       --> WBE
+RhoRed    --> WBE
+
+' --- Layer-3 + Layer-4 → Layer-5 (Replication is a leaf) ---
+RhoSyntax --> Rep
+SEI       --> Rep
+SEH       --> Rep
+RhoRed    --> Rep
+Bisim     --> Rep
+WBE       --> Rep
+
+@enduml

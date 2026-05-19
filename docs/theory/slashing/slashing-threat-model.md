@@ -176,7 +176,7 @@ The traceability status for each finding is maintained on the
 Hypothesis witness is not treated as a Rust vulnerability unless that
 ledger marks it as production-source confirmed. Boundaries and projection
 risks receive formal classifications and regression tests; they do not
-authorize Rust source changes by themselves.
+authorize Rust implementation changes by themselves.
 
 | Threat class                                                   | Protection                                                                                                                                                                                                                                                            | Formal artifact                                                                                                                                             | Rust tests                                                  |
 |----------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------|
@@ -273,7 +273,7 @@ v2 until v2 proposes it. v1 cannot "censor" v2's deploys because v1
 never has them. T-12PF is therefore correctly classified as a
 *boundary assumption* — see the traceability ledger (preserved on
 `analysis/slashing` as `slashing-traceability.md`) finding 88
-(`model_boundary`, "No source bug confirmed"). The boundary status
+(`model_boundary`, "No implementation bug confirmed"). The boundary status
 is a *positive design finding* about the protocol's author-local-
 mempool semantics, not a deferred TODO. In-tree property tests
 (`proposer_fairness_boundary.rs`, `hypothesis_adversarial_scheduler.rs`,

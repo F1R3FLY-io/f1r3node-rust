@@ -36,9 +36,9 @@ Concretely:
   test that fails on the pre-fix code path (proving the bug was
   real) and a **post-fix passing** test (proving the fix closes it).
 - The traceability ledger (preserved on `analysis/slashing` as
-  `slashing-traceability.md`) gates Rust source work. Model-only
+  `slashing-traceability.md`) gates Rust implementation work. Model-only
   boundaries and projection risks receive formal classifications and
-  regression fixtures; they do not require production source changes
+  regression fixtures; they do not require production implementation changes
   unless reproduced on the production path.
 
 ## 14.2 Test infrastructure

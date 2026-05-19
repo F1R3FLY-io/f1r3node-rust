@@ -1,0 +1,36 @@
+flowchart TD
+    %% CoFixpoint bisim flow — proof structure of post_gate_bisim_strong.
+    %% Source of truth for Figure 8.1 in docs/theory/cost-accounted-rho-verification.md.
+    %% Render: mmdc -i cofixpoint-bisim-flow.mmd -o cofixpoint-bisim-flow.svg
+
+    subgraph Entry["bisim_intro — coinductive constructor"]
+      Input["Inputs: P, W, H : W ≡ P ∣ *(@0)"]
+    end
+
+    subgraph Forward["Forward arm — W step matched by P step"]
+      direction TB
+      F1["W ⇝ W' — given"]
+      F2["backward_sim_par_stuck"]
+      F3["P ⇝ P'  and  W' ≡ P' ∣ *(@0)"]
+      F4["RECURSE: post_gate_bisim_strong P' W' H_eq'"]
+      F5["P' ~~ W' — guarded"]
+      F1 --> F2 --> F3 --> F4 --> F5
+    end
+
+    subgraph Backward["Backward arm — P step matched by W step"]
+      direction TB
+      B1["P ⇝ P' — given"]
+      B2["rs_par_l + rs_struct"]
+      B3["W ⇝ W' where W' := P' ∣ *(@0)"]
+      B4["RECURSE: post_gate_bisim_strong P' W' refl"]
+      B5["P' ~~ W' — guarded"]
+      B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    Input --> Forward
+    Input --> Backward
+
+    classDef guard fill:#EEFAF1,stroke:#444;
+    classDef hyp   fill:#EEF2FF,stroke:#444;
+    class F4,B4 guard
+    class Input hyp

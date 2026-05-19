@@ -1,0 +1,78 @@
+' Module Dependency Graph — Package variant (layout v3)
+'
+' Coarse-grained view showing the 5 proof-layer tiers as packages.
+' Module names are listed as plain text inside each package.
+'
+' v3 layout changes vs v2:
+'   * Transitive reduction at the tier level: drops L1→L3 and L1→L5
+'     (both covered by L1→L2→L3→L5); leaves 5 edges forming the
+'     minimal DAG cover.
+'   * linetype polyline (not ortho): allows diagonal arrow routing,
+'     so long edges no longer need to pass through packages.
+'   * Removed the together { L2 L3 L4 } constraint: with fewer edges
+'     the layout engine produces a clean Hasse-style pyramid
+'     naturally.
+'   * Kept the 2×2 (L1) and 3×3 (L2) text grids from v2.
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/module-dependency-graph-package.puml
+
+@startuml module-dependency-graph-package
+!theme plain
+
+skinparam package {
+  BackgroundColor<<L1>> #EEF2FF
+  BackgroundColor<<L2>> #EEF7FF
+  BackgroundColor<<L3>> #FFF7EE
+  BackgroundColor<<L4>> #EEFAF1
+  BackgroundColor<<L5>> #FBEEF5
+  BorderColor       #333333
+  FontSize          13
+  FontStyle         bold
+}
+skinparam defaultFontName  "sans-serif"
+skinparam defaultFontSize  11
+skinparam arrowColor       #444444
+skinparam arrowThickness   1.3
+skinparam linetype         polyline
+skinparam nodesep          50
+skinparam ranksep          60
+
+title Module Dependency Graph — Package View\n(5 proof-layer tiers · 18 modules · transitive edges omitted — see §11.1 for full per-module detail)
+
+package "Layer 1 — Syntactic Foundation" <<L1>> as L1 {
+  rectangle "  RhoSyntax    ·    StructEquivInversion  \n  StructEquivHeads    ·    RhoReduction  " as L1_mods #white
+}
+
+package "Layer 2 — Cost-Accounting and Translation" <<L2>> as L2 {
+  rectangle "  CostAccountedSyntax     ·  CostAccountedReduction  ·  Translation  \n  ChannelSeparation       ·  TokenConservation       ·  FuelEventDecomposition  \n  StrongNormalization     ·  Confluence              ·  StepDeterminism  " as L2_mods #white
+}
+
+package "Layer 3 — Faithfulness &\nStrong Bisimulation" <<L3>> as L3 {
+  rectangle "  TranslationFaithfulness  \n  FuelGateSafety  \n  Bisimulation  " as L3_mods #white
+}
+
+package "Layer 4 — Weak Barbed Observables\n[added 2026-04-20]" <<L4>> as L4 {
+  rectangle "  WeakBarbedEquiv  " as L4_mods #white
+}
+
+package "Layer 5 — Replication Encoding Support (leaf)\n[added 2026-04-20]" <<L5>> as L5 {
+  rectangle "  Replication  \n\n  _Replication support lives here and cannot_  \n  _propagate into Layers 1–3._  " as L5_mods #white
+}
+
+' Tier-level dependency edges — transitively reduced.
+' Arrow direction: A --> B reads "B imports A".
+L1 --> L2
+L1 --> L4
+L2 --> L3
+L3 --> L5
+L4 --> L5
+
+legend bottom
+  Arrow direction: **A ⟶ B** means "tier **B** imports tier **A**".
+  Transitive edges at the tier level are omitted for clarity;\n
+  e.g. **Layer 5** directly imports a subset of **Layer 1**, but the dependency path **L1 ⟶ L2 ⟶ L3 ⟶ L5** carries the information.\n
+  For per-module edges see §11.1 File Listing.
+endlegend
+
+@enduml

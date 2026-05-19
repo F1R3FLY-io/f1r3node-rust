@@ -15,8 +15,6 @@ pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, event};
@@ -136,6 +134,12 @@ where
             .expect("history read lock")
             .clone()
     }
+}
+
+fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
+where D: Serialize {
+    let bytes = bincode::serialize(candidate).unwrap_or_default();
+    Blake2b256Hash::new(&bytes)
 }
 
 struct HeldLock {
@@ -1170,14 +1174,25 @@ where
         }
     }
 
-    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = thread_rng();
+    fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
+    where D: Serialize {
         let mut indexed_vec = t
             .into_iter()
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
-        indexed_vec.shuffle(&mut rng);
+
+        // Candidate ordering participates in replay-visible COMM selection.
+        // A random shuffle can make equally valid matches diverge across
+        // validators, so order by a stable hash of the serialized candidate
+        // and use the original index only as a deterministic tie breaker.
+        indexed_vec.sort_by(|(left, left_index), (right, right_index)| {
+            let left_hash = deterministic_candidate_hash(left);
+            let right_hash = deterministic_candidate_hash(right);
+            left_hash
+                .cmp(&right_hash)
+                .then_with(|| left_index.cmp(right_index))
+        });
         indexed_vec
     }
 }
