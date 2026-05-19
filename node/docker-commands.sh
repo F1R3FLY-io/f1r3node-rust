@@ -24,6 +24,7 @@ docker_build() {
         docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:latest" \
             --push \
@@ -32,6 +33,7 @@ docker_build() {
         echo "Building single-architecture image..."
         docker build \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:latest" \
             .
@@ -44,6 +46,7 @@ docker_build_local() {
     echo "Building Docker image for local use..."
     docker build \
         --file node/Dockerfile \
+        --build-arg VERSION="${VERSION}" \
         --tag "${IMAGE_NAME}:local" \
         --tag "${FULL_IMAGE_NAME}:local" \
         .

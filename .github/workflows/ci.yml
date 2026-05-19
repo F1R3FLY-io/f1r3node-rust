@@ -247,9 +247,11 @@ jobs:
         shell: bash -ex {0}
         run: |
           docker context use default
+          VERSION="$(git describe --tags --always)"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .

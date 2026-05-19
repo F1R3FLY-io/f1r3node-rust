@@ -162,11 +162,14 @@ EXPOSE 40400 40401 40402 40403 40404
 # Note: The original uses grpcurl and curl with jq
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService.status | jq -e && \
-        curl -s 127.0.0.1:40403/status | jq -e || exit 1
+        curl -s 127.0.0.1:40403/api/status | jq -e || exit 1
 
-# Labels (matching build.sbt)
+# Image version label. Populate via `--build-arg VERSION=...` from
+# docker-commands.sh / CI so the label tracks the actual build instead of
+# drifting from node/Cargo.toml.
+ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
-LABEL version="0.4.15"
+LABEL version="${VERSION}"
 
 # Switch to daemon user (matching build.sbt: daemonUser in Docker := "daemon")
 USER daemon
