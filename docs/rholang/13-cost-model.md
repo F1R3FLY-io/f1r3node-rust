@@ -127,9 +127,12 @@ The runtime represents billable work as typed events:
 
 `MeteredMachine` is the reducer-facing entry point. It builds billable frames,
 drains them in canonical `(source_path, redex_id, local_index)` order, then asks
-`RuntimeBudget` to reserve the weighted source-token event with one atomic compare
-and swap. This makes the metering path stack-safe and lets parallel Rholang
-branches execute concurrently while racing only on the shared budget counter.
+`RuntimeBudget` to commit the ready batch. `RuntimeBudget` returns execution
+permits for the funded canonical prefix and records the first canonical OOP
+boundary if the batch exceeds the remaining phlo. Permit grant is the cost
+commit: the work is charged even if later deploy state rolls back. This keeps
+parallel branches out of the per-event budget hot path while preventing unpaid
+physical work.
 
 Normal evaluation records only `SourceStep`, `Substitution`, or `Primitive`
 events. Legacy `cost.charge(...)` calls are not part of the user-deploy path.

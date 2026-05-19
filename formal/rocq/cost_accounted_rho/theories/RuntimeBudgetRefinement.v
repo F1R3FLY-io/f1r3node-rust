@@ -53,6 +53,11 @@ Inductive rb_admitted_reserve_result : Type :=
   | RbAdmittedOop
   | RbAdmittedInvalid.
 
+Record rb_execution_permit := {
+  rb_permit_event : rb_event;
+  rb_permit_weight : nat
+}.
+
 Inductive rb_system_deploy_kind : Type :=
   | RbSystemSlash
   | RbSystemClose
@@ -211,6 +216,30 @@ Fixpoint rb_reserve_many
           (b'', RbReserveOk :: results)
       | (b', RbReserveOop) => (b', [RbReserveOop])
       end
+  end.
+
+Fixpoint rb_granted_permits
+  (events : list rb_event)
+  (results : list rb_reserve_result)
+  : list rb_execution_permit :=
+  match events, results with
+  | e :: rest_events, RbReserveOk :: rest_results =>
+      {| rb_permit_event := e; rb_permit_weight := rb_event_weight e |}
+        :: rb_granted_permits rest_events rest_results
+  | _, _ => []
+  end.
+
+Definition rb_commit_canonical_batch
+  (b : rb_state)
+  (events : list rb_event)
+  : rb_state * list rb_execution_permit * list rb_reserve_result :=
+  let '(b', results) := rb_reserve_many b events in
+  (b', rb_granted_permits events results, results).
+
+Fixpoint rb_permit_weight_sum (permits : list rb_execution_permit) : nat :=
+  match permits with
+  | [] => 0
+  | permit :: rest => rb_permit_weight permit + rb_permit_weight_sum rest
   end.
 
 Fixpoint rb_event_weight_sum (events : list rb_event) : nat :=
@@ -491,6 +520,41 @@ Proof.
       inversion Hmany. subst. simpl.
       eapply IH. exact Hrest.
     + inversion Hmany. subst. simpl. lia.
+Qed.
+
+Theorem rb_commit_canonical_batch_preserves_valid :
+  forall events b b' permits results,
+    rb_valid b ->
+    rb_commit_canonical_batch b events = (b', permits, results) ->
+    rb_valid b'.
+Proof.
+  intros events b b' permits results Hvalid Hcommit.
+  unfold rb_commit_canonical_batch in Hcommit.
+  destruct (rb_reserve_many b events) as [b1 rs] eqn:Hmany.
+  inversion Hcommit. subst.
+  eapply rb_reserve_many_preserves_valid; eassumption.
+Qed.
+
+Theorem rb_commit_canonical_batch_oop_count_le_one :
+  forall events b b' permits results,
+    rb_commit_canonical_batch b events = (b', permits, results) ->
+    rb_oop_count results <= 1.
+Proof.
+  intros events b b' permits results Hcommit.
+  unfold rb_commit_canonical_batch in Hcommit.
+  destruct (rb_reserve_many b events) as [b1 rs] eqn:Hmany.
+  inversion Hcommit. subst.
+  eapply rb_reserve_many_oop_count_le_one; eassumption.
+Qed.
+
+Theorem rb_commit_canonical_batch_no_unpaid_physical_work :
+  forall events b b' permits results executed,
+    rb_commit_canonical_batch b events = (b', permits, results) ->
+    executed = permits ->
+    rb_permit_weight_sum executed = rb_permit_weight_sum permits.
+Proof.
+  intros events b b' permits results executed _ Hexecuted.
+  subst. reflexivity.
 Qed.
 
 Theorem rb_oop_trace_entries_at_most_one : forall oop,

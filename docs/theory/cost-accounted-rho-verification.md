@@ -3085,10 +3085,11 @@ The model now consists of seven TLA+ specifications under
 
 5. **`RuntimeBudgetReplay.tla`** — Models the bounded Rust
    `RuntimeBudget` admission/replay trace state machine, including OOP
-   boundary commitment, invalid event rejection, trace caps, canonical
-   digest-entry tagging over the Rust event descriptor tuple, duplicate
-   event occurrence multiplicity, and finalization reads followed by deploy
-   reset. *(976 distinct states / 3,427 generated states, 6 events.)*
+   boundary commitment, canonical permit grants, no-unpaid-work ordering,
+   invalid event rejection, trace caps, canonical digest-entry tagging over
+   the Rust event descriptor tuple, duplicate event occurrence
+   multiplicity, and finalization reads followed by deploy reset.
+   *(72 distinct states / 203 generated states, 6 events.)*
 
 6. **`CostAccountingThreats.tla`** — Models replay tampering,
    activation downgrade attempts, unauthorized settlement, cost-invalid

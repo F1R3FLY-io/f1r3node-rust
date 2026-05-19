@@ -1258,9 +1258,11 @@ commit:
    their `BillableTokenEvent` descriptors and weights without touching a
    global cost mutex.
 3. The metering kernel commits the ready billable events in canonical
-   descriptor order for the deploy, calling `TokenBudget::reserve_canonical`.
-4. Successfully reserved continuations resume immediately and may spawn
-   further metered work through `FuturesUnordered`.
+   descriptor order for the deploy, calling
+   `RuntimeBudget::commit_canonical_batch`.
+4. Successfully permitted continuations resume immediately and may spawn
+   further metered work through `FuturesUnordered`; permit grant consumes
+   phlo and is not refunded by later state rollback.
 5. If the next canonical reservation would exceed the budget, every
    validator raises `OutOfPhlogistonsError` at the same descriptor.
 
@@ -1270,6 +1272,12 @@ execution, primitive work, and branch discovery remain concurrent. Event
 logs and replay payloads must use canonical descriptors or multiset
 commitments for fuel events; they must not depend on wall-clock task
 completion order.
+
+The security boundary is physical work, not only surviving state. A branch
+may discover cheap descriptors, but expensive primitive work, substitution,
+RSpace search, hashing, serialization, continuation execution, and spawn
+must be preceded by a charged execution permit or a deterministic admission
+cap. User-visible effects can roll back after OOP; the permit charge remains.
 
 #### 5.9.4 Acceptance Criteria for Complete Replacement
 

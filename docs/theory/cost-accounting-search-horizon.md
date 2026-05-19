@@ -199,9 +199,9 @@ The current highest-value expansion points are:
 
 1. Producer routing: zero-capable work must use incremental reservation,
    while standalone billable work must produce positive bounded events.
-2. Runtime-budget concurrency: trace-slot reservation and release must
-   remain linearizable under success, OOP, invalid admission, and repeated
-   OOP races.
+2. Runtime-budget concurrency: canonical batch permit grants, trace-slot
+   reservation, and release must remain linearizable under success, OOP,
+   invalid admission, repeated OOP races, and low-phlo fanout attempts.
 3. Replay authentication: every replay-relevant cost field mutation must
    be visible to validation or authenticated payload hashing.
 4. Settlement isolation: precharge/refund arithmetic must be bounded,
@@ -221,7 +221,10 @@ The current highest-value expansion points are:
    cost-trace digest input (`deploy_id`, `source_path`, `redex_id`,
    `local_index`, billable kind, primitive descriptor, and weight) must change
    authenticated evidence.
-10. Corpus retention: every promoted generated witness must remain replayable
+10. Permit-frontier search: descriptors may be discovered cheaply, but every
+   expensive primitive, substitution, RSpace search, hash, serialization, or
+   branch spawn must be preceded by a charged permit or deterministic cap.
+11. Corpus retention: every promoted generated witness must remain replayable
    as a stable Rust fixture and must keep its terminal classification.
 11. Cross-product horizon search: multi-deploy events, replay mutation,
     settlement, slashing evidence, resource bounds, and lifecycle ordering

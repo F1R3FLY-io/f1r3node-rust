@@ -2,8 +2,8 @@
 (****************************************************************************)
 (* Finite-state model of the bounded-memory runtime budget used by the       *)
 (* Rust implementation. This complements the Rocq arithmetic refinement by   *)
-(* exploring reservation interleavings, OOP boundary commitment, replay      *)
-(* trace sequence stability, deploy reset, and finalization reads in small   *)
+(* exploring canonical permit grants, OOP boundary commitment, replay trace *)
+(* sequence stability, deploy reset, and finalization reads in small        *)
 (* schedules.                                                               *)
 (****************************************************************************)
 
@@ -18,6 +18,7 @@ CONSTANTS
     KindId,
     PrimitiveDescriptor,
     Weight,
+    Rank,
     InitialBudget,
     MaxTraceEvents,
     MaxSourcePathComponents,
@@ -28,17 +29,21 @@ VARIABLES
     pending,
     consumed,
     successTrace,
+    permits,
+    executed,
     oop,
     finalizedTrace,
     postOopRejects,
     frontier
 
-vars == <<pending, consumed, successTrace, oop, finalizedTrace, postOopRejects, frontier>>
+vars == <<pending, consumed, successTrace, permits, executed, oop, finalizedTrace, postOopRejects, frontier>>
 
 Init ==
     /\ pending = Events
     /\ consumed = 0
     /\ successTrace = <<>>
+    /\ permits = <<>>
+    /\ executed = <<>>
     /\ oop = NoOop
     /\ finalizedTrace = <<>>
     /\ postOopRejects = 0
@@ -49,6 +54,8 @@ TypeOK ==
     /\ consumed \in Nat
     /\ consumed <= InitialBudget
     /\ successTrace \in Seq(Events)
+    /\ permits \in Seq(Events)
+    /\ executed \in Seq(Events)
     /\ oop \in Events \cup {NoOop}
     /\ finalizedTrace \in Seq(Events)
     /\ postOopRejects \in Nat
@@ -61,6 +68,7 @@ TypeOK ==
     /\ \A e \in Events : KindId[e] \in 0..2
     /\ \A e \in Events : PrimitiveDescriptor[e] \in Nat
     /\ \A e \in Events : Weight[e] \in Nat
+    /\ \A e \in Events : Rank[e] \in Nat
     /\ MaxSourcePathComponents \in Nat
     /\ MaxPrimitiveDescriptor \in Nat
 
@@ -101,6 +109,11 @@ OopDigestEntries(boundary) ==
 CanonicalDigestEntries(trace, boundary) ==
     SuccessDigestEntries(trace) \cup OopDigestEntries(boundary)
 
+CanonicalReady(e) ==
+    /\ e \in pending
+    /\ ValidEvent(e)
+    /\ \A other \in pending : ValidEvent(other) => Rank[e] <= Rank[other]
+
 FinalizedSuccessTrace ==
     IF oop = NoOop THEN finalizedTrace
     ELSE IF Len(finalizedTrace) = 0 THEN <<>>
@@ -113,11 +126,12 @@ FinalizedDigestEntries ==
 ReserveOk(e) ==
     /\ frontier = 0
     /\ oop = NoOop
-    /\ e \in pending
-    /\ ValidEvent(e)
+    /\ CanonicalReady(e)
     /\ consumed + Weight[e] <= InitialBudget
     /\ consumed' = consumed + Weight[e]
     /\ successTrace' = Append(successTrace, e)
+    /\ permits' = Append(permits, e)
+    /\ executed' = Append(executed, e)
     /\ pending' = pending \ {e}
     /\ oop' = NoOop
     /\ finalizedTrace' = finalizedTrace
@@ -127,11 +141,11 @@ ReserveOk(e) ==
 ReserveOop(e) ==
     /\ frontier = 0
     /\ oop = NoOop
-    /\ e \in pending
-    /\ ValidEvent(e)
+    /\ CanonicalReady(e)
     /\ consumed + Weight[e] > InitialBudget
     /\ consumed' = InitialBudget
     /\ successTrace' = successTrace
+    /\ UNCHANGED <<permits, executed>>
     /\ pending' = pending \ {e}
     /\ oop' = e
     /\ finalizedTrace' = finalizedTrace
@@ -144,7 +158,7 @@ RejectPostOop(e) ==
     /\ e \in pending
     /\ ValidEvent(e)
     /\ pending' = pending \ {e}
-    /\ UNCHANGED <<consumed, successTrace, oop, finalizedTrace>>
+    /\ UNCHANGED <<consumed, successTrace, permits, executed, oop, finalizedTrace>>
     /\ postOopRejects' = postOopRejects + 1
     /\ frontier' = frontier
 
@@ -153,13 +167,13 @@ RejectInvalid(e) ==
     /\ e \in pending
     /\ ~ValidEvent(e)
     /\ pending' = pending \ {e}
-    /\ UNCHANGED <<consumed, successTrace, oop, finalizedTrace, postOopRejects, frontier>>
+    /\ UNCHANGED <<consumed, successTrace, permits, executed, oop, finalizedTrace, postOopRejects, frontier>>
 
 FinalizeTrace ==
     /\ frontier = 0
     /\ (pending = {} \/ oop # NoOop)
     /\ finalizedTrace' = TraceWithOop(successTrace, oop)
-    /\ UNCHANGED <<pending, consumed, successTrace, oop, postOopRejects>>
+    /\ UNCHANGED <<pending, consumed, successTrace, permits, executed, oop, postOopRejects>>
     /\ frontier' = 1
 
 ResetDeploy ==
@@ -167,6 +181,8 @@ ResetDeploy ==
     /\ pending' = Events
     /\ consumed' = 0
     /\ successTrace' = <<>>
+    /\ permits' = <<>>
+    /\ executed' = <<>>
     /\ oop' = NoOop
     /\ finalizedTrace' = finalizedTrace
     /\ postOopRejects' = 0
@@ -190,6 +206,16 @@ ReplayTraceSubset ==
 
 OopNotLogged ==
     oop # NoOop => \A i \in DOMAIN successTrace : successTrace[i] # oop
+
+PermitsMatchSuccessfulTrace ==
+    permits = successTrace
+
+NoUnpaidPhysicalWork ==
+    executed = permits
+
+CanonicalPermitOrder ==
+    \A i, j \in DOMAIN successTrace :
+        i < j => Rank[successTrace[i]] <= Rank[successTrace[j]]
 
 FinalizedTraceSequence ==
     finalizedTrace \in Seq(Events)

@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::accounting::costs::Cost;
-use super::accounting::{BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, SourcePath};
+use super::accounting::{
+    BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, SourcePath,
+};
 use super::errors::InterpreterError;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -165,19 +167,40 @@ impl MeteredMachine {
     fn drain_frames(&self, mut frames: Vec<MeteredFrame>) -> Result<(), InterpreterError> {
         frames.sort_by(|left, right| frame_order_key(left).cmp(&frame_order_key(right)));
 
+        let mut billable = Vec::new();
+        let mut nonbillable = Vec::new();
         for frame in frames {
             match frame {
-                MeteredFrame::Billable(event) => self.budget.reserve_canonical(event)?,
+                MeteredFrame::Billable(event) => billable.push((event, None)),
                 MeteredFrame::BillableCost { event, amount } => {
-                    self.budget.reserve_canonical_with_cost(event, amount)?
+                    billable.push((event, Some(amount)))
                 }
-                MeteredFrame::InstallGate(key) => {
-                    self.enqueue_frame(MeteredFrame::FireGate(key));
-                }
-                MeteredFrame::FireGate(key) => {
-                    self.enqueue_frame(MeteredFrame::Resume(key));
-                }
+                frame => nonbillable.push(frame),
+            }
+        }
+
+        billable.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let commit = self.budget.commit_canonical_batch(CostReservationBatch {
+            events: billable
+                .iter()
+                .map(|(event, _)| event.clone())
+                .collect::<Vec<_>>(),
+        })?;
+        for (_, amount) in billable.iter().take(commit.permits.len()) {
+            if let Some(amount) = amount {
+                self.budget.append_cost_log(amount.clone());
+            }
+        }
+        if commit.oop.is_some() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+
+        for frame in nonbillable {
+            match frame {
+                MeteredFrame::InstallGate(key) => self.enqueue_frame(MeteredFrame::FireGate(key)),
+                MeteredFrame::FireGate(key) => self.enqueue_frame(MeteredFrame::Resume(key)),
                 MeteredFrame::Resume(_) => {}
+                MeteredFrame::Billable(_) | MeteredFrame::BillableCost { .. } => {}
             }
         }
 

@@ -26,6 +26,7 @@ pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
     consumed_tokens: Arc<AtomicI64>,
+    commit_lock: Arc<Mutex<()>>,
     signature: Arc<Mutex<Sig>>,
     deploy_id: Arc<Mutex<[u8; 32]>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
@@ -50,6 +51,24 @@ pub struct CostTraceDigest {
     // reservations but still sensitive to event descriptors and OOP boundary.
     pub digest: Vec<u8>,
     pub event_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CostReservationBatch {
+    pub events: Vec<BillableTokenEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionPermit {
+    pub event: BillableTokenEvent,
+    pub weight: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CostCommit {
+    pub permits: Vec<ExecutionPermit>,
+    pub consumed_weight: u64,
+    pub oop: Option<BillableTokenEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -91,6 +110,7 @@ impl RuntimeBudget {
         Self {
             initial_tokens: Arc::new(AtomicI64::new(initial_value.value)),
             consumed_tokens: Arc::new(AtomicI64::new(0)),
+            commit_lock: Arc::new(Mutex::new(())),
             signature: Arc::new(Mutex::new(Sig::Unit)),
             deploy_id: Arc::new(Mutex::new([0; 32])),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
@@ -114,12 +134,19 @@ impl RuntimeBudget {
         event: BillableTokenEvent,
         amount: Cost,
     ) -> Result<(), InterpreterError> {
-        self.reserve_canonical(event)?;
-        self.append_cost_log(amount);
+        let commit = self.commit_canonical_batch(CostReservationBatch {
+            events: vec![event],
+        })?;
+        if commit.oop.is_some() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        if !commit.permits.is_empty() {
+            self.append_cost_log(amount);
+        }
         Ok(())
     }
 
-    fn append_cost_log(&self, amount: Cost) {
+    pub(crate) fn append_cost_log(&self, amount: Cost) {
         if self.max_log_entries > 0 {
             let mut log = self.log.lock().unwrap();
             if log.len() >= self.max_log_entries {
@@ -189,42 +216,88 @@ impl RuntimeBudget {
     }
 
     pub fn reserve_canonical(&self, event: BillableTokenEvent) -> Result<(), InterpreterError> {
+        let commit = self.commit_canonical_batch(CostReservationBatch {
+            events: vec![event],
+        })?;
+        if commit.oop.is_some() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(())
+    }
+
+    pub fn commit_canonical_batch(
+        &self,
+        batch: CostReservationBatch,
+    ) -> Result<CostCommit, InterpreterError> {
         if self.unmetered.load(Ordering::Acquire) != 0 {
-            return Ok(());
+            return Ok(CostCommit {
+                permits: batch
+                    .events
+                    .into_iter()
+                    .map(|event| ExecutionPermit {
+                        weight: event.weight,
+                        event,
+                    })
+                    .collect(),
+                consumed_weight: 0,
+                oop: None,
+            });
         }
 
-        Self::validate_billable_event(&event)?;
-        self.try_reserve_cost_trace_slot()?;
+        for event in &batch.events {
+            Self::validate_billable_event(event)?;
+        }
 
-        let weight = event.weight as i64;
-        loop {
+        let mut events = batch.events;
+        events.sort();
+
+        let _commit = self.commit_lock.lock().expect("runtime budget commit lock");
+        if let Some(oop) = self.last_oop_event() {
+            return Ok(CostCommit {
+                permits: Vec::new(),
+                consumed_weight: 0,
+                oop: Some(oop),
+            });
+        }
+
+        let mut permits = Vec::new();
+        let mut consumed_weight = 0u64;
+        for event in events {
+            self.try_reserve_cost_trace_slot()?;
             let consumed = self.consumed_tokens.load(Ordering::Acquire);
             let initial = self.initial_tokens.load(Ordering::Acquire);
             if consumed < 0 || initial < 0 {
                 self.release_cost_trace_slot();
                 return Err(InterpreterError::OutOfPhlogistonsError);
             }
+
+            let weight = event.weight as i64;
             let next = consumed.saturating_add(weight);
             if next > initial {
                 self.consumed_tokens.store(initial, Ordering::Release);
-                let mut last_oop_event = self.last_oop_event.lock().expect("last OOP event lock");
-                if last_oop_event.is_none() {
-                    *last_oop_event = Some(event);
-                } else {
-                    self.release_cost_trace_slot();
-                }
-                return Err(InterpreterError::OutOfPhlogistonsError);
+                *self.last_oop_event.lock().expect("last OOP event lock") = Some(event.clone());
+                return Ok(CostCommit {
+                    permits,
+                    consumed_weight,
+                    oop: Some(event),
+                });
             }
-            if self
-                .consumed_tokens
-                .compare_exchange(consumed, next, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                self.append_cost_trace_event(event.clone());
-                self.append_event_log(event);
-                return Ok(());
-            }
+
+            self.consumed_tokens.store(next, Ordering::Release);
+            self.append_cost_trace_event(event.clone());
+            self.append_event_log(event.clone());
+            consumed_weight = consumed_weight.saturating_add(event.weight);
+            permits.push(ExecutionPermit {
+                weight: event.weight,
+                event,
+            });
         }
+
+        Ok(CostCommit {
+            permits,
+            consumed_weight,
+            oop: None,
+        })
     }
 
     pub fn get(&self) -> Cost {
@@ -248,6 +321,7 @@ impl RuntimeBudget {
     }
 
     pub fn reset_from_token(&self, token: &Token) {
+        let _commit = self.commit_lock.lock().expect("runtime budget commit lock");
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
         self.consumed_tokens.store(0, Ordering::Release);
@@ -361,29 +435,29 @@ impl RuntimeBudget {
     /// boundary is tagged separately. Call this only after the evaluator has
     /// joined all deploy work for the finalization window.
     pub fn cost_trace_digest(&self) -> CostTraceDigest {
-        fn push_len_prefixed(bytes: &mut Vec<u8>, data: &[u8]) {
-            bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(data);
+        fn feed_len_prefixed(update: &mut dyn FnMut(&[u8]), data: &[u8]) {
+            update(&(data.len() as u64).to_le_bytes());
+            update(data);
         }
 
-        fn push_event(bytes: &mut Vec<u8>, tag: u8, event: &BillableTokenEvent) {
-            bytes.push(tag);
-            bytes.extend_from_slice(&event.deploy_id);
-            bytes.extend_from_slice(&(event.source_path.0.len() as u64).to_le_bytes());
+        fn feed_event(update: &mut dyn FnMut(&[u8]), tag: u8, event: &BillableTokenEvent) {
+            update(&[tag]);
+            update(&event.deploy_id);
+            update(&(event.source_path.0.len() as u64).to_le_bytes());
             for component in &event.source_path.0 {
-                bytes.extend_from_slice(&component.to_le_bytes());
+                update(&component.to_le_bytes());
             }
-            bytes.extend_from_slice(&event.redex_id.0.to_le_bytes());
-            bytes.extend_from_slice(&event.local_index.to_le_bytes());
+            update(&event.redex_id.0.to_le_bytes());
+            update(&event.local_index.to_le_bytes());
             match &event.kind {
-                BillableKind::SourceStep => bytes.push(0),
+                BillableKind::SourceStep => update(&[0]),
                 BillableKind::Primitive(name) => {
-                    bytes.push(1);
-                    push_len_prefixed(bytes, name.as_bytes());
+                    update(&[1]);
+                    feed_len_prefixed(update, name.as_bytes());
                 }
-                BillableKind::Substitution => bytes.push(2),
+                BillableKind::Substitution => update(&[2]),
             }
-            bytes.extend_from_slice(&event.weight.to_le_bytes());
+            update(&event.weight.to_le_bytes());
         }
 
         let mut tagged_events = self
@@ -401,15 +475,16 @@ impl RuntimeBudget {
             left_tag.cmp(right_tag).then_with(|| left.cmp(right))
         });
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(COST_TRACE_DIGEST_DOMAIN);
-        bytes.extend_from_slice(&(tagged_events.len() as u64).to_le_bytes());
-        for (tag, event) in &tagged_events {
-            push_event(&mut bytes, *tag, event);
-        }
+        let digest = Blake2b256::hash_stream(|update| {
+            update(COST_TRACE_DIGEST_DOMAIN);
+            update(&(tagged_events.len() as u64).to_le_bytes());
+            for (tag, event) in &tagged_events {
+                feed_event(update, *tag, event);
+            }
+        });
 
         CostTraceDigest {
-            digest: Blake2b256::hash(bytes).to_vec(),
+            digest,
             event_count: tagged_events.len() as u64,
         }
     }

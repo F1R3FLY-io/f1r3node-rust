@@ -13,8 +13,8 @@ use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 use rand::Rng;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
-    BillableKind, BillableTokenEvent, RedexId, RuntimeBudget, Sig, SignatureChannel, SignedProcess,
-    SourcePath, Token, MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES,
+    BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, Sig,
+    SignatureChannel, SignedProcess, SourcePath, Token, MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES,
     MAX_COST_TRACE_SOURCE_PATH_COMPONENTS,
 };
 use rholang::rust::interpreter::errors::InterpreterError;
@@ -793,6 +793,64 @@ fn runtime_budget_canonical_event_log_is_order_independent() {
     );
     assert_eq!(forward.total_cost().value, reverse.total_cost().value);
     assert_eq!(forward.remaining().value, reverse.remaining().value);
+}
+
+#[test]
+fn canonical_batch_commit_is_permutation_invariant() {
+    let left = RuntimeBudget::new(Cost::create(100, "left batch budget"));
+    let right = RuntimeBudget::new(Cost::create(100, "right batch budget"));
+    let events = vec![token_event(2, 50), token_event(1, 60)];
+
+    let left_commit = left
+        .commit_canonical_batch(CostReservationBatch {
+            events: events.clone(),
+        })
+        .unwrap();
+    let right_commit = right
+        .commit_canonical_batch(CostReservationBatch {
+            events: events.into_iter().rev().collect(),
+        })
+        .unwrap();
+
+    assert_eq!(left_commit, right_commit);
+    assert_eq!(
+        left_commit
+            .permits
+            .iter()
+            .map(|permit| permit.event.source_path.clone())
+            .collect::<Vec<_>>(),
+        vec![SourcePath(vec![1])]
+    );
+    assert_eq!(
+        left_commit
+            .oop
+            .as_ref()
+            .map(|event| event.source_path.clone()),
+        Some(SourcePath(vec![2]))
+    );
+    assert_eq!(left.total_cost().value, 100);
+    assert_eq!(right.total_cost().value, 100);
+    assert_eq!(left.cost_trace_digest(), right.cost_trace_digest());
+}
+
+#[test]
+fn batch_commit_charges_only_granted_execution_permits() {
+    let budget = RuntimeBudget::new(Cost::create(7, "permit budget"));
+    let commit = budget
+        .commit_canonical_batch(CostReservationBatch {
+            events: vec![token_event(3, 5), token_event(4, 5)],
+        })
+        .unwrap();
+
+    let permitted_weight: u64 = commit.permits.iter().map(|permit| permit.weight).sum();
+
+    assert_eq!(permitted_weight, 5);
+    assert_eq!(commit.consumed_weight, 5);
+    assert_eq!(budget.total_cost().value, 7);
+    assert_eq!(budget.remaining().value, 0);
+    assert_eq!(budget.get_event_log().len(), 1);
+    assert!(commit.oop.is_some());
+    assert_eq!(budget.cost_trace_event_count(), 2);
 }
 
 #[test]

@@ -44,6 +44,12 @@ MC_Weight == [e \in MC_Events |-> CASE e = e0 -> 0
                                      [] e = e3 -> 5
                                      [] e = e4 -> 1
                                      [] e = e5 -> 1]
+MC_Rank == [e \in MC_Events |-> CASE e = e0 -> 0
+                                   [] e = e1 -> 1
+                                   [] e = e2 -> 2
+                                   [] e = e3 -> 3
+                                   [] e = e4 -> 4
+                                   [] e = e5 -> 5]
 MC_InitialBudget == 6
 MC_MaxTraceEvents == 3
 MC_MaxSourcePathComponents == 2

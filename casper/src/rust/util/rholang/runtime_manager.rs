@@ -378,10 +378,10 @@ impl RuntimeManager {
         // Cache replay result for potential replay shortcut (including event logs)
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-            let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
                 let key = ReplayCacheKey::new(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
@@ -510,10 +510,10 @@ impl RuntimeManager {
         // Cache replay result for potential replay shortcut (including event logs)
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
-            let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
                 let key = ReplayCacheKey::new(
                     start_hash.clone(),
                     sender.bytes.to_vec(),

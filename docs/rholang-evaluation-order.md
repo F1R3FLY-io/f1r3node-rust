@@ -67,9 +67,11 @@ parallel task happens to trigger a COMM.
 Metering uses explicit work frames (`MeteredMachine`) rather than recursive
 charging. Each live billable frame is keyed by deploy id, branch-derived source
 path, redex id, and local index, then drained in canonical order before
-atomically reserving tokens from `RuntimeBudget`. This preserves maximum branch
-parallelism: spawned Par tasks do not serialize on evaluation, only on the short
-budget reservation CAS.
+requesting a `RuntimeBudget` batch commit. The returned execution permits are
+the cost commit for the funded canonical prefix; work without a permit must not
+perform expensive evaluation or commit user-visible state. This preserves safe
+branch parallelism: workers run independently after permits are granted, and
+the budget boundary is canonical rather than task-scheduler dependent.
 
 ## References
 

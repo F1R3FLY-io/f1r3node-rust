@@ -24,7 +24,7 @@ The TLC model checker jar is at:
 | `MCEval.tla` | Model instance for EvalScheduling | — | — |
 | `FullProtocol.tla` | Generalized protocol: shared channels, arbitrary nesting (depth 0/1/2), Join mediators | 12,960 (7 procs, 12 channels) | TokenConservation, CostDeterminism, FuelGateSafety, GateOrdering, SplitOrdering, NoNegativeTokens |
 | `MCFull.tla` | Model instance for FullProtocol | — | — |
-| `RuntimeBudgetReplay.tla` | Bounded runtime-budget reservation, replay trace, invalid-event rejection, post-OOP rejection, deploy reset, finalization-read model, and canonical digest-entry abstraction over Rust event descriptors and occurrence multiplicity | 976 distinct / 3,427 generated (6 events, including zero-weight, over-source-path, and over-primitive-descriptor invalid events) | NoOverspend, OopCommitsBoundary, ReplayTraceSubset, OopNotLogged, FinalizedTraceSequence, FinalizationPreservesActiveBudget, LoggedEventsHavePositiveWeight, LoggedEventsAreValidated, TraceWithinRetentionBound, ResetClearsActiveTraceAfterFinalization, PostOopRejectionsPreserveSingleBoundary, CanonicalDigestEventCountMatches, CanonicalDigestDomainSeparatesOop, CanonicalDigestStableAfterFinalization |
+| `RuntimeBudgetReplay.tla` | Bounded runtime-budget canonical permit grants, replay trace, invalid-event rejection, post-OOP rejection, deploy reset, finalization-read model, and canonical digest-entry abstraction over Rust event descriptors and occurrence multiplicity | 72 distinct / 203 generated (6 events, including zero-weight, over-source-path, and over-primitive-descriptor invalid events) | NoOverspend, OopCommitsBoundary, ReplayTraceSubset, OopNotLogged, PermitsMatchSuccessfulTrace, NoUnpaidPhysicalWork, CanonicalPermitOrder, FinalizedTraceSequence, FinalizationPreservesActiveBudget, LoggedEventsHavePositiveWeight, LoggedEventsAreValidated, TraceWithinRetentionBound, ResetClearsActiveTraceAfterFinalization, PostOopRejectionsPreserveSingleBoundary, CanonicalDigestEventCountMatches, CanonicalDigestDomainSeparatesOop, CanonicalDigestStableAfterFinalization |
 | `MCRuntimeBudgetReplay.tla` | Model instance for RuntimeBudgetReplay | — | — |
 | `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, and evidence-recording threat model | 52 (single deploy boundary) | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation |
 | `MCCostAccountingThreats.tla` | Model instance for CostAccountingThreats | — | — |
@@ -133,6 +133,11 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
   matching the Rust `cost_trace_event_count` contract. Duplicate events with
   the same deploy id, source path, redex id, local index, billable kind,
   primitive descriptor, and weight receive distinct occurrence ordinals.
+- **PermitsMatchSuccessfulTrace** and **NoUnpaidPhysicalWork**: successful
+  budget commits grant execution permits before modeled physical work
+  executes, and OOP does not grant an execution permit for unfunded work.
+- **CanonicalPermitOrder**: permits follow the modeled canonical rank, so
+  the OOP boundary is not chosen by task completion order.
 - **CanonicalDigestDomainSeparatesOop**: the OOP boundary is tagged
   separately from successful events, so boundary evidence cannot collapse
   into a successful reservation with the same event identity.
@@ -202,7 +207,7 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `CompoundProtocol.tla` | 4 (incl. recursive spawn) | 4 | 1 | up to 2 | 63 |
 | `FullProtocol.tla` | 7 | 12 | 2 (doubly-compound + Join) | up to 3 | 12,960 |
 | `EvalScheduling.tla` | 3 bodies | — | 0 | 1 | 16 |
-| `RuntimeBudgetReplay.tla` | 6 events | — | 0 | bounded budget 6 | 976 distinct / 3,427 generated |
+| `RuntimeBudgetReplay.tla` | 6 events | — | 0 | bounded budget 6 | 72 distinct / 203 generated |
 | `CostAccountingThreats.tla` | 1 deploy boundary | — | 0 | bounded fuel 5 | 52 |
 | `CostAccountingSearchFrontier.tla` | 9 witness families | — | 0 | — | bounded by classification and v3 metadata flags |
 
