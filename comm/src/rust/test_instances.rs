@@ -20,10 +20,6 @@ pub struct NodeDiscoveryStub {
     pub nodes: Vec<PeerNode>,
 }
 
-impl Default for NodeDiscoveryStub {
-    fn default() -> Self { Self::new() }
-}
-
 impl NodeDiscoveryStub {
     pub fn new() -> Self { Self { nodes: vec![] } }
 
@@ -71,10 +67,6 @@ pub type Responses = Box<dyn Fn(&PeerNode, &Protocol) -> Result<(), CommError> +
 pub struct TransportLayerStub {
     reqresp: Arc<Mutex<Option<Arc<Responses>>>>,
     requests: Arc<Mutex<Vec<Request>>>,
-}
-
-impl Default for TransportLayerStub {
-    fn default() -> Self { Self::new() }
 }
 
 impl TransportLayerStub {

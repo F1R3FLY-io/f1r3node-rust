@@ -93,6 +93,7 @@ pub enum InterpreterError {
 
     OpenAIError(String),
     OllamaError(String),
+    ChromaDBError(String),
     IllegalArgumentError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
@@ -242,6 +243,8 @@ impl fmt::Display for InterpreterError {
             InterpreterError::OpenAIError(msg) => write!(f, "OpenAI error: {}", msg),
 
             InterpreterError::OllamaError(msg) => write!(f, "Ollama error: {}", msg),
+
+            InterpreterError::ChromaDBError(msg) => write!(f, "ChromaDB error: {}", msg),
 
             InterpreterError::IllegalArgumentError(msg) => write!(f, "Illegal argument: {}", msg),
 

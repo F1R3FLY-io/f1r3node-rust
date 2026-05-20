@@ -10,8 +10,8 @@ Rholang is completely asynchronous, in the sense that while you can read a messa
 
 Get started with Rholang by selecting one of the options below.
 * __Run Rholang on RNode__ - Write Rholang contracts in an editor of your choice and run them on RNode using either the REPL or EVAL modes. [Get started](https://github.com/rchain/rchain/releases) with the latest version of RNode.
-* __Run Rholang on a web interface__ - This [web interface](http://rchain.cloud) was created by a RChain community member.
-* __Run Rholang using Cryptofex IDE__ - This closed source [IDE](http://cryptofex.io/download) was created by Pyrofex.
+* __Run Rholang on a web interface__ - A web interface was created by a RChain community member.
+* __Run Rholang using Cryptofex IDE__ - A closed source IDE was created by Pyrofex.
 * __Write Rholang using an IntelliJ plugin__ - This [Rholang IntelliJ plugin](https://github.com/tgrospic/rholang-idea) was created by a RChain community member.
 
 ## Summary of the language constructs
@@ -776,7 +776,7 @@ new x, y, stdout(`rho:io:stdout`) in {
 
 ## Secure design patterns
 
-In this section we describe several design patterns.  These patterns are adapted from Marc Stiegler's [_A PictureBook of Secure Cooperation_](http://erights.org/talks/efun/SecurityPictureBook.pdf).
+In this section we describe several design patterns.  These patterns are adapted from Marc Stiegler's _A PictureBook of Secure Cooperation_.
 
 ### Facets
 

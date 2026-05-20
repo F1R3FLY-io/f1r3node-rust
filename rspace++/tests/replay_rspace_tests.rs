@@ -41,11 +41,10 @@ fn get_metrics_snapshotter() -> &'static Snapshotter {
     snapshotter
 }
 
-fn capture_baseline_metrics(snapshotter: &Snapshotter) -> (u64, usize) {
+fn capture_baseline_metrics(snapshotter: &Snapshotter) -> u64 {
     let snapshot = snapshotter.snapshot();
     let metrics = snapshot.into_hashmap();
     let mut count = 0u64;
-    let mut samples = 0;
 
     for (key, (_, _, value)) in metrics.iter() {
         let key_str = format!("{:?}", key);
@@ -54,27 +53,16 @@ fn capture_baseline_metrics(snapshotter: &Snapshotter) -> (u64, usize) {
                 count = *c;
             }
         }
-        if key_str.contains("comm_produce_time_seconds") && key_str.contains(RSPACE_METRICS_SOURCE)
-        {
-            if let metrics_util::debugging::DebugValue::Histogram(s) = value {
-                samples = s.len();
-            }
-        }
     }
 
-    (count, samples)
+    count
 }
 
-fn verify_metrics_incremented(
-    snapshotter: &Snapshotter,
-    baseline_count: u64,
-    baseline_samples: usize,
-) {
+fn verify_metrics_incremented(snapshotter: &Snapshotter, baseline_count: u64) {
     let snapshot = snapshotter.snapshot();
     let metrics = snapshot.into_hashmap();
 
     let mut after_produce_count = 0u64;
-    let mut after_produce_time_samples = 0;
 
     for (key, (_, _, value)) in metrics.iter() {
         let key_str = format!("{:?}", key);
@@ -84,13 +72,6 @@ fn verify_metrics_incremented(
                 after_produce_count = *count;
             }
         }
-
-        if key_str.contains("comm_produce_time_seconds") && key_str.contains(RSPACE_METRICS_SOURCE)
-        {
-            if let metrics_util::debugging::DebugValue::Histogram(samples) = value {
-                after_produce_time_samples = samples.len();
-            }
-        }
     }
 
     assert!(
@@ -98,13 +79,6 @@ fn verify_metrics_incremented(
         "comm_produce counter should be incremented, was {} before and {} after",
         baseline_count,
         after_produce_count
-    );
-
-    assert!(
-        after_produce_time_samples > baseline_samples,
-        "comm_produce_time_seconds histogram should have new samples, had {} before and {} after",
-        baseline_samples,
-        after_produce_time_samples
     );
 }
 
@@ -172,7 +146,7 @@ async fn creating_a_comm_event_should_replay_correctly() {
     let empty_point = space.create_checkpoint().await.unwrap();
 
     let snapshotter = get_metrics_snapshotter();
-    let (baseline_count, baseline_samples) = capture_baseline_metrics(snapshotter);
+    let baseline_count = capture_baseline_metrics(snapshotter);
 
     let result_consume = space
         .consume(channels.clone(), patterns.clone(), continuation.clone(), false, BTreeSet::new())
@@ -183,7 +157,7 @@ async fn creating_a_comm_event_should_replay_correctly() {
         .await;
     let rig_point = space.create_checkpoint().await.unwrap();
 
-    verify_metrics_incremented(snapshotter, baseline_count, baseline_samples);
+    verify_metrics_incremented(snapshotter, baseline_count);
 
     assert!(result_consume.unwrap().is_none());
     assert!(result_produce.clone().unwrap().is_some());

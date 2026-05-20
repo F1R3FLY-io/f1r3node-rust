@@ -1,4 +1,5 @@
-// 3.14 is used as a generic test double, not as the constant PI.
+// 3.14 etc. in this file are arbitrary sample doubles for arithmetic
+// tests, not approximations of pi.
 #![allow(clippy::approx_constant)]
 
 use models::rhoapi::expr::ExprInstance;

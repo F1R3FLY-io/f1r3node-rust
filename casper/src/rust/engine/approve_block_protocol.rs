@@ -135,7 +135,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
-        runtime_manager: &mut RuntimeManager,
+        runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
         transport: Arc<T>,
@@ -318,7 +318,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                 .publish(F1r3flyEvent::sent_unapproved_block(
                     self.candidate_hash.clone(),
                 ))
-                .map_err(CasperError::RuntimeError)?;
+                .map_err(|e| CasperError::RuntimeError(e))?;
         }
 
         Ok(())
@@ -344,7 +344,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                 .publish(F1r3flyEvent::sent_approved_block(
                     self.candidate_hash.clone(),
                 ))
-                .map_err(CasperError::RuntimeError)?;
+                .map_err(|e| CasperError::RuntimeError(e))?;
         }
 
         Ok(())
@@ -447,7 +447,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
                                     sender: sender.clone(),
                                 },
                             ))
-                            .map_err(CasperError::RuntimeError)?;
+                            .map_err(|e| CasperError::RuntimeError(e))?;
                     }
                 } else {
                     tracing::info!("No new sigs received");

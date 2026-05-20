@@ -2,7 +2,7 @@
 
 Rust implementation of the F1r3fly tuple space engine. Provides produce/consume pattern matching, LMDB-backed trie history, and checkpointing for the Rholang interpreter.
 
-See [rspace/README.md](../rspace/README.md) for the original Scala implementation and conceptual overview.
+See [docs/rspace/README.md](../docs/rspace/README.md) for the RSpace conceptual overview.
 
 ## Building
 

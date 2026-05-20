@@ -54,8 +54,9 @@ fn pos_spec() {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let test_object = CompiledRholangSource::load_source("PoSTest.rho")
-                    .expect("Failed to load PoSTest.rho");
+                let test_object =
+                    crate::util::rholang::test_rho_loader::load_test_rho("PoSTest.rho")
+                        .expect("Failed to load PoSTest.rho");
 
                 let compiled = CompiledRholangSource::new(
                     test_object,

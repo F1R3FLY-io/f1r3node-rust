@@ -39,10 +39,6 @@ static RE_TOP_LEVEL_CONNECTIVES: LazyLock<Regex> = LazyLock::new(|| {
 #[derive(Clone)]
 pub struct LspGrpcServiceImpl;
 
-impl Default for LspGrpcServiceImpl {
-    fn default() -> Self { Self::new() }
-}
-
 impl LspGrpcServiceImpl {
     pub fn new() -> Self { Self }
 

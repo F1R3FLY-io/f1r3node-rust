@@ -166,6 +166,11 @@ async fn run_block_creator_create_memory_profile() {
             .await
             .expect("Failed to create deploy storage"),
     ));
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
+            .await
+            .expect("Failed to create rejected deploy buffer"),
+    ));
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("Failed to create block store");
@@ -183,7 +188,7 @@ async fn run_block_creator_create_memory_profile() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -263,6 +268,7 @@ async fn run_block_creator_create_memory_profile() {
                 &validator_identity,
                 None,
                 deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
                 &mut runtime_manager,
                 &mut block_store,
                 false,
@@ -420,7 +426,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -546,10 +552,18 @@ async fn run_block_creator_phase_split_memory_profile() {
 
         let rss_before = vm_rss_kb();
 
-        let (pre_state_hash, _rejected) = if skip_parents_compute {
+        let (pre_state_hash, _rejected, _rejected_slashes) = if skip_parents_compute {
             match snapshot.parents.first() {
-                Some(parent) => (parent.body.state.post_state_hash.clone(), Vec::new()),
-                None => (RuntimeManager::empty_state_hash_fixed(), Vec::new()),
+                Some(parent) => (
+                    parent.body.state.post_state_hash.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+                None => (
+                    RuntimeManager::empty_state_hash_fixed(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
             }
         } else {
             match compute_parents_post_state(
@@ -557,6 +571,7 @@ async fn run_block_creator_phase_split_memory_profile() {
                 snapshot.parents.clone(),
                 &snapshot,
                 &runtime_manager,
+                None,
                 None,
             ) {
                 Ok(result) => result,

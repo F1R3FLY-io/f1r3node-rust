@@ -15,8 +15,11 @@ impl Sortable<Send> for SendSortMatcher {
                 .expect("channel field on Send was None, should be Some"),
         );
 
-        let sorted_data: Vec<ScoredTerm<Par>> =
-            s.data.iter().map(ParSortMatcher::sort_match).collect();
+        let sorted_data: Vec<ScoredTerm<Par>> = s
+            .data
+            .iter()
+            .map(|p| ParSortMatcher::sort_match(p))
+            .collect();
 
         let sorted_send = Send {
             chan: Some(sorted_chan.term),

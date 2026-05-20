@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/rholang/RuntimeSyntax.scala
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::mem;
 use std::sync::OnceLock;
@@ -43,12 +43,14 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
+use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC,
     BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, CASPER_METRICS_SOURCE,
+    EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
+    EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
 use crate::rust::rholang::types::eval_collector::EvalCollector;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
@@ -539,7 +541,7 @@ impl RuntimeOps {
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, HashSet<Par>), CasperError> {
+    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
         // Keep a soft checkpoint before user deploy execution so failed deploy rollback
         // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
@@ -557,7 +559,7 @@ impl RuntimeOps {
             cost: Cost::to_proto(eval_result.cost),
             deploy_log: deploy_log
                 .into_iter()
-                .map(event_converter::to_casper_event)
+                .map(|event| event_converter::to_casper_event(event))
                 .collect(),
             is_failed: !eval_succeeded,
             system_deploy_error: None,
@@ -582,20 +584,42 @@ impl RuntimeOps {
 
     pub async fn get_number_channels_data(
         &self,
-        channels: &HashSet<Par>,
+        channels: &std::collections::HashMap<
+            Par,
+            rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+        >,
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut result = BTreeMap::new();
-        for channel in channels {
-            if let Some((hash, value)) = self.get_number_channel(channel).await? {
-                result.insert(hash, value);
+        for (channel, merge_type) in channels {
+            if let Some((hash, value)) = self.get_number_channel(channel, *merge_type).await? {
+                result.insert(hash, (value, *merge_type));
             }
         }
         Ok(result)
     }
 
+    /// Deterministic multi-value fold for a mergeable channel that holds more
+    /// than one numeric Datum at observation time. Dispatches by `MergeType`:
+    /// `IntegerAdd` picks the max (conservative for vault balances);
+    /// `BitmaskOr` OR-folds all bitmaps (no set bit is lost). Returns `None`
+    /// for an empty input.
+    pub fn fold_multi_value(values: &[i64], merge_type: MergeType) -> Option<i64> {
+        if values.is_empty() {
+            return None;
+        }
+        let folded = match merge_type {
+            MergeType::IntegerAdd => *values.iter().max().unwrap(),
+            MergeType::BitmaskOr => values
+                .iter()
+                .fold(0i64, |acc, v| ((acc as u64) | (*v as u64)) as i64),
+        };
+        Some(folded)
+    }
+
     pub async fn get_number_channel(
         &self,
         channel: &Par,
+        merge_type: MergeType,
     ) -> Result<Option<(Blake2b256Hash, i64)>, CasperError> {
         let ch_values = self.runtime.get_data(channel).await;
 
@@ -604,25 +628,26 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge proposing.
-                // Keep behavior deterministic by selecting the maximum observed numeric value.
-                let num = ch_values
+                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
+                // proposing. Non-numeric values are skipped — they aren't candidates for the
+                // numeric merge path and fall through to existing conflict handling.
+                let nums: Vec<i64> = ch_values
                     .iter()
-                    .map(|datum| {
-                        let (n, _) = RholangMergingLogic::get_number_with_rnd(&datum.a);
-                        n
+                    .filter_map(|datum| {
+                        RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
                     })
-                    .max()
-                    .ok_or_else(|| {
-                        CasperError::RuntimeError(
-                            "NumberChannel had values but max() returned none.".to_string(),
-                        )
-                    })?;
+                    .collect();
+
+                let num = match Self::fold_multi_value(&nums, merge_type) {
+                    Some(n) => n,
+                    None => return Ok(None),
+                };
 
                 tracing::warn!(
                     target: "f1r3fly.mergeable_channel.sanitize",
-                    "NumberChannel has {} values; selecting deterministic max={} for channel {}",
+                    "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
                     ch_values.len(),
+                    merge_type,
                     num,
                     hex::encode(ch_hash.clone().bytes()),
                 );
@@ -635,9 +660,14 @@ impl RuntimeOps {
                 return Ok(Some((ch_hash, num)));
             }
 
+            // Single value: opportunistic numeric read. Non-numeric values
+            // (e.g., TreeHashMap leaf Maps tagged with the bitmask tag) are
+            // skipped here and fall through to the existing conflict path.
             let num_par = &ch_values[0].a;
-            let (num, _) = RholangMergingLogic::get_number_with_rnd(num_par);
-            Ok(Some((ch_hash, num)))
+            match RholangMergingLogic::try_get_number_with_rnd(num_par) {
+                Some((num, _)) => Ok(Some((ch_hash, num))),
+                None => Ok(None),
+            }
         }
     }
 
@@ -711,7 +741,7 @@ impl RuntimeOps {
         (
             Vec<Event>,
             Either<SystemDeployUserError, S::Result>,
-            HashSet<Par>,
+            HashMap<Par, MergeType>,
         ),
         CasperError,
     > {
@@ -802,14 +832,17 @@ impl RuntimeOps {
                 }
             }
         };
+        let wrapper_pre_start = Instant::now();
         log_mem_step("start");
 
         // println!("\nEvaluating system deploy, {:?}", S::source());
+        let wrapper_pre = wrapper_pre_start.elapsed();
         let eval_result = self.evaluate_system_source(system_deploy).await?;
         log_mem_step("after_evaluate_system_source");
 
         // println!("\nEval result: {:?}", eval_result);
 
+        let wrapper_mid_start = Instant::now();
         if !eval_result.errors.is_empty() {
             return Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::UnexpectedSystemErrors(eval_result.errors),
@@ -818,7 +851,9 @@ impl RuntimeOps {
         log_mem_step("after_error_check");
 
         log_mem_step("before_consume_system_result");
+        let wrapper_mid = wrapper_mid_start.elapsed();
         let consumed = self.consume_system_result(system_deploy).await?;
+        let wrapper_post_start = Instant::now();
         log_mem_step("after_consume_system_result");
         let r = match consumed {
             Some((_, vec_list)) => match vec_list.as_slice() {
@@ -838,6 +873,12 @@ impl RuntimeOps {
             )),
         }?;
         log_mem_step("after_match_result");
+        metrics::counter!(EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        metrics::counter!(EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(
+                (wrapper_pre + wrapper_mid + wrapper_post_start.elapsed()).as_nanos() as u64,
+            );
 
         Ok((r, eval_result))
     }
@@ -883,6 +924,11 @@ impl RuntimeOps {
         par: Par,
         hash: &StateHash,
     ) -> Result<Vec<Par>, CasperError> {
+        use crate::rust::metrics_constants::{
+            BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
+            BONDS_CACHE_RESET_TIME_METRIC, CASPER_METRICS_SOURCE,
+        };
+        let __reset_start = std::time::Instant::now();
         let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
         let read_vm_rss_kb =
             || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
@@ -920,6 +966,8 @@ impl RuntimeOps {
         log_mem_step("after_reset");
         self.runtime.cost().set(Cost::unsafe_max());
         log_mem_step("after_set_cost");
+        metrics::histogram!(BONDS_CACHE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(__reset_start.elapsed().as_secs_f64());
 
         let rand = Blake2b512Random::create_from_bytes(&[0u8; 128]);
         let mut return_rand = rand.clone();
@@ -930,14 +978,22 @@ impl RuntimeOps {
         }]);
         log_mem_step("after_build_return_name");
 
+        let __inj_start = std::time::Instant::now();
         let result = match self.runtime.inj(par, Env::new(), rand).await {
             Ok(()) => {
                 log_mem_step("after_inj_ok");
+                metrics::histogram!(BONDS_CACHE_INJ_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(__inj_start.elapsed().as_secs_f64());
+                let __get_data_start = std::time::Instant::now();
                 let data = self.get_data_par(&return_name).await;
+                metrics::histogram!(BONDS_CACHE_GET_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(__get_data_start.elapsed().as_secs_f64());
                 log_mem_step("after_get_data_par");
                 Ok(data)
             }
             Err(err) => {
+                metrics::histogram!(BONDS_CACHE_INJ_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(__inj_start.elapsed().as_secs_f64());
                 log_mem_step("after_inj_err");
                 tracing::error!("Error in play_exploratory_par: {:?}", err);
                 Ok(Vec::new())
@@ -1101,12 +1157,14 @@ impl RuntimeOps {
         // Using tracing events for async - Span[F].traceI("evaluate-system-source") from Scala
         tracing::debug!(target: "f1r3fly.casper.evaluate-system-source", "evaluate-system-source-started");
         let eval_start = Instant::now();
+        let wrapper_pre_start = eval_start;
         log_mem_step("before_build_env");
         let env = system_deploy.env();
         log_mem_step("after_build_env");
         let rand = system_deploy.rand().clone();
         log_mem_step("after_clone_rand");
         log_mem_step("before_runtime_evaluate");
+        let wrapper_pre = wrapper_pre_start.elapsed();
         let result = self
             .runtime
             .evaluate(
@@ -1117,9 +1175,14 @@ impl RuntimeOps {
                 rand,
             )
             .await?;
+        let wrapper_post_start = Instant::now();
         log_mem_step("after_runtime_evaluate");
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(eval_start.elapsed().as_secs_f64());
+        metrics::counter!(EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        metrics::counter!(EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment((wrapper_pre + wrapper_post_start.elapsed()).as_nanos() as u64);
         Ok(result)
     }
 
@@ -1199,7 +1262,7 @@ impl RuntimeOps {
         }
 
         let validators = Self::to_validator_vec(validators_pars[0].to_owned())?;
-        let vlds: Vec<String> = validators.iter().map(hex::encode).collect();
+        let vlds: Vec<String> = validators.iter().map(|v| hex::encode(v)).collect();
         tracing::info!(
             "*** ACTIVE VALIDATORS FOR StateHash {}: {}",
             hex::encode(start_hash),
@@ -1341,5 +1404,86 @@ impl RuntimeOps {
             }
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fold_multi_value_empty_returns_none() {
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[], MergeType::IntegerAdd),
+            None
+        );
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[], MergeType::BitmaskOr),
+            None
+        );
+    }
+
+    #[test]
+    fn fold_multi_value_single_returns_value() {
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[42], MergeType::IntegerAdd),
+            Some(42)
+        );
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[42], MergeType::BitmaskOr),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn fold_multi_value_integer_add_returns_max() {
+        // Vault-balance semantics: pick the largest observed value.
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[10, 5, 20, 15], MergeType::IntegerAdd),
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn fold_multi_value_bitmask_or_returns_or_fold_not_max() {
+        // BitmaskOr must OR-fold all bitmaps; using max() would silently lose
+        // bits set only in non-max values.
+        let a = 0b00010001i64; // bits {0, 4}
+        let b = 0b00100010i64; // bits {1, 5}
+                               // max(a, b) = b = 0b00100010 — would lose bits {0, 4}.
+                               // OR fold = 0b00110011 — bits {0, 1, 4, 5}. Correct.
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[a, b], MergeType::BitmaskOr),
+            Some(0b00110011),
+        );
+        // Three-way fold sanity.
+        let c = 0b01000000i64;
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&[a, b, c], MergeType::BitmaskOr),
+            Some(0b01110011),
+        );
+    }
+
+    #[test]
+    fn fold_multi_value_bitmask_or_commutes() {
+        // Result must not depend on observation order.
+        let xs = [0b0001_0001i64, 0b0010_0010, 0b0100_0100, 0b1000_1000];
+        let mut ys = xs;
+        ys.reverse();
+        assert_eq!(
+            RuntimeOps::fold_multi_value(&xs, MergeType::BitmaskOr),
+            RuntimeOps::fold_multi_value(&ys, MergeType::BitmaskOr),
+        );
+    }
+
+    #[test]
+    fn fold_multi_value_bitmask_or_negative_high_bits_preserved() {
+        // i64::MIN sets only the sign bit (bit 63). OR with a positive bitmap
+        // must keep bit 63 set — no narrowing or sign-extension surprise.
+        let neg = i64::MIN;
+        let pos = 0b1010i64;
+        let folded = RuntimeOps::fold_multi_value(&[neg, pos], MergeType::BitmaskOr).unwrap();
+        assert_eq!(folded as u64, (neg as u64) | (pos as u64));
+        assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
     }
 }

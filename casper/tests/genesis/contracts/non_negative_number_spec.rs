@@ -9,8 +9,9 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn non_negative_number_spec() {
-    let test_object = CompiledRholangSource::load_source("NonNegativeNumberTest.rho")
-        .expect("Failed to load NonNegativeNumberTest.rho");
+    let test_object =
+        crate::util::rholang::test_rho_loader::load_test_rho("NonNegativeNumberTest.rho")
+            .expect("Failed to load NonNegativeNumberTest.rho");
 
     let compiled = CompiledRholangSource::new(
         test_object,

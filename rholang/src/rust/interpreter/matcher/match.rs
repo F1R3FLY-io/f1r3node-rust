@@ -23,7 +23,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         let mut spatial_matcher = SpatialMatcherContext::new();
 
         let fold_match_result =
-            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder);
+            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder.clone());
         let match_result = match fold_match_result {
             Some(pars) => Some((spatial_matcher.free_map, pars)),
             None => None,

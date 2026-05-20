@@ -22,7 +22,7 @@ impl Sortable<New> for NewSortMatcher {
             sorted_uri
                 .clone()
                 .into_iter()
-                .map(Tree::<ScoreAtom>::create_leaf_from_string)
+                .map(|s| Tree::<ScoreAtom>::create_leaf_from_string(s))
                 .collect()
         } else {
             vec![Tree::<ScoreAtom>::create_leaf_from_i64(
@@ -58,8 +58,8 @@ impl Sortable<New> for NewSortMatcher {
                     .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
                         n.bind_count as i64,
                     )))
-                    .chain(uri_score)
-                    .chain(injections_score)
+                    .chain(uri_score.into_iter())
+                    .chain(injections_score.into_iter())
                     .chain(std::iter::once(sorted_par.score))
                     .collect(),
             ),
