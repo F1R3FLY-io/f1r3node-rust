@@ -1,7 +1,17 @@
-# Auto-bump version on merge to master or dev.
+# Auto-bump patch version on merge to master.
 #
-# - master: bumps minor (0.4.0 → 0.5.0)
-# - dev:    bumps patch (0.4.0 → 0.4.1)
+# - master: bumps patch (0.4.0 → 0.4.1)
+#
+# Minor and major bumps are NOT automated. To cut a minor/major release,
+# manually create and push a tag:
+#
+#     git tag -a v0.5.0 origin/master -m "Release v0.5.0"
+#     git push origin v0.5.0
+#
+# The tag push triggers ci.yml's release_docker_image + release_packages jobs.
+# node/Cargo.toml + node/Dockerfile LABEL will stay at the previous patch-bumped
+# value (e.g. 0.4.17) until the next master merge auto-patch-bumps from the
+# new tag (which would then compute 0.5.1 from latest tag v0.5.0).
 #
 # Determines the next version from the latest `v*` tag, bumps
 # node/Cargo.toml + node/Dockerfile LABEL, regenerates Cargo.lock, generates
@@ -17,8 +27,6 @@ on:
   push:
     branches:
       - master
-      - dev
-  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -30,7 +38,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: >-
-      github.event_name == 'workflow_dispatch' ||
       !startsWith(github.event.head_commit.message, 'chore(release)')
     permissions:
       contents: write
@@ -72,16 +79,11 @@ jobs:
         shell: bash -exu -o pipefail {0}
         run: |
           source scripts/version.sh
-          BRANCH="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH" = "master" ]; then
-            bump_version minor
-          else
-            bump_version patch
-          fi
+          bump_version patch
           echo "NEXT_VERSION=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "Next version: $NEXT_VERSION (tag: $TAG_NAME) [branch: $BRANCH]"
+          echo "BRANCH=master" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT_VERSION (tag: $TAG_NAME)"
 
       - name: Update node/Cargo.toml version
         run: |
