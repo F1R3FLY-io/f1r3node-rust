@@ -887,13 +887,12 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
+        crypto::rust::public_key::PublicKey::validate_secp256k1_hex(&pubkey)?;
+
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
-        .to_string();
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
+        }"#.to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -930,10 +929,10 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let _ = crypto::rust::public_key::PublicKey::validate_secp256k1_hex(&pubkey);
 
-        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
+        let pk_bytes = hex::decode(&pubkey)?;
+        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
             public_key: pubkey,
