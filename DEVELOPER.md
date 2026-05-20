@@ -161,6 +161,18 @@ cargo test -p rholang
 ./scripts/run_rust_tests.sh
 ```
 
+### Supply-Chain Audit
+
+Workspace supply-chain checks: `cargo-deny` (licenses + advisories, configured in [`deny.toml`](deny.toml)) and `cargo-geiger` (volume of `unsafe` in the dependency tree, baseline at [`.cargo-geiger.baseline.jsonc`](./.cargo-geiger.baseline.jsonc)).
+
+```bash
+just geiger              # Workspace unsafe scan (table summary)
+just geiger-baseline     # Write/refresh .cargo-geiger.baseline.jsonc
+just geiger-update       # Regenerate baseline and diff against previous
+```
+
+Install `cargo-geiger` once with `cargo install --locked cargo-geiger`. The full workflow (when to refresh the baseline, how reviewers audit a baseline bump) is documented further down once the CI gate is wired up.
+
 ### Run A Standalone Node (without Docker)
 
 Requires [`just`](https://github.com/casey/just) — a command runner installed with the tooling above.

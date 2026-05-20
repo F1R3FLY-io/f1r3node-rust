@@ -678,7 +678,10 @@ user_flow: FLOW-001
 tasks:
   - id: TASK-010-1
     title: "Local tooling: Justfile recipes for cargo-geiger"
-    status: pending
+    status: complete
+    claimed_by: claude-session-task-001-1
+    claimed_at: 2026-05-20T18:11:43Z
+    completed_date: 2026-05-20
     acceptance:
       - "`just geiger` runs a workspace scan (default features) and prints a table summary"
       - "`just geiger-baseline` writes/refreshes `.cargo-geiger.baseline.jsonc` at repo root"

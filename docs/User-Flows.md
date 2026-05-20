@@ -48,7 +48,7 @@ reference them by name from each flow's `Personas:` field.
 **Journey:** Local install -> Optional pre-push gate -> PR submission -> CI baseline gate -> Intentional baseline refresh -> Nightly drift visibility
 
 **Steps:**
-1. **Local Install & Baseline View** - Developer runs cargo install --locked cargo-geiger and just geiger to see workspace unsafe surface; reviews committed .cargo-geiger.baseline.json to understand current posture
+1. **Local Install & Baseline View** - Developer runs cargo install --locked cargo-geiger and just geiger to see workspace unsafe surface; reviews committed .cargo-geiger.baseline.jsonc to understand current posture
 2. **Optional Pre-Push Gate** - Developer opts into local gating with RUN_GEIGER=1 git push; pre-push hook runs geiger alongside clippy/test and applies the same regression rule as CI
 3. **PR Submission** - Developer pushes branch and opens PR; GitHub Actions geiger job runs in parallel with deny and test on every PR to dev/master/feature/**
 4. **CI Baseline Gate Outcome** - Job compares current scan against committed baseline. Clean diff: green check + JSON artifact uploaded. Regression: red X with failure message pointing at just geiger-update
@@ -58,14 +58,14 @@ reference them by name from each flow's `Personas:` field.
 **Key Interactions:**
 - cargo install --locked cargo-geiger succeeds under the pinned nightly toolchain
 - just geiger, just geiger-baseline, and just geiger-update recipes appear in just --list with single-line docstrings
-- .cargo-geiger.baseline.json is tracked in git and reproducible from a clean checkout
+- .cargo-geiger.baseline.jsonc is tracked in git and reproducible from a clean checkout
 - CI geiger job runs in parallel with cargo-deny and does not depend on lint
 - CI geiger job fails when a PR introduces new unsafe relative to the committed baseline
 - CI geiger job passes when the scan matches or improves upon the baseline
 - CI failure message explicitly instructs the developer to run just geiger-update
 - Default git push does NOT run geiger; only RUN_GEIGER=1 git push triggers the local scan
 - Pre-push hook degrades gracefully with a SKIP message when cargo-geiger is not installed
-- Nightly workflow uploads a dated artifact and never mutates .cargo-geiger.baseline.json
+- Nightly workflow uploads a dated artifact and never mutates .cargo-geiger.baseline.jsonc
 
 **Success Metrics:**
 - Local just geiger completes in <300s on a warm Cargo cache
