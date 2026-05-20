@@ -39,7 +39,7 @@ docker compose -f shard.yml down -v
 
 ## Build from Source
 
-Requires Nix or a Rust toolchain. Build a local Docker image:
+Requires a Rust toolchain (nightly pinned in `rust-toolchain.toml`). Build a local Docker image:
 ```bash
 ./node/docker-commands.sh build-local
 ```

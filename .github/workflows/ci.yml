@@ -247,9 +247,11 @@ jobs:
         shell: bash -ex {0}
         run: |
           docker context use default
+          VERSION="$(git describe --tags --always)"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .
@@ -284,7 +286,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: refactor/integration-test-framework
+          ref: fix/test-stability
           path: system-integration
 
       - name: Install OCI CLI
@@ -386,7 +388,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: refactor/integration-test-framework
+          ref: fix/test-stability
           path: system-integration
 
       - name: Load Docker Image (from build_docker_image artifact)
