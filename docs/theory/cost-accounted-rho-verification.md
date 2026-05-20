@@ -3054,8 +3054,9 @@ deadlocks in mediator interactions. A property that is both proven in
 Rocq and verified by TLC is, in practice, very unlikely to have been
 stated incorrectly.
 
-The model now consists of seven TLA+ specifications under
-`formal/tlaplus/cost_accounted_rho/`, each adding a layer of generality:
+The model consists of seven TLA+ specifications preserved on
+`analysis/cost-accounted-rho` under `formal/tlaplus/cost_accounted_rho/`,
+each adding a layer of generality:
 
 1. **`CostAccountedRho.tla`** — The atomic fuel-gate protocol:
    processes with atomic signatures acquire fuel tokens via COMM events
@@ -3772,9 +3773,9 @@ fuel-gate safety) inhabit **Tier 1 alone**: they report
 
 ### 12.2.1 Proof Hygiene Gate
 
-The repository enforces an axiom-free formalization. The gate
-`scripts/check-cost-accounted-rho-proofs.sh` fails if any theory file
-contains:
+The axiom-free formalization is preserved on `analysis/cost-accounted-rho`.
+The gate `scripts/check-cost-accounted-rho-proofs.sh` preserved on `analysis/cost-accounted-rho`
+fails if any theory file contains:
 
 ```text
 Admitted.

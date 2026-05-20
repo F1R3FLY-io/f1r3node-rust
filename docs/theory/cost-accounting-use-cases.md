@@ -93,7 +93,7 @@ external paper remains unchanged; this document records repo-local coverage.
 | UC-CA-078 | Cross-product horizon search composes budget, replay, settlement, slashing, resource, and lifecycle axes | Sage `horizon_v2_search.sage` | `generated_frontier_differential_fixtures_hold` | A multi-axis witness keeps deploy-local cost, authenticated replay fields, bounded settlement, and terminal classification. |
 | UC-CA-079 | Source-aware Rholang seeds replay through production-shaped fixtures | Sage `horizon_v2_search.sage` source-seed mode | `generated_frontier_differential_fixtures_hold` | Source-derived descriptors and paths produce stable cost, count, and digest projections without bypassing classification. |
 | UC-CA-080 | Exploit campaigns stay in documented buckets before implementation action | Sage `horizon_v2_search.sage` exploit mode | `generated_frontier_differential_fixtures_hold` | Replay-cache substitution, refund replenishment, slashing/refund confusion, descriptor inflation, and rollback/finalization campaigns remain classified and replayable. |
-| UC-CA-081 | Exhaustive search runs inside a hard 32GB process envelope | Search-horizon runner metadata | `scripts/check-cost-accounting-search-horizon.sh` | Heavyweight Sage and TLA+ commands are memory bounded or explicitly refused; Rocq and deterministic nextest checks remain direct verification steps. |
+| UC-CA-081 | Exhaustive search runs inside a hard 32GB process envelope | Search-horizon runner metadata preserved on `analysis/cost-accounted-rho` | `scripts/check-cost-accounting-search-horizon.sh` on `analysis/cost-accounted-rho` | Heavyweight Sage and TLA+ commands are memory bounded or explicitly refused; Rocq and deterministic nextest checks remain direct verification steps. |
 | UC-CA-082 | Stateful campaign witnesses carry operation, oracle, production-path, digest, and reproducer metadata | TLA+ `CostAccountingSearchFrontier`; Sage `horizon_v3_stateful_search.sage` | `generated_frontier_stateful_campaign_fixtures_hold` | Runtime-budget, replay, finalization, settlement, and slashing campaigns cannot be promoted as terminal evidence without traceability metadata. |
 | UC-CA-083 | Production-path differential campaigns bind replay payloads to Casper settlement arithmetic | Sage v3 production-path search | `generated_frontier_stateful_campaign_fixtures_hold` | Cost fields survive wire roundtrip while refunds remain bounded and cannot replenish runtime fuel. |
 | UC-CA-084 | Source-corpus paths feed minimized stateful replay fixtures | Sage v3 source-corpus search | generated stateful campaign fixture replay | Real Rholang path distributions and primitive descriptors remain replayable through production-shaped runtime-budget fixtures. |
@@ -173,15 +173,16 @@ cargo nextest run -p casper cost_accounting_v13
 cargo nextest run -p models refund_amount_property_is_bounded_by_valid_escrow
 cargo nextest run -p models processed_deploy_cost_trace_fields_roundtrip_through_proto
 ./scripts/check-cost-accounting-legacy-guard.sh
-(cd formal/tlaplus/cost_accounted_rho && tlc MCRuntimeBudgetReplay.tla -config RuntimeBudgetReplay.cfg -workers auto -nowarning)
-(cd formal/tlaplus/cost_accounted_rho && tlc MCCostAccountingThreats.tla -config CostAccountingThreats.cfg -workers auto -nowarning)
-(cd formal/tlaplus/cost_accounted_rho && tlc MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning)
 ```
 
-The proof side remains the Rocq hygiene script:
+The formal model-checking and proof-hygiene commands are preserved on
+`analysis/cost-accounted-rho`:
 
 ```bash
-./scripts/check-cost-accounted-rho-proofs.sh
+(cd formal/tlaplus/cost_accounted_rho && tlc MCRuntimeBudgetReplay.tla -config RuntimeBudgetReplay.cfg -workers auto -nowarning) # analysis/cost-accounted-rho
+(cd formal/tlaplus/cost_accounted_rho && tlc MCCostAccountingThreats.tla -config CostAccountingThreats.cfg -workers auto -nowarning) # analysis/cost-accounted-rho
+(cd formal/tlaplus/cost_accounted_rho && tlc MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning) # analysis/cost-accounted-rho
+./scripts/check-cost-accounted-rho-proofs.sh # analysis/cost-accounted-rho
 ```
 
 The combination gives three levels of coverage: universal Rocq proofs for the
