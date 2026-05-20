@@ -528,6 +528,48 @@ fn runtime_budget_reset_from_token_clears_success_trace_window() {
 }
 
 #[test]
+fn runtime_budget_reset_from_token_serializes_with_batch_commit() {
+    for _ in 0..128 {
+        let sig = Sig::Hash(vec![7, 8, 9]);
+        let budget = RuntimeBudget::new(Cost::create(64, "reset commit race"));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let reset_budget = budget.clone();
+        let reset_barrier = Arc::clone(&barrier);
+        let reset_sig = sig.clone();
+        let reset = thread::spawn(move || {
+            reset_barrier.wait();
+            reset_budget.reset_from_token(&Token::coalesced(reset_sig, 128));
+        });
+
+        let commit_budget = budget.clone();
+        let commit_barrier = Arc::clone(&barrier);
+        let commit = thread::spawn(move || {
+            let events = (0..32).map(|path| token_event(path, 2)).collect::<Vec<_>>();
+            commit_barrier.wait();
+            commit_budget
+                .commit_canonical_batch(CostReservationBatch { events })
+                .unwrap();
+        });
+
+        reset.join().expect("reset thread panicked");
+        commit.join().expect("commit thread panicked");
+
+        assert_eq!(budget.signature(), sig);
+        let state = (
+            budget.total_cost().value,
+            budget.remaining().value,
+            budget.cost_trace_event_count(),
+        );
+        assert!(
+            state == (0, 128, 0) || state == (64, 64, 32),
+            "reset and batch commit must be serialized, got {:?}",
+            state
+        );
+    }
+}
+
+#[test]
 fn empty_cost_trace_still_has_consensus_digest() {
     let budget = RuntimeBudget::new(Cost::create(5, "empty trace digest"));
     let digest = budget.cost_trace_digest();
