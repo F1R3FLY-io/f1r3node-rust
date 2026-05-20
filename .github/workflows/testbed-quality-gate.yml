@@ -60,6 +60,11 @@ on:
         required: true
         default: true
         type: boolean
+      mntd_cap:
+        description: "TPS only: override the hardcoded BestMNTD cap (0 = use built-in constant). Set from the MNTD run output."
+        required: false
+        default: "0"
+        type: string
 
 env:
   LOG_HOST_PATH: /tmp/asi-chain-logs/${{ github.run_id }}-${{ github.run_attempt }}
@@ -546,7 +551,7 @@ jobs:
           | **Topology** | 3 genesis validators, no bonding |
           | **Duration** | ~4 h |
           | **Pass criteria** | sustained TPS > 0 · finalization latency stays bounded under load |
-          | **Note** | Run MNTD first when testing a new image or hardware — TPS uses the hardcoded BestMNTD |
+          | **Note** | Run MNTD first when testing a new image or hardware, then pass the resulting cap via the \`mntd_cap\` input |
           | **Image** | \`${{ inputs.image }}\` |
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
@@ -588,6 +593,7 @@ jobs:
             IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
+            MNTD_CAP=${{ inputs.mntd_cap }} \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
           JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
             -o jsonpath='{.items[-1].metadata.name}')
