@@ -762,6 +762,82 @@ tasks:
 
 ---
 
+### EPOCH-011: Align Git Hooks with CI
+
+```yaml
+---
+epoch_id: EPOCH-011
+title: "Align git hooks with CI invocation form + fix inherited lint/test drift"
+status: in_progress
+priority: p1
+user_story: US-TBD
+blocked_by: []
+created_at: 2026-05-20
+claimed_by: claude-session-epoch-011
+claimed_at: 2026-05-20T19:48:55Z
+branch: align-git-hook-ci
+tasks:
+  - id: TASK-011-1
+    title: "Fix the 2 inherited casper/node (lib) clippy warnings"
+    status: complete
+    claimed_by: claude-session-epoch-011
+    claimed_at: 2026-05-20T19:48:55Z
+    completed_date: 2026-05-20
+    acceptance:
+      - "`cargo clippy --workspace -- -D warnings` exits 0 from a clean checkout of this branch"
+      - "`needless_return` at casper/src/rust/blocks/block_processor.rs:76:9 fixed (drop the bare `return;` from the if-guard)"
+      - "`needless_return` at node/src/rust/instances/block_processor_instance.rs:36:9 fixed (same pattern)"
+      - "`cargo test --release -p casper -p node` passes after fixes"
+    notes:
+      - "Original scoping (11 warnings) was based on `cargo clippy --workspace --all-targets` output which includes test code. The hook + CI both invoke clippy WITHOUT --all-targets, so only lib/bin lints are gated. Lib actually shows just 2 warnings; the other 9 (including MutexGuard-across-await and non-binding-let-on-future) live in test code (rspace_plus_plus tests, casper tests, etc.) and are not currently enforced."
+      - "Test-target cleanup (~130 warnings across multiple crates) is a separate concern; deferred to backlog."
+
+  - id: TASK-011-2
+    title: "Align hook clippy invocation form with CI (RUSTFLAGS env vs `--` arg)"
+    status: pending
+    blocked_by: [TASK-011-1]
+    acceptance:
+      - "`.githooks/pre-commit` uses `RUSTFLAGS=\"-C target-feature=+aes,+sse2 -D warnings\" cargo clippy --workspace` matching `.github/workflows/ci.yml` line 105-107"
+      - "If `.githooks/pre-push` still runs clippy after TASK-011-3, it uses the same RUSTFLAGS form"
+      - "Hook docstring updated to reflect the new invocation"
+      - "Functional behavior verified equivalent: same lints fire, same exit codes"
+
+  - id: TASK-011-3
+    title: "Deduplicate clippy: run in pre-commit only, drop from pre-push"
+    status: pending
+    acceptance:
+      - "`.githooks/pre-push` no longer runs `cargo clippy` (kept in pre-commit only)"
+      - "Pre-push hook docstring/comments updated to reflect tests-only responsibility (clippy already gated at commit time)"
+      - "`SKIP_CLIPPY=1` references removed from pre-push help text"
+      - "Pre-push wall time measurably reduced on a no-test-change push (incremental clippy compile time saved)"
+
+  - id: TASK-011-4
+    title: "Fix comm test port-contention (3 tests bind to fixed ports, collide on retry)"
+    status: pending
+    acceptance:
+      - "`discovery::kademlia_rpc_spec::ping_remote_peer_send_and_receive_positive_response`, `..._send_twice_and_receive_positive_responses`, and `transport::transport_layer_spec::streaming_empty_blob_should_work` no longer bind to fixed ports"
+      - "Tests bind to port `0` (OS-assigned ephemeral) and discover the actual port via the bound listener's local_addr()"
+      - "`cargo test --release -p comm` passes consistently across 3 back-to-back runs (no port-conflict flake)"
+      - "Pre-push hook's full sweep on a clean checkout produces zero failures attributable to port contention"
+---
+```
+
+**Context:** During the cargo-geiger-integration -> origin/dev merge (commit fb677dcc), the merge brought in 11 casper (lib) clippy warnings that the local pre-commit hook (`-D warnings`) rejects. Both hooks AND CI use `-D warnings`, but via different invocation paths (hook: `cargo clippy --workspace -- -D warnings`; CI: `cargo clippy --workspace` with `RUSTFLAGS="-C target-feature=+aes,+sse2 -D warnings"`). The cargo-geiger-integration commits were landed via `SKIP_CLIPPY=1` + `git commit-tree` plumbing to avoid bundling unrelated lint cleanup with the feature work. This epoch addresses that follow-up plus orthogonal drift: clippy duplicated across pre-commit/pre-push, and 3 comm tests that bind to fixed ports rather than ephemeral.
+
+**Scope:**
+- Lint cleanup in casper (lib) — fix, not suppress
+- Hook invocation form alignment with CI
+- Hook deduplication (clippy in pre-commit only)
+- Test isolation fix in comm (ephemeral ports)
+- **Explicitly out of scope:** broader pre-push tuning (e.g., `QUICK=1` default), the `.github/workflows/assign-ids.yml` cache-tree corruption (separate investigation), per-crate `#![forbid(unsafe_code)]` (Backlog).
+
+**Notes:**
+- Branch `align-git-hook-ci` was forked from `cargo-geiger-integration` HEAD (87bee793) so it inherits the cargo-geiger work; PR target is the same branch (or its eventual merge target). Per [[feedback-branch-scope]] — keep feature branches focused; this work is intentionally on its own branch.
+- The 2 behavior-relevant clippy warnings need investigation, not auto-fix. `MutexGuard across await` can deadlock under concurrent load; `non-binding let on future` is often a forgotten `.await`.
+- Comm test fix may extend beyond the 3 named tests if the root cause is shared fixture state — investigate the test setup before patching only the named tests.
+
+---
+
 ## Task States
 
 | Status | Meaning | Next Action |

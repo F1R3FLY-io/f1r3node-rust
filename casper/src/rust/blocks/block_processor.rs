@@ -58,7 +58,9 @@ const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
 const MISSING_DEPENDENCY_ATTEMPTS_MAX: u32 = 32;
 const MISSING_DEPENDENCY_QUARANTINE_MS: u64 = 10_000;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 8;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -66,6 +68,7 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
     let interval = MALLOC_TRIM_INTERVAL_BLOCKS;
     if interval == 0 {
@@ -76,16 +79,18 @@ fn maybe_trim_allocator_after_block() {
         return;
     }
 
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
-        // Best-effort return of free heap pages to OS to limit RSS ratcheting.
-        unsafe {
-            let _ = malloc_trim(0);
-        }
-        metrics::counter!(ALLOCATOR_TRIM_TOTAL_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
-            .increment(1);
+    use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
+    // Best-effort return of free heap pages to OS to limit RSS ratcheting.
+    unsafe {
+        let _ = malloc_trim(0);
     }
+    metrics::counter!(ALLOCATOR_TRIM_TOTAL_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+        .increment(1);
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn maybe_trim_allocator_after_block() {
+    // no-op on non-linux-gnu targets: malloc_trim is glibc-specific
 }
 
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {

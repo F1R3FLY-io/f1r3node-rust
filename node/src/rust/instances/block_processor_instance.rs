@@ -1,5 +1,6 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -16,8 +17,10 @@ use tokio::sync::mpsc;
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
+#[cfg(target_os = "linux")]
 const MALLOC_TRIM_EVERY_BLOCKS: usize = 8;
 const TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: bool = false;
+#[cfg(target_os = "linux")]
 static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "linux")]
@@ -25,6 +28,7 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+#[cfg(target_os = "linux")]
 fn maybe_trim_allocator_after_block() {
     let interval = MALLOC_TRIM_EVERY_BLOCKS;
     if interval == 0 {
@@ -36,10 +40,14 @@ fn maybe_trim_allocator_after_block() {
         return;
     }
 
-    #[cfg(target_os = "linux")]
     unsafe {
         let _ = malloc_trim(0);
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn maybe_trim_allocator_after_block() {
+    // no-op on non-linux targets: malloc_trim is glibc-specific
 }
 
 /// Ensures the in-flight marker is always cleared, even on early-return or panic.
