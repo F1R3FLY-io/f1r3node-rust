@@ -110,7 +110,6 @@ The Cargo workspace contains 11 crates:
 | [F1r3fly Architecture](./f1r3fly_architecture.md) | High-level architecture overview |
 | [F1r3fly State Diagram](./f1r3fly_state_diagram.md) | Node lifecycle state diagrams |
 | [Namespaces & Scaling](./namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
-| [Rholang Language Analysis](./rholang-language-analysis.md) | Language design analysis |
 | [Features](./features.md) | Feature requirements and status |
 
 ### Genesis & Token Identity

@@ -233,25 +233,28 @@ created_at: 2026-04-09
 claimed_by: claude-session-epoch004
 claimed_at: 2026-04-17T19:19:55Z
 source_branch: rust/staging
-source_head: 6ee5c390a189227b4632186e065b1a964fab5b9e
+source_head: fb59611fbf2be202a6d6450850de1435c9dec7a4
 tasks:
   - id: TASK-004-1
     title: "Sync Rust workspace crates from f1r3node rust/staging"
     status: review
     claimed_by: claude-session-epoch004
     claimed_at: 2026-04-17T19:19:55Z
-    completed_at: 2026-04-17T19:45:00Z
+    completed_at: 2026-04-29T18:50:45Z
     notes:
-      - "Synced all 11 crates + root workspace files from f1r3node rust/staging @ 6ee5c390"
-      - "cargo build --workspace passes (1m 00s)"
-      - "cargo test -p crypto --lib passes (29/29) — full test suite not yet run"
-      - "Full sync report: docs/work-logs/task-004-1-2026-04-17T19-19-55Z.md"
+      - "Initial sync: 11 crates + root workspace files from f1r3node rust/staging @ 6ee5c390 (2026-04-17)"
+      - "Re-sync: refreshed to f1r3node rust/staging @ fb59611f (2026-04-29) — 39 upstream commits, 539 files modified, 1 deleted, 5 new"
+      - "Re-sync preserves local heed 0.22 upgrade (315b23b, 111e318): rspace++/Cargo.toml, shared/Cargo.toml pinned to heed = \"0.22.1\"; lmdb_*.rs files unchanged from HEAD"
+      - "Per-crate Cargo.lock files added to .gitignore (only workspace /Cargo.lock is authoritative)"
+      - "cargo build --workspace passes (49s)"
+      - "./scripts/run_rust_tests.sh passes: 68 test runs, 0 failed"
+      - "Full sync reports: docs/work-logs/task-004-1-2026-04-17T19-19-55Z.md (initial), docs/work-logs/task-004-1-resync-fb59611f-2026-04-29T18-50-45Z.md (current)"
       - "Not committed yet; user to invoke /quick-commit after review"
     acceptance:
-      - "All 11 workspace crates updated from f1r3node rust/dev HEAD"
+      - "All 11 workspace crates updated from f1r3node rust/staging HEAD (fb59611f)"
       - "Cargo.toml workspace dependencies match source"
       - "cargo build --workspace succeeds"
-      - "cargo test --workspace passes (per-crate to avoid LMDB contention)"
+      - "./scripts/run_rust_tests.sh passes per-crate"
 
   - id: TASK-004-2
     title: "Port CI/CD workflows"

@@ -165,7 +165,7 @@ impl DeployRuntime {
 
     pub async fn bond_status<S: DeployService>(svc: &mut S, public_key: &PublicKey) {
         Self::graceful_exit(svc.bond_status(BondStatusQuery {
-            public_key: public_key.bytes.clone(),
+            public_key: Bytes::from(public_key.bytes.clone()),
         }))
         .await
     }

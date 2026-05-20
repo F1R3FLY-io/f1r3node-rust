@@ -78,10 +78,6 @@ impl KeyValueStore for InMemoryKeyValueStore {
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.state.is_empty()) }
 }
 
-impl Default for InMemoryKeyValueStore {
-    fn default() -> Self { Self::new() }
-}
-
 impl InMemoryKeyValueStore {
     pub fn new() -> Self {
         InMemoryKeyValueStore {

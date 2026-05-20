@@ -43,7 +43,7 @@ impl RSpaceExporterImpl {
 
         Ok(keys
             .into_iter()
-            .zip(loaded)
+            .zip(loaded.into_iter())
             .filter_map(|(key, value_option)| value_option.map(|value| (key, value)))
             .collect())
     }
@@ -92,7 +92,7 @@ impl TrieExporter for RSpaceExporterImpl {
 
         Ok(keys
             .into_iter()
-            .zip(loaded)
+            .zip(loaded.into_iter())
             .filter_map(|(key, value_option)| value_option.map(|value| (key, value)))
             .collect())
     }

@@ -72,12 +72,12 @@ impl BlockMetadata {
             justifications: proto
                 .justifications
                 .into_iter()
-                .map(Justification::from_proto)
+                .map(|j| Justification::from_proto(j))
                 .collect(),
             weight_map: proto
                 .bonds
                 .into_iter()
-                .map(|b| (b.validator, b.stake))
+                .map(|b| (b.validator.into(), b.stake))
                 .collect(),
             block_number: proto.block_num,
             sequence_number: proto.seq_num,

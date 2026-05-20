@@ -18,15 +18,16 @@ use graphz::{GraphSerializer, ListSerializer};
 use models::casper::v1::deploy_service_server::DeployService;
 use models::casper::v1::{
     BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
-    DeployResponse, EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse,
-    IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
+    DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
+    FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
     PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
-    DataAtNameByBlockQuery, DeployDataProto, ExploratoryDeployQuery, FindDeployQuery,
-    IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery, PrivateNamePreviewQuery,
-    ReportQuery, Status, VersionInfo, VisualizeDagQuery,
+    DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
+    DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
+    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
+    PrivateNamePreviewQuery, ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
@@ -683,6 +684,45 @@ impl DeployService for DeployGrpcServiceV1Impl {
         }
     }
 
+    /// Query the finalization status of a deploy by its signature.
+    async fn deploy_finalization_status(
+        &self,
+        request: tonic::Request<DeployFinalizationStatusQuery>,
+    ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
+        let request = request.into_inner();
+        match casper::rust::api::block_api::BlockAPI::deploy_finalization_status(
+            &self.engine_cell,
+            &request.deploy_sig,
+        )
+        .await
+        {
+            Ok(status) => Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+                message: Some(
+                    models::casper::v1::deploy_finalization_status_response::Message::Status(
+                        DeployFinalizationStatusInfo {
+                            state: deploy_state_to_proto(status.state) as i32,
+                            rejection_count: status.rejection_count,
+                            latest_block_hash: status.latest_block_hash,
+                        },
+                    ),
+                ),
+            })),
+            Err(e) => {
+                error!(
+                    "Deploy service method error deploy_finalization_status: {}",
+                    e
+                );
+                Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+                    message: Some(
+                        models::casper::v1::deploy_finalization_status_response::Message::Error(
+                            e.into_service_error(),
+                        ),
+                    ),
+                }))
+            }
+        }
+    }
+
     /// Get bond status
     async fn bond_status(
         &self,
@@ -933,5 +973,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
         Ok(tonic::Response::new(StatusResponse {
             message: Some(models::casper::v1::status_response::Message::Status(status)),
         }))
+    }
+}
+
+fn deploy_state_to_proto(
+    state: casper::rust::api::deploy_finalization_status::DeployFinalizationState,
+) -> DeployFinalizationStateProto {
+    use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+    match state {
+        S::Finalized => DeployFinalizationStateProto::DeployStateFinalized,
+        S::Failed => DeployFinalizationStateProto::DeployStateFailed,
+        S::Pending => DeployFinalizationStateProto::DeployStatePending,
+        S::Expired => DeployFinalizationStateProto::DeployStateExpired,
     }
 }

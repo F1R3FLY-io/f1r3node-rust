@@ -136,13 +136,13 @@ impl TestResult {
             .assertions
             .get(assertion.test_name())
             .cloned()
-            .unwrap_or_else(HashMap::new);
+            .unwrap_or_else(|| HashMap::new());
 
         let new_assertion = (attempt, {
             let mut new_assertions = current_attempt_assertions
                 .get(&attempt)
                 .cloned()
-                .unwrap_or_else(Vec::new);
+                .unwrap_or_else(|| Vec::new());
 
             new_assertions.insert(0, assertion.clone());
             new_assertions
@@ -177,10 +177,6 @@ impl TestResult {
 
 pub struct TestResultCollector {
     result: Mutex<TestResult>,
-}
-
-impl Default for TestResultCollector {
-    fn default() -> Self { Self::new() }
 }
 
 impl TestResultCollector {

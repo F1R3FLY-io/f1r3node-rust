@@ -158,12 +158,12 @@ pub fn sub_pars(
 
     min_max_subsets(&par.sends, send_min, send_max)
         .into_iter()
-        .cartesian_product(min_max_subsets(&par.receives, receive_min, receive_max))
-        .cartesian_product(min_max_subsets(&par.news, new_min, new_max))
-        .cartesian_product(min_max_subsets(&par.exprs, expr_min, expr_max))
-        .cartesian_product(min_max_subsets(&par.matches, match_min, match_max))
-        .cartesian_product(min_max_subsets(&par.unforgeables, unf_min, unf_max))
-        .cartesian_product(min_max_subsets(&par.bundles, bundle_min, bundle_max))
+        .cartesian_product(min_max_subsets(&par.receives, receive_min, receive_max).into_iter())
+        .cartesian_product(min_max_subsets(&par.news, new_min, new_max).into_iter())
+        .cartesian_product(min_max_subsets(&par.exprs, expr_min, expr_max).into_iter())
+        .cartesian_product(min_max_subsets(&par.matches, match_min, match_max).into_iter())
+        .cartesian_product(min_max_subsets(&par.unforgeables, unf_min, unf_max).into_iter())
+        .cartesian_product(min_max_subsets(&par.bundles, bundle_min, bundle_max).into_iter())
         .map(
             |(
                 (((((sub_sends, sub_receives), sub_news), sub_exprs), sub_matches), sub_unfs),

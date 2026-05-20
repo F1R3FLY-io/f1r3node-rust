@@ -89,7 +89,7 @@ pub fn to_rspace_event(event: &Event) -> RspaceEvent {
             channel_hashes: consume_event
                 .channels_hashes
                 .iter()
-                .map(Blake2b256Hash::from_bytes_prost)
+                .map(|h| Blake2b256Hash::from_bytes_prost(h))
                 .collect(),
             hash: Blake2b256Hash::from_bytes_prost(&consume_event.hash),
             persistent: consume_event.persistent,
@@ -101,7 +101,7 @@ pub fn to_rspace_event(event: &Event) -> RspaceEvent {
                     .consume
                     .channels_hashes
                     .iter()
-                    .map(Blake2b256Hash::from_bytes_prost)
+                    .map(|h| Blake2b256Hash::from_bytes_prost(h))
                     .collect(),
                 hash: Blake2b256Hash::from_bytes_prost(&comm_event.consume.hash),
                 persistent: comm_event.consume.persistent,

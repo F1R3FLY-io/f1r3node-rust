@@ -241,10 +241,6 @@ impl HostnameTrustManagerFactory {
 #[derive(Debug)]
 pub struct HostnameTrustManager;
 
-impl Default for HostnameTrustManager {
-    fn default() -> Self { Self::new() }
-}
-
 impl HostnameTrustManager {
     pub fn new() -> Self { Self }
 
@@ -469,10 +465,6 @@ impl ServerCertVerifier for HostnameTrustManager {
 #[derive(Debug)]
 pub struct F1r3flyClientCertVerifier {
     trust_manager: Arc<HostnameTrustManager>,
-}
-
-impl Default for F1r3flyClientCertVerifier {
-    fn default() -> Self { Self::new() }
 }
 
 impl F1r3flyClientCertVerifier {

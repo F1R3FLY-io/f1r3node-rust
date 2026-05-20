@@ -24,7 +24,7 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
+    Db, LmdbDirStoreManager, LmdbEnvConfig, GB,
 };
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tempfile::{Builder, TempDir};
@@ -121,7 +121,12 @@ pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
 ) -> impl KeyValueStoreManager {
-    let limit_size = 500 * MB;
+    // Cap on the shared LMDB env's map_size. heed 0.22's env cache locks the
+    // map_size at first open per path, so the entire casper test suite shares
+    // one env at this size — not 500 MB per test like legacy heed 0.11. Bumped
+    // to 4 GB to give the suite headroom (virtual address space; real disk
+    // usage matches data written).
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -199,7 +204,9 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     rspace_scope: String,
 ) -> impl KeyValueStoreManager {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    let limit_size = 100 * MB;
+    // Dual-scope variant — same shared-env consideration as
+    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
+    let limit_size = 1 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -416,6 +423,33 @@ pub async fn key_value_deploy_storage_from_dyn(
     })
 }
 
+pub async fn key_value_rejected_deploy_buffer_from_dyn(
+    kvm: &mut dyn KeyValueStoreManager,
+) -> Result<
+    block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    shared::rust::store::key_value_store::KvStoreError,
+> {
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use shared::rust::ByteString;
+
+    let buffer_kv_store = kvm
+        .store("rejected_deploy_buffer".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get rejected_deploy_buffer store: {:?}",
+                e
+            ))
+        })?;
+    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
+        KeyValueTypedStoreImpl::new(buffer_kv_store);
+
+    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+}
+
 pub async fn casper_buffer_storage_from_dyn(
     kvm: &mut dyn KeyValueStoreManager,
 ) -> Result<
@@ -447,26 +481,43 @@ pub async fn casper_buffer_storage_from_dyn(
         })
 }
 
-pub async fn mk_runtime_manager(_prefix: &str, mergeable_tag_name: Option<Par>) -> RuntimeManager {
+pub async fn mk_runtime_manager(
+    _prefix: &str,
+    mergeable_tags: Option<
+        std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+    >,
+) -> RuntimeManager {
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
 
-    mk_runtime_manager_at(&mut *kvm, mergeable_tag_name).await
+    mk_runtime_manager_at(&mut *kvm, mergeable_tags).await
 }
 
 pub async fn mk_runtime_manager_at(
     kvm: &mut dyn KeyValueStoreManager,
-    mergeable_tag_name: Option<Par>,
+    mergeable_tags: Option<
+        std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+    >,
 ) -> RuntimeManager {
-    let mergeable_tag_name =
-        mergeable_tag_name.unwrap_or(Genesis::non_negative_mergeable_tag_name());
+    let mergeable_tags =
+        mergeable_tags.unwrap_or_else(|| std::sync::Arc::new(Genesis::default_mergeable_tags()));
 
     let r_store = kvm.r_space_stores().await.unwrap();
     let m_store = mergeable_store_from_dyn(kvm).await.unwrap();
     RuntimeManager::create_with_store(
         r_store,
         m_store,
-        mergeable_tag_name,
+        mergeable_tags,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
 }
@@ -479,7 +530,7 @@ pub async fn mk_runtime_manager_with_history_at(
     let (rt_manager, history_repo) = RuntimeManager::create_with_history(
         r_store,
         m_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     );
     (rt_manager, history_repo)
@@ -518,6 +569,7 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         justifications: DashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
+        rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
         max_seq_nums: DashMap::new(),
         on_chain_state: OnChainCasperState {

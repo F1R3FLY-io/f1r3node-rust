@@ -14,6 +14,7 @@ mod engine;
 mod genesis;
 mod helper;
 mod merging;
+mod multi_node;
 mod sync;
 mod util;
 
