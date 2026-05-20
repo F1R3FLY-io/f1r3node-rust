@@ -391,19 +391,18 @@ impl ReplayRuntimeOps {
             ));
         }
 
-        if require_cost_trace || has_recorded_cost_trace {
-            if expected_digest != replay_cost_trace.digest
-                || processed_deploy.cost_trace_event_count != replay_cost_trace.event_count
-            {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_cost_trace_mismatch(
-                        expected_digest,
-                        replay_cost_trace.digest,
-                        processed_deploy.cost_trace_event_count,
-                        replay_cost_trace.event_count,
-                    ),
-                ));
-            }
+        if (require_cost_trace || has_recorded_cost_trace)
+            && (expected_digest != replay_cost_trace.digest
+                || processed_deploy.cost_trace_event_count != replay_cost_trace.event_count)
+        {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_cost_trace_mismatch(
+                    expected_digest,
+                    replay_cost_trace.digest,
+                    processed_deploy.cost_trace_event_count,
+                    replay_cost_trace.event_count,
+                ),
+            ));
         }
 
         Ok((user_eval_result, eval_successful))

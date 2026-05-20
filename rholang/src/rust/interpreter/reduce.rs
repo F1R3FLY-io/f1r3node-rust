@@ -267,7 +267,7 @@ impl DebruijnInterpreter {
                 // Spawn each branch as its own task. This preserves actual runtime
                 // parallelism and gives deeply recursive branches an independent
                 // task stack while still reporting errors in source order below.
-                let handle = tokio::spawn(async move { fut.await });
+                let handle = tokio::spawn(fut);
                 unordered.push(async move { (index, handle.await) });
             }
 
@@ -763,7 +763,7 @@ impl DebruijnInterpreter {
         for (index, fut) in futures.into_iter().enumerate() {
             // Persistent/peek continuations must progress independently; spawning
             // preserves parallel execution and isolates deep recursive branches.
-            let handle = tokio::spawn(async move { fut.await });
+            let handle = tokio::spawn(fut);
             unordered.push(async move { (index, handle.await) });
         }
 
