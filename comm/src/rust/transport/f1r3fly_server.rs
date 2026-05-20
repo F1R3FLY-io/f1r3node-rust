@@ -112,9 +112,9 @@ impl F1r3flyServer {
 
     /// Create the custom incoming stream for tonic server
     ///
-    /// This creates a stream of TLS-authenticated connections that tonic can
-    /// use to serve gRPC requests. Each connection is pre-authenticated
-    /// using F1r3fly's custom certificate verification.
+    /// This creates a stream of TLS-authenticated connections that tonic can use
+    /// to serve gRPC requests. Each connection is pre-authenticated using F1r3fly's
+    /// custom certificate verification.
     pub async fn incoming(self) -> Result<F1r3flyIncoming, F1r3flyServerError> {
         // Bind TCP listener
         let listener = TcpListener::bind(&self.bind_addr).await.map_err(|e| {
@@ -145,10 +145,7 @@ impl F1r3flyServer {
                         }
 
                         if tcp_keepalive.is_some() {
-                            tracing::debug!(
-                                "TCP keepalive configuration requested but not implemented in \
-                                 tokio TcpStream"
-                            );
+                            tracing::debug!("TCP keepalive configuration requested but not implemented in tokio TcpStream");
                         }
 
                         // Get peer address

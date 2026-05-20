@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// MultiSigSystemVaultSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/MultiSigSystemVaultSpec.scala
 
 use std::collections::HashMap;
 
@@ -10,8 +9,9 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn multi_sig_system_vault_spec() {
-    let test_object = CompiledRholangSource::load_source("MultiSigSystemVaultTest.rho")
-        .expect("Failed to load MultiSigSystemVaultTest.rho");
+    let test_object =
+        crate::util::rholang::test_rho_loader::load_test_rho("MultiSigSystemVaultTest.rho")
+            .expect("Failed to load MultiSigSystemVaultTest.rho");
 
     let compiled = CompiledRholangSource::new(
         test_object,

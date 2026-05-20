@@ -103,8 +103,7 @@ impl GraphSerializer for FileSerializer {
     }
 }
 
-// Sealed traits equivalent - all enum definitions first (like Scala sealed
-// traits)
+// Sealed traits equivalent - all enum definitions first (like Scala sealed traits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphType {
     Graph,
@@ -155,8 +154,7 @@ pub enum GraphArrowType {
     NoneArrow,
 }
 
-// Display implementations (equivalent to Scala's Show instances in object
-// Graphz)
+// Display implementations (equivalent to Scala's Show instances in object Graphz)
 
 // Note: We don't use a small_to_string function like Scala's smallToString[A]
 // because:
@@ -226,7 +224,6 @@ const TAB: &str = "  ";
 
 pub fn default_shape() -> GraphShape { GraphShape::Circle }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     name: String,
     gtype: GraphType,
@@ -286,7 +283,6 @@ pub async fn apply(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn subgraph(
     name: String,
     gtype: GraphType,

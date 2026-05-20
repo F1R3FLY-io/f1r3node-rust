@@ -38,10 +38,10 @@ impl PartialEq for StateChange {
         // PartialEq
 
         // Check if maps have same size
-        if self.datums_changes.len() != other.datums_changes.len()
-            || self.cont_changes.len() != other.cont_changes.len()
-            || self.consume_channels_to_join_serialized_map.len()
-                != other.consume_channels_to_join_serialized_map.len()
+        if self.datums_changes.len() != other.datums_changes.len() ||
+            self.cont_changes.len() != other.cont_changes.len() ||
+            self.consume_channels_to_join_serialized_map.len() !=
+                other.consume_channels_to_join_serialized_map.len()
         {
             return false;
         }
@@ -70,9 +70,9 @@ impl PartialEq for StateChange {
                 let other_key = other_entry.key();
                 let other_value = other_entry.value();
 
-                key == other_key
-                    && value.added == other_value.added
-                    && value.removed == other_value.removed
+                key == other_key &&
+                    value.added == other_value.added &&
+                    value.removed == other_value.removed
             });
 
             if !found {
@@ -112,12 +112,12 @@ impl PartialOrd for StateChange {
         // For a real implementation, you'd need to define a sensible ordering
 
         // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len()
-            + self.cont_changes.len()
-            + self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len()
-            + other.cont_changes.len()
-            + other.consume_channels_to_join_serialized_map.len();
+        let self_total = self.datums_changes.len() +
+            self.cont_changes.len() +
+            self.consume_channels_to_join_serialized_map.len();
+        let other_total = other.datums_changes.len() +
+            other.cont_changes.len() +
+            other.consume_channels_to_join_serialized_map.len();
 
         self_total.partial_cmp(&other_total)
     }
@@ -255,12 +255,12 @@ impl Ord for StateChange {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Implement total ordering consistent with partial_cmp
         // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len()
-            + self.cont_changes.len()
-            + self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len()
-            + other.cont_changes.len()
-            + other.consume_channels_to_join_serialized_map.len();
+        let self_total = self.datums_changes.len() +
+            self.cont_changes.len() +
+            self.consume_channels_to_join_serialized_map.len();
+        let other_total = other.datums_changes.len() +
+            other.cont_changes.len() +
+            other.consume_channels_to_join_serialized_map.len();
 
         self_total.cmp(&other_total)
     }

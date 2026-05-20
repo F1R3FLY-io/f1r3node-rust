@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
+use rand::Rng;
 use rand::distributions::{Alphanumeric, DistString};
 use rand::seq::SliceRandom;
-use rand::Rng;
 use rspace_plus_plus::rspace::errors::{HistoryError, RadixTreeError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history::{History, HistoryInstances};
@@ -16,15 +16,6 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::{Byte, ByteVector};
-
-type RandomInsertDeleteResult = Result<
-    (
-        Box<dyn History>,
-        Vec<HistoryAction>,
-        BTreeMap<Vec<u8>, Blake2b256Hash>,
-    ),
-    Box<dyn Error>,
->;
 
 #[test]
 fn creating_and_read_one_record_should_work() {
@@ -109,12 +100,10 @@ fn history_should_allow_to_store_different_length_key_records_in_different_branc
 #[test]
 fn deletion_of_a_non_existing_records_should_not_throw_error() {
     let (history_action1, _) = history_insert(hex_key("0011"));
-    let (history_action2, _): (Vec<HistoryAction>, Vec<DeleteAction>) = vec![
-        history_delete(hex_key("0012")),
-        history_delete(hex_key("0011")),
-    ]
-    .into_iter()
-    .unzip();
+    let (history_action2, _): (Vec<HistoryAction>, Vec<DeleteAction>) =
+        vec![history_delete(hex_key("0012")), history_delete(hex_key("0011"))]
+            .into_iter()
+            .unzip();
 
     let empty_history = create_empty_history();
     let history_one = empty_history.process(vec![history_action1]).unwrap();
@@ -125,22 +114,17 @@ fn deletion_of_a_non_existing_records_should_not_throw_error() {
 
 #[test]
 fn history_should_not_allow_to_store_different_length_key_records_in_same_branch() {
-    let (history_actions, _): (Vec<HistoryAction>, Vec<InsertAction>) = vec![
-        history_insert(hex_key("01")),
-        history_insert(hex_key("0100")),
-    ]
-    .into_iter()
-    .unzip();
+    let (history_actions, _): (Vec<HistoryAction>, Vec<InsertAction>) =
+        vec![history_insert(hex_key("01")), history_insert(hex_key("0100"))]
+            .into_iter()
+            .unzip();
     let empty_history = create_empty_history();
     let err = empty_history.process(history_actions);
 
     assert!(err.is_err());
     match err {
         Err(HistoryError::RadixTreeError(RadixTreeError::PrefixError(message))) => {
-            assert_eq!(
-                message,
-                "The length of all prefixes in the subtree must be the same."
-            );
+            assert_eq!(message, "The length of all prefixes in the subtree must be the same.");
         }
         _ => panic!("Expected PrefixError variant"),
     }
@@ -221,23 +205,14 @@ fn update_of_a_record_should_not_change_past_history() {
 
     assert!(read_value_one_pre.is_ok());
     assert!(read_value_one_post.is_ok());
-    assert_eq!(
-        read_value_one_pre.as_ref().unwrap(),
-        &read_value_one_post.unwrap()
-    );
+    assert_eq!(read_value_one_pre.as_ref().unwrap(), &read_value_one_post.unwrap());
     assert_ne!(read_value_one_pre.unwrap(), read_value_two.unwrap());
 }
 
 #[test]
 fn history_should_correctly_build_the_same_trees_in_different_ways() {
-    let insert_one = vec![
-        history_insert(hex_key("010000")).0,
-        history_insert(hex_key("0200")).0,
-    ];
-    let insert_two = vec![
-        history_insert(hex_key("010001")).0,
-        history_insert(hex_key("0300")).0,
-    ];
+    let insert_one = vec![history_insert(hex_key("010000")).0, history_insert(hex_key("0200")).0];
+    let insert_two = vec![history_insert(hex_key("010001")).0, history_insert(hex_key("0300")).0];
     let mut insert_one_two = insert_one.clone();
     insert_one_two.extend(insert_two.clone());
 
@@ -267,24 +242,15 @@ fn history_should_correctly_build_the_same_trees_in_different_ways() {
 
     let history_one_another_way = history_one_two.as_ref().unwrap().process(delete_two);
     assert!(history_one_another_way.is_ok());
-    assert_eq!(
-        &history_one.unwrap().root(),
-        &history_one_another_way.unwrap().root()
-    );
+    assert_eq!(&history_one.unwrap().root(), &history_one_another_way.unwrap().root());
 
     let history_two_another_way = history_one_two.as_ref().unwrap().process(delete_one);
     assert!(history_two_another_way.is_ok());
-    assert_eq!(
-        &history_two.unwrap().root(),
-        &history_two_another_way.unwrap().root()
-    );
+    assert_eq!(&history_two.unwrap().root(), &history_two_another_way.unwrap().root());
 
     let empty_history_another_way = history_one_two.unwrap().process(delete_one_two);
     assert!(empty_history_another_way.is_ok());
-    assert_eq!(
-        &empty_history.root(),
-        &empty_history_another_way.unwrap().root()
-    );
+    assert_eq!(&empty_history.root(), &empty_history_another_way.unwrap().root());
 }
 
 #[test]
@@ -314,10 +280,7 @@ fn adding_already_existing_records_should_not_change_history() {
 fn collision_detecting_in_kvdb_should_work() {
     let insert_record = vec![history_insert(zeros()).0];
     let delete_record = vec![history_delete(zeros()).0];
-    let collision_kv_pair = (
-        RadixHistory::empty_root_node_hash().bytes(),
-        random_blake().bytes(),
-    );
+    let collision_kv_pair = (RadixHistory::empty_root_node_hash().bytes(), random_blake().bytes());
 
     let (empty_history, in_mem_store) = create_empty_history_and_store();
     let new_history = empty_history.process(insert_record);
@@ -352,9 +315,8 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
 
     let empty_history = create_empty_history();
 
-    let res: RandomInsertDeleteResult = (1..=10).try_fold(
-        (empty_history, inserts, state),
-        |(history, inserts, state), _| {
+    let res: Result<(Box<dyn History>, Vec<HistoryAction>, BTreeMap<Vec<u8>, Blake2b256Hash>), _> =
+        (1..=10).try_fold((empty_history, inserts, state), |(history, inserts, state), _| {
             let new_inserts = generate_random_insert(size_inserts);
             let new_updates = generate_random_insert_from_insert(size_updates, &inserts);
 
@@ -368,14 +330,14 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
 
             let new_deletes = generate_random_delete_from_insert(size_deletes, last_inserts)
                 .into_iter()
-                .chain(generate_random_delete(size_deletes))
+                .chain(generate_random_delete(size_deletes).into_iter())
                 .collect::<Vec<_>>();
 
             let actions = new_inserts
                 .clone()
                 .into_iter()
-                .chain(new_deletes.clone())
-                .chain(new_updates)
+                .chain(new_deletes.clone().into_iter())
+                .chain(new_updates.into_iter())
                 .collect::<Vec<_>>();
 
             println!("\nprocess {}", actions.len());
@@ -389,22 +351,26 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
                     Ok(Some(v)) => assert!(v == value.bytes()),
                     Err(e) => {
                         println!("{:?}", e);
-                        panic!("Can not get value")
+                        assert!(false, "Can not get value")
                     }
-                    Ok(None) => panic!("Can not get value"),
+                    Ok(None) => {
+                        assert!(false, "Can not get value")
+                    }
                 }
             }
 
             for d in new_deletes.iter() {
                 match new_history.as_ref().unwrap().read(d.key()) {
-                    Ok(None) => {}
-                    _ => panic!("got empty pointer after remove"),
+                    Ok(None) => assert!(true),
+                    _ => assert!(false, "got empty pointer after remove"),
                 }
             }
 
-            Ok::<_, Box<dyn Error>>((new_history.unwrap(), new_inserts, new_state))
-        },
-    );
+            Ok::<
+                (Box<dyn History>, Vec<HistoryAction>, BTreeMap<Vec<u8>, Blake2b256Hash>),
+                Box<dyn Error>,
+            >((new_history.unwrap(), new_inserts, new_state))
+        });
 
     assert!(res.is_ok());
 }
@@ -468,10 +434,10 @@ fn generate_random_delete_from_insert(
 
 fn generate_random_insert_from_insert(
     size: usize,
-    inserts: &[HistoryAction],
+    inserts: &Vec<HistoryAction>,
 ) -> Vec<HistoryAction> {
     let mut rng = rand::thread_rng();
-    let mut shuffled_inserts = inserts.to_owned();
+    let mut shuffled_inserts = inserts.clone();
     shuffled_inserts.shuffle(&mut rng);
     shuffled_inserts
         .into_iter()
@@ -482,7 +448,7 @@ fn generate_random_insert_from_insert(
 
 fn update_state(
     mut state: BTreeMap<KeyPath, Blake2b256Hash>,
-    actions: &[HistoryAction],
+    actions: &Vec<HistoryAction>,
 ) -> BTreeMap<KeyPath, Blake2b256Hash> {
     for action in actions {
         match action {

@@ -1,5 +1,4 @@
-// TODO: double check whether this converters will be needed in future because
-// it seems like that configs values where they are used are not in use
+// TODO: double check whether this converters will be needed in future because it seems like that configs values where they are used are not in use
 
 //! Value converters for command-line arguments
 //!

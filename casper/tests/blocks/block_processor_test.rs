@@ -63,8 +63,7 @@ impl TestFixture {
         // Get underlying BlockDagKeyValueStorage for CasperDependencyAnalyzer
         let block_dag_storage = {
             // We need to extract underlying storage for the dependency analyzer
-            // For now, create a separate one since IndexedBlockDagStorage doesn't expose
-            // underlying
+            // For now, create a separate one since IndexedBlockDagStorage doesn't expose underlying
             let mut dag_kvm = InMemoryStoreManager::new();
             BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap()
         };

@@ -15,8 +15,7 @@ pub fn normalize_p_negation<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    // Use the actual span of the entire UnaryExp (~<expr>) for accurate source
-    // location
+    // Use the actual span of the entire UnaryExp (~<expr>) for accurate source location
     let ann_proc = AnnProc {
         proc: arg,
         span: unary_expr_span,
@@ -55,8 +54,7 @@ pub fn normalize_p_negation<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// ProcMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::rhoapi::connective::ConnectiveInstance;

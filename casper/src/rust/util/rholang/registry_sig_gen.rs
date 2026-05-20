@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/RegistrySigGen.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/RegistrySigGen.scala
 
 use std::fmt;
 

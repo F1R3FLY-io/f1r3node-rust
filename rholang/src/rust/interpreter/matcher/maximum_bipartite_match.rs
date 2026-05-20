@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// MaximumBipartiteMatch.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/MaximumBipartiteMatch.scala
 pub struct MaximumBipartiteMatch<P, T, R>
 where
     P: Debug + Clone,
@@ -96,8 +95,7 @@ where
                                 self.try_claim_match(candidate.clone(), pattern, match_result)
                             }
                             None => {
-                                // println!("\nthis candidate doesn't match, proceed to the
-                                // others");
+                                // println!("\nthis candidate doesn't match, proceed to the others");
                                 self.find_match((p, candidates.to_vec()))
                             }
                         }
@@ -129,13 +127,11 @@ where
             Some(previous_pattern) => {
                 // try to find a different match for the previous pattern
                 if self.find_match(previous_pattern) {
-                    // if found, we can match current pattern with this candidate despite it being
-                    // taken
+                    // if found, we can match current pattern with this candidate despite it being taken
                     self.claim_match(candidate, pattern, result);
                     true
                 } else {
-                    // else, current pattern can't be matched with this candidate given the current
-                    // matches, try others
+                    // else, current pattern can't be matched with this candidate given the current matches, try others
                     self.find_match(pattern)
                 }
             }

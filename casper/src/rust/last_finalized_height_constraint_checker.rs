@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/
-// LastFinalizedHeightConstraintChecker.scala
+// See casper/src/main/scala/coop/rchain/casper/LastFinalizedHeightConstraintChecker.scala
 
 use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
 use super::casper::CasperSnapshot;

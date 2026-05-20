@@ -15,10 +15,6 @@ pub trait PacketHandler: Send + Sync {
 /// A no-operation packet handler that does nothing
 pub struct NOPPacketHandler;
 
-impl Default for NOPPacketHandler {
-    fn default() -> Self { Self::new() }
-}
-
 impl NOPPacketHandler {
     pub fn new() -> Self { Self }
 }

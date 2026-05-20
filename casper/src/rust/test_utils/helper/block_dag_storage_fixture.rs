@@ -1,7 +1,6 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/BlockDagStorageFixture.
-// scala Moved from casper/tests/helper/block_dag_storage_fixture.rs to
-// casper/src/rust/test_utils/helper/block_dag_storage_fixture.rs All imports
-// fixed for library crate context
+// See casper/src/test/scala/coop/rchain/casper/helper/BlockDagStorageFixture.scala
+// Moved from casper/tests/helper/block_dag_storage_fixture.rs to casper/src/rust/test_utils/helper/block_dag_storage_fixture.rs
+// All imports fixed for library crate context
 
 use std::future::Future;
 

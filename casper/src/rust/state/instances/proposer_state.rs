@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/state/instances/ProposerState.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/state/instances/ProposerState.scala
 
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::oneshot;

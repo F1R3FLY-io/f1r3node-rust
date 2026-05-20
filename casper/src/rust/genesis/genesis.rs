@@ -1,13 +1,16 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/Genesis.scala
 
+use std::collections::HashMap;
+
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{GPrivate, GUnforgeable, Par};
+use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::merging::mergeable_tags;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 use super::contracts::proof_of_stake::ProofOfStake;
 use super::contracts::standard_deploys;
@@ -15,7 +18,6 @@ use super::contracts::vault::Vault;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::util::rholang::tools::Tools;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {
@@ -26,23 +28,26 @@ pub struct Genesis {
     pub vaults: Vec<Vault>,
     pub supply: i64,
     pub version: i64,
+    /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
+    /// the `TokenMetadata` Rholang contract at genesis.
+    pub native_token_name: String,
+    /// Ticker symbol of the native token (e.g. "F1R3").
+    pub native_token_symbol: String,
+    /// Number of decimal places for native token display (dust per token = 10^decimals).
+    pub native_token_decimals: u32,
 }
 
 impl Genesis {
     pub fn non_negative_mergeable_tag_name() -> Par {
-        let mut rng = Tools::unforgeable_name_rng(
-            &standard_deploys::NON_NEGATIVE_NUMBER_PUB_KEY,
-            standard_deploys::NON_NEGATIVE_NUMBER_TIMESTAMP,
-        );
+        mergeable_tags::non_negative_mergeable_tag_name()
+    }
 
-        rng.next();
-        let unforgeable_byte = rng.next();
+    pub fn bitmask_or_mergeable_tag_name() -> Par {
+        mergeable_tags::bitmask_or_mergeable_tag_name()
+    }
 
-        Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: unforgeable_byte.into_iter().map(|b| b as u8).collect(),
-            })),
-        }])
+    pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
+        mergeable_tags::default_mergeable_tags()
     }
 
     pub fn default_blessed_terms_with_timestamp(
@@ -51,6 +56,9 @@ impl Genesis {
         vaults: &Vec<Vault>,
         supply: i64,
         shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -58,7 +66,7 @@ impl Genesis {
         // Create vault deploys only if vaults are not empty
         let mut vault_deploys = Vec::new();
         if !vaults.is_empty() {
-            let batch_count = vaults.len().div_ceil(BATCH_SIZE);
+            let batch_count = (vaults.len() + BATCH_SIZE - 1) / BATCH_SIZE;
             vault_deploys.reserve(batch_count);
 
             for (idx, chunk) in vaults.chunks(BATCH_SIZE).enumerate() {
@@ -90,9 +98,15 @@ impl Genesis {
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
+        let token_metadata = standard_deploys::token_metadata(
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            shard_id,
+        );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
-        let mut all_deploys = Vec::with_capacity(10 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(11 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
@@ -102,6 +116,7 @@ impl Genesis {
         all_deploys.push(system_vault);
         all_deploys.push(multi_sig_system_vault);
         all_deploys.push(stack);
+        all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
 
@@ -113,6 +128,9 @@ impl Genesis {
         vaults: &Vec<Vault>,
         supply: i64,
         shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -122,11 +140,14 @@ impl Genesis {
             vaults,
             supply,
             shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
         )
     }
 
     pub async fn create_genesis_block(
-        runtime_manager: &mut RuntimeManager,
+        runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
         let blessed_terms = Self::default_blessed_terms(
@@ -134,6 +155,9 @@ impl Genesis {
             &genesis.vaults,
             genesis.supply,
             &genesis.shard_id,
+            &genesis.native_token_name,
+            &genesis.native_token_symbol,
+            genesis.native_token_decimals,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
@@ -204,7 +228,7 @@ impl Genesis {
         bonds
             .into_iter()
             .map(|(pk, stake)| Bond {
-                validator: pk.bytes,
+                validator: pk.bytes.into(),
                 stake,
             })
             .collect()

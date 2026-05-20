@@ -60,8 +60,7 @@ pub fn normalize_p_par<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

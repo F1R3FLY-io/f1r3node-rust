@@ -60,10 +60,7 @@ pub async fn check_ports(conf: &NodeConf) -> Result<NodeConf> {
             info!("Using random port {} as F1r3fly Protocol port", free_port);
             updated_conf.protocol_server.port = free_port;
         } else {
-            error!(
-                "Hint: Run me with --use-random-ports to use a random port for F1r3fly Protocol \
-                 port"
-            );
+            error!("Hint: Run me with --use-random-ports to use a random port for F1r3fly Protocol port");
             return Err(eyre::eyre!("Invalid F1r3fly Protocol port"));
         }
     }

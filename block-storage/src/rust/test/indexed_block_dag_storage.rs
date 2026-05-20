@@ -1,5 +1,4 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
-// IndexedBlockDagStorage.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/IndexedBlockDagStorage.scala
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -114,6 +113,7 @@ impl IndexedBlockDagStorage {
     pub async fn record_directly_finalized<F, Fut>(
         &mut self,
         block_hash: BlockHash,
+        ft_value: f32,
         finalization_effect: F,
     ) -> Result<(), KvStoreError>
     where
@@ -121,7 +121,7 @@ impl IndexedBlockDagStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         self.underlying
-            .record_directly_finalized(block_hash, finalization_effect)
+            .record_directly_finalized(block_hash, ft_value, finalization_effect)
             .await
     }
 

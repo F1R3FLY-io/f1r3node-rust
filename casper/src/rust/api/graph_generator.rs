@@ -90,8 +90,7 @@ impl GraphzGenerator {
             g.node(ancestor, GraphShape::Box, style, None, None).await?;
         }
 
-        // create invisible edges from ancestors to first node in each cluster for
-        // proper alignment
+        // create invisible edges from ancestors to first node in each cluster for proper alignment
         let mut invisible_edge_pairs = Vec::new();
         for (id, blocks) in &validators_list {
             let nodes = Self::nodes_for_ts(id, first_ts, blocks, &last_finalized_block_hash);
@@ -238,8 +237,7 @@ impl GraphzGenerator {
             .flatten()
             .collect();
 
-        // Equivalent to case ValidatorBlock(blockHash, parentsHashes, _) =>
-        // parentsHashes.traverse(...)
+        // Equivalent to case ValidatorBlock(blockHash, parentsHashes, _) => parentsHashes.traverse(...)
         let edge_pairs: Vec<(&String, &String)> = all_validator_blocks
             .iter()
             .flat_map(|validator_block| {
@@ -270,8 +268,7 @@ impl GraphzGenerator {
             .flatten()
             .collect();
 
-        // Equivalent to case ValidatorBlock(blockHash, _, justifications) =>
-        // justifications.traverse(...)
+        // Equivalent to case ValidatorBlock(blockHash, _, justifications) => justifications.traverse(...)
         let edge_pairs: Vec<(&String, &String)> = all_validator_blocks
             .iter()
             .flat_map(|validator_block| {
@@ -341,15 +338,13 @@ impl GraphzGenerator {
         )
         .await?;
 
-        // Equivalent to nodes = timeseries.map(ts => nodesForTs(id, ts, blocks,
-        // lastFinalizedBlockHash))
+        // Equivalent to nodes = timeseries.map(ts => nodesForTs(id, ts, blocks, lastFinalizedBlockHash))
         let nodes: Vec<HashMap<String, Option<GraphStyle>>> = timeseries
             .iter()
             .map(|&ts| Self::nodes_for_ts(id, ts, blocks, last_finalized_block_hash))
             .collect();
 
-        // Equivalent to nodes.traverse(ns => ns.toList.traverse { case (name, style) =>
-        // g.node(...) })
+        // Equivalent to nodes.traverse(ns => ns.toList.traverse { case (name, style) => g.node(...) })
         for node_map in &nodes {
             for (name, style) in node_map {
                 g.node(name, GraphShape::Box, *style, None, None).await?;

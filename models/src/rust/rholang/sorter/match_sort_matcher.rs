@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/MatchSortMatcher.scala
 
 use super::score_tree::ScoredTerm;
 use super::sortable::Sortable;
@@ -46,7 +45,8 @@ impl Sortable<Match> for MatchSortMatcher {
                 .as_ref()
                 .expect("target field on Match was None, should be Some"),
         );
-        let scored_cases: Vec<ScoredTerm<MatchCase>> = m.cases.iter().map(sort_case).collect();
+        let scored_cases: Vec<ScoredTerm<MatchCase>> =
+            m.cases.iter().map(|c| sort_case(c)).collect();
         let connective_used_score = if m.connective_used { 1 } else { 0 };
 
         ScoredTerm {
@@ -61,6 +61,7 @@ impl Sortable<Match> for MatchSortMatcher {
                 vec![sorted_value.score]
                     .into_iter()
                     .chain(scored_cases.into_iter().map(|c| c.score))
+                    .into_iter()
                     .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                         connective_used_score,
                     )])

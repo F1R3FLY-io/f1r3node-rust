@@ -134,20 +134,12 @@ WORKDIR /opt/docker
 # Create bin directory first
 RUN mkdir -p /opt/docker/bin
 
-# Copy node binary (using node_binary from builder to avoid conflict with node/ directory)
-# Verify it's a file before copying
+# Copy node binary (using node_binary from builder to avoid conflict with node/ directory).
+# The Rust binary is fully self-contained: `defaults.conf` and the genesis-ceremony
+# `.rho` / `.rhox` resources are baked in via `include_str!` at compile time, so no
+# resource files need to be staged into the runtime image.
+
 COPY --from=builder --chmod=755 /build/node_binary /opt/docker/bin/node
-
-# Copy node resources (defaults.conf, kamon.conf, logback.xml, etc.)
-# The node executable expects these at node/src/main/resources relative to current directory
-COPY --from=builder /build/node/src/main/resources ./node/src/main/resources
-
-# Copy casper resources (Registry.rho, ListOps.rho, etc.)
-# The node executable needs these at runtime to create genesis blocks
-COPY --from=builder /build/casper/src/main/resources ./casper/src/main/resources
-
-# Copy rholang examples (matching build.sbt: directory((baseDirectory in rholang).value / "examples"))
-COPY --from=builder /build/rholang/examples ./examples
 
 # Create entrypoint script for Rust (adapted from docker-entrypoint.sh)
 # Copy the Rust-specific entrypoint script from node directory
@@ -170,11 +162,14 @@ EXPOSE 40400 40401 40402 40403 40404
 # Note: The original uses grpcurl and curl with jq
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService.status | jq -e && \
-        curl -s 127.0.0.1:40403/status | jq -e || exit 1
+        curl -s 127.0.0.1:40403/api/status | jq -e || exit 1
 
-# Labels (matching build.sbt)
+# Image version label. Populate via `--build-arg VERSION=...` from
+# docker-commands.sh / CI so the label tracks the actual build instead of
+# drifting from node/Cargo.toml.
+ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
-LABEL version="0.1.0"
+LABEL version="${VERSION}"
 
 # Switch to daemon user (matching build.sbt: daemonUser in Docker := "daemon")
 USER daemon

@@ -13,19 +13,19 @@ minikube start \
 ```
 
 ## Pull `rnode` into Minikube
-**This step needed if `f1r3flyindustries/f1r3fly-rust-node:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
+**This step needed if `f1r3flyindustries/f1r3fly-rust:latest` preset as local Docker image only. If the docker image has been published into remote Docker registry, skip this section.**
 
-Load `f1r3flyindustries/f1r3fly-rust-node:latest` Docker image inside Minikube cache
+Load `f1r3flyindustries/f1r3fly-rust:latest` Docker image inside Minikube cache
 ```sh
-minikube image load f1r3flyindustries/f1r3fly-rust-node:latest
+minikube image load f1r3flyindustries/f1r3fly-rust:latest
 ```
-Check the image list. `f1r3flyindustries/f1r3fly-rust-node:latest` should be listed in the table
+Check the image list. `f1r3flyindustries/f1r3fly-rust:latest` should be listed in the table
 ```sh
 minikube image list --format=table
 ```
 If `load` command failed (it's possible, [here is an open issue at GitHub](https://github.com/kubernetes/minikube/issues/18021)), use alternative mathod via file: store image into the file and load it from the file
 ```sh
-docker image save f1r3flyindustries/f1r3fly-rust-node:latest -o rnode.tar && \
+docker image save f1r3flyindustries/f1r3fly-rust:latest -o rnode.tar && \
     minikube image load rnode.tar && \
     rm rnode.tar
 ```
@@ -74,14 +74,17 @@ The expected result should be like
 {
   "version": {
     "api": "1",
-    "node": "RChain Node 1.0.0-SNAPSHOT (29aa391c6948c2c1df533b4cd35794d65eab04b5)"
+    "node": "F1r3node Rust 0.4.10 ()"
   },
   "address": "rnode://c93bc07f3d141459356791f9eaaa05f4cec49c0b@f1r3fly0-0.f1r3fly0?protocol=40400&discovery=40404",
-  "networkId": "f1r3fly",
+  "networkId": "testnet",
   "shardId": "root",
   "peers": 1,
   "nodes": 3,
-  "minPhloPrice": 1
+  "minPhloPrice": 1,
+  "nativeTokenName": "F1R3CAP",
+  "nativeTokenSymbol": "F1R3",
+  "nativeTokenDecimals": 8
 }
 ```
 

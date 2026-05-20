@@ -231,10 +231,9 @@ fn create_justifications(pairs: Vec<(Bytes, Bytes)>) -> HashMap<Bytes, Bytes> {
 }
 
 // Many tests use checks that must be added later
-// TODO: Add log validation mechanism when LogStub mechanism from Scala will be
-// implemented on Rust.
+// TODO: Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_signature_validation_should_return_false_on_unknown_algorithms() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -252,16 +251,14 @@ async fn block_signature_validation_should_return_false_on_unknown_algorithms() 
         let result1 = Validate::block_signature(&block1);
         assert_eq!(result1, false);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.last.contains(s"signature
-        // algorithm $unknownAlgorithm is unsupported") should be(true)
-        // log.warns.last.contains(s"signature algorithm $rsa is unsupported")
-        // should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.last.contains(s"signature algorithm $unknownAlgorithm is unsupported") should be(true)
+        // log.warns.last.contains(s"signature algorithm $rsa is unsupported") should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_signature_validation_should_return_false_on_invalid_secp256k1_signatures() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let secp256k1 = Secp256k1;
@@ -314,15 +311,14 @@ async fn block_signature_validation_should_return_false_on_invalid_secp256k1_sig
             assert_eq!(result, false, "Block {} should have invalid signature", i);
         }
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should
-        // be(blocks.length) log.warns.forall(_.contains("signature is
-        // invalid")) should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(blocks.length)
+        // log.warns.forall(_.contains("signature is invalid")) should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_signature_validation_should_return_true_on_valid_secp256k1_signatures() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let n = 6;
@@ -338,22 +334,21 @@ async fn block_signature_validation_should_return_true_on_valid_secp256k1_signat
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns should be(Nil)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 1, vec![]);
         let block = block_dag_storage.lookup_by_id_unsafe(0);
 
         // modifiedTimestampHeader = block.header.copy(timestamp = 99999999)
-        // Note: In Scala tests LogicalTime starts from 0, but in Rust we use real Unix
-        // timestamps So we need a timestamp that's actually in the future
-        // relative to current time
+        // Note: In Scala tests LogicalTime starts from 0, but in Rust we use real Unix timestamps
+        // So we need a timestamp that's actually in the future relative to current time
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -374,14 +369,14 @@ async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
         let result_valid = Validate::timestamp(&block, &mut block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. _ = log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // _ = log.warns.size should be(1)
         // result = log.warns.head.contains("block timestamp") should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn timestamp_validation_should_not_accept_blocks_that_were_published_before_parent_time() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -399,14 +394,14 @@ async fn timestamp_validation_should_not_accept_blocks_that_were_published_befor
         let result_valid = Validate::timestamp(&block, &mut block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
         // log.warns.head.contains("block timestamp") should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_number_validation_should_only_accept_0_as_the_number_for_a_block_with_no_parents() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 1, vec![]);
@@ -424,15 +419,14 @@ async fn block_number_validation_should_only_accept_0_as_the_number_for_a_block_
         let result_valid = Validate::block_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
-        // log.warns.head.contains("not zero, but block has no parents") should
-        // be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
+        // log.warns.head.contains("not zero, but block has no parents") should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_number_validation_should_return_false_for_non_sequential_numbering() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -450,15 +444,14 @@ async fn block_number_validation_should_return_false_for_non_sequential_numberin
         let result_valid = Validate::block_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
-        // log.warns.head.contains("is not one more than maximum parent number")
-        // should be(true)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
+        // log.warns.head.contains("is not one more than maximum parent number") should be(true)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_number_validation_should_return_true_for_sequential_numbering() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let n = 6;
@@ -475,13 +468,13 @@ async fn block_number_validation_should_return_true_for_sequential_numbering() {
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns should be(Nil)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_number_validation_should_correctly_validate_a_multi_parent_block_where_the_parents_have_different_block_numbers(
 ) {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -563,7 +556,7 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_work() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -601,7 +594,7 @@ async fn future_deploy_validation_should_work() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_not_accept_blocks_with_a_deploy_for_a_future_block_number()
 {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -643,7 +636,7 @@ async fn future_deploy_validation_should_not_accept_blocks_with_a_deploy_for_a_f
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_expiration_validation_should_work() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -665,7 +658,7 @@ async fn deploy_expiration_validation_should_work() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_that_is_expired() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -705,7 +698,7 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sequence_number_validation_should_only_accept_0_as_the_number_for_a_block_with_no_parents()
 {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -724,13 +717,13 @@ async fn sequence_number_validation_should_only_accept_0_as_the_number_for_a_blo
         let result_valid = Validate::sequence_number(&block, &mut casper_snapshot);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sequence_number_validation_should_return_false_for_non_sequential_numbering() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -745,13 +738,13 @@ async fn sequence_number_validation_should_return_false_for_non_sequential_numbe
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidSequenceNumber))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sequence_number_validation_should_return_true_for_sequential_numbering() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let n = 20;
@@ -773,13 +766,13 @@ async fn sequence_number_validation_should_return_true_for_sequential_numbering(
 
         assert_eq!(condition, true);
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns should be(Nil)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns should be(Nil)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -797,9 +790,9 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
-//Test 18: "Repeat deploy validation" should "not accept blocks with a repeated
-// deploy" +
-#[tokio::test]
+//Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
+// +
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deploy() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
@@ -844,7 +837,209 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
-#[tokio::test]
+/// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
+///
+/// Without the exemption, validation rejects any block that re-includes a
+/// sig already present in an ancestor's `body.deploys` — including the
+/// legitimate recovery path where a deploy was rejected by a descendant
+/// merge and is re-proposed through `RejectedDeployBuffer` to land its
+/// effects in canonical state.
+///
+/// Setup models a true recovery scenario: the deploy lives ONLY in a
+/// non-canonical / non-finalized ancestor (the `rejected_in_scope` flag
+/// is what marks it as rejected during merge), so
+/// `deploy_finalization_status::resolve` for the sig returns `Pending`
+/// — not `Finalized`. Under this state, the recovery exemption is
+/// legitimate: re-inclusion is the only way to land the deploy's
+/// effects in canonical state.
+///
+/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy], not
+/// finalized) → block_w (body.deploys=[deploy], the re-inclusion).
+/// LFB stays at genesis because only `genesis` is inserted with
+/// `approved=true`. The resolver's BFS from LFB visits only genesis,
+/// never block_x — so the sig has no clean canonical inclusion and the
+/// resolver returns `Pending`.
+///
+/// Companion test:
+/// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
+/// covers the symmetric case where the sig has a clean canonical
+/// inclusion (status `Finalized`) and the recovery exemption must NOT
+/// apply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
+    use std::sync::Arc;
+
+    use dashmap::DashSet;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Genesis carries no user deploys: keeps the LFB clean of `deploy`
+        // so the resolver cannot find a canonical clean inclusion.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_x carries the deploy in body.deploys but is NOT marked
+        // approved/finalized (insert_indexed only marks genesis approved).
+        // The resolver's LFB BFS walks main parents up from genesis and
+        // never visits block_x, so the resolver returns `Pending`.
+        let block_x = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_w re-includes the deploy. repeat_deploy walks block_w's
+        // ancestor chain and finds block_x with deploy in body.deploys —
+        // an "ancestor occurrence" that without the exemption would be
+        // flagged as repeat.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
+        // This is the signal the block-creator and Phase D recovery pipelines use
+        // to justify re-inclusion; validation must honor it.
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig);
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        assert_eq!(
+            result,
+            Either::Right(ValidBlock::Valid),
+            "recovery re-inclusion of a rejected-in-scope sig with status=Pending must validate; got {:?}",
+            result,
+        );
+    })
+    .await
+}
+
+/// Companion to `repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope`.
+/// Tests the symmetric case the recovery exemption must NOT cover: a sig
+/// that is in `rejected_in_scope` but ALSO has a clean canonical
+/// inclusion (status `Finalized`). Re-including a Finalized sig is
+/// double-execution, not recovery — the catchup gate
+/// (`should_admit_to_rejected_buffer`) is the primary defense, but the
+/// repeat-deploy validator must serve as a second line in case the gate
+/// misses.
+///
+/// DAG: genesis (body.deploys=[deploy], LFB) → block_w
+/// (body.deploys=[deploy], re-inclusion). Genesis IS the LFB so the
+/// resolver finds a clean canonical inclusion of `deploy` in genesis
+/// and returns `Finalized`. The recovery exemption must therefore NOT
+/// apply, and the repeat check must catch the duplicate inclusion.
+///
+/// Pre-fix: the rejected_in_scope filter in `repeat_deploy` exempts
+/// the sig unconditionally → returns `Valid` → double-execution slips
+/// through. This test fails.
+///
+/// Post-fix: the filter is gated on `status != Finalized`. The sig is
+/// Finalized, so it is NOT exempted; ancestor scan finds the clean
+/// inclusion in genesis and returns `InvalidRepeatDeploy`. This test
+/// passes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
+    use std::sync::Arc;
+
+    use dashmap::DashSet;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Genesis IS the LFB and contains `deploy` clean in body.deploys.
+        // The resolver therefore reports `Finalized` for this sig.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_w re-includes the deploy. ancestor scan would find genesis's
+        // clean inclusion if not exempted by the rejected_in_scope filter.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        // Same `rejected_in_scope` membership as the recovery test — the
+        // gap is exactly that the repeat_deploy filter cannot distinguish
+        // "rejected somewhere, recoverable" from "finalized somewhere,
+        // non-recoverable" via this set alone.
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig);
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "double-execution of a Finalized sig (rejected_in_scope membership notwithstanding) must be caught; got {:?}",
+            result,
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded_validators_and_false_otherwise(
 ) {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -879,7 +1074,7 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
 // Parent validation tests - Testing validator progress check (InvalidParents)
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_first_block_from_new_validator() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -923,13 +1118,13 @@ async fn parent_validation_should_allow_first_block_from_new_validator() {
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, false);
+        let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, i32::MAX, 0, false);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -1015,13 +1210,13 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::parents(&b3, &genesis, &mut casper_snapshot, -1, false);
+        let result = Validate::parents(&b3, &genesis, &mut casper_snapshot, -1, i32::MAX, 0, false);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -1083,7 +1278,7 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, false);
+        let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, i32::MAX, 0, false);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
@@ -1092,7 +1287,7 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_parents() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -1157,13 +1352,13 @@ async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_pa
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, false);
+        let result = Validate::parents(&b2, &genesis, &mut casper_snapshot, -1, i32::MAX, 0, false);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -1192,8 +1387,7 @@ async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis(
             .as_millis() as i64;
 
         // v0 creates empty block with parent [genesis] - build without inserting
-        // Since v0's previous block is genesis (which has no parents), this should be
-        // valid
+        // Since v0's previous block is genesis (which has no parents), this should be valid
         let b1 = build_block(
             vec![genesis.block_hash.clone()],
             Some(v0.clone()),
@@ -1210,13 +1404,13 @@ async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis(
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, false);
+        let result = Validate::parents(&b1, &genesis, &mut casper_snapshot, -1, i32::MAX, 0, false);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
@@ -1303,8 +1497,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
             .unwrap()
             .as_millis() as i64;
 
-        // Create block with 3 parents but maxNumberOfParents = 2 - build without
-        // inserting
+        // Create block with 3 parents but maxNumberOfParents = 2 - build without inserting
         let b4 = build_block(
             vec![
                 b1.block_hash.clone(),
@@ -1326,7 +1519,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
         // maxNumberOfParents = 2, but block has 3 parents
-        let result = Validate::parents(&b4, &genesis, &mut casper_snapshot, 2, false);
+        let result = Validate::parents(&b4, &genesis, &mut casper_snapshot, 2, i32::MAX, 0, false);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
@@ -1335,7 +1528,7 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_summary_validation_should_short_circuit_after_first_invalidity() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![]);
@@ -1380,6 +1573,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             "root",
             i32::MAX,
             max_number_of_parents,
+            i32::MAX, // max_parent_depth: disable depth check for this test
+            0,        // depth_buffer: irrelevant when depth check disabled
             &mut block_store,
             false,
         )
@@ -1390,13 +1585,13 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockNumber))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size should be(1)
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size should be(1)
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn justification_follow_validation_should_return_valid_for_proper_justifications_and_failed_otherwise(
 ) {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -1575,23 +1770,21 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size shouldBe 1
-        // log.warns.forall(_.contains("do not match the bonded validators"))
-        // shouldBe true
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size shouldBe 1
+        // log.warns.forall(_.contains("do not match the bonded validators")) shouldBe true
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn justification_regression_validation_should_return_valid_for_proper_justifications_and_justification_regression_detected_otherwise(
 ) {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator 1"));
         let v1 = generate_validator(Some("Validator 2"));
 
-        // bonds = List(v0, v1).zipWithIndex.map { case (v, i) => Bond(v, 2L * i.toLong
-        // + 1L) }
+        // bonds = List(v0, v1).zipWithIndex.map { case (v, i) => Bond(v, 2L * i.toLong + 1L) }
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
@@ -1718,13 +1911,13 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
             Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
         );
 
-        // Add log validation mechanism when LogStub mechanism from Scala will
-        // be implemented on Rust. log.warns.size shouldBe 1
+        // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
+        // log.warns.size shouldBe 1
     })
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn justification_regression_validation_should_return_valid_for_regressive_invalid_blocks() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator 1"));
@@ -1859,7 +2052,7 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modified_bonds() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()
@@ -1879,7 +2072,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         let mut runtime_manager = RuntimeManager::create_with_store(
             (&mut *kvm).r_space_stores().await.unwrap(),
             m_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -1891,6 +2084,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             &mut block_store,
             &mut casper_snapshot,
             &mut runtime_manager,
+            None,
         )
         .await
         .unwrap();
@@ -1918,7 +2112,7 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn field_format_validation_should_succeed_on_a_valid_block_and_fail_on_empty_fields() {
     with_storage(|_block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()
@@ -1961,7 +2155,7 @@ async fn field_format_validation_should_succeed_on_a_valid_block_and_fail_on_emp
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_hash_format_validation_should_fail_on_invalid_hash() {
     with_storage(|_block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()
@@ -1996,7 +2190,7 @@ async fn block_hash_format_validation_should_fail_on_invalid_hash() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_version_validation_should_work() {
     with_storage(|_block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()
@@ -2023,6 +2217,396 @@ async fn block_version_validation_should_work() {
 
         let result = Validate::version(&genesis, 1);
         assert_eq!(result, true);
+    })
+    .await
+}
+
+// ── Parent-depth enforcement (symmetric to proposer-side filterDeepParents) ──
+//
+// `validate::parents` rejects blocks whose parents fall outside
+// `max_parent_depth + depth_buffer` from the highest tip. Joiners that LFS-sync
+// to the LFB hold rspace history only for blocks within this horizon; rejecting
+// out-of-horizon blocks here prevents `UnknownRootError` cascades during
+// validation. Symmetric to the proposer-side `Estimator::filterDeepParents`
+// in `multi_parent_casper_impl::create_block`.
+
+fn build_linear_chain(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut IndexedBlockDagStorage,
+    length: usize,
+    bonds: Vec<Bond>,
+    validator: Bytes,
+) -> Vec<BlockMessage> {
+    let genesis = create_genesis_block(
+        block_store,
+        block_dag_storage,
+        None,
+        Some(bonds.clone()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let mut chain = vec![genesis.clone()];
+    for i in 1..length {
+        let parent = chain.last().unwrap().clone();
+        let block = create_block(
+            block_store,
+            block_dag_storage,
+            vec![parent.block_hash.clone()],
+            &genesis,
+            Some(validator.clone()),
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(i as i32),
+            None,
+        );
+        chain.push(block);
+    }
+    chain
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_pass_when_parent_within_horizon() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 5 blocks. Tip at chain[4] (block_number=4).
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            5,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+        let tip = chain[4].clone();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Test block parents the tip directly (depth 0). max_parent_depth=2, buffer=0.
+        let test_block = build_block(
+            vec![tip.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(5),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,   // max_number_of_parents (unlimited)
+            2,    // max_parent_depth
+            0,    // depth_buffer
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_pass_at_horizon_boundary() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 6 blocks. Max block_number = 5, latest_block_number() returns 6.
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            6,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+        let parent_at_depth_4 = chain[2].clone(); // block_number=2, depth=6-2=4
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let test_block = build_block(
+            vec![parent_at_depth_4.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(6),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        // depth=4, max_parent_depth=4, buffer=0 → 4 <= 4, passes (boundary)
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,
+            4,
+            0,
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_pass_at_horizon_plus_buffer_boundary() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 7 blocks. Max block_number = 6, latest_block_number() returns 7.
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            7,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+        let parent_at_depth_5 = chain[2].clone(); // block_number=2, depth=7-2=5
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let test_block = build_block(
+            vec![parent_at_depth_5.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(7),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        // depth=5, max_parent_depth=4, buffer=1 → 5 <= 4+1, passes (boundary)
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,
+            4,
+            1,
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_reject_when_parent_beyond_horizon() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 7 blocks. Max block_number = 6, latest_block_number() returns 7.
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            7,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+        let parent_at_depth_6 = chain[1].clone(); // block_number=1, depth=7-1=6
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let test_block = build_block(
+            vec![parent_at_depth_6.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(7),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        // depth=6, max_parent_depth=4, buffer=0 → 6 > 4, REJECT
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,
+            4,
+            0,
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_exempt_genesis_from_depth_check() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 12 blocks. Tip at chain[11] (block_number=11). Genesis depth=11.
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            12,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Test block parents genesis directly. depth=11, max_parent_depth=4, buffer=0 →
+        // would normally be REJECTED (11 > 4) — but genesis (block_number=0) is exempt.
+        let test_block = build_block(
+            vec![genesis.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(12),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,
+            4,
+            0,
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_should_skip_depth_check_when_max_parent_depth_is_unlimited() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10,
+        }];
+
+        // Chain of 7 blocks. Max block_number = 6, latest_block_number() returns 7.
+        let chain = build_linear_chain(
+            &mut block_store,
+            &mut block_dag_storage,
+            7,
+            bonds.clone(),
+            v0.clone(),
+        );
+        let genesis = chain[0].clone();
+        let parent_at_depth_6 = chain[1].clone(); // depth=7-1=6
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let test_block = build_block(
+            vec![parent_at_depth_6.block_hash.clone()],
+            Some(v0.clone()),
+            now,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(7),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        // depth=5 but max_parent_depth=i32::MAX → check skipped, passes regardless
+        let result = Validate::parents(
+            &test_block,
+            &genesis,
+            &mut casper_snapshot,
+            -1,
+            i32::MAX,
+            0,
+            true, // disable_validator_progress_check (isolate depth check)
+        );
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
 }

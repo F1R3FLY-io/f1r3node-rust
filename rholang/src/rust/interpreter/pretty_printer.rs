@@ -1,5 +1,4 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
@@ -28,10 +27,6 @@ pub struct PrettyPrinter {
     pub rotation: i32,
     pub max_var_count: i32,
     pub is_building_channel: bool,
-}
-
-impl Default for PrettyPrinter {
-    fn default() -> Self { Self::new() }
 }
 
 impl PrettyPrinter {
@@ -473,8 +468,7 @@ impl PrettyPrinter {
                                         // (e.g., from Rholang strings like "books")
                                         match sexpr {
                                             SExpr::Symbol(s) => {
-                                                // If it's already quoted, use as-is; otherwise add
-                                                // quotes
+                                                // If it's already quoted, use as-is; otherwise add quotes
                                                 if s.starts_with('"') && s.ends_with('"') {
                                                     s
                                                 } else {
@@ -898,9 +892,8 @@ impl PrettyPrinter {
             if self.is_empty_par(p) {
                 Ok(String::from("Nil"))
             } else {
-                // Iterate through Par fields directly (like Scala does) instead of boxing and
-                // downcasting This avoids type erasure issues that cause panics
-                // when downcast_ref fails
+                // Iterate through Par fields directly (like Scala does) instead of boxing and downcasting
+                // This avoids type erasure issues that cause panics when downcast_ref fails
                 let mut prev_non_empty = false;
                 let mut result = String::new();
 
@@ -1154,8 +1147,7 @@ fn twos_complement_to_decimal(bytes: &[u8]) -> String {
     num_bigint::BigInt::from_signed_bytes_be(bytes).to_string()
 }
 
-// rholang/src/test/scala/coop/rchain/rholang/interpreter/PrettyPrinterTest.
-// scala
+// rholang/src/test/scala/coop/rchain/rholang/interpreter/PrettyPrinterTest.scala
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;

@@ -59,7 +59,7 @@ pub fn normalize_collection<'ast>(
         }
 
         let constructed_expr: Expr = constructor(acc_pars, locally_free, connective_used);
-        let expr: Expr = constructed_expr;
+        let expr: Expr = constructed_expr.into();
 
         Ok(CollectVisitOutputs {
             expr,
@@ -114,12 +114,12 @@ pub fn normalize_collection<'ast>(
         }
 
         let remainder_connective_used = match remainder {
-            Some(ref var) => var.connective_used(*var),
+            Some(ref var) => var.connective_used(var.clone()),
             None => false,
         };
 
         let remainder_locally_free = match remainder {
-            Some(ref var) => var.locally_free(*var, 0),
+            Some(ref var) => var.locally_free(var.clone(), 0),
             None => Vec::new(),
         };
 
@@ -131,7 +131,7 @@ pub fn normalize_collection<'ast>(
                     ),
                     connective_used: connective_used || remainder_connective_used,
                     locally_free: union(locally_free, remainder_locally_free),
-                    remainder,
+                    remainder: remainder.clone(),
                 },
             ))),
         };
@@ -156,7 +156,7 @@ pub fn normalize_collection<'ast>(
                         ps,
                         locally_free,
                         connective_used,
-                        remainder: optional_remainder,
+                        remainder: optional_remainder.clone(),
                     };
 
                     tmp_e_list.connective_used =
@@ -206,7 +206,7 @@ pub fn normalize_collection<'ast>(
                         ps: SortedParHashSet::create_from_vec(pars),
                         locally_free,
                         connective_used,
-                        remainder: optional_remainder,
+                        remainder: optional_remainder.clone(),
                     };
 
                     tmp_par_set.connective_used =
@@ -245,7 +245,7 @@ pub fn normalize_collection<'ast>(
                         ps,
                         locally_free,
                         connective_used,
-                        remainder: optional_remainder,
+                        remainder: optional_remainder.clone(),
                     };
 
                     tmp_e_pathmap.connective_used =
@@ -260,8 +260,7 @@ pub fn normalize_collection<'ast>(
     }
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// CollectMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/CollectMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

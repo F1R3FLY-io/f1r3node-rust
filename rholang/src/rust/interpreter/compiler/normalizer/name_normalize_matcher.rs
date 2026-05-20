@@ -178,7 +178,7 @@ pub fn normalize_names<'ast>(
     // Handle remainder if present
     if let Some(remainder_var) = &names.remainder {
         let (remainder_model_var, updated_free_map) =
-            normalize_match_name(&Some(*remainder_var), current_input.free_map)?;
+            normalize_match_name(&Some(remainder_var.clone()), current_input.free_map)?;
 
         // If there's a remainder variable, add it to the expressions
         if let Some(var) = remainder_model_var {
@@ -202,8 +202,7 @@ pub fn normalize_names<'ast>(
     })
 }
 
-//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/
-// NameMatcherSpec.scala
+//rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/NameMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

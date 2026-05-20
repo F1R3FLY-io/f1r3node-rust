@@ -1,6 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/TestUtil.scala
-// This is the ORIGINAL SCALA MAIN CODE implementation (not the modified version
-// currently in main)
+// This is the ORIGINAL SCALA MAIN CODE implementation (not the modified version currently in main)
 
 use std::collections::HashMap;
 

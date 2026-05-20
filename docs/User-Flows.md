@@ -40,7 +40,7 @@ reference them by name from each flow's `Personas:` field.
 ### FLOW-001: cargo-geiger Supply-Chain Audit Integration & Usage
 
 **Status:** In Progress
-**Implemented in:** EPOCH-001
+**Implemented in:** EPOCH-010
 **Related Stories:** US-001
 **Related Flows:** None
 **Personas:** F1R3node Rust developer maintaining workspace dependencies, Security/CI reviewer auditing supply-chain regressions

@@ -9,18 +9,6 @@ mr_status:
 
 # Tasks and Epochs
 
-<!--
-TEMPLATE USAGE INSTRUCTIONS:
-0. Update the frontmatter date when modifying this file
-   (Update version only for significant structural changes to template)
-1. Replace all [PROJECT_NAME] and [PROJECT_SPECIFIC] markers
-2. Add new epochs using the YAML frontmatter format below
-3. Move completed epochs to docs/CompletedTasks.md
-4. Use /nextTask to find the next task to work on
-5. Use /implement to execute tasks with full context
-6. Remove these usage instruction comments before committing
--->
-
 This document tracks implementation work through **epochs** (logical groupings of related tasks).
 
 **Document Structure**
@@ -29,11 +17,7 @@ This document tracks implementation work through **epochs** (logical groupings o
 - Completed work: `docs/CompletedTasks.md`
 - Backlog: `docs/Backlog.md`
 
-**For LLM assistance in multi-repo workspace:**
-See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/common/task-tracking-standard.md)
-
-**For reference (GitLab):**
-[Task Tracking Standard](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/task-tracking-standard.md)
+**Shared Coordination File:** `/tmp/migrationPlan.md` (read by agents in both f1r3node and f1r3node-rust)
 
 ---
 
@@ -44,64 +28,678 @@ When all tasks in this file are complete and ready for merge, update the frontma
 ```yaml
 mr_status:
   ready: true
-  target_branch: main
-  title: "feat: [PROJECT_SPECIFIC: MR title]"
+  target_branch: master
+  title: "feat: f1r3node -> f1r3node-rust migration"
   description: |
     ## Summary
-    - [Completed items]
+    - Full migration from f1r3node monorepo to standalone Rust workspace
+    - Code sync, CI/CD, Docker, issue migration, deprecation
 
     ## Test plan
-    - [x] All tests passing
-  labels: ["feature", "enhancement"]
+    - [x] All 11 crates build and pass tests
+    - [x] Docker image publishes under new name
+    - [x] system-integration tests pass against new image
 ```
 
 ---
 
 ## Active Epochs
 
-<!-- Epochs are ordered by priority. Work on the highest priority epoch first. -->
+<!-- Epochs ordered by priority. EPOCH-001/002 are system-integration alignment (US-001). EPOCH-003-008 are migration (US-002). -->
 
 ---
 
-### EPOCH-001: cargo-geiger Supply-Chain Unsafe Audit
+### EPOCH-001: System-Integration Alignment
 
 ```yaml
 ---
 epoch_id: EPOCH-001
+title: "System-Integration Alignment"
+status: in_progress
+priority: p1
+user_story: US-001
+blocked_by: []
+created_at: 2026-03-19
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-001-1
+    title: "Align genesis wallets.txt with system-integration (20 wallets, validator3=500T)"
+    status: complete
+    acceptance:
+      - "docker/genesis/wallets.txt matches system-integration/genesis/wallets.txt (20 lines)"
+      - "Validator3 balance is 500000000000000000 (500T)"
+      - "All 12 additional test wallets present"
+
+  - id: TASK-001-2
+    title: "Standardize compose env var naming (F1R3FLY_RUST_IMAGE -> F1R3FLY_IMAGE)"
+    status: complete
+    acceptance:
+      - "All compose files use F1R3FLY_IMAGE instead of F1R3FLY_RUST_IMAGE"
+      - "DEVELOPER.md and docker/README.md updated"
+
+  - id: TASK-001-3
+    title: "Standardize Docker network name to f1r3fly-shard"
+    status: complete
+    acceptance:
+      - "shard.yml network named f1r3fly-shard"
+      - "observer.yml and validator4.yml reference f1r3fly-shard as external network"
+
+  - id: TASK-001-4
+    title: "Verify shard starts with updated genesis and network config"
+    status: complete
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T20:55:00Z
+    blocked_by: []
+    acceptance:
+      - "docker compose -f docker/shard.yml up succeeds"
+      - "Genesis ceremony completes with 20-wallet wallets.txt"
+      - "Observer and validator4 can join via f1r3fly-shard network"
+    notes:
+      - "All 3 written ACs verified end-to-end with locally built f1r3fly-rust:local image"
+      - "Bonding extension also verified: added validator4's REV address (1111La6tHaCt...jtEi3M) to wallets.txt as genesis funding, then deployed bond.rho signed by validator4, propose included in block with errored=false and cost=167749 phlo, bond-status flipped to 'Validator is bonded', validator4 proceeded to produce 6+ blocks via heartbeat"
+      - "Root cause of earlier insufficient-funds error: validator4.yml was designed for runtime bonding but validator4's REV address was never added to genesis wallets.txt. Fix is a single-line addition."
+      - "REV-address computation done via `node eval` on 1.know_ones_vaultaddress.rho (output in docker stdout of the evaluating node)"
+---
+```
+
+**Context:** The `system-integration` repo orchestrates this node via Docker Compose and shardctl. It has a 6-phase migration plan (see `system-integration/docs/migration-to-rust-node.md`) to make f1r3node-rust the sole node implementation. Phase 1 requires genesis and compose alignment in this repo.
+
+**Scope:**
+- Genesis wallets.txt sync (critical blocker for system-integration Phase 1)
+- Compose env var and network name standardization
+- Validation that shard starts correctly
+
+**Notes:**
+- system-integration currently targets branch `dev` in its services.yml, but this repo uses `master` as its working branch. system-integration will need to update its branch reference.
+- standalone.yml keeps its own network name (`f1r3fly-standalone`) since it's isolated by design.
+
+---
+
+### EPOCH-002: Separate Monitoring from Shard Compose
+
+```yaml
+---
+epoch_id: EPOCH-002
+title: "Separate Monitoring from Shard Compose"
+status: pending
+priority: p2
+user_story: US-001
+blocked_by: []
+created_at: 2026-03-19
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-002-1
+    title: "Extract Prometheus and Grafana into docker/monitoring.yml"
+    status: complete
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T21:35:00Z
+    acceptance:
+      - "docker/monitoring.yml contains prometheus and grafana services"
+      - "monitoring.yml joins f1r3fly-shard as external network"
+      - "shard.yml no longer contains prometheus/grafana services"
+      - "docker/README.md updated to reflect new file"
+    notes:
+      - "Verbatim service-block move; same container names, ports, volumes, env"
+      - "Also updated Justfile shard-down to include monitoring.yml teardown"
+      - "Also updated docker/vps-cloud-testing.md Part A to reflect opt-in monitoring"
+---
+```
+
+**Context:** system-integration manages monitoring as a separate compose file (`compose/monitoring.yml`). Aligning this repo's structure makes compose files directly usable as upstream sources during the migration (Phase 3).
+
+**Scope:**
+- Move prometheus and grafana service definitions from `docker/shard.yml` to `docker/monitoring.yml`
+- Update documentation
+
+---
+
+### EPOCH-003: Merge Critical PRs into f1r3node
+
+```yaml
+---
+epoch_id: EPOCH-003
+title: "Merge Critical PRs into f1r3node"
+status: pending
+priority: p0
+user_story: US-002
+blocked_by: []
+created_at: 2026-04-09
+claimed_by: null
+claimed_at: null
+external: true
+external_repo: F1R3FLY-io/f1r3node
+coordination_note: "This epoch is executed by the agent in f1r3node. Track progress via /tmp/migrationPlan.md phase_1_critical_prs status."
+tasks:
+  - id: TASK-003-1
+    title: "Verify new_parser branch status"
+    status: pending
+    acceptance:
+      - "new_parser branch is merged into rust/dev OR confirmed as base for Reified RSpaces chain"
+      - "rholang-rs#83 dependency is resolved"
+
+  - id: TASK-003-2
+    title: "Merge Reified RSpaces chain (#328-#338)"
+    status: pending
+    blocked_by: [TASK-003-1]
+    acceptance:
+      - "All 11 PRs (#328 through #338) merged sequentially into rust/dev"
+      - "CI passes after each merge"
+
+  - id: TASK-003-3
+    title: "Merge Tier 2 PRs if ready"
+    status: pending
+    acceptance:
+      - "#466 (Embers) reviewed — merged or deferred"
+      - "#186 (eval cost) reviewed — merged or deferred"
+      - "#281 (LMDB fixes) reviewed — merged or deferred"
+
+  - id: TASK-003-4
+    title: "Tag final f1r3node release"
+    status: pending
+    blocked_by: [TASK-003-2, TASK-003-3]
+    acceptance:
+      - "Tag rust-v0.4.12 (or appropriate version) created on f1r3node rust/dev"
+      - "phase_1_critical_prs.status set to 'complete' in /tmp/migrationPlan.md"
+      - "phase_1_critical_prs.final_tag populated"
+---
+```
+
+**Context:** The Reified RSpaces chain (#328-#338) is a major architectural change that must land before code sync. This phase is owned by the agent working in the f1r3node repository. Completion is signaled via the shared migration plan file.
+
+**Scope:**
+- Included: Merging blocking and ready PRs into f1r3node rust/dev
+- Excluded: Any work in f1r3node-rust (that starts in EPOCH-004)
+
+**Notes:**
+- The 11-PR Reified RSpaces chain has a sequential dependency — each PR targets the previous one
+- Chain base (#328) depends on `new_parser` branch which depends on `rholang-rs#83`
+- Monitor `/tmp/migrationPlan.md` for `phase_1_critical_prs.status` to know when to start EPOCH-004
+
+---
+
+### EPOCH-004: Code Sync to f1r3node-rust
+
+```yaml
+---
+epoch_id: EPOCH-004
+title: "Code Sync to f1r3node-rust"
+status: in_progress
+priority: p0
+user_story: US-002
+blocked_by: [EPOCH-003]
+created_at: 2026-04-09
+claimed_by: claude-session-epoch004
+claimed_at: 2026-04-17T19:19:55Z
+source_branch: rust/staging
+source_head: fb59611fbf2be202a6d6450850de1435c9dec7a4
+tasks:
+  - id: TASK-004-1
+    title: "Sync Rust workspace crates from f1r3node rust/staging"
+    status: review
+    claimed_by: claude-session-epoch004
+    claimed_at: 2026-04-17T19:19:55Z
+    completed_at: 2026-04-29T18:50:45Z
+    notes:
+      - "Initial sync: 11 crates + root workspace files from f1r3node rust/staging @ 6ee5c390 (2026-04-17)"
+      - "Re-sync: refreshed to f1r3node rust/staging @ fb59611f (2026-04-29) — 39 upstream commits, 539 files modified, 1 deleted, 5 new"
+      - "Re-sync preserves local heed 0.22 upgrade (315b23b, 111e318): rspace++/Cargo.toml, shared/Cargo.toml pinned to heed = \"0.22.1\"; lmdb_*.rs files unchanged from HEAD"
+      - "Per-crate Cargo.lock files added to .gitignore (only workspace /Cargo.lock is authoritative)"
+      - "cargo build --workspace passes (49s)"
+      - "./scripts/run_rust_tests.sh passes: 68 test runs, 0 failed"
+      - "Full sync reports: docs/work-logs/task-004-1-2026-04-17T19-19-55Z.md (initial), docs/work-logs/task-004-1-resync-fb59611f-2026-04-29T18-50-45Z.md (current)"
+      - "Not committed yet; user to invoke /quick-commit after review"
+    acceptance:
+      - "All 11 workspace crates updated from f1r3node rust/staging HEAD (fb59611f)"
+      - "Cargo.toml workspace dependencies match source"
+      - "cargo build --workspace succeeds"
+      - "./scripts/run_rust_tests.sh passes per-crate"
+
+  - id: TASK-004-2
+    title: "Port CI/CD workflows"
+    status: pending
+    blocked_by: [TASK-004-1]
+    acceptance:
+      - "build-test-and-deploy.yml ported (Docker build, multi-arch, artifact publishing)"
+      - "release.yml ported (automated versioning, changelog, tagging)"
+      - "cliff.toml ported (changelog generation)"
+      - ".github/apt-dependencies.txt ported"
+      - "Docker image name set to f1r3fly-rust in CI"
+
+  - id: TASK-004-3
+    title: "Port Docker configuration"
+    status: pending
+    blocked_by: [TASK-004-1]
+    acceptance:
+      - "node/Dockerfile updated with correct image labels"
+      - "docker/standalone.yml, shard.yml, observer.yml, validator4.yml ported"
+      - "docker/monitoring/ (Prometheus, Grafana) ported"
+      - "docker/conf/ (node config templates) ported"
+      - "docker/genesis/ (bonds, wallets) ported"
+      - "docker/.env.example ported"
+      - "All compose files reference f1r3fly-rust image name"
+
+  - id: TASK-004-4
+    title: "Port scripts and local dev configuration"
+    status: pending
+    blocked_by: [TASK-004-1]
+    acceptance:
+      - "scripts/version.sh ported"
+      - "scripts/clean_rust_libraries.sh ported"
+      - "scripts/delete_data.sh ported"
+      - "scripts/run_rust_tests.sh ported"
+      - "run-local/ configuration ported"
+
+  - id: TASK-004-5
+    title: "Set version and create initial tag"
+    status: pending
+    blocked_by: [TASK-004-1, TASK-004-2]
+    acceptance:
+      - "node/Cargo.toml version continues from f1r3node's last release"
+      - "Tag v0.4.12 (or matching version) created on f1r3node-rust"
+      - "phase_2_code_sync.status set to 'complete' in /tmp/migrationPlan.md"
+      - "phase_2_code_sync.synced_from_commit populated"
+---
+```
+
+**Context:** Brings f1r3node-rust to full parity with post-merge f1r3node rust/dev. This is the core migration step — after this, f1r3node-rust becomes the canonical source of truth.
+
+**Scope:**
+- Included: All Rust crates, CI/CD, Docker, scripts, local dev config, version tagging
+- Excluded: Issue migration (EPOCH-005), external repo updates (EPOCH-006)
+
+**Notes:**
+- The code delta is ~4 releases (v0.4.9-v0.4.11) plus the critical PRs from EPOCH-003
+- Docker image renamed from `f1r3fly-rust-node` to `f1r3fly-rust`
+- Version drops the `rust-` tag prefix (no longer needed in a Rust-only repo)
+- Run tests per-crate to avoid LMDB lock contention (see commit f2b4b5f)
+
+---
+
+### EPOCH-005: Issue Migration
+
+```yaml
+---
+epoch_id: EPOCH-005
+title: "Issue Migration"
+status: complete
+priority: p1
+user_story: US-002
+blocked_by: [EPOCH-004]
+created_at: 2026-04-09
+claimed_by: claude-session-migrate
+claimed_at: 2026-04-17T19:35:00Z
+completed_at: 2026-04-17T19:35:00Z
+tasks:
+  - id: TASK-005-1
+    title: "Migrate 22 Rust-relevant issues to f1r3node-rust"
+    status: complete
+    claimed_by: claude-session-migrate
+    completed_at: 2026-04-17T19:35:00Z
+    acceptance:
+      - "22 Rust-relevant issues created on f1r3node-rust as #5-#26 with original context"
+      - "Each new issue has migration header with source #, author, filed date, and link"
+      - "Original labels (bug/enhancement/question) preserved where applicable"
+      - "Original issues on f1r3node received redirect comments pointing to new issue numbers"
+    notes:
+      - "Spec called for 22 total (16 Rust-specific + 6 triage/design); actual open count was 22"
+      - "#437 excluded from migration — already fixed on rust/staging by commit 89ac4a7a, closed with reference"
+      - "Mapping table: /tmp/issue-migration/issue-map.tsv"
+
+  - id: TASK-005-2
+    title: "Close 5 Scala-only issues on f1r3node"
+    status: complete
+    claimed_by: claude-session-migrate
+    completed_at: 2026-04-17T19:35:00Z
+    acceptance:
+      - "Issues #452, #366, #321, #221 closed with deprecation comment (reason: not planned)"
+      - "Comment directs reporter to f1r3node-rust if bug still reproduces there"
+      - "phase_3_issues.status set to 'complete' in /tmp/migrationPlan.md"
+    notes:
+      - "#184 from the original spec was already closed pre-migration (unrelated genesis refactor), so effective count is 4 Scala + 1 already-fixed (#437) = 5 closures"
+---
+```
+
+**Context:** Transfer the 27 open issues from f1r3node to their appropriate destinations. 22 issues migrate to f1r3node-rust, 5 Scala-only issues are closed.
+
+**Scope:**
+- Included: Issue creation, cross-referencing, closing Scala issues
+- Excluded: Fixing any of the migrated issues
+
+---
+
+### EPOCH-006: External Repo Updates
+
+```yaml
+---
+epoch_id: EPOCH-006
+title: "External Repo Updates"
+status: pending
+priority: p1
+user_story: US-002
+blocked_by: [EPOCH-004]
+created_at: 2026-04-09
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-006-1
+    title: "Update system-integration repo"
+    status: pending
+    acceptance:
+      - "Docker image references updated from f1r3fly-rust-node to f1r3fly-rust"
+      - "CI triggers updated to reference f1r3node-rust repo"
+      - "Integration tests pass against new image"
+
+  - id: TASK-006-2
+    title: "Update pyf1r3fly repo"
+    status: pending
+    acceptance:
+      - "Repo references in docs and CI updated"
+      - "PR #4 cross-reference updated (references f1r3node #407)"
+
+  - id: TASK-006-3
+    title: "Verify rholang-rs compatibility"
+    status: pending
+    acceptance:
+      - "rholang-rs git rev reference in Cargo.toml confirmed working"
+      - "No changes needed (already independent)"
+      - "phase_4_external.status set to 'complete' in /tmp/migrationPlan.md"
+---
+```
+
+**Context:** Downstream consumers need to point at the new repo and Docker image name. system-integration and pyf1r3fly are the primary consumers. rholang-rs is already independent.
+
+**Scope:**
+- Included: system-integration, pyf1r3fly, rholang-rs verification
+- Excluded: Any other F1R3FLY-io repos not listed
+
+---
+
+### EPOCH-007: PR Cleanup & Redirect
+
+```yaml
+---
+epoch_id: EPOCH-007
+title: "PR Cleanup & Redirect"
+status: pending
+priority: p1
+user_story: US-002
+blocked_by: [EPOCH-004]
+created_at: 2026-04-09
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-007-1
+    title: "Redirect Tier 3 PRs to f1r3node-rust"
+    status: pending
+    acceptance:
+      - "PRs #457, #426, #424, #407, #405 receive redirect comment"
+      - "Comment includes rebase instructions for f1r3node-rust"
+      - "PRs closed on f1r3node"
+
+  - id: TASK-007-2
+    title: "Close Tier 4 (Scala) PRs"
+    status: pending
+    acceptance:
+      - "PRs #470, #314, #185 receive deprecation comment"
+      - "PRs closed on f1r3node"
+      - "phase_5_pr_cleanup.status set to 'complete' in /tmp/migrationPlan.md"
+---
+```
+
+**Context:** All open PRs on f1r3node must be resolved. Tier 3 PRs (viable Rust work) get redirect instructions. Tier 4 PRs (Scala) are closed with deprecation notice.
+
+**Scope:**
+- Included: Commenting and closing PRs on f1r3node
+- Excluded: Tier 1/2 PRs (handled in EPOCH-003)
+
+---
+
+### EPOCH-008: Deprecation & Archive
+
+```yaml
+---
+epoch_id: EPOCH-008
+title: "Deprecation & Archive"
+status: pending
+priority: p2
+user_story: US-002
+blocked_by: [EPOCH-005, EPOCH-006, EPOCH-007]
+created_at: 2026-04-09
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-008-1
+    title: "Update f1r3node README with deprecation notice"
+    status: pending
+    acceptance:
+      - "README.md updated on rust/dev, main, and default branch"
+      - "Notice points to F1R3FLY-io/f1r3node-rust"
+      - "Last Rust release version documented"
+
+  - id: TASK-008-2
+    title: "Update GitHub repo metadata"
+    status: pending
+    acceptance:
+      - "Repository description set to 'DEPRECATED - See F1R3FLY-io/f1r3node-rust'"
+
+  - id: TASK-008-3
+    title: "Disable CI and close remaining items"
+    status: pending
+    blocked_by: [TASK-008-1]
+    acceptance:
+      - "All GitHub Actions workflows disabled on f1r3node"
+      - "Any remaining open issues closed with redirect comment"
+
+  - id: TASK-008-4
+    title: "Archive f1r3node repository"
+    status: pending
+    blocked_by: [TASK-008-1, TASK-008-2, TASK-008-3]
+    acceptance:
+      - "Repository archived (read-only) on GitHub"
+      - "phase_6_deprecation.status set to 'complete' in /tmp/migrationPlan.md"
+      - "phase_6_deprecation.archived set to true"
+---
+```
+
+**Context:** Final step — makes f1r3node read-only and redirects all traffic to f1r3node-rust. This must not happen until all issues, PRs, and external repos are handled.
+
+**Scope:**
+- Included: README update, repo metadata, CI disable, archive
+- Excluded: Any further development in f1r3node
+
+**Notes:**
+- Do NOT archive until Phases 5-7 are confirmed complete
+- The other agent in f1r3node should NOT start this until signaled
+
+---
+
+### EPOCH-009: Distributed OCI Testbed for Latency Benchmarking
+
+```yaml
+---
+epoch_id: EPOCH-009
+title: "Distributed OCI Testbed for Latency Benchmarking"
+status: in_progress
+priority: p2
+user_story: US-003
+blocked_by: []
+created_at: 2026-04-13
+claimed_by: claude-session-epoch009
+claimed_at: 2026-04-13T19:00:00Z
+tasks:
+  - id: TASK-009-1
+    title: "OCI VPS provisioning scripts"
+    status: review
+    claimed_by: claude-session-epoch009
+    completed_at: 2026-04-13T19:05:00Z
+    acceptance:
+      - "scripts/remote/oci-provision.sh creates a dedicated f1r3node-rust-testbed-vcn in us-sanjose-1"
+      - "Creates 2x VM.Standard.A1.Flex (arm64 Ampere) instances in f1r3fly-devops compartment"
+      - "Security list opens TCP 40400-40405 and UDP 40404 to 0.0.0.0/0 (public testbed)"
+      - "SSH access provisioned via a dedicated testbed keypair"
+      - "Teardown script (oci-destroy.sh) removes VMs, VCN, and security rules cleanly"
+    notes:
+      - "Code complete (commit be7ad3f); dry-run validated end-to-end"
+      - "Real --apply validation deferred to TASK-009-4+ integration"
+      - "Security list range (40400-40405) may need widening in TASK-009-3 to accommodate 3 nodes on VPS-2"
+
+  - id: TASK-009-2
+    title: "Image distribution via docker save + scp + load"
+    status: review
+    claimed_by: claude-session-epoch009
+    blocked_by: [TASK-009-1]
+    completed_at: 2026-04-13T19:10:00Z
+    acceptance:
+      - "scripts/remote/image-transfer.sh: local docker save | scp | remote docker load"
+      - "Works against both VPSes in a single invocation (parallel transfer)"
+      - "Image tag matches what distributed compose files reference"
+      - "Migration note captured: once OCIR first-publish lands, switch to docker pull on VPS"
+    notes:
+      - "Code complete (commit 6e045c0); dry-run validated with fabricated state"
+      - "Real --apply pending live VPSes"
+
+  - id: TASK-009-3
+    title: "Distributed compose file split"
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T19:15:00Z
+    completed_at: 2026-04-13T19:30:00Z
+    blocked_by: [TASK-009-1]
+    acceptance:
+      - "docker/shard.vps1.yml runs bootstrap only; parameterized by BOOTSTRAP_HOST env"
+      - "docker/shard.vps2.yml runs 2 validators + observer; connects to BOOTSTRAP_HOST:40400"
+      - "No reliance on Docker internal DNS for inter-host communication"
+      - "Both files read from a shared .env.remote template"
+    notes:
+      - "VPS-2 runs 3 rnode processes sharing one public IP; each needs a distinct port-band to avoid protocol-port collision"
+      - "Added 3 per-node conf files (validator1-remote.conf, validator2-remote.conf, readonly-remote.conf) that HOCON-include default.conf and override protocol-server.port / peers-discovery.port / api-server.port-*"
+      - "Widened oci-provision.sh security list from 40400-40405/tcp+40404/udp to 40400-40455/tcp+40400-40455/udp to cover all 3 port-bands (supersedes TASK-009-1 AC wording)"
+      - "Revisit: if node binary exposes --protocol-port / --discovery-port CLI flags, the per-node conf files could be replaced with inline compose args (would drop ~45 lines)"
+
+  - id: TASK-009-4
+    title: "Justfile recipes for end-to-end orchestration"
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T19:40:00Z
+    completed_at: 2026-04-13T19:58:00Z
+    blocked_by: [TASK-009-1, TASK-009-2, TASK-009-3]
+    acceptance:
+      - "just vps-up: provisions 2 VPSes and returns their public IPs"
+      - "just vps-deploy: scp config + images, start bootstrap (VPS-1), then validators/observer (VPS-2)"
+      - "just vps-status [target]: shows shard health via HTTP API and metrics endpoint"
+      - "just vps-down: tears down all OCI resources created by vps-up"
+    notes:
+      - "Justfile prefix renamed oci- -> vps- per user direction to stay cloud-agnostic; BACKLOG-FI-002 captures the AWS/GCP generalization plan"
+      - "Added scripts/remote/deploy.sh (renders .env.remote from template, parallel scp, bootstrap-then-followers startup, HTTP /api/status readiness poll)"
+      - "Added scripts/remote/status.sh (per-node /api/status + /metrics check, non-zero exit on unhealthy)"
+      - "Added scripts/remote/teardown.sh (docker compose down -v on both VPSes, separate from OCI termination)"
+      - "Plus convenience recipe vps-image-push wrapping image-transfer.sh"
+      - "Dry-run validated end-to-end; full apply-run deferred pending live VPS decision"
+
+  - id: TASK-009-5
+    title: "Port latency benchmark (Scala -> native grpcurl/curl)"
+    status: review
+    claimed_by: claude-session-epoch009
+    claimed_at: 2026-04-13T21:19:00Z
+    completed_at: 2026-04-13T21:25:00Z
+    blocked_by: [TASK-009-4]
+    acceptance:
+      - "scripts/bench/latency-benchmark.sh: drops rust-client external dependency, uses grpcurl + HTTP /api"
+      - "Parameterized for arbitrary validator count (not hardcoded to 3)"
+      - "Emits load-summary.txt and p50/p95 latency report"
+      - "just bench-latency HOST DURATION wraps the script"
+      - "scripts/bench/profile-casper-latency.sh ported for Rust node log format"
+    notes:
+      - "Implementation uses `node deploy` (via docker exec / ssh) for deploy signing rather than raw grpcurl — grpcurl can't produce secp256k1 signatures without a pre-signer binary. The AC intent (drop rust-client external dep) is met; interpretation documented in the script header."
+      - "Uses curl for /api/status preflight and node CLI (show-blocks, last-finalized-block) for block/deploy matching. No external-repo dependencies."
+      - "Parameterized via --duration, --rate, --host, --container, --http-port, --out-dir flags plus PHLO_LIMIT/PHLO_PRICE/DEPLOYER_KEY env"
+      - "Default deployer key is bootstrap's (funded locally and in wallets.txt via commit 993c239 for distributed)"
+      - "Justfile recipe: just vps-bench-latency host=<ip> duration=60 rate=2"
+      - "profile-casper-latency.sh parses Rust JSON logs (targets f1r3fly.propose.timing + f1r3fly.casper) for per-validator propose_core_ms / block_replay_ms / finalizer_cycle_ms p50/p95"
+      - "Real-apply validation against a live shard deferred (same as TASK-009-1..4)"
+---
+```
+
+**Context:** Stands up a realistic multi-host deployment (single shard distributed across 2 VPSes) to measure network-latency-bound consensus performance. This is distinct from in-process or single-host Docker tests — it exercises the P2P transport, Kademlia discovery, and Casper finalization under real inter-host latency.
+
+**Scope:**
+- Included: OCI provisioning, image distribution, distributed compose, deploy/teardown automation, latency benchmark port
+- Excluded: Inter-shard consensus (Option B, ~1,500+ LOC of consensus work — see BACKLOG-FI-001)
+- Excluded: Non-OCI providers (Tata cloud, etc.)
+- Excluded: Throughput, chaos, or whiteblock-plan benchmarks (future epochs)
+- Excluded: Production-grade secrets management (using `scp` for TLS keys for now)
+
+**Notes:**
+- Uses arm64 (VM.Standard.A1.Flex) for free-tier eligibility and production representativeness
+- Image distribution intentionally uses `docker save/load` rather than registry pull, to keep this epoch self-contained until the OCIR CI switch lands
+- TLS keys for bootstrap are shipped via `scp` (acceptable for a throwaway testbed)
+
+---
+
+## Epoch Dependency Graph
+
+```
+EPOCH-001 (system-integration alignment)    EPOCH-003 (f1r3node: merge critical PRs)
+EPOCH-002 (monitoring separation)               |
+                                                 v
+                                            EPOCH-004 (f1r3node-rust: code sync)
+                                                 |
+                                            +----+----+----+
+                                            |    |    |    |
+                                            v    v    v    v
+                                          005  006  007
+                                        (issues)(repos)(PRs)
+                                            |    |    |
+                                            +----+----+
+                                                 |
+                                                 v
+                                            EPOCH-008
+                                         (deprecation/archive)
+```
+
+---
+
+### EPOCH-010: cargo-geiger Supply-Chain Unsafe Audit
+
+```yaml
+---
+epoch_id: EPOCH-010
 title: "cargo-geiger supply-chain unsafe audit"
 status: pending
 priority: p1
-user_story: US-001
+user_story: US-TBD
 blocked_by: []
 created_at: 2026-05-20
 claimed_by: null
 claimed_at: null
 user_flow: FLOW-001
 tasks:
-  - id: TASK-001-1
+  - id: TASK-010-1
     title: "Local tooling: Justfile recipes for cargo-geiger"
     status: pending
     acceptance:
       - "`just geiger` runs a workspace scan (default features) and prints a table summary"
-      - "`just geiger-baseline` writes/refreshes `.cargo-geiger.baseline.json` at repo root"
+      - "`just geiger-baseline` writes/refreshes `.cargo-geiger.baseline.jsonc` at repo root"
       - "`just geiger-update` regenerates the baseline and shows the diff against the previous one"
       - "All three recipes appear in `just --list` with single-line docstrings"
       - "README/DEVELOPER.md links the recipes from the supply-chain section"
 
-  - id: TASK-001-2
-    title: "Commit initial `.cargo-geiger.baseline.json` and document update workflow"
+  - id: TASK-010-2
+    title: "Commit initial `.cargo-geiger.baseline.jsonc` and document update workflow"
     status: pending
-    blocked_by: [TASK-001-1]
+    blocked_by: [TASK-010-1]
     acceptance:
-      - "`.cargo-geiger.baseline.json` is tracked in git at repo root"
+      - "`.cargo-geiger.baseline.jsonc` is tracked in git at repo root"
       - "Baseline is reproducible from a clean checkout via `just geiger-baseline` (deterministic ordering)"
       - "DEVELOPER.md describes when and how to bump the baseline (with an example PR snippet)"
       - "Baseline file format documented (raw `cargo geiger --output-format Json` or a normalized subset)"
 
-  - id: TASK-001-3
+  - id: TASK-010-3
     title: "Add `geiger` CI job to `.github/workflows/ci.yml` with baseline regression gate"
     status: pending
-    blocked_by: [TASK-001-2]
+    blocked_by: [TASK-010-2]
     acceptance:
       - "New `geiger` job runs in parallel with `deny` on every PR (push to dev/master and PR to dev/master/feature/**)"
       - "Job installs cargo-geiger via `cargo install --locked cargo-geiger` with `Swatinem/rust-cache@v2` keyed for it"
@@ -110,20 +708,20 @@ tasks:
       - "Job fails when current scan introduces new unsafe vs. committed baseline; passes when scan matches or improves"
       - "Failure message points the developer at `just geiger-update` to refresh the baseline intentionally"
 
-  - id: TASK-001-4
+  - id: TASK-010-4
     title: "Add nightly scheduled cargo-geiger workflow"
     status: pending
-    blocked_by: [TASK-001-3]
+    blocked_by: [TASK-010-3]
     acceptance:
       - "Scheduled workflow runs daily (cron) on `master` with the same scan as the PR job"
       - "Run uploads the JSON artifact with a date-suffixed name and surfaces diffs vs. committed baseline"
       - "Workflow does not modify the baseline; surfaces drift only (so transitive ecosystem changes show up without blocking PRs)"
       - "Schedule entry is colocated in `ci.yml` or in a sibling `geiger-nightly.yml` (documented choice in the PR description)"
 
-  - id: TASK-001-5
+  - id: TASK-010-5
     title: "Opt-in cargo-geiger integration in `.githooks/pre-push`"
     status: pending
-    blocked_by: [TASK-001-1]
+    blocked_by: [TASK-010-1]
     acceptance:
       - "`RUN_GEIGER=1 git push` triggers a geiger scan alongside the existing clippy/test background jobs"
       - "Default `git push` does NOT run geiger (cost stays on CI by default)"
@@ -131,10 +729,10 @@ tasks:
       - "Hook degrades gracefully with a clear SKIP message if `cargo-geiger` is not installed locally"
       - "`scripts/setup-hooks.sh --status` and `--help` mention the `RUN_GEIGER` switch"
 
-  - id: TASK-001-6
+  - id: TASK-010-6
     title: "Document the cargo-geiger workflow in DEVELOPER.md"
     status: pending
-    blocked_by: [TASK-001-3, TASK-001-5]
+    blocked_by: [TASK-010-3, TASK-010-5]
     acceptance:
       - "DEVELOPER.md gains a `Supply-Chain Audit (cargo-geiger)` section"
       - "Section explains: what cargo-geiger measures, where the baseline lives, how to refresh it, and when to refuse a baseline bump"
@@ -143,7 +741,7 @@ tasks:
 ---
 ```
 
-**Context:** F1R3node is a blockchain node where consensus correctness and key handling are safety-critical. We already enforce license/advisory hygiene via `cargo-deny`, but we have no signal on the **volume or growth of `unsafe` code** in our dependency tree. `cargo-geiger` quantifies that surface and, when paired with a committed baseline, gives us a regression gate that catches a new transitive dependency (or a dep version bump) silently adding `unsafe` blocks. The branch `cargo-gieger-integration` (sic) was created to land this.
+**Context:** F1R3node is a blockchain node where consensus correctness and key handling are safety-critical. We already enforce license/advisory hygiene via `cargo-deny`, but we have no signal on the **volume or growth of `unsafe` code** in our dependency tree. `cargo-geiger` quantifies that surface and, when paired with a committed baseline, gives us a regression gate that catches a new transitive dependency (or a dep version bump) silently adding `unsafe` blocks. The branch `cargo-geiger-integration` was created to land this.
 
 **Scope:**
 - Workspace-wide scan with default features (matches `cargo test` posture)
@@ -156,92 +754,8 @@ tasks:
 **Notes:**
 - cargo-geiger may need a `--locked` install and may itself depend on a recent stable; verify it builds under our pinned `nightly-2026-02-09`. If the nightly toolchain breaks geiger's build, install it under stable in CI and run it against the workspace lockfile (geiger reads `Cargo.lock`, not the toolchain).
 - Workspace deps known to carry unsafe: `bytes`, `tokio`, `heed`/`lmdb`, `rustls`, `prost`, `parking_lot`. Initial baseline will reflect this; reviewers should compare deltas, not absolutes.
-- Branch name typo (`cargo-gieger-integration`) is noted but not in scope to rename here; up to the PR author whether to rename before merge.
+- Renumbered from EPOCH-001 to EPOCH-010 during the dev merge (2026-05-20) to avoid collision with dev's existing EPOCH-001..009. Original tracking lived on branch `cargo-gieger-integration` (typo); this branch (`cargo-geiger-integration`) is the rename.
 - Future enhancement (Backlog candidate): per-crate `#![forbid(unsafe_code)]` on the crates that don't legitimately need unsafe (e.g., `graphz`, `shared`).
-
----
-
-### EPOCH-002: Restore `ulimit -n 65536` in pre-push hook and CI (b851666a regression)
-
-```yaml
----
-epoch_id: EPOCH-002
-title: "Restore ulimit raise dropped by new-repo infrastructure import"
-status: complete
-priority: p1
-user_story: US-TBD
-blocked_by: []
-created_at: 2026-05-20
-claimed_by: claude-session-cargo-geiger
-claimed_at: 2026-05-20
-completed_at: 2026-05-20
-tasks:
-  - id: TASK-002-1
-    title: "Restore `ulimit -n 65536 2>/dev/null || true` in `.githooks/pre-push`"
-    status: complete
-    acceptance:
-      - "Line is inserted at the same position as commit `a5401484` placed it (between the GIT_DIR unset and the `cd \"$REPO_ROOT\"` step), with the same trailing `|| true` so a shell that disallows raising the limit does not fail the hook"
-      - "Comment above the line cites the heed-0.22 fd pressure rationale"
-      - "`cargo test --release -p rholang` invoked via `git push` no longer panics with `Os { code: 24, kind: Uncategorized, message: \"Too many open files\" }`"
-
-  - id: TASK-002-2
-    title: "Restore `ulimit -n 65536` in `.github/workflows/ci.yml` test job"
-    status: complete
-    acceptance:
-      - "Line is inserted as the first command in the `run:` block of the test step, ahead of `mkdir -p /tmp/test-logs` and the cargo invocation"
-      - "GitHub Actions Linux runners (soft default ~1024) lift past the LMDB-heavy parallel rholang threshold"
-
-  - id: TASK-002-3
-    title: "Verify the restored fix end-to-end"
-    status: complete
-    blocked_by: [TASK-002-1, TASK-002-2]
-    acceptance:
-      - "Locally: `git push` runs the pre-push hook with the new ulimit and the rholang test step completes green without `SKIP_TESTS=1`"
-      - "CI: the next PR push triggers the workflow and the test matrix runs without EMFILE-class failures"
----
-```
-
-**Context:** A previous fix (commit `a5401484`, Apr 30 2026: "fix(ci): raise ulimit -n to 65536 for LMDB-heavy parallel tests") added one line to `.githooks/pre-push` and one to `.github/workflows/ci.yml` to lift the OS file-descriptor ceiling for the rholang test suite (heed 0.22 holds more fds per Env than 0.11). That fix was **silently overwritten** by commit `b851666a` (May 12 2026: "chore: import new-repo native infrastructure on top of legacy"), which wholesale replaced both files with the new-repo versions (`393 insertions(+)` for `.githooks/`). The ulimit lines went with them. Symptom returned: `Os { code: 24, kind: Uncategorized, message: "Too many open files" }` in `rholang/src/rust/interpreter/test_utils/resources.rs:56` during `cargo test --release -p rholang` under the pre-push hook on macOS.
-
-**Scope:**
-- Re-add the exact same two lines that `a5401484` originally inserted, at the same code locations in the new (post-`b851666a`) versions of those files.
-- **Explicitly out of scope:** porting `env_cache.rs` (the Weak<Env> cache from `origin/sync/legacy-v0.4.15` commit `4ecd73a6`). That is a more aggressive fix that the cherry-pick `4b486b4f` deliberately deferred for the eventual `dev→master` merge ("the broader upstream sync... intentionally NOT included"). Pulling it into this branch entangles two unrelated streams; let it land via the planned merge.
-
-**Notes:**
-- Reference: `git show a5401484 -- .githooks/pre-push .github/workflows/ci.yml` for the exact original diff.
-- Insertion points selected to match the prior commit's structure: after the GIT_DIR unset in the hook, before the `mkdir -p` in the workflow.
-- The two lines complement each other: the hook's `ulimit -n 65536 2>/dev/null || true` covers local pre-push test runs; the workflow's `ulimit -n 65536` covers CI Linux runners.
-- **Follow-up Backlog candidate:** if the broader supply-chain effort wants every developer's `cargo test -p rholang` invocation (outside the hook) to also pass on macOS default `ulimit -n 256`, the `env_cache.rs` port from `4ecd73a6` is the architectural fix. File when the dev→master merge timing is right; treat as a separate epoch.
-
----
-
-<!-- Add more epochs following the same format -->
-
----
-
-## Epoch Template
-
-Use this template when adding new epochs:
-
-```yaml
----
-epoch_id: EPOCH-XXX
-title: "Short descriptive title"
-status: pending
-priority: p2
-user_story: US-XXX
-blocked_by: []
-created_at: YYYY-MM-DD
-claimed_by: null         # Implementer ID: human-{email}, {tool}-session[-{id}], or {team}/{role}
-claimed_at: null
-tasks:
-  - id: TASK-XXX-1
-    title: "Task description"
-    status: pending
-    acceptance:
-      - "Measurable acceptance criterion"
----
-```
 
 ---
 
@@ -260,16 +774,18 @@ tasks:
 ## Workflow
 
 1. **Find next task**: Use `/nextTask` to identify the highest priority unclaimed task
-2. **Claim task**: Set `claimed_by` using [Implementer Identification](../common/stigmergic-collaboration.md#implementer-identification) format and `status: in_progress`
+2. **Claim task**: Set `claimed_by` and `status: in_progress`
 3. **Implement**: Use `/implement` to execute with full context
 4. **Complete**: Mark `status: complete` when acceptance criteria met
-5. **Move epoch**: When all tasks complete, move epoch to `docs/CompletedTasks.md`
+5. **Signal**: Update completion signals in `/tmp/migrationPlan.md`
+6. **Move epoch**: When all tasks complete, move epoch to `docs/CompletedTasks.md`
 
 ---
 
 ## References
 
+- **Shared Migration Plan:** `/tmp/migrationPlan.md`
 - **User Stories:** `docs/UserStories.md`
 - **Completed Work:** `docs/CompletedTasks.md`
 - **Backlog:** `docs/Backlog.md`
-- **MR/PR Tracking Standard:** [docs/common/todos-mr_pr-tracking-standard.md]([RELATIVE_PATH]/top-level-gitlab-profile/docs/common/todos-mr_pr-tracking-standard.md)
+- **System-Integration Migration Plan:** `../system-integration/docs/migration-to-rust-node.md`

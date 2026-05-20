@@ -8,7 +8,7 @@ pub struct PathMapCrateTypeMapper;
 impl PathMapCrateTypeMapper {
     /// Convert from protobuf EPathMap to PathMap-based structure
     pub fn e_pathmap_to_rholang_pathmap(e_pathmap: &EPathMap) -> PathMapCreationResult {
-        create_pathmap_from_elements(&e_pathmap.ps, e_pathmap.remainder)
+        create_pathmap_from_elements(&e_pathmap.ps, e_pathmap.remainder.clone())
     }
 
     /// Convert from PathMap back to protobuf EPathMap

@@ -80,7 +80,7 @@ pub fn normalize_p_contr<'ast>(
         binds: vec![ReceiveBind {
             patterns: init_acc.0.clone().into_iter().rev().collect(),
             source: Some(name_match_result.par.clone()),
-            remainder: remainder_result.0,
+            remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
         }],
         body: Some(body_result.par.clone()),
@@ -102,8 +102,7 @@ pub fn normalize_p_contr<'ast>(
             .connective_used(name_match_result.par.clone())
             || body_result.par.connective_used(body_result.par.clone()),
     };
-    //TODO: I should create new Expr for prepend_expr and provide it instead of
-    // receive.clone().into
+    //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
     let updated_par = input.clone().par.prepend_receive(receive);
     Ok(ProcVisitOutputs {
         par: updated_par,
@@ -111,8 +110,7 @@ pub fn normalize_p_contr<'ast>(
     })
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

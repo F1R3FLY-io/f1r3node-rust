@@ -1,5 +1,4 @@
-// See node/src/main/scala/coop/rchain/node/state/instances/
-// RNodeStateManagerImpl.scala
+// See node/src/main/scala/coop/rchain/node/state/instances/RNodeStateManagerImpl.scala
 
 use casper::rust::errors::CasperError;
 use casper::rust::state::instances::BlockStateManager;

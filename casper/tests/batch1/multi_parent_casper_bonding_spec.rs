@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperBondingSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperBondingSpec.scala
 
 // TODO rewrite this test for the new PoS
 #[tokio::test]
