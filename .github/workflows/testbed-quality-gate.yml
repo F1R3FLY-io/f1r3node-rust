@@ -1,0 +1,601 @@
+# Testbed Quality Gate — GitHub Actions workflow
+#
+# Manual dispatch only. Maintainers trigger this workflow from the GitHub UI
+# or via the GitHub CLI to run any testbed suite against a candidate f1r3node
+# image on the self-hosted k3s runner.
+#
+# PREREQUISITES (self-hosted runner machine):
+#   - k3s installed and running (kubectl in PATH, no sudo)
+#   - Docker installed (docker group, no sudo)
+#   - Go 1.22+ installed (to build the testbed binary)
+#   - GitHub Actions runner registered with labels: [self-hosted, linux, x64, testbed]
+#
+# GITHUB SECRETS (set in the target repo → Settings → Secrets → Actions):
+#   TESTBED_PAT — personal access token with repo read access to asi-chain-testbed
+#                 (required because asi-chain-testbed is a private repo)
+#   Validator keys are generated fresh before each run — no other secrets needed.
+#
+# HOW TO USE:
+#   Copy this file and testbed-runner-health.yml to
+#   f1r3node/.github/workflows/ and add the TESTBED_PAT secret.
+#   Run testbed-runner-health.yml first to verify the runner is ready.
+#
+# SUITE GUIDE:
+#   smoke           — fast CI gate (~20 min): chain starts, blocks finalize, 1 validator bonds
+#   ft-upfront      — fault-tolerance sweep, two sequential phases (~4 h total)
+#                     phase 1 (ft 0.1/0.33/0.5): 66 pods, 132 cores peak
+#                     phase 2 (ft 0.67/0.99):    44 pods,  88 cores peak
+#   sync-constraint — synchrony-threshold sweep (~1.5 h)
+#   mntd            — max-deploys-per-block calibration (~3 h)
+#   tps             — sustained throughput ramp, uses hardcoded BestMNTD (~4 h)
+#   nightly         — smoke + ft-upfront (p1 then p2) + sync-constraint (~5 h)
+#   heartbeat       — heartbeat parameter sweep, BestHeartbeatMatrix only (~2 h)
+#
+# RESOURCE PROFILE:
+#   All jobs use ProfileCI (1/4 CPU, 2Gi/8Gi RAM, 50Gi PVC per pod).
+#   Peak cluster requirement for ft-upfront phase 1: ~132 cores, ~132 GiB RAM, ~3.3 TiB disk.
+
+name: Testbed Quality Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Suite to run"
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - ft-upfront
+          - sync-constraint
+          - mntd
+          - tps
+          - nightly
+          - heartbeat
+      image:
+        description: "f1r3node image (e.g. amamata/rust-node:0.4.15)"
+        required: true
+        type: string
+      testbed_ref:
+        description: "asi-chain-testbed branch / tag / SHA"
+        required: true
+        default: main
+        type: string
+      testbed_repo:
+        description: "asi-chain-testbed repository (override for fork testing)"
+        required: false
+        default: asi-alliance/asi-chain-testbed
+        type: string
+      strict:
+        description: "Fail the job if any experiment check fails (recommended for smoke)"
+        required: true
+        default: true
+        type: boolean
+
+env:
+  LOG_HOST_PATH: /tmp/asi-chain-logs/${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+
+  # ───────────────────────────── smoke ───────────────────────────────────────
+  smoke:
+    name: smoke (~20 min)
+    if: contains(fromJSON('["smoke","nightly"]'), inputs.suite)
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=smoke \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            STRICT="${{ inputs.strict }}" \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check exit code
+        if: ${{ inputs.strict }}
+        working-directory: testbed
+        run: |
+          EXIT=$(kubectl get pods -l job-name=${{ env.JOB_NAME }} \
+            -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}')
+          echo "Job exit code: ${EXIT}"
+          [ "${EXIT}" = "0" ] || exit 1
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-smoke-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────── ft-upfront phase 1 (ft 0.1 / 0.33 / 0.5) ───────────
+  ft-upfront-p1:
+    name: ft-upfront phase 1 — ft0.1/0.33/0.5 (~2 h, 66 pods)
+    if: contains(fromJSON('["ft-upfront","nightly"]'), inputs.suite)
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=ft-upfront-p1 \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-ft-upfront-p1-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────── ft-upfront phase 2 (ft 0.67 / 0.99) ────────────────
+  ft-upfront-p2:
+    name: ft-upfront phase 2 — ft0.67/0.99 (~1.5 h, 44 pods)
+    needs: ft-upfront-p1
+    if: contains(fromJSON('["ft-upfront","nightly"]'), inputs.suite)
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=ft-upfront-p2 \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-ft-upfront-p2-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────────────── sync-constraint ─────────────────────────────
+  sync-constraint:
+    name: sync-constraint (~1.5 h)
+    if: contains(fromJSON('["sync-constraint","nightly"]'), inputs.suite)
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=sync-constraint \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-sync-constraint-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────────────── mntd ────────────────────────────────────────
+  mntd:
+    name: mntd calibration (~3 h)
+    if: inputs.suite == 'mntd'
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=mntd \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-mntd-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────────────── tps ─────────────────────────────────────────
+  tps:
+    name: tps throughput (~4 h)
+    if: inputs.suite == 'tps'
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=tps \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-tps-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
+
+  # ───────────────────────────── heartbeat ───────────────────────────────────
+  heartbeat:
+    name: heartbeat (~2 h)
+    if: inputs.suite == 'heartbeat'
+    runs-on: [self-hosted, linux, x64, testbed]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.testbed_repo }}
+          ref: ${{ inputs.testbed_ref }}
+          token: ${{ secrets.TESTBED_PAT }}
+          path: testbed
+
+      - name: Build testbed
+        working-directory: testbed
+        run: make build
+
+      - name: Generate validator keys
+        working-directory: testbed
+        run: ./testbed gen --validators 20 --out .env
+
+      - name: Import f1r3node image into k3s
+        run: |
+          docker pull "${{ inputs.image }}"
+          k3s ctr images rm "${{ inputs.image }}" 2>/dev/null || true
+          docker save "${{ inputs.image }}" | k3s ctr images import -
+
+      - name: Import testbed image into k3s
+        working-directory: testbed
+        run: make docker
+
+      - name: Apply RBAC
+        working-directory: testbed
+        run: make job-setup
+
+      - name: Run suite
+        working-directory: testbed
+        run: |
+          source .env
+          make job-run ENV=.env SUITE=heartbeat ONLY_BEST=1 \
+            IMAGE="${{ inputs.image }}" \
+            PROFILE=ci \
+            OUTPUT_FORMAT=json \
+            LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
+          JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1].metadata.name}')
+          echo "JOB_NAME=${JOB}" >> "$GITHUB_ENV"
+
+      - name: Wait for job
+        working-directory: testbed
+        run: make job-wait JOB=${{ env.JOB_NAME }}
+
+      - name: Summarize results
+        if: always()
+        working-directory: testbed
+        run: |
+          make job-summarize LOG_HOST_PATH=${{ env.LOG_HOST_PATH }} >> "$GITHUB_STEP_SUMMARY" || \
+            echo "No results.json found — see uploaded logs." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        working-directory: testbed
+        run: ./testbed clean --prefixes exp-,test- || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-heartbeat-${{ github.run_id }}
+          path: ${{ env.LOG_HOST_PATH }}
+          retention-days: 14
