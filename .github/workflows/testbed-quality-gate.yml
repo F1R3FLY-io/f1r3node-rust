@@ -11,29 +11,15 @@
 #   - GitHub Actions runner registered with labels: [self-hosted, linux, x64, testbed]
 #
 # GITHUB SECRETS (set in the target repo → Settings → Secrets → Actions):
-#   TESTBED_PAT — personal access token with repo read access to asi-chain-testbed
+#   TESTBED_PAT — fine-grained PAT with Contents: Read-only on asi-chain-testbed
 #                 (required because asi-chain-testbed is a private repo)
 #   Validator keys are generated fresh before each run — no other secrets needed.
 #
 # HOW TO USE:
-#   Copy this file and testbed-runner-health.yml to
-#   f1r3node/.github/workflows/ and add the TESTBED_PAT secret.
-#   Run testbed-runner-health.yml first to verify the runner is ready.
-#
-# SUITE GUIDE:
-#   smoke           — fast CI gate (~20 min): chain starts, blocks finalize, 1 validator bonds
-#   ft-upfront      — fault-tolerance sweep, two sequential phases (~4 h total)
-#                     phase 1 (ft 0.1/0.33/0.5): 66 pods, 132 cores peak
-#                     phase 2 (ft 0.67/0.99):    44 pods,  88 cores peak
-#   sync-constraint — synchrony-threshold sweep (~1.5 h)
-#   mntd            — max-deploys-per-block calibration (~3 h)
-#   tps             — sustained throughput ramp, uses hardcoded BestMNTD (~4 h)
-#   nightly         — smoke + ft-upfront (p1 then p2) + sync-constraint (~5 h)
-#   heartbeat       — heartbeat parameter sweep, BestHeartbeatMatrix only (~2 h)
-#
-# RESOURCE PROFILE:
-#   All jobs use ProfileCI (1/4 CPU, 2Gi/8Gi RAM, 50Gi PVC per pod).
-#   Peak cluster requirement for ft-upfront phase 1: ~132 cores, ~132 GiB RAM, ~3.3 TiB disk.
+#   1. Add TESTBED_PAT secret to this repo (Settings → Secrets → Actions).
+#   2. Ensure the self-hosted runner is registered and healthy
+#      (run testbed-runner-health.yml first).
+#   3. Trigger this workflow from the Actions tab, selecting suite and image.
 
 name: Testbed Quality Gate
 
@@ -41,7 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "Suite to run"
+        description: >
+          Suite: smoke (~20 min) | ft-upfront (~4 h) | sync-constraint (~1.5 h) |
+          mntd (~3 h) | tps (~4 h) | heartbeat (~2 h) | nightly (~5 h)
         required: true
         default: smoke
         type: choice
@@ -54,7 +42,7 @@ on:
           - nightly
           - heartbeat
       image:
-        description: "f1r3node image (e.g. amamata/rust-node:0.4.15)"
+        description: "f1r3node image to test (e.g. amamata/rust-node:0.4.15)"
         required: true
         type: string
       testbed_ref:
@@ -76,6 +64,11 @@ on:
 env:
   LOG_HOST_PATH: /tmp/asi-chain-logs/${{ github.run_id }}-${{ github.run_attempt }}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Actions doesn't support YAML anchors, so common steps are inlined
+# per job but kept identical.
+# ─────────────────────────────────────────────────────────────────────────────
+
 jobs:
 
   # ───────────────────────────── smoke ───────────────────────────────────────
@@ -85,6 +78,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 40
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Smoke — fast CI gate
+
+          | | |
+          |---|---|
+          | **What** | 3 genesis validators start, produce ≥70 finalized blocks, then 1 validator bonds dynamically |
+          | **Topology** | 4 validators (3 genesis + 1 bonded), 1 bootstrap, 1 observer |
+          | **Duration** | ~20 min |
+          | **Pass criteria** | blocks finalize · spread ≤4 · fin-lag ≤6 · bond lands in LFB · no proposal errors |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -168,6 +176,23 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 180
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Fault-Tolerance Sweep — Phase 1 (ft 0.1 / 0.33 / 0.5)
+
+          | | |
+          |---|---|
+          | **What** | Verifies the network survives and recovers from the expected fault rate at three thresholds |
+          | **ft values** | 0.10 · 0.33 · 0.50 — up to 50% of validators can be byzantine |
+          | **Topology** | Up to 20 validators bonded upfront (all running before genesis finalizes) |
+          | **Peak cluster** | ~66 pods · ~66 cores · ~66 GiB RAM · ~1.6 TiB PVC |
+          | **Duration** | ~2 h |
+          | **Pass criteria** | all validators bond · finalized spread stays bounded · chain keeps producing |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -242,6 +267,23 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 150
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Fault-Tolerance Sweep — Phase 2 (ft 0.67 / 0.99)
+
+          | | |
+          |---|---|
+          | **What** | Verifies the network at near-maximum fault thresholds — only 1% of validators need to be honest |
+          | **ft values** | 0.67 · 0.99 — high byzantine tolerance regime |
+          | **Topology** | Up to 20 validators bonded upfront |
+          | **Peak cluster** | ~44 pods · ~44 cores · ~44 GiB RAM · ~1.1 TiB PVC |
+          | **Duration** | ~1.5 h (runs after phase 1 completes) |
+          | **Pass criteria** | all validators bond · chain finalizes under extreme fault assumptions |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -315,6 +357,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 120
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Sync-Constraint Sweep
+
+          | | |
+          |---|---|
+          | **What** | Sweeps synchrony threshold values to find the boundary where Casper consensus degrades |
+          | **Topology** | 3 genesis validators, no additional bonding |
+          | **Duration** | ~1.5 h |
+          | **Pass criteria** | chain continues to finalize across all tested sync values |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -388,6 +445,22 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 240
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## MNTD — Max-Deploys-per-Block Calibration
+
+          | | |
+          |---|---|
+          | **What** | Binary-searches for the largest deploy batch size the node can propose and finalize reliably |
+          | **Output** | \`BestMNTD\` value to hardcode in the TPS suite for this hardware/image combination |
+          | **Topology** | 3 genesis validators, no bonding |
+          | **Duration** | ~3 h |
+          | **Pass criteria** | produces a stable BestMNTD value with no chain halt at the chosen cap |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -461,6 +534,23 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 300
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## TPS — Sustained Throughput Benchmark
+
+          | | |
+          |---|---|
+          | **What** | Ramps deploy load using the calibrated BestMNTD cap to measure maximum sustained TPS |
+          | **Metric** | max sustained TPS over a fixed measurement window at stable finalization |
+          | **Topology** | 3 genesis validators, no bonding |
+          | **Duration** | ~4 h |
+          | **Pass criteria** | sustained TPS > 0 · finalization latency stays bounded under load |
+          | **Note** | Run MNTD first when testing a new image or hardware — TPS uses the hardcoded BestMNTD |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
@@ -534,6 +624,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, testbed]
     timeout-minutes: 180
     steps:
+      - name: Suite overview
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Heartbeat — Parameter Sweep
+
+          | | |
+          |---|---|
+          | **What** | Sweeps heartbeat interval parameters to find the optimal liveness/overhead tradeoff |
+          | **Topology** | 3 genesis validators, no bonding |
+          | **Duration** | ~2 h (BestHeartbeatMatrix only) |
+          | **Pass criteria** | chain finalizes across all tested heartbeat intervals without stalls |
+          | **Image** | \`${{ inputs.image }}\` |
+          | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
+          EOF
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.testbed_repo }}
