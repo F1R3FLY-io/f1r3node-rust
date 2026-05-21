@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use hex::ToHex;
 use indexmap::IndexSet;
+use tracing::info;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -96,15 +98,43 @@ impl RholangMergingLogic {
         HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         HistoryError,
     > {
+        let ch_hex: String = channel_hash.encode_hex();
+        info!(
+            target: "f1r3.trace.fold",
+            "[TRACE-MERGE-FOLD-ENTRY] channel={} merge_type={:?} diff={} added_len={} removed_len={}",
+            ch_hex, merge_type, diff, changes.added.len(), changes.removed.len()
+        );
         // Read initial value of number channel from base state.
         // None = channel doesn't exist yet (treat as 0); Err = invariant
         // violation (non-numeric or multi-value pre-state) — propagate so the
         // merge is rejected rather than silently substituting 0.
-        let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
+        let init_num = match Self::convert_to_read_number(get_base_data)(channel_hash)? {
+            Some(n) => {
+                info!(
+                    target: "f1r3.trace.fold",
+                    "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num={}",
+                    ch_hex, n
+                );
+                n
+            }
+            None => {
+                info!(
+                    target: "f1r3.trace.fold",
+                    "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num=0 (channel empty)",
+                    ch_hex
+                );
+                0
+            }
+        };
         let new_val = match merge_type {
             MergeType::IntegerAdd => init_num.wrapping_add(diff),
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
         };
+        info!(
+            target: "f1r3.trace.fold",
+            "[TRACE-MERGE-FOLD-RESULT] channel={} merge_type={:?} init_num={} diff={} new_val={}",
+            ch_hex, merge_type, init_num, diff, new_val
+        );
 
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {
@@ -219,7 +249,18 @@ impl RholangMergingLogic {
     where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
         move |hash: &Blake2b256Hash| {
             let data = get_data_func(hash)?;
+            let ch_hex: String = hash.encode_hex();
+            info!(
+                target: "f1r3.trace.fold",
+                "[TRACE-PRE-STATE-READ] channel={} data_len={}",
+                ch_hex, data.len()
+            );
             if data.len() > 1 {
+                info!(
+                    target: "f1r3.trace.fold",
+                    "[TRACE-PRE-STATE-VIOLATION] channel={} data_len={} (single-value invariant violated at pre-state read)",
+                    ch_hex, data.len()
+                );
                 return Err(HistoryError::MergeError(format!(
                     "Number channel {:?} has {} pre-state values; single-value invariant violated",
                     hash,

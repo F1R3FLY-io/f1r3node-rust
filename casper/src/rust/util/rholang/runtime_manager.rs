@@ -634,6 +634,13 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                tracing::info!(
+                    target: "f1r3.trace.replay_cache",
+                    "[TRACE-REPLAY-CACHE-HIT] sender_seq={} post_state={} event_log_count={} (returning without save_mergeable_channels)",
+                    seq_num,
+                    hex::encode(&entry.post_state),
+                    entry.event_log.len()
+                );
 
                 // Rig the replay runtime with cached event log
                 let replay_runtime = self.spawn_replay_runtime().await;
@@ -725,14 +732,39 @@ impl RuntimeManager {
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        let state_hex = hex::encode(hash);
+        tracing::info!(
+            target: "f1r3.trace.bonds_validation",
+            "[TRACE-COMPUTE-BONDS-ENTRY] state={}",
+            state_hex
+        );
         if let Some(cached) = self.bonds_cache.get(hash) {
             Self::touch_cache_key(&self.bonds_cache_order, hash);
+            tracing::info!(
+                target: "f1r3.trace.bonds_validation",
+                "[TRACE-COMPUTE-BONDS-CACHE-HIT] state={} bonds_count={}",
+                state_hex, cached.len()
+            );
             return Ok(cached.clone());
         }
 
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
+        tracing::info!(
+            target: "f1r3.trace.bonds_validation",
+            "[TRACE-COMPUTE-BONDS-RUNTIME] state={} bonds_count={}",
+            state_hex, computed.len()
+        );
+        for bond in &computed {
+            tracing::info!(
+                target: "f1r3.trace.bonds_validation",
+                "[TRACE-COMPUTE-BONDS-RUNTIME-BOND] state={} validator={} stake={}",
+                state_hex,
+                hex::encode(&bond.validator),
+                bond.stake
+            );
+        }
 
         let max_entries = Self::max_bonds_cache_entries();
         if self.bonds_cache.len() >= max_entries {
@@ -910,6 +942,29 @@ impl RuntimeManager {
                             .collect::<BTreeMap<_, _>>()
                     })
                     .collect::<Vec<_>>();
+                let total_channels: usize = res_map.iter().map(|m| m.len()).sum();
+                tracing::info!(
+                    target: "f1r3.trace.mergeable_store",
+                    "[TRACE-LOAD-MERGEABLE-CHANNELS] state_hash={} creator={} seq={} deploys={} total_channels={}",
+                    state_hash.bytes().encode_hex::<String>(),
+                    creator.encode_hex::<String>(),
+                    seq_num,
+                    res_map.len(),
+                    total_channels
+                );
+                for (deploy_idx, m) in res_map.iter().enumerate() {
+                    for (ch, (diff, mt)) in m.iter() {
+                        tracing::info!(
+                            target: "f1r3.trace.mergeable_store",
+                            "[TRACE-LOAD-MERGEABLE-CHANNELS-ENTRY] state_hash={} deploy_idx={} channel={} merge_type={:?} diff={}",
+                            state_hash.bytes().encode_hex::<String>(),
+                            deploy_idx,
+                            hex::encode(ch.bytes()),
+                            mt,
+                            diff
+                        );
+                    }
+                }
                 Ok(res_map)
             }
             None => {
@@ -920,6 +975,13 @@ impl RuntimeManager {
                     seq_num
                 );
                 tracing::error!("{}", msg);
+                tracing::info!(
+                    target: "f1r3.trace.mergeable_store",
+                    "[TRACE-LOAD-MERGEABLE-CHANNELS-MISSING] state_hash={} creator={} seq={}",
+                    state_hash.bytes().encode_hex::<String>(),
+                    creator.encode_hex::<String>(),
+                    seq_num
+                );
                 Err(CasperError::KvStoreError(KvStoreError::KeyNotFound(msg)))
             }
         }
@@ -966,12 +1028,36 @@ impl RuntimeManager {
         key_bytes: Vec<u8>,
         value_bytes: Vec<u8>,
     ) -> Result<(), CasperError> {
+        tracing::info!(
+            target: "f1r3.trace.lfs_import",
+            "[TRACE-LFS-PUT-MERGEABLE-ENTRY] key_bytes_len={} value_bytes_len={}",
+            key_bytes.len(), value_bytes.len()
+        );
         if value_bytes.is_empty() {
+            tracing::info!(
+                target: "f1r3.trace.lfs_import",
+                "[TRACE-LFS-PUT-MERGEABLE-ENTRY-EMPTY] (peer had no entry, no-op)"
+            );
             return Ok(());
         }
         let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
             CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
         })?;
+        let total_channels: usize = value.iter().map(|d| d.channels.len()).sum();
+        tracing::info!(
+            target: "f1r3.trace.lfs_import",
+            "[TRACE-LFS-PUT-MERGEABLE-ENTRY-DECODED] deploys={} total_channels={}",
+            value.len(), total_channels
+        );
+        for (deploy_idx, d) in value.iter().enumerate() {
+            for ch in d.channels.iter() {
+                tracing::info!(
+                    target: "f1r3.trace.lfs_import",
+                    "[TRACE-LFS-PUT-MERGEABLE-ENTRY-CH] deploy_idx={} channel={} merge_type={:?} diff={}",
+                    deploy_idx, hex::encode(ch.hash.bytes()), ch.merge_type, ch.diff
+                );
+            }
+        }
         self.mergeable_store
             .put_one(key_bytes, value)
             .map_err(CasperError::KvStoreError)
@@ -1014,8 +1100,39 @@ impl RuntimeManager {
         // Used to calculate value difference from final values
         pre_state_hash: &Blake2b256Hash,
     ) -> Result<(), CasperError> {
+        let total_endvals: usize = channels_data.iter().map(|m| m.len()).sum();
+        tracing::info!(
+            target: "f1r3.trace.mergeable_store",
+            "[TRACE-SAVE-MERGEABLE-CHANNELS-ENTRY] post_state={} pre_state={} creator={} seq={} deploys={} total_endval_channels={}",
+            post_state_hash.bytes().encode_hex::<String>(),
+            pre_state_hash.bytes().encode_hex::<String>(),
+            creator.encode_hex::<String>(),
+            seq_num,
+            channels_data.len(),
+            total_endvals
+        );
         // Calculate difference values from final values on number channels
         let diffs = self.convert_number_channels_to_diff(channels_data, pre_state_hash)?;
+        let total_diffs: usize = diffs.iter().map(|m| m.len()).sum();
+        tracing::info!(
+            target: "f1r3.trace.mergeable_store",
+            "[TRACE-SAVE-MERGEABLE-CHANNELS-DIFFS] post_state={} total_diff_channels={}",
+            post_state_hash.bytes().encode_hex::<String>(),
+            total_diffs
+        );
+        for (deploy_idx, m) in diffs.iter().enumerate() {
+            for (ch, (diff, mt)) in m.iter() {
+                tracing::info!(
+                    target: "f1r3.trace.mergeable_store",
+                    "[TRACE-SAVE-MERGEABLE-CHANNELS-ENTRY] post_state={} deploy_idx={} channel={} merge_type={:?} diff={}",
+                    post_state_hash.bytes().encode_hex::<String>(),
+                    deploy_idx,
+                    hex::encode(ch.bytes()),
+                    mt,
+                    diff
+                );
+            }
+        }
 
         // Convert to storage types
         let deploy_channels = diffs
@@ -1047,6 +1164,11 @@ impl RuntimeManager {
 
         // Save to mergeable channels store
         self.mergeable_store.put_one(key_encoded, deploy_channels)?;
+        tracing::info!(
+            target: "f1r3.trace.mergeable_store",
+            "[TRACE-SAVE-MERGEABLE-CHANNELS-EXIT] post_state={} (persisted)",
+            post_state_hash.bytes().encode_hex::<String>()
+        );
 
         Ok(())
     }

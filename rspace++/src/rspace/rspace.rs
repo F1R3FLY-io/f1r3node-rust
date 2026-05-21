@@ -167,6 +167,10 @@ where
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
         event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
+        tracing::info!(
+            target: "f1r3.trace.rspace_checkpoint",
+            "[TRACE-RSPACE-CREATE-CHECKPOINT-ENTRY]"
+        );
 
         // Get changes with span
         let changes = {
@@ -174,6 +178,11 @@ where
                 tracing::info_span!(target: "f1r3fly.rspace", CHANGES_SPAN).entered();
             self.get_store().changes()
         };
+        tracing::info!(
+            target: "f1r3.trace.rspace_checkpoint",
+            "[TRACE-RSPACE-CREATE-CHECKPOINT-CHANGES] changes_count={}",
+            changes.len()
+        );
 
         // Create history checkpoint with span
         let next_history = {

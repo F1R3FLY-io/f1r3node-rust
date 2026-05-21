@@ -1208,9 +1208,39 @@ impl Validate {
     ) -> ValidBlockProcessing {
         let bonds = proto_util::bonds(b);
         let tuplespace_hash = proto_util::post_state_hash(b);
+        let block_hash_hex = hex::encode(&b.block_hash);
+        let post_state_hex = hex::encode(&tuplespace_hash);
+        tracing::info!(
+            target: "f1r3.trace.bonds_validation",
+            "[TRACE-BONDS-CACHE-VALIDATE-ENTRY] block={} post_state={} block_bonds_count={}",
+            block_hash_hex, post_state_hex, bonds.len()
+        );
+        for bond in &bonds {
+            tracing::info!(
+                target: "f1r3.trace.bonds_validation",
+                "[TRACE-BONDS-CACHE-VALIDATE-BLOCK-BOND] block={} validator={} stake={}",
+                block_hash_hex,
+                hex::encode(&bond.validator),
+                bond.stake
+            );
+        }
 
         match runtime_manager.compute_bonds(&tuplespace_hash).await {
             Ok(computed_bonds) => {
+                tracing::info!(
+                    target: "f1r3.trace.bonds_validation",
+                    "[TRACE-BONDS-CACHE-VALIDATE-COMPUTED] block={} computed_bonds_count={}",
+                    block_hash_hex, computed_bonds.len()
+                );
+                for bond in &computed_bonds {
+                    tracing::info!(
+                        target: "f1r3.trace.bonds_validation",
+                        "[TRACE-BONDS-CACHE-VALIDATE-COMPUTED-BOND] block={} validator={} stake={}",
+                        block_hash_hex,
+                        hex::encode(&bond.validator),
+                        bond.stake
+                    );
+                }
                 let bonds_set: HashSet<_> = bonds
                     .iter()
                     .map(|bond| (&bond.validator, bond.stake))
@@ -1221,16 +1251,31 @@ impl Validate {
                     .collect();
 
                 if bonds_set == computed_bonds_set {
+                    tracing::info!(
+                        target: "f1r3.trace.bonds_validation",
+                        "[TRACE-BONDS-CACHE-VALIDATE-MATCH] block={}",
+                        block_hash_hex
+                    );
                     Either::Right(ValidBlock::Valid)
                 } else {
                     tracing::warn!(
                         "Bonds in proof of stake contract do not match block's bond cache."
+                    );
+                    tracing::info!(
+                        target: "f1r3.trace.bonds_validation",
+                        "[TRACE-BONDS-CACHE-VALIDATE-MISMATCH] block={} post_state={} block_count={} computed_count={}",
+                        block_hash_hex, post_state_hex, bonds_set.len(), computed_bonds_set.len()
                     );
                     Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
                 }
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                tracing::info!(
+                    target: "f1r3.trace.bonds_validation",
+                    "[TRACE-BONDS-CACHE-VALIDATE-COMPUTE-FAILED] block={} error={}",
+                    block_hash_hex, ex
+                );
                 Either::Left(BlockError::BlockException(ex))
             }
         }

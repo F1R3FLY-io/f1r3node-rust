@@ -1128,6 +1128,21 @@ pub fn compute_parents_post_state(
 
             // Use DagMerger to merge parent states with scope
             let merge_started = std::time::Instant::now();
+            tracing::info!(
+                target: "f1r3.trace.compute_parents_post_state",
+                "[TRACE-COMPUTE-PARENTS-MULTI-PARENT-ENTRY] parents_count={} lfb_state={} visible_blocks={}",
+                parents.len(),
+                hex::encode(lfb_state.bytes()),
+                visible_blocks.len()
+            );
+            for p in &parents {
+                tracing::info!(
+                    target: "f1r3.trace.compute_parents_post_state",
+                    "[TRACE-COMPUTE-PARENTS-PARENT] parent={} post_state={}",
+                    hex::encode(&p.block_hash),
+                    hex::encode(&p.body.state.post_state_hash)
+                );
+            }
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &lfb_for_descendants,
@@ -1144,6 +1159,14 @@ pub fn compute_parents_post_state(
             let merge_ms = merge_started.elapsed().as_millis();
 
             let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            tracing::info!(
+                target: "f1r3.trace.compute_parents_post_state",
+                "[TRACE-COMPUTE-PARENTS-MULTI-PARENT-RESULT] new_state={} merge_ms={} rejected_user_count={} rejected_slash_count={}",
+                hex::encode(state.bytes()),
+                merge_ms,
+                rejected_user_pairs.len(),
+                rejected_slash_pairs.len()
+            );
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
             // Looking up the `Signed<DeployData>` from the block store lets the block

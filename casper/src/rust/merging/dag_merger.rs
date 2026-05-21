@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use hex::ToHex;
 use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
@@ -13,6 +14,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
+use tracing::info;
 
 use super::conflict_set_merger;
 use super::deploy_chain_index::DeployChainIndex;
@@ -399,8 +401,20 @@ pub fn merge(
                 &*reader,
                 &mergeable_chs,
                 |hash: &Blake2b256Hash, channel_changes, number_chs: &NumberChannelsDiff| {
+                    let ch_hex: String = hash.encode_hex();
+                    let in_mergeable = number_chs.contains_key(hash);
+                    info!(
+                        target: "f1r3.trace.dispatcher",
+                        "[TRACE-DISPATCHER] channel={} in_mergeable_chs={} number_chs_size={}",
+                        ch_hex, in_mergeable, number_chs.len()
+                    );
                     if let Some(number_ch_val) = number_chs.get(hash) {
                         let (diff, merge_type) = *number_ch_val;
+                        info!(
+                            target: "f1r3.trace.dispatcher",
+                            "[TRACE-DISPATCHER-FOLD] channel={} merge_type={:?} diff={}",
+                            ch_hex, merge_type, diff
+                        );
                         let base_get_data = |h: &Blake2b256Hash| reader.get_data(h);
                         Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
                             hash,
@@ -410,6 +424,11 @@ pub fn merge(
                             base_get_data,
                         )?))
                     } else {
+                        info!(
+                            target: "f1r3.trace.dispatcher",
+                            "[TRACE-DISPATCHER-FALLBACK] channel={} (not in mergeable_chs)",
+                            ch_hex
+                        );
                         Ok(None)
                     }
                 },
@@ -417,11 +436,31 @@ pub fn merge(
         }
     };
 
-    let apply_trie_actions_fn = |actions| {
+    let lfb_hex: String = lfb_post_state.encode_hex();
+    info!(
+        target: "f1r3.trace.dag_merger",
+        "[TRACE-DAG-MERGE-LFB-POST-STATE] lfb_post_state={}",
+        lfb_hex
+    );
+    let apply_trie_actions_fn = |actions: Vec<_>| {
+        info!(
+            target: "f1r3.trace.dag_merger",
+            "[TRACE-DAG-MERGE-APPLY-ACTIONS] actions_count={}",
+            actions.len()
+        );
         history_repository
             .reset(lfb_post_state)
             .map(|reset_repo| reset_repo.do_checkpoint(actions))
-            .map(|checkpoint| checkpoint.root())
+            .map(|checkpoint| {
+                let root = checkpoint.root();
+                let root_hex: String = root.encode_hex();
+                info!(
+                    target: "f1r3.trace.dag_merger",
+                    "[TRACE-DAG-MERGE-APPLY-RESULT] new_root={}",
+                    root_hex
+                );
+                root
+            })
             .map_err(|e| e.into())
     };
 
