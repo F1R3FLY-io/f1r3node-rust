@@ -101,6 +101,7 @@ pub fn normalize_p_contr<'ast>(
             .par
             .connective_used(name_match_result.par.clone())
             || body_result.par.connective_used(body_result.par.clone()),
+        condition: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
     let updated_par = input.clone().par.prepend_receive(receive);
@@ -206,6 +207,7 @@ mod tests {
             bind_count: 3,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -286,6 +288,7 @@ mod tests {
             bind_count: 1,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);

@@ -1,0 +1,17 @@
+// Match-case `where` guard with fall-through: when the pattern matches
+// but the guard evaluates to anything other than `true` (false, non-bool,
+// or an error), control falls through to the next case.
+//
+// For each input, classifies as "child", "teen", or "adult".
+new classify, stdout(`rho:io:stdout`) in {
+    contract classify(@age) = {
+        match age {
+            n where n < 13 => stdout!(("child", n))
+            n where n < 20 => stdout!(("teen", n))
+            n              => stdout!(("adult", n))
+        }
+    } |
+    classify!(8)  |
+    classify!(15) |
+    classify!(40)
+}

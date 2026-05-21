@@ -18,6 +18,7 @@ pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
         unforgeables: Vec::new(),
         bundles: Vec::new(),
         connectives: Vec::new(),
+        conditionals: Vec::new(),
         locally_free: _locally_free,
         connective_used: _connective_used,
     }
@@ -109,6 +110,11 @@ pub fn concatenate_pars(p: Par, that: Par) -> Par {
             .collect(),
         bundles: that.bundles.into_iter().chain(p.bundles).collect(),
         connectives: that.connectives.into_iter().chain(p.connectives).collect(),
+        conditionals: that
+            .conditionals
+            .into_iter()
+            .chain(p.conditionals)
+            .collect(),
         locally_free: union(that.locally_free, p.locally_free),
         connective_used: that.connective_used || p.connective_used,
     }
