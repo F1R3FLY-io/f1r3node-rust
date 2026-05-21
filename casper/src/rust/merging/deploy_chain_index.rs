@@ -76,6 +76,28 @@ impl DeployChainIndex {
         let state_changes =
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
+        tracing::info!(
+            target: "f1r3.trace.deploy_chain_index",
+            "[TRACE-DEPLOY-CHAIN-INDEX-NEW] source_block={} block_num={} pre_state={} post_state={} deploys_count={} number_channels_count={} datums_changes_count={}",
+            hex::encode(&source_block_hash),
+            source_block_number,
+            hex::encode(pre_state_hash.bytes()),
+            hex::encode(post_state_hash.bytes()),
+            deploys.0.len(),
+            event_log_index.number_channels_data.len(),
+            state_changes.datums_changes.len()
+        );
+        for (ch, (diff, mt)) in event_log_index.number_channels_data.iter() {
+            tracing::info!(
+                target: "f1r3.trace.deploy_chain_index",
+                "[TRACE-DEPLOY-CHAIN-INDEX-CH] source_block={} channel={} merge_type={:?} diff={}",
+                hex::encode(&source_block_hash),
+                hex::encode(ch.bytes()),
+                mt,
+                diff
+            );
+        }
+
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),

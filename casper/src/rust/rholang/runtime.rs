@@ -589,12 +589,39 @@ impl RuntimeOps {
             rspace_plus_plus::rspace::merger::merging_logic::MergeType,
         >,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        tracing::info!(
+            target: "f1r3.trace.classify",
+            "[TRACE-GET-NUMBER-CHANNELS-DATA-ENTRY] tagged_channels_count={}",
+            channels.len()
+        );
         let mut result = BTreeMap::new();
         for (channel, merge_type) in channels {
-            if let Some((hash, value)) = self.get_number_channel(channel, *merge_type).await? {
-                result.insert(hash, (value, *merge_type));
+            match self.get_number_channel(channel, *merge_type).await? {
+                Some((hash, value)) => {
+                    let ch_hex = hex::encode(hash.bytes());
+                    tracing::info!(
+                        target: "f1r3.trace.classify",
+                        "[TRACE-GET-NUMBER-CHANNELS-DATA-INCLUDED] channel={} merge_type={:?} value={}",
+                        ch_hex, merge_type, value
+                    );
+                    result.insert(hash, (value, *merge_type));
+                }
+                None => {
+                    let ch_hash = stable_hash_provider::hash(channel);
+                    let ch_hex = hex::encode(ch_hash.bytes());
+                    tracing::info!(
+                        target: "f1r3.trace.classify",
+                        "[TRACE-GET-NUMBER-CHANNELS-DATA-EXCLUDED] channel={} merge_type={:?} (tagged but no numeric value at observation)",
+                        ch_hex, merge_type
+                    );
+                }
             }
         }
+        tracing::info!(
+            target: "f1r3.trace.classify",
+            "[TRACE-GET-NUMBER-CHANNELS-DATA-EXIT] result_size={}",
+            result.len()
+        );
         Ok(result)
     }
 
@@ -622,12 +649,28 @@ impl RuntimeOps {
         merge_type: MergeType,
     ) -> Result<Option<(Blake2b256Hash, i64)>, CasperError> {
         let ch_values = self.runtime.get_data(channel).await;
+        let ch_hash = stable_hash_provider::hash(channel);
+        let ch_hex = hex::encode(ch_hash.bytes());
+        tracing::info!(
+            target: "f1r3.trace.classify",
+            "[TRACE-GET-NUMBER-CHANNEL] channel={} merge_type={:?} ch_values_len={}",
+            ch_hex, merge_type, ch_values.len()
+        );
 
         if ch_values.is_empty() {
+            tracing::info!(
+                target: "f1r3.trace.classify",
+                "[TRACE-GET-NUMBER-CHANNEL-EMPTY] channel={} merge_type={:?} (no value at observation)",
+                ch_hex, merge_type
+            );
             Ok(None)
         } else {
-            let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
+                tracing::info!(
+                    target: "f1r3.trace.classify",
+                    "[TRACE-GET-NUMBER-CHANNEL-MULTI-DATUM-OBSERVED] channel={} merge_type={:?} ch_values_len={} (HOT store has multi-Datum at observation — sanitize path)",
+                    ch_hex, merge_type, ch_values.len()
+                );
                 // Liveness-first fallback: ambiguous mergeable channel values should not wedge
                 // proposing. Non-numeric values are skipped — they aren't candidates for the
                 // numeric merge path and fall through to existing conflict handling.
@@ -640,7 +683,14 @@ impl RuntimeOps {
 
                 let num = match Self::fold_multi_value(&nums, merge_type) {
                     Some(n) => n,
-                    None => return Ok(None),
+                    None => {
+                        tracing::info!(
+                            target: "f1r3.trace.classify",
+                            "[TRACE-GET-NUMBER-CHANNEL-NO-NUMERIC] channel={} merge_type={:?} (no numeric values among the multi-Datum)",
+                            ch_hex, merge_type
+                        );
+                        return Ok(None);
+                    }
                 };
 
                 tracing::warn!(
@@ -650,6 +700,11 @@ impl RuntimeOps {
                     merge_type,
                     num,
                     hex::encode(ch_hash.clone().bytes()),
+                );
+                tracing::info!(
+                    target: "f1r3.trace.classify",
+                    "[TRACE-GET-NUMBER-CHANNEL-SANITIZED] channel={} merge_type={:?} folded_value={} from {} datums",
+                    ch_hex, merge_type, num, ch_values.len()
                 );
                 metrics::counter!(
                     "mergeable_channel_number_sanitized_total",
@@ -665,8 +720,22 @@ impl RuntimeOps {
             // skipped here and fall through to the existing conflict path.
             let num_par = &ch_values[0].a;
             match RholangMergingLogic::try_get_number_with_rnd(num_par) {
-                Some((num, _)) => Ok(Some((ch_hash, num))),
-                None => Ok(None),
+                Some((num, _)) => {
+                    tracing::info!(
+                        target: "f1r3.trace.classify",
+                        "[TRACE-GET-NUMBER-CHANNEL-NUMERIC] channel={} merge_type={:?} value={}",
+                        ch_hex, merge_type, num
+                    );
+                    Ok(Some((ch_hash, num)))
+                }
+                None => {
+                    tracing::info!(
+                        target: "f1r3.trace.classify",
+                        "[TRACE-GET-NUMBER-CHANNEL-NON-NUMERIC] channel={} merge_type={:?} (single value but non-numeric — excluded from number_channels_data)",
+                        ch_hex, merge_type
+                    );
+                    Ok(None)
+                }
             }
         }
     }

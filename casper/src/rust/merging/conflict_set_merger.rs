@@ -9,6 +9,7 @@ use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
+use hex::ToHex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     combine_mergeable_value, MergeType, NumberChannelsDiff,
 };
@@ -335,27 +336,59 @@ where
     // uses bitwise OR through u64. Branches must agree on merge_type for a given
     // channel; disagreement yields a tagged error so callers reject the merge
     // rather than crashing the validator.
+    info!(
+        target: "f1r3.trace.compute_merged_state",
+        "[TRACE-COMPUTE-MERGED-STATE-ENTRY] to_merge_items_count={}",
+        to_merge_items.len()
+    );
     let mut all_mergeable_channels = NumberChannelsDiff::new();
-    for item in &to_merge_items {
+    for (item_idx, item) in to_merge_items.iter().enumerate() {
         let item_channels = mergeable_channels(item);
+        info!(
+            target: "f1r3.trace.compute_merged_state",
+            "[TRACE-COMPUTE-MERGED-STATE-ITEM] item_idx={} channels_count={}",
+            item_idx, item_channels.len()
+        );
         for (key, value) in item_channels.iter() {
             let (incoming_diff, incoming_mt) = *value;
+            let ch_hex: String = key.encode_hex();
             match all_mergeable_channels.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
+                        info!(
+                            target: "f1r3.trace.compute_merged_state",
+                            "[TRACE-MERGE-TYPE-MISMATCH] channel={} existing={:?} incoming={:?}",
+                            ch_hex, existing.1, incoming_mt
+                        );
                         return Err(HistoryError::MergeError(format!(
                             "MergeType mismatch on channel {:?}: {:?} vs {:?}",
                             key, existing.1, incoming_mt,
                         )));
                     }
+                    let prev = existing.0;
                     existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    info!(
+                        target: "f1r3.trace.compute_merged_state",
+                        "[TRACE-MERGE-CHANNEL-COMBINE] channel={} merge_type={:?} prev_diff={} incoming_diff={} combined_diff={}",
+                        ch_hex, incoming_mt, prev, incoming_diff, existing.0
+                    );
                 }
                 None => {
                     all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
+                    info!(
+                        target: "f1r3.trace.compute_merged_state",
+                        "[TRACE-MERGE-CHANNEL-FIRST] channel={} merge_type={:?} diff={}",
+                        ch_hex, incoming_mt, incoming_diff
+                    );
                 }
             }
         }
     }
+    info!(
+        target: "f1r3.trace.compute_merged_state",
+        "[TRACE-COMPUTE-MERGED-STATE-AGGREGATED] total_mergeable_channels={}",
+        all_mergeable_channels.len()
+    );
 
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =

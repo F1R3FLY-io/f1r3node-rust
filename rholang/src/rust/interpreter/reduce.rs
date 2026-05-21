@@ -31,6 +31,7 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
@@ -783,6 +784,13 @@ impl DebruijnInterpreter {
 
     async fn update_mergeable_channels(&self, chan: &Par) -> () {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
+            let ch_hash = stable_hash_provider::hash(chan);
+            let ch_hex = hex::encode(ch_hash.bytes());
+            tracing::info!(
+                target: "f1r3.trace.classify",
+                "[TRACE-UPDATE-MERGEABLE-CHANNELS] channel={} merge_type={:?} (classified by tag match)",
+                ch_hex, merge_type
+            );
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
         }

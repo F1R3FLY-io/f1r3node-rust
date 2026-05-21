@@ -1,6 +1,8 @@
 // See rspace/src/main/scala/coop/rchain/rspace/merger/StateChangeMerger.scala
 
+use hex::ToHex;
 use shared::rust::ByteVector;
+use tracing::info;
 
 use super::channel_change::ChannelChange;
 use super::merging_logic::NumberChannelsDiff;
@@ -42,6 +44,22 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         &NumberChannelsDiff,
     ) -> Result<Option<HotStoreTrieAction<C, P, A, K>>, HistoryError>,
 ) -> Result<Vec<HotStoreTrieAction<C, P, A, K>>, HistoryError> {
+    info!(
+        target: "f1r3.trace.merger",
+        "[TRACE-COMPUTE-TRIE-ACTIONS-ENTRY] datums_channels={} cont_channels={} joins_channels={} mergeable_chs={}",
+        changes.datums_changes.len(),
+        changes.cont_changes.len(),
+        changes.consume_channels_to_join_serialized_map.len(),
+        mergeable_chs.len()
+    );
+    for (ch, (diff, mt)) in mergeable_chs.iter() {
+        let ch_hex: String = ch.encode_hex();
+        info!(
+            target: "f1r3.trace.merger",
+            "[TRACE-MERGEABLE-CH-ENTRY] channel={} merge_type={:?} diff={}",
+            ch_hex, mt, diff
+        );
+    }
     // Sort continuation changes by hash of consume channels for deterministic
     // ordering
     let mut cont_changes_sorted: Vec<_> = changes
@@ -130,7 +148,29 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
     let produce_trie_actions = datums_changes_sorted
         .iter()
         .map(|(history_pointer, changes)| {
+            let ch_hex: String = history_pointer.encode_hex();
+            info!(
+                target: "f1r3.trace.merger",
+                "[TRACE-PER-CHANNEL-DATUM-CHANGE] channel={} added_len={} removed_len={} in_mergeable_chs={}",
+                ch_hex,
+                changes.added.len(),
+                changes.removed.len(),
+                mergeable_chs.contains_key(history_pointer)
+            );
             handle_channel_change(history_pointer, changes, mergeable_chs).and_then(|action| {
+                if action.is_some() {
+                    info!(
+                        target: "f1r3.trace.merger",
+                        "[TRACE-DISPATCH-DECISION] channel={} path=fold",
+                        ch_hex
+                    );
+                } else {
+                    info!(
+                        target: "f1r3.trace.merger",
+                        "[TRACE-DISPATCH-DECISION] channel={} path=fallback_multiset",
+                        ch_hex
+                    );
+                }
                 action.map(Ok).unwrap_or_else(|| {
                     make_trie_action(
                         history_pointer,
@@ -242,6 +282,7 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
     update_action: impl Fn(&Blake2b256Hash, Vec<ByteVector>) -> HotStoreTrieAction<C, P, A, K>,
 ) -> Result<HotStoreTrieAction<C, P, A, K>, HistoryError> {
     let init = init_value(history_pointer)?;
+    let ch_hex: String = history_pointer.encode_hex();
 
     let new_val = {
         // Use multiset diff: remove each item in 'removed' exactly once from 'init'
@@ -250,13 +291,41 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         result
     };
 
+    info!(
+        target: "f1r3.trace.merger",
+        "[TRACE-MAKE-TRIE-ACTION] channel={} init_len={} added_len={} removed_len={} new_val_len={}",
+        ch_hex, init.len(), changes.added.len(), changes.removed.len(), new_val.len()
+    );
+    if new_val.len() > 1 {
+        info!(
+            target: "f1r3.trace.merger",
+            "[TRACE-MAKE-TRIE-ACTION-MULTI] channel={} new_val_len={} (this writes multi-Datum)",
+            ch_hex, new_val.len()
+        );
+    }
+
     if new_val.is_empty() && !init.is_empty() {
+        info!(
+            target: "f1r3.trace.merger",
+            "[TRACE-MAKE-TRIE-ACTION-RESULT] channel={} case=remove",
+            ch_hex
+        );
         // Case 1: All items present in base are removed - remove action
         Ok(remove_action(history_pointer))
     } else if init != new_val {
+        info!(
+            target: "f1r3.trace.merger",
+            "[TRACE-MAKE-TRIE-ACTION-RESULT] channel={} case=update new_val_len={}",
+            ch_hex, new_val.len()
+        );
         // Case 2: Items were updated - update action
         Ok(update_action(history_pointer, new_val))
     } else {
+        info!(
+            target: "f1r3.trace.merger",
+            "[TRACE-MAKE-TRIE-ACTION-RESULT] channel={} case=no-change-error",
+            ch_hex
+        );
         // Case 3: Error case - no changes
         Err(HistoryError::MergeError(
             "Merging logic error: empty channel change for produce or join when computing trie \

@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{Level, debug};
+use tracing::{Level, debug, info};
+use hex::ToHex;
 
 use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
@@ -130,6 +131,12 @@ where
     ) -> (ColdAction, HistoryAction) {
         match action {
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertProduce channel={} data_len={}",
+                    channel_hex, i.data.len()
+                );
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
                 let data_leaf_encoded = bincode::serialize(&data_leaf)
@@ -145,6 +152,12 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertConsume channels_hash={} cont_len={}",
+                    channel_hex, i.continuations.len()
+                );
                 let data = encode_continuations(&i.continuations);
                 let continuations_leaf = ContinuationsLeaf { bytes: data };
                 let continuations_leaf_encoded = bincode::serialize(&continuations_leaf)
@@ -163,6 +176,12 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertJoins channel={} joins_len={}",
+                    channel_hex, i.joins.len()
+                );
                 let data = encode_joins(&i.joins);
                 let joins_leaf = JoinsLeaf { bytes: data };
                 let joins_leaf_encoded = bincode::serialize(&joins_leaf)
@@ -178,6 +197,19 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertBinaryProduce channel={} data_len={}",
+                    channel_hex, i.data.len()
+                );
+                if i.data.len() > 1 {
+                    info!(
+                        target: "f1r3.trace.trie_write",
+                        "[TRACE-TRIE-WRITE-MULTI] channel={} multi_datum_write data_len={}",
+                        channel_hex, i.data.len()
+                    );
+                }
                 // Sort data before serializing for deterministic hashing regardless of
                 // insertion order
                 let mut sorted_data = i.data.clone();
@@ -198,6 +230,12 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertBinaryConsume channels_hash={} cont_len={}",
+                    channel_hex, i.continuations.len()
+                );
                 // Sort continuations before serializing for deterministic hashing regardless of
                 // insertion order
                 let mut sorted_continuations = i.continuations.clone();
@@ -221,6 +259,12 @@ where
                 )
             }
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(i)) => {
+                let channel_hex: String = i.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieInsertBinaryJoins channel={} joins_len={}",
+                    channel_hex, i.joins.len()
+                );
                 // Sort joins before serializing for deterministic hashing regardless of
                 // insertion order
                 let mut sorted_joins = i.joins.clone();
@@ -240,24 +284,48 @@ where
                     }),
                 )
             }
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(d)) => (
-                (d.hash.clone(), None),
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_DATUM, &d.hash.bytes()),
-                }),
-            ),
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(d)) => (
-                (d.hash.clone(), None),
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_KONT, &d.hash.bytes()),
-                }),
-            ),
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(d)) => (
-                (d.hash.clone(), None),
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_JOINS, &d.hash.bytes()),
-                }),
-            ),
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(d)) => {
+                let channel_hex: String = d.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieDeleteProduce channel={}",
+                    channel_hex
+                );
+                (
+                    (d.hash.clone(), None),
+                    HistoryAction::Delete(DeleteAction {
+                        key: prepend_bytes(PREFIX_DATUM, &d.hash.bytes()),
+                    }),
+                )
+            }
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(d)) => {
+                let channel_hex: String = d.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieDeleteConsume channels_hash={}",
+                    channel_hex
+                );
+                (
+                    (d.hash.clone(), None),
+                    HistoryAction::Delete(DeleteAction {
+                        key: prepend_bytes(PREFIX_KONT, &d.hash.bytes()),
+                    }),
+                )
+            }
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(d)) => {
+                let channel_hex: String = d.hash.encode_hex();
+                info!(
+                    target: "f1r3.trace.trie_write",
+                    "[TRACE-TRIE-WRITE] action=TrieDeleteJoins channel={}",
+                    channel_hex
+                );
+                (
+                    (d.hash.clone(), None),
+                    HistoryAction::Delete(DeleteAction {
+                        key: prepend_bytes(PREFIX_JOINS, &d.hash.bytes()),
+                    }),
+                )
+            }
         }
     }
 
@@ -342,6 +410,11 @@ where
         &self,
         trie_actions: Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static> {
+        info!(
+            target: "f1r3.trace.checkpoint",
+            "[TRACE-CHECKPOINT-ENTRY] trie_actions_count={}",
+            trie_actions.len()
+        );
         if trie_actions.is_empty() {
             return self.checkpoint_noop_clone();
         }
@@ -407,6 +480,12 @@ where
 
         let new_root = new_history.root();
         store_root(&new_root).expect("History Repository Impl: Unable to store root");
+        let new_root_hex: String = new_root.encode_hex();
+        info!(
+            target: "f1r3.trace.checkpoint",
+            "[TRACE-CHECKPOINT-EXIT] new_root={}",
+            new_root_hex
+        );
 
         ();
 
