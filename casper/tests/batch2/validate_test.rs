@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::{
-    InsertMode, KeyValueDagRepresentation,
-};
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};

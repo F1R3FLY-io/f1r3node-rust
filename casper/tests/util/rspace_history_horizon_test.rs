@@ -2,7 +2,6 @@
 // reachability calculation. See `casper/src/rust/util/rspace_history_horizon.rs`
 // for the production code under test.
 
-use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper::CasperShardConf;

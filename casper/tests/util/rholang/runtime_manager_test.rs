@@ -1813,7 +1813,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -2136,7 +2136,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -2162,7 +2162,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -2874,7 +2874,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -2900,7 +2900,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),

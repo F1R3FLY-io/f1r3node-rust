@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::estimator::Estimator;
 use models::rust::casper::protocol::casper_message::Bond;
 

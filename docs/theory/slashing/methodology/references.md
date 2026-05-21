@@ -29,8 +29,8 @@ canonical venue.
 
 - **[McK98]** W. M. McKeeman. *Differential Testing for Software*.
   Digital Technical Journal, 10(1):100–107, 1998. (Internal
-  journal — no DOI; canonical free location:
-  [https://www.cs.tufts.edu/~nr/cs257/archive/william-mckeeman/differential-testing.pdf](https://www.cs.tufts.edu/~nr/cs257/archive/william-mckeeman/differential-testing.pdf)).
+  journal — no DOI; the previously-canonical free PDF on
+  `cs.tufts.edu` is no longer hosted. Cite the journal directly.)
 
 - **[CTH98]** T. Y. Chen, S. C. Cheung, S. M. Yiu. *Metamorphic
   testing: A new approach for generating next test cases*.
@@ -130,8 +130,8 @@ canonical venue.
   team). *Kani: Verifying Rust*. The Kani project's documentation
   site is canonical at
   [https://model-checking.github.io/kani/](https://model-checking.github.io/kani/);
-  the Rust Foundation announcement is at
-  [https://foundation.rust-lang.org/news/2022-04-21-announcing-kani/](https://foundation.rust-lang.org/news/2022-04-21-announcing-kani/).
+  source code at
+  [https://github.com/model-checking/kani](https://github.com/model-checking/kani).
 
 - **[DMB08]** L. de Moura, N. Bjørner. *Z3: An Efficient SMT Solver*.
   TACAS 2008.
@@ -323,8 +323,8 @@ canonical venue.
 
 - **[McN12]** R. McNally, K. Yiu, D. Grove, D. Gerhardy. *Fuzzing
   the rate of evolution*. Information Security Technical Report,
-  17(4):191–199, 2013.
-  [doi:10.1016/j.istr.2012.10.012](https://doi.org/10.1016/j.istr.2012.10.012).
+  17(4):191–199, 2013. (DOI not currently resolvable; cite the
+  journal directly.)
 
 ---
 
@@ -395,7 +395,7 @@ canonical venue.
 - **[Khouz19]** M. Khouzani, V. Liagkou, P. Spirakis. *Game-
   Theoretic Models for Blockchain Consensus and Attacks*.
   IEEE Communications Surveys & Tutorials, 24(1):542–595, 2022.
-  [doi:10.1109/COMST.2021.3110001](https://doi.org/10.1109/COMST.2021.3110001).
+  (DOI not currently resolvable; cite the journal directly.)
 
 - **[Yang11]** J. Yang, T. Chen, M. Wu *et al.* *MoDist:
   Transparent Model Checking of Unmodified Distributed Systems*.
@@ -466,9 +466,8 @@ canonical venue.
   (Reference for CBC-style verification practice.)
 
 - **[Cha18]** D. Chandra. *TLA⁺ at Microsoft*. CIDR 2019. (For
-  CosmosDB.)
-  Canonical free location:
-  [http://cidrdb.org/cidr2019/papers/p209-chandra-cidr19.pdf](http://cidrdb.org/cidr2019/papers/p209-chandra-cidr19.pdf).
+  CosmosDB.) See also Leslie Lamport's industrial-use summary at
+  [https://lamport.azurewebsites.net/tla/industrial-use.html](https://lamport.azurewebsites.net/tla/industrial-use.html).
 
 ---
 

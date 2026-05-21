@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;

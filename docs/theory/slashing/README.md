@@ -191,7 +191,7 @@ done
 
 ## Related documents
 
-- GitHub issue [`F1R3FLY-io/f1r3node-rust#25`](https://github.com/F1R3FLY-io/f1r3fly-rust/issues/25)
+- GitHub issue [`F1R3FLY-io/f1r3node-rust#25`](https://github.com/F1R3FLY-io/f1r3node-rust/issues/25)
   — original tracking issue for slashing documentation, test porting, and known gaps.
 - `docs/casper/BYZANTINE_FAULT_TOLERANCE.md` — broader BFT model context.
 - `docs/casper/CONSENSUS_PROTOCOL.md` — overall consensus protocol description.

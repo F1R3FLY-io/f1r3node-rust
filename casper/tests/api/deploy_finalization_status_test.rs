@@ -3,7 +3,7 @@
 // single-node TestNode fixture.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::api::block_api::BlockAPI;
