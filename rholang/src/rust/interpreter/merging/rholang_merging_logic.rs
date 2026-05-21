@@ -6,7 +6,6 @@ use std::hash::Hash;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use hex::ToHex;
 use indexmap::IndexSet;
-use tracing::info;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -19,6 +18,7 @@ use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
+use tracing::info;
 
 use crate::rust::interpreter::rho_type::RhoNumber;
 

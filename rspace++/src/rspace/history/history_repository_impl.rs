@@ -1,11 +1,11 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
+use hex::ToHex;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug, info};
-use hex::ToHex;
 
 use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
