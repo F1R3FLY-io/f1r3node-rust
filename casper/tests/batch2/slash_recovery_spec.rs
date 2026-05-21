@@ -24,8 +24,34 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
+        // The default `GenesisBuilder::create_bonds` formula
+        // `(i as i64) * 2 + 1` puts validator 0 at stake 1, which is
+        // exactly the genesis `minimum_bond`. With deductions from the
+        // genesis PoS Rholang initialization, validator 0 ends up at
+        // stake 0 (unbonded), which then trips
+        // `slashing_authorization::validate_received_slash_deploys`'s
+        // `TargetNotBonded` guard when an honest validator tries to
+        // slash validator 0 for equivocating. The dev-side tests in
+        // this file assume the equivocator is bonded — so use a custom
+        // bonds_function that gives every validator a comfortably-bonded
+        // stake (well above `minimum_bond = 1`).
+        //
+        // 100 is arbitrary but chosen so that even after a "slash to 0"
+        // and PoS reward redistribution, the active-validator
+        // accounting stays clearly separated. 4 default validators are
+        // built by `build_genesis_parameters_with_defaults(_, None)`.
+        fn bonds_function(
+            validators: Vec<crypto::rust::public_key::PublicKey>,
+        ) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64> {
+            validators
+                .into_iter()
+                .zip(vec![100i64, 100, 100, 100])
+                .collect()
+        }
+        let parameters =
+            GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .expect("Failed to build genesis");
         let shard_id = genesis.genesis_block.shard_id.clone();

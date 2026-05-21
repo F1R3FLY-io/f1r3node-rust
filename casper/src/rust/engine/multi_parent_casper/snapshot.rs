@@ -142,24 +142,78 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
     } else {
-        let reference_bonds = sorted_parents_list
-            .iter()
-            .max_by(|a, b| {
-                a.body
-                    .state
-                    .block_number
-                    .cmp(&b.body.state.block_number)
-                    .then_with(|| a.block_hash.cmp(&b.block_hash))
-            })
-            .expect("sorted_parents_list is non-empty after is_empty() check")
-            .body
-            .state
-            .bonds
-            .clone();
+        // Filter parents to the most-slashed (smallest) consistent
+        // validator-set view.
+        //
+        // The original incarnation of this filter compared the full
+        // `Vec<Bond>` (including exact stake amounts) of every parent
+        // against the max-height parent's bonds. That had two bugs:
+        //
+        //   1. It conflated stake-amount drift with bond-set drift.
+        //      Each block's `CloseBlockDeploy` pays PoS rewards to its
+        //      creator, so sibling blocks from different creators never
+        //      have identical stake *amounts* even when the bonded set
+        //      is the same. The hazard the filter is meant to guard
+        //      against is a parent with a *stale view of who is
+        //      bonded* (e.g. a genesis slot sneaking in beside h=N
+        //      blocks where a slash has already zeroed an equivocator),
+        //      not stake-amount divergence.
+        //
+        //   2. Picking the max-height parent as the reference is unsafe
+        //      when siblings include both pre-slash and post-slash
+        //      blocks at the same height. The equivocator's own valid
+        //      block (e.g. `signed_block` in
+        //      `casper/tests/batch2/slash_recovery_spec.rs`) has the
+        //      pre-slash validator set as a *superset* of the
+        //      slashing-sibling's set; max-height tiebreaks via hash
+        //      can make the pre-slash block the reference and then
+        //      drop the post-slash siblings. The pre-slash block is
+        //      the stale one — we should drop *it*, not the
+        //      slashing-aware blocks.
+        //
+        // Fix: compute the intersection of all parents' bonded-validator
+        // sets. The intersection is the "most-slashed" view — any
+        // validator missing from one parent's set is taken to be
+        // slashed-out, regardless of which sibling chose to apply the
+        // slash. Then keep only parents whose bonded set equals this
+        // intersection, i.e. parents that have actually applied every
+        // slash visible to the consensus snapshot. Pre-slash siblings
+        // with extra validators are dropped as stale.
+        let validator_set_of = |block: &BlockMessage| -> std::collections::BTreeSet<
+            models::rust::validator::Validator,
+        > {
+            block
+                .body
+                .state
+                .bonds
+                .iter()
+                .filter(|b| b.stake > 0)
+                .map(|b| b.validator.clone())
+                .collect()
+        };
+
+        let parent_validator_sets: Vec<
+            std::collections::BTreeSet<models::rust::validator::Validator>,
+        > = sorted_parents_list.iter().map(validator_set_of).collect();
+
+        let intersection: std::collections::BTreeSet<models::rust::validator::Validator> =
+            parent_validator_sets
+                .iter()
+                .skip(1)
+                .fold(parent_validator_sets[0].clone(), |acc, set| {
+                    acc.intersection(set).cloned().collect()
+                });
 
         sorted_parents_list
             .into_iter()
-            .filter(|block| block.body.state.bonds == reference_bonds)
+            .zip(parent_validator_sets.into_iter())
+            .filter_map(|(block, set)| {
+                if set == intersection {
+                    Some(block)
+                } else {
+                    None
+                }
+            })
             .collect()
     };
 
@@ -243,18 +297,30 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let justifications = {
         let bonded_validators = &on_chain_state.bonds_map;
 
-        valid_latest_metas
+        // Include justifications for ALL bonded validators based on their
+        // *unfiltered* latest_messages, valid OR invalid. The proposer must
+        // satisfy `justification_follows` (T-9.7), which requires every
+        // bonded validator to appear in the block's justifications.
+        // Filtering to only `valid_latest_metas` here would drop the
+        // equivocator's slot from the snapshot, so the proposer's resulting
+        // block would lack the equivocator's justification and be flagged
+        // `InvalidFollows` downstream — even though parent-selection /
+        // fork-choice correctly use `valid_latest_metas` only.
+        //
+        // This pairs with the LMM-for-invalid-blocks invariant documented
+        // at `block-storage/src/rust/dag/block_dag_key_value_storage.rs`'s
+        // `new_latest_messages` closure: invalid blocks advance LMM
+        // precisely so the equivocator's slot is reachable here, and
+        // `justification_follows` (validator-side) plus
+        // `check_neglected_equivocations_with_update` (T-9.7 detection)
+        // can both work.
+        latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| bonded_validators.contains_key(*validator))
-            .map(
-                |(validator, block_metadata): (
-                    &Validator,
-                    &models::rust::block_metadata::BlockMetadata,
-                )| Justification {
-                    validator: validator.clone(),
-                    latest_block_hash: block_metadata.block_hash.clone(),
-                },
-            )
+            .map(|(validator, hash)| Justification {
+                validator: validator.clone(),
+                latest_block_hash: hash.clone(),
+            })
             .collect::<HashSet<_>>()
     };
 
