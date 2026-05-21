@@ -255,7 +255,7 @@ impl BlockMetadataStore {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "BlockMetadataStore is missing key {}",
-                PrettyPrinter::build_string_bytes(hash)
+                PrettyPrinter::build_string_bytes(&hash.to_vec())
             ))
         })
     }

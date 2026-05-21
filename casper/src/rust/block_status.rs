@@ -210,7 +210,7 @@ impl InvalidBlock {
             // IgnorableEquivocation is now slashable per Bug #1 (§9.1). On
             // dev this variant was a known DOS-vector TODO — equivocations
             // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`multi_parent_casper_impl::handle_*`)
+            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
             // now mints an EquivocationRecord whenever this branch fires.
             | InvalidBlock::IgnorableEquivocation => true,
 

@@ -124,6 +124,7 @@ impl TestContext {
             justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {
@@ -210,6 +211,7 @@ impl TestContext {
             runtime_manager,
             block_data,
             HashMap::new(),
+            None,
         )
         .await
     }
@@ -473,6 +475,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -635,6 +638,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -869,6 +873,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &block_store,
             &mut casper_snapshot,
             &mut runtime_manager,
+            None,
         )
         .await
         .expect("Failed to validate block checkpoint");
@@ -935,6 +940,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -968,6 +974,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1050,6 +1057,7 @@ contract @"recursionTest"(@list) = {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1083,6 +1091,7 @@ contract @"recursionTest"(@list) = {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1169,6 +1178,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1202,6 +1212,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1284,6 +1295,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1317,6 +1329,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1391,6 +1404,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1425,6 +1439,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");
@@ -1489,6 +1504,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1538,6 +1554,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1618,6 +1635,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1652,6 +1670,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");

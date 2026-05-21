@@ -384,7 +384,6 @@ If implementing the spawned tasks approach in the future:
 
 ## Related Documentation
 
-- [Scala LFS Tuple Space Requester](../../casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala)
 - [Rust LFS Tuple Space Requester](../../casper/src/rust/engine/lfs_tuple_space_requester.rs)
 - [Initializing Spec Tests](../../casper/tests/engine/initializing_spec.rs)
 

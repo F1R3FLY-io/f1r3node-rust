@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
@@ -25,9 +26,9 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -47,7 +48,7 @@ pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
 /// disables the parent-count cap. C15 / Smell-3: hoisted from two
 /// duplicate `const UNLIMITED_PARENTS: i32 = -1;` definitions (one in
-/// `validate.rs` and one in `casper_engine/snapshot.rs`) so the wire
+/// `validate.rs` and one in `engine/multi_parent_casper/snapshot.rs`) so the wire
 /// convention has a single source of truth. NOTE: this is the
 /// config-parsing convention; the `Estimator::UNLIMITED_PARENTS`
 /// (`i32::MAX`) sentinel used internally by the GHOST estimator is
@@ -165,7 +166,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>>;
+    /// Read-only access to the shard configuration. Used by APIs that need
+    /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
+    /// finalization status.
+    fn casper_shard_conf(&self) -> &CasperShardConf;
+
+    fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
 
@@ -187,11 +193,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
     casper_shard_conf: CasperShardConf,
@@ -206,6 +213,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -244,6 +252,11 @@ pub struct CasperSnapshot {
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
     pub deploys_in_scope: Arc<DashSet<Bytes>>,
+    /// Signatures of deploys that appeared in a merge block's rejected_deploys list
+    /// within the ancestry window. Intersects with `deploys_in_scope` when a deploy
+    /// was executed in one block and rejected during a descendant merge; the block
+    /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
+    pub rejected_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -260,6 +273,7 @@ impl CasperSnapshot {
             justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
@@ -336,21 +350,17 @@ pub struct CasperShardConf {
     pub native_token_decimals: u32,
     /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
     /// `compute_last_finalized_block` call. Previously a hardcoded
-    /// 15-second constant in `casper_engine/finalization_runner.rs`;
+    /// 15-second constant in `engine/multi_parent_casper/finalization_runner.rs`;
     /// lifted to configuration so operators can extend the budget for
     /// deep-DAG finalization sweeps without recompiling.
     pub finalizer_blocking_timeout: Duration,
     /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
     /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
-    /// constant in `casper_engine/types.rs`; lifted to configuration so
+    /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
     /// operators can size the cache for their validator set without
     /// recompiling. Distinct from the `runtime_manager`'s own 256-entry
     /// validator-key cache.
     pub active_validators_cache_max_entries: usize,
-}
-
-impl Default for CasperShardConf {
-    fn default() -> Self { Self::new() }
 }
 
 impl CasperShardConf {
@@ -571,7 +581,9 @@ pub mod test_helpers {
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-        fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
+        fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+        fn runtime_manager(&self) -> Arc<RuntimeManager> {
             unimplemented!("runtime_manager not needed for heartbeat tests")
         }
 

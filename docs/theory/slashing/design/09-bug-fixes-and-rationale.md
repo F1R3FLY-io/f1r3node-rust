@@ -51,8 +51,8 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | Bug | Theorem | Production location                                                  |
 > |-----|---------|----------------------------------------------------------------------|
 > | #1  | T-9.1   | `block_status.rs:191` — `IgnorableEquivocation` in `is_slashable()`  |
-> | #2  | T-9.2   | `multi_parent_casper_impl.rs:1056` — RMW via `access_equivocations_tracker` |
-> | #3  | T-9.3   | `multi_parent_casper_impl.rs:1105` — `status if status.is_slashable()` catch-all |
+> | #2  | T-9.2   | `engine/multi_parent_casper/mod.rs:1056` — RMW via `access_equivocations_tracker` |
+> | #3  | T-9.3   | `engine/multi_parent_casper/mod.rs:1105` — `status if status.is_slashable()` catch-all |
 > | #4  | T-9.4   | `PoS.rhox:487-509` — `match transferResult` with deterministic failure |
 > | #5  | T-9.5   | `equivocation_detector.rs:184` — `if stake > 0` guard                |
 > | #6  | T-9.6   | `validate.rs:875-898` — self-regression filter dropped               |
@@ -77,7 +77,7 @@ vector if not fixed."*
 **Cause.** Pre-fix, `IgnorableEquivocation` is *not* in
 `is_slashable() = ⊤`. Equivocations that arrive *unsolicited* (no
 other block cites them) are silently dropped at
-`multi_parent_casper_impl.rs:1077-1088` with only a `tracing::info!`
+`engine/multi_parent_casper/mod.rs:1077-1088` with only a `tracing::info!`
 log. A Byzantine validator can flood the network with such blocks
 without economic cost.
 
@@ -107,7 +107,7 @@ the offender their entire bond.
 
 **Origin.** Rust-introduced regression.
 
-**Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
+**Cause.** `engine/multi_parent_casper/mod.rs:1046-1075` reads then writes
 the equivocation tracker without a lock, allowing two threads
 processing `AdmissibleEquivocation` for the same `(validator,
 baseSeqNum)` to both observe `record-absent` and both insert,
@@ -145,7 +145,7 @@ catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)`
 arm only invokes `handleInvalidBlockEffect` (mark-invalid +
 buffer-remove); no `EquivocationRecord` is created.
 
-**Cause.** `multi_parent_casper_impl.rs:1090-1099` carries
+**Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` carries
 *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
 The 15 non-equivocation slashable variants (`JustificationRegression`,
 `InvalidBondsCache`, `NeglectedInvalidBlock`, etc.) only get marked

@@ -367,13 +367,15 @@ impl HasLocallyFree<VarInstance> for VarInstance {
 
 impl HasLocallyFree<Var> for Var {
     fn connective_used(&self, v: Var) -> bool {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .connective_used(v.var_instance.unwrap())
     }
 
     fn locally_free(&self, v: Var, depth: i32) -> Vec<u8> {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .locally_free(v.var_instance.unwrap(), depth)
     }
@@ -399,7 +401,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().connective_used(v.unwrap()),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().connective_used(v.unwrap()),
             Some(ENotBody(ENot { p })) => p.unwrap().connective_used,
             Some(ENegBody(ENeg { p })) => p.unwrap().connective_used,
 
@@ -479,7 +481,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.locally_free,
             Some(EZipperBody(e)) => e.locally_free,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().locally_free(v.unwrap(), depth),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().locally_free(v.unwrap(), depth),
             Some(ENotBody(ENot { p })) => p.unwrap().locally_free,
             Some(ENegBody(ENeg { p })) => p.unwrap().locally_free,
 

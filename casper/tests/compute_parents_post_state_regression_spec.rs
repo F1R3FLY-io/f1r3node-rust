@@ -128,6 +128,7 @@ async fn step_block(
             runtime_manager,
             BlockData::from_block(block),
             HashMap::new(),
+            None,
         )
         .await?;
 
@@ -198,7 +199,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -319,14 +320,16 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     );
     snapshot_without_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
 
-    let (state_without_skew, rejected_without_skew) = compute_parents_post_state(
-        &block_store,
-        parents.clone(),
-        &snapshot_without_skew,
-        &runtime_manager,
-        None,
-    )
-    .expect("Failed to compute parents post-state without finalized skew");
+    let (state_without_skew, rejected_without_skew, _rejected_slashes) =
+        compute_parents_post_state(
+            &block_store,
+            parents.clone(),
+            &snapshot_without_skew,
+            &runtime_manager,
+            None,
+            None,
+        )
+        .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
@@ -345,11 +348,12 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
-    let (state_with_skew, rejected_with_skew) = compute_parents_post_state(
+    let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        None,
         None,
     )
     .expect("Failed to compute parents post-state with finalized skew");
@@ -412,7 +416,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -549,6 +553,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         None,
+        None,
     );
 
     assert!(
@@ -622,7 +627,7 @@ async fn run_visible_blocks_scope_test() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 

@@ -415,7 +415,7 @@ equivalence argument and the 10,896× state-space reduction.
 
 The orchestrator. It composes `Validate`, `EquivocationDetector`, and
 `BlockDagStorage` to process incoming blocks. The critical method is
-`handle_invalid_block(block, ib)` at `multi_parent_casper_impl.rs:1018-1112`:
+`handle_invalid_block(block, ib)` at `engine/multi_parent_casper/mod.rs:1018-1112`:
 
 ```
 match ib with
@@ -918,7 +918,7 @@ formalized in `MainTheorem.v`.
 
 ### 7.2 Pre-fix vs post-fix behavior
 
-The pre-fix pipeline at `multi_parent_casper_impl.rs:1018-1112` exhibits
+The pre-fix pipeline at `engine/multi_parent_casper/mod.rs:1018-1112` exhibits
 three documented gaps that prevent the pipeline from completing for some
 inputs:
 
@@ -1305,7 +1305,7 @@ design*; T-9.9 establishes that the widening is sound.
 ### 10.2 Bug #2 — Lock-free tracker access (Rust regression)
 
 - **Origin.** Rust-introduced regression.
-- **Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
+- **Cause.** `engine/multi_parent_casper/mod.rs:1046-1075` reads then writes
   the equivocation tracker without a lock, allowing two threads
   processing `AdmissibleEquivocation` for the same `(validator,
   baseSeqNum)` to both observe `record-absent` and both insert,
@@ -1347,7 +1347,7 @@ design*; T-9.9 establishes that the widening is sound.
   catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)` arm
   only invokes `handleInvalidBlockEffect` (mark-invalid + buffer-remove);
   no `EquivocationRecord` is created.
-- **Cause.** `multi_parent_casper_impl.rs:1090-1099` carries
+- **Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` carries
   *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
   The 15 non-equivocation slashable variants
   (`JustificationRegression`, `InvalidBondsCache`,
@@ -1886,7 +1886,7 @@ Trace (showing only the slashing-relevant transitions):
 2. validate(bX) = JustificationRegression
 3. is_slashable(JustificationRegression) = TRUE
 
-   Pre-fix dispatcher (multi_parent_casper_impl.rs:1090-1099):
+   Pre-fix dispatcher (engine/multi_parent_casper/mod.rs:1090-1099):
 4. handle_invalid_block_effect(bX, invalid = true)
    ⟶ DAG marks bX invalid; NO EquivocationRecord;
       A continues with bond intact unless a future proposer

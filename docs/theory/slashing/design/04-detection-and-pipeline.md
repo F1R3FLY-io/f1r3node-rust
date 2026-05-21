@@ -197,7 +197,7 @@ are recorded identically.
 ## 4.5 The dispatcher — what happens after `detect`
 
 The `MultiParentCasperImpl.handle_invalid_block` dispatcher (Rust:
-`multi_parent_casper_impl.rs:1018-1112`) receives the verdict and
+`engine/multi_parent_casper/mod.rs:1018-1112`) receives the verdict and
 decides what to do. The relevant branches:
 
 ```

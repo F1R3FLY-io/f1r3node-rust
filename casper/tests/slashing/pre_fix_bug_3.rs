@@ -4,7 +4,7 @@
 // Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
 // Out-of-band approach: this asserts the post-fix invariant that
 // would FAIL on the parent of the bug-#3 fix commit (where
-// multi_parent_casper_impl.rs:1090-1099's catch-all only called
+// engine/multi_parent_casper/mod.rs:1090-1099's catch-all only called
 // `handle_invalid_block_effect` without minting an EquivocationRecord
 // for the 14 non-equivocation slashable variants:
 //   InvalidBlockNumber, InvalidParents, InvalidFollows,

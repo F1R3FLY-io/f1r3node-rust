@@ -1,8 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/Proposer.scala
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
@@ -22,8 +23,8 @@ use crate::rust::blocks::proposer::propose_result::{
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
-use crate::rust::multi_parent_casper_impl::{self};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 use crate::rust::{
@@ -512,6 +513,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -532,7 +534,12 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
             validator_arc.clone(),
         ),
         ProductionHeightChecker::new(validator_arc),
-        ProductionBlockCreator::new(deploy_storage, runtime_manager.clone(), block_store.clone()),
+        ProductionBlockCreator::new(
+            deploy_storage,
+            rejected_deploy_buffer,
+            runtime_manager.clone(),
+            block_store.clone(),
+        ),
         ProductionBlockValidator,
         ProductionProposeEffectHandler::new(
             block_store,
@@ -629,6 +636,7 @@ impl HeightChecker for ProductionHeightChecker {
 
 pub struct ProductionBlockCreator {
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -636,11 +644,13 @@ pub struct ProductionBlockCreator {
 impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {
         Self {
             deploy_storage,
+            rejected_deploy_buffer,
             runtime_manager,
             block_store,
         }
@@ -660,7 +670,8 @@ impl BlockCreator for ProductionBlockCreator {
             validator_identity,
             dummy_deploy_opt,
             self.deploy_storage.clone(),
-            &mut self.runtime_manager,
+            self.rejected_deploy_buffer.clone(),
+            &self.runtime_manager,
             &mut self.block_store,
             allow_empty_blocks,
         )
@@ -754,7 +765,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
     fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError> {
         // Publish BlockCreated event
         self.event_publisher
-            .publish(multi_parent_casper_impl::created_event(block))
+            .publish(created_event(block))
             .map_err(Into::into)
     }
 }

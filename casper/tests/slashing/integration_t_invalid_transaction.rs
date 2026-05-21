@@ -15,7 +15,7 @@
 // runs replay → if computed_post_state_hash != block.body.state.
 // post_state_hash, returns Right(None), which the dispatcher
 // converts to `InvalidTransaction`
-// (multi_parent_casper_impl.rs:570-573).
+// (engine/multi_parent_casper/mod.rs:570-573).
 //
 // Mutating body.state.post_state_hash to a different value (after
 // checkpoint computation but before signing) is the canonical way

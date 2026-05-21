@@ -14,8 +14,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, New, Par,
+    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -31,6 +31,7 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -50,6 +51,12 @@ use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::matcher::has_locally_free::HasLocallyFree;
+use super::metrics_constants::{
+    REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
+    REDUCER_EVAL_NEW_CALLS_METRIC, REDUCER_EVAL_NEW_TIME_NS_METRIC,
+    REDUCER_EVAL_RECEIVE_CALLS_METRIC, REDUCER_EVAL_RECEIVE_TIME_NS_METRIC,
+    REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
+};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
@@ -111,8 +118,8 @@ pub struct DebruijnInterpreter {
     pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
-    pub merge_chs: Arc<RwLock<HashSet<Par>>>,
-    pub mergeable_tag_name: Par,
+    pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
 }
@@ -775,30 +782,61 @@ impl DebruijnInterpreter {
     /* Collect mergeable channels */
 
     async fn update_mergeable_channels(&self, chan: &Par) -> () {
-        let is_mergeable = self.is_mergeable_channel(chan);
-
-        if is_mergeable {
-            {
-                let mut merge_chs_write = self.merge_chs.write().await;
-                merge_chs_write.insert(chan.clone());
-            }
+        if let Some(merge_type) = self.is_mergeable_channel(chan) {
+            let mut merge_chs_write = self.merge_chs.write().await;
+            merge_chs_write.insert(chan.clone(), merge_type);
         }
     }
 
-    fn is_mergeable_channel(&self, chan: &Par) -> bool {
-        let tuple_elms: Vec<Par> = chan
-            .exprs
-            .iter()
-            .flat_map(|y| match &y.expr_instance {
-                Some(expr_instance) => match expr_instance {
-                    ExprInstance::ETupleBody(etuple) => etuple.ps.clone(),
-                    _ => ETuple::default().ps,
-                },
-                None => ETuple::default().ps,
-            })
-            .collect();
+    fn is_mergeable_channel(&self, chan: &Par) -> Option<MergeType> {
+        // Hot path — runs on every channel produce/consume. Borrow the head
+        // Par of the first ETupleBody expression without allocating.
+        metrics::counter!("is-mergeable-channel.calls", "source" => "f1r3fly.rholang.reduce")
+            .increment(1);
 
-        tuple_elms.first() == Some(&self.mergeable_tag_name)
+        let head: Option<&Par> = chan.exprs.iter().find_map(|y| match &y.expr_instance {
+            Some(ExprInstance::ETupleBody(etuple)) => etuple.ps.first(),
+            _ => None,
+        });
+
+        let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
+
+        // Diagnostic trace: every channel write/consume invokes this. Logs
+        // distinguish (a) tuple channels that match a registered tag (mergeable),
+        // (b) tuple channels with a head that ISN'T in the tag registry
+        // (potential bitmask-tag-binding miss), and (c) non-tuple channels
+        // (most channels). Configure with `RUST_LOG=f1r3fly.merge.tag_check=trace`.
+        if let Some(head_par) = head {
+            match result {
+                Some(mt) => tracing::trace!(
+                    target: "f1r3fly.merge.tag_check",
+                    "mergeable channel detected: merge_type={:?}",
+                    mt,
+                ),
+                None => {
+                    use prost::Message;
+                    let head_bytes = head_par.encode_to_vec();
+                    let head_hex: String =
+                        head_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    let tag_hexes: Vec<String> = self
+                        .mergeable_tags
+                        .keys()
+                        .map(|k| {
+                            let bs = k.encode_to_vec();
+                            bs.iter().map(|b| format!("{:02x}", b)).collect()
+                        })
+                        .collect();
+                    tracing::trace!(
+                        target: "f1r3fly.merge.tag_check",
+                        "tuple channel with non-tag head: head_hex={}, registered_tag_hexes={:?}",
+                        head_hex,
+                        tag_hexes,
+                    );
+                }
+            }
+        }
+
+        result
     }
 
     fn aggregate_evaluator_errors(
@@ -848,15 +886,47 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         match term {
-            GeneratedMessage::Send(term) => self.eval_send(term, env, rand).await,
-            GeneratedMessage::Receive(term) => self.eval_receive(term, env, rand).await,
-            GeneratedMessage::New(term) => self.eval_new(term, env.clone(), rand).await,
-            GeneratedMessage::Match(term) => self.eval_match(term, env, rand).await,
+            GeneratedMessage::Send(term) => {
+                metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_send(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::Receive(term) => {
+                metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_receive(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::New(term) => {
+                metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_new(term, env.clone(), rand).await;
+                metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
+            GeneratedMessage::Match(term) => {
+                metrics::counter!(REDUCER_EVAL_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(1);
+                let start = std::time::Instant::now();
+                let result = self.eval_match(term, env, rand).await;
+                metrics::counter!(REDUCER_EVAL_MATCH_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
+                    .increment(start.elapsed().as_nanos() as u64);
+                result
+            }
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.v.unwrap(), env)?;
+                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
                         self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -1031,56 +1101,34 @@ impl DebruijnInterpreter {
             })
         }
 
-        let first_match = Box::new(
-            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
-
-                loop {
-                    let (_target, _cases) = state;
-
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
-
-                        [single_case, case_rem @ ..] => {
-                            let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
-
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
-
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    self.eval(
-                                        single_case.source.clone().unwrap(),
-                                        &add_to_env(env, free_map.clone(), single_case.free_count),
-                                        rand,
-                                    )
-                                    .await?;
-
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
         self.cost.charge(match_eval_cost())?;
         let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        for single_case in mat.cases.iter() {
+            let pattern = self.substitute.substitute_and_charge(
+                &unwrap_option_safe(single_case.pattern.clone())?,
+                1,
+                env,
+            )?;
+
+            let mut spatial_matcher = SpatialMatcherContext::new();
+            if let Some(free_map) =
+                spatial_matcher.spatial_match_result(subst_target.clone(), pattern)
+            {
+                return self
+                    .eval(
+                        single_case.source.clone().unwrap(),
+                        &add_to_env(env, free_map.clone(), single_case.free_count),
+                        rand,
+                    )
+                    .await;
+            }
+        }
+
+        Ok(())
     }
 
     /**
@@ -1148,7 +1196,20 @@ impl DebruijnInterpreter {
                     }
                 } else {
                     match self.urn_map.get(&urn) {
-                        Some(p) => Ok(new_env.put(p.clone())),
+                        Some(p) => {
+                            if urn == "rho:system:bitmaskMergeableTag" {
+                                use prost::Message;
+                                let bytes = p.encode_to_vec();
+                                let hex: String =
+                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                                tracing::info!(
+                                    target: "f1r3fly.merge.tag_check",
+                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
+                                    hex,
+                                );
+                            }
+                            Ok(new_env.put(p.clone()))
+                        }
                         None => Err(InterpreterError::ReduceError(format!(
                             "Unknown urn for new: {}",
                             urn
@@ -2126,7 +2187,7 @@ impl DebruijnInterpreter {
                             self.cost.charge(byte_array_append_cost(lhs.clone()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
-                                    lhs.into_iter().chain(rhs).collect(),
+                                    lhs.into_iter().chain(rhs.into_iter()).collect(),
                                 )),
                             })
                         }
@@ -2135,7 +2196,7 @@ impl DebruijnInterpreter {
                             self.cost.charge(list_append_cost(lhs.clone().ps))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: lhs.ps.into_iter().chain(rhs.ps).collect(),
+                                    ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
                                     locally_free: union(lhs.locally_free, rhs.locally_free),
                                     connective_used: lhs.connective_used || rhs.connective_used,
                                     remainder: None,
@@ -2246,7 +2307,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&(*v).unwrap(), env)?;
+                    let p = self.eval_var(&v.clone().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
@@ -2811,6 +2872,7 @@ impl DebruijnInterpreter {
                         let new_par_set = ParSet::create_from_vec(
                             base_sorted_pars_set
                                 .difference(&other_sorted_pars_set)
+                                .into_iter()
                                 .cloned()
                                 .collect(),
                         );
@@ -3088,7 +3150,7 @@ impl DebruijnInterpreter {
                                         ps: remaining,
                                         locally_free: list.locally_free.clone(),
                                         connective_used: list.connective_used,
-                                        remainder: list.remainder,
+                                        remainder: list.remainder.clone(),
                                     };
                                     let new_par = Par {
                                         exprs: vec![models::rhoapi::Expr {
@@ -6428,7 +6490,7 @@ impl DebruijnInterpreter {
                 remainder: Option<Var>,
             ) -> Result<Par, InterpreterError> {
                 let key_pairs: Vec<Option<(Par, Par)>> =
-                    ps.into_iter().map(RhoTuple2::unapply).collect();
+                    ps.into_iter().map(|p| RhoTuple2::unapply(&p)).collect();
 
                 if key_pairs.iter().any(|pair| !pair.is_some()) {
                     Err(InterpreterError::MethodNotDefined {
@@ -6695,7 +6757,7 @@ impl DebruijnInterpreter {
                 [Expr {
                     expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
                 }] => {
-                    let p = self.eval_var(&unwrap_option_safe(*v)?, env)?;
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                     self.eval_to_i64(&p, env)
                 }
 
@@ -6744,7 +6806,7 @@ impl DebruijnInterpreter {
                 [Expr {
                     expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
                 }] => {
-                    let p = self.eval_var(&unwrap_option_safe(*v)?, env)?;
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                     self.eval_to_bool(&p, env)
                 }
 
@@ -6833,7 +6895,7 @@ impl DebruijnInterpreter {
             .ps
             .iter()
             .map(|p| p.locally_free.clone())
-            .fold(Vec::new(), union);
+            .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         elist
     }
@@ -6843,7 +6905,7 @@ impl DebruijnInterpreter {
             .ps
             .iter()
             .map(|p| p.locally_free.clone())
-            .fold(Vec::new(), union);
+            .fold(Vec::new(), |acc, locally_free| union(acc, locally_free));
 
         etuple
     }
@@ -6877,8 +6939,8 @@ impl DebruijnInterpreter {
     pub fn new(
         space: RhoISpace,
         urn_map: Arc<HashMap<String, Par>>,
-        merge_chs: Arc<RwLock<HashSet<Par>>>,
-        mergeable_tag_name: Par,
+        merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+        mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: _cost,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -6892,7 +6954,7 @@ impl DebruijnInterpreter {
             dispatcher: dispatcher.clone(),
             urn_map,
             merge_chs,
-            mergeable_tag_name,
+            mergeable_tags,
             cost: cost.clone(),
             substitute: Substitute { cost: cost.clone() },
         });

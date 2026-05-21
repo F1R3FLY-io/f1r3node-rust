@@ -86,7 +86,7 @@ Scala source is faulty.
 |----------------------------|-----------------------------------|-------------------------------------------------------------|---------------------------------------------------------------|
 | Equivocation detection     | `slashing-specification.md` §4    | `casper/src/rust/equivocation_detector.rs`                  | `coop/rchain/casper/EquivocationDetector.scala`               |
 | Block validation           | `slashing-specification.md` §3.2  | `casper/src/rust/validate.rs`                               | `coop/rchain/casper/Validate.scala`                           |
-| Casper orchestration       | `slashing-specification.md` §3.3  | `casper/src/rust/multi_parent_casper_impl.rs`               | `coop/rchain/casper/MultiParentCasperImpl.scala`              |
+| Casper orchestration       | `slashing-specification.md` §3.3  | `casper/src/rust/engine/multi_parent_casper/mod.rs`               | `coop/rchain/casper/MultiParentCasperImpl.scala`              |
 | DAG storage                | `slashing-specification.md` §3.4  | `block-storage/src/rust/dag/block_dag_key_value_storage.rs` | `coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala`  |
 | Equivocation tracker store | `slashing-specification.md` §3.5  | `block-storage/src/rust/dag/equivocation_tracker_store.rs`  | `coop/rchain/blockstorage/dag/EquivocationTrackerStore.scala` |
 | Block proposer             | `slashing-specification.md` §3.6  | `casper/src/rust/blocks/proposer/block_creator.rs`          | `coop/rchain/casper/blocks/proposer/BlockCreator.scala`       |

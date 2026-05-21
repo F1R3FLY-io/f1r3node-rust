@@ -46,7 +46,7 @@ impl SystemDeployTrait for CheckBalance {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn process_result(
-        value: <Self::Output as Extractor<Self::Output>>::RustType,
+        value: <Self::Output as Extractor>::RustType,
     ) -> Either<SystemDeployUserError, Self::Result> {
         Either::Right(value)
     }

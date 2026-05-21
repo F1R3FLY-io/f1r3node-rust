@@ -8,10 +8,6 @@ pub struct Env<A: Clone> {
     pub shift: i32,
 }
 
-impl<A: Clone> Default for Env<A> {
-    fn default() -> Self { Self::new() }
-}
-
 impl<A: Clone> Env<A> {
     pub fn new() -> Env<A> {
         Env {

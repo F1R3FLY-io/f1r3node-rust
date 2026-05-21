@@ -1,4 +1,8 @@
-// JNA/FFI bindings — public extern "C" fns intentionally accept raw pointers.
+// FFI boundary -- raw pointer args are required by the Scala JNA caller
+// surface. clippy::not_unsafe_ptr_arg_deref would otherwise force every
+// extern "C" wrapper to be marked unsafe, which would change the Scala
+// side too. This file is slated for removal in the FFI cleanup PR
+// (see docs/sync-todo.md TODO 2).
 #![allow(clippy::not_unsafe_ptr_arg_deref, clippy::unnecessary_unwrap)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};

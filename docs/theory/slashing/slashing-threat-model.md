@@ -264,7 +264,7 @@ is intentionally NOT in the Docker suite, and the reason is stronger
 than "no runtime detector exists" — **the conventional censorship
 threat is structurally undefined in this protocol's wire semantics**.
 Deploys are not gossiped: the deploy gRPC endpoint
-(`casper/src/rust/casper_engine/block_admission.rs:60-94 admit_deploy`)
+(`casper/src/rust/engine/multi_parent_casper/block_admission.rs:60-94 admit_deploy`)
 stores deploys in the local node's `KeyValueDeployStorage`; the block
 creator (`casper/src/rust/blocks/proposer/block_creator.rs:52-130
 prepare_user_deploys`) reads from that same local storage; no code

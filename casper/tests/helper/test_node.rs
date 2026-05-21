@@ -14,11 +14,11 @@ use casper::rust::blocks::proposer::proposer::new_proposer;
 use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -65,6 +65,9 @@ pub struct TestNode {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+    >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
     pub requested_blocks: RequestedBlocks,
@@ -111,6 +114,7 @@ impl TestNode {
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -738,6 +742,12 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
+        // Initialize the shared tracing subscriber once per test process.
+        // Without this, tracing calls in production code are silently
+        // dropped during tests, defeating diagnostic intent. Tests opt
+        // in by going through create_network; RUST_LOG is honored.
+        crate::init_logger();
+
         let test_network = TestNetwork::empty();
 
         // Take the required number of validator keys
@@ -891,6 +901,12 @@ impl TestNode {
                 .unwrap(),
         ));
 
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            resources::key_value_rejected_deploy_buffer_from_dyn(&mut *kvm)
+                .await
+                .unwrap(),
+        ));
+
         let casper_buffer_storage = resources::casper_buffer_storage_from_dyn(&mut *kvm)
             .await
             .unwrap();
@@ -903,7 +919,7 @@ impl TestNode {
         let (runtime_manager, _rho_history_repository) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -938,6 +954,7 @@ impl TestNode {
                 runtime_manager.clone(),
                 block_store.clone(),
                 deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1013,11 +1030,12 @@ impl TestNode {
         let casper_impl = MultiParentCasperImpl {
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
-            runtime_manager: Arc::new(tokio::sync::Mutex::new(runtime_manager.clone())),
+            runtime_manager: Arc::new(runtime_manager.clone()),
             estimator: estimator.clone(),
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1078,6 +1096,7 @@ impl TestNode {
             block_store,
             block_dag_storage,
             deploy_storage,
+            rejected_deploy_buffer,
             runtime_manager,
             requested_blocks,
             connections_cell,

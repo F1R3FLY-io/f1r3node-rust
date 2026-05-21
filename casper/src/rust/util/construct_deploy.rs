@@ -59,7 +59,7 @@ pub fn source_deploy(
         expiration_timestamp: None,
     };
 
-    Signed::create(data, Box::new(Secp256k1), sec).map_err(CasperError::SigningError)
+    Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
 }
 
 pub fn source_deploy_now(

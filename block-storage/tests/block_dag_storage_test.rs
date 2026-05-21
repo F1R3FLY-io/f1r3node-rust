@@ -466,7 +466,11 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 }
 
 #[test]
-fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_sender() {
+fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender() {
+    // Inserting an invalid block with an advancing sequence number updates the
+    // sender's latest message. Required for equivocation detection via
+    // `invalid_latest_messages` to fire on validators that have a prior valid
+    // block.
     let genesis = genesis_block();
     let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
@@ -521,11 +525,14 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
         .expect("dag representation");
     assert_eq!(
         dag.latest_message_hash(&valid_block.sender),
-        Some(valid_block.block_hash.clone())
+        Some(invalid_block.block_hash.clone())
     );
 
     let invalid_latest_messages = dag.invalid_latest_messages().unwrap();
-    assert!(!invalid_latest_messages.contains_key(&valid_block.sender));
+    assert_eq!(
+        invalid_latest_messages.get(&valid_block.sender),
+        Some(&invalid_block.block_hash)
+    );
 }
 
 #[test]

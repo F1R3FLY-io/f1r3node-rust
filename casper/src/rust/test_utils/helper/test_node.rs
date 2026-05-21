@@ -45,10 +45,10 @@ use crate::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::engine_with_casper::EngineWithCasper;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::genesis::genesis::Genesis;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
 use crate::rust::test_utils::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::rust::test_utils::util::comm::transport_layer_test_impl::{
@@ -87,6 +87,9 @@ pub struct TestNode {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
+    pub rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+    >,
     // Note: Removed comm_util field, will use transport_layer directly
     pub block_retriever: BlockRetriever<TransportLayerTestImpl>,
     // TODO: pub metrics: Metrics,
@@ -167,6 +170,7 @@ impl TestNode {
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -1026,6 +1030,12 @@ impl TestNode {
             KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
         ));
 
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .unwrap(),
+        ));
+
         let casper_buffer_storage = CasperBufferKeyValueStorage::new_from_kvm(&mut kvm)
             .await
             .unwrap();
@@ -1035,7 +1045,7 @@ impl TestNode {
         let runtime_manager = RuntimeManager::create_with_store(
             rspace_store,
             mergeable_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -1072,6 +1082,7 @@ impl TestNode {
                 runtime_manager.clone(),
                 block_store.clone(),
                 deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1147,11 +1158,12 @@ impl TestNode {
         let casper_impl = MultiParentCasperImpl {
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
-            runtime_manager: Arc::new(tokio::sync::Mutex::new(runtime_manager.clone())),
+            runtime_manager: Arc::new(runtime_manager.clone()),
             estimator: estimator.clone(),
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1163,7 +1175,7 @@ impl TestNode {
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
-                None::<(u64, BlockHash, Arc<DashSet<Bytes>>)>,
+                None::<(u64, BlockHash, Arc<DashSet<Bytes>>, Arc<DashSet<Bytes>>)>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };
@@ -1183,6 +1195,7 @@ impl TestNode {
                 block_store: casper_guard.block_store.clone(),
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
+                rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),
                 casper_shard_conf: casper_guard.casper_shard_conf.clone(),
@@ -1225,6 +1238,7 @@ impl TestNode {
             block_store,
             block_dag_storage,
             deploy_storage,
+            rejected_deploy_buffer,
             block_retriever,
             casper_buffer_storage,
             runtime_manager,

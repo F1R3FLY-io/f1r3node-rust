@@ -11,7 +11,7 @@
 
 services:
   standalone:
-    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
     user: root
     restart: always
     networks:
@@ -23,6 +23,9 @@ services:
       - --host=${STANDALONE_HOST:-rnode.standalone}
       - --validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}
       - --allow-private-addresses
+      - --native-token-name=${NATIVE_TOKEN_NAME:-F1R3CAP}
+      - --native-token-symbol=${NATIVE_TOKEN_SYMBOL:-F1R3}
+      - --native-token-decimals=${NATIVE_TOKEN_DECIMALS:-8}
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -37,7 +40,6 @@ services:
       - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
-      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s

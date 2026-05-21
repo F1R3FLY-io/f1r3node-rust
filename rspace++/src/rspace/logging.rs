@@ -43,10 +43,6 @@ pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
 /// passthrough)
 pub struct BasicLogger;
 
-impl Default for BasicLogger {
-    fn default() -> Self { Self::new() }
-}
-
 impl BasicLogger {
     pub fn new() -> Self { BasicLogger }
 }

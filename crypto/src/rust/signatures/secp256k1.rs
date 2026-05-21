@@ -175,7 +175,8 @@ impl SignaturesAlg for Secp256k1 {
 
         let private_key = PrivateKey::from_bytes(&secret_key.to_bytes());
 
-        let public_key = PublicKey::from_bytes(raw_public_key.to_encoded_point(false).as_bytes());
+        let public_key =
+            PublicKey::from_bytes(&raw_public_key.to_encoded_point(false).as_bytes().to_vec());
 
         (private_key, public_key)
     }

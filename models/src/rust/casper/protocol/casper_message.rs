@@ -33,6 +33,8 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
+    MergeableEntryRequest(MergeableEntryRequest),
+    MergeableEntryResponse(MergeableEntryResponse),
 }
 
 impl CasperMessage {
@@ -104,6 +106,14 @@ impl CasperMessage {
 
     pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Self {
         CasperMessage::StoreItemsMessage(StoreItemsMessage::from_proto(proto))
+    }
+
+    pub fn from_mergeable_entry_request(proto: MergeableEntryRequestProto) -> Self {
+        CasperMessage::MergeableEntryRequest(MergeableEntryRequest::from_proto(proto))
+    }
+
+    pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
+        CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
     }
 }
 
@@ -348,7 +358,7 @@ impl BlockMessage {
             justifications: proto
                 .justifications
                 .into_iter()
-                .map(Justification::from_proto)
+                .map(|j| Justification::from_proto(j))
                 .collect(),
             sender: proto.sender,
             seq_num: proto.seq_num,
@@ -443,17 +453,17 @@ impl Body {
             deploys: proto
                 .deploys
                 .into_iter()
-                .map(ProcessedDeploy::from_proto)
+                .map(|d| ProcessedDeploy::from_proto(d))
                 .collect::<Result<Vec<ProcessedDeploy>, String>>()?,
             rejected_deploys: proto
                 .rejected_deploys
                 .into_iter()
-                .map(RejectedDeploy::from_proto)
+                .map(|r| RejectedDeploy::from_proto(r))
                 .collect(),
             system_deploys: proto
                 .system_deploys
                 .into_iter()
-                .map(ProcessedSystemDeploy::from_proto)
+                .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
         })
@@ -530,7 +540,11 @@ impl F1r3flyState {
         Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
-            bonds: proto.bonds.into_iter().map(Bond::from_proto).collect(),
+            bonds: proto
+                .bonds
+                .into_iter()
+                .map(|b| Bond::from_proto(b))
+                .collect(),
             block_number: proto.block_number,
         }
     }
@@ -539,7 +553,12 @@ impl F1r3flyState {
         RChainStateProto {
             pre_state_hash: self.pre_state_hash.clone(),
             post_state_hash: self.post_state_hash.clone(),
-            bonds: self.bonds.clone().into_iter().map(Bond::to_proto).collect(),
+            bonds: self
+                .bonds
+                .clone()
+                .into_iter()
+                .map(|b| Bond::to_proto(b))
+                .collect(),
             block_number: self.block_number,
         }
     }
@@ -598,7 +617,7 @@ impl ProcessedDeploy {
             deploy_log: proto
                 .deploy_log
                 .into_iter()
-                .map(Event::from_proto)
+                .map(|e| Event::from_proto(e))
                 .collect::<Result<Vec<Event>, String>>()?,
             is_failed: proto.errored,
             system_deploy_error: {
@@ -678,7 +697,7 @@ impl SystemDeployData {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         invalid_block_hash,
-                        issuer_public_key: issuer_public_key.bytes,
+                        issuer_public_key: issuer_public_key.bytes.into(),
                         target_activation_epoch,
                     },
                 )),
@@ -886,8 +905,8 @@ impl DeployData {
             phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
-            deployer: dd.pk.bytes.clone(),
-            sig: dd.sig.clone(),
+            deployer: dd.pk.bytes.clone().into(),
+            sig: dd.sig.clone().into(),
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
@@ -1224,6 +1243,49 @@ impl StoreItemsMessage {
                     value,
                 })
                 .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergeableEntryRequest {
+    pub block_hash: ByteString,
+}
+
+impl MergeableEntryRequest {
+    pub fn from_proto(proto: MergeableEntryRequestProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+        }
+    }
+
+    pub fn to_proto(self) -> MergeableEntryRequestProto {
+        MergeableEntryRequestProto {
+            block_hash: self.block_hash,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergeableEntryResponse {
+    pub block_hash: ByteString,
+    /// Bincode of `Vec<DeployMergeableData>`. Empty bytes = peer has the block
+    /// but no entry for it.
+    pub serialized_entry: ByteString,
+}
+
+impl MergeableEntryResponse {
+    pub fn from_proto(proto: MergeableEntryResponseProto) -> Self {
+        Self {
+            block_hash: proto.block_hash,
+            serialized_entry: proto.serialized_entry,
+        }
+    }
+
+    pub fn to_proto(self) -> MergeableEntryResponseProto {
+        MergeableEntryResponseProto {
+            block_hash: self.block_hash,
+            serialized_entry: self.serialized_entry,
         }
     }
 }

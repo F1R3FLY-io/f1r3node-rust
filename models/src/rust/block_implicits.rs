@@ -18,31 +18,34 @@ use super::validator::{self, Validator};
 use crate::rhoapi::PCost;
 
 pub fn block_hash_gen() -> impl Strategy<Value = BlockHash> {
-    prop::collection::vec(any::<u8>(), block_hash::LENGTH).prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), block_hash::LENGTH)
+        .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec))
 }
 
 pub fn state_hash_gen() -> impl Strategy<Value = StateHash> {
-    prop::collection::vec(any::<u8>(), state_hash::LENGTH).prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), state_hash::LENGTH)
+        .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec))
 }
 
 pub fn validator_gen() -> impl Strategy<Value = Validator> {
-    prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from)
+    prop::collection::vec(any::<u8>(), validator::LENGTH)
+        .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec))
 }
 
 pub fn bond_gen() -> impl Strategy<Value = Bond> {
-    let validator_gen =
-        prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from);
+    let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
+        .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec));
     let stake_gen = 1i64..=1024i64;
     (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond { validator, stake })
 }
 
 pub fn justification_gen() -> impl Strategy<Value = Justification> {
-    let validator_gen =
-        prop::collection::vec(any::<u8>(), validator::LENGTH).prop_map(prost::bytes::Bytes::from);
+    let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
+        .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec));
     let block_hash_gen = block_hash_gen();
     (validator_gen, block_hash_gen).prop_map(|(validator, latest_block_hash)| Justification {
-        validator,
-        latest_block_hash,
+        validator: validator.into(),
+        latest_block_hash: latest_block_hash.into(),
     })
 }
 
@@ -143,6 +146,7 @@ pub fn block_element_gen(
                 bonds
                     .choose(&mut rng)
                     .map(|bond| bond.validator.clone())
+                    .map(|b| b)
                     .unwrap_or_else(|| {
                         validator_gen()
                             .boxed()
@@ -187,7 +191,7 @@ pub fn block_element_gen(
                 let block = BlockMessage {
                     block_hash: prost::bytes::Bytes::new(),
                     header: Header {
-                        parents_hash_list: parents_hash_list.into_iter().collect(),
+                        parents_hash_list: parents_hash_list.into_iter().map(Into::into).collect(),
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
@@ -205,7 +209,7 @@ pub fn block_element_gen(
                         extra_bytes: prost::bytes::Bytes::new(),
                     },
                     justifications,
-                    sender: validator,
+                    sender: validator.into(),
                     seq_num: seq_number,
                     sig: prost::bytes::Bytes::new(),
                     sig_algorithm: String::new(),
@@ -223,7 +227,7 @@ pub fn block_element_gen(
                 };
 
                 BlockMessage {
-                    block_hash,
+                    block_hash: block_hash.into(),
                     ..block
                 }
             },
@@ -266,13 +270,13 @@ pub fn block_elements_with_parents_gen(
             // Select random parents from existing blocks
             let parent_hashes: Vec<BlockHash> = blocks
                 .choose_multiple(&mut rng, blocks.len().max(1) / 2)
-                .map(|b| b.block_hash.clone())
+                .map(|b| b.block_hash.clone().into())
                 .collect();
 
             // Create modified block with parent hashes
             let block = BlockMessage {
                 header: Header {
-                    parents_hash_list: parent_hashes.into_iter().collect(),
+                    parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
                     ..new_block.header
                 },
                 ..new_block
@@ -292,7 +296,7 @@ pub fn block_with_new_hashes_gen(
             .iter()
             .zip(new_hashes)
             .map(|(block, hash)| BlockMessage {
-                block_hash: hash,
+                block_hash: hash.into(),
                 ..block.clone()
             })
             .collect()

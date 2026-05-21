@@ -37,7 +37,7 @@ two data artifacts.
 |-------------------------|-------------------------------------------------------------------------------------------------------|-----------------------------------------------|--------------------------------------------------|
 | `Validate`              | Runs ~17 protocol-level validity checks against an arriving block.                                    | `casper/src/rust/validate.rs`                 | `coop.rchain.casper.Validate.scala`              |
 | `EquivocationDetector`  | Classifies a candidate's equivocation status: Valid / Admissible / Ignorable / NeglectedEquivocation. | `casper/src/rust/equivocation_detector.rs`    | `coop.rchain.casper.EquivocationDetector.scala`  |
-| `MultiParentCasperImpl` | Orchestrator: dispatches `InvalidBlock` verdicts to the appropriate handler.                          | `casper/src/rust/multi_parent_casper_impl.rs` | `coop.rchain.casper.MultiParentCasperImpl.scala` |
+| `MultiParentCasperImpl` | Orchestrator: dispatches `InvalidBlock` verdicts to the appropriate handler.                          | `casper/src/rust/engine/multi_parent_casper/mod.rs` | `coop.rchain.casper.MultiParentCasperImpl.scala` |
 
 **Intuition.** When a block message arrives over the network, the
 node must answer two questions: (1) *Is this block syntactically
@@ -190,7 +190,7 @@ The high-level data flow is:
 
 ```
 casper/src/rust/                 (orchestrator + detection + proposer)
-├── multi_parent_casper_impl.rs  (MultiParentCasperImpl)
+├── engine/multi_parent_casper/mod.rs  (MultiParentCasperImpl)
 ├── validate.rs                  (Validate)
 ├── equivocation_detector.rs     (EquivocationDetector)
 ├── block_status.rs              (InvalidBlock enum, is_slashable())

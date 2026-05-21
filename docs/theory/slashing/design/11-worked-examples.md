@@ -195,7 +195,7 @@ bug #6).
 2. validate(bX) = JustificationRegression
 3. is_slashable(JustificationRegression) = TRUE
 
-   Pre-fix dispatcher (multi_parent_casper_impl.rs:1090-1099):
+   Pre-fix dispatcher (engine/multi_parent_casper/mod.rs:1090-1099):
 4. handle_invalid_block_effect(bX, invalid = true)
    ⟶ DAG marks bX invalid; NO EquivocationRecord;
       A continues with bond intact unless a future proposer

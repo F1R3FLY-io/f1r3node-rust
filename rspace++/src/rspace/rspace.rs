@@ -413,9 +413,9 @@ where
                             .iter()
                             .map(|(k, v)| {
                                 if k.hash == produce_ref.hash {
-                                    (produce_ref.clone(), *v)
+                                    (produce_ref.clone(), v.clone())
                                 } else {
-                                    (k.clone(), *v)
+                                    (k.clone(), v.clone())
                                 }
                             })
                             .collect(),
@@ -571,12 +571,12 @@ where
             .map(|p| {
                 (
                     p.clone(),
-                    *self
-                        .produce_counter
+                    self.produce_counter
                         .lock()
                         .expect("produce counter lock")
                         .get(&p)
-                        .unwrap_or(&0),
+                        .unwrap_or(&0)
+                        .clone(),
                 )
             })
             .collect()

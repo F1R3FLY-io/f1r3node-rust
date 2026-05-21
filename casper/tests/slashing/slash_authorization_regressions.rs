@@ -87,6 +87,7 @@ fn snapshot_from_fixture(
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
+        rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

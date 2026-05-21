@@ -189,9 +189,10 @@ pub async fn equivocate_block(
         alt_deploys,
         system_deploys,
         &snapshot,
-        &mut producing_node.runtime_manager,
+        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
+        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -327,9 +328,10 @@ pub async fn propose_with_explicit_justifications(
         alt_deploys,
         system_deploys,
         &snapshot,
-        &mut producing_node.runtime_manager,
+        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
+        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -445,7 +447,7 @@ pub async fn process_block_bypassing_of_interest_filter(
 /// targeted validator inspects, while keeping all earlier validators
 /// happy. For the validator order see
 /// `casper/src/rust/validate.rs::block_summary` and
-/// `multi_parent_casper_impl.rs::validate_block_checkpoint` flow.
+/// `engine::multi_parent_casper::validate_block_checkpoint` flow.
 pub async fn propose_with_block_mutation(
     producing_node: &mut TestNode,
     alt_deploys: Vec<Signed<DeployData>>,
@@ -499,9 +501,10 @@ pub async fn propose_with_block_mutation(
         alt_deploys,
         system_deploys,
         &snapshot,
-        &mut producing_node.runtime_manager,
+        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
+        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
@@ -646,9 +649,10 @@ pub async fn propose_neglecting_block(
         alt_deploys,
         system_deploys,
         &snapshot,
-        &mut producing_node.runtime_manager,
+        &producing_node.runtime_manager,
         block_data.clone(),
         invalid_blocks,
+        Some(&producing_node.rejected_deploy_buffer),
     )
     .await?;
 
