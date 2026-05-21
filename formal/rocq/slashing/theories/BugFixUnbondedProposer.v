@@ -32,7 +32,7 @@ Definition prepare_slashing_deploys_post_fix
   (proposer : Validator)
   (seqNum : nat)
   (currentEpoch : nat)
-  (seed_fn : Validator -> nat -> nat)
+  (seed_fn : Validator -> nat -> BlockHash -> nat)
   : list SlashDeploy :=
   if Nat.eqb (bm_lookup bonds proposer) 0
   then []

@@ -15,10 +15,14 @@ VARIABLES
     slashedSet,
     epoch,
     rejectedSlashDeploys,
+    mergeRejectedSlashDeploys,
+    recoveredSlashDeploys,
     badAuthObserved
 
 vars == <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys,
-          slashedSet, epoch, rejectedSlashDeploys, badAuthObserved>>
+          slashedSet, epoch, rejectedSlashDeploys,
+          mergeRejectedSlashDeploys, recoveredSlashDeploys,
+          badAuthObserved>>
 
 Evidence == Hashes \X Validators \X Epochs
 SlashDeploy == Validators \X Epochs \X Hashes
@@ -37,6 +41,8 @@ TypeOK ==
     /\ slashedSet \in SUBSET Validators
     /\ epoch \in Epochs
     /\ rejectedSlashDeploys \in SUBSET SlashDeploy
+    /\ mergeRejectedSlashDeploys \in SUBSET SlashDeploy
+    /\ recoveredSlashDeploys \in SUBSET SlashDeploy
     /\ badAuthObserved \in BOOLEAN
 
 Init ==
@@ -47,18 +53,29 @@ Init ==
     /\ slashedSet = {}
     /\ epoch = CHOOSE e \in Epochs : TRUE
     /\ rejectedSlashDeploys = {}
+    /\ mergeRejectedSlashDeploys = {}
+    /\ recoveredSlashDeploys = {}
     /\ badAuthObserved = FALSE
+
+HashUnused(h) ==
+    \A ev \in evidence : ev[1] # h
+
+PendingCoversHash(h) ==
+    \E d \in pendingSlashDeploys : d[3] = h
 
 RecordSlashableInvalid(v, e, h) ==
     /\ v \in Validators
     /\ e \in Epochs
     /\ h \in Hashes
+    /\ HashUnused(h)
     /\ evidence' = evidence \cup {<<h, v, e>>}
     /\ pendingSlashDeploys' =
-        IF e = epoch /\ lifetimeEpoch[v] = e /\ bonds[v] > 0
+        IF e = epoch /\ lifetimeEpoch[v] = e /\ bonds[v] > 0 /\ ~ PendingCoversHash(h)
         THEN pendingSlashDeploys \cup {<<v, e, h>>}
         ELSE pendingSlashDeploys
-    /\ UNCHANGED <<bonds, lifetimeEpoch, slashedSet, epoch, rejectedSlashDeploys, badAuthObserved>>
+    /\ UNCHANGED <<bonds, lifetimeEpoch, slashedSet, epoch,
+                    rejectedSlashDeploys, mergeRejectedSlashDeploys,
+                    recoveredSlashDeploys, badAuthObserved>>
 
 AdvanceEpoch(e) ==
     /\ e \in Epochs
@@ -66,7 +83,9 @@ AdvanceEpoch(e) ==
     /\ pendingSlashDeploys' =
         {<<ev[2], ev[3], ev[1]>> :
             ev \in {x \in evidence : x[3] = e /\ lifetimeEpoch[x[2]] = e /\ bonds[x[2]] > 0}}
-    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, slashedSet, rejectedSlashDeploys, badAuthObserved>>
+    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, slashedSet,
+                    rejectedSlashDeploys, mergeRejectedSlashDeploys,
+                    recoveredSlashDeploys, badAuthObserved>>
 
 RebondSameKey(v) ==
     /\ v \in Validators
@@ -74,7 +93,9 @@ RebondSameKey(v) ==
     /\ v \notin slashedSet
     /\ bonds' = [bonds EXCEPT ![v] = InitialBonds[v]]
     /\ lifetimeEpoch' = [lifetimeEpoch EXCEPT ![v] = epoch]
-    /\ UNCHANGED <<evidence, pendingSlashDeploys, slashedSet, epoch, rejectedSlashDeploys, badAuthObserved>>
+    /\ UNCHANGED <<evidence, pendingSlashDeploys, slashedSet, epoch,
+                    rejectedSlashDeploys, mergeRejectedSlashDeploys,
+                    recoveredSlashDeploys, badAuthObserved>>
 
 ReceiveUnauthorizedSlash(v, e, h) ==
     /\ v \in Validators
@@ -82,14 +103,40 @@ ReceiveUnauthorizedSlash(v, e, h) ==
     /\ h \in Hashes
     /\ ~ Authorized(v, e, h)
     /\ rejectedSlashDeploys' = rejectedSlashDeploys \cup {<<v, e, h>>}
-    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys, slashedSet, epoch, badAuthObserved>>
+    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys,
+                    slashedSet, epoch, mergeRejectedSlashDeploys,
+                    recoveredSlashDeploys, badAuthObserved>>
+
+ObserveMergeRejectedSlash(v, e, h) ==
+    /\ v \in Validators
+    /\ e \in Epochs
+    /\ h \in Hashes
+    /\ <<h, v, e>> \in evidence
+    /\ mergeRejectedSlashDeploys' = mergeRejectedSlashDeploys \cup {<<v, e, h>>}
+    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys,
+                    slashedSet, epoch, rejectedSlashDeploys,
+                    recoveredSlashDeploys, badAuthObserved>>
+
+RecoverMergeRejectedSlash(v, e, h) ==
+    /\ <<v, e, h>> \in mergeRejectedSlashDeploys
+    /\ Authorized(v, e, h)
+    /\ recoveredSlashDeploys' = recoveredSlashDeploys \cup {<<v, e, h>>}
+    /\ pendingSlashDeploys' =
+        IF PendingCoversHash(h)
+        THEN pendingSlashDeploys
+        ELSE pendingSlashDeploys \cup {<<v, e, h>>}
+    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, slashedSet, epoch,
+                    rejectedSlashDeploys, mergeRejectedSlashDeploys,
+                    badAuthObserved>>
 
 ReceiveBadAuthSlash(v, e, h) ==
     /\ v \in Validators
     /\ e \in Epochs
     /\ h \in Hashes
     /\ badAuthObserved' = TRUE
-    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys, slashedSet, epoch, rejectedSlashDeploys>>
+    /\ UNCHANGED <<bonds, lifetimeEpoch, evidence, pendingSlashDeploys,
+                    slashedSet, epoch, rejectedSlashDeploys,
+                    mergeRejectedSlashDeploys, recoveredSlashDeploys>>
 
 ExecuteSlash(v, e, h) ==
     /\ <<v, e, h>> \in pendingSlashDeploys
@@ -98,13 +145,17 @@ ExecuteSlash(v, e, h) ==
     /\ slashedSet' = slashedSet \cup {v}
     /\ pendingSlashDeploys' =
         {d \in pendingSlashDeploys : d[1] # v \/ d[2] # e}
-    /\ UNCHANGED <<lifetimeEpoch, evidence, epoch, rejectedSlashDeploys, badAuthObserved>>
+    /\ UNCHANGED <<lifetimeEpoch, evidence, epoch, rejectedSlashDeploys,
+                    mergeRejectedSlashDeploys, recoveredSlashDeploys,
+                    badAuthObserved>>
 
 Next ==
     \/ \E v \in Validators, e \in Epochs, h \in Hashes : RecordSlashableInvalid(v, e, h)
     \/ \E e \in Epochs : AdvanceEpoch(e)
     \/ \E v \in Validators : RebondSameKey(v)
     \/ \E v \in Validators, e \in Epochs, h \in Hashes : ReceiveUnauthorizedSlash(v, e, h)
+    \/ \E v \in Validators, e \in Epochs, h \in Hashes : ObserveMergeRejectedSlash(v, e, h)
+    \/ \E v \in Validators, e \in Epochs, h \in Hashes : RecoverMergeRejectedSlash(v, e, h)
     \/ \E v \in Validators, e \in Epochs, h \in Hashes : ReceiveBadAuthSlash(v, e, h)
     \/ \E v \in Validators, e \in Epochs, h \in Hashes : ExecuteSlash(v, e, h)
 
@@ -140,5 +191,23 @@ Inv_InvalidAuthSlashNoPending ==
 
 Inv_BondsZeroAfterSlash ==
     \A v \in slashedSet : bonds[v] = 0 \/ lifetimeEpoch[v] = epoch
+
+Inv_EvidenceHashUnique ==
+    \A ev1 \in evidence :
+      \A ev2 \in evidence :
+        ev1[1] = ev2[1] => ev1 = ev2
+
+Inv_RecoveredSlashHasEvidence ==
+    \A d \in recoveredSlashDeploys :
+        <<d[3], d[1], d[2]>> \in evidence
+
+Inv_RecoveredSlashCoveredByPendingOrExecuted ==
+    \A d \in recoveredSlashDeploys :
+        ~ Authorized(d[1], d[2], d[3]) \/ PendingCoversHash(d[3]) \/ d[1] \in slashedSet
+
+Inv_PendingSlashHashUnique ==
+    \A d1 \in pendingSlashDeploys :
+      \A d2 \in pendingSlashDeploys :
+        d1[3] = d2[3] => d1 = d2
 
 ============================================================================

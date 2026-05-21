@@ -34,12 +34,15 @@ VARIABLES
     equivocationRecords,\* SUBSET (Validators \X (0..MaxSeqNum))
 
     \* Pipeline state:
-    pendingSlashDeploys,\* SUBSET Validators: slash deploys queued
+    pendingSlashDeploys,\* SUBSET BlockId: slash deploys queued by invalid hash
+    rejectedSlashDeploys,
+    recoveredSlashDeploys,
     forkChoiceLatest    \* [Validators -> Nat]: latest seq considered by FC
 
 vars == <<bonds, activeValidators, coopVaultBalance, slashedSet,
           blocks, invalidBlocks, equivocationRecords,
-          pendingSlashDeploys, forkChoiceLatest>>
+          pendingSlashDeploys, rejectedSlashDeploys, recoveredSlashDeploys,
+          forkChoiceLatest>>
 
 \* Block IDs are encoded as (validator, seqNum, blockNum) triples.
 BlockId == Validators \X (1..MaxSeqNum) \X (1..2)
@@ -55,7 +58,9 @@ TypeOK ==
     /\ blocks           \in [Validators -> [1..MaxSeqNum -> SUBSET (1..2)]]
     /\ invalidBlocks    \in SUBSET BlockId
     /\ equivocationRecords \in SUBSET (Validators \X (0..MaxSeqNum))
-    /\ pendingSlashDeploys \in SUBSET Validators
+    /\ pendingSlashDeploys \in SUBSET BlockId
+    /\ rejectedSlashDeploys \in SUBSET BlockId
+    /\ recoveredSlashDeploys \in SUBSET BlockId
     /\ forkChoiceLatest \in [Validators -> Nat]
 
 (****************************************************************************)
@@ -71,6 +76,8 @@ Init ==
     /\ invalidBlocks    = {}
     /\ equivocationRecords = {}
     /\ pendingSlashDeploys = {}
+    /\ rejectedSlashDeploys = {}
+    /\ recoveredSlashDeploys = {}
     /\ forkChoiceLatest = [v \in Validators |-> 0]
 
 (****************************************************************************)
@@ -83,7 +90,8 @@ SignHonest(v, s) ==
     /\ blocks' = [blocks EXCEPT ![v] = [@ EXCEPT ![s] = {1}]]
     /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![v] = s]
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    invalidBlocks, equivocationRecords, pendingSlashDeploys>>
+                    invalidBlocks, equivocationRecords, pendingSlashDeploys,
+                    rejectedSlashDeploys, recoveredSlashDeploys>>
 
 (****************************************************************************)
 (* Action: validator v equivocates by signing a SECOND block at seq s.      *)
@@ -95,26 +103,63 @@ SignEquivocating(v, s) ==
     /\ blocks' = [blocks EXCEPT ![v] = [@ EXCEPT ![s] = {1, 2}]]
     /\ invalidBlocks' = invalidBlocks \cup {<<v, s, 2>>}
     /\ equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
-    /\ pendingSlashDeploys' = pendingSlashDeploys \cup {v}
+    /\ pendingSlashDeploys' = pendingSlashDeploys \cup {<<v, s, 2>>}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    forkChoiceLatest>>
+                    rejectedSlashDeploys, recoveredSlashDeploys, forkChoiceLatest>>
 
 (****************************************************************************)
-(* Action: an honest proposer issues a SlashDeploy against an offender o,   *)
-(* and the PoS contract executes successfully (no transfer failure).        *)
+(* Action: a merge rejects a slash branch carrying invalid block h.         *)
 (****************************************************************************)
-ExecuteSlash(o) ==
-    /\ o \in pendingSlashDeploys
-    /\ o \in activeValidators
-    /\ bonds[o] > 0
-    /\ LET valBond == bonds[o]
-       IN  /\ bonds' = [bonds EXCEPT ![o] = 0]
-           /\ activeValidators' = activeValidators \ {o}
-           /\ coopVaultBalance' = coopVaultBalance + valBond
-           /\ slashedSet' = slashedSet \cup {o}
-           /\ pendingSlashDeploys' = pendingSlashDeploys \ {o}
-           /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
-    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords>>
+ObserveRejectedSlash(h) ==
+    /\ h \in invalidBlocks
+    /\ h \notin rejectedSlashDeploys
+    /\ rejectedSlashDeploys' = rejectedSlashDeploys \cup {h}
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    blocks, invalidBlocks, equivocationRecords,
+                    pendingSlashDeploys, recoveredSlashDeploys, forkChoiceLatest>>
+
+RecoverRejectedSlash(h) ==
+    /\ h \in rejectedSlashDeploys
+    /\ h \in invalidBlocks
+    /\ h \notin recoveredSlashDeploys
+    /\ recoveredSlashDeploys' = recoveredSlashDeploys \cup {h}
+    /\ pendingSlashDeploys' =
+        IF h \in pendingSlashDeploys \/ h[1] \in slashedSet
+        THEN pendingSlashDeploys
+        ELSE pendingSlashDeploys \cup {h}
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    blocks, invalidBlocks, equivocationRecords,
+                    rejectedSlashDeploys, forkChoiceLatest>>
+
+SlashSeedInput(proposer, seq, h) ==
+    <<proposer, seq, h>>
+
+(****************************************************************************)
+(* Action: an honest proposer issues a SlashDeploy against invalid block h. *)
+(* A duplicate slash against a zero-bond offender succeeds as a no-op.       *)
+(****************************************************************************)
+ExecuteSlash(h) ==
+    /\ h \in pendingSlashDeploys
+    /\ LET o == h[1]
+       IN IF bonds[o] > 0
+          THEN
+            LET valBond == bonds[o]
+            IN  /\ bonds' = [bonds EXCEPT ![o] = 0]
+                /\ activeValidators' = activeValidators \ {o}
+                /\ coopVaultBalance' = coopVaultBalance + valBond
+                /\ slashedSet' = slashedSet \cup {o}
+                /\ pendingSlashDeploys' =
+                    {d \in pendingSlashDeploys : d[1] # o}
+                /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
+          ELSE
+            /\ bonds' = bonds
+            /\ activeValidators' = activeValidators
+            /\ coopVaultBalance' = coopVaultBalance
+            /\ slashedSet' = slashedSet
+            /\ pendingSlashDeploys' = pendingSlashDeploys \ {h}
+            /\ forkChoiceLatest' = forkChoiceLatest
+    /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords,
+                    rejectedSlashDeploys, recoveredSlashDeploys>>
 
 (****************************************************************************)
 (* Next                                                                     *)
@@ -122,9 +167,11 @@ ExecuteSlash(o) ==
 Next ==
     \/ \E v \in Validators, s \in 1..MaxSeqNum : SignHonest(v, s)
     \/ \E v \in Validators, s \in 1..MaxSeqNum : SignEquivocating(v, s)
-    \/ \E o \in Validators                     : ExecuteSlash(o)
+    \/ \E h \in BlockId                         : ObserveRejectedSlash(h)
+    \/ \E h \in BlockId                         : RecoverRejectedSlash(h)
+    \/ \E h \in BlockId                         : ExecuteSlash(h)
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(\E o \in Validators : ExecuteSlash(o))
+Spec == Init /\ [][Next]_vars /\ WF_vars(\E h \in BlockId : ExecuteSlash(h))
 
 (****************************************************************************)
 (* Invariants                                                               *)
@@ -169,11 +216,28 @@ Inv_BondsNonNegative ==
 Inv_StakeConservation ==
     SumBonds(Validators) + coopVaultBalance = SumInitialBonds(Validators)
 
+Inv_PendingSlashHasEvidence ==
+    pendingSlashDeploys \subseteq invalidBlocks
+
+Inv_RecoveredSlashHasEvidence ==
+    recoveredSlashDeploys \subseteq invalidBlocks
+
+Inv_RecoveredSlashCovered ==
+    \A h \in recoveredSlashDeploys :
+        h \in pendingSlashDeploys \/ h[1] \in slashedSet
+
+Inv_SlashSeedInputInjectiveByHash ==
+    \A p \in Validators :
+      \A s \in 1..MaxSeqNum :
+        \A h1 \in BlockId :
+          \A h2 \in BlockId :
+            SlashSeedInput(p, s, h1) = SlashSeedInput(p, s, h2) => h1 = h2
+
 (****************************************************************************)
 (* Liveness: every detected equivocation eventually triggers slash.          *)
 (****************************************************************************)
 Live_SlashedEventually ==
-    \A v \in Validators :
-        v \in pendingSlashDeploys ~> v \in slashedSet
+    \A h \in BlockId :
+        h \in pendingSlashDeploys ~> h[1] \in slashedSet
 
 ============================================================================

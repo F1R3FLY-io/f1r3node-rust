@@ -256,6 +256,11 @@ has_slash ← scan b_B.body.system_deploys for SystemDeployData::Slash
 reject ⟺ neglected ∧ ¬has_slash    -- post-fix #9
 ```
 
+For received `SlashDeploy`s, the corresponding positive-bond check is
+bound to the block's actual parent pre-state. This keeps recovery blocks
+valid when the receiver's current snapshot already includes a sibling
+where the same offender has been slashed.
+
 The post-fix `¬has_slash` clause is the *Rust widening* of bug #9
 (§09): a block that *self-corrects* by attaching its own
 `SlashDeploy` for the neglected justification's validator is

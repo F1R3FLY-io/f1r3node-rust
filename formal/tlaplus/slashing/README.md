@@ -11,9 +11,9 @@ configurations of the protocol.
 |---|---|
 | `EquivocationDetector.tla` | Pure detector state machine: validator equivocates → detection → status (admissible / ignorable / neglected). |
 | `ConcurrentTracker.tla` | Models the lock-free vs. locked equivocation-tracker access. The lock-free version *demonstrates* the Rust-introduced race condition (Bug #2); the locked version proves the fix restores monotonicity. |
-| `SlashFlow.tla` | End-to-end pipeline: detection → record → propose → SlashDeploy → PoS bond zeroing → fork-choice exclusion. |
+| `SlashFlow.tla` | End-to-end pipeline: detection → record → propose/recover → SlashDeploy → PoS bond zeroing/idempotent reissue → fork-choice exclusion. |
 | `TwoLevelSlashing.tla` | Level 1 + Level 2 slashing closure; proves termination, fixed-point stabilization, count-weighted quorum under the closure bound, stake-weighted quorum under the weighted closure bound, active-quorum intersection, current-validator and epoch filtering, visibility/report admissibility, validator-renaming equivariance, bounded arithmetic envelopes, and differential-divergence classification. |
-| `AuthorizedSlashFlow.tla` | Slash-authorization state machine for current-epoch invalid-block evidence, same-key rebond stale-evidence rejection, received-deploy authorization, invalid-index slash liveness, and duplicate target suppression. |
+| `AuthorizedSlashFlow.tla` | Slash-authorization state machine for current-epoch invalid-block evidence, same-key rebond stale-evidence rejection, received-deploy authorization, invalid-index slash liveness, merge-rejected slash recovery, and duplicate target/hash suppression. |
 | `JustificationProjection.tla` | Justification-validator projection model proving duplicate validators are rejected before any validator-key map projection can hide the malformed input. |
 | `WithdrawFlow.tla` | Post-quarantine withdrawal flow modelling Bug #10 (T-9.10). Verifies that a failed `posVault.transfer` leaves the validator's `withdrawers` entry intact, the `total_funds` invariant is preserved across success and failure, every removed validator was paid in full, and every withdrawer is eventually paid under fair retry scheduling. Companion Rocq theorem set: `BugFixWithdrawTransferFailure.v` (T-9.10 / T-9.10' / T-9.10″). |
 
@@ -91,6 +91,8 @@ tlc -workers 12 MC_WithdrawFlow.tla
 | AuthorizedSlashFlow | `Inv_RejectedSlashWithoutEvidenceNoPending` | Rejected slash deploys do not create pending slash authorization. |
 | AuthorizedSlashFlow | `Inv_InvalidAuthSlashNoPending` | Bad-auth slash deploy receipt cannot create pending slash authorization without independent valid evidence. |
 | AuthorizedSlashFlow | `Inv_BondsZeroAfterSlash` | Executed authorized slash deploys zero the offender's bond. |
+| AuthorizedSlashFlow | `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCoveredByPendingOrExecuted` / `Inv_PendingSlashHashUnique` | Merge-rejected slash recovery preserves evidence, avoids uncovered recovered entries, and keeps one pending entry per invalid hash. |
+| SlashFlow | `Inv_PendingSlashHasEvidence` / `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCovered` / `Inv_SlashSeedInputInjectiveByHash` | Recovered slashes have invalid-block evidence, are pending or already executed, and use seed inputs injective in invalid hash. |
 | JustificationProjection | `Inv_DuplicateJustificationsRejected` | A justification list with duplicate validator keys is rejected before projection. |
 | JustificationProjection | `Inv_AcceptedImpliesUniqueJustifications` / `Inv_AcceptedProjectionCardinality` | Accepted justification lists preserve one entry per validator under map/set projection. |
 | WithdrawFlow | `Inv_NoFundsLost` | A failed `posVault.transfer` does not remove the validator from `withdrawers`; equivalently, every removed validator was paid in full (T-9.10). |
@@ -143,6 +145,7 @@ table. In summary:
 | `PartitionGossipDivergenceClass` / `ObjectiveGuidedDivergenceClass` / `PreconditionFuzzingClass` / `RustReplayDivergenceClass` / `DeepThreatModelDivergenceClass` / `DagTraceDivergenceClass` / `AdversarialCampaignDivergenceClass` / `DifferentialOraclePipelineClass` | `frontier_expansion_reasons_require_review` in `Bisimulation.v`; `deep_threat_chain_closure_bound_assumption_needed` in `TwoLevelSlashing.v` |
 | `Inv_LivenessAsSafety` (Eager) | T-2 (`detection_complete` in `EquivocationDetector.v`) |
 | `Inv_StaleEvidenceCannotSlashRebondedKey`, `Inv_OnlyAuthorizedSlashCanBePending`, `Inv_RejectedSlashWithoutEvidenceNoPending`, `Inv_InvalidAuthSlashNoPending`, `Inv_BondsZeroAfterSlash` | `ValidatorLifetime.v`, `BugFixSlashAuthorization.v`, and `SlashDeploy.v` authorization/no-op theorems |
+| `Inv_RecoveredSlashHasEvidence`, `Inv_RecoveredSlashCoveredByPendingOrExecuted`, `Inv_PendingSlashHashUnique`, `Inv_SlashSeedInputInjectiveByHash` | `BlockCreator.v` recoverable rejected-slash hash theorems and `SlashDeploy.v` seed-input injectivity |
 | `Inv_NoInvalidLatestLivenessGap` | `BlockCreator.deploy_epoch_matches_target` and `BugFixSlashAuthorization.authorized_execution_zeros_offender` |
 | `Inv_DuplicateJustificationsRejected`, `Inv_AcceptedImpliesUniqueJustifications`, `Inv_AcceptedProjectionCardinality` | `BugFixDuplicateJustifications.v` |
 

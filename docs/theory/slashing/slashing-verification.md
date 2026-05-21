@@ -1287,7 +1287,7 @@ transitive). Proofs in `Bisimulation.v` §2.
 
 ### 8.3 Theorem 8.2 (T-15b, Composed bisimulation closure)
 
-**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:428`.)*
+**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:475`.)*
 For every component triple `(b₁, b₂, v₁, v₂, sl₁, sl₂, offender)` with
 component-wise R-equivalence as the hypothesis,
 
@@ -1950,7 +1950,7 @@ is the conjunction:
   issuer(deploy) = block_sender(deploy)
   ∧ evidence_hash(ev) ∈ local.invalid_blocks
   ∧ evidence_epoch(ev) = current_epoch       ← the relevant conjunct
-  ∧ target(deploy) ∈ active_validators
+  ∧ parent_pre_state_bond(target(deploy)) > 0
   ∧ unique_target_per_epoch(deploy) .
 ```
 The third conjunct fails directly under the hypothesis
@@ -1996,6 +1996,53 @@ the authorization-rejection branch has identity post-image on
 
 **TLA+ mirror.** `Inv_RejectedSlashWithoutEvidenceNoPending` in
 `MC_AuthorizedSlashFlow.cfg`.
+
+#### 9.13.2 Theorem 9.13′ (Parent-pre-state bond authorization)
+
+**Statement.** *(`positive_parent_bond_authorizes_matching_candidate`,
+`zero_parent_bond_not_authorized_candidate`; also
+`main_T9_13_positive_parent_bond_authorizes_matching_candidate` and
+`main_T9_13_zero_parent_bond_not_authorized`.)*
+```
+  evidence_hash(deploy) = h
+  ∧ local.invalid_blocks[h] = offender
+  ∧ evidence_epoch(h) = target_epoch(deploy) = current_epoch(block)
+  ∧ parent_pre_state_bond(offender) > 0
+  ⟹ authorized(deploy).
+
+  parent_pre_state_bond(offender) = 0
+  ⟹ ¬ authorized(deploy).
+```
+
+**Proof.** The Rocq predicate uses the parent bond map as an explicit
+argument to `authorized_slash_candidate`. The positive case reduces to
+`Nat.ltb_lt`; the zero-bond case reduces to the false right conjunct of
+the authorization conjunction. ∎
+
+**TLA+ mirror.** `Authorized` in `AuthorizedSlashFlow.tla` and
+`Inv_OnlyAuthorizedSlashCanBePending` in `MC_AuthorizedSlashFlow.cfg`.
+
+#### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
+
+**Statement.** *(`recoverable_rejected_slash_hashes_nodup`,
+`own_detected_hash_not_recovered`,
+`uncovered_rejected_hash_recovered`; also the corresponding
+`main_T9_13_*` wrappers.)*
+```
+  recoverable = dedup_by_invalid_hash(rejected \ own_detected)
+  ⟹ NoDup(recoverable)
+     ∧ own_detected_hash ∉ recoverable
+     ∧ uncovered rejected hash ∈ recoverable.
+```
+
+**Proof.** Rocq projects rejected slash records to `invalid_block_hash`,
+filters hashes present in the proposer's own-detected set, and applies
+`nodup hash_eq_dec`. `NoDup_nodup`, `filter_In`, and the boolean membership
+lemma for `hash_member` establish the three clauses. ∎
+
+**TLA+ mirror.** `Inv_RecoveredSlashHasEvidence`,
+`Inv_RecoveredSlashCoveredByPendingOrExecuted`, and
+`Inv_PendingSlashHashUnique` in `MC_AuthorizedSlashFlow.cfg`.
 
 ### 9.14 T-9.14 — Checked sequence arithmetic
 
@@ -2145,8 +2192,8 @@ index*, closing the original Bug #14 liveness gap.
 #### 9.16.1 Theorem 9.16 (T-Auth, Invalid token is no-op)
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
-`BugFixSlashAuthorization.v:50`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:218`.)*
+`SlashDeploy.v:142`; also
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:252`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2165,8 +2212,8 @@ on `state` follows. ∎
 #### 9.16.2 Theorem 9.16′ (T-Auth, Valid token preserves semantics)
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
-`BugFixSlashAuthorization.v:60`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:223`.)*
+`SlashDeploy.v:149`; also
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:257`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2216,6 +2263,12 @@ The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
 `block_creator.rs:309`) is the operational realisation of this fold
 and is verified to match by the bisimulation result of §8. ∎
+
+Deterministic slash-seed construction is tracked separately:
+`deploy_seed_uses_invalid_block_hash` proves every emitted
+`SlashDeploy` uses `seed_fn(proposer, seqNum, invalid_block_hash)`,
+and `slash_seed_input_hash_injective` proves the modeled seed input is
+injective in `invalid_block_hash` for fixed proposer and sequence.
 
 **Example 9.16.** See `design/11-worked-examples.md §11.15`.
 
@@ -2350,16 +2403,17 @@ The rewrite is observationally bisimilar to the original (every reachable
 state of the original maps to one in the rewrite via the natural
 projection that classifies pending blocks).
 
-### 10.5 Model-checking results (verified through 2026-05-05 run)
+### 10.5 Model-checking results (verified through 2026-05-21 run)
 
-Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`.
+Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`;
+for `MC_SlashFlow`, the 2026-05-21 rerun used `tlc -workers 1`.
 
 | Spec                                                                                                                    | Result                                                                                                     | States explored                                                      |
 |-------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
 | `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, weighted closure bound, quorum-intersection, fixed-point, epoch, visibility/report, evidence-view, carryover, retention, canonical-key, batch-projection, proposer-fairness, semantic-campaign, scheduler, assumption-classification, arithmetic-stress, and arithmetic-envelope invariants) | ✅ Exhausted, 0 violations on 2026-05-05 with `tlc -workers 1`                                             | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
-| `MC_SlashFlow` (full invariants incl. `Inv_ForfeitedToCoopVault` and `Inv_StakeConservation` via `RECURSIVE` operators) | ✅ Exhausted, 0 violations                                                                                 | 2,365,633 generated; **405,224 distinct**; depth 22                  |
+| `MC_SlashFlow` (full invariants incl. rejected-slash recovery, slash-seed injectivity, `Inv_ForfeitedToCoopVault`, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-05-21                                                                   | 1,591,417 generated; **238,328 distinct**; depth 28                  |
 | `MC_EquivocationDetector` (combined safety + `Live_DetectionComplete`, 2v × 2s × 2b)                                    | ⚠️ JVM heap exhausted at 14.9M distinct states during liveness graph construction (after 65 min, 32 GB cap) | Liveness graph hit ~120M distinct states before OOM                  |
 | `MC_EquivocationDetector_safety` (full bounds, safety only)                                                             | ✅ Exhausted, 0 violations                                                                                 | **191,849,257 generated; 22,667,121 distinct**; depth 29; 2 min 26 s |
 | `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations                                                                                 | 147 generated; **69 distinct**; depth 8                              |

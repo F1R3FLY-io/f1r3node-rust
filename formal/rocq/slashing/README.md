@@ -87,8 +87,8 @@ cost-accounting precedent:
 - **(c) Proof-original extensions** — bisimilarity Rust ~~ Scala (T-13–T-15);
   proven bug-fix deltas (T-9.1–T-9.15, including T-9.10' / T-9.10″ for the
   withdrawal flow), plus current-epoch slash authorization, checked sequence
-  arithmetic, duplicate-justification rejection, and auth-token no-op
-  wrappers.
+  arithmetic, duplicate-justification rejection, rejected-slash recovery
+  dedup, slash-seed input injectivity, and auth-token no-op wrappers.
 - **(d) Citable-axiom-gated** — none in the consensus-critical path; all
   classical lemmas appear in the trust base only.
 

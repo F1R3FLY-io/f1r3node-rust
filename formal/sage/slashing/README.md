@@ -10,7 +10,7 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `tracker_race_model.sage` models finite tracker schedules with Sage `DiGraph`, `Permutations`, and `Set`. It produces a minimal lost-update witness for the pre-fix read/write model and checks that atomic read-modify-write schedules keep every observed hash.
 
-`pipeline_effect_model.sage` enumerates small bond maps and slash sets with Sage `cartesian_product`, `Subsets`, `Integer`, `ZZ`, and `vector`. It checks exact accounting, idempotence, zeroing of slashed bonds, preservation of unslashed bonds, and non-negative balances.
+`pipeline_effect_model.sage` enumerates small bond maps and slash sets with Sage `cartesian_product`, `Subsets`, `Integer`, `ZZ`, and `vector`. It checks exact accounting, idempotence, zeroing of slashed bonds, preservation of unslashed bonds, non-negative balances, and rejected-slash reissue no-op behavior.
 
 `weighted_closure_model.sage` models the same neglect closure with stake weights and searches for active-stake quorum failures.
 
@@ -30,7 +30,7 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `closure_certificate_model.sage` emits fixed-point depth and first-slash-round certificates, including shortest neglect paths.
 
-`slash_order_model.sage` permutes batch slash execution orders and checks final bonds, slashed set, and vault balance.
+`slash_order_model.sage` permutes batch slash execution orders and checks final bonds, slashed set, vault balance, duplicate reissue idempotence, and zero-bond no-op behavior.
 
 `epoch_lifecycle_model.sage` models current-epoch/current-validator filtering for stale and fresh evidence.
 
@@ -38,7 +38,7 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `arithmetic_envelope_model.sage` computes fixed-width safe envelopes of the form `initialVault + validators * maxBond <= limit`.
 
-`record_normalization_model.sage` checks record meaning modulo insertion order and duplicate hashes.
+`record_normalization_model.sage` checks record meaning modulo insertion order and duplicate hashes, plus recovered rejected-slash normalization by invalid hash after own-detected coverage is removed.
 
 `adversarial_timing_game.sage` searches bounded adversarial choices of direct equivocation, neglect edges, visibility, reports, and stake distribution against objectives such as honest-slashed stake, quorum drop, accountability gap, delay, and damage ratio.
 

@@ -11,12 +11,13 @@ def apply_slash(bonds, vault, already_slashed, slash_set):
     next_slashed = set(already_slashed)
     transferred = Integer(0)
     for validator in sorted(slash_set):
-        if validator not in next_slashed:
-            amount = Integer(next_bonds[validator])
-            transferred += amount
-            next_vault += amount
-            next_bonds[validator] = Integer(0)
-            next_slashed.add(validator)
+        amount = Integer(next_bonds[validator])
+        if validator in next_slashed or amount <= 0:
+            continue
+        transferred += amount
+        next_vault += amount
+        next_bonds[validator] = Integer(0)
+        next_slashed.add(validator)
     return vector(ZZ, next_bonds), next_vault, next_slashed, transferred
 
 
@@ -81,6 +82,36 @@ def run_analysis(max_validators, max_bond, max_failures):
     return {"summaries": summaries, "failures": failures}
 
 
+def rejected_slash_reissue_case():
+    bonds = vector(ZZ, [Integer(5), Integer(7), Integer(0)])
+    after_bonds, after_vault, after_slashed, first_transferred = apply_slash(
+        bonds, 0, set(), {0}
+    )
+    reissue_bonds, reissue_vault, reissue_slashed, second_transferred = apply_slash(
+        after_bonds, after_vault, after_slashed, {0}
+    )
+    zero_bond_bonds, zero_bond_vault, zero_bond_slashed, zero_transferred = apply_slash(
+        bonds, 0, set(), {2}
+    )
+    holds = (
+        list(after_bonds) == list(reissue_bonds)
+        and after_vault == reissue_vault
+        and after_slashed == reissue_slashed
+        and second_transferred == 0
+        and list(zero_bond_bonds) == list(bonds)
+        and zero_bond_vault == 0
+        and zero_bond_slashed == set()
+        and zero_transferred == 0
+    )
+    return {
+        "model": "sage_rejected_slash_reissue_idempotence",
+        "first_transferred": int(first_transferred),
+        "second_transferred": int(second_transferred),
+        "zero_bond_transferred": int(zero_transferred),
+        "holds": holds,
+    }
+
+
 def overflow_boundary(word_bits):
     if word_bits < 2:
         raise ValueError("word_bits must be at least 2")
@@ -109,9 +140,13 @@ def self_test():
     result = run_analysis(5, 3, 4)
     if result["failures"]:
         raise AssertionError("slash effect invariant failed")
+    reissue = rejected_slash_reissue_case()
+    if not reissue["holds"]:
+        raise AssertionError("reissued slash was not idempotent")
     overflow = overflow_boundary(64)
     if overflow["failures"][0]["exact_sum"] != 2 ** 63:
         raise AssertionError("overflow boundary changed")
+    result["rejected_slash_reissue"] = reissue
     return result
 
 
@@ -132,6 +167,13 @@ def print_summary(result):
         print(
             "overflow_boundary word_bits={word_bits} signed_max={signed_max} vault={vault} bond={bond} exact_sum={exact_sum}".format(
                 **first
+            )
+        )
+    if "rejected_slash_reissue" in result:
+        reissue = result["rejected_slash_reissue"]
+        print(
+            "rejected_slash_reissue holds={holds} first_transferred={first_transferred} second_transferred={second_transferred} zero_bond_transferred={zero_bond_transferred}".format(
+                **reissue
             )
         )
 

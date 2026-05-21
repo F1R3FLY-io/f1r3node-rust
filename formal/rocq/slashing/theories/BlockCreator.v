@@ -41,7 +41,8 @@ Set Implicit Arguments.
      this Rocq module takes that canonical candidate list as input.
    - The bond map.
    - The proposer's identity and the next sequence number (for seed gen).
-   - A seed-generation function (deterministic). *)
+   - A seed-generation function over proposer, sequence number, and invalid
+     block hash. *)
 
 Definition AuthorizedCandidate := (Validator * BlockHash * nat)%type.
 
@@ -51,7 +52,7 @@ Definition prepare_slashing_deploys
   (proposer : Validator)
   (seqNum : nat)
   (currentEpoch : nat)
-  (seed_fn : Validator -> nat -> nat)
+  (seed_fn : Validator -> nat -> BlockHash -> nat)
   : list SlashDeploy :=
   let authorized := filter
                   (fun p =>
@@ -65,9 +66,27 @@ Definition prepare_slashing_deploys
        (fun p =>
           match p with
           | (_, h, targetEpoch) =>
-              mkSlashDeploy h proposer targetEpoch (seed_fn proposer seqNum)
+              mkSlashDeploy h proposer targetEpoch (seed_fn proposer seqNum h)
           end)
        authorized.
+
+Definition RejectedSlash := (BlockHash * Validator)%type.
+
+Definition rejected_slash_hash (rs : RejectedSlash) : BlockHash := fst rs.
+
+Fixpoint hash_member (h : BlockHash) (hs : list BlockHash) : bool :=
+  match hs with
+  | [] => false
+  | h' :: rest => Nat.eqb h h' || hash_member h rest
+  end.
+
+Definition recoverable_rejected_slash_hashes
+  (rejected : list RejectedSlash) (own_invalid_hashes : list BlockHash)
+  : list BlockHash :=
+  nodup hash_eq_dec
+    (filter
+       (fun h => negb (hash_member h own_invalid_hashes))
+       (map rejected_slash_hash rejected)).
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — Properties
@@ -132,4 +151,73 @@ Proof.
   apply andb_prop in Hauth as [Hepoch _].
   apply Nat.eqb_eq in Hepoch.
   rewrite <- Hsd. simpl. assumption.
+Qed.
+
+Theorem deploy_seed_uses_invalid_block_hash :
+  forall candidates bonds proposer seqNum currentEpoch seed_fn sd,
+    In sd (prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn) ->
+    sd_seed sd = seed_fn proposer seqNum (sd_target_hash sd).
+Proof.
+  intros candidates bonds proposer seqNum currentEpoch seed_fn sd Hin.
+  unfold prepare_slashing_deploys in Hin.
+  apply in_map_iff in Hin.
+  destruct Hin as [[[v h] targetEpoch] [Hsd Hin']].
+  rewrite <- Hsd. reflexivity.
+Qed.
+
+Lemma hash_member_true_iff :
+  forall h hs,
+    hash_member h hs = true <-> In h hs.
+Proof.
+  intros h hs. induction hs as [| x xs IH]; simpl.
+  - split; intros H; [discriminate | contradiction].
+  - rewrite Bool.orb_true_iff. rewrite Nat.eqb_eq. rewrite IH.
+    split.
+    + intros [Heq | Hin]; [left; symmetry; assumption | right; assumption].
+    + intros [Heq | Hin]; [left; symmetry; assumption | right; assumption].
+Qed.
+
+Lemma hash_member_false_iff :
+  forall h hs,
+    hash_member h hs = false <-> ~ In h hs.
+Proof.
+  intros h hs. rewrite <- Bool.not_true_iff_false.
+  rewrite hash_member_true_iff. reflexivity.
+Qed.
+
+Theorem recoverable_rejected_slash_hashes_nodup :
+  forall rejected own_invalid_hashes,
+    NoDup (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof.
+  intros. unfold recoverable_rejected_slash_hashes. apply NoDup_nodup.
+Qed.
+
+Theorem own_detected_hash_not_recovered :
+  forall rejected own_invalid_hashes h,
+    In h own_invalid_hashes ->
+    ~ In h (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof.
+  intros rejected own_invalid_hashes h Hown Hin.
+  unfold recoverable_rejected_slash_hashes in Hin.
+  apply nodup_In in Hin.
+  apply filter_In in Hin.
+  destruct Hin as [_ Hfilter].
+  rewrite Bool.negb_true_iff in Hfilter.
+  apply hash_member_false_iff in Hfilter.
+  contradiction.
+Qed.
+
+Theorem uncovered_rejected_hash_recovered :
+  forall rejected own_invalid_hashes rs,
+    In rs rejected ->
+    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
+    In (rejected_slash_hash rs)
+       (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof.
+  intros rejected own_invalid_hashes rs Hrej Hnotown.
+  unfold recoverable_rejected_slash_hashes.
+  apply nodup_In.
+  apply filter_In. split.
+  - apply in_map. assumption.
+  - rewrite Bool.negb_true_iff. apply hash_member_false_iff. assumption.
 Qed.

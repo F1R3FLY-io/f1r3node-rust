@@ -37,6 +37,13 @@ fixes a Rust-only deviation). "Deliberate widening" = the fix is a
 documented Rust-side improvement that breaks strict bisimilarity by
 design; T-9.9 establishes that the widening is sound.
 
+The current dev merge adds a recovery refinement to #12/#13: a slash
+that is itself rejected by multi-parent merge conflict resolution is
+surfaced as `RejectedSlash` and reissued by the merge proposer. Recovery
+dedups by `invalid_block_hash`, drops hashes already covered by the
+proposer's own slash pass, and relies on PoS slash idempotence when the
+offender has already reached zero bond.
+
 Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
 `posVault.transfer`-failure FIXMEs in `PoS.rhox`. Bug #4 fixed the
 slash arm (line 469); Bug #10 fixes the post-quarantine
@@ -356,6 +363,7 @@ property; the Rust source implements the short-circuit before reading
 
 ```
 ∀ ilm bonds proposer seqNum seed_fn,
+   seed_fn : Validator → SeqNum → BlockHash → Seed
    bm_lookup(bonds, proposer) = 0
  ⟹ prepare_slashing_deploys_post_fix(ilm, bonds, proposer, seqNum, seed_fn) = []
 
@@ -583,8 +591,9 @@ PoS state on the basis of evidence the local node had not validated.
 **Post-fix behavior.** Validation rejects unauthorized slash deploys before
 Rholang replay. The issuer must equal the block sender, the invalid hash must
 name a locally known invalid block, the target epoch must match both evidence
-and current epoch, the target must be currently bonded, and a block may target
-each `(validator, epoch)` at most once.
+and current epoch, the target must have positive bond in the block's actual
+parent pre-state, and a block may target each `(validator, epoch)` at most
+once.
 
 **Proofs and tests.** Rocq: `execute_unknown_evidence_noop`,
 `main_T9_13_unknown_slash_evidence_noop`. TLA+:

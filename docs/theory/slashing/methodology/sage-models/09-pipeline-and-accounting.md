@@ -68,7 +68,8 @@ order is observationally independent in this configuration.
 | Record meaning under permutation | T-9.11 (permutation invariance)    | (model-checked)                                   | `prop_t_9_11_detector_permutation_invariance.rs`                  |
 | Record uniqueness                | T-4                                | `EquivocationDetector.tla` `Inv_RecordUniqueness` | `prop_t_4_record_uniqueness.rs`                                   |
 | Slash order independence         | (informal; covered by composition) | (model-checked)                                   | `prop_t_5_record_monotonicity.rs`                                 |
-| Current-validator filtering      | (boundary)                         | `AuthorizedSlashFlow.tla`                         | `validator_boundary_model.sage` (no Rust regression)              |
+| Parent-bond authorization        | T-9.13′                            | `AuthorizedSlashFlow.tla`                         | `slash_authorization_regressions`                                 |
+| Rejected-slash reissue           | T-9.13″                            | `AuthorizedSlashFlow.tla`, `SlashFlow.tla`        | `slash_recovery_spec`, `rejected_slash`                           |
 
 ## 5 · Related findings
 

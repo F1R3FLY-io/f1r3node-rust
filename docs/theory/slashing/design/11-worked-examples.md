@@ -515,6 +515,15 @@ TLA+ `Inv_RejectedSlashWithoutEvidenceNoPending`. Rust
 `slash_authorization_regressions`.  **Diagram.** Extends Diagram 05
 with the authorize-before-replay guard.
 
+**Merge-rejected recovery refinement.** If a valid slash deploy is carried
+by a branch later rejected by multi-parent merge resolution, the merge
+reports `RejectedSlash(invalid_block_hash, issuer, source_block_hash)`.
+The next proposer reissues a single slash for that `invalid_block_hash`
+unless its own normal slashing pass already covers the same hash. The
+received block is authorized against its actual parent pre-state, so it is
+not rejected merely because another sibling already shows the offender at
+zero bond in the receiver's ambient snapshot.
+
 ## 11.14 Stale-evidence rebond identity (bug #13 demo)
 
 **Setup.** Validator with public key `K` bonds at epoch `e₁=5`,

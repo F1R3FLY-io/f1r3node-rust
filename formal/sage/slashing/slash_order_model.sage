@@ -10,10 +10,12 @@ def execute_order(bonds, order):
     vault = Integer(0)
     slashed = Set([])
     for validator in order:
-        if validator not in slashed:
-            vault += bonds[validator]
-            bonds[validator] = Integer(0)
-            slashed = slashed.union(Set([validator]))
+        amount = Integer(bonds[validator])
+        if validator in slashed or amount <= 0:
+            continue
+        vault += amount
+        bonds[validator] = Integer(0)
+        slashed = slashed.union(Set([validator]))
     return {"bonds": [int(value) for value in bonds], "vault": int(vault), "slashed": sorted(slashed)}
 
 
@@ -38,6 +40,10 @@ def self_test():
         raise AssertionError("slash order changed final state")
     if result["expected"]["vault"] != 36:
         raise AssertionError("vault total changed")
+    duplicate = execute_order([5, 7, 0], [0, 0, 2, 0])
+    if duplicate != {"bonds": [0, 7, 0], "vault": 5, "slashed": [0]}:
+        raise AssertionError("duplicate or zero-bond slash changed final state incorrectly")
+    result["duplicate_reissue"] = duplicate
     return result
 
 
@@ -45,6 +51,8 @@ def print_summary(result):
     for summary in result["summaries"]:
         print("validators={validators} slash_count={slash_count} checked={checked} failures={failures}".format(**summary))
     print("expected={}".format(result["expected"]))
+    if "duplicate_reissue" in result:
+        print("duplicate_reissue={}".format(result["duplicate_reissue"]))
 
 
 def main(argv):

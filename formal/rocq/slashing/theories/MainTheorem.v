@@ -215,6 +215,40 @@ Theorem main_T9_13_unknown_slash_evidence_noop :
     execute_slash_deploy ps sd current_epoch (evidence_lookup evidence) = (ps, false).
 Proof. exact unauthorized_unknown_execution_noop. Qed.
 
+Theorem main_T9_13_zero_parent_bond_not_authorized :
+  forall current_epoch parent_bonds sd evidence offender evidence_epoch,
+    evidence_lookup evidence (sd_target_hash sd) = Some (offender, evidence_epoch) ->
+    bm_lookup parent_bonds offender = 0 ->
+    authorized_slash_candidate current_epoch parent_bonds sd evidence = false.
+Proof. exact zero_parent_bond_not_authorized_candidate. Qed.
+
+Theorem main_T9_13_positive_parent_bond_authorizes_matching_candidate :
+  forall current_epoch parent_bonds sd evidence offender,
+    evidence_lookup evidence (sd_target_hash sd) = Some (offender, current_epoch) ->
+    sd_target_epoch sd = current_epoch ->
+    bm_lookup parent_bonds offender > 0 ->
+    authorized_slash_candidate current_epoch parent_bonds sd evidence = true.
+Proof. exact positive_parent_bond_authorizes_matching_candidate. Qed.
+
+Theorem main_T9_13_recoverable_rejected_slash_hashes_nodup :
+  forall rejected own_invalid_hashes,
+    NoDup (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof. exact recoverable_rejected_slash_hashes_nodup. Qed.
+
+Theorem main_T9_13_own_detected_hash_not_recovered :
+  forall rejected own_invalid_hashes h,
+    In h own_invalid_hashes ->
+    ~ In h (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof. exact own_detected_hash_not_recovered. Qed.
+
+Theorem main_T9_13_uncovered_rejected_hash_recovered :
+  forall rejected own_invalid_hashes rs,
+    In rs rejected ->
+    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
+    In (rejected_slash_hash rs)
+       (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Proof. exact uncovered_rejected_hash_recovered. Qed.
+
 Theorem main_TAuth_invalid_token_noop :
   forall ps sd lookup current_epoch,
     execute_authenticated_slash_deploy ps sd current_epoch lookup false = (ps, false).
@@ -225,6 +259,19 @@ Theorem main_TAuth_valid_token_equiv :
     execute_authenticated_slash_deploy ps sd current_epoch lookup true =
     execute_slash_deploy ps sd current_epoch lookup.
 Proof. exact execute_valid_auth_token_equiv. Qed.
+
+Theorem main_TSlash_seed_input_hash_injective :
+  forall proposer seqNum h1 h2,
+    slash_seed_input proposer seqNum h1 =
+    slash_seed_input proposer seqNum h2 ->
+    h1 = h2.
+Proof. exact slash_seed_input_hash_injective. Qed.
+
+Theorem main_TSlash_deploy_seed_uses_invalid_block_hash :
+  forall candidates bonds proposer seqNum currentEpoch seed_fn sd,
+    In sd (prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn) ->
+    sd_seed sd = seed_fn proposer seqNum (sd_target_hash sd).
+Proof. exact deploy_seed_uses_invalid_block_hash. Qed.
 
 Theorem main_T9_14_checked_pred_positive :
   forall n,

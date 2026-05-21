@@ -13,7 +13,7 @@
    SlashDeploy             │ SystemDeployEnum::Slash                          │
    sd_target               │ invalid_block_hash → looked up in invalidBlocks   │
    sd_proposer             │ validator_identity.public_key                    │
-   sd_seed                 │ generate_slash_deploy_random_seed(self, seqNum)  │
+   sd_seed                 │ generate_slash_deploy_random_seed(self, seqNum, invalid_block_hash) │
    ─────────────────────────────────────────────────────────────────────────
 
    Companion doc: slashing-verification.md §3.7.
@@ -32,8 +32,23 @@ Record SlashDeploy : Type := mkSlashDeploy {
   sd_target_hash  : BlockHash;       (* hash of the offending invalid block *)
   sd_proposer     : Validator;       (* public key of the deployer *)
   sd_target_epoch : nat;             (* validator lifetime/epoch being targeted *)
-  sd_seed         : nat              (* deterministic seed (splitByte(1)) *)
+  sd_seed         : nat              (* deterministic seed input includes target hash *)
 }.
+
+Definition slash_seed_input
+  (proposer : Validator) (seqNum : nat) (target_hash : BlockHash)
+  : Validator * nat * BlockHash :=
+  (proposer, seqNum, target_hash).
+
+Theorem slash_seed_input_hash_injective :
+  forall proposer seqNum h1 h2,
+    slash_seed_input proposer seqNum h1 =
+    slash_seed_input proposer seqNum h2 ->
+    h1 = h2.
+Proof.
+  intros proposer seqNum h1 h2 H.
+  inversion H. reflexivity.
+Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — Execution semantics
