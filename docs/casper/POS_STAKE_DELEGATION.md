@@ -34,6 +34,7 @@ PoS state now includes:
   - Accrued rewards claimable by delegators.
 - `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (Int, Int)]]`
   - Pending undelegation principal by delegator/validator as `(amount, unlockBlock)`.
+  - Unlocking principal is excluded from future effective stake, but remains slashable escrow until `completeUndelegate`.
 
 Effective stake is computed as:
 
@@ -64,6 +65,8 @@ Effective stake is computed as:
     - validator exists in `allBonds`
     - validator self-bond is `> 0`
     - validator is not in `pendingWithdrawers`
+    - validator effective stake cap is respected:
+      - `allBonds[validatorPk] + delegatedTotals.getOrElse(validatorPk, 0) + amount <= maximumBond`
   - Effects:
     - transfers `amount` from delegator vault to PoS vault
     - increments `delegations[delegatorPk][validatorPk]`
@@ -79,6 +82,7 @@ Effective stake is computed as:
     - decrements `delegations[delegatorPk][validatorPk]`
     - decrements `delegatedTotals[validatorPk]`
     - creates `pendingUndelegations[delegatorPk][validatorPk] = (amount, blockNumber + epochLength)`
+    - pending principal stops contributing to future effective stake, but remains slashable until completion
 
 - `PoS("completeUndelegate", deployerId, validatorPk, returnCh)`
   - Preconditions:
@@ -257,6 +261,7 @@ Map these contract errors to stable SDK/user-facing codes:
 - `No pending undelegation for validator.`
 - `Undelegation cooldown not finished.`
 - `No delegator rewards available.`
+- `Delegation would exceed validator maximum effective bond.`
 - `Validator has active delegations.` (withdraw path)
 
 ## Behavior Changes in Core Flows
@@ -283,6 +288,7 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 `PoS("undelegate", ...)` no longer transfers principal immediately.
 
 - request step: removes active delegation stake and creates pending undelegation with unlock block
+- pending step: principal is unlocking, excluded from future effective stake, and still slashable escrow
 - completion step: `PoS("completeUndelegate", ...)` transfers principal only after cooldown
 
 ### Withdraw
@@ -296,9 +302,10 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 
 `PoS("slash", ...)` now:
 
-- transfers `selfBond + delegatedTotal` to Coop vault
+- transfers `selfBond + activeDelegatedTotal + pendingUndelegationTotalForValidator` to Coop vault
 - removes slashed validator from every delegator mapping
 - deletes `delegatedTotals[validatorPk]`
+- removes pending undelegation claims tied to the slashed validator
 - keeps previous slash state transitions (`allBonds[validatorPk] = 0`, remove from active set, clear rewards)
 
 ## Mechanism Invariants
@@ -308,10 +315,11 @@ Expected invariants for valid state transitions:
 1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0) for all d)`
 2. Delegation can only target validators with active self-bond (`allBonds[v] > 0`).
 3. Validator with positive delegated total cannot enter pending withdrawal.
-4. On slash, both validator self-bond and delegated stake attached to that validator are slashed.
-5. Reward weighting uses effective stake, but active-set selection remains based on `allBonds` path in `closeBlock`.
-6. Undelegation request removes stake from effective bonds immediately and records claimable principal in `pendingUndelegations`.
-7. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
+4. On slash, validator self-bond, active delegated stake, and pending undelegation principal tied to that validator are slashed.
+5. Reward weighting and active-set selection use effective stake (`self + active delegated`), excluding pending undelegations.
+6. Undelegation request removes stake from effective bonds immediately and records unlocking principal in `pendingUndelegations`.
+7. Pending undelegation principal remains slashable until `completeUndelegate` transfers it out.
+8. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
 
 ## Operational Validation (April 20, 2026 UTC)
 
@@ -345,6 +353,7 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 1. Cooldown duration is fixed to `epochLength` (no separate undelegation-parameter yet).
 2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
 3. Delegator rewards are tracked per delegator total (not bucketed per validator).
+4. `maximumBond` is enforced as an effective stake cap (`self + active delegated`), not just self-bond.
 
 ## Minimal Usage Example (Rholang)
 
