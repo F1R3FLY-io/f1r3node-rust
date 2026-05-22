@@ -7,7 +7,7 @@
 # PREREQUISITES (self-hosted runner machine):
 #   - k3s installed and running (kubectl in PATH, no sudo)
 #   - Docker installed (docker group, no sudo)
-#   - Go 1.22+ installed (to build the testbed binary)
+#   - Go 1.25+ installed (to build the testbed binary)
 #   - GitHub Actions runner registered with labels: [self-hosted, linux, x64, testbed]
 #
 # GITHUB SECRETS (set in the target repo → Settings → Secrets → Actions):
@@ -22,6 +22,10 @@
 #   3. Trigger this workflow from the Actions tab, selecting suite and image.
 
 name: Testbed Quality Gate
+
+concurrency:
+  group: testbed-quality-gate
+  cancel-in-progress: false
 
 on:
   workflow_dispatch:
@@ -682,6 +686,7 @@ jobs:
             IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
+            DURATION=90m \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
           JOB=$(kubectl get jobs -l app=testbed --sort-by=.metadata.creationTimestamp \
             -o jsonpath='{.items[-1].metadata.name}')
