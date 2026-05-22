@@ -33,25 +33,33 @@ impl TestContext {
     }
 }
 
-/// Trivial deploy body. The conflict comes from the system-level
-/// precharge against the source vault, not from anything in the Rholang.
+/// Send/receive pair drives a deterministic, non-trivial settled cost
+/// under the cost-accounted-rho metering model (one `send_eval` + one
+/// `receive_eval` + a COMM + substitutions land the deploy at 49 phlo
+/// in the merged tree). The deploy must settle successfully —
+/// `block_index` discards failed-deploy diffs upstream of the merge
+/// engine, so an `OutOfPhlogistons` exit would erase the vault drain
+/// that drives the rejection.
 const CONFLICT_RHO: &str = r#"
-Nil
+@0!(0) | for (_ <- @0) { 0 }
 "#;
 
 /// Phlogiston pricing per deploy. The actual REV drain on the source
 /// vault is `cost * phlo_price` (precharge is `phlo_limit * phlo_price`,
 /// refunded down to `cost * phlo_price`).
 ///
-/// `phlo_limit = 8` keeps the precharge under the 9_000_000 REV vault
-/// cap (`8 * 1_000_000 = 8_000_000`). The deploy's actual cost is
-/// ~6 phlo (two `sum_cost = 3` charges from chaining `1 + 2 + 3`), so
-/// per-deploy net drain ≈ `6 * 1_000_000 = 6_000_000` REV. Two such
-/// deploys against the same vault sum to `12_000_000`, exceeding the
-/// 9_000_000 balance and triggering the merge-engine's negative-balance
-/// rejection.
-const PHLO_LIMIT: i64 = 8;
-const PHLO_PRICE: i64 = 1_000_000;
+/// `phlo_limit = 80` keeps the per-branch precharge at
+/// `80 * 100_000 = 8_000_000` REV — under the 9_000_000 REV vault cap
+/// (the default `DEFAULT_PUB` balance from `genesis_builder`'s
+/// `predefined_vault`). `phlo_price = 100_000` amplifies the body's
+/// settled cost (49 phlo) into `49 * 100_000 = 4_900_000` REV of vault
+/// drain per branch. Two such deploys against the same source vault
+/// sum to `9_800_000` REV, exceeding the `9_000_000` balance and
+/// triggering the merge-engine's negative-balance rejection. The body
+/// stays comfortably under `phlo_limit` (49 < 80) so the deploy
+/// settles without `OutOfPhlogistons`.
+const PHLO_LIMIT: i64 = 80;
+const PHLO_PRICE: i64 = 100_000;
 
 /// Recovery cycle end-to-end.
 ///
@@ -95,18 +103,6 @@ const PHLO_PRICE: i64 = 1_000_000;
 ///   in `self_chain_deploy_sigs`. The hash-asc tiebreak that decides
 ///   merge_block's main parent is irrelevant — we never traverse
 ///   merge_block via the self-chain walk.
-// FIXME(feature/cost-accounted-rho merge): the rejection trigger here depends on `Nil`'s
-// settled cost being ~5 phlo (the body length under the legacy parsing_cost charge).
-// The cost-accounted-rho model removes parsing_cost entirely, so a Nil deploy now settles
-// at cost 0 — precharge and refund net to zero on the source vault, and the merge engine
-// sees no negative-balance conflict to reject. The slashing-recovery mechanism this test
-// exercises (KeyValueRejectedDeployBuffer + self-chain dedup carve-out) is unchanged on
-// the merge; only the test's cost-arithmetic precondition is broken. Re-enable after
-// replacing the conflict trigger with one that does not depend on user-deploy phlo
-// settlement (e.g., a smaller source-vault genesis balance, or a precharge configuration
-// that overflows on the second branch regardless of refund). See the merge commit body
-// for context.
-#[ignore = "cost-accounted-rho merge: rejection trigger depends on removed parsing_cost"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {

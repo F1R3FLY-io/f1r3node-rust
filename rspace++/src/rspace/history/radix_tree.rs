@@ -37,29 +37,27 @@ const NUM_ITEMS: usize = 256;
 
 pub fn empty_node() -> Node { vec![Item::EmptyItem; NUM_ITEMS] }
 
-/**
-* Binary codecs for serializing/deserializing Node in Radix tree
-*
-* {{{
-* Coding structure for items:
-*   EmptyItem                   - Empty (not encode)
-
-*   Leaf(prefix,value)    -> [item index] [second byte] [prefix0]..[prefixM] [value0]..[value31]
-*                               where is: [second byte] -> bit7 = 0 (Leaf identifier)
-*                                                          bit6..bit0 - prefix length = M (from 0 to 127)
-*
-*   NodePtr(prefix,ptr)   -> [item index] [second byte] [prefix0]..[prefixM] [ptr0]..[ptr31]
-*                               where is: [second byte] -> bit7 = 1 (NodePtr identifier)
-*                                                          bit6..bit0 - prefix length = M (from 0 to 127)
-*
-* For example encode this Node which contains 2 non-empty items (index 1 and index 2):
-* (0)[Empty] (1)[Leaf(prefix:0xFFFF,value:0x00..0001)] (2)[NodePtr(prefix:empty,value:0xFF..FFFF)] (3)...(255)[Empty].
-* Encoded data = 0x0102FFFF0000000000000000000000000000000000000000000000000000000000000001
-*                  0280FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-* where: item 1 (index_secondByte_prefix_value) = 01_02_FFFF_00..0001
-*        item 2 (index_secondByte_prefix_value) = 02_80_empty_FF..FFFF
-* }}}
-*/
+/// Binary codecs for serializing/deserializing Node in Radix tree.
+///
+/// ```text
+/// Coding structure for items:
+///   EmptyItem                   - Empty (not encode)
+///
+///   Leaf(prefix,value)    -> [item index] [second byte] [prefix0]..[prefixM] [value0]..[value31]
+///                               where is: [second byte] -> bit7 = 0 (Leaf identifier)
+///                                                          bit6..bit0 - prefix length = M (from 0 to 127)
+///
+///   NodePtr(prefix,ptr)   -> [item index] [second byte] [prefix0]..[prefixM] [ptr0]..[ptr31]
+///                               where is: [second byte] -> bit7 = 1 (NodePtr identifier)
+///                                                          bit6..bit0 - prefix length = M (from 0 to 127)
+///
+/// For example encode this Node which contains 2 non-empty items (index 1 and index 2):
+/// (0)[Empty] (1)[Leaf(prefix:0xFFFF,value:0x00..0001)] (2)[NodePtr(prefix:empty,value:0xFF..FFFF)] (3)...(255)[Empty].
+/// Encoded data = 0x0102FFFF0000000000000000000000000000000000000000000000000000000000000001
+///                  0280FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+/// where: item 1 (index_secondByte_prefix_value) = 01_02_FFFF_00..0001
+///        item 2 (index_secondByte_prefix_value) = 02_80_empty_FF..FFFF
+/// ```
 
 // Default size for non-empty item data
 const DEF_SIZE: usize = 32;
