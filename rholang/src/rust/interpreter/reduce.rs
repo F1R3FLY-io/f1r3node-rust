@@ -1150,9 +1150,12 @@ impl DebruijnInterpreter {
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        let new_uri = new.uri.clone();
         let mut alloc = |count: usize, urns: Vec<String>| {
+            let total_simple_news = count - urns.len();
+            let mut new_idx: usize = 0;
             let simple_news =
-                (0..(count - urns.len()))
+                (0..total_simple_news)
                     .into_iter()
                     .fold(env.clone(), |mut _env: Env<Par>, _| {
                         let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
@@ -1160,6 +1163,17 @@ impl DebruijnInterpreter {
                                 id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
                             })),
                         }]);
+                        let ch_hash = stable_hash_provider::hash(&addr);
+                        tracing::info!(
+                            target: "f1r3.trace.channel_created",
+                            "[TRACE-CHANNEL-CREATED] channel={} new_idx={} total={} urns_count={} uri_count={}",
+                            hex::encode(ch_hash.bytes()),
+                            new_idx,
+                            total_simple_news,
+                            urns.len(),
+                            new_uri.len()
+                        );
+                        new_idx += 1;
                         _env.put(addr)
                     });
 
@@ -1216,6 +1230,13 @@ impl DebruijnInterpreter {
                                     hex,
                                 );
                             }
+                            let ch_hash = stable_hash_provider::hash(p);
+                            tracing::info!(
+                                target: "f1r3.trace.channel_created",
+                                "[TRACE-CHANNEL-CREATED-URN] urn={} channel={}",
+                                urn,
+                                hex::encode(ch_hash.bytes())
+                            );
                             Ok(new_env.put(p.clone()))
                         }
                         None => Err(InterpreterError::ReduceError(format!(

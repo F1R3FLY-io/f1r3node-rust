@@ -555,6 +555,36 @@ where
         HashMap::new();
     let mut global_branches: HashSet<usize> = HashSet::new();
 
+    // Check #4 inputs — channel-keyed consume-then-produce signature.
+    // For each branch, find channels where the branch BOTH consumed a
+    // pre-state produce AND emitted a new produce (linear or persistent).
+    // This is the structural signature of `runMVar(ch, ...)` and any
+    // contract pattern that treats `ch` as single-value.
+    //
+    // Refinement: the bare presence of the signature in 2+ branches is
+    // not sufficient to imply conflict. If all branches produce
+    // identical Datums on the channel, `ChannelChange::combine`'s
+    // multiset-max-count merge dedupes them to a single Datum — no
+    // multi-Datum results. Conflict only when 2+ branches produce
+    // DIFFERENT Datums on a non-commutative channel (per CSV cell
+    // `4 ! × 4 !`: "Could have matched same produce. Mergeable if
+    // different linear produces.").
+    //
+    // Track per channel: which branches have the signature, and the
+    // set of distinct produces each branch emitted on the channel.
+    // A pair of branches conflicts on the channel iff their emitted
+    // produce sets differ (and the channel isn't in number_channels_data
+    // for both, which is the existing commutative-merge bypass).
+    let mut consume_then_produce_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
+        HashMap::new();
+    let mut produces_emitted_by_channel_branch: HashMap<
+        (&Blake2b256Hash, usize),
+        HashSet<&Blake2b256Hash>,
+    > = HashMap::new();
+    // For the commutative bypass: which branches treat which channels as
+    // mergeable (IntegerAdd / BitmaskOr).
+    let mut mergeable_chs_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> = HashMap::new();
+
     for (idx, e) in event_logs.iter().enumerate() {
         // #1 race candidates: events destroyed in COMM (consumed produces /
         // produced consumes) and their mergeable counterparts.
@@ -628,6 +658,83 @@ where
         if !e.produces_touching_base_joins.0.is_empty() {
             global_branches.insert(idx);
         }
+
+        // #4 channel-keyed consume-then-produce signature (Run 6 architecture).
+        //
+        // A branch has the runMVar-style signature on channel C iff:
+        //   * branch.produces_consumed contains any produce on C, AND
+        //   * branch.produces_linear ∪ produces_persistent contains any
+        //     produce on C.
+        //
+        // Pure structural detection — no provenance filter on whether
+        // the consumed produce was external (LFB) or local (created
+        // within the branch). The external-consume refinement was tried
+        // (Run 8) and empirically regressed: too restrictive, lost the
+        // bonding-bug coverage.
+        let consumed_channels: HashSet<&Blake2b256Hash> = e
+            .produces_consumed
+            .0
+            .iter()
+            .map(|p| &p.channel_hash)
+            .collect();
+        let produced_channels: HashSet<&Blake2b256Hash> = e
+            .produces_linear
+            .0
+            .iter()
+            .chain(e.produces_persistent.0.iter())
+            .map(|p| &p.channel_hash)
+            .collect();
+        for ch in consumed_channels.intersection(&produced_channels) {
+            consume_then_produce_by_channel
+                .entry(*ch)
+                .or_default()
+                .insert(idx);
+            // Collect produce hashes emitted by this branch on this channel.
+            let emitted_set = produces_emitted_by_channel_branch
+                .entry((*ch, idx))
+                .or_default();
+            for p in e.produces_linear.0.iter().chain(e.produces_persistent.0.iter()) {
+                if &p.channel_hash == *ch {
+                    emitted_set.insert(&p.hash);
+                }
+            }
+        }
+        for ch in e.number_channels_data.keys() {
+            mergeable_chs_by_channel.entry(ch).or_default().insert(idx);
+        }
+    }
+
+    // Diagnostic: dump the branch-count distribution for produces_consumed
+    // so we can verify Check #1 has the inputs we expect.
+    tracing::info!(
+        target: "f1r3.trace.conflict_map",
+        "[TRACE-CONFLICT-MAP-BUILT] n_branches={} pc_keys={} pm_keys={} cp_keys={} cm_keys={}",
+        n,
+        produces_consumed_by_branches.len(),
+        produces_mergeable_by_branches.len(),
+        consumes_produced_by_branches.len(),
+        consumes_mergeable_by_branches.len()
+    );
+    for (produce, branches_set) in &produces_consumed_by_branches {
+        if branches_set.len() >= 2 {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CONFLICT-MAP-PRODUCE-MULTI] channel={} produce_hash={} persistent={} branch_count={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes()),
+                produce.persistent,
+                branches_set.len()
+            );
+        } else {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CONFLICT-MAP-PRODUCE-SINGLE] channel={} produce_hash={} persistent={} branch_count={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes()),
+                produce.persistent,
+                branches_set.len()
+            );
+        }
     }
 
     // Collect conflict pairs (i, j) with i < j; duplicate insertions into
@@ -636,9 +743,25 @@ where
 
     // #1 race on produces_consumed.
     for (produce, branches_set) in &produces_consumed_by_branches {
-        if produce.persistent || branches_set.len() < 2 {
+        if produce.persistent {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CHECK-1-SKIP-PERSISTENT] channel={} produce_hash={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes())
+            );
             continue;
         }
+        if branches_set.len() < 2 {
+            continue;
+        }
+        tracing::info!(
+            target: "f1r3.trace.conflict_map",
+            "[TRACE-CHECK-1-MULTI-BRANCH] channel={} produce_hash={} branch_count={}",
+            hex::encode(produce.channel_hash.bytes()),
+            hex::encode(produce.hash.bytes()),
+            branches_set.len()
+        );
         let mergeable = produces_mergeable_by_branches.get(produce);
         let pos: Vec<usize> = branches_set.iter().copied().collect();
         for i in 0..pos.len() {
@@ -700,6 +823,66 @@ where
         for o in 0..n {
             if o != g {
                 let (lo, hi) = if g < o { (g, o) } else { (o, g) };
+                pairs.push((lo, hi));
+            }
+        }
+    }
+
+    // #4 channel-keyed consume-then-produce signature. The structural
+    // form of CSV cell `4 ! × 4 !`. Each branch that round-trips a
+    // channel (consume-then-produce) carries the runMVar pattern's
+    // signature on that channel. Two+ branches with this signature on
+    // the same non-commutative channel conflict ONLY IF the branches'
+    // emitted produces differ — if all emit identical Datums, the
+    // multiset-max-count combine dedupes to a single Datum and no
+    // multi-Datum results. Bypassed when the channel is in
+    // `number_channels_data` for both branches (commutative merge).
+    for (channel, branches_set) in &consume_then_produce_by_channel {
+        if branches_set.len() < 2 {
+            continue;
+        }
+        tracing::info!(
+            target: "f1r3.trace.conflict_map",
+            "[TRACE-CHECK-4-CANDIDATE] channel={} branch_count={}",
+            hex::encode(channel.bytes()),
+            branches_set.len()
+        );
+        let mergeable_branches = mergeable_chs_by_channel.get(channel);
+        let pos: Vec<usize> = branches_set.iter().copied().collect();
+        for i in 0..pos.len() {
+            for j in (i + 1)..pos.len() {
+                let (a, b) = (pos[i], pos[j]);
+                let both_mergeable = mergeable_branches
+                    .map(|m| m.contains(&a) && m.contains(&b))
+                    .unwrap_or(false);
+                if both_mergeable {
+                    continue;
+                }
+                let empty: HashSet<&Blake2b256Hash> = HashSet::new();
+                let emitted_a = produces_emitted_by_channel_branch
+                    .get(&(*channel, a))
+                    .unwrap_or(&empty);
+                let emitted_b = produces_emitted_by_channel_branch
+                    .get(&(*channel, b))
+                    .unwrap_or(&empty);
+                if emitted_a == emitted_b {
+                    tracing::info!(
+                        target: "f1r3.trace.conflict_map",
+                        "[TRACE-CHECK-4-SKIP-IDENTICAL] channel={} branches=({},{}) emitted_count={}",
+                        hex::encode(channel.bytes()),
+                        a, b,
+                        emitted_a.len()
+                    );
+                    continue;
+                }
+                tracing::info!(
+                    target: "f1r3.trace.conflict_map",
+                    "[TRACE-CHECK-4-CONFLICT] channel={} branches=({},{}) emitted_a={} emitted_b={}",
+                    hex::encode(channel.bytes()),
+                    a, b,
+                    emitted_a.len(), emitted_b.len()
+                );
+                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
                 pairs.push((lo, hi));
             }
         }

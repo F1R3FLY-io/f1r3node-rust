@@ -15,6 +15,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 
 use super::deploy_index::DeployIndex;
+use crate::rust::system_deploy::is_system_deploy_id;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeployIdWithCost {
@@ -22,11 +23,29 @@ pub struct DeployIdWithCost {
     pub cost: u64,
 }
 
-/** index of deploys depending on each other inside a single block (state transition) */
+/// Index of deploys depending on each other inside a single block (state
+/// transition).
+///
+/// Events are tracked along three primitive views, all populated at
+/// construction:
+///   * `user_event_log_index` — events emitted by user deploys only
+///     (PreCharge + user body + Refund, all of which the runtime wraps
+///     into a single user-deploy `deploy_log`).
+///   * `system_event_log_index` — events emitted by system deploys
+///     (closeBlock, slash, heartbeat).
+///   * `event_log_index` — combined view, equal to
+///     `EventLogIndex::combine(&user_event_log_index, &system_event_log_index)`.
+///     Used by `depends_fn` / `compute_depends_map_event_indexed` for
+///     inter-chain dependency checks where the user/system distinction is
+///     irrelevant.
+///
+/// Classification uses `is_system_deploy_id` on each `DeployIndex.deploy_id`.
 #[derive(Debug, Clone)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
     post_state_hash: Blake2b256Hash,
+    pub user_event_log_index: EventLogIndex,
+    pub system_event_log_index: EventLogIndex,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
     // Source block identity. Allows the merge algorithm to identify chains
@@ -64,11 +83,51 @@ impl DeployChainIndex {
             })
             .collect();
 
-        let event_log_index = deploys
-            .into_iter()
-            .try_fold(EventLogIndex::empty(), |acc, deploy| {
-                EventLogIndex::combine(&acc, &deploy.event_log_index)
-            })?;
+        let (user_event_log_index, system_event_log_index) = deploys.into_iter().try_fold(
+            (EventLogIndex::empty(), EventLogIndex::empty()),
+            |(user_acc, system_acc), deploy| -> Result<_, HistoryError> {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    let merged = EventLogIndex::combine(&system_acc, &deploy.event_log_index)?;
+                    Ok((user_acc, merged))
+                } else {
+                    let merged = EventLogIndex::combine(&user_acc, &deploy.event_log_index)?;
+                    Ok((merged, system_acc))
+                }
+            },
+        )?;
+
+        let event_log_index =
+            EventLogIndex::combine(&user_event_log_index, &system_event_log_index)?;
+
+        tracing::info!(
+            target: "f1r3.trace.deploy_chain_index",
+            "[TRACE-DEPLOY-CHAIN-INDEX-NEW] source_block={} block_num={} deploys={} user_produces_consumed={} system_produces_consumed={} user_produces_linear={} system_produces_linear={}",
+            hex::encode(&source_block_hash),
+            source_block_number,
+            deploys.0.len(),
+            user_event_log_index.produces_consumed.0.len(),
+            system_event_log_index.produces_consumed.0.len(),
+            user_event_log_index.produces_linear.0.len(),
+            system_event_log_index.produces_linear.0.len()
+        );
+        for p in user_event_log_index.produces_consumed.0.iter() {
+            tracing::info!(
+                target: "f1r3.trace.deploy_chain_index",
+                "[TRACE-DCI-USER-PRODUCE-CONSUMED] source_block={} channel={} produce_hash={}",
+                hex::encode(&source_block_hash),
+                hex::encode(p.channel_hash.bytes()),
+                hex::encode(p.hash.bytes())
+            );
+        }
+        for p in system_event_log_index.produces_consumed.0.iter() {
+            tracing::info!(
+                target: "f1r3.trace.deploy_chain_index",
+                "[TRACE-DCI-SYSTEM-PRODUCE-CONSUMED] source_block={} channel={} produce_hash={}",
+                hex::encode(&source_block_hash),
+                hex::encode(p.channel_hash.bytes()),
+                hex::encode(p.hash.bytes())
+            );
+        }
 
         let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
         let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
@@ -76,31 +135,11 @@ impl DeployChainIndex {
         let state_changes =
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
-        tracing::info!(
-            target: "f1r3.trace.deploy_chain_index",
-            "[TRACE-DEPLOY-CHAIN-INDEX-NEW] source_block={} block_num={} pre_state={} post_state={} deploys_count={} number_channels_count={} datums_changes_count={}",
-            hex::encode(&source_block_hash),
-            source_block_number,
-            hex::encode(pre_state_hash.bytes()),
-            hex::encode(post_state_hash.bytes()),
-            deploys.0.len(),
-            event_log_index.number_channels_data.len(),
-            state_changes.datums_changes.len()
-        );
-        for (ch, (diff, mt)) in event_log_index.number_channels_data.iter() {
-            tracing::info!(
-                target: "f1r3.trace.deploy_chain_index",
-                "[TRACE-DEPLOY-CHAIN-INDEX-CH] source_block={} channel={} merge_type={:?} diff={}",
-                hex::encode(&source_block_hash),
-                hex::encode(ch.bytes()),
-                mt,
-                diff
-            );
-        }
-
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
+            user_event_log_index,
+            system_event_log_index,
             event_log_index,
             state_changes,
             source_block_hash,
@@ -109,17 +148,27 @@ impl DeployChainIndex {
     }
 
     /// Construct a DeployChainIndex directly from its parts (for testing).
+    /// Caller supplies the user/system event-log split; the combined
+    /// `event_log_index` is built here so it stays in sync.
     pub fn from_parts(
         deploys_with_cost: HashableSet<DeployIdWithCost>,
         post_state_hash: Blake2b256Hash,
-        event_log_index: EventLogIndex,
+        user_event_log_index: EventLogIndex,
+        system_event_log_index: EventLogIndex,
         state_changes: StateChange,
         source_block_hash: BlockHash,
         source_block_number: i64,
     ) -> Self {
+        let event_log_index =
+            EventLogIndex::combine(&user_event_log_index, &system_event_log_index).expect(
+                "EventLogIndex::combine in DeployChainIndex::from_parts must not fail — \
+             callers are responsible for supplying consistent MergeType data",
+            );
         DeployChainIndex {
             deploys_with_cost,
             post_state_hash,
+            user_event_log_index,
+            system_event_log_index,
             event_log_index,
             state_changes,
             source_block_hash,
@@ -229,6 +278,8 @@ mod tests {
         DeployChainIndex {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: Blake2b256Hash::from_bytes(vec![post_state_seed; 32]),
+            user_event_log_index: EventLogIndex::empty(),
+            system_event_log_index: EventLogIndex::empty(),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
