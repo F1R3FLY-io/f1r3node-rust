@@ -63,6 +63,170 @@ fn descendants_within_scope(
     result
 }
 
+/// Pre-computed data for a branch — aggregated user-deploy IDs and event
+/// logs split by deploy provenance.
+///
+/// `combined_user_event_log` aggregates the `user_event_log_index` of every
+/// chain in the branch; it feeds the existing CSP-level conflict checks
+/// (`compute_conflict_map_event_indexed`).
+///
+/// `combined_system_event_log` aggregates the `system_event_log_index` of
+/// every chain; it feeds the system-deploy state-mutation checks.
+///
+/// Per-deploy event provenance replaces the old chain-level
+/// system-deploy filter: instead of stripping any chain that carries a
+/// system-deploy id (which masked user-deploy effects on tagged channels
+/// when the runtime grouped them with closeBlock), each chain
+/// contributes its user and system events to the respective combined
+/// logs.
+pub struct BranchDerived {
+    pub user_deploy_ids: HashSet<Bytes>,
+    pub combined_user_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+    pub combined_system_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+    pub combined_all_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+}
+
+pub fn compute_branch_derived(
+    branch: &HashableSet<DeployChainIndex>,
+) -> Result<BranchDerived, rspace_plus_plus::rspace::errors::HistoryError> {
+    let user_deploy_ids: HashSet<_> = branch
+        .0
+        .iter()
+        .flat_map(|chain| chain.deploys_with_cost.0.iter())
+        .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
+        .map(|deploy| deploy.deploy_id.clone())
+        .collect();
+
+    let combined_user_event_log = branch
+        .0
+        .iter()
+        .map(|chain| &chain.user_event_log_index)
+        .try_fold(
+            rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
+            |acc, index| {
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                    &acc, index,
+                )
+            },
+        )?;
+
+    let combined_system_event_log = branch
+        .0
+        .iter()
+        .map(|chain| &chain.system_event_log_index)
+        .try_fold(
+            rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
+            |acc, index| {
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                    &acc, index,
+                )
+            },
+        )?;
+
+    let combined_all_event_log =
+        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+            &combined_user_event_log,
+            &combined_system_event_log,
+        )?;
+
+    Ok(BranchDerived {
+        user_deploy_ids,
+        combined_user_event_log,
+        combined_system_event_log,
+        combined_all_event_log,
+    })
+}
+
+/// Group `merge_set` chains into branches whose elements depend on each other.
+/// Builds inverted indexes over each chain's `EventLogIndex` and emits depends
+/// pairs in a single pass, then groups via `gather_related_sets`.
+pub fn compute_branches(
+    merge_set: &HashableSet<DeployChainIndex>,
+) -> HashableSet<HashableSet<DeployChainIndex>> {
+    let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
+    let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
+        chains_vec.iter().map(|c| &c.event_log_index).collect();
+    #[allow(clippy::mutable_key_type)]
+    let depends_map = merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
+    merging_logic::gather_related_sets(&depends_map)
+}
+
+/// Build the conflict map between branches. Combines event-log conflicts
+/// (races, potential COMMs, produces touching base joins) with the
+/// same-user-deploy-id check: two branches that share any user deploy ID
+/// must be flagged as conflicting regardless of their event logs.
+///
+/// `EventLogIndex::combine` inside `compute_branch_derived` is fallible — a
+/// MergeType mismatch propagates as a hard error so the merge is rejected
+/// rather than silently absorbing the invariant violation.
+pub fn compute_conflict_map(
+    branches_set: &HashableSet<HashableSet<DeployChainIndex>>,
+) -> Result<
+    HashMap<HashableSet<DeployChainIndex>, HashableSet<HashableSet<DeployChainIndex>>>,
+    rspace_plus_plus::rspace::errors::HistoryError,
+> {
+    // Snapshot branch references in a stable order so the parallel arrays
+    // passed into the indexed map and the deploy-id pass below line up.
+    let branches_refs: Vec<&HashableSet<DeployChainIndex>> = branches_set.0.iter().collect();
+    let branches_owned: Vec<HashableSet<DeployChainIndex>> =
+        branches_refs.iter().map(|b| (*b).clone()).collect();
+
+    // Compute branch-derived data fresh for each branch. The original closure
+    // form cached this in a RefCell, but `resolve_conflicts` calls this
+    // exactly once per merge, so the cache was effectively unused — dropping
+    // it has zero perf impact on production.
+    let derived: Vec<BranchDerived> = branches_refs
+        .iter()
+        .map(|b| compute_branch_derived(b))
+        .collect::<Result<_, _>>()?;
+
+    // Option 2 experiment: feed BOTH user and system events into Check #1.
+    // Hypothesis: heartbeat closeBlocks read stateCh via peek (`<<-`), so
+    // they populate `produces_peeked`, not `produces_consumed`. Only true
+    // state-mutating runMVar consumes (regular `<-` inside `runMVar`)
+    // populate `produces_consumed`. Feeding system events should surface
+    // bonding-bug conflicts without re-triggering the bf3d274a flood —
+    // because that flood was about consume/produce matching at the
+    // potential-comms layer, not produces_consumed races.
+    let all_event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
+        derived.iter().map(|d| &d.combined_all_event_log).collect();
+
+    // Event-log conflicts: races, potential COMMs, base-join touches.
+    // `mutable_key_type` is a false positive here: prost::bytes::Bytes uses an
+    // internal Arc, not interior mutability, but clippy can't distinguish.
+    #[allow(clippy::mutable_key_type)]
+    let mut conflict_map =
+        merging_logic::compute_conflict_map_event_indexed(&branches_owned, &all_event_logs);
+
+    // Same-user-deploy-id pass: for any user deploy ID appearing in multiple
+    // branches, mark all such branches as mutual conflicts.
+    let mut deploy_to_branches: HashMap<prost::bytes::Bytes, Vec<usize>> = HashMap::new();
+    for (idx, d) in derived.iter().enumerate() {
+        for id in &d.user_deploy_ids {
+            deploy_to_branches.entry(id.clone()).or_default().push(idx);
+        }
+    }
+    for branch_ids in deploy_to_branches.values() {
+        if branch_ids.len() < 2 {
+            continue;
+        }
+        for i in 0..branch_ids.len() {
+            for j in (i + 1)..branch_ids.len() {
+                let a = branches_owned[branch_ids[i]].clone();
+                let b = branches_owned[branch_ids[j]].clone();
+                if let Some(set_a) = conflict_map.get_mut(&a) {
+                    set_a.0.insert(b.clone());
+                }
+                if let Some(set_b) = conflict_map.get_mut(&b) {
+                    set_b.0.insert(a.clone());
+                }
+            }
+        }
+    }
+
+    Ok(conflict_map)
+}
+
 pub fn merge(
     dag: &KeyValueDagRepresentation,
     lfb: &BlockHash,
@@ -270,54 +434,10 @@ pub fn merge(
         consumes_created: HashableSet<rspace_plus_plus::rspace::trace::event::Consume>,
     }
 
-    // Pre-computed data for a branch (HashableSet<DeployChainIndex>), cached by
-    // pointer address to avoid recomputing on every O(B²) conflicts() call.
-    struct BranchDerived {
-        user_deploy_ids: HashSet<Bytes>,
-        combined_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
-    }
-
-    fn compute_branch_derived(
-        branch: &HashableSet<DeployChainIndex>,
-    ) -> Result<BranchDerived, rspace_plus_plus::rspace::errors::HistoryError> {
-        let user_deploy_ids: HashSet<_> = branch
-            .0
-            .iter()
-            .flat_map(|chain| chain.deploys_with_cost.0.iter())
-            .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
-            .map(|deploy| deploy.deploy_id.clone())
-            .collect();
-
-        let combined_event_log = branch
-            .0
-            .iter()
-            .filter(|idx| {
-                idx.deploys_with_cost
-                    .0
-                    .iter()
-                    .all(|d| !is_system_deploy_id(&d.deploy_id))
-            })
-            .map(|chain| &chain.event_log_index)
-            .try_fold(
-                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
-                |acc, index| {
-                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
-                        &acc, index,
-                    )
-                },
-            )?;
-
-        Ok(BranchDerived {
-            user_deploy_ids,
-            combined_event_log,
-        })
-    }
-
-    // Lazy caches keyed by pointer address. Safe because:
+    // Lazy chain-derived cache keyed by pointer address. Safe because:
     // - References come from HashSet iteration, addresses stable during iteration
-    // - DerivedSets/BranchDerived are pure functions of the item
+    // - DerivedSets is a pure function of the item
     let chain_cache: RefCell<HashMap<usize, ChainDerived>> = RefCell::new(HashMap::new());
-    let branch_cache: RefCell<HashMap<usize, BranchDerived>> = RefCell::new(HashMap::new());
 
     let get_chain_derived = |chain: &DeployChainIndex| -> usize {
         let addr = std::ptr::addr_of!(*chain) as usize;
@@ -332,17 +452,6 @@ pub fn merge(
         });
         addr
     };
-
-    let get_branch_derived =
-        |branch: &HashableSet<DeployChainIndex>| -> Result<usize, rspace_plus_plus::rspace::errors::HistoryError> {
-            let addr = std::ptr::addr_of!(*branch) as usize;
-            let mut cache = branch_cache.borrow_mut();
-            if !cache.contains_key(&addr) {
-                let derived = compute_branch_derived(branch)?;
-                cache.insert(addr, derived);
-            }
-            Ok(addr)
-        };
 
     // Create history reader for base state
     let history_reader = std::sync::Arc::new(
@@ -466,96 +575,10 @@ pub fn merge(
 
     let get_data_fn = |hash| history_reader.get_data(&hash).map_err(|e| e.into());
 
-    // Build the conflict map for branches. Combines event-log conflicts
-    // (races, potential COMMs, produces touching base joins) with the
-    // same-user-deploy-id check: two branches that share any user deploy
-    // ID must be flagged as conflicting regardless of their event logs.
-    //
-    // `EventLogIndex::combine` inside `get_branch_derived` is fallible —
-    // a MergeType mismatch propagates as a hard error so the merge is
-    // rejected rather than silently absorbing the invariant violation.
-    let compute_conflict_map_fn = |branches_set: &HashableSet<HashableSet<DeployChainIndex>>| -> Result<
-        HashMap<HashableSet<DeployChainIndex>, HashableSet<HashableSet<DeployChainIndex>>>,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    > {
-        // Populate `branch_cache` for every branch so the borrow below can
-        // read combined event logs without recomputing, and any combine
-        // failure surfaces here before we read.
-        for branch in branches_set.0.iter() {
-            get_branch_derived(branch)?;
-        }
-
-        // Snapshot branch references in a stable order so the parallel
-        // arrays passed into the indexed map and the deploy-id pass below
-        // line up.
-        let branches_refs: Vec<&HashableSet<DeployChainIndex>> = branches_set.0.iter().collect();
-        let branches_owned: Vec<HashableSet<DeployChainIndex>> =
-            branches_refs.iter().map(|b| (*b).clone()).collect();
-
-        let cache = branch_cache.borrow();
-        let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-            branches_refs
-                .iter()
-                .map(|b| {
-                    let addr = std::ptr::addr_of!(**b) as usize;
-                    &cache.get(&addr).unwrap().combined_event_log
-                })
-                .collect();
-
-        // Event-log conflicts: races, potential COMMs, base-join touches.
-        // `mutable_key_type` is a false positive here: prost::bytes::Bytes uses an
-        // internal Arc, not interior mutability, but clippy can't distinguish.
-        #[allow(clippy::mutable_key_type)]
-        let mut conflict_map =
-            merging_logic::compute_conflict_map_event_indexed(&branches_owned, &event_logs);
-
-        // Same-user-deploy-id pass: for any user deploy ID appearing in
-        // multiple branches, mark all such branches as mutual conflicts.
-        let mut deploy_to_branches: HashMap<prost::bytes::Bytes, Vec<usize>> = HashMap::new();
-        for (idx, b) in branches_refs.iter().enumerate() {
-            let addr = std::ptr::addr_of!(**b) as usize;
-            let derived = cache.get(&addr).unwrap();
-            for d in &derived.user_deploy_ids {
-                deploy_to_branches.entry(d.clone()).or_default().push(idx);
-            }
-        }
-        for branch_ids in deploy_to_branches.values() {
-            if branch_ids.len() < 2 {
-                continue;
-            }
-            for i in 0..branch_ids.len() {
-                for j in (i + 1)..branch_ids.len() {
-                    let a = branches_owned[branch_ids[i]].clone();
-                    let b = branches_owned[branch_ids[j]].clone();
-                    if let Some(set_a) = conflict_map.get_mut(&a) {
-                        set_a.0.insert(b.clone());
-                    }
-                    if let Some(set_b) = conflict_map.get_mut(&b) {
-                        set_b.0.insert(a.clone());
-                    }
-                }
-            }
-        }
-
-        Ok(conflict_map)
-    };
-
-    // Group chains in merge_set into branches whose elements depend on each
-    // other. Builds inverted indexes over each chain's `EventLogIndex` and
-    // emits depends pairs in a single pass, then groups via
-    // `gather_related_sets`.
-    let compute_branches_fn =
-        |merge_set: &HashableSet<DeployChainIndex>| -> HashableSet<HashableSet<DeployChainIndex>> {
-            let chains_vec: Vec<DeployChainIndex> = merge_set.0.iter().cloned().collect();
-            let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-                chains_vec.iter().map(|c| &c.event_log_index).collect();
-            #[allow(clippy::mutable_key_type)]
-            let depends_map =
-                merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
-            merging_logic::gather_related_sets(&depends_map)
-        };
-
     // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
+    // Both branch-grouping and conflict-mapping are module-level pub functions
+    // (see `compute_branches`, `compute_conflict_map` above) so the test suite
+    // can exercise the exact production call path.
     let mut resolved = conflict_set_merger::resolve_conflicts(
         actual_seq,
         late_seq,
@@ -563,8 +586,8 @@ pub fn merge(
         &rejection_cost_f,
         &mergeable_channels_fn,
         &get_data_fn,
-        &compute_branches_fn,
-        &compute_conflict_map_fn,
+        &compute_branches,
+        &compute_conflict_map,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
