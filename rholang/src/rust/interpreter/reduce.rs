@@ -1151,6 +1151,15 @@ impl DebruijnInterpreter {
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         let new_uri = new.uri.clone();
+        // Body fingerprint: content-addressed hash of the New block's body Par.
+        // Same Rholang `new x, y in {...}` source → same body_hash regardless of
+        // caller. Lets us correlate channel-creation events back to the specific
+        // source position in PoS.rhox / RevVault.rho / etc.
+        let body_hash = stable_hash_provider::hash(new.p.as_ref().expect("New::p must be present"));
+        let body_hex = hex::encode(&body_hash.bytes()[..8]);
+        // Rand path: identifies the execution-path context at this `new`.
+        // Stable for the same deploy + same control-flow path.
+        let path_hex = hex::encode(&rand.path_view[..rand.path_position]);
         let mut alloc = |count: usize, urns: Vec<String>| {
             let total_simple_news = count - urns.len();
             let mut new_idx: usize = 0;
@@ -1166,12 +1175,14 @@ impl DebruijnInterpreter {
                         let ch_hash = stable_hash_provider::hash(&addr);
                         tracing::info!(
                             target: "f1r3.trace.channel_created",
-                            "[TRACE-CHANNEL-CREATED] channel={} new_idx={} total={} urns_count={} uri_count={}",
+                            "[TRACE-CHANNEL-CREATED] channel={} new_idx={} total={} urns_count={} uri_count={} body_hash={} path={}",
                             hex::encode(ch_hash.bytes()),
                             new_idx,
                             total_simple_news,
                             urns.len(),
-                            new_uri.len()
+                            new_uri.len(),
+                            body_hex,
+                            path_hex
                         );
                         new_idx += 1;
                         _env.put(addr)

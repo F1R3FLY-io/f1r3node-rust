@@ -659,21 +659,51 @@ where
             global_branches.insert(idx);
         }
 
-        // #4 channel-keyed consume-then-produce signature (Run 6 architecture).
+        // #4 channel-keyed external-linear-consume-then-local-produce signature.
         //
-        // A branch has the runMVar-style signature on channel C iff:
-        //   * branch.produces_consumed contains any produce on C, AND
-        //   * branch.produces_linear ∪ produces_persistent contains any produce on C.
+        // A branch has the runMVar-on-persistent-state signature on
+        // channel C iff:
         //
-        // Pure structural detection — no provenance filter on whether
-        // the consumed produce was external (LFB) or local (created
-        // within the branch). The external-consume refinement was tried
-        // (Run 8) and empirically regressed: too restrictive, lost the
-        // bonding-bug coverage.
-        let consumed_channels: HashSet<&Blake2b256Hash> = e
+        //   * branch has a LINEAR consume on C that was destroyed via COMM (`c in
+        //     consumes_produced where !c.persistent`). This excludes CSV `! C` / `!! C`
+        //     (linear send matched by persistent receiver) — persistent consumes aren't
+        //     destroyed, so produce-into-persistent-contract is mergeable per CSV.
+        //
+        //   * branch.produces_consumed contains a produce on C whose hash is NOT in
+        //     branch.produces_linear ∪ produces_persistent (i.e., the consumed Datum
+        //     came from outside the branch — LFB or an upstream block — not from a
+        //     produce the branch itself emitted in the same chain). This excludes the
+        //     single-deploy `@x!(v) | for (@y <- @x) { @x!(y) }` pattern where the
+        //     consume matches the deploy's own produce — a local round-trip that
+        //     doesn't race across branches.
+        //
+        //   * branch.produces_linear ∪ produces_persistent contains a produce on C (the
+        //     branch emitted a new value).
+        //
+        // This is the structural signature for runMVar on a persistent
+        // state channel: linear consume of a pre-existing (LFB or
+        // upstream) Datum + linear produce of a new Datum. Two+
+        // branches with this signature on a non-mergeable channel race
+        // for the single-value invariant.
+        let local_produce_hashes: HashSet<&Blake2b256Hash> = e
+            .produces_linear
+            .0
+            .iter()
+            .chain(e.produces_persistent.0.iter())
+            .map(|p| &p.hash)
+            .collect();
+        let linearly_consumed_channels: HashSet<&Blake2b256Hash> = e
+            .consumes_produced
+            .0
+            .iter()
+            .filter(|c| !c.persistent)
+            .flat_map(|c| c.channel_hashes.iter())
+            .collect();
+        let externally_consumed_channels: HashSet<&Blake2b256Hash> = e
             .produces_consumed
             .0
             .iter()
+            .filter(|p| !local_produce_hashes.contains(&p.hash))
             .map(|p| &p.channel_hash)
             .collect();
         let produced_channels: HashSet<&Blake2b256Hash> = e
@@ -683,7 +713,15 @@ where
             .chain(e.produces_persistent.0.iter())
             .map(|p| &p.channel_hash)
             .collect();
-        for ch in consumed_channels.intersection(&produced_channels) {
+        // Channel qualifies iff all three conditions hold.
+        let candidate_channels: HashSet<&Blake2b256Hash> = linearly_consumed_channels
+            .intersection(&externally_consumed_channels)
+            .copied()
+            .collect::<HashSet<_>>()
+            .intersection(&produced_channels)
+            .copied()
+            .collect();
+        for ch in candidate_channels.iter() {
             consume_then_produce_by_channel
                 .entry(*ch)
                 .or_default()
