@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
+use casper::rust::casper::{
+    Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
+};
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::running::{
@@ -71,6 +73,8 @@ mod tests {
             self.inner.block_store()
         }
 
+        fn casper_shard_conf(&self) -> &CasperShardConf { self.inner.casper_shard_conf() }
+
         fn get_validator(&self) -> Option<ValidatorIdentity> { Some(self.validator_id.clone()) }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
@@ -79,8 +83,7 @@ mod tests {
 
         fn runtime_manager(
             &self,
-        ) -> Arc<tokio::sync::Mutex<casper::rust::util::rholang::runtime_manager::RuntimeManager>>
-        {
+        ) -> Arc<casper::rust::util::rholang::runtime_manager::RuntimeManager> {
             self.inner.runtime_manager()
         }
 
@@ -408,6 +411,7 @@ mod tests {
                 block_store: fixture.block_store.clone(),
                 block_dag_storage: fixture.block_dag_storage.clone(),
                 deploy_storage: fixture.deploy_storage.clone(),
+                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
                 casper_buffer_storage: fixture.casper_buffer_storage.clone(),
                 rspace_state_manager: fixture.rspace_state_manager.clone(),
                 event_publisher: fixture.event_publisher.clone(),

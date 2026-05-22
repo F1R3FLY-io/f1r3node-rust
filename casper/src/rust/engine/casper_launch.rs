@@ -418,6 +418,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 block_store: self.block_store.clone(),
                 block_dag_storage: self.block_dag_storage.clone(),
                 deploy_storage: self.deploy_storage.clone(),
+                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
                 casper_buffer_storage: self.casper_buffer_storage.clone(),
                 rspace_state_manager: self.rspace_state_manager.clone(),
                 event_publisher: self.event_publisher.clone(),

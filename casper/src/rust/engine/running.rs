@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -355,11 +356,12 @@ pub struct RunningRecoveryContext {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: KeyValueDeployStorage,
+    pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub rspace_state_manager: RSpaceStateManager,
     pub event_publisher: F1r3flyEvents,
     pub engine_cell: Arc<EngineCell>,
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     pub estimator: Estimator,
     pub casper_shard_conf: CasperShardConf,
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
@@ -492,6 +494,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             &recovery_context.block_store,
             &recovery_context.block_dag_storage,
             &recovery_context.deploy_storage,
+            &recovery_context.rejected_deploy_buffer,
             &recovery_context.casper_buffer_storage,
             &recovery_context.rspace_state_manager,
             recovery_context.event_publisher.clone(),
