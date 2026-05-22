@@ -1,0 +1,3 @@
+-------------- MODULE MCMergeableChannelAccounting --------------
+EXTENDS MergeableChannelAccounting
+=============================================================================

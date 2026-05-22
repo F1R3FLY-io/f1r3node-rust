@@ -7,7 +7,7 @@
 # Source: cost-accounted-rho.pdf (Meredith)
 # Companion doc: docs/theory/cost-accounted-rho-verification.md
 #
-# 22 modules with kernel-checked theorem bodies. The development is
+# 23 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -30,6 +30,7 @@
 #   TokenConservation           → CostAccountedSyntax, CostAccountedReduction
 #   Settlement                  → TokenConservation
 #   SlashingComposition         → Settlement
+#   MergeableChannelAccounting  → Settlement
 #   RuntimeBudgetRefinement     → CostAccountedSyntax
 #   FuelEventDecomposition      → CostAccountedSyntax, CostAccountedReduction
 #   StrongNormalization         → CostAccountedReduction, TokenConservation
@@ -45,7 +46,8 @@
 #   Replication                 → RhoSyntax, StructEquivInversion,
 #                                 StructEquivHeads, RhoReduction, Bisimulation
 #   UseCaseAdequacy             → TokenConservation, Settlement,
-#                                 SlashingComposition, RuntimeBudgetRefinement,
+#                                 SlashingComposition, MergeableChannelAccounting,
+#                                 RuntimeBudgetRefinement,
 #                                 FuelEventDecomposition, Confluence,
 #                                 StepDeterminism, TranslationFaithfulness
 #
@@ -53,7 +55,8 @@
 #              → TranslationFaithfulness → Bisimulation
 # Cost-determinism stack: TokenConservation → StrongNormalization
 #              → Confluence → StepDeterminism
-# Settlement stack: TokenConservation → Settlement → SlashingComposition
+# Settlement stack: TokenConservation → Settlement →
+#              SlashingComposition / MergeableChannelAccounting
 # Runtime refinement stack: CostAccountedSyntax → RuntimeBudgetRefinement
 
 -Q theories CostAccountedRho
@@ -89,7 +92,10 @@ theories/Settlement.v
 # Level 4a2: Slashing composition boundary (depends on Settlement)
 theories/SlashingComposition.v
 
-# Level 4a3: Bounded-memory runtime-budget refinement (depends on syntax)
+# Level 4a3: Typed mergeable-channel accounting boundary (depends on Settlement)
+theories/MergeableChannelAccounting.v
+
+# Level 4a4: Bounded-memory runtime-budget refinement (depends on syntax)
 theories/RuntimeBudgetRefinement.v
 
 # Level 4b: Fuel event decomposition (depends on CostAccountedReduction)

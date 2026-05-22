@@ -24,6 +24,7 @@ From CostAccountedRho Require Import ChannelSeparation.
 From CostAccountedRho Require Import TokenConservation.
 From CostAccountedRho Require Import Settlement.
 From CostAccountedRho Require Import SlashingComposition.
+From CostAccountedRho Require Import MergeableChannelAccounting.
 From CostAccountedRho Require Import FuelEventDecomposition.
 From CostAccountedRho Require Import Confluence.
 From CostAccountedRho Require Import StepDeterminism.
@@ -1810,4 +1811,85 @@ Proof.
     + split.
       * exact rb_oversized_primitive_descriptor_admission_rejection_preserves_trace.
       * exact rb_trace_cap_frontier_preserves_budget_and_trace.
+Qed.
+
+(* UC-CA-141: typed mergeable-channel diffs preserve the selected merge
+   strategy and cannot reinterpret a non-numeric payload as a numeric merge. *)
+Theorem uc_ca_141_typed_mergeable_channel_type_preservation :
+  (forall previous current,
+    mergeable_diff_type (typed_mergeable_delta previous current) =
+    mergeable_channel_type current) /\
+  (forall ty,
+    mergeable_payload_matches ty NonNumericPayload = false).
+Proof.
+  split.
+  - exact mergeable_channel_delta_preserves_type.
+  - exact non_numeric_channel_not_mergeable_payload_match.
+Qed.
+
+(* UC-CA-142: BitmaskOr diffs encode newly-set bits; replaying the diff from
+   the previous value reconstructs the union of previous and current bits. *)
+Theorem uc_ca_142_bitmask_or_diff_merge_round_trip :
+  forall previous current,
+    same_bits
+      (bitmask_or previous (bitmask_diff previous current))
+      (bitmask_or previous current).
+Proof.
+  exact bitmask_diff_merge_round_trip.
+Qed.
+
+(* UC-CA-143: BitmaskOr multi-value folding is set-like and independent of
+   observation order. *)
+Theorem uc_ca_143_bitmask_or_fold_order_independent :
+  forall values values',
+    Permutation values values' ->
+    same_bits (bitmask_fold values) (bitmask_fold values').
+Proof.
+  exact mergeable_channel_bitmask_fold_permutation.
+Qed.
+
+(* UC-CA-144: IntegerAdd diffs retain the existing additive round-trip
+   semantics in the mathematical integer model. *)
+Theorem uc_ca_144_integer_add_diff_merge_round_trip :
+  forall previous current,
+    integer_add_merge previous (integer_add_diff previous current) = current.
+Proof.
+  exact integer_add_diff_merge_round_trip.
+Qed.
+
+(* UC-CA-145: mergeable-channel accounting updates channel metadata without
+   changing user budget or fee-settlement inputs. *)
+Theorem uc_ca_145_mergeable_channel_accounting_preserves_cost_boundary :
+  (forall state channels,
+    let state' := apply_mergeable_accounting state channels in
+    system_token_count
+      (mergeable_boundary_user_system
+        (mergeable_accounting_boundary state')) =
+    system_token_count
+      (mergeable_boundary_user_system
+        (mergeable_accounting_boundary state))) /\
+  (forall state channels,
+    let state' := apply_mergeable_accounting state channels in
+    settlement_limit
+      (mergeable_boundary_settlement
+        (mergeable_accounting_boundary state')) =
+      settlement_limit
+        (mergeable_boundary_settlement
+          (mergeable_accounting_boundary state)) /\
+    settlement_price
+      (mergeable_boundary_settlement
+        (mergeable_accounting_boundary state')) =
+      settlement_price
+        (mergeable_boundary_settlement
+          (mergeable_accounting_boundary state)) /\
+    settlement_token_cost
+      (mergeable_boundary_settlement
+        (mergeable_accounting_boundary state')) =
+      settlement_token_cost
+        (mergeable_boundary_settlement
+          (mergeable_accounting_boundary state))).
+Proof.
+  split.
+  - exact mergeable_channel_accounting_preserves_user_budget.
+  - exact mergeable_channel_accounting_preserves_fee_settlement_inputs.
 Qed.

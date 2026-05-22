@@ -65,6 +65,60 @@ CASES = [
         "source_facets": ["slashing", "authorization", "epoch_boundary", "payload_hash"],
     },
     {
+        "id": "v14_mergeable_bitmask_or_roundtrip",
+        "primary_surface": "mergeable_channels",
+        "primary_risk": "typed_bitmask_diff_roundtrip",
+        "secondary_surface": "mergeable_channels",
+        "secondary_risk": "bitmask_or_combine",
+        "security_surface": "typed_mergeable_channel",
+        "external_input_kind": "mergeable_channel_final_value",
+        "auth_boundary": "merge_type_and_channel_diff",
+        "replay_boundary": "mergeable_channel_cache",
+        "expected_disposition": "accepted",
+        "events": [
+            canonical_event("source", 1, descriptor="v14/mergeable/bitmask", deploy=0, path=[14, 4]),
+        ],
+        "initial_budget": 6,
+        "replay_mutations": ["merge_type", "mergeable_diff", "bitmask_bits", "mergeable_channel_cache"],
+        "source_facets": ["mergeable_channels", "bitmask_or", "diff_roundtrip", "type_persistence"],
+    },
+    {
+        "id": "v14_mergeable_non_numeric_fallback",
+        "primary_surface": "mergeable_channels",
+        "primary_risk": "non_numeric_mergeable_fallback",
+        "secondary_surface": "mergeable_channels",
+        "secondary_risk": "mergeable_tag_type_propagation",
+        "security_surface": "typed_mergeable_channel",
+        "external_input_kind": "tagged_non_numeric_channel_value",
+        "auth_boundary": "mergeable_payload_type",
+        "replay_boundary": "conflict_rejection_path",
+        "expected_disposition": "accepted",
+        "events": [
+            canonical_event("source", 1, descriptor="v14/mergeable/non-numeric", deploy=0, path=[14, 5]),
+        ],
+        "initial_budget": 6,
+        "replay_mutations": ["merge_type", "payload_kind", "conflict_path", "cost_trace_digest"],
+        "source_facets": ["mergeable_channels", "non_numeric", "fallback_conflict_path", "type_propagation"],
+    },
+    {
+        "id": "v14_mergeable_store_type_persistence",
+        "primary_surface": "mergeable_channels",
+        "primary_risk": "merge_type_persistence",
+        "secondary_surface": "mergeable_channels",
+        "secondary_risk": "merge_type_domain",
+        "security_surface": "typed_mergeable_channel",
+        "external_input_kind": "mergeable_channel_cache_entry",
+        "auth_boundary": "merge_type_serialization",
+        "replay_boundary": "mergeable_channel_cache",
+        "expected_disposition": "accepted",
+        "events": [
+            canonical_event("source", 1, descriptor="v14/mergeable/store", deploy=0, path=[14, 6]),
+        ],
+        "initial_budget": 6,
+        "replay_mutations": ["merge_type", "mergeable_diff", "serialized_mergeable_entry", "post_state_hash"],
+        "source_facets": ["mergeable_channels", "store_wire", "type_persistence", "type_domain"],
+    },
+    {
         "id": "v14_transport_tls_peer_certificate_boundary",
         "primary_surface": "transport_tls",
         "primary_risk": "peer_certificate_extraction",
@@ -193,6 +247,8 @@ def rust_test_for(case):
         return "generated_frontier_v14_source_graph_oracles_hold"
     if surface == "slashing_authorization":
         return "generated_frontier_v14_slashing_security_oracles_hold"
+    if surface == "typed_mergeable_channel":
+        return "generated_frontier_v14_mergeable_channel_oracles_hold"
     if surface in ["transport_tls", "crypto_key_material", "dependency_advisory"]:
         return "generated_frontier_v14_node_security_oracles_hold"
     return "generated_frontier_v14_source_graph_oracles_hold"
@@ -305,6 +361,7 @@ def adequacy_record():
             "casper_replay",
             "replay_cache",
             "slashing",
+            "mergeable_channels",
             "transport_tls",
             "crypto_key_material",
             "api_ingress",
@@ -371,13 +428,13 @@ def assert_adequacy(records):
         if scenario.get("security_surface") and scenario.get("security_surface") != "coverage_adequacy":
             surfaces.add(scenario.get("cost_surface", ""))
         for facet in scenario.get("source_facets", []):
-            if facet in ["runtime_budget", "casper_replay", "replay_cache", "slashing", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"]:
+            if facet in ["runtime_budget", "casper_replay", "replay_cache", "slashing", "mergeable_channels", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"]:
                 surfaces.add(facet)
         if scenario.get("auth_boundary"):
             boundaries.add(scenario.get("auth_boundary"))
         for feature in item.get("coverage_features", []):
             features.add(feature)
-    required_surfaces = set(["runtime_budget", "casper_replay", "replay_cache", "slashing", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"])
+    required_surfaces = set(["runtime_budget", "casper_replay", "replay_cache", "slashing", "mergeable_channels", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"])
     required_features = set(["source_graph_security", "security_surface", "external_input_kind", "auth_boundary", "replay_boundary", "source_anchor_status", "production_replay_target", "promotion_gate", "coverage_adequacy"])
     missing_surfaces = sorted(required_surfaces - surfaces)
     missing_features = sorted(required_features - features)

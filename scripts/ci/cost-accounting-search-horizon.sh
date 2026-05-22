@@ -514,6 +514,7 @@ run_apalache() {
     fi
     run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCRuntimeBudgetReplay.tla"
     run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCCostAccountingThreats.tla"
+    run_limited apalache-mc check "$FORMAL_REPO/formal/tlaplus/cost_accounted_rho/MCMergeableChannelAccounting.tla"
 }
 
 run_tla() {
@@ -536,6 +537,9 @@ run_tla() {
         run_limited java -Xmx"$TLC_MAX_HEAP" -XX:+UseParallelGC -cp "$tla_tools" \
             tlc2.TLC MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning \
             -metadir "$SEARCH_OUTPUT_DIR/tla-cost-accounting-search-frontier"
+        run_limited java -Xmx"$TLC_MAX_HEAP" -XX:+UseParallelGC -cp "$tla_tools" \
+            tlc2.TLC MCMergeableChannelAccounting.tla -config MergeableChannelAccounting.cfg -workers auto -nowarning \
+            -metadir "$SEARCH_OUTPUT_DIR/tla-mergeable-channel-accounting"
     )
 }
 

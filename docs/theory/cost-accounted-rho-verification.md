@@ -23,7 +23,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 22 modules and 18,130 lines of development, and
+in **Rocq 9.1.1** across 23 modules and 18,550 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The
 headline results include contextual forward reachability
 (`translation_faithful`, with the precision boundary stated in
@@ -42,7 +42,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 556 `Qed.`/`Defined.` proof terms are discharged without any
+All 624 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -125,7 +125,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 22 modules and 18,130 lines, with 556 `Qed.` or
+   development spans 23 modules and 18,550 lines, with 624 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -152,11 +152,12 @@ This article proves that claim. Concretely, we contribute:
    fuel-event multiset determinism (`fuel_events_consumed_perm`).
 
 4. Independent **TLA+** finite-state correctness models (Section 10),
-   verified by TLC across seven specifications: the four core
+   verified by TLC across eight specifications: the four core
    protocol/scheduling models up to 12,960 distinct states, plus
-   runtime-budget replay, threat-model, and search-frontier models that
-   check implementation-facing invariants — catching specification bugs
-   that a universally-quantified proof could still miss.
+   runtime-budget replay, threat-model, search-frontier, and typed
+   mergeable-channel models that check implementation-facing invariants —
+   catching specification bugs that a universally-quantified proof could
+   still miss.
 
 5. Machine-checked **replication encoding support** for the persistent
    infrastructure used by the translation: Meredith's reflective
@@ -275,9 +276,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 22 modules                                                 |
-| Total lines of Rocq                              | 18,130                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 556                                                        |
+| Rocq source files                                | 23 modules                                                 |
+| Total lines of Rocq                              | 18,550                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 624                                                        |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -300,7 +301,7 @@ on any axiom from Section 12.2.1.
 ### 1.7 Module Dependency Graph
 
 Arrows point from dependency to dependent (`A ──► B` means "module `B`
-imports module `A`"). The 22 modules organize into seven dependency
+imports module `A`"). The 23 modules organize into seven dependency
 tiers corresponding to the proof layers of §7.1.
 
 ```
@@ -350,6 +351,7 @@ direct-import edges are omitted. In particular:**
 - `CostAccountedReduction` → `TokenConservation`, `FuelEventDecomposition`,
   `Confluence` (the cost-determinism stack is drawn separately below).
 - `TokenConservation` → `Settlement` → `SlashingComposition`
+  and `MergeableChannelAccounting`
   (post-evaluation fee settlement and slash-system composition are drawn
   separately from reduction and translation).
 - `WeakBarbedEquiv` → `Replication` (the weak-barb framework consumed
@@ -380,8 +382,10 @@ See §11.1 File Listing for the complete per-module dependency set.
   CostAccountedSyntax    ──► ChannelSeparation        (signature channels are quotations)
   CostAccountedSyntax    ──► RuntimeBudgetRefinement  (coalesced runtime budget and replay trace)
   TokenConservation      ──► Settlement ──► SlashingComposition ──► UseCaseAdequacy
+                                      └────► MergeableChannelAccounting ──┘
                                       (fee settlement, slash-system composition,
-                                       and proof-backed use-case anchors)
+                                       typed mergeable channels, and proof-backed
+                                       use-case anchors)
   RhoSyntax              ──┘
 ```
 
@@ -1366,6 +1370,11 @@ Layer 2 ── Cost-Accounting and Translation
         adopts the slashing-side boundary from f1r3node-rust
         analysis/slashing and proves slash system effects preserve
         user fuel, settlement inputs, and settlement arithmetic.
+  └── MergeableChannelAccounting (274 lines, 14 thms)
+        models `IntegerAdd` and `BitmaskOr` mergeable-channel accounting,
+        proves bitmask diff/merge round trips, order-independent OR
+        folding, non-numeric fallback classification, merge-type
+        preservation, and cost-boundary isolation.
 
 Layer 3 ── Faithfulness and Strong Bisimulation
   ├── TranslationFaithfulness (4,183 lines, 84 thms)
@@ -1400,7 +1409,7 @@ Layer 5 ── Replication Encoding Support
         (replication_encoding_forward_barb_sound, Section 6.6).
 
 Layer 6 ── Runtime Budget Refinement
-  └── RuntimeBudgetRefinement (1,960 lines, 83 thms)
+  └── RuntimeBudgetRefinement (2,024 lines, 83 thms)
         bounded-memory budget conservation, successful weighted
         reservation refinement, out-of-phlo boundary commitment,
         reset-from-token trace clearing, finalization-read cost traces,
@@ -1408,12 +1417,13 @@ Layer 6 ── Runtime Budget Refinement
         and replay-payload trace sensitivity.
 
 Layer 7 ── Use-Case Adequacy
-  └── UseCaseAdequacy (1,813 lines, 79 thms)
+  └── UseCaseAdequacy (1,895 lines, 84 thms)
         named UC-CA semantic anchors over token conservation,
         unit-token expansion, confluence, settlement, slashing
-        composition, recursive reflection, runtime-budget refinement,
-        finalization-read trace digests, block/cache authentication,
-        zero-event commitments, and replay payload equivalence.
+        composition, typed mergeable channels, recursive reflection,
+        runtime-budget refinement, finalization-read trace digests,
+        block/cache authentication, zero-event commitments, and replay
+        payload equivalence.
 ```
 
 **Dependency property.** Layers 4 and 5 depend on Layers 1–3 but are
@@ -3054,7 +3064,7 @@ deadlocks in mediator interactions. A property that is both proven in
 Rocq and verified by TLC is, in practice, very unlikely to have been
 stated incorrectly.
 
-The model now consists of seven TLA+ specifications under
+The model now consists of eight TLA+ specifications under
 `formal/tlaplus/cost_accounted_rho/`, each adding a layer of generality:
 
 1. **`CostAccountedRho.tla`** — The atomic fuel-gate protocol:
@@ -3104,6 +3114,14 @@ The model now consists of seven TLA+ specifications under
    path evidence, and exploit cross-products must carry a threat family and
    expected invariant before terminal classification. *(14,203 distinct
    states / 100,477 generated states.)*
+
+8. **`MergeableChannelAccounting.tla`** — Models the post-slashing-merge
+   typed mergeable-channel surface. It checks that `BitmaskOr` diffs replay
+   to `previous OR current`, that `IntegerAdd` retains additive round trips,
+   that OR merge cannot drop set bits, that non-numeric tagged payloads stay
+   outside numeric merge accounting, and that mergeable/slash system metadata
+   updates preserve user cost and settlement cost evidence. *(2,656 distinct
+   states / 8,992 generated states.)*
 
 ### 10.2 Module Structure
 
@@ -3433,6 +3451,9 @@ a TLA+ invariant names a Rocq theorem, and the two evolve together.
 | Fuel event multiset determinism  | `fuel_events_consumed_perm`              | (not directly modeled)          |
 | Step determinism (single-token)  | `ca_step_deterministic`                  | (not modeled)                   |
 | Single-token path uniqueness     | `single_token_path_unique`               | (not modeled)                   |
+| Bitmask mergeable diff/merge     | `bitmask_diff_merge_round_trip`          | `BitmaskDiffMergeRoundTrip`     |
+| IntegerAdd mergeable diff/merge  | `integer_add_diff_merge_round_trip`      | `IntegerAddDiffMergeRoundTrip`  |
+| Mergeable cost-boundary isolation | `mergeable_channel_accounting_preserves_user_budget` | `MergeableAccountingPreservesUserCost` |
 
 ### 10.6 What TLA+ Proves and Does Not Prove
 
@@ -3521,8 +3542,9 @@ references.
 | `TokenConservation.v`       | 234        | 9        | Fuel monotonicity (per-step and multi-step)                                                                                                                                                                                                                                        |
 | `Settlement.v`              | 140        | 8        | Post-evaluation fee settlement, escrow/refund arithmetic, and no mid-evaluation refund fuel                                                                                                                                                                                        |
 | `SlashingComposition.v`     | 389        | 20       | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic                                                                                  |
-| `RuntimeBudgetRefinement.v` | 1,960      | 83       | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, and replay-payload field sensitivity |
-| `UseCaseAdequacy.v`         | 1,813      | 79       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
+| `MergeableChannelAccounting.v` | 274     | 14       | Typed mergeable-channel accounting: `IntegerAdd` additive round trip, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
+| `RuntimeBudgetRefinement.v` | 2,024      | 83       | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, and replay-payload field sensitivity |
+| `UseCaseAdequacy.v`         | 1,895      | 84       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
 | `FuelEventDecomposition.v`  | 239        | 6        | Fuel event multiset determinism                                                                                                                                                                                                                                                    |
 | `StrongNormalization.v`     | 130        | 5        | Well-foundedness of `ca_step`; `ca_strongly_normalizing`                                                                                                                                                                                                                           |
 | `Confluence.v`              | 483        | 14       | Per-rule determinism, Newman's lemma, full confluence, cost determinism                                                                                                                                                                                                            |
@@ -3532,7 +3554,7 @@ references.
 | `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| **Total**                   | **18,130** | **556**  |                                                                                                                                                                                                                                                                                    |
+| **Total**                   | **18,550** | **624**  |                                                                                                                                                                                                                                                                                    |
 
 Theorem counts are `Qed.` + `Defined.` occurrences (the proofs that
 contribute kernel-checked terms). Earlier totals listed in this table
@@ -3594,6 +3616,10 @@ per large module.
 | §8.7 (this doc)    | Step inv. (bare PReplicate)   | `step_PReplicate_inv_se`               | `Replication.v` Section 13       |
 | §8.7 (this doc)    | Step inv. (PReplicate + rest) | `step_PPar_PReplicate_inv_se` (Lem 9.21) | `Replication.v` Section 14.C   |
 | §6.6 (this doc)    | Closed forward replication boundary | `replication_encoding_forward_barb_sound` (Thm 9.23) | `Replication.v:2063`   |
+| post-merge implementation | `BitmaskOr` typed mergeable diff/merge | `bitmask_diff_merge_round_trip` | `MergeableChannelAccounting.v:147` |
+| post-merge implementation | `BitmaskOr` fold order independence | `mergeable_channel_bitmask_fold_permutation` | `MergeableChannelAccounting.v:201` |
+| post-merge implementation | `IntegerAdd` diff/merge round trip | `integer_add_diff_merge_round_trip` | `MergeableChannelAccounting.v:168` |
+| post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:222` |
 
 Rows tagged with "—" in the *Paper Section* column are not stated
 in [4]. They split into two groups: the determinism/multiset rows
@@ -3635,6 +3661,7 @@ external paper remains a read-only input for this phase.
 | Casper fee settlement uses token cost without reintroducing runtime metering | `refund_le_escrow`, `charged_plus_refund_eq_escrow`, `post_evaluation_settlement_no_mint` | Mechanized as post-evaluation arithmetic in `Settlement.v`; implemented with unmetered system deploys and wire-compatible settlement of `RuntimeBudget.total_cost() * phlo_price` |
 | Evaluation cannot receive Casper refund fuel mid-run | `evaluation_cannot_receive_refund_fuel`, `evaluation_step_cannot_mint_fuel` | Mechanized by importing token monotonicity into `Settlement.v`; runtime must not mutate deploy balance or copy a process with a larger remaining budget during evaluation |
 | Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related cost-invalid evidence may feed slashing authorization, but recording the evidence preserves the settlement boundary |
+| Typed mergeable channels preserve strategy-specific semantics | `bitmask_diff_merge_round_trip`, `mergeable_channel_bitmask_fold_permutation`, `integer_add_diff_merge_round_trip`, `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match`, `mergeable_channel_accounting_preserves_user_budget` | Mechanized in `MergeableChannelAccounting.v`; implemented by `MergeType::{IntegerAdd, BitmaskOr}`, `calculate_num_channel_diff`, `combine_mergeable_value`, `fold_multi_value`, and non-numeric fallback to the conflict path |
 | Replay-cache fingerprints include replay-relevant event traces | `rb_replay_payload_user_trace_change_detected`, `rb_replay_payload_system_trace_change_detected`, `rb_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_event_count_change_detected`, `rb_full_replay_payload_user_cost_trace_present_change_detected`, `rb_full_replay_payload_missing_cost_trace_change_detected`, `rb_replay_cache_key_payload_change_detected`, `rb_trace_entry_deploy_change_detected`, `rb_trace_entry_source_path_change_detected`, `rb_trace_entry_redex_change_detected`, `rb_trace_entry_local_index_change_detected`, `rb_trace_entry_billable_kind_change_detected`, `rb_trace_entry_primitive_descriptor_change_detected`, `rb_trace_entry_weight_change_detected` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by hashing canonicalized user deploy logs, system deploy logs, bounded cost-trace digests, cost-trace presence, and cost-trace event counts alongside cost, status, and system deploy data. The abstract trace entry now names the concrete Rust digest inputs: deploy id, source path, redex id, local index, billable kind, primitive descriptor when the kind is primitive, and weight. |
 | Post-activation replay requires cost-trace evidence | `rb_post_activation_cost_trace_commitment_valid`, `rb_empty_cost_trace_commitment_can_be_valid`, `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_046_zero_event_post_activation_trace_commitment` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by rejecting cost-accounted replay when the processed deploy has no cost-trace digest, while allowing a present zero-event digest and leaving legacy non-cost-accounted replay quarantined |
 | Block authentication includes cost-trace replay payload fields | `rb_block_auth_payload_replay_payload_change_detected`, `uc_ca_047_block_authenticates_cost_trace_payload` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by including processed-deploy cost-trace digest and event count in the block body hash/signature payload |

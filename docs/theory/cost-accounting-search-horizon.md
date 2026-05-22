@@ -111,6 +111,7 @@ fixtures are replayed by `generated_frontier_v13_source_semantic_oracles_hold`,
 source-graph security fixtures are replayed by
 `generated_frontier_v14_source_graph_oracles_hold`,
 `generated_frontier_v14_slashing_security_oracles_hold`,
+`generated_frontier_v14_mergeable_channel_oracles_hold`,
 `generated_frontier_v14_node_security_oracles_hold`,
 `generated_frontier_v14_coverage_adequacy_holds`, and Casper-native
 `cost_accounting_v14_replay_slashing_oracles_hold`.
@@ -163,14 +164,14 @@ The stateful search emits:
 | `horizon-v9-<profile>-<mode>-rust-fixtures.json` | Differential corpus/security fixtures and adequacy gates consumed by nextest. |
 | `horizon-v10-<profile>-<mode>.json` | Hybrid fuzz, Kani-bound, parallel stress, settlement, slashing, legacy-quarantine, and coverage-adequacy records. |
 | `horizon-v10-<profile>-<mode>-rust-fixtures.json` | Hybrid fuzz/security fixtures and adequacy gates consumed by nextest. |
-| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing, and legacy quarantine. |
+| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing, typed mergeable channels, and legacy quarantine. |
 | `horizon-v11-<profile>-<mode>.json` | Source-anchored cost-surface records classified against the current `f1r3node-rust` source tree. |
 | `horizon-v11-<profile>-<mode>-rust-fixtures.json` | Source-anchored fixtures and adequacy gates consumed by nextest. |
 | `horizon-v12-<profile>-<mode>.json` | Production-oracle records that bind source anchors to native RuntimeBudget, metering, parallel evaluation, Casper replay, settlement, slashing, and legacy-quarantine oracles. |
 | `horizon-v12-<profile>-<mode>-rust-fixtures.json` | Production-oracle fixtures and adequacy gates consumed by rholang and Casper nextest targets. |
 | `horizon-v13-<profile>-<mode>.json` | Source-semantic cross-surface records that bind RuntimeBudget, metering, parallel evaluation, Casper replay, settlement, slashing, and legacy-quarantine source facets to named semantic oracles. |
 | `horizon-v13-<profile>-<mode>-rust-fixtures.json` | Source-semantic fixtures and adequacy gates consumed by rholang and Casper nextest targets. |
-| `horizon-v14-<profile>-<mode>.json` | Source-graph security records binding cost-accounting, slashing authorization, replay cache, TLS/crypto, API ingress, and dependency advisory surfaces to current source anchors. |
+| `horizon-v14-<profile>-<mode>.json` | Source-graph security records binding cost-accounting, slashing authorization, typed mergeable-channel accounting, replay cache, TLS/crypto, API ingress, and dependency advisory surfaces to current source anchors. |
 | `horizon-v14-<profile>-<mode>-rust-fixtures.json` | Source-graph security fixtures and adequacy gates consumed by rholang and Casper nextest targets. |
 
 The runner writes operational evidence under
@@ -309,9 +310,9 @@ The current highest-value expansion points are:
     authentication, and legacy-to-runtime quarantine.
 29. Source-graph security horizon search: cost-accounting witnesses must be
     aligned with the current Rust graph for API ingress, replay cache payload
-    binding, slashing authorization, TLS peer identity, private-key debug
-    surfaces, and accepted dependency advisories before any bug or security
-    claim is promoted.
+    binding, slashing authorization, typed mergeable-channel accounting, TLS
+    peer identity, private-key debug surfaces, and accepted dependency
+    advisories before any bug or security claim is promoted.
 
 ## Promotion Rules
 

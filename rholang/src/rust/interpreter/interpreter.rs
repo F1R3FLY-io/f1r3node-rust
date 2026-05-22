@@ -166,7 +166,10 @@ impl Interpreter for InterpreterImpl {
 }
 
 impl InterpreterImpl {
-    pub fn new(cost: RuntimeBudget, merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>) -> InterpreterImpl {
+    pub fn new(
+        cost: RuntimeBudget,
+        merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+    ) -> InterpreterImpl {
         InterpreterImpl { c: cost, merge_chs }
     }
 

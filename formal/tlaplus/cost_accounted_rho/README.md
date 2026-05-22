@@ -30,6 +30,8 @@ The TLC model checker jar is at:
 | `MCCostAccountingThreats.tla` | Model instance for CostAccountingThreats | — | — |
 | `CostAccountingSearchFrontier.tla` | Witness classification and promotion discipline for generated cost-accounting findings | bounded by witness and classification flags | NoSourceFixWithoutRustOrInvariantEvidence, ProjectionRiskHasRustGuard, FormalStrengtheningHasInvariantTarget, ConfirmedBugHasSourceTarget |
 | `MCCostAccountingSearchFrontier.tla` | Model instance for CostAccountingSearchFrontier | — | — |
+| `MergeableChannelAccounting.tla` | Typed mergeable-channel diff/merge behavior and cost-boundary isolation | 2,656 distinct / 8,992 generated | BitmaskDiffMergeRoundTrip, IntegerAddDiffMergeRoundTrip, BitmaskMergeDoesNotDropBits, NonNumericPayloadHasNoNumericDiff, MergeableAccountingPreservesUserCost, SlashSystemEffectPreservesCostBoundary |
+| `MCMergeableChannelAccounting.tla` | Model instance for MergeableChannelAccounting | — | — |
 
 ## Running
 
@@ -69,9 +71,13 @@ java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
 # Search-frontier witness classification and promotion discipline
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCCostAccountingSearchFrontier.tla -config CostAccountingSearchFrontier.cfg -workers auto -nowarning
+
+# Typed mergeable-channel diff/merge and cost-boundary isolation
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCMergeableChannelAccounting.tla -config MergeableChannelAccounting.cfg -workers auto -nowarning
 ```
 
-All seven should report: `Model checking completed. No error has been found.`
+All eight should report: `Model checking completed. No error has been found.`
 
 ## Verified Properties
 
@@ -176,6 +182,23 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
 - **TerminalStutter**: once a witness reaches a terminal classification,
   later discovery actions cannot rewrite its action or promotion target.
 
+### MergeableChannelAccounting (typed mergeable channels)
+
+- **BitmaskDiffMergeRoundTrip**: a `BitmaskOr` diff records newly-set bits
+  as `end & !previous`; replaying it with OR reconstructs
+  `previous OR end`, not `max(previous, end)`.
+- **IntegerAddDiffMergeRoundTrip**: the existing `IntegerAdd` path keeps
+  additive diff/merge behavior.
+- **BitmaskMergeDoesNotDropBits**: OR merge preserves every bit set in the
+  previous value or current value.
+- **NonNumericPayloadHasNoNumericDiff**: tagged non-numeric values stay out
+  of numeric merge accounting and must use the ordinary conflict path.
+- **MergeableAccountingPreservesUserCost** and
+  **MergeableAccountingPreservesSettlementCost**: mergeable-channel metadata
+  updates do not mutate user runtime cost or fee-settlement cost evidence.
+- **SlashSystemEffectPreservesCostBoundary**: slashing system effects compose
+  with the typed mergeable-channel model without changing the cost boundary.
+
 ## Scope and Limitations
 
 These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost_accounted_rho/`; neither tool subsumes the other. Readers should understand what TLA+ here establishes, what it does not, and how it relates to the Rocq proofs.
@@ -210,6 +233,7 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `RuntimeBudgetReplay.tla` | 6 events | — | 0 | bounded budget 6 | 72 distinct / 203 generated |
 | `CostAccountingThreats.tla` | 1 deploy boundary | — | 0 | bounded fuel 5 | 52 |
 | `CostAccountingSearchFrontier.tla` | 9 witness families | — | 0 | — | bounded by classification and v3 metadata flags |
+| `MergeableChannelAccounting.tla` | typed values over 2-bit bitmaps and bounded integers | — | 0 | bounded values 0..3 | 2,656 |
 
 Running on larger bounds has not been attempted — doubly-compound depth-2 already exercises the cascading-Split + Join interactions and is the deepest scenario anticipated by the design.
 

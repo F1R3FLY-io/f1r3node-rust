@@ -404,6 +404,7 @@ run_tla() {
   run_tlc_model RuntimeBudgetReplay MCRuntimeBudgetReplay
   run_tlc_model CostAccountingThreats MCCostAccountingThreats
   run_tlc_model CostAccountingSearchFrontier MCCostAccountingSearchFrontier
+  run_tlc_model MergeableChannelAccounting MCMergeableChannelAccounting
 }
 
 run_optional_deep_controls() {

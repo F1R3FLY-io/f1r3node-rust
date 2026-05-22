@@ -144,7 +144,7 @@ by `generated_frontier_v13_*` and `cost_accounting_v13_*` nextest targets.
 The v14 source-graph security frontier expands v13 from cost-accounting
 semantics into current whole-node source surfaces. It binds API ingress,
 runtime/replay cost evidence, replay-cache payloads, slashing authorization,
-TLS peer certificate handling, private-key debug exposure, and accepted
-RustSec policy exceptions to extracted `f1r3node-rust` source anchors. V14
-fixtures are consumed by `generated_frontier_v14_*` and
-`cost_accounting_v14_*` nextest targets.
+typed mergeable-channel accounting, TLS peer certificate handling, private-key
+debug exposure, and accepted RustSec policy exceptions to extracted
+`f1r3node-rust` source anchors. V14 fixtures are consumed by
+`generated_frontier_v14_*` and `cost_accounting_v14_*` nextest targets.

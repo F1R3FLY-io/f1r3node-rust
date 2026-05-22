@@ -1912,6 +1912,65 @@ fn assert_v14_slashing_oracle(fixture: &GeneratedFixture) {
     assert_settlement_projection(fixture);
 }
 
+fn assert_v14_mergeable_channel_oracle(fixture: &GeneratedFixture) {
+    assert_eq!(fixture.security_surface, "typed_mergeable_channel");
+    assert_eq!(fixture.cost_surface, "mergeable_channels");
+    assert_eq!(fixture.expected_disposition, "accepted");
+    assert!(fixture
+        .source_facets
+        .iter()
+        .any(|facet| facet == "mergeable_channels"));
+    assert!(fixture
+        .replay_mutations
+        .iter()
+        .any(|mutation| mutation == "merge_type"));
+    match fixture.source_risk.as_str() {
+        "typed_bitmask_diff_roundtrip" => {
+            for field in ["mergeable_diff", "bitmask_bits"] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must carry mergeable mutation axis {}",
+                    fixture.id,
+                    field
+                );
+            }
+        }
+        "non_numeric_mergeable_fallback" => {
+            for field in ["payload_kind", "conflict_path"] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must carry non-numeric mergeable axis {}",
+                    fixture.id,
+                    field
+                );
+            }
+        }
+        "merge_type_persistence" => {
+            for field in ["serialized_mergeable_entry", "post_state_hash"] {
+                assert!(
+                    fixture
+                        .replay_mutations
+                        .iter()
+                        .any(|mutation| mutation == field),
+                    "fixture {} must carry mergeable persistence axis {}",
+                    fixture.id,
+                    field
+                );
+            }
+        }
+        other => panic!(
+            "fixture {} has unsupported V14 mergeable source risk {}",
+            fixture.id, other
+        ),
+    }
+}
+
 fn assert_v14_node_security_oracle(fixture: &GeneratedFixture) {
     match fixture.security_surface.as_str() {
         "transport_tls" => {
@@ -1955,6 +2014,7 @@ fn run_v14_source_graph_oracle(fixture: &GeneratedFixture) {
             assert_v14_runtime_or_replay_oracle(fixture)
         }
         "slashing_authorization" => assert_v14_slashing_oracle(fixture),
+        "typed_mergeable_channel" => assert_v14_mergeable_channel_oracle(fixture),
         "transport_tls" | "crypto_key_material" | "dependency_advisory" => {
             assert_v14_node_security_oracle(fixture)
         }
@@ -2653,6 +2713,29 @@ fn generated_frontier_v14_slashing_security_oracles_hold() {
 }
 
 #[test]
+fn generated_frontier_v14_mergeable_channel_oracles_hold() {
+    let fixtures = replay_matching_fixtures("v14 mergeable channel security", |fixture| {
+        fixture.security_surface == "typed_mergeable_channel"
+    });
+    for source_risk in [
+        "typed_bitmask_diff_roundtrip",
+        "non_numeric_mergeable_fallback",
+        "merge_type_persistence",
+    ] {
+        assert!(
+            fixtures
+                .iter()
+                .any(|fixture| fixture.source_risk == source_risk),
+            "v14 frontier corpus must cover mergeable source risk {source_risk}"
+        );
+    }
+    for fixture in &fixtures {
+        assert_v14_source_graph_metadata(fixture);
+        assert_v14_mergeable_channel_oracle(fixture);
+    }
+}
+
+#[test]
 fn generated_frontier_v14_node_security_oracles_hold() {
     let fixtures = replay_matching_fixtures("v14 node security", |fixture| {
         matches!(
@@ -2692,6 +2775,7 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         "api_to_runtime_replay",
         "replay_cache_payload_binding",
         "slashing_authorization",
+        "typed_mergeable_channel",
         "transport_tls",
         "crypto_key_material",
         "dependency_advisory",
@@ -2707,6 +2791,7 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         "runtime_budget",
         "replay_cache",
         "slashing",
+        "mergeable_channels",
         "transport_tls",
         "crypto_key_material",
         "dependency_advisory",

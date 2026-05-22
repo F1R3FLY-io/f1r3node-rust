@@ -40,7 +40,7 @@ assumptions="$(mktemp)"
 trap 'rm -f "$assumptions"' EXIT
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition RuntimeBudgetRefinement UseCaseAdequacy.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement UseCaseAdequacy.
 Print Assumptions translation_faithful.
 Print Assumptions translation_strong_bisimilar_generic.
 Print Assumptions compound_gate_per_step_reverse.
@@ -56,6 +56,13 @@ Print Assumptions slash_preserves_settled_amount.
 Print Assumptions slash_after_evaluation_cannot_add_fuel.
 Print Assumptions cost_invalid_block_evidence_does_not_change_user_cost.
 Print Assumptions slash_system_effect_is_unmetered_for_user_budget.
+Print Assumptions bitmask_diff_merge_round_trip.
+Print Assumptions mergeable_channel_bitmask_fold_permutation.
+Print Assumptions integer_add_diff_merge_round_trip.
+Print Assumptions mergeable_channel_delta_preserves_type.
+Print Assumptions non_numeric_channel_not_mergeable_payload_match.
+Print Assumptions mergeable_channel_accounting_preserves_user_budget.
+Print Assumptions mergeable_channel_accounting_preserves_fee_settlement_inputs.
 Print Assumptions rb_total_remaining_conservation.
 Print Assumptions rb_reserve_oop_commits_limit.
 Print Assumptions rb_reserve_first_oop_commits_boundary.
@@ -187,6 +194,11 @@ Print Assumptions uc_ca_071_replay_mutation_frontier.
 Print Assumptions uc_ca_072_multi_deploy_settlement_frontier.
 Print Assumptions uc_ca_073_slashing_composition_frontier.
 Print Assumptions uc_ca_074_resource_exhaustion_frontier.
+Print Assumptions uc_ca_141_typed_mergeable_channel_type_preservation.
+Print Assumptions uc_ca_142_bitmask_or_diff_merge_round_trip.
+Print Assumptions uc_ca_143_bitmask_or_fold_order_independent.
+Print Assumptions uc_ca_144_integer_add_diff_merge_round_trip.
+Print Assumptions uc_ca_145_mergeable_channel_accounting_preserves_cost_boundary.
 Quit.
 EOF
 then

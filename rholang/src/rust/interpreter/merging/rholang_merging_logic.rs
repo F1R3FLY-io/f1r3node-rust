@@ -353,4 +353,27 @@ mod tests {
         expected_map0.insert(ch.clone(), (0b0100i64, mt));
         assert_eq!(result, vec![expected_map0]);
     }
+
+    #[test]
+    fn test_calculate_num_channel_diff_bitmask_round_trips_to_or_merge() {
+        let ch = "X".to_string();
+        let mt = MergeType::BitmaskOr;
+        let previous = 0b0001i64;
+        let current = 0b0100i64;
+        let mut init_values = HashMap::new();
+        init_values.insert(ch.clone(), previous);
+
+        let mut map0 = BTreeMap::new();
+        map0.insert(ch.clone(), (current, mt));
+        let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], |k: &String| {
+            init_values.get(k).copied()
+        });
+
+        let diff = result[0].get(&ch).copied().unwrap().0;
+        assert_eq!(((previous as u64) | (diff as u64)) as i64, 0b0101);
+        assert_eq!(
+            ((previous as u64) | (diff as u64)) as i64,
+            ((previous as u64) | (current as u64)) as i64
+        );
+    }
 }
