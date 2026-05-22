@@ -83,6 +83,7 @@ docs/*.md.bak
 .*.aux
 *.v.d
 *.crashcoqide
+
 .coqdeps.d
 .coq-native/
 .coq-cache/

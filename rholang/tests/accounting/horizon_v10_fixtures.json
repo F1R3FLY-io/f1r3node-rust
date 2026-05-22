@@ -237,7 +237,7 @@
       "bounded_depth": 3,
       "production_replay_target": "generated_frontier_v10_fuzz_seed_fixtures_hold",
       "promotion_gate": "rust_replay_before_source_action",
-      "reproducer_command": "analysis/cost-accounted-rho: KANI_HARNESSES=kani_runtime_budget_conservation RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
+      "reproducer_command": "KANI_HARNESSES=kani_runtime_budget_conservation RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
       "settlement": {}
     },
     {
@@ -266,7 +266,7 @@
       "bounded_depth": 2,
       "production_replay_target": "generated_frontier_v10_fuzz_seed_fixtures_hold",
       "promotion_gate": "rust_replay_before_source_action",
-      "reproducer_command": "analysis/cost-accounted-rho: KANI_HARNESSES=kani_invalid_admission_no_mutation RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
+      "reproducer_command": "KANI_HARNESSES=kani_invalid_admission_no_mutation RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
       "settlement": {}
     },
     {
@@ -298,7 +298,7 @@
       "bounded_depth": 2,
       "production_replay_target": "generated_frontier_v10_fuzz_seed_fixtures_hold",
       "promotion_gate": "rust_replay_before_source_action",
-      "reproducer_command": "analysis/cost-accounted-rho: KANI_HARNESSES=kani_oop_single_boundary RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
+      "reproducer_command": "KANI_HARNESSES=kani_oop_single_boundary RUN_KANI=1 SEARCH_TIER=exhaustive bash scripts/check-cost-accounting-search-horizon.sh",
       "settlement": {}
     },
     {
