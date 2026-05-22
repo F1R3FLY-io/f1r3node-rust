@@ -70,11 +70,13 @@ else
 fi
 
 # --- cargo clippy ---
+# Match CI's invocation form exactly (see .github/workflows/ci.yml `lint` job):
+# RUSTFLAGS carries both the target-feature pin and the warning-denial.
 if [[ "$SKIP_CLIPPY" == "1" ]]; then
     echo -e "  ${CYAN}[clippy]${NC} ${YELLOW}SKIP${NC} (SKIP_CLIPPY=1)"
 else
     clippy_out=$(mktemp)
-    if cargo clippy --workspace -- -D warnings > "$clippy_out" 2>&1; then
+    if RUSTFLAGS="-C target-feature=+aes,+sse2 -D warnings" cargo clippy --workspace > "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC} ${GREEN}PASS${NC}"
     else
         echo -e "  ${CYAN}[clippy]${NC} ${RED}FAIL${NC}"
@@ -85,7 +87,7 @@ else
             # Show just the error lines
             grep -E "^error" "$clippy_out" | head -20
             echo ""
-            echo -e "  ${YELLOW}Run for details:${NC} cargo clippy --workspace --all-targets"
+            echo -e "  ${YELLOW}Run for details:${NC} RUSTFLAGS=\"-C target-feature=+aes,+sse2 -D warnings\" cargo clippy --workspace"
             echo ""
         fi
     fi

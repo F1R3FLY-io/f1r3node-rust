@@ -213,19 +213,27 @@ where
     F: FnOnce(GrpcKademliaRPC, PeerNode, PeerNode) -> Fut,
     Fut: std::future::Future<Output = T>,
 {
-    // Create two environments
+    // env1 is the local (client) identity — never binds a server, so its port
+    // is metadata only. get_free_port() is fine here (the listener-drop race
+    // can't bite because nothing rebinds this port).
     let port1 = get_free_port()
         .await
         .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-    let port2 = get_free_port()
-        .await
-        .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-
     let env1 = runtime.create_environment(port1);
-    let env2 = runtime.create_environment(port2);
+
+    // env2 is the remote (server) identity. Use port=0 (ephemeral) so the gRPC
+    // server binds to an OS-assigned port — eliminates the TOCTOU race window
+    // of get_free_port()'s bind+drop+rebind pattern. The actual port is
+    // discovered post-bind via remote_server.port().
+    let mut env2 = runtime.create_environment(0);
 
     let local = env1.peer.clone();
-    let remote = env2.peer.clone();
+    // handler_remote is the peer reference the server's handlers capture at
+    // construction. Its port=0 is fine because handlers only use this for
+    // (receiver, sender) record-keeping; the recorded receiver is compared
+    // against test_result.remote_node below, which we ALSO build from this
+    // same handler_remote so the assertion `receiver == &remote_node` matches.
+    let handler_remote = env2.peer.clone();
 
     // Use provided handlers or create defaults
     let ping_handler = ping_handler.unwrap_or_else(|| TestPingHandler::new());
@@ -234,20 +242,29 @@ where
     // Create local RPC client
     let local_rpc = runtime.create_kademlia_rpc(&env1);
 
-    // Create and start remote RPC server
+    // Create and start remote RPC server (binds ephemeral, populates self.port).
     let mut remote_server = runtime
         .create_kademlia_rpc_server(
             &env2,
-            ping_handler.to_handler(remote.clone()),
-            lookup_handler.to_handler(remote.clone()),
+            ping_handler.to_handler(handler_remote.clone()),
+            lookup_handler.to_handler(handler_remote.clone()),
         )
         .await?;
+
+    // Discover the actually-bound port and rebuild env2.peer with it so the
+    // client can connect to the real listener. The handler still has the
+    // port=0 view via handler_remote (used only for identity-equality below).
+    let actual_port = remote_server.port();
+    env2.port = actual_port;
+    env2.peer.endpoint = Endpoint::new(env2.host.clone(), actual_port as u32, actual_port as u32);
+    let client_remote = env2.peer.clone();
 
     // Give the server a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Execute the test function
-    let result = execute_fn(local_rpc, local.clone(), remote.clone()).await;
+    // Execute the test function — client_remote carries the real port so the
+    // RPC actually connects.
+    let result = execute_fn(local_rpc, local.clone(), client_remote).await;
 
     // Stop the server
     remote_server
@@ -258,7 +275,9 @@ where
     let test_result = TwoNodesResult {
         result,
         local_node: local,
-        remote_node: remote,
+        // remote_node mirrors handler_remote so that
+        // `assert_eq!(received_receiver, &test_result.remote_node)` matches.
+        remote_node: handler_remote,
     };
 
     Ok((test_result, ping_handler, lookup_handler))

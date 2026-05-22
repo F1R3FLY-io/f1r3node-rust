@@ -105,7 +105,9 @@ echo "================================"
     fi
     total=1
     clippy_out="$RESULTS_DIR/clippy.out"
-    if timeout "$TEST_TIMEOUT" cargo clippy --workspace -- -D warnings > "$clippy_out" 2>&1; then
+    # Match CI's invocation form exactly (see .github/workflows/ci.yml `lint` job):
+    # RUSTFLAGS carries both the target-feature pin and the warning-denial.
+    if RUSTFLAGS="-C target-feature=+aes,+sse2 -D warnings" timeout "$TEST_TIMEOUT" cargo clippy --workspace > "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC}  ${GREEN}PASS${NC}" >&3
         passed=1
     else

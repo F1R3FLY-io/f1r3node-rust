@@ -91,6 +91,10 @@ impl GrpcServer {
 
         let addr: SocketAddr = ([0, 0, 0, 0], self.port).into();
         let listener = bind_tcp_listener_with_retry(addr).await?;
+        // Capture the actually-bound port — matters when caller passed port=0
+        // (ephemeral). After this assignment, self.port() returns the OS-assigned
+        // port so callers can build peer references with the real endpoint.
+        self.port = listener.local_addr()?.port();
         let incoming = TcpListenerStream::new(listener);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
@@ -120,6 +124,10 @@ impl GrpcServer {
 
         let addr: SocketAddr = ([0, 0, 0, 0], self.port).into();
         let listener = bind_tcp_listener_with_retry(addr).await?;
+        // Capture the actually-bound port — matters when caller passed port=0
+        // (ephemeral). After this assignment, self.port() returns the OS-assigned
+        // port so callers can build peer references with the real endpoint.
+        self.port = listener.local_addr()?.port();
         let incoming = TcpListenerStream::new(listener);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
