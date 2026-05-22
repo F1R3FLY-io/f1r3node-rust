@@ -285,6 +285,14 @@ jobs:
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
     needs: lint
+    # Skip on fork PRs: secrets.OCI_* aren't exposed to workflows triggered
+    # by PRs from forks, so this job would only ever fail with malformed-
+    # config errors. The integration_tests matrix needs this job, so it'll
+    # also skip; the Integration Tests (amd64/arm64) aggregators run with
+    # if: always() and pass vacuously because the matrix has no slots to
+    # report as failed. Maintainers validate fork-PR code by re-pushing
+    # the branch into the canonical repo (e.g. staging).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       actions: write  # needed for gh api ... actions/runners/registration-token
