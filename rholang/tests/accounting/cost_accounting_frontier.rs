@@ -127,6 +127,8 @@ struct GeneratedFixture {
     #[serde(default)]
     replay_boundary: String,
     #[serde(default)]
+    slashing_authorization: serde_json::Value,
+    #[serde(default)]
     secret_material_touched: bool,
     #[serde(default)]
     source_anchor_status: String,
@@ -417,6 +419,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -470,6 +473,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -523,6 +527,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -576,6 +581,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -629,6 +635,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -716,6 +723,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
             external_input_kind: String::new(),
             auth_boundary: String::new(),
             replay_boundary: String::new(),
+            slashing_authorization: serde_json::Value::Null,
             secret_material_touched: false,
             source_anchor_status: String::new(),
             dependency_advisory_id: String::new(),
@@ -1898,7 +1906,15 @@ fn assert_v14_slashing_oracle(fixture: &GeneratedFixture) {
         .source_facets
         .iter()
         .any(|facet| facet == "slashing"));
-    for field in ["slash_epoch", "slash_fields", "block_hash", "signature"] {
+    for field in [
+        "slash_epoch",
+        "slash_fields",
+        "target_activation_epoch",
+        "evidence_epoch",
+        "parent_pre_state_bond",
+        "block_hash",
+        "signature",
+    ] {
         assert!(
             fixture
                 .replay_mutations
@@ -1909,6 +1925,40 @@ fn assert_v14_slashing_oracle(fixture: &GeneratedFixture) {
             field
         );
     }
+    for facet in ["parent_pre_state", "current_evidence"] {
+        assert!(
+            fixture.source_facets.iter().any(|value| value == facet),
+            "fixture {} must expose slashing source facet {}",
+            fixture.id,
+            facet
+        );
+    }
+    let auth = &fixture.slashing_authorization;
+    let current_epoch = auth
+        .get("current_epoch")
+        .and_then(serde_json::Value::as_i64);
+    assert_eq!(
+        auth.get("evidence_epoch")
+            .and_then(serde_json::Value::as_i64),
+        current_epoch,
+        "fixture {} must bind slash evidence to the current epoch",
+        fixture.id
+    );
+    assert_eq!(
+        auth.get("target_activation_epoch")
+            .and_then(serde_json::Value::as_i64),
+        current_epoch,
+        "fixture {} must bind target activation to the current epoch",
+        fixture.id
+    );
+    assert!(
+        auth.get("parent_pre_state_bond")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+            > 0,
+        "fixture {} must carry parent pre-state bond evidence",
+        fixture.id
+    );
     assert_settlement_projection(fixture);
 }
 

@@ -227,6 +227,7 @@ def canonical_scenario(
     external_input_kind=None,
     auth_boundary=None,
     replay_boundary=None,
+    slashing_authorization=None,
     secret_material_touched=False,
     source_anchor_status=None,
     dependency_advisory_id=None,
@@ -310,6 +311,7 @@ def canonical_scenario(
         "external_input_kind": str(external_input_kind or ""),
         "auth_boundary": str(auth_boundary or ""),
         "replay_boundary": str(replay_boundary or ""),
+        "slashing_authorization": slashing_authorization or {},
         "secret_material_touched": bool(secret_material_touched),
         "source_anchor_status": str(source_anchor_status or ""),
         "dependency_advisory_id": str(dependency_advisory_id or ""),
@@ -497,6 +499,19 @@ def coverage_features(scenario, classification, witness=None):
     if scenario.get("replay_boundary"):
         features = features.union(Set(["replay_boundary"]))
         features = features.union(Set(["replay_boundary:{}".format(scenario.get("replay_boundary"))]))
+    if scenario.get("slashing_authorization", {}):
+        features = features.union(Set(["slashing_authorization"]))
+        auth = scenario.get("slashing_authorization", {})
+        if auth.get("evidence_epoch") == auth.get("current_epoch"):
+            features = features.union(Set(["current_evidence_epoch"]))
+        if auth.get("target_activation_epoch") == auth.get("current_epoch"):
+            features = features.union(Set(["current_target_activation_epoch"]))
+        if int(auth.get("parent_pre_state_bond", 0)) > 0:
+            features = features.union(Set(["parent_pre_state_bond"]))
+        if int(auth.get("ambient_bond", 0)) > 0:
+            features = features.union(Set(["ambient_bond"]))
+        if int(auth.get("execution_bond", 0)) == 0:
+            features = features.union(Set(["zero_execution_bond"]))
     if scenario.get("secret_material_touched"):
         features = features.union(Set(["secret_material_touched"]))
     if scenario.get("source_anchor_status"):

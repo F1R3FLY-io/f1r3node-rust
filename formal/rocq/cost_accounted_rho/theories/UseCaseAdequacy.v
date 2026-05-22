@@ -1893,3 +1893,93 @@ Proof.
   - exact mergeable_channel_accounting_preserves_user_budget.
   - exact mergeable_channel_accounting_preserves_fee_settlement_inputs.
 Qed.
+
+(* UC-CA-146: recovered rejected slashes require evidence from the current
+   cost-invalid epoch and the target activation epoch. *)
+Theorem uc_ca_146_recovered_slash_requires_current_cost_evidence :
+  forall view,
+    recovered_rejected_slash_current view = true ->
+    slash_view_evidence_epoch view = slash_view_current_epoch view /\
+    slash_view_target_activation_epoch view = slash_view_current_epoch view.
+Proof.
+  intros view Hcurrent.
+  apply current_cost_evidence_epoch_sound.
+  exact (recovered_rejected_slash_requires_current_cost_evidence view Hcurrent).
+Qed.
+
+(* UC-CA-147: slash authorization reads the parent pre-state bond and keeps
+   the cost-accounting boundary out of the slashing state transition. *)
+Theorem uc_ca_147_parent_pre_state_slash_authorization_preserves_cost_boundary :
+  (forall view,
+    slash_authorized_by_parent_pre_state view = true ->
+    0 < slash_view_parent_pre_state_bond view) /\
+  (forall C view E,
+    slash_authorized_by_parent_pre_state view = true ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C).
+Proof.
+  split.
+  - exact parent_pre_state_authorization_requires_parent_bond.
+  - exact parent_pre_state_authorized_slash_preserves_cost_boundary.
+Qed.
+
+(* UC-CA-148: the slash target activation epoch is an authenticated replay
+   payload field. *)
+Theorem uc_ca_148_slash_target_epoch_is_replay_authenticated :
+  forall sigs costs traces trace_counts failed errors user_logs kinds system_errors
+         invalid_block_hash issuer_public_key epoch1 epoch2 system_logs genesis,
+    epoch1 <> epoch2 ->
+    ~ rb_full_replay_payload_equiv
+      {|
+        rb_full_user_signatures := sigs;
+        rb_full_user_costs := costs;
+        rb_full_user_cost_traces := traces;
+        rb_full_user_cost_trace_present := repeat true (length traces);
+        rb_full_user_cost_trace_event_counts := trace_counts;
+        rb_full_user_failed := failed;
+        rb_full_user_errors := errors;
+        rb_full_user_logs := user_logs;
+        rb_full_system_kinds := kinds;
+        rb_full_system_error_messages := system_errors;
+        rb_full_system_slash_fields := [{|
+          rb_slash_invalid_block_hash := invalid_block_hash;
+          rb_slash_issuer_public_key := issuer_public_key;
+          rb_slash_target_activation_epoch := epoch1
+        |}];
+        rb_full_system_logs := system_logs;
+        rb_full_genesis := genesis
+      |}
+      {|
+        rb_full_user_signatures := sigs;
+        rb_full_user_costs := costs;
+        rb_full_user_cost_traces := traces;
+        rb_full_user_cost_trace_present := repeat true (length traces);
+        rb_full_user_cost_trace_event_counts := trace_counts;
+        rb_full_user_failed := failed;
+        rb_full_user_errors := errors;
+        rb_full_user_logs := user_logs;
+        rb_full_system_kinds := kinds;
+        rb_full_system_error_messages := system_errors;
+        rb_full_system_slash_fields := [{|
+          rb_slash_invalid_block_hash := invalid_block_hash;
+          rb_slash_issuer_public_key := issuer_public_key;
+          rb_slash_target_activation_epoch := epoch2
+        |}];
+        rb_full_system_logs := system_logs;
+        rb_full_genesis := genesis
+      |}.
+Proof.
+  exact rb_full_replay_payload_slash_target_epoch_change_detected.
+Qed.
+
+(* UC-CA-149: a zero-bond slash represented as a no-op cannot alter the
+   cost-accounting boundary. *)
+Theorem uc_ca_149_zero_bond_slash_noop_preserves_cost_boundary :
+  forall C view E,
+    slash_execution_bond_zero view = true ->
+    slash_effect_after E = slash_effect_before E ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C.
+Proof.
+  exact zero_bond_slash_noop_preserves_cost_boundary.
+Qed.

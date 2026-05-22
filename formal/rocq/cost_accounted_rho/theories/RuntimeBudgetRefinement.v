@@ -693,6 +693,12 @@ Record rb_replay_payload := {
   rb_payload_genesis : bool
 }.
 
+Record rb_slash_payload_fields := {
+  rb_slash_invalid_block_hash : nat;
+  rb_slash_issuer_public_key : nat;
+  rb_slash_target_activation_epoch : nat
+}.
+
 Record rb_full_replay_payload := {
   rb_full_user_signatures : list nat;
   rb_full_user_costs : list nat;
@@ -704,7 +710,7 @@ Record rb_full_replay_payload := {
   rb_full_user_logs : list (list (nat * nat));
   rb_full_system_kinds : list rb_system_deploy_kind;
   rb_full_system_error_messages : list nat;
-  rb_full_system_slash_fields : list (nat * nat * nat);
+  rb_full_system_slash_fields : list rb_slash_payload_fields;
   rb_full_system_logs : list (list (nat * nat));
   rb_full_genesis : bool
 }.
@@ -1818,6 +1824,60 @@ Proof.
   intros sigs costs traces trace_counts failed errors user_logs kinds system_errors
     slash_fields1 slash_fields2 system_logs genesis Hneq Hequiv.
   unfold rb_full_replay_payload_equiv in Hequiv. intuition.
+Qed.
+
+Theorem rb_full_replay_payload_slash_target_epoch_change_detected :
+  forall sigs costs traces trace_counts failed errors user_logs kinds system_errors
+         invalid_block_hash issuer_public_key epoch1 epoch2 system_logs genesis,
+    epoch1 <> epoch2 ->
+    ~ rb_full_replay_payload_equiv
+      {|
+        rb_full_user_signatures := sigs;
+        rb_full_user_costs := costs;
+        rb_full_user_cost_traces := traces;
+        rb_full_user_cost_trace_present := repeat true (length traces);
+        rb_full_user_cost_trace_event_counts := trace_counts;
+        rb_full_user_failed := failed;
+        rb_full_user_errors := errors;
+        rb_full_user_logs := user_logs;
+        rb_full_system_kinds := kinds;
+        rb_full_system_error_messages := system_errors;
+        rb_full_system_slash_fields := [{|
+          rb_slash_invalid_block_hash := invalid_block_hash;
+          rb_slash_issuer_public_key := issuer_public_key;
+          rb_slash_target_activation_epoch := epoch1
+        |}];
+        rb_full_system_logs := system_logs;
+        rb_full_genesis := genesis
+      |}
+      {|
+        rb_full_user_signatures := sigs;
+        rb_full_user_costs := costs;
+        rb_full_user_cost_traces := traces;
+        rb_full_user_cost_trace_present := repeat true (length traces);
+        rb_full_user_cost_trace_event_counts := trace_counts;
+        rb_full_user_failed := failed;
+        rb_full_user_errors := errors;
+        rb_full_user_logs := user_logs;
+        rb_full_system_kinds := kinds;
+        rb_full_system_error_messages := system_errors;
+        rb_full_system_slash_fields := [{|
+          rb_slash_invalid_block_hash := invalid_block_hash;
+          rb_slash_issuer_public_key := issuer_public_key;
+          rb_slash_target_activation_epoch := epoch2
+        |}];
+        rb_full_system_logs := system_logs;
+        rb_full_genesis := genesis
+      |}.
+Proof.
+  intros sigs costs traces trace_counts failed errors user_logs kinds system_errors
+    invalid_block_hash issuer_public_key epoch1 epoch2 system_logs genesis
+    Hneq Hequiv.
+  unfold rb_full_replay_payload_equiv in Hequiv.
+  destruct Hequiv as
+    [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [Hslash _]]]]]]]]]]].
+  inversion Hslash.
+  congruence.
 Qed.
 
 Theorem rb_set_unmetered_restores_metered_observables :

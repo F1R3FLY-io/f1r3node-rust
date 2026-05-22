@@ -7,10 +7,12 @@ protocol and eval scheduling, complementing the Rocq mechanization at
 ## Prerequisites
 
 - Java 17+ (`java -version`)
-- TLA+ Toolbox (`brew install --cask tla+-toolbox`)
+- TLC through a local `tla2tools.jar`
+- Optional Apalache (`apalache-mc version`) for SMT-backed bounded cross-checks
 
-The TLC model checker jar is at:
-`/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`
+Common TLC jar locations:
+- `/usr/share/java/tla2tools.jar`
+- `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`
 
 ## Specifications
 
@@ -26,9 +28,9 @@ The TLC model checker jar is at:
 | `MCFull.tla` | Model instance for FullProtocol | — | — |
 | `RuntimeBudgetReplay.tla` | Bounded runtime-budget canonical permit grants, replay trace, invalid-event rejection, post-OOP rejection, deploy reset, finalization-read model, and canonical digest-entry abstraction over Rust event descriptors and occurrence multiplicity | 72 distinct / 203 generated (6 events, including zero-weight, over-source-path, and over-primitive-descriptor invalid events) | NoOverspend, OopCommitsBoundary, ReplayTraceSubset, OopNotLogged, PermitsMatchSuccessfulTrace, NoUnpaidPhysicalWork, CanonicalPermitOrder, FinalizedTraceSequence, FinalizationPreservesActiveBudget, LoggedEventsHavePositiveWeight, LoggedEventsAreValidated, TraceWithinRetentionBound, ResetClearsActiveTraceAfterFinalization, PostOopRejectionsPreserveSingleBoundary, CanonicalDigestEventCountMatches, CanonicalDigestDomainSeparatesOop, CanonicalDigestStableAfterFinalization |
 | `MCRuntimeBudgetReplay.tla` | Model instance for RuntimeBudgetReplay | — | — |
-| `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, and evidence-recording threat model | 52 (single deploy boundary) | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation |
+| `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, evidence-recording, and slash-authorization threat model | 5,408 distinct / 401,025 generated | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation, RecoveredSlashRequiresCurrentEvidence, SlashAuthorizationUsesParentPreState, AmbientBondDoesNotAuthorizeWithoutParent, ParentPositiveAmbientZeroCanAuthorize, SlashNoopPreservesCostBoundary |
 | `MCCostAccountingThreats.tla` | Model instance for CostAccountingThreats | — | — |
-| `CostAccountingSearchFrontier.tla` | Witness classification and promotion discipline for generated cost-accounting findings | bounded by witness and classification flags | NoSourceFixWithoutRustOrInvariantEvidence, ProjectionRiskHasRustGuard, FormalStrengtheningHasInvariantTarget, ConfirmedBugHasSourceTarget |
+| `CostAccountingSearchFrontier.tla` | Witness classification and promotion discipline for generated cost-accounting findings | 34,167 distinct / 266,015 generated | NoSourceFixWithoutRustOrInvariantEvidence, ProjectionRiskHasRustGuard, FormalStrengtheningHasInvariantTarget, ConfirmedBugHasSourceTarget, SourceSemanticWitnessHasFacets, SourceGraphSlashingWitnessHasAuthorizationMetadata |
 | `MCCostAccountingSearchFrontier.tla` | Model instance for CostAccountingSearchFrontier | — | — |
 | `MergeableChannelAccounting.tla` | Typed mergeable-channel diff/merge behavior and cost-boundary isolation | 2,656 distinct / 8,992 generated | BitmaskDiffMergeRoundTrip, IntegerAddDiffMergeRoundTrip, BitmaskMergeDoesNotDropBits, NonNumericPayloadHasNoNumericDiff, MergeableAccountingPreservesUserCost, SlashSystemEffectPreservesCostBoundary |
 | `MCMergeableChannelAccounting.tla` | Model instance for MergeableChannelAccounting | — | — |
@@ -37,7 +39,7 @@ The TLC model checker jar is at:
 
 ```bash
 cd formal/tlaplus/cost_accounted_rho
-TLA2TOOLS="/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar"
+TLA2TOOLS="${TLA2TOOLS:-/usr/share/java/tla2tools.jar}"
 
 # Atomic token protocol (3 processes, 3 channels, 3 tokens, all interleavings)
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
@@ -78,6 +80,19 @@ java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
 ```
 
 All eight should report: `Model checking completed. No error has been found.`
+
+When Apalache is installed, the threat and search-frontier models can also
+be checked symbolically:
+
+```bash
+cd formal/tlaplus/cost_accounted_rho
+apalache-mc check --out-dir=/tmp/apalache-MCCostAccountingThreats \
+  --config=CostAccountingThreats.cfg MCCostAccountingThreats.tla
+apalache-mc check --out-dir=/tmp/apalache-CostAccountingSearchFrontier \
+  --config=CostAccountingSearchFrontier.cfg CostAccountingSearchFrontier.tla
+```
+
+Both should report `The outcome is: NoError`.
 
 ## Verified Properties
 
@@ -131,6 +146,19 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
   for a modeled cost-invalid violation.
 - **ReplayTamperCannotStayAccepted**: after digest/count/commitment
   tampering, cost-accounted replay is no longer accepted.
+- **RecoveredSlashRequiresCurrentEvidence**: a recovered rejected slash
+  is considered only when its evidence epoch and target activation epoch
+  are both the current epoch.
+- **SlashAuthorizationUsesParentPreState**: slash acceptance is
+  authorized by the parent pre-state bond, not by an ambient post-state
+  or execution-time bond view.
+- **AmbientBondDoesNotAuthorizeWithoutParent**: an ambient bond alone
+  cannot authorize a slash when the parent pre-state bond is zero.
+- **ParentPositiveAmbientZeroCanAuthorize**: a positive parent pre-state
+  bond authorizes current slash evidence even when the ambient bond view
+  is zero.
+- **SlashNoopPreservesCostBoundary**: a zero execution-bond slash is a
+  no-op with respect to the user runtime cost boundary.
 
 ### RuntimeBudgetReplay (bounded runtime-budget replay)
 
@@ -181,6 +209,9 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
   an expected invariant.
 - **TerminalStutter**: once a witness reaches a terminal classification,
   later discovery actions cannot rewrite its action or promotion target.
+- **SourceGraphSlashingWitnessHasAuthorizationMetadata**: source-graph
+  slashing witnesses cannot terminate without current-evidence and
+  parent-pre-state metadata.
 
 ### MergeableChannelAccounting (typed mergeable channels)
 
@@ -231,8 +262,8 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `FullProtocol.tla` | 7 | 12 | 2 (doubly-compound + Join) | up to 3 | 12,960 |
 | `EvalScheduling.tla` | 3 bodies | — | 0 | 1 | 16 |
 | `RuntimeBudgetReplay.tla` | 6 events | — | 0 | bounded budget 6 | 72 distinct / 203 generated |
-| `CostAccountingThreats.tla` | 1 deploy boundary | — | 0 | bounded fuel 5 | 52 |
-| `CostAccountingSearchFrontier.tla` | 9 witness families | — | 0 | — | bounded by classification and v3 metadata flags |
+| `CostAccountingThreats.tla` | 1 deploy boundary plus slash authorization view | — | 0 | bounded fuel 5, epochs 0..1, bonds 0..1 | 5,408 distinct / 401,025 generated |
+| `CostAccountingSearchFrontier.tla` | 11 witness families | — | 0 | — | 34,167 distinct / 266,015 generated |
 | `MergeableChannelAccounting.tla` | typed values over 2-bit bitmaps and bounded integers | — | 0 | bounded values 0..3 | 2,656 |
 
 Running on larger bounds has not been attempted — doubly-compound depth-2 already exercises the cascading-Split + Join interactions and is the deepest scenario anticipated by the design.

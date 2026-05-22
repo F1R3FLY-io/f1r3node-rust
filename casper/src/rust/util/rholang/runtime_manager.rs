@@ -1447,6 +1447,8 @@ mod tests {
         #[serde(default)]
         replay_boundary: String,
         #[serde(default)]
+        slashing_authorization: serde_json::Value,
+        #[serde(default)]
         dependency_advisory_id: String,
         #[serde(default)]
         secret_material_touched: bool,
@@ -2026,7 +2028,15 @@ mod tests {
                 }
                 "slashing_authorization" => {
                     assert_eq!(fixture.expected_disposition, "replay_invalid");
-                    for field in ["slash_epoch", "slash_fields", "block_hash", "signature"] {
+                    for field in [
+                        "slash_epoch",
+                        "slash_fields",
+                        "target_activation_epoch",
+                        "evidence_epoch",
+                        "parent_pre_state_bond",
+                        "block_hash",
+                        "signature",
+                    ] {
                         assert!(
                             fixture
                                 .replay_mutations
@@ -2037,6 +2047,32 @@ mod tests {
                             field
                         );
                     }
+                    let auth = &fixture.slashing_authorization;
+                    let current_epoch = auth
+                        .get("current_epoch")
+                        .and_then(serde_json::Value::as_i64);
+                    assert_eq!(
+                        auth.get("evidence_epoch")
+                            .and_then(serde_json::Value::as_i64),
+                        current_epoch,
+                        "v14 fixture {} must bind evidence epoch to current epoch",
+                        fixture.id
+                    );
+                    assert_eq!(
+                        auth.get("target_activation_epoch")
+                            .and_then(serde_json::Value::as_i64),
+                        current_epoch,
+                        "v14 fixture {} must bind target activation epoch to current epoch",
+                        fixture.id
+                    );
+                    assert!(
+                        auth.get("parent_pre_state_bond")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0)
+                            > 0,
+                        "v14 fixture {} must carry parent pre-state bond evidence",
+                        fixture.id
+                    );
                     assert_ne!(
                         RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
                         RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),

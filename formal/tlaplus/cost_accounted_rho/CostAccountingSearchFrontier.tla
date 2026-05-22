@@ -8,22 +8,43 @@
 EXTENDS Naturals, TLC
 
 VARIABLES
+    \* @type: Str;
     witness,
+    \* @type: Str;
     threatFamily,
+    \* @type: Bool;
     reproduced,
+    \* @type: Bool;
     productionInvariantViolated,
+    \* @type: Bool;
     guardedByProduction,
+    \* @type: Bool;
     theoremGap,
+    \* @type: Bool;
     hasRustReproducer,
+    \* @type: Bool;
     hasExpectedInvariant,
+    \* @type: Bool;
     hasCampaignSteps,
+    \* @type: Bool;
     hasProductionPath,
+    \* @type: Bool;
     hasOracle,
+    \* @type: Bool;
     hasSourceFacet,
+    \* @type: Bool;
     hasSourceAnchorDigest,
+    \* @type: Bool;
     hasCrossSurfaceRole,
+    \* @type: Bool;
+    hasCurrentEvidenceEpoch,
+    \* @type: Bool;
+    hasParentPreStateView,
+    \* @type: Str;
     classified,
+    \* @type: Str;
     action,
+    \* @type: Str;
     promotionTarget
 
 vars ==
@@ -31,12 +52,14 @@ vars ==
       guardedByProduction, theoremGap, hasRustReproducer,
       hasExpectedInvariant, hasCampaignSteps, hasProductionPath, hasOracle,
       hasSourceFacet, hasSourceAnchorDigest, hasCrossSurfaceRole,
-      classified, action, promotionTarget>>
+      hasCurrentEvidenceEpoch, hasParentPreStateView, classified, action,
+      promotionTarget>>
 
 WitnessSet ==
     {"budget", "replay", "settlement", "concurrency", "slashing",
      "stateful_campaign", "source_corpus", "production_path_diff",
-     "exploit_cross_product", "source_semantic_oracle"}
+     "exploit_cross_product", "source_semantic_oracle",
+     "source_graph_security"}
 ThreatFamilySet ==
     {"producer_routing", "concurrency_schedule", "replay_authentication",
      "settlement", "slashing_composition", "resource_exhaustion",
@@ -50,7 +73,8 @@ ThreatFamilySet ==
      "source_semantic_metering_to_parallel_digest_stability",
      "source_semantic_replay_to_slashing_authentication",
      "source_semantic_legacy_to_runtime_quarantine",
-     "source_semantic_coverage"}
+     "source_semantic_coverage",
+     "source_graph_slashing_authorization_security"}
 ClassSet ==
     {"unclassified", "confirmed_safe", "bisimilar", "projection_risk",
      "assumption_counterexample", "proof_or_model_strengthening",
@@ -76,6 +100,8 @@ Init ==
     /\ hasSourceFacet = FALSE
     /\ hasSourceAnchorDigest = FALSE
     /\ hasCrossSurfaceRole = FALSE
+    /\ hasCurrentEvidenceEpoch = FALSE
+    /\ hasParentPreStateView = FALSE
     /\ classified = "unclassified"
     /\ action = "none"
     /\ promotionTarget = "none"
@@ -95,6 +121,8 @@ TypeOK ==
     /\ hasSourceFacet \in BOOLEAN
     /\ hasSourceAnchorDigest \in BOOLEAN
     /\ hasCrossSurfaceRole \in BOOLEAN
+    /\ hasCurrentEvidenceEpoch \in BOOLEAN
+    /\ hasParentPreStateView \in BOOLEAN
     /\ classified \in ClassSet
     /\ action \in ActionSet
     /\ promotionTarget \in PromotionTargetSet
@@ -110,6 +138,10 @@ MetadataReady ==
     /\ witness # "source_semantic_oracle" \/
         (hasProductionPath /\ hasOracle /\ hasRustReproducer /\
          hasSourceFacet /\ hasSourceAnchorDigest /\ hasCrossSurfaceRole)
+    /\ witness # "source_graph_security" \/
+        (hasProductionPath /\ hasOracle /\ hasRustReproducer /\
+         hasSourceFacet /\ hasSourceAnchorDigest /\ hasCrossSurfaceRole /\
+         hasCurrentEvidenceEpoch /\ hasParentPreStateView)
 
 DiscoverCampaignSteps ==
     /\ classified = "unclassified"
@@ -119,7 +151,8 @@ DiscoverCampaignSteps ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasProductionPath, hasOracle,
         hasSourceFacet, hasSourceAnchorDigest, hasCrossSurfaceRole,
-        classified, action, promotionTarget>>
+        hasCurrentEvidenceEpoch, hasParentPreStateView, classified, action,
+        promotionTarget>>
 
 DiscoverProductionPath ==
     /\ classified = "unclassified"
@@ -131,7 +164,7 @@ DiscoverProductionPath ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasExpectedInvariant, hasCampaignSteps, classified, action,
         promotionTarget, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView>>
 
 DiscoverSourceSemanticMetadata ==
     /\ classified = "unclassified"
@@ -145,6 +178,22 @@ DiscoverSourceSemanticMetadata ==
     /\ UNCHANGED <<witness, threatFamily, reproduced,
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasExpectedInvariant, hasCampaignSteps, classified, action,
+        promotionTarget, hasCurrentEvidenceEpoch, hasParentPreStateView>>
+
+DiscoverSourceGraphMetadata ==
+    /\ classified = "unclassified"
+    /\ witness = "source_graph_security"
+    /\ hasProductionPath' = TRUE
+    /\ hasOracle' = TRUE
+    /\ hasRustReproducer' = TRUE
+    /\ hasSourceFacet' = TRUE
+    /\ hasSourceAnchorDigest' = TRUE
+    /\ hasCrossSurfaceRole' = TRUE
+    /\ hasCurrentEvidenceEpoch' = TRUE
+    /\ hasParentPreStateView' = TRUE
+    /\ UNCHANGED <<witness, threatFamily, reproduced,
+        productionInvariantViolated, guardedByProduction, theoremGap,
+        hasExpectedInvariant, hasCampaignSteps, classified, action,
         promotionTarget>>
 
 DiscoverRustReproduction ==
@@ -155,7 +204,8 @@ DiscoverRustReproduction ==
     /\ UNCHANGED <<witness, threatFamily, productionInvariantViolated,
         guardedByProduction, theoremGap, hasExpectedInvariant,
         hasCampaignSteps, hasProductionPath, hasOracle, hasSourceFacet,
-        hasSourceAnchorDigest, hasCrossSurfaceRole, classified, action>>
+        hasSourceAnchorDigest, hasCrossSurfaceRole, hasCurrentEvidenceEpoch,
+        hasParentPreStateView, classified, action>>
 
 DiscoverInvariantViolation ==
     /\ classified = "unclassified"
@@ -165,7 +215,7 @@ DiscoverInvariantViolation ==
     /\ UNCHANGED <<witness, threatFamily, reproduced, guardedByProduction,
         theoremGap, hasRustReproducer, hasCampaignSteps, hasProductionPath,
         hasOracle, hasSourceFacet, hasSourceAnchorDigest, hasCrossSurfaceRole,
-        classified, action>>
+        hasCurrentEvidenceEpoch, hasParentPreStateView, classified, action>>
 
 DiscoverProductionGuard ==
     /\ classified = "unclassified"
@@ -175,7 +225,8 @@ DiscoverProductionGuard ==
     /\ UNCHANGED <<witness, threatFamily, reproduced,
         productionInvariantViolated, theoremGap, hasExpectedInvariant,
         hasCampaignSteps, hasProductionPath, hasOracle, hasSourceFacet,
-        hasSourceAnchorDigest, hasCrossSurfaceRole, classified, action>>
+        hasSourceAnchorDigest, hasCrossSurfaceRole, hasCurrentEvidenceEpoch,
+        hasParentPreStateView, classified, action>>
 
 DiscoverTheoremGap ==
     /\ classified = "unclassified"
@@ -185,7 +236,8 @@ DiscoverTheoremGap ==
     /\ UNCHANGED <<witness, threatFamily, reproduced,
         productionInvariantViolated, guardedByProduction, hasRustReproducer,
         hasCampaignSteps, hasProductionPath, hasOracle, hasSourceFacet,
-        hasSourceAnchorDigest, hasCrossSurfaceRole, classified, action>>
+        hasSourceAnchorDigest, hasCrossSurfaceRole, hasCurrentEvidenceEpoch,
+        hasParentPreStateView, classified, action>>
 
 ClassifyBug ==
     /\ classified = "unclassified"
@@ -198,7 +250,7 @@ ClassifyBug ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasCampaignSteps,
         hasProductionPath, hasOracle, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView>>
 
 ClassifyGuardedProjection ==
     /\ classified = "unclassified"
@@ -213,7 +265,7 @@ ClassifyGuardedProjection ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasCampaignSteps,
         hasProductionPath, hasOracle, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView>>
 
 ClassifyFormalStrengthening ==
     /\ classified = "unclassified"
@@ -229,7 +281,8 @@ ClassifyFormalStrengthening ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasCampaignSteps,
         hasProductionPath, hasOracle, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole, promotionTarget>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView,
+        promotionTarget>>
 
 ClassifySafe ==
     /\ classified = "unclassified"
@@ -245,7 +298,7 @@ ClassifySafe ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasCampaignSteps,
         hasProductionPath, hasOracle, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView>>
 
 EscalateAudit ==
     /\ classified = "unclassified"
@@ -257,7 +310,7 @@ EscalateAudit ==
         productionInvariantViolated, guardedByProduction, theoremGap,
         hasRustReproducer, hasExpectedInvariant, hasCampaignSteps,
         hasProductionPath, hasOracle, hasSourceFacet, hasSourceAnchorDigest,
-        hasCrossSurfaceRole>>
+        hasCrossSurfaceRole, hasCurrentEvidenceEpoch, hasParentPreStateView>>
 
 TerminalStutter ==
     /\ classified # "unclassified"
@@ -265,7 +318,7 @@ TerminalStutter ==
 
 Next ==
     DiscoverCampaignSteps \/ DiscoverProductionPath \/
-    DiscoverSourceSemanticMetadata \/
+    DiscoverSourceSemanticMetadata \/ DiscoverSourceGraphMetadata \/
     DiscoverRustReproduction \/ DiscoverInvariantViolation \/
     DiscoverProductionGuard \/ DiscoverTheoremGap \/ ClassifyBug \/
     ClassifyGuardedProjection \/ ClassifyFormalStrengthening \/
@@ -331,5 +384,16 @@ SourceSemanticWitnessHasFacets ==
         /\ hasProductionPath
         /\ hasOracle
         /\ hasRustReproducer
+
+SourceGraphSlashingWitnessHasAuthorizationMetadata ==
+    (classified # "unclassified" /\ witness = "source_graph_security") =>
+        /\ hasSourceFacet
+        /\ hasSourceAnchorDigest
+        /\ hasCrossSurfaceRole
+        /\ hasProductionPath
+        /\ hasOracle
+        /\ hasRustReproducer
+        /\ hasCurrentEvidenceEpoch
+        /\ hasParentPreStateView
 
 =============================================================================

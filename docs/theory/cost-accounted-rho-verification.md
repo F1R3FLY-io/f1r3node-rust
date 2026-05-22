@@ -24,8 +24,9 @@ processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
 in **Rocq 9.1.1** across 23 modules and 18,550 lines of development, and
-complements it with a **TLA+** finite-state model verified by TLC. The
-headline results include contextual forward reachability
+complements it with a **TLA+** finite-state model verified by TLC and
+selectively cross-checked by Apalache. The headline results include
+contextual forward reachability
 (`translation_faithful`, with the precision boundary stated in
 Section 6.1), strong bisimulation
 (`translation_strong_bisimilar_generic`), per-step reverse simulation
@@ -152,7 +153,8 @@ This article proves that claim. Concretely, we contribute:
    fuel-event multiset determinism (`fuel_events_consumed_perm`).
 
 4. Independent **TLA+** finite-state correctness models (Section 10),
-   verified by TLC across eight specifications: the four core
+   verified by TLC across eight specifications and cross-checked through
+   Apalache for the typed threat/search-frontier models: the four core
    protocol/scheduling models up to 12,960 distinct states, plus
    runtime-budget replay, threat-model, search-frontier, and typed
    mergeable-channel models that check implementation-facing invariants —
@@ -3060,9 +3062,10 @@ protocol. The two approaches are complementary: Rocq yields universal
 guarantees, while TLA+ can catch specification bugs that a proof might
 miss — for example, errors in the formalization of the operational
 semantics, off-by-one mistakes in accounting invariants, or unexpected
-deadlocks in mediator interactions. A property that is both proven in
-Rocq and verified by TLC is, in practice, very unlikely to have been
-stated incorrectly.
+deadlocks in mediator interactions. A property that is proven in Rocq,
+exhausted by TLC, and accepted by Apalache's independent type checker and
+bounded checker is, in practice, very unlikely to have been stated
+incorrectly.
 
 The model now consists of eight TLA+ specifications under
 `formal/tlaplus/cost_accounted_rho/`, each adding a layer of generality:
@@ -3103,7 +3106,10 @@ The model now consists of eight TLA+ specifications under
 
 6. **`CostAccountingThreats.tla`** — Models replay tampering,
    activation downgrade attempts, unauthorized settlement, cost-invalid
-   evidence recording, and settlement/fuel separation.
+   evidence recording, settlement/fuel separation, recovered rejected
+   slashes, current evidence epochs, parent-pre-state slash
+   authorization, ambient-bond rejection, and zero-bond slash no-ops.
+   *(5,408 distinct states / 401,025 generated states.)*
 
 7. **`CostAccountingSearchFrontier.tla`** — Models the witness
    classification rule used by the search horizon: generated witnesses
@@ -3111,9 +3117,10 @@ The model now consists of eight TLA+ specifications under
    Rust path or violate a production-path invariant. The model also checks
    the v3 stateful-search metadata discipline: campaign witnesses must name
    operation steps, production-path differentials must name oracle and Rust
-   path evidence, and exploit cross-products must carry a threat family and
-   expected invariant before terminal classification. *(14,203 distinct
-   states / 100,477 generated states.)*
+   path evidence, exploit cross-products must carry a threat family and
+   expected invariant, and source-graph slashing witnesses must carry
+   current-evidence and parent-pre-state metadata before terminal
+   classification. *(34,167 distinct states / 266,015 generated states.)*
 
 8. **`MergeableChannelAccounting.tla`** — Models the post-slashing-merge
    typed mergeable-channel surface. It checks that `BitmaskOr` diffs replay
@@ -3541,10 +3548,10 @@ references.
 | `ChannelSeparation.v`       | 219        | 7        | Signature-channel invariance under subst/lift; `N_tr_is_Quote`                                                                                                                                                                                                                     |
 | `TokenConservation.v`       | 234        | 9        | Fuel monotonicity (per-step and multi-step)                                                                                                                                                                                                                                        |
 | `Settlement.v`              | 140        | 8        | Post-evaluation fee settlement, escrow/refund arithmetic, and no mid-evaluation refund fuel                                                                                                                                                                                        |
-| `SlashingComposition.v`     | 389        | 20       | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic                                                                                  |
+| `SlashingComposition.v`     | 570        | 30       | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, recovered rejected slashes require current evidence, parent pre-state authorization gates slash effects, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic |
 | `MergeableChannelAccounting.v` | 274     | 14       | Typed mergeable-channel accounting: `IntegerAdd` additive round trip, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
-| `RuntimeBudgetRefinement.v` | 2,024      | 83       | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, and replay-payload field sensitivity |
-| `UseCaseAdequacy.v`         | 1,895      | 84       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
+| `RuntimeBudgetRefinement.v` | 2,084      | 86       | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, slash target activation epoch authentication, and replay-payload field sensitivity |
+| `UseCaseAdequacy.v`         | 1,985      | 88       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, recovered slash current-evidence authorization, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
 | `FuelEventDecomposition.v`  | 239        | 6        | Fuel event multiset determinism                                                                                                                                                                                                                                                    |
 | `StrongNormalization.v`     | 130        | 5        | Well-foundedness of `ca_step`; `ca_strongly_normalizing`                                                                                                                                                                                                                           |
 | `Confluence.v`              | 483        | 14       | Per-rule determinism, Newman's lemma, full confluence, cost determinism                                                                                                                                                                                                            |
@@ -3660,14 +3667,14 @@ external paper remains a read-only input for this phase.
 | Canonical OOP boundary is schedule-independent | `fuel_events_consumed_perm`, `ca_cost_deterministic` | Mechanized multiset/cost basis; Rust records insufficient-fuel boundaries by canonical source-event descriptor |
 | Casper fee settlement uses token cost without reintroducing runtime metering | `refund_le_escrow`, `charged_plus_refund_eq_escrow`, `post_evaluation_settlement_no_mint` | Mechanized as post-evaluation arithmetic in `Settlement.v`; implemented with unmetered system deploys and wire-compatible settlement of `RuntimeBudget.total_cost() * phlo_price` |
 | Evaluation cannot receive Casper refund fuel mid-run | `evaluation_cannot_receive_refund_fuel`, `evaluation_step_cannot_mint_fuel` | Mechanized by importing token monotonicity into `Settlement.v`; runtime must not mutate deploy balance or copy a process with a larger remaining budget during evaluation |
-| Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related cost-invalid evidence may feed slashing authorization, but recording the evidence preserves the settlement boundary |
+| Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost`, `current_cost_evidence_epoch_sound`, `recovered_rejected_slash_requires_current_cost_evidence` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related current cost-invalid evidence may feed slashing authorization, but recording the evidence preserves the settlement boundary |
 | Typed mergeable channels preserve strategy-specific semantics | `bitmask_diff_merge_round_trip`, `mergeable_channel_bitmask_fold_permutation`, `integer_add_diff_merge_round_trip`, `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match`, `mergeable_channel_accounting_preserves_user_budget` | Mechanized in `MergeableChannelAccounting.v`; implemented by `MergeType::{IntegerAdd, BitmaskOr}`, `calculate_num_channel_diff`, `combine_mergeable_value`, `fold_multi_value`, and non-numeric fallback to the conflict path |
 | Replay-cache fingerprints include replay-relevant event traces | `rb_replay_payload_user_trace_change_detected`, `rb_replay_payload_system_trace_change_detected`, `rb_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_event_count_change_detected`, `rb_full_replay_payload_user_cost_trace_present_change_detected`, `rb_full_replay_payload_missing_cost_trace_change_detected`, `rb_replay_cache_key_payload_change_detected`, `rb_trace_entry_deploy_change_detected`, `rb_trace_entry_source_path_change_detected`, `rb_trace_entry_redex_change_detected`, `rb_trace_entry_local_index_change_detected`, `rb_trace_entry_billable_kind_change_detected`, `rb_trace_entry_primitive_descriptor_change_detected`, `rb_trace_entry_weight_change_detected` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by hashing canonicalized user deploy logs, system deploy logs, bounded cost-trace digests, cost-trace presence, and cost-trace event counts alongside cost, status, and system deploy data. The abstract trace entry now names the concrete Rust digest inputs: deploy id, source path, redex id, local index, billable kind, primitive descriptor when the kind is primitive, and weight. |
 | Post-activation replay requires cost-trace evidence | `rb_post_activation_cost_trace_commitment_valid`, `rb_empty_cost_trace_commitment_can_be_valid`, `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_046_zero_event_post_activation_trace_commitment` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by rejecting cost-accounted replay when the processed deploy has no cost-trace digest, while allowing a present zero-event digest and leaving legacy non-cost-accounted replay quarantined |
 | Block authentication includes cost-trace replay payload fields | `rb_block_auth_payload_replay_payload_change_detected`, `uc_ca_047_block_authenticates_cost_trace_payload` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by including processed-deploy cost-trace digest and event count in the block body hash/signature payload |
-| Slashing/refund/replay cross-products authenticate the composed production payload | `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel`, `uc_ca_058_refund_cannot_replenish_runtime_fuel`, `post_evaluation_settlement_no_mint`, `rb_replay_cache_key_payload_change_detected` | Mechanized by composing slashing, settlement, and replay-authentication lemmas; implemented by composed Rust hardening tests that mutate user cost trace fields, event logs, slash evidence, genesis mode, and settlement cost projection in one production-shaped scenario |
+| Slashing/refund/replay cross-products authenticate the composed production payload | `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel`, `uc_ca_058_refund_cannot_replenish_runtime_fuel`, `post_evaluation_settlement_no_mint`, `rb_replay_cache_key_payload_change_detected`, `rb_full_replay_payload_slash_target_epoch_change_detected` | Mechanized by composing slashing, settlement, and replay-authentication lemmas; implemented by composed Rust hardening tests that mutate user cost trace fields, event logs, slash evidence, target activation epoch, genesis mode, and settlement cost projection in one production-shaped scenario |
 | Failed and control-path execution preserve trace boundaries | `rb_oop_trace_survives_boundary`, `rb_oversized_weight_rejection_preserves_trace`, `rb_oversized_source_path_admission_rejection_preserves_trace`, `rb_oversized_primitive_descriptor_admission_rejection_preserves_trace`, `rb_nonbillable_frame_preserves_trace` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by retaining OOP trace evidence across failed-deploy rollback, rejecting oversized weights, source paths, and primitive descriptors before trace mutation, and keeping non-billable control frames out of the consensus cost trace |
-| Slash system deploys preserve user fuel and fee settlement | `slash_preserves_fee_settlement_inputs`, `slash_preserves_settled_amount`, `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel` | Mechanized in `SlashingComposition.v`; the slashing proof suite remains authoritative for authorization/effect correctness, while this branch proves composition with token-cost settlement |
+| Slash system deploys preserve user fuel and fee settlement | `slash_preserves_fee_settlement_inputs`, `slash_preserves_settled_amount`, `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel`, `parent_pre_state_authorized_slash_preserves_cost_boundary`, `zero_bond_slash_noop_preserves_cost_boundary` | Mechanized in `SlashingComposition.v`; the slashing proof suite remains authoritative for core effect correctness, while this branch proves current-evidence authorization composition with token-cost settlement |
 | Fuel channels are not de Bruijn application variables | `ChannelSeparation.v` | Mechanized syntactically |
 | Runtime fuel channels are unforgeable and user-disjoint | `Sig`, `SignatureChannel`, `SignedProcess`, `RuntimeBudget` in `f1r3node-rust` | Implemented with `GPrivate` signature channels; tests cover deploy isolation and canonical compound signatures |
 | Parallel scheduling preserves final cost | Rocq confluence plus TLA+ `EvalScheduling` | Mechanized/model-checked; Rust implementation must keep deterministic result aggregation |
@@ -3697,12 +3704,14 @@ out any interpretation where Casper refunds or balance edits add fuel
 back into an in-flight evaluation. `SlashingComposition.v` sits at the
 same boundary. It adopts the slashing-side interface proven in
 f1r3node-rust's `analysis/slashing` branch and proves only the
-cost-accounting composition facts: cost-invalid evidence is observational
-for deploy cost, and slash system effects preserve user fuel, fee
-settlement inputs, and settlement arithmetic. The authenticated trace
+cost-accounting composition facts: current cost-invalid evidence is
+observational for deploy cost, recovered rejected slashes require current
+evidence and target activation epochs, parent pre-state bond authorization
+preserves the cost boundary, and slash system effects preserve user fuel,
+fee settlement inputs, and settlement arithmetic. The authenticated trace
 obligation is therefore protocol-level: deploy signatures bind the phlo
 limit and price, and block signatures bind the processed deploy cost plus
-replay log that fed settlement.
+replay log and slash target epoch that fed settlement and slashing.
 
 ---
 

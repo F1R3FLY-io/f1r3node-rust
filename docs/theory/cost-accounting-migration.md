@@ -46,7 +46,7 @@ The correctness of this approach rests on two independent formal verifications:
 
 1. **Rocq mechanization** (`formal/rocq/cost_accounted_rho/`): 23 modules with zero admissions and zero axioms. The consensus-critical results (token conservation, cost determinism, step determinism, fuel-gate safety, strong normalization, full confluence, fuel-event multiset determinism, channel separation, fee settlement, slashing composition, typed mergeable-channel accounting, bounded-memory runtime-budget refinement, replay-payload trace equivalence, and use-case adequacy) are unconditional except for the explicit translation-side hash hypotheses described below. One abstract `hash_process : list bool → proc` encoding parameter plus three explicit section hypotheses (`hash_process_injective`, `hash_process_closed`, `hash_process_head_count_one`) scope only the translation-side theorems that reason about hash-derived signature channels. The replication appendix is also axiom-free: it proves Meredith's reflective encoding performs the expected one-step unfold and that every weak input/output barb of the replicated body propagates to both the primitive `PReplicate` wrapper and the reflective `bang_encoding` wrapper (`replication_encoding_forward_barb_sound`). The headline results are: (a) the token conservation theorem (`token_monotone_step`, `token_monotone_reachable`): no reduction step creates fuel, and every step consumes a strictly positive amount; (b) the cost determinism theorem (`ca_cost_deterministic` in `Confluence.v`): all terminal states reachable from a given initial system have the same token count, proven via strong normalization (`StrongNormalization.v`) and local confluence (`ca_local_confluence`) composed through Newman's lemma; (c) the step determinism theorem (`ca_step_deterministic` in `StepDeterminism.v`): in a system with at most one `SToken` node (a single deploy), `ca_step` is deterministic — there is exactly one possible successor, formally capturing the sequential ordering enforced by the token chain; (d) the channel separation theorem (`ChannelSeparation.v`): fuel-gate channels are structurally disjoint from application channels, ensuring that multi-channel consumes (joins) in user code cannot interfere with cost accounting; (e) the runtime-budget refinement theorems (`RuntimeBudgetRefinement.v`): a coalesced counter preserves consumed/remaining conservation, out-of-phlo boundary commitment, finalization-read trace commitments, and reset-time trace clearing; (f) the slashing composition theorem family (`SlashingComposition.v`): cost-invalid evidence may feed slashing without changing user cost, and slash system effects preserve user fuel and fee settlement; and (g) the typed mergeable-channel theorem family (`MergeableChannelAccounting.v`): `IntegerAdd` keeps additive diff/merge semantics, `BitmaskOr` records newly-set bits and replays by OR, non-numeric tagged payloads stay outside numeric merge accounting, and mergeable metadata does not mutate the user cost boundary.
 
-2. **TLA+ model** (`formal/tlaplus/cost_accounted_rho/`): eight specifications with concrete model-checking instances, verified by TLC with zero errors across all reachable states. The core protocol/scheduling models (`CostAccountedRho.tla`, `CompoundProtocol.tla`, `FullProtocol.tla`, `EvalScheduling.tla`) check token conservation, cost determinism, fuel-gate safety, gate ordering, and liveness across all interleavings — from a minimal 3-process atomic system (79 states) up to a fully generalized 7-process system with shared channels, arbitrary nesting (depth 0/1/2), Split mediators, Join mediators, and recursive eval (12,960 states). The implementation/security/search models (`RuntimeBudgetReplay.tla`, `CostAccountingThreats.tla`, `CostAccountingSearchFrontier.tla`, `MergeableChannelAccounting.tla`) check bounded runtime-budget replay, threat-model, search-frontier, and typed mergeable-channel invariants.
+2. **TLA+ model** (`formal/tlaplus/cost_accounted_rho/`): eight specifications with concrete model-checking instances, verified by TLC with zero errors across all reachable states and cross-checked through Apalache for the typed threat/search-frontier models. The core protocol/scheduling models (`CostAccountedRho.tla`, `CompoundProtocol.tla`, `FullProtocol.tla`, `EvalScheduling.tla`) check token conservation, cost determinism, fuel-gate safety, gate ordering, and liveness across all interleavings — from a minimal 3-process atomic system (79 states) up to a fully generalized 7-process system with shared channels, arbitrary nesting (depth 0/1/2), Split mediators, Join mediators, and recursive eval (12,960 states). The implementation/security/search models (`RuntimeBudgetReplay.tla`, `CostAccountingThreats.tla`, `CostAccountingSearchFrontier.tla`, `MergeableChannelAccounting.tla`) check bounded runtime-budget replay, threat-model, slash-authorization, search-frontier, and typed mergeable-channel invariants.
 
 Both verifications are documented in detail in the verification
 companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md)
@@ -658,7 +658,7 @@ deploy based on the deploy's cryptographic signature, which is part of the deplo
 metadata (deployer public key, timestamp, term, signature) — **not** from the Rholang source
 code. For most deploys, this will be `Sig::Hash(blake2b256("f1r3node:cost-accounted-rho:deploy-signature:v1" || deploy.sig))`, where `deploy.sig` is the deploy's Ed25519/Secp256k1 signature (unique per deploy by construction — it signs `hash(term) + timestamp` with the deployer's private key). Domain separation prevents raw signature bytes from being reused accidentally as another protocol hash. This ensures per-deploy signature channel isolation (see Section 5.8.1 for the rationale and security analysis). The deploy's phlogiston limit initializes the bounded token budget (Section 5.3); the implementation must not materialize one runtime object per phlo.
 
-**System deploy exemption.** System deploys (genesis, slash, close-block, heartbeat), identified by `is_system_deploy_id(deploy_id)`, are exempt from the user-deploy cost-accounting translation. They run directly as plain `Par` terms under an explicit unmetered/no-op budget, not under the legacy `CostManager` framework. The Signature Annotator skips the translation pipeline for system deploy execution, while user-deploy fee settlement still uses system deploys as described in Section 5.9.2.
+**System deploy exemption.** System deploys (genesis, slash, close-block, heartbeat), identified by `is_system_deploy_id(deploy_id)`, are exempt from the user-deploy cost-accounting translation. They run directly as plain `Par` terms under an explicit unmetered/no-op budget, not under the legacy `CostManager` framework. The Signature Annotator skips the translation pipeline for system deploy execution, while user-deploy fee settlement still uses system deploys as described in Section 5.9.2. Slash system deploys remain outside user metering, but their cost-invalid evidence must be current at the slashing boundary and authorized by the parent pre-state bond view.
 
 ### 5.3 New Cost Model: TokenBudget
 
@@ -1235,11 +1235,16 @@ cost-accounting branch adopts only the interface needed for fee
 settlement: a slash system deploy may update PoS bond, vault, active-set,
 and slashed-validator state, but it must preserve the user deploy's
 `phlo_limit`, `phlo_price`, computed `token_cost`, final user fuel, and
-escrow/refund arithmetic. Mechanized bridge theorems in
-`SlashingComposition.v` prove that cost-invalid block evidence can feed
-the slashing evidence pipeline without changing the already-computed
-user cost, and that applying a slash effect after evaluation cannot add
-fuel or alter settlement.
+escrow/refund arithmetic. The bridge now models the slashing-side
+current-evidence predicate explicitly: recovered rejected slashes require
+both evidence epoch and target activation epoch to equal the current
+epoch, authorization reads the parent pre-state bond rather than an
+ambient post-state view, and a zero-bond no-op slash preserves the cost
+boundary. Mechanized bridge theorems in `SlashingComposition.v` prove
+that current cost-invalid block evidence can feed the slashing evidence
+pipeline without changing the already-computed user cost, and that
+applying a slash effect after evaluation cannot add fuel or alter
+settlement.
 
 `ProcessedDeploy.cost.cost` remains the consensus-visible numeric field,
 but its unit changes to consumed source-token units. `CostProto.operation`
@@ -1403,7 +1408,11 @@ Calculus*](cost-accounted-rho-verification.md):
   `CostAccountingSearchFrontier.tla`, and
   `MergeableChannelAccounting.tla`. TLC verified every invariant
   across every reachable state (up to 12,960 distinct states for the
-  most comprehensive core protocol configuration).
+  most comprehensive core protocol configuration, 5,408 distinct states
+  for the slash-authorization threat model, and 34,167 distinct states
+  for the source-graph search-frontier model). Apalache also accepts the
+  typed threat/search-frontier models with `NoError` at the bounded
+  symbolic check depth.
 - **Assumptions and trust base** — verification doc §12.
 
 Operational coverage for the migration is cataloged in
@@ -1506,7 +1515,7 @@ Across deploys in a block, the deploy-level digests are combined in canonical bl
 
 **Rholang language.** No changes to the Rholang language syntax or semantics. The recursive metering mechanism is inserted by the compiler/runtime's internal pass (between normalization and reduction), which is completely transparent to the Rholang programmer. Existing Rholang programs run unchanged with zero source modifications. A developer writing `new ch in { ch!(42) | for(@x <- ch){ stdout!(x) } }` today writes exactly the same code after the migration. The `Sig`, `Token`, and `SignedProcess` types are internal compiler IR — they never appear in Rholang source code, error messages, or developer-facing APIs.
 
-**System deploy handling.** System deploys (genesis, slash, close-block, heartbeat, and fee-settlement deploys) are exempt from the cost-accounting translation and run without fuel gates under an explicit unmetered/no-op budget. They are not a reason to retain `CostManager` as a second runtime metering path. System deploys are identified by `is_system_deploy_id(deploy_id)` (`system_deploy.rs`) and bypass the Signature Annotator entirely. Slash system deploys may consume invalid-block evidence produced by cost validation or replay mismatch, but the slash effect is confined to PoS slashing state and preserves user deploy fuel, token cost, and fee settlement inputs.
+**System deploy handling.** System deploys (genesis, slash, close-block, heartbeat, and fee-settlement deploys) are exempt from the cost-accounting translation and run without fuel gates under an explicit unmetered/no-op budget. They are not a reason to retain `CostManager` as a second runtime metering path. System deploys are identified by `is_system_deploy_id(deploy_id)` (`system_deploy.rs`) and bypass the Signature Annotator entirely. Slash system deploys may consume invalid-block evidence produced by cost validation or replay mismatch only when the evidence epoch and target activation epoch are current; the target epoch is part of the authenticated replay payload. The slash effect is confined to PoS slashing state and preserves user deploy fuel, token cost, and fee settlement inputs.
 
 **Typed mergeable-channel handling.** Mergeable channels now carry an explicit `MergeType`. `IntegerAdd` preserves the existing additive diff/merge path for numeric channels. `BitmaskOr` is used for registry-style bitmaps: multi-value observation OR-folds all numeric values, diffs record newly-set bits as `end & !previous`, and merge replays with OR so no set bit is lost. Tagged non-numeric values are not coerced into the numeric merge path; they fall through to the ordinary conflict-rejection path. The mergeable-channel cache persists the merge type alongside each diff, and the formal model proves this metadata update preserves user fuel and fee-settlement evidence.
 
@@ -1642,7 +1651,7 @@ Implementation paths, formal-verification artifacts, and regression tests are co
 
 [3] L. G. Meredith *et al.*, "Rholang Specification," F1R3FLY.io, 2017-2026. The F1R3Node implementation currently lives in this repository (the standalone Rust port that replaces the prior Scala/Rust hybrid): [https://github.com/F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust). Historical upstream: [https://github.com/F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node).
 
-[4] L. G. Meredith, "Translating Cost-Accounted Rho Calculus Back to the Pure Rho Calculus," F1R3FLY.io, April 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/` (23 modules, 18,550 lines, 624 `Qed`/`Defined` proof terms, zero admissions, zero axioms). TLA+ finite-state model at `formal/tlaplus/cost_accounted_rho/` (verified by TLC with zero errors). See the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).
+[4] L. G. Meredith, "Translating Cost-Accounted Rho Calculus Back to the Pure Rho Calculus," F1R3FLY.io, April 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/` (23 modules, 18,550 lines, 624 `Qed`/`Defined` proof terms, zero admissions, zero axioms). TLA+ finite-state model at `formal/tlaplus/cost_accounted_rho/` (verified by TLC with zero errors, with typed threat/search-frontier models also accepted by Apalache). See the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).
 
 [5] L. Lamport, *Specifying Systems: The TLA+ Language and Tools for Hardware and Software Engineers*. Addison-Wesley, 2002. ISBN: 0-321-14306-X.
 

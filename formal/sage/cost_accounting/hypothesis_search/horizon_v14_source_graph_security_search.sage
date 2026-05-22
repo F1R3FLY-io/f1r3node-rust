@@ -61,8 +61,62 @@ CASES = [
         ],
         "initial_budget": 6,
         "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 10, "token_cost": 3, "refund": 7, "phlo_limit": 10, "phlo_price": 1},
-        "replay_mutations": ["slash_epoch", "slash_fields", "block_hash", "signature", "cost_trace_digest"],
-        "source_facets": ["slashing", "authorization", "epoch_boundary", "payload_hash"],
+        "slashing_authorization": {
+            "current_epoch": 2,
+            "evidence_epoch": 2,
+            "target_activation_epoch": 2,
+            "parent_pre_state_bond": 1,
+            "ambient_bond": 0,
+            "execution_bond": 1,
+        },
+        "replay_mutations": [
+            "slash_epoch",
+            "slash_fields",
+            "target_activation_epoch",
+            "evidence_epoch",
+            "parent_pre_state_bond",
+            "block_hash",
+            "signature",
+            "cost_trace_digest",
+        ],
+        "source_facets": ["slashing", "authorization", "epoch_boundary", "payload_hash", "parent_pre_state", "current_evidence"],
+    },
+    {
+        "id": "v14_slashing_recovered_rejected_current_evidence",
+        "primary_surface": "slashing",
+        "primary_risk": "recovered_rejected_current_evidence",
+        "secondary_surface": "slashing",
+        "secondary_risk": "recovered_slash_current_epoch_filter",
+        "security_surface": "slashing_authorization",
+        "external_input_kind": "recovered_rejected_slash",
+        "auth_boundary": "current_evidence_epoch_and_parent_pre_state",
+        "replay_boundary": "recovered_slash_payload_hash",
+        "expected_disposition": "replay_invalid",
+        "events": [
+            canonical_event("source", 1, descriptor="v14/slashing/recovered-current", deploy=0, path=[14, 7]),
+        ],
+        "initial_budget": 6,
+        "settlement": {"kind": "slash_after_evaluation", "authority": "casper", "escrow": 10, "token_cost": 3, "refund": 7, "phlo_limit": 10, "phlo_price": 1},
+        "slashing_authorization": {
+            "current_epoch": 2,
+            "evidence_epoch": 2,
+            "target_activation_epoch": 2,
+            "parent_pre_state_bond": 1,
+            "ambient_bond": 0,
+            "execution_bond": 1,
+        },
+        "replay_mutations": [
+            "slash_epoch",
+            "slash_fields",
+            "target_activation_epoch",
+            "evidence_epoch",
+            "parent_pre_state_bond",
+            "recovered_rejected_slash",
+            "block_hash",
+            "signature",
+            "cost_trace_digest",
+        ],
+        "source_facets": ["slashing", "recovered_rejected", "authorization", "epoch_boundary", "parent_pre_state", "current_evidence"],
     },
     {
         "id": "v14_mergeable_bitmask_or_roundtrip",
@@ -318,6 +372,7 @@ def record_for_case(case, primary, secondary):
         external_input_kind=case["external_input_kind"],
         auth_boundary=case["auth_boundary"],
         replay_boundary=case["replay_boundary"],
+        slashing_authorization=case.get("slashing_authorization", {}),
         secret_material_touched=bool(case.get("secret_material_touched", False)),
         source_anchor_status=primary.get("source_surface_status", ""),
         dependency_advisory_id=case.get("dependency_advisory_id", ""),
@@ -331,6 +386,7 @@ def record_for_case(case, primary, secondary):
         "source_anchor_status": scenario["source_anchor_status"],
         "secret_material_touched": scenario["secret_material_touched"],
         "dependency_advisory_id": scenario["dependency_advisory_id"],
+        "slashing_authorization": scenario.get("slashing_authorization", {}),
     }
     return record(
         "horizon_v14_source_graph_security",
@@ -435,7 +491,7 @@ def assert_adequacy(records):
         for feature in item.get("coverage_features", []):
             features.add(feature)
     required_surfaces = set(["runtime_budget", "casper_replay", "replay_cache", "slashing", "mergeable_channels", "transport_tls", "crypto_key_material", "api_ingress", "dependency_advisory"])
-    required_features = set(["source_graph_security", "security_surface", "external_input_kind", "auth_boundary", "replay_boundary", "source_anchor_status", "production_replay_target", "promotion_gate", "coverage_adequacy"])
+    required_features = set(["source_graph_security", "security_surface", "external_input_kind", "auth_boundary", "replay_boundary", "source_anchor_status", "production_replay_target", "promotion_gate", "coverage_adequacy", "slashing_authorization"])
     missing_surfaces = sorted(required_surfaces - surfaces)
     missing_features = sorted(required_features - features)
     if missing_surfaces or missing_features or not boundaries:
@@ -509,6 +565,7 @@ def rust_fixture_from_record(item):
         "secret_material_touched": bool(scenario.get("secret_material_touched", False)),
         "source_anchor_status": scenario.get("source_anchor_status", ""),
         "dependency_advisory_id": scenario.get("dependency_advisory_id", ""),
+        "slashing_authorization": scenario.get("slashing_authorization", {}),
         "expected_disposition": scenario.get("expected_disposition", ""),
     }
 

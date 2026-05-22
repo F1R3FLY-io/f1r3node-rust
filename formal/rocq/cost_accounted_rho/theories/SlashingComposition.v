@@ -16,7 +16,7 @@
    over PoS state, not an in-flight mutation of user-evaluation fuel.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
-From Stdlib Require Import Arith.PeanoNat Lia.
+From Stdlib Require Import Arith.PeanoNat Bool.Bool Lia.
 
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CostAccountedReduction.
@@ -47,6 +47,15 @@ Record slash_system_effect := {
   slash_effect_before : slashing_ledger;
   slash_effect_after : slashing_ledger;
   slash_effect_evidence_epoch : nat
+}.
+
+Record slash_authorization_view := {
+  slash_view_current_epoch : nat;
+  slash_view_evidence_epoch : nat;
+  slash_view_target_activation_epoch : nat;
+  slash_view_parent_pre_state_bond : nat;
+  slash_view_ambient_bond : nat;
+  slash_view_execution_bond : nat
 }.
 
 Definition apply_slash_system_effect
@@ -132,6 +141,42 @@ Definition stale_cost_evidence
   (current_epoch evidence_epoch horizon : nat)
   : bool :=
   negb (current_epoch <=? evidence_epoch + horizon).
+
+Definition slash_evidence_epoch_current
+  (view : slash_authorization_view)
+  : bool :=
+  Nat.eqb
+    (slash_view_evidence_epoch view)
+    (slash_view_current_epoch view) &&
+  Nat.eqb
+    (slash_view_target_activation_epoch view)
+    (slash_view_current_epoch view).
+
+Definition slash_authorized_by_parent_pre_state
+  (view : slash_authorization_view)
+  : bool :=
+  slash_evidence_epoch_current view &&
+  (0 <? slash_view_parent_pre_state_bond view).
+
+Definition recovered_rejected_slash_current
+  (view : slash_authorization_view)
+  : bool :=
+  slash_evidence_epoch_current view.
+
+Definition slash_execution_bond_zero
+  (view : slash_authorization_view)
+  : bool :=
+  Nat.eqb (slash_view_execution_bond view) 0.
+
+Definition slash_effect_for_authorization
+  (C : composed_state)
+  (view : slash_authorization_view)
+  (E : slash_system_effect)
+  : composed_state :=
+  if slash_authorized_by_parent_pre_state view then
+    apply_slash_system_effect C E
+  else
+    C.
 
 Theorem replay_cost_mismatch_sound_for_evidence : forall recorded observed,
   recorded <> observed ->
@@ -230,6 +275,99 @@ Proof.
   unfold stale_cost_evidence.
   apply Nat.leb_gt in Hstale.
   rewrite Hstale. reflexivity.
+Qed.
+
+Theorem current_cost_evidence_epoch_sound :
+  forall view,
+    slash_evidence_epoch_current view = true ->
+    slash_view_evidence_epoch view = slash_view_current_epoch view /\
+    slash_view_target_activation_epoch view = slash_view_current_epoch view.
+Proof.
+  intros view Hcurrent.
+  unfold slash_evidence_epoch_current in Hcurrent.
+  apply andb_true_iff in Hcurrent as [Hevidence Htarget].
+  apply Nat.eqb_eq in Hevidence.
+  apply Nat.eqb_eq in Htarget.
+  split; assumption.
+Qed.
+
+Theorem current_cost_evidence_epoch_complete :
+  forall view,
+    slash_view_evidence_epoch view = slash_view_current_epoch view ->
+    slash_view_target_activation_epoch view = slash_view_current_epoch view ->
+    slash_evidence_epoch_current view = true.
+Proof.
+  intros view Hevidence Htarget.
+  unfold slash_evidence_epoch_current.
+  rewrite Hevidence, Htarget.
+  repeat rewrite Nat.eqb_refl.
+  reflexivity.
+Qed.
+
+Theorem parent_pre_state_authorizes_current_cost_evidence :
+  forall view,
+    slash_evidence_epoch_current view = true ->
+    0 < slash_view_parent_pre_state_bond view ->
+    slash_authorized_by_parent_pre_state view = true.
+Proof.
+  intros view Hcurrent Hbond.
+  unfold slash_authorized_by_parent_pre_state.
+  rewrite Hcurrent.
+  apply Nat.ltb_lt in Hbond.
+  rewrite Hbond.
+  reflexivity.
+Qed.
+
+Theorem parent_pre_state_authorization_requires_parent_bond :
+  forall view,
+    slash_authorized_by_parent_pre_state view = true ->
+    0 < slash_view_parent_pre_state_bond view.
+Proof.
+  intros view Hauthorized.
+  unfold slash_authorized_by_parent_pre_state in Hauthorized.
+  apply andb_true_iff in Hauthorized as [_ Hbond].
+  apply Nat.ltb_lt in Hbond.
+  exact Hbond.
+Qed.
+
+Theorem ambient_bond_does_not_authorize_without_parent_pre_state :
+  forall view,
+    slash_view_parent_pre_state_bond view = 0 ->
+    0 < slash_view_ambient_bond view ->
+    slash_authorized_by_parent_pre_state view = false.
+Proof.
+  intros view Hparent _.
+  unfold slash_authorized_by_parent_pre_state.
+  rewrite Hparent.
+  destruct (slash_evidence_epoch_current view); reflexivity.
+Qed.
+
+Theorem recovered_rejected_slash_requires_current_cost_evidence :
+  forall view,
+    recovered_rejected_slash_current view = true ->
+    slash_evidence_epoch_current view = true.
+Proof.
+  intros view Hcurrent.
+  exact Hcurrent.
+Qed.
+
+Theorem stale_recovered_slash_not_authorized :
+  forall view,
+    slash_view_evidence_epoch view <> slash_view_current_epoch view \/
+    slash_view_target_activation_epoch view <> slash_view_current_epoch view ->
+    slash_authorized_by_parent_pre_state view = false.
+Proof.
+  intros view Hnoncurrent.
+  destruct (slash_authorized_by_parent_pre_state view) eqn:Hauthorized.
+  - unfold slash_authorized_by_parent_pre_state in Hauthorized.
+    destruct Hnoncurrent as [Hevidence | Htarget].
+    + apply andb_true_iff in Hauthorized as [Hcurrent _].
+      apply current_cost_evidence_epoch_sound in Hcurrent as [Heq _].
+      contradiction.
+    + apply andb_true_iff in Hauthorized as [Hcurrent _].
+      apply current_cost_evidence_epoch_sound in Hcurrent as [_ Heq].
+      contradiction.
+  - reflexivity.
 Qed.
 
 Theorem cost_invalid_block_evidence_does_not_change_user_cost :
@@ -386,4 +524,47 @@ Proof.
   exact (charged_plus_refund_eq_escrow
     (boundary_settlement (composed_cost_boundary C))
     Hbounded).
+Qed.
+
+Theorem parent_pre_state_authorized_slash_preserves_cost_boundary :
+  forall C view E,
+    slash_authorized_by_parent_pre_state view = true ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C.
+Proof.
+  intros C view E Hauthorized.
+  unfold slash_effect_for_authorization.
+  rewrite Hauthorized.
+  reflexivity.
+Qed.
+
+Theorem zero_bond_slash_noop_preserves_cost_boundary :
+  forall C view E,
+    slash_execution_bond_zero view = true ->
+    slash_effect_after E = slash_effect_before E ->
+    composed_cost_boundary (slash_effect_for_authorization C view E) =
+    composed_cost_boundary C.
+Proof.
+  intros C view E _ _.
+  unfold slash_effect_for_authorization.
+  destruct (slash_authorized_by_parent_pre_state view); reflexivity.
+Qed.
+
+Theorem zero_bond_slash_noop_preserves_composed_state :
+  forall C view E,
+    slash_execution_bond_zero view = true ->
+    slash_effect_after E = slash_effect_before E ->
+    composed_slashing_ledger C = slash_effect_before E ->
+    slash_effect_for_authorization C view E = C.
+Proof.
+  intros C view E _ Hnoop Hbefore.
+  unfold slash_effect_for_authorization.
+  destruct (slash_authorized_by_parent_pre_state view) eqn:Hauthorized.
+  - destruct C as [boundary ledger].
+    destruct E as [before after epoch].
+    simpl in *.
+    subst after.
+    subst ledger.
+    reflexivity.
+  - reflexivity.
 Qed.

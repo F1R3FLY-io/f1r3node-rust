@@ -164,7 +164,7 @@ The stateful search emits:
 | `horizon-v9-<profile>-<mode>-rust-fixtures.json` | Differential corpus/security fixtures and adequacy gates consumed by nextest. |
 | `horizon-v10-<profile>-<mode>.json` | Hybrid fuzz, Kani-bound, parallel stress, settlement, slashing, legacy-quarantine, and coverage-adequacy records. |
 | `horizon-v10-<profile>-<mode>-rust-fixtures.json` | Hybrid fuzz/security fixtures and adequacy gates consumed by nextest. |
-| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing, typed mergeable channels, and legacy quarantine. |
+| `source-surface.json` | Extracted Rust source anchors for runtime budget, metering, parallel evaluation, Casper replay, settlement, slashing authorization, recovered rejected slash current-evidence filtering, typed mergeable channels, and legacy quarantine. |
 | `horizon-v11-<profile>-<mode>.json` | Source-anchored cost-surface records classified against the current `f1r3node-rust` source tree. |
 | `horizon-v11-<profile>-<mode>-rust-fixtures.json` | Source-anchored fixtures and adequacy gates consumed by nextest. |
 | `horizon-v12-<profile>-<mode>.json` | Production-oracle records that bind source anchors to native RuntimeBudget, metering, parallel evaluation, Casper replay, settlement, slashing, and legacy-quarantine oracles. |
@@ -209,8 +209,9 @@ The current highest-value expansion points are:
    total on valid inputs, and unable to mutate runtime fuel.
 5. Multi-deploy blocks: budgets and traces must remain deploy-local while
    settlement adds independently.
-6. Slashing composition: cost-invalid evidence may authorize slashing
-   without changing user cost, runtime fuel, or settlement inputs.
+6. Slashing composition: current cost-invalid evidence may authorize
+   slashing through the parent pre-state bond boundary without changing
+   user cost, runtime fuel, or settlement inputs.
 7. Resource exhaustion: event weights, primitive descriptors, source paths,
    trace windows, and generated lifecycle traces must match Rust admission
    bounds and reject before budget or trace mutation.
@@ -310,9 +311,10 @@ The current highest-value expansion points are:
     authentication, and legacy-to-runtime quarantine.
 29. Source-graph security horizon search: cost-accounting witnesses must be
     aligned with the current Rust graph for API ingress, replay cache payload
-    binding, slashing authorization, typed mergeable-channel accounting, TLS
-    peer identity, private-key debug surfaces, and accepted dependency
-    advisories before any bug or security claim is promoted.
+    binding, slashing authorization, recovered rejected slash current-evidence
+    filtering, typed mergeable-channel accounting, TLS peer identity,
+    private-key debug surfaces, and accepted dependency advisories before any
+    bug or security claim is promoted.
 
 ## Promotion Rules
 
@@ -340,7 +342,7 @@ production disposition.
 | `RUN_MUTANTS=1` | Run `cargo-mutants` against the Rust cost-accounting surface when installed. |
 | `RUN_MIRI=1` | Run the generated metamorphic replay test under Miri when installed. |
 | `RUN_DENY=1` | Run dependency policy checks through `cargo-deny` when installed. |
-| `RUN_APALACHE=1` | Cross-check selected TLA+ models through Apalache when installed. |
+| `RUN_APALACHE=1` | Cross-check `CostAccountingThreats` and `CostAccountingSearchFrontier` through Apalache when installed. |
 | `RUN_FUZZ=1` | Run configured `cargo-fuzz` targets when cargo-fuzz and local fuzz targets are available. |
 | `RUN_KANI=1` | Run configured Kani harnesses when cargo-kani is installed. |
 | `FUZZ_TARGETS` | Space-separated fuzz targets; defaults to runtime-budget admission, replay payload, and lifecycle traces. |

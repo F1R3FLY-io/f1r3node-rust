@@ -468,7 +468,10 @@ run_optional_deep_controls() {
     if command -v apalache-mc >/dev/null 2>&1; then
       (
         cd "$TLA_DIR"
-        run_bounded apalache-mc check --config=CostAccountingSearchFrontier.cfg CostAccountingSearchFrontier.tla
+        run_bounded apalache-mc check --out-dir="$OUT_DIR/apalache-threats" \
+          --config=CostAccountingThreats.cfg MCCostAccountingThreats.tla
+        run_bounded apalache-mc check --out-dir="$OUT_DIR/apalache-search-frontier" \
+          --config=CostAccountingSearchFrontier.cfg CostAccountingSearchFrontier.tla
       )
     else
       echo "warning: RUN_APALACHE=1 requested but apalache-mc is not installed" >&2

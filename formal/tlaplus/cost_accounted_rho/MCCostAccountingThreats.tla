@@ -5,7 +5,11 @@
 
 EXTENDS CostAccountingThreats, TLC
 
-CONSTANTS good_digest, bad_digest
+CONSTANTS
+    \* @type: Str;
+    good_digest,
+    \* @type: Str;
+    bad_digest
 
 MC_GoodDigest == good_digest
 MC_BadDigest == bad_digest
