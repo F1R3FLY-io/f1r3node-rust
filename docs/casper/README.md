@@ -194,6 +194,6 @@ All interpreter-level tests use `#[tokio::test(flavor = "multi_thread", worker_t
 to match the production multi-threaded runtime, ensuring parallel `tokio::spawn` evaluation
 of Rholang Par branches is exercised during testing.
 
-**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md) | [PoS Stake Delegation](./POS_STAKE_DELEGATION.md)
+**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md) | [PoS Stake Delegation](./POS_STAKE_DELEGATION.md) | [Staking UX Architecture](./STAKING_UI_ARCHITECTURE.md)
 
 [← Back to docs index](../README.md)
