@@ -86,10 +86,9 @@ slashing protocol's defensive surface maps as follows:
 
 The STRIDE columns are **inclusive**, not partitioning — many
 threats span multiple buckets. The "Defense" column links to the
-formal artifact in `slashing-verification.md` (the prose theorem;
-mechanizations preserved on `analysis/slashing` under
-`formal/rocq/slashing/` and `formal/tlaplus/slashing/`) that
-discharges the threat. For the complete coverage matrix with
+formal artifact in `slashing-verification.md` and the mechanizations under
+`formal/rocq/slashing/` and `formal/tlaplus/slashing/` that discharge the
+threat. For the complete coverage matrix with
 Rust-test pointers see §3.
 
 > *Citation note.* STRIDE was introduced by M. Howard and D. LeBlanc,
@@ -202,6 +201,8 @@ authorize Rust source changes by themselves.
 | Epoch/churn identity confusion                                 | Current-epoch evidence filtering and parent-pre-state positive-bond authorization prevent stale slash replay                                                                                                                                                          | T-12EID; `Inv_StaleEvidenceCannotSlashRebondedKey`                                                                                                          | UC-57, UC-64, UC-68, UC-96, slash authorization regressions |
 | Rebonded identity replay                                       | Epoch-scoped slash authorization prevents stale evidence from targeting a later same-key lifetime                                                                                                                                                                     | `stale_evidence_not_authorized`; `main_T9_12_stale_evidence_not_authorized`; `Inv_StaleEvidenceCannotSlashRebondedKey`                                      | slash authorization regressions                             |
 | Unauthorized received slash deploy                             | Block validation rejects issuer mismatch, unknown invalid hash, stale epoch, non-positive parent-pre-state bond, and duplicate target before replay                                                                                                                   | `execute_unknown_evidence_noop`; `main_T9_13_unknown_slash_evidence_noop`; `Inv_RejectedSlashWithoutEvidenceNoPending`                                      | slash authorization regressions                             |
+| Incomplete parent-pre-state reconstruction                     | Parent lookup failures or missing parents abort validation before slash authorization can run against an incomplete bond view                                                                                                                                          | `Inv_AuthorizationUsesParentPreState`; `parent_pre_state_authorizes_when_ambient_zero`; validation parent lookup regression                                  | slash recovery regression tests                             |
+| Stale recovered rejected slash                                 | Recovered merge-rejected slashes are filtered by current invalid-block evidence before reissue                                                                                                                                                                        | `recoverable_rejected_slash_requires_current_evidence`; Sage Finding 118                                                                                    | `filter_recoverable_with_evidence` tests                    |
 | Spoofed system auth token                                      | Invalid-auth slash deploys are rejected before any PoS state mutation; valid-auth execution is equivalent to the ordinary slash deploy semantics                                                                                                                      | `execute_invalid_auth_token_noop`; `main_TAuth_invalid_token_noop`; `execute_valid_auth_token_equiv`; `Inv_InvalidAuthSlashNoPending`                       | UC-21, `prop_t_auth_check`                                  |
 | Invalid-latest slash liveness gap and candidate nondeterminism | Proposers derive slash candidates from the authorized invalid-block evidence index and canonicalize multiple same-epoch invalid hashes for one offender by minimum hash                                                                                               | `deploy_epoch_matches_target`; `Inv_NoInvalidLatestLivenessGap`                                                                                             | slash authorization regressions                             |
 | Duplicate justification projection                             | Duplicate validator justifications are invalid before detector projection                                                                                                                                                                                             | `duplicate_head_rejected`; `main_T9_15_duplicate_justifications_rejected`; `Inv_DuplicateJustificationsRejected`                                            | slash authorization regressions                             |
@@ -311,8 +312,8 @@ false-positive behaviors are rejected as bugs.
 
 ## 4.1 Vocabulary mapping to traceability ledger
 
-The traceability ledger (preserved on `analysis/slashing` as
-`slashing-traceability.md §1`) defines an eight-status vocabulary used
+The traceability ledger (`slashing-traceability.md §1`) defines an
+eight-status vocabulary used
 to track each Sage / Hypothesis finding from raw witness through
 promotion. The six classes above are the *defensive-classification*
 projection; the eight statuses are the *workflow* projection. The

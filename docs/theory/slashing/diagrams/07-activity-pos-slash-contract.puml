@@ -4,8 +4,7 @@
 ' casper/src/main/resources/PoS.rhox:432-495.
 '
 ' Diamond branches show the auth-token check, the invalid-block lookup,
-' and the transfer-failure FIXME (which currently has no error path back —
-' bug fix #4 / T-9.4 closes this).
+' zero-bond idempotence, and deterministic transfer-failure return.
 '
 ' Source of truth for Figure 5.1 in slashing-specification.md.
 '
@@ -62,20 +61,18 @@ if (sysAuthTokenOps.check(sysAuthToken)) then (valid)
   if (blockHash ∈ invalidBlocks) then (yes)
     :validator ← invalidBlocks[blockHash]; <<#BBDEFB>>
   else (no)
-    :validator ← userPk; <<#FFCDD2>>
-    note right #FFCDD2
-      ⛔ **Branch removed by Bug #12 / T-9.13**
-      (`main_T9_13_unknown_slash_evidence_noop`).
-      Per spec §15.2, an unknown invalid-block hash
-      is no longer a slashable witness: the
-      pre-replay authorization guard rejects the
-      deploy and PoS state is not mutated. This
-      branch is retained for historical diagram
-      fidelity and is dead post-§15.2.
-    end note
+    :returnCh!((false, "invalid slash evidence")); <<#FFCDD2>>
+    stop
   endif
 
   :valBond ← state.allBonds[validator]; <<#BBDEFB>>
+
+  if (valBond <= 0) then (yes)
+    :stateUpdateCh!(state, (true, Nil)); <<#C8E6C9>>
+    :returnCh!((true, Nil)); <<#C8E6C9>>
+    stop
+  else (no)
+  endif
 
   partition "Transfer to Coop vault" {
     :@posVault!("transfer",
@@ -95,17 +92,12 @@ if (sysAuthTokenOps.check(sysAuthToken)) then (valid)
         not three sequential writes.
       end note
       :returnCh!((true, Nil)); <<#C8E6C9>>
-    else (no — current FIXME)
-      :hang forever; <<#FFCDD2>>
+    else (no)
+      :returnCh!((false, "transfer failed: " ++ errorMessage)); <<#FFCDD2>>
       note right
-        ⚠ PoS.rhox:469 "FIXME handle
-        transfer failing case".
-        No error path. The deploy
-        never returns.
-        Bug fix #4 (T-9.4) replaces
-        this with a deterministic
-        (false, "transfer failed")
-        return on returnCh.
+        Bug fix #4 / T-9.4:
+        transfer failure is a deterministic
+        failed result, not a stuck deploy.
       end note
       stop
     endif

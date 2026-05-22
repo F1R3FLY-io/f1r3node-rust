@@ -152,10 +152,13 @@ The activity flow:
      stricter rejection is intentional and is the only safe choice
      under Bug #12 / T-9.13.
 6. **Read the offender's bond:** `valBond ← state.allBonds[validator]`.
-7. **Transfer** `valBond` to the Coop vault via
+7. **Zero-bond branch:** if `valBond ≤ 0`, return `(true, Nil)` with no
+   state mutation. This is the idempotent recovery path used by
+   merge-rejected slash reissue.
+8. **Transfer** positive `valBond` to the Coop vault via
    `@posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
    *transferDoneCh)`.
-8. **Wait for transfer ack** on `transferDoneCh`:
+9. **Handle transfer result** on `transferDoneCh`:
    - On **success**: atomically construct the new state in one
      `stateUpdateCh!` write at `PoS.rhox:477-486`:
      ```
@@ -165,11 +168,8 @@ The activity flow:
        state'.committedRewards  := state.committedRewards \ {validator}
      ```
      Then `returnCh!((true, Nil))`.
-   - On **failure** (transfer fails): **pre-fix bug #4**, the
-     continuation `for(_ <- transferDoneCh)` never fires; the deploy
-     hangs forever. Post-fix, an alternate continuation listens for
-     an error signal (or a timeout) and writes
-     `(false, "transfer failed")` to `returnCh` deterministically.
+   - On **failure**: return `(false, "transfer failed: ...")`
+     deterministically and leave PoS state unchanged.
 
 > **Auth-token observation (T-AuthCheck).** A spoofed deploy with
 > the wrong system auth token is rejected at the very first guard
@@ -190,7 +190,7 @@ slash(ps, v) =
   | ps.allBonds[v] = 0   ⟹  (ps, true)              -- idempotent
   | otherwise:
       let b = ps.allBonds[v]
-      transfer(coopVault, b)                         -- bug #4: assume success
+      transfer(coopVault, b)
       ps' = { allBonds[v] := 0;
               activeValidators \\ {v};
               coopVaultBalance += b }

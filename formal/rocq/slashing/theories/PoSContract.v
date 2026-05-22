@@ -107,6 +107,17 @@ Proof.
   - intro H. reflexivity.
 Qed.
 
+Theorem slash_zero_bond_noop :
+  forall ps v,
+    bm_lookup (ps_allBonds ps) v = 0 ->
+    slash ps v = (ps, true).
+Proof.
+  intros ps v H.
+  unfold slash.
+  rewrite H.
+  destruct (Nat.eq_dec 0 0) as [_ | Hneq]; [reflexivity | contradiction].
+Qed.
+
 (* ═══════════════════════════════════════════════════════════════════════════
    §5 — T-9: slash idempotence
    ═══════════════════════════════════════════════════════════════════════════

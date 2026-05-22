@@ -111,8 +111,7 @@ formal claim (verification §9 / MainTheorem.v).
 
 DR-1 through DR-5 each cover one of the Rust-source-confirmed bug
 classes #12..#16. The Rocq aliases above all live in
-`formal/rocq/slashing/theories/MainTheorem.v` (preserved on the
-`analysis/slashing` branch) and resolve to the corresponding
+`formal/rocq/slashing/theories/MainTheorem.v` and resolve to the corresponding
 underlying lemmas in the relevant `BugFix*.v` files
 (e.g. `BugFixSlashAuthorization.v`, `ValidatorLifetime.v`,
 `BugFixSeqArithmetic.v`, `BugFixDuplicateJustifications.v`).

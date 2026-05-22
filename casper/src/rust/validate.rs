@@ -394,17 +394,22 @@ impl Validate {
             let mut parent_bonds: std::collections::HashMap<Validator, i64> =
                 std::collections::HashMap::new();
             for parent_hash in &block.header.parents_hash_list {
-                if let Ok(Some(parent_block)) = block_store.get(parent_hash) {
-                    for bond in &parent_block.body.state.bonds {
-                        parent_bonds
-                            .entry(bond.validator.clone())
-                            .and_modify(|existing| {
-                                if bond.stake > *existing {
-                                    *existing = bond.stake;
-                                }
-                            })
-                            .or_insert(bond.stake);
+                let parent_block = match block_store.get(parent_hash) {
+                    Ok(Some(parent_block)) => parent_block,
+                    Ok(None) => return Either::Left(BlockError::MissingBlocks),
+                    Err(err) => {
+                        return Either::Left(BlockError::BlockException(CasperError::from(err)));
                     }
+                };
+                for bond in &parent_block.body.state.bonds {
+                    parent_bonds
+                        .entry(bond.validator.clone())
+                        .and_modify(|existing| {
+                            if bond.stake > *existing {
+                                *existing = bond.stake;
+                            }
+                        })
+                        .or_insert(bond.stake);
                 }
             }
             if parent_bonds.is_empty() {

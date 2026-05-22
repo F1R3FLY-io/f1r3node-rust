@@ -16,9 +16,8 @@
 > Sage and Hypothesis traceability passes — and specifies their corrected
 > behavior. Every claim is anchored to a theorem with its prose proof in
 > the self-contained `slashing-verification.md` mathematical article;
-> the underlying Rocq and TLA+ mechanizations live on the
-> `analysis/slashing` branch under `formal/rocq/slashing/` and
-> `formal/tlaplus/slashing/`.
+> the underlying Rocq and TLA+ mechanizations live in this repository under
+> `formal/rocq/slashing/` and `formal/tlaplus/slashing/`.
 
 ---
 
@@ -66,10 +65,9 @@ authorization/projection gaps.
 Without a normative specification, every defect remains encoded only as
 inline `// TODO` markers; without machine-checked verification, no
 implementation change can be audited against an authoritative reference.
-This document, together with `slashing-verification.md` (the
-self-contained proof artifact on this branch), and the formal-methods
-sources preserved on the `analysis/slashing` branch under
-`formal/rocq/slashing/` and `formal/tlaplus/slashing/`, fills that gap.
+This document, together with `slashing-verification.md` and the
+formal-methods sources under `formal/rocq/slashing/`,
+`formal/tlaplus/slashing/`, and `formal/sage/slashing/`, fills that gap.
 
 ### 1.2 Contribution
 
@@ -81,9 +79,8 @@ This work contributes:
    — short form `(D, I, E, B, A, Sl, C)`; cf. §7.1.
    The semantics is realized as a Rocq inductive in
    `formal/rocq/slashing/theories/EquivocationDetector.v` and as a TLA+
-   transition relation in `formal/tlaplus/slashing/SlashFlow.tla`
-   (both preserved on `analysis/slashing`; proofs reproduced in prose
-   in `slashing-verification.md`).
+   transition relation in `formal/tlaplus/slashing/SlashFlow.tla`;
+   proofs are reproduced in prose in `slashing-verification.md`.
 2. A **bisimilarity proof**: under the sixteen documented bug-fix deltas, the
    Rust implementation is observationally bisimilar to the Scala original
    with respect to all observable barbs (block/state changes, fork-choice
@@ -156,8 +153,9 @@ artifacts may still use the alias.
 |-------------------------------------|-------------------------------------------------|
 | This document                       | ~1,800 lines markdown (incl. embedded diagrams) |
 | `slashing-verification.md`          | ~1,300 lines markdown                           |
-| `formal/rocq/slashing/theories/*.v` (on `analysis/slashing`) | 21 modules / ~3,500 lines                       |
-| `formal/tlaplus/slashing/*.tla` (on `analysis/slashing`)     | 5 base specs + 8 MC instances / ~1,100 lines    |
+| `formal/rocq/slashing/theories/*.v` | 26 modules / ~7,700 lines                       |
+| `formal/tlaplus/slashing/*.tla`     | 7 base specs + MC instances                     |
+| `formal/sage/slashing/*.sage`       | 32 finite/search models                         |
 | PlantUML sources                    | 11 diagrams / ~1,700 lines                      |
 | Total new artifact                  | ~9,500 lines                                    |
 
@@ -582,8 +580,8 @@ both Rust and Scala interpreters; the contract itself is bisimilar by
 construction. The contract:
 
 1. Verifies the system auth token (rejects if invalid).
-2. Looks up the offender via `invalidBlocks[blockHash]` (defaulting to
-   the deployer if the lookup misses — a degraded-mode fallback).
+2. Looks up the offender via `invalidBlocks[blockHash]`; if the lookup
+   misses, returns `(false, "invalid slash evidence")` without mutation.
 3. Reads the offender's bond.
 4. If the bond is already zero, returns `(true, Nil)` without mutation.
 5. Otherwise transfers the bond to the Coop vault.
@@ -591,7 +589,8 @@ construction. The contract:
    `state.committedRewards` as a single atomic `stateUpdateCh!`
    map-construction at `PoS.rhox:477-486` (one map write, not three
    field writes).
-7. Returns `(true, Nil)` on `returnCh`.
+7. Returns `(true, Nil)` on `returnCh`; transfer failure returns
+   `(false, "transfer failed: ...")` deterministically.
 
 Bug fix #4 (T-9.4) addresses the missing error path on transfer failure.
 The zero-bond no-op branch is the implementation hook that makes
@@ -619,7 +618,7 @@ validators' latest messages from the GHOST-style fork-choice computation.
 This is the final step that gives a slashed validator zero influence over
 future block selection. Theorem T-10 (stated and proved in
 `slashing-verification.md`; mechanized in
-`formal/rocq/slashing/theories/ForkChoice.v` on `analysis/slashing`)
+`formal/rocq/slashing/theories/ForkChoice.v`)
 states this exclusion formally.
 
 Rust: `casper/src/rust/estimator.rs`. Scala:
@@ -643,8 +642,7 @@ iff there exist two distinct blocks `b1, b2 ∈ D` with `sender(bᵢ) = v`,
 for the predicate.
 
 The Rocq formalization is `equivocates : DAGState -> Validator -> nat ->
-Prop` in `formal/rocq/slashing/theories/DAGState.v` (preserved on
-`analysis/slashing`). The boolean
+Prop` in `formal/rocq/slashing/theories/DAGState.v`. The boolean
 counterpart `equivocates_b` is the function actually used by the
 detector; the two are equivalent by reflection (`equivocates_dec` in the
 same file).
@@ -1397,15 +1395,14 @@ design*; T-9.9 establishes that the widening is sound.
 ### 10.4 Bug #4 — PoS transfer-failure FIXME
 
 - **Origin.** Scala-inherited.
-- **Cause.** `casper/src/main/resources/PoS.rhox:469` carries the
-  comment *"FIXME handle transfer failing case"*. If
-  `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
-  *transferDoneCh)` fails, the `for (_ <- transferDoneCh)` continuation
-  never fires and there is no error path back to `returnCh`. The slash
-  deploy hangs.
-- **Fix.** Add an alternate continuation that listens for an error
-  signal on `transferDoneCh` (or a timeout) and writes
-  `(false, "transfer failed")` to `returnCh` deterministically.
+- **Cause.** The pre-fix contract only waited for the successful transfer
+  acknowledgement. If `posVault!("transfer", coopMultiVaultAddr, valBond,
+  posAuthKey, *transferDoneCh)` failed, there was no deterministic error
+  path back to `returnCh`.
+- **Fix.** The current contract handles the transfer result explicitly:
+  success proceeds to the atomic state update, while failure writes
+  `(false, "transfer failed: ...")` to `returnCh` without mutating PoS
+  state.
 - **Theorem.** T-9.4 — `t_9_4_transfer_failure_safety` in
   `BugFixTransferFailure.v`. Proves: under the fix, the slash
   transition either succeeds with T-7/T-8 or returns `false` in finite
@@ -1422,7 +1419,7 @@ design*; T-9.9 establishes that the widening is sound.
   See §9.4 of `slashing-verification.md` for the full proof.
 - **Diagram.**
 
-  [![Diagram 07 — PoS.slash() Rholang activity flow with the bug-#4 transfer-failure error path added: deterministic (false, "transfer failed") return on returnCh instead of the pre-fix hang](./diagrams/07-activity-pos-slash-contract.svg)](./diagrams/07-activity-pos-slash-contract.svg)
+  [![Diagram 07 — PoS.slash() Rholang activity flow with zero-bond no-op, unknown-evidence rejection, and deterministic transfer failure](./diagrams/07-activity-pos-slash-contract.svg)](./diagrams/07-activity-pos-slash-contract.svg)
 
 ### 10.5 Bug #5 — Stake-0 silent classification
 
@@ -1647,7 +1644,7 @@ design*; T-9.9 establishes that the widening is sound.
   apply `reflexivity`. T-9.10″: unfold both nested calls and
   conclude using `wm_remove_commutative` / `rm_remove_commutative`
   (per-validator removal commutes across distinct keys).
-- **TLA+ companion.** `formal/tlaplus/slashing/WithdrawFlow.tla` (preserved on `analysis/slashing`)
+- **TLA+ companion.** `formal/tlaplus/slashing/WithdrawFlow.tla`
   with `MC_WithdrawFlow.cfg` model-checks five invariants
   (`Inv_NoFundsLost`, `Inv_TotalFundsConst`,
   `Inv_RemovedImpliesPaid`, `Inv_RewardsConsistent`,
@@ -1740,7 +1737,7 @@ where
   uc_55_buffer_dag_atomic_transition.rs` (UC-55, 6 tests via the
   `SlashingTestHarness` extension). Rocq mechanization at
   `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`
-  (preserved on `analysis/slashing`) with three theorems:
+  with three theorems:
   `t_9_20_recon`, `t_9_20_reconcile_idempotent`,
   `t_9_20_step_idempotent_on_projection`.
 
@@ -1842,8 +1839,8 @@ A remains in `SlashPending` indefinitely; the next proposer tries again
 on B's next block; same failure; etc. The validator is effectively
 quarantined but not slashed, with no closure.
 
-Post-fix trace: the alternate continuation fires after a deterministic
-timeout, returning `(false, "transfer failed")` on `returnCh`. A
+Post-fix trace: the transfer-failure branch returns
+`(false, "transfer failed: ...")` on `returnCh`. A
 transitions back to `EquivocatorRecorded`. The next proposer can retry
 the slash; or, if the failure is persistent (a misconfigured vault
 contract), an operator alert fires.
@@ -2249,7 +2246,7 @@ likely objections by stating what is in and out of scope.
 
 | Topic                                                        | Status            | Rationale                                                                                                                                                                                                                    |
 |--------------------------------------------------------------|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Implementing unconfirmed Rust-source changes                 | Out               | The traceability ledger (preserved on `analysis/slashing` as `slashing-traceability.md`) gates source changes: Sage/Hypothesis witnesses become Rust source work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
+| Implementing unconfirmed Rust-source changes                 | Out               | The traceability ledger (`slashing-traceability.md`) gates source changes: Sage/Hypothesis witnesses become Rust source work only after production-path confirmation. Confirmed fixed bugs are already cross-referenced by theorem and test.           |
 | Rewriting `test_slash.py` (issue #25 fix 3d)                 | Out               | System-integration concern (`F1R3FLY-io/system-integration#51`); separate repo.                                                                                                                                              |
 | Replacing PoS multi-sig keys (issue #25 fix 3e)              | Out               | Operations / key-management concern; not a code change in `casper/`.                                                                                                                                                         |
 | Graduated/proportional slashing penalties (issue #25 fix 3c) | Out               | Requires protocol-level design decision; this spec covers the existing one-strike model. Future work mentioned at the end of §10.                                                                                            |

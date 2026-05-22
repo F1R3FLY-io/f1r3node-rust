@@ -223,7 +223,7 @@ after the bounded frontier and Rust regression suite are stable.
 |---------|---------------------|----------------------|
 | `prop_t_15_triple_bisim_dispatch` fails on bond observable | Production | Compare `compute_bonds` output between two consecutive commits |
 | `prop_t_15_triple_bisim_dispatch` fails on has_record | Harness | Check `dispatch` arm coverage; harness may have skipped a slashable variant |
-| `prop_t_13a_bonds_bisim` fails (no production tier) | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` (preserved on `analysis/slashing`) |
+| `prop_t_13a_bonds_bisim` fails (no production tier) | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` |
 | Surviving mutant in `equivocation_detector.rs` | Coverage gap | Add a UC test or proptest exercising the mutated code path |
 | `loom-interleavings` job times out | Loom budget | Decrease `LOOM_MAX_PREEMPTIONS` or remove a thread from the schedule |
 
@@ -242,8 +242,7 @@ The principled architecture is verified against the constraints:
   destructive.
 * **No fabricated tests.** ✓ Every test traces to a §14 line
   or a Rocq theorem stated in `slashing-verification.md`
-  (mechanization on `analysis/slashing` under
-  `formal/rocq/slashing/theories/`).
+  (mechanization under `formal/rocq/slashing/theories/`).
 * **Every assertion traceable.** ✓ Each test module is listed in
   §14, the specification use-case table, or the traceability
   ledger with the theorem or finding it protects.
@@ -258,7 +257,7 @@ The principled architecture is verified against the constraints:
   bisimulation theorem the triple-bisim tests are runtime-
   checking.
 * `formal/rocq/slashing/theories/Bisimulation.v` — the Rocq
-  mechanization (preserved on `analysis/slashing`).
+  mechanization.
 
 ---
 

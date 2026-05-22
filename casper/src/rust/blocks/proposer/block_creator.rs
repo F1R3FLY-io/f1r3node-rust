@@ -15,7 +15,6 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-#[cfg(test)]
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
@@ -794,14 +793,68 @@ pub async fn create(
     // merge-rejected slash for an equivocator already covered by
     // prepare_slashing_deploys is dropped. `filter_recoverable` also
     // collapses multiple rejected slashes for the same equivocator
-    // (e.g., from different original issuers) down to a single entry.
+    // (e.g., from different original issuers) down to a single entry,
+    // then the evidence filter drops stale or no-longer-invalid hashes.
     let own_invalid_block_hashes = slashing_deploys
         .iter()
         .map(|sd| sd.invalid_block_hash.clone());
-    let recovered_rejected_slashes = crate::rust::merging::rejected_slash::filter_recoverable(
-        rejected_slashes,
-        own_invalid_block_hashes,
-    );
+    let epoch_length = casper_snapshot.on_chain_state.shard_conf.epoch_length;
+    let candidate_recovered_rejected_slashes =
+        crate::rust::merging::rejected_slash::filter_recoverable(
+            rejected_slashes,
+            own_invalid_block_hashes,
+        );
+    let (recovered_target_activation_epoch, recovered_rejected_slashes) =
+        if candidate_recovered_rejected_slashes.is_empty() {
+            (None, Vec::new())
+        } else {
+            let recovered_target_activation_epoch =
+                crate::rust::slashing_authorization::epoch_for_block_number(
+                    next_block_num,
+                    epoch_length,
+                )
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "Failed to compute current epoch for recovered slash deploy: {:?}",
+                        e
+                    ))
+                })?
+                .get();
+            let recovered_rejected_slashes =
+                crate::rust::merging::rejected_slash::filter_recoverable_with_evidence(
+                    candidate_recovered_rejected_slashes,
+                    Vec::<BlockHash>::new(),
+                    |invalid_block_hash| {
+                        let Some(metadata) = casper_snapshot
+                            .dag
+                            .lookup(invalid_block_hash)
+                            .map_err(CasperError::KvStoreError)?
+                        else {
+                            return Ok::<bool, CasperError>(false);
+                        };
+                        if !metadata.invalid {
+                            return Ok::<bool, CasperError>(false);
+                        }
+                        let evidence_epoch =
+                            crate::rust::slashing_authorization::epoch_for_block_number(
+                                metadata.block_number,
+                                epoch_length,
+                            )
+                            .map_err(|e| {
+                                CasperError::from(
+                                    crate::rust::slashing_authorization::SlashAuthError::from(e),
+                                )
+                            })?;
+                        Ok::<bool, CasperError>(
+                            evidence_epoch.get() == recovered_target_activation_epoch,
+                        )
+                    },
+                )?;
+            (
+                Some(recovered_target_activation_epoch),
+                recovered_rejected_slashes,
+            )
+        };
 
     // Check if we have any new work to process.
     // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
@@ -837,36 +890,26 @@ pub async fn create(
     // epoch is the one that will be assigned to the block we are creating,
     // i.e. `epoch_for_block_number(next_block_num, epoch_length)`.
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
-    let recovered_target_activation_epoch =
-        crate::rust::slashing_authorization::epoch_for_block_number(
-            next_block_num,
-            casper_snapshot.on_chain_state.shard_conf.epoch_length,
-        )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!(
-                "Failed to compute current epoch for recovered slash deploy: {:?}",
-                e
-            ))
-        })?
-        .get();
-    for rs in &recovered_rejected_slashes {
-        let slash_deploy = SlashDeploy {
-            invalid_block_hash: rs.invalid_block_hash.clone(),
-            pk: validator_identity.public_key.clone(),
-            target_activation_epoch: recovered_target_activation_epoch,
-            initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
-                self_id.clone(),
-                next_seq_num,
-                &rs.invalid_block_hash,
-            ),
-        };
-        tracing::info!(
-            "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
-            pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
-            hex::encode(&rs.issuer_public_key.bytes),
-            recovered_target_activation_epoch
-        );
-        system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
+    if let Some(recovered_target_activation_epoch) = recovered_target_activation_epoch {
+        for rs in &recovered_rejected_slashes {
+            let slash_deploy = SlashDeploy {
+                invalid_block_hash: rs.invalid_block_hash.clone(),
+                pk: validator_identity.public_key.clone(),
+                target_activation_epoch: recovered_target_activation_epoch,
+                initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+                    self_id.clone(),
+                    next_seq_num,
+                    &rs.invalid_block_hash,
+                ),
+            };
+            tracing::info!(
+                "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
+                pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
+                hex::encode(&rs.issuer_public_key.bytes),
+                recovered_target_activation_epoch
+            );
+            system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
+        }
     }
 
     // Add the actual close block deploy

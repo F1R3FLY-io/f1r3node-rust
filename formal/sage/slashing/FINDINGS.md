@@ -1043,3 +1043,19 @@ horizon-v2 fixtures. Rocq `DRHorizonV2Boundary` and TLA+
 rather than a permitted bisimilarity delta; the component properties are
 covered through detector, record-lifecycle, temporal-retention,
 weighted-bound, reachability, epoch-identity, and divergence families.
+
+## Finding 118 - Parent-pre-state slash authorization is distinct from ambient and execution state
+
+`parent_prestate_authorization_model.sage` checks the current recovered-slash
+boundary introduced by the latest `dev` merge. Receive-side authorization
+depends on the block's actual parent-pre-state bond view, not on the receiver's
+ambient snapshot. PoS execution remains idempotent when the execution state has
+already zeroed the offender's bond. Recovered rejected slashes must still point
+at known invalid evidence in the target block's current epoch; stale recovered
+evidence is dropped before the proposer emits a new Slash deploy.
+
+Promotion status: represented by `Inv_AuthorizationUsesParentPreState`,
+`Inv_AmbientZeroDoesNotBlockParentPositiveAuth`,
+`Inv_ParentZeroRejectsEvenAmbientPositive`, Rocq
+`parent_pre_state_authorizes_when_ambient_zero`, and Rust tests for
+`filter_recoverable_with_evidence`.
