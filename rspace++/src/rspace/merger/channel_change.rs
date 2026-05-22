@@ -20,14 +20,13 @@ impl<A> ChannelChange<A> {
     ///    Prevents duplication when sibling blocks execute identical deploys.
     /// 2. Cross-set cancellation: items in BOTH `added` and `removed` after
     ///    union are intermediates — produced by one chain in the merge
-    ///    aggregation and consumed by a later chain in the same chain
-    ///    sequence. Net effect on the channel is zero for those items, so
-    ///    they must drop from both sets. Without this, the multiset-diff
-    ///    `vec_diff(init, removed) ++ added` in `make_trie_action` can fail
-    ///    to remove an intermediate `D_X` from `init` (it isn't there) yet
-    ///    add `D_X` from `added`, leaving the channel with `D_X` plus the
-    ///    "real" terminal Datum — a multi-Datum write on a single-value
-    ///    channel.
+    ///    aggregation and consumed by a later chain in the same chain sequence.
+    ///    Net effect on the channel is zero for those items, so they must drop
+    ///    from both sets. Without this, the multiset-diff `vec_diff(init,
+    ///    removed) ++ added` in `make_trie_action` can fail to remove an
+    ///    intermediate `D_X` from `init` (it isn't there) yet add `D_X` from
+    ///    `added`, leaving the channel with `D_X` plus the "real" terminal
+    ///    Datum — a multi-Datum write on a single-value channel.
     pub fn combine(self, other: Self) -> Self
     where A: PartialEq {
         let added_only_in_other = Self::vec_diff(other.added, &self.added);

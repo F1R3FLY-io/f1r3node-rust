@@ -663,8 +663,7 @@ where
         //
         // A branch has the runMVar-style signature on channel C iff:
         //   * branch.produces_consumed contains any produce on C, AND
-        //   * branch.produces_linear ∪ produces_persistent contains any
-        //     produce on C.
+        //   * branch.produces_linear ∪ produces_persistent contains any produce on C.
         //
         // Pure structural detection — no provenance filter on whether
         // the consumed produce was external (LFB) or local (created
@@ -693,7 +692,12 @@ where
             let emitted_set = produces_emitted_by_channel_branch
                 .entry((*ch, idx))
                 .or_default();
-            for p in e.produces_linear.0.iter().chain(e.produces_persistent.0.iter()) {
+            for p in e
+                .produces_linear
+                .0
+                .iter()
+                .chain(e.produces_persistent.0.iter())
+            {
                 if &p.channel_hash == *ch {
                     emitted_set.insert(&p.hash);
                 }
