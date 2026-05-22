@@ -4999,6 +4999,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rho-pure-eval"
+version = "0.1.0"
+dependencies = [
+ "models",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "shared",
+]
+
+[[package]]
 name = "rholang"
 version = "0.1.0"
 dependencies = [
@@ -5030,6 +5041,7 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest 0.11.27",
+ "rho-pure-eval",
  "rholang-parser",
  "rspace_plus_plus",
  "rust-bert",
@@ -5054,7 +5066,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -5069,7 +5081,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5078,7 +5090,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=d25f953a#d25f953a3e5dbfd4b0f1e953b496810da99fa41d"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
 dependencies = [
  "anyhow",
  "quote",

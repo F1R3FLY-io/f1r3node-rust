@@ -14,8 +14,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, New, Par,
-    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
+    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -176,6 +176,10 @@ impl DebruijnInterpreter {
             par.matches
                 .into_iter()
                 .map(GeneratedMessage::Match)
+                .collect(),
+            par.conditionals
+                .into_iter()
+                .map(GeneratedMessage::If)
                 .collect(),
             par.bundles
                 .into_iter()
@@ -375,6 +379,7 @@ impl DebruijnInterpreter {
         body: ParWithRandom,
         persistent: bool,
         peek: bool,
+        guard: Option<Par>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -383,7 +388,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek),
+            inner: self.consume_inner(binds, body, persistent, peek, guard),
         })
     }
 
@@ -393,6 +398,7 @@ impl DebruijnInterpreter {
         body: ParWithRandom,
         persistent: bool,
         peek: bool,
+        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -408,6 +414,7 @@ impl DebruijnInterpreter {
                 patterns.clone(),
                 TaggedContinuation {
                     tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+                    guard: guard.clone(),
                 },
                 persistent,
                 if peek {
@@ -427,6 +434,7 @@ impl DebruijnInterpreter {
             peek,
             is_replay,
             Vec::new(),
+            guard,
         )
         .await
     }
@@ -589,6 +597,7 @@ impl DebruijnInterpreter {
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
+        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -611,6 +620,7 @@ impl DebruijnInterpreter {
                     let persistent_flag = persistent;
                     let peek_flag = peek;
                     let is_replay_flag = is_replay;
+                    let guard_clone = guard.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -640,7 +650,13 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .consume(binds_clone, body_clone, persistent_flag, peek_flag)
+                            .consume(
+                                binds_clone,
+                                body_clone,
+                                persistent_flag,
+                                peek_flag,
+                                guard_clone,
+                            )
                             .await
                     })
                         as Pin<
@@ -922,6 +938,7 @@ impl DebruijnInterpreter {
                     .increment(start.elapsed().as_nanos() as u64);
                 result
             }
+            GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
@@ -1012,6 +1029,20 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+
+        // Optional `where`-clause guard. Substituted at depth=1 so any
+        // variables in scope at the receive site (but not pattern-bound)
+        // get replaced with their values, while pattern-bound free vars
+        // stay as free vars for the matcher to fill in. Stored once on
+        // the TaggedContinuation so it sees every bound variable across
+        // every bind. Plan §7.12.
+        let subst_guard = match receive.condition.as_ref() {
+            Some(c) if c != &Par::default() => {
+                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+            }
+            _ => None,
+        };
+
         let binds = receive
             .binds
             .clone()
@@ -1050,6 +1081,7 @@ impl DebruijnInterpreter {
             },
             receive.persistent,
             receive.peek,
+            subst_guard,
         )
         .await?;
         Ok(())
@@ -1101,34 +1133,137 @@ impl DebruijnInterpreter {
             })
         }
 
+        let first_match = Box::new(
+            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
+                let mut state = (target, cases);
+
+                loop {
+                    let (_target, _cases) = state;
+
+                    match _cases.as_slice() {
+                        [] => return Ok(()),
+
+                        [single_case, case_rem @ ..] => {
+                            let pattern = self.substitute.substitute_and_charge(
+                                &unwrap_option_safe(single_case.pattern.clone())?,
+                                1,
+                                env,
+                            )?;
+
+                            let mut spatial_matcher = SpatialMatcherContext::new();
+                            let match_result =
+                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
+
+                            match match_result {
+                                None => {
+                                    state = (_target, case_rem.to_vec());
+                                }
+
+                                Some(free_map) => {
+                                    let case_env =
+                                        add_to_env(env, free_map.clone(), single_case.free_count);
+
+                                    // Optional `where` guard. Fire the case
+                                    // body iff the guard evaluates to
+                                    // GBool(true). Anything else (false,
+                                    // non-bool, eval-error) falls through to
+                                    // the next case — matching the plan §3.4
+                                    // fall-through rule. `Some(empty Par)` is
+                                    // treated as "no guard" so we agree with
+                                    // eval_receive and Matcher::check_commit.
+                                    let guard_passes = match &single_case.guard {
+                                        Some(g) if g != &Par::default() => {
+                                            match rho_pure_eval::eval(g, &case_env) {
+                                                Ok(result) => extract_bool(&result) == Some(true),
+                                                Err(_) => false,
+                                            }
+                                        }
+                                        _ => true,
+                                    };
+
+                                    if !guard_passes {
+                                        state = (_target, case_rem.to_vec());
+                                        continue;
+                                    }
+
+                                    self.eval(
+                                        single_case
+                                            .source
+                                            .clone()
+                                            .expect("MatchCase.source: protobuf no_box invariant"),
+                                        &case_env,
+                                        rand,
+                                    )
+                                    .await?;
+
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        );
+
         self.cost.charge(match_eval_cost())?;
-        let evaled_target = self.eval_expr(mat.target.as_ref().unwrap(), env)?;
+        let evaled_target = self.eval_expr(
+            mat.target
+                .as_ref()
+                .expect("Match.target: normalizer post-condition"),
+            env,
+        )?;
         let subst_target = self
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
 
-        for single_case in mat.cases.iter() {
-            let pattern = self.substitute.substitute_and_charge(
-                &unwrap_option_safe(single_case.pattern.clone())?,
-                1,
-                env,
-            )?;
+        first_match(subst_target, mat.cases.clone(), rand).await
+    }
 
-            let mut spatial_matcher = SpatialMatcherContext::new();
-            if let Some(free_map) =
-                spatial_matcher.spatial_match_result(subst_target.clone(), pattern)
-            {
-                return self
-                    .eval(
-                        single_case.source.clone().unwrap(),
-                        &add_to_env(env, free_map.clone(), single_case.free_count),
-                        rand,
-                    )
-                    .await;
+    async fn eval_if(
+        &self,
+        conditional: &If,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        self.cost.charge(match_eval_cost())?;
+        let evaled_cond = self.eval_expr(
+            conditional
+                .condition
+                .as_ref()
+                .expect("If.condition: normalizer post-condition"),
+            env,
+        )?;
+        let subst_cond = self
+            .substitute
+            .substitute_and_charge(&evaled_cond, 0, env)?;
+
+        match extract_bool(&subst_cond) {
+            Some(true) => {
+                self.eval(
+                    conditional
+                        .if_true
+                        .clone()
+                        .expect("If.if_true: normalizer post-condition"),
+                    env,
+                    rand,
+                )
+                .await
             }
+            Some(false) => {
+                self.eval(
+                    conditional
+                        .if_false
+                        .clone()
+                        .expect("If.if_false: normalizer post-condition"),
+                    env,
+                    rand,
+                )
+                .await
+            }
+            None => Err(InterpreterError::IfConditionTypeError {
+                actual_type: describe_par_type(&subst_cond),
+            }),
         }
-
-        Ok(())
     }
 
     /**
@@ -7221,5 +7356,56 @@ fn divide_fixed_points(
     models::rhoapi::GFixedPoint {
         unscaled: bigint_to_bytes(&result),
         scale: a.scale,
+    }
+}
+
+/// Returns `Some(b)` iff `par` represents the bool value `b` —
+/// exactly one Expr (a `GBool`) and nothing else of substance.
+fn extract_bool(par: &Par) -> Option<bool> {
+    if !par.sends.is_empty()
+        || !par.receives.is_empty()
+        || !par.news.is_empty()
+        || !par.matches.is_empty()
+        || !par.bundles.is_empty()
+        || !par.unforgeables.is_empty()
+        || !par.connectives.is_empty()
+        || !par.conditionals.is_empty()
+        || par.exprs.len() != 1
+    {
+        return None;
+    }
+    match par.exprs[0].expr_instance.as_ref()? {
+        ExprInstance::GBool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+fn describe_par_type(par: &Par) -> String {
+    if par.exprs.len() == 1
+        && par.sends.is_empty()
+        && par.receives.is_empty()
+        && par.news.is_empty()
+        && par.matches.is_empty()
+        && par.bundles.is_empty()
+        && par.unforgeables.is_empty()
+        && par.connectives.is_empty()
+        && par.conditionals.is_empty()
+    {
+        match par.exprs[0].expr_instance.as_ref() {
+            Some(ExprInstance::GBool(_)) => "Bool".to_string(),
+            Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GString(_)) => "String".to_string(),
+            Some(ExprInstance::GUri(_)) => "Uri".to_string(),
+            Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),
+            Some(ExprInstance::EListBody(_)) => "List".to_string(),
+            Some(ExprInstance::ETupleBody(_)) => "Tuple".to_string(),
+            Some(ExprInstance::ESetBody(_)) => "Set".to_string(),
+            Some(ExprInstance::EMapBody(_)) => "Map".to_string(),
+            Some(ExprInstance::EVarBody(_)) => "unbound variable".to_string(),
+            _ => "non-boolean expression".to_string(),
+        }
+    } else {
+        "non-boolean process".to_string()
     }
 }

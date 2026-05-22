@@ -1,7 +1,7 @@
 new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`) in {
   @"north"!("knife") |
   @"south"!("spoon") |
-  for (@knf <- @"north"; @spn <- @"south") {
+  for (@knf <- @"north" & @spn <- @"south") {
     new ack in {
       stdoutAck!("Philosopher 1 Utensils: ", *ack) |
       for (_ <- ack) {
@@ -20,7 +20,7 @@ new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`) in {
     @"north"!(knf) |
     @"south"!(spn)
   } |
-  for (@spn <- @"south"; @knf <- @"north") {
+  for (@spn <- @"south" & @knf <- @"north") {
     new ack in {
       stdoutAck!("Philosopher 2 Utensils: ", *ack) |
       for (_ <- ack) {

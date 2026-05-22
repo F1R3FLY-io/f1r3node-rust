@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use models::rhoapi::{Match, MatchCase, Par};
-use models::rust::utils::{new_gbool_par, union};
+use models::rhoapi::{If, Par};
+use models::rust::utils::union;
 use rholang_parser::ast::AnnProc;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
@@ -63,21 +63,10 @@ pub fn normalize_p_if<'ast>(
         }
     };
 
-    // Construct the desugared if as a Match
-    let desugared_if = Match {
-        target: Some(target_result.par.clone()),
-        cases: vec![
-            MatchCase {
-                pattern: Some(new_gbool_par(true, vec![], false)),
-                source: Some(true_case_body.par.clone()),
-                free_count: 0,
-            },
-            MatchCase {
-                pattern: Some(new_gbool_par(false, vec![], false)),
-                source: Some(false_case_body.par.clone()),
-                free_count: 0,
-            },
-        ],
+    let desugared_if = If {
+        condition: Some(target_result.par.clone()),
+        if_true: Some(true_case_body.par.clone()),
+        if_false: Some(false_case_body.par.clone()),
         locally_free: union(
             union(
                 target_result.par.locally_free.clone(),
@@ -90,8 +79,7 @@ pub fn normalize_p_if<'ast>(
             || false_case_body.par.connective_used,
     };
 
-    // Update the input par by prepending the desugared if statement
-    let updated_par = input.par.prepend_match(desugared_if);
+    let updated_par = input.par.prepend_if(desugared_if);
 
     Ok(ProcVisitOutputs {
         par: updated_par,
@@ -106,7 +94,7 @@ mod tests {
 
     use models::create_bit_vector;
     use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::{EEq, Expr, Match, MatchCase, Par, Send};
+    use models::rhoapi::{EEq, Expr, If, Par};
     use models::rust::utils::{
         new_boundvar_par, new_gbool_par, new_gint_expr, new_gint_par, new_new_par, new_send_par,
     };
@@ -114,7 +102,7 @@ mod tests {
     use crate::rust::interpreter::test_utils::utils::proc_visit_inputs_and_env;
 
     #[test]
-    fn p_if_else_should_desugar_to_match_with_true_false_cases() {
+    fn p_if_else_should_emit_if_node() {
         // if (true) { @Nil!(47) }
         use rholang_parser::ast::SendType;
 
@@ -136,26 +124,16 @@ mod tests {
         let result = normalize_ann_proc(&if_then_else, inputs.clone(), &env, &parser);
         assert!(result.is_ok());
 
-        let expected_result = Par::default().prepend_match(Match {
-            target: Some(new_gbool_par(true, Vec::new(), false)),
-            cases: vec![
-                MatchCase {
-                    pattern: Some(new_gbool_par(true, Vec::new(), false)),
-                    source: Some(Par::default().with_sends(vec![Send {
-                        chan: Some(Par::default()),
-                        data: vec![new_gint_par(47, Vec::new(), false)],
-                        persistent: false,
-                        locally_free: Vec::new(),
-                        connective_used: false,
-                    }])),
-                    free_count: 0,
-                },
-                MatchCase {
-                    pattern: Some(new_gbool_par(false, Vec::new(), false)),
-                    source: Some(Par::default()),
-                    free_count: 0,
-                },
-            ],
+        let expected_result = Par::default().prepend_if(If {
+            condition: Some(new_gbool_par(true, Vec::new(), false)),
+            if_true: Some(Par::default().with_sends(vec![models::rhoapi::Send {
+                chan: Some(Par::default()),
+                data: vec![new_gint_par(47, Vec::new(), false)],
+                persistent: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+            }])),
+            if_false: Some(Par::default()),
             locally_free: Vec::new(),
             connective_used: false,
         });
@@ -183,25 +161,16 @@ mod tests {
         let result = normalize_ann_proc(&if_then_else, inputs.clone(), &env, &parser);
         assert!(result.is_ok());
 
+        let expected_if = If {
+            condition: Some(new_gbool_par(true, Vec::new(), false)),
+            if_true: Some(new_gint_par(10, Vec::new(), false)),
+            if_false: Some(Par::default()),
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
         let expected_result = Par::default()
-            .with_matches(vec![Match {
-                target: Some(new_gbool_par(true, Vec::new(), false)),
-                cases: vec![
-                    MatchCase {
-                        pattern: Some(new_gbool_par(true, Vec::new(), false)),
-                        source: Some(new_gint_par(10, Vec::new(), false)),
-                        free_count: 0,
-                    },
-                    MatchCase {
-                        pattern: Some(new_gbool_par(false, Vec::new(), false)),
-                        source: Some(Par::default()),
-                        free_count: 0,
-                    },
-                ],
-                locally_free: Vec::new(),
-                connective_used: false,
-            }])
-            .with_exprs(vec![new_gint_expr(7)]);
+            .with_exprs(vec![new_gint_expr(7)])
+            .prepend_if(expected_if);
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.unwrap().free_map, inputs.free_map);
@@ -253,60 +222,53 @@ mod tests {
         let result = normalize_ann_proc(&if_then_else, inputs.clone(), &env, &parser);
         assert!(result.is_ok());
 
-        let expected_result = Par::default().with_matches(vec![Match {
-            target: Some(Par::default().with_exprs(vec![Expr {
+        let new_x_branch = new_new_par(
+            1,
+            new_send_par(
+                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                vec![new_gint_par(47, Vec::new(), false)],
+                false,
+                create_bit_vector(&vec![0]),
+                false,
+                create_bit_vector(&vec![0]),
+                false,
+            ),
+            vec![],
+            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+        let new_y_branch = new_new_par(
+            1,
+            new_send_par(
+                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                vec![new_gint_par(47, Vec::new(), false)],
+                false,
+                create_bit_vector(&vec![0]),
+                false,
+                create_bit_vector(&vec![0]),
+                false,
+            ),
+            vec![],
+            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+
+        let expected_result = Par::default().prepend_if(If {
+            condition: Some(Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::EEqBody(EEq {
                     p1: Some(new_gint_par(47, Vec::new(), false)),
                     p2: Some(new_gint_par(47, Vec::new(), false)),
                 })),
             }])),
-            cases: vec![
-                MatchCase {
-                    pattern: Some(new_gbool_par(true, Vec::new(), false)),
-                    source: Some(new_new_par(
-                        1,
-                        new_send_par(
-                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                            vec![new_gint_par(47, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                        ),
-                        vec![],
-                        BTreeMap::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        false,
-                    )),
-                    free_count: 0,
-                },
-                MatchCase {
-                    pattern: Some(new_gbool_par(false, Vec::new(), false)),
-                    source: Some(new_new_par(
-                        1,
-                        new_send_par(
-                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                            vec![new_gint_par(47, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                        ),
-                        vec![],
-                        BTreeMap::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        false,
-                    )),
-                    free_count: 0,
-                },
-            ],
+            if_true: Some(new_x_branch),
+            if_false: Some(new_y_branch),
             locally_free: Vec::new(),
             connective_used: false,
-        }]);
+        });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.unwrap().free_map, inputs.free_map);
