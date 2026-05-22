@@ -630,15 +630,64 @@ where
         }
     }
 
+    // Diagnostic: dump the branch-count distribution for produces_consumed
+    // so we can verify Check #1 has the inputs we expect.
+    tracing::info!(
+        target: "f1r3.trace.conflict_map",
+        "[TRACE-CONFLICT-MAP-BUILT] n_branches={} pc_keys={} pm_keys={} cp_keys={} cm_keys={}",
+        n,
+        produces_consumed_by_branches.len(),
+        produces_mergeable_by_branches.len(),
+        consumes_produced_by_branches.len(),
+        consumes_mergeable_by_branches.len()
+    );
+    for (produce, branches_set) in &produces_consumed_by_branches {
+        if branches_set.len() >= 2 {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CONFLICT-MAP-PRODUCE-MULTI] channel={} produce_hash={} persistent={} branch_count={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes()),
+                produce.persistent,
+                branches_set.len()
+            );
+        } else {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CONFLICT-MAP-PRODUCE-SINGLE] channel={} produce_hash={} persistent={} branch_count={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes()),
+                produce.persistent,
+                branches_set.len()
+            );
+        }
+    }
+
     // Collect conflict pairs (i, j) with i < j; duplicate insertions into
     // the result HashSets are idempotent so we don't dedupe pairs upfront.
     let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     // #1 race on produces_consumed.
     for (produce, branches_set) in &produces_consumed_by_branches {
-        if produce.persistent || branches_set.len() < 2 {
+        if produce.persistent {
+            tracing::info!(
+                target: "f1r3.trace.conflict_map",
+                "[TRACE-CHECK-1-SKIP-PERSISTENT] channel={} produce_hash={}",
+                hex::encode(produce.channel_hash.bytes()),
+                hex::encode(produce.hash.bytes())
+            );
             continue;
         }
+        if branches_set.len() < 2 {
+            continue;
+        }
+        tracing::info!(
+            target: "f1r3.trace.conflict_map",
+            "[TRACE-CHECK-1-MULTI-BRANCH] channel={} produce_hash={} branch_count={}",
+            hex::encode(produce.channel_hash.bytes()),
+            hex::encode(produce.hash.bytes()),
+            branches_set.len()
+        );
         let mergeable = produces_mergeable_by_branches.get(produce);
         let pos: Vec<usize> = branches_set.iter().copied().collect();
         for i in 0..pos.len() {

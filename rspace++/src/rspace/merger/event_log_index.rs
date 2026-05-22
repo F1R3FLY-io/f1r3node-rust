@@ -258,6 +258,38 @@ impl EventLogIndex {
                 .collect(),
         );
 
+        tracing::info!(
+            target: "f1r3.trace.event_log_index",
+            "[TRACE-EVENT-LOG-INDEX-NEW] produces_linear={} produces_persistent={} produces_consumed={} produces_peeked={} consumes_linear_and_peeks={} consumes_persistent={} consumes_produced={} produces_mergeable={} consumes_mergeable={}",
+            produces_linear.0.len(),
+            produces_persistent.0.len(),
+            produces_consumed.0.len(),
+            produces_peeked.0.len(),
+            consumes_linear_and_peeks.0.len(),
+            consumes_persistent.0.len(),
+            consumes_produced.0.len(),
+            produces_mergeable.0.len(),
+            consumes_mergeable.0.len()
+        );
+        for p in produces_consumed.0.iter() {
+            tracing::info!(
+                target: "f1r3.trace.event_log_index",
+                "[TRACE-EVENT-LOG-INDEX-PRODUCES-CONSUMED] channel={} produce_hash={} persistent={}",
+                hex::encode(p.channel_hash.bytes()),
+                hex::encode(p.hash.bytes()),
+                p.persistent
+            );
+        }
+        for p in produces_linear.0.iter() {
+            tracing::info!(
+                target: "f1r3.trace.event_log_index",
+                "[TRACE-EVENT-LOG-INDEX-PRODUCES-LINEAR] channel={} produce_hash={} persistent={}",
+                hex::encode(p.channel_hash.bytes()),
+                hex::encode(p.hash.bytes()),
+                p.persistent
+            );
+        }
+
         EventLogIndex {
             produces_linear,
             produces_persistent,
