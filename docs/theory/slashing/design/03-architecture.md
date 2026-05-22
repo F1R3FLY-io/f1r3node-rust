@@ -37,7 +37,7 @@ two data artifacts.
 |-------------------------|-------------------------------------------------------------------------------------------------------|-----------------------------------------------|--------------------------------------------------|
 | `Validate`              | Runs ~17 protocol-level validity checks against an arriving block.                                    | `casper/src/rust/validate.rs`                 | `coop.rchain.casper.Validate.scala`              |
 | `EquivocationDetector`  | Classifies a candidate's equivocation status: Valid / Admissible / Ignorable / NeglectedEquivocation. | `casper/src/rust/equivocation_detector.rs`    | `coop.rchain.casper.EquivocationDetector.scala`  |
-| `MultiParentCasperImpl` | Orchestrator: dispatches `InvalidBlock` verdicts to the appropriate handler.                          | `casper/src/rust/multi_parent_casper_impl.rs` | `coop.rchain.casper.MultiParentCasperImpl.scala` |
+| `MultiParentCasperImpl` | Orchestrator: dispatches `InvalidBlock` verdicts to the appropriate handler.                          | `casper/src/rust/engine/multi_parent_casper/mod.rs` | `coop.rchain.casper.MultiParentCasperImpl.scala` |
 
 **Intuition.** When a block message arrives over the network, the
 node must answer two questions: (1) *Is this block syntactically
@@ -79,7 +79,7 @@ the next block's `SlashDeploy`s.
 |--------------------|-------------------------------------------------------------------------------------|--------------------------------------------------------|-------------------------------------------------------------|
 | `BlockCreator`     | Reads authorized current-epoch invalid-block evidence → emits `SlashDeploy`s.       | `casper/src/rust/blocks/proposer/block_creator.rs`     | `coop.rchain.casper.blocks.proposer.BlockCreator.scala`     |
 | `SlashDeploy`      | A *system deploy* (no user-fee) that invokes `@PoS!("slash", …)` on-chain.          | `casper/src/rust/util/rholang/costacc/slash_deploy.rs` | `coop.rchain.casper.util.rholang.costacc.SlashDeploy.scala` |
-| `SystemDeployUtil` | Generates deterministic random seeds for system deploys (`splitByte(1)` for slash). | `casper/src/rust/util/rholang/system_deploy_util.rs`   | `coop.rchain.casper.util.rholang.SystemDeployUtil.scala`    |
+| `SystemDeployUtil` | Generates deterministic random seeds for system deploys; slash seeds include `(proposer, seq_num, invalid_block_hash)`. | `casper/src/rust/util/rholang/system_deploy_util.rs`   | `coop.rchain.casper.util.rholang.SystemDeployUtil.scala`    |
 
 **Intuition.** When the next proposer's turn arrives, that proposer
 asks: *"Is there anyone bonded I should slash?"* `BlockCreator`
@@ -91,6 +91,14 @@ and attaches it to the block. The proposer's signature on the block
 also signs the deploy (it's a *system deploy* — no user authentication
 required; the system auth-token and the received-deploy authorization
 gate guard it instead, see §06).
+
+When a multi-parent merge rejects a branch that carried a valid slash,
+the merge surfaces a `RejectedSlash` recovery record. The proposer
+reissues at most one recovered slash per `invalid_block_hash`, unless
+its own normal slashing pass already covers that hash. Received-block
+authorization checks the target's positive bond in the block's actual
+parent pre-state; it does not require a separate `activeValidators`
+membership predicate.
 
 ### 3.2.4 Effect layer — *"what changes when a slash fires?"*
 
@@ -108,11 +116,12 @@ A successful slash transition (Diagram 07) atomically:
    guard if invalid — `T-AuthCheck`).
 2. Looks up the offender via `invalidBlocks[blockHash]`.
 3. Reads the offender's bond.
-4. Transfers the bond to the Coop vault.
-5. **Atomically** updates `state.allBonds`, `state.activeValidators`,
+4. If the bond is already zero, returns success without mutation.
+5. Otherwise transfers the bond to the Coop vault.
+6. **Atomically** updates `state.allBonds`, `state.activeValidators`,
    and `state.committedRewards` — a single map-construction step,
    not three field writes.
-6. Returns `(true, Nil)` on `returnCh`.
+7. Returns `(true, Nil)` on `returnCh`.
 
 [![Diagram 07 — PoS.slash() Rholang activity flow](../diagrams/07-activity-pos-slash-contract.svg)](../diagrams/07-activity-pos-slash-contract.svg)
 
@@ -190,7 +199,7 @@ The high-level data flow is:
 
 ```
 casper/src/rust/                 (orchestrator + detection + proposer)
-├── multi_parent_casper_impl.rs  (MultiParentCasperImpl)
+├── engine/multi_parent_casper/mod.rs  (MultiParentCasperImpl)
 ├── validate.rs                  (Validate)
 ├── equivocation_detector.rs     (EquivocationDetector)
 ├── block_status.rs              (InvalidBlock enum, is_slashable())

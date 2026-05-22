@@ -101,7 +101,7 @@ bisimilarity discussion (§10).
 | `delimiter-free`  | Key-encoding scheme  | A bytestring concatenation key without separator bytes, vulnerable to prefix-collision attacks. T-5DF; §05.4.3 record-key collision. |
 | `canonical visible self-chain child` | Detector input | The lowest-sequence visible self-child block above `baseSeq` in the canonical traversal; T-9.7. |
 | `T-Idem`          | Slash idempotence    | "A second slash on the same validator is a no-op." Alias for legacy `T-9`. See `PoSContract.v:117`. |
-| `T-Auth`          | Auth-token correctness | Family of theorems: invalid-auth slash deploys are no-ops; valid-auth execution is equivalent to ordinary slash semantics. See `MainTheorem.v:218,223`. |
+| `T-Auth`          | Auth-token correctness | Family of theorems: invalid-auth slash deploys are no-ops; valid-auth execution is equivalent to ordinary slash semantics. See `MainTheorem.v:252,257`. |
 | `T-LivenessGap`   | Authorized-index liveness | The proposer derives slash candidates from the authorized invalid-block evidence index, not from `invalid_latest_messages`; one slash deploy per current offender epoch. `deploy_epoch_matches_target`; Bug #14 / §9.16. |
 
 ## 2.4 Sequence-number convention

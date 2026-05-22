@@ -29,7 +29,7 @@
 //! Steps 4, 5, 7 each surface `InvalidBlock::*Equivocation` /
 //! `NeglectedInvalidBlock` to the dispatcher, which then mints
 //! `EquivocationRecord` evidence and routes the block to the
-//! `casper_engine::validation_dispatcher::dispatch_handle_invalid_block`
+//! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
 //! path.
 
 use std::collections::{HashMap, HashSet};
@@ -298,82 +298,193 @@ impl Validate {
         shard_id: &str,
         expiration_threshold: i32,
         max_number_of_parents: i32,
+        max_parent_depth: i32,
+        depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
+        use crate::rust::metrics_constants::*;
+        macro_rules! __step {
+            ($metric:ident, $body:expr) => {{
+                let __t0 = std::time::Instant::now();
+                let __r = $body;
+                metrics::histogram!($metric, "source" => CASPER_METRICS_SOURCE)
+                    .record(__t0.elapsed().as_secs_f64());
+                __r
+            }};
+        }
+
         tracing::debug!(target: "f1r3fly.casper", "before-block-hash-validation");
-        match Self::block_hash(block) {
+        match __step!(
+            BLOCK_VALIDATION_BLOCK_HASH_TIME_METRIC,
+            Self::block_hash(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-timestamp-validation");
-        match Self::timestamp(block, block_store) {
+        match __step!(
+            BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC,
+            Self::timestamp(block, block_store)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-shard-identifier-validation");
-        match Self::shard_identifier(block, shard_id) {
+        match __step!(
+            BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC,
+            Self::shard_identifier(block, shard_id)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-deploys-shard-identifier-validation");
-        match Self::deploys_shard_identifier(block, shard_id) {
+        match __step!(
+            BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC,
+            Self::deploys_shard_identifier(block, shard_id)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
-        match Self::repeat_deploy(block, s, block_store, expiration_threshold) {
+        match __step!(
+            BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
+            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-block-number-validation");
-        match Self::block_number(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC,
+            Self::block_number(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-slash-deploy-authorization-validation");
-        match Self::slash_deploy_authorization(block, s) {
+        // The slash-authorization predicate (T-9.8) requires "target is
+        // currently bonded". For a received block whose `body.system_deploys`
+        // contains a SlashDeploy, "currently bonded" semantically means
+        // bonded at the BLOCK'S pre-state — i.e., in the bonds map carried
+        // by the block's actual parents (per `block.header.parents_hash_list`),
+        // not in whatever `s.on_chain_state.bonds_map` the validator's
+        // current snapshot picked from its independent `valid_latest_msgs`.
+        //
+        // These can diverge in multi-parent merge scenarios: the snapshot's
+        // chosen parents may include a sibling that has already applied the
+        // same slash (and so reports the target at stake 0), while the
+        // block-being-validated's actual parents may all be from a chain
+        // where the slash hadn't landed yet (so the target's stake is
+        // still positive). Without this rebind, slash-recovery proposals
+        // are spuriously rejected as `UnauthorizedSlashDeploy`.
+        //
+        // We rebind a transient bonds_map view from the block's actual
+        // parents (looked up via block_store) before delegating to
+        // `slash_deploy_authorization`, then restore the original. Using
+        // the union of validator stakes (max across parents) keeps the
+        // most-lenient view, which matches the proposer-side
+        // `authorized_slash_candidates` snapshot context.
+        let _saved_bonds_map = if block.body.system_deploys.iter().any(|sd| {
+            matches!(sd, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
+        }) {
+            let mut parent_bonds: std::collections::HashMap<Validator, i64> =
+                std::collections::HashMap::new();
+            for parent_hash in &block.header.parents_hash_list {
+                if let Ok(Some(parent_block)) = block_store.get(parent_hash) {
+                    for bond in &parent_block.body.state.bonds {
+                        parent_bonds
+                            .entry(bond.validator.clone())
+                            .and_modify(|existing| {
+                                if bond.stake > *existing {
+                                    *existing = bond.stake;
+                                }
+                            })
+                            .or_insert(bond.stake);
+                    }
+                }
+            }
+            if parent_bonds.is_empty() {
+                None
+            } else {
+                let saved = std::mem::replace(&mut s.on_chain_state.bonds_map, parent_bonds);
+                Some(saved)
+            }
+        } else {
+            None
+        };
+        let slash_auth_outcome = Self::slash_deploy_authorization(block, s);
+        if let Some(saved) = _saved_bonds_map {
+            s.on_chain_state.bonds_map = saved;
+        }
+        match slash_auth_outcome {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-future-transaction-validation");
-        match Self::future_transaction(block) {
+        match __step!(
+            BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC,
+            Self::future_transaction(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
-        match Self::transaction_expiration(block, expiration_threshold) {
+        match __step!(
+            BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
+            Self::transaction_expiration(block, expiration_threshold)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-time-based-expiration-validation");
-        match Self::time_based_expiration(block) {
+        match __step!(
+            BLOCK_VALIDATION_TIME_BASED_EXPIRATION_TIME_METRIC,
+            Self::time_based_expiration(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-justification-follows-validation");
-        match Self::justification_follows(block, block_store) {
+        match __step!(
+            BLOCK_VALIDATION_JUSTIFICATION_FOLLOWS_TIME_METRIC,
+            Self::justification_follows(block, block_store)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-parents-validation");
-        match Self::parents(
-            block,
-            genesis,
-            s,
-            max_number_of_parents,
-            disable_validator_progress_check,
+        match __step!(
+            BLOCK_VALIDATION_PARENTS_TIME_METRIC,
+            Self::parents(
+                block,
+                genesis,
+                s,
+                max_number_of_parents,
+                max_parent_depth,
+                depth_buffer,
+                disable_validator_progress_check,
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-sequence-number-validation");
-        match Self::sequence_number(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_SEQUENCE_NUMBER_TIME_METRIC,
+            Self::sequence_number(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-justification-regression-validation");
-        match Self::justification_regressions(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_JUSTIFICATION_REGRESSIONS_TIME_METRIC,
+            Self::justification_regressions(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
@@ -383,18 +494,91 @@ impl Validate {
     }
 
     /// Validate no deploy with the same sig has been produced in the chain
-    /// Agnostic of non-parent justifications
+    /// Agnostic of non-parent justifications.
+    ///
+    /// Recovery exemption: sigs present in `s.rejected_in_scope` (rejected
+    /// by a descendant merge within deploy_lifespan) may be legitimate
+    /// recovery candidates — the rejected-deploy buffer pipeline re-includes
+    /// them so their effects can land in canonical state. Without this
+    /// exemption, every recovery-path block would fail `InvalidRepeatDeploy`.
+    ///
+    /// The exemption is gated on the sig's current finalization status. A
+    /// sig in `rejected_in_scope` falls into one of two cases:
+    ///
+    ///   - `Pending` / `Expired` / `Failed`: the deploy's effects are NOT
+    ///     in canonical state (no clean canonical inclusion that survived
+    ///     descendant rejection). Re-inclusion is the only way to land
+    ///     them. Exempt from the repeat check.
+    ///
+    ///   - `Finalized`: the deploy has a clean canonical inclusion that
+    ///     was NOT invalidated by a canonical-descendant rejection. Its
+    ///     effects ARE already in canonical state. Re-inclusion would be
+    ///     double-execution, not recovery. Do NOT exempt — let the
+    ///     ancestor scan find the canonical inclusion and flag the
+    ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
+    ///     is the primary defense against this; the validator-side
+    ///     check is the second line of defense.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
+        use crate::rust::api::deploy_finalization_status::{
+            resolve as resolve_finalization_status, DeployFinalizationState,
+        };
+
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .map(|deploy| deploy.deploy.sig.to_vec())
+            .filter(|pd| {
+                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
+                    return true; // not rejected — must check
+                }
+                // Sig is in rejected_in_scope. Apply the exemption only if
+                // the sig is NOT Finalized — otherwise re-inclusion is
+                // double-execution and the repeat check must catch it.
+                match resolve_finalization_status(
+                    &s.dag,
+                    block_store,
+                    expiration_threshold as i64,
+                    &pd.deploy.sig,
+                ) {
+                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
+                        let canonical_block_str = status
+                            .latest_block_hash
+                            .as_ref()
+                            .map(|h| PrettyPrinter::build_string_bytes(h))
+                            .unwrap_or_else(|| "<none>".to_string());
+                        tracing::warn!(
+                            "repeat_deploy: sig {} is in rejected_in_scope but \
+                             resolves to Finalized (clean canonical inclusion at \
+                             {}); declining the recovery exemption to prevent \
+                             double-execution",
+                            hex::encode(&pd.deploy.sig),
+                            canonical_block_str,
+                        );
+                        true // keep in check set so the ancestor scan finds the repeat
+                    }
+                    Ok(_) => false, // status != Finalized → exempt (recovery)
+                    Err(err) => {
+                        // Resolver failures are conservative-fail: keep the sig
+                        // in the check set so an inconsistency surfaces as
+                        // InvalidRepeatDeploy rather than being silently
+                        // exempted as a recovery candidate.
+                        tracing::warn!(
+                            "repeat_deploy: deploy_finalization_status::resolve \
+                             failed for sig {}: {} — keeping sig in check set \
+                             rather than granting recovery exemption",
+                            hex::encode(&pd.deploy.sig),
+                            err,
+                        );
+                        true
+                    }
+                }
+            })
+            .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -783,6 +967,8 @@ impl Validate {
         genesis: &BlockMessage,
         s: &mut CasperSnapshot,
         max_number_of_parents: i32,
+        max_parent_depth: i32,
+        depth_buffer: i32,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         // Check if block contains user deploys (non-system deploys)
@@ -821,6 +1007,50 @@ impl Validate {
             );
             tracing::warn!("{}", Self::ignore(b, &message));
             return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+        }
+
+        // Parent-depth enforcement: symmetric to proposer-side `Estimator::filterDeepParents`.
+        // Reject any block whose parents fall outside the consensus-permitted horizon
+        // (depth from highest tip > max_parent_depth + depth_buffer). An honest proposer
+        // already drops these parents before signing; this check rejects blocks from
+        // buggy or malicious proposers that would otherwise hit `UnknownRootError` on
+        // joiners that don't carry pre-horizon rspace history.
+        //
+        // Sentinel: `max_parent_depth == i32::MAX` disables the check (matches the
+        // proposer-side convention in `engine::multi_parent_casper::create_block`).
+        //
+        // Genesis is exempt: validators justify back to genesis as the ultimate ancestor,
+        // and on a long-running chain genesis would always exceed the depth horizon.
+        // We compare by hash to the passed `genesis` BlockMessage rather than to
+        // `block_number == 0` so this works correctly regardless of how the chain's
+        // genesis ended up indexed (test fixtures may assign genesis a non-zero
+        // block_number; production assigns 0).
+        if max_parent_depth != i32::MAX {
+            let max_allowed_depth = (max_parent_depth as i64) + (depth_buffer as i64);
+            let highest_tip_height = s.dag.latest_block_number();
+            for parent_hash in &parent_hashes {
+                if parent_hash == &genesis.block_hash {
+                    continue; // genesis exempt
+                }
+                let parent_meta = match s.dag.lookup_unsafe(parent_hash) {
+                    Ok(meta) => meta,
+                    Err(_) => continue, // missing-parent handled by dependency gate, not here
+                };
+                let depth = highest_tip_height - parent_meta.block_number;
+                if depth > max_allowed_depth {
+                    let message = format!(
+                        "parent {} at block_number {} is at depth {} from highest tip {} \
+                         (exceeds max_parent_depth + depth_buffer = {})",
+                        PrettyPrinter::build_string_bytes(parent_hash),
+                        parent_meta.block_number,
+                        depth,
+                        highest_tip_height,
+                        max_allowed_depth
+                    );
+                    tracing::warn!("{}", Self::ignore(b, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+                }
+            }
         }
 
         let validator = &b.sender;

@@ -4,14 +4,14 @@
 Rholang is based on the rhoVM whose computational model is centered around processes sending messages to one another to synchronize when necessary. These operations are coordinated through the tuplespace.
 Although it is unique from the Turing or Von Neuman architectures that many programmers will be familiar with, it is quite understandable. All tuplespace operations can be built up from three building blocks.
 
-![building blocks](buildingBlocks.png)
+![building blocks](../buildingBlocks.png)
 
 * A channel on which messages are send and received
-* Data to be sent (includes [primitive types](../primatives/README.md), [data structures](../data_structures/README.md), or even entire processes. )
+* Data to be sent (includes [primitive types](../primitives/README.md), [data structures](../data_structures/README.md), or even entire processes. )
 * Continuations which spawn new processes when a message is received
 
 ### Sends
-![Sends](send.png)
+![Sends](../send.png)
 Sending a process associates that process with the channel in the tuplespace. It will wait there forever until it matches with a receive on the same channel.
 
 #### Single Send
@@ -26,7 +26,7 @@ This send will never be consumed. While arbitrarily many receives can receive th
 The simple sends we've described so far are sufficient to make rholang Turing complete, but it is often convenient to send multiple...
 
 ### Receives
-![Receive](receive.png)
+![Receive](../receive.png)
 
 A receive associates a continuation with a channel in the tuplespace.
 
@@ -40,7 +40,7 @@ A receive associates a continuation with a channel in the tuplespace.
 #### Joins
 
 ### Comm Events
-![comm events lead to processes](process.png)
+![comm events lead to processes](../process.png)
 When data and continuation are associated with the same name in the tuplespace (and no further restriction is applied, see below) in the tuplspace, a communication event, or "comm event" happens.
 
 #### Pattern Matching

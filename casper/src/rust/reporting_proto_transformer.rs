@@ -34,10 +34,6 @@ pub struct ReportingProtoTransformer;
 /// 2. Generated protobuf types require owned data for serialization
 /// 3. This is a one-time transformation for reporting, not a hot path
 
-impl Default for ReportingProtoTransformer {
-    fn default() -> Self { Self::new() }
-}
-
 impl ReportingProtoTransformer {
     pub fn new() -> Self { ReportingProtoTransformer }
 

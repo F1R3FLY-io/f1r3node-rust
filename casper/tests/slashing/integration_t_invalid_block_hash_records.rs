@@ -11,7 +11,7 @@
 // validation at `validate.rs:249` fires before
 // `sequence_number` (line 310), so the classifier returns
 // `InvalidBlockHash`. The post-fix #3 dispatcher catch-all
-// (multi_parent_casper_impl.rs:1090-...) MUST mint an
+// (engine/multi_parent_casper/mod.rs:1090-...) MUST mint an
 // EquivocationRecord at `(sender, seq-1)` despite the bogus hash.
 //
 // Pre-fix this assertion fails: the catch-all only logged

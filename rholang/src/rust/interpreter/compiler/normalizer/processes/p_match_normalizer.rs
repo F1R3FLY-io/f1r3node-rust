@@ -81,7 +81,7 @@ pub fn normalize_p_match<'ast>(
         target: Some(target_result.par.clone()),
         cases: init_acc.0.into_iter().rev().collect(),
         locally_free: union(init_acc.2, target_result.par.locally_free.clone()),
-        connective_used: init_acc.3 || target_result.par.connective_used,
+        connective_used: init_acc.3 || target_result.par.connective_used.clone(),
     };
 
     Ok(ProcVisitOutputs {

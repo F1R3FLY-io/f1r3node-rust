@@ -467,30 +467,52 @@ in {
                                     for (@validator <- toBeSlashed) {
                                       valBondCh!(state.get("allBonds").get(validator)) |
                                       for (@valBond <- valBondCh) {
-                                        new transferDoneCh in {
-                                          @posVault!(
-                                            "transfer",
-                                            coopMultiVaultAddr,
-                                            valBond,
-                                            posAuthKey,
-                                            *transferDoneCh
-                                          ) |
-                                          for (@transferResult <- transferDoneCh) {
-                                            match transferResult {
-                                              (true, _) => {
-                                                stateUpdateCh!({
-                                                  "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                  "activeValidators": state.get("activeValidators").delete(validator),
-                                                  "committedRewards" : state.get("committedRewards").delete(validator),
-                                                  "withdrawers"     : state.get("withdrawers"),
-                                                  "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                  "randomImages"    : state.get("randomImages"),
-                                                  "randomNumbers"   : state.get("randomNumbers")
-                                                },
-                                                (true, Nil))
-                                              }
-                                              (_, errorMessage) => {
-                                                stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                        // Idempotency: a validator already at
+                                        // stake 0 has been slashed by a prior
+                                        // call. The transfer of `valBond = 0`
+                                        // would fail with "Amount must be
+                                        // positive value", but the desired
+                                        // end state (validator at 0, removed
+                                        // from active set) is already reached.
+                                        // Returning (true, Nil) here makes
+                                        // PoS!"slash" safe to invoke from
+                                        // every block whose body re-issues a
+                                        // SlashDeploy for the same offender —
+                                        // a requirement for the
+                                        // merge-rejected-slash recovery
+                                        // path (`merging::rejected_slash::
+                                        // filter_recoverable`) and for the
+                                        // T-9.3 catch-all dispatcher that
+                                        // mints a record per slashable
+                                        // variant.
+                                        if (valBond <= 0) {
+                                          stateUpdateCh!(state, (true, Nil))
+                                        } else {
+                                          new transferDoneCh in {
+                                            @posVault!(
+                                              "transfer",
+                                              coopMultiVaultAddr,
+                                              valBond,
+                                              posAuthKey,
+                                              *transferDoneCh
+                                            ) |
+                                            for (@transferResult <- transferDoneCh) {
+                                              match transferResult {
+                                                (true, _) => {
+                                                  stateUpdateCh!({
+                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
+                                                    "activeValidators": state.get("activeValidators").delete(validator),
+                                                    "committedRewards" : state.get("committedRewards").delete(validator),
+                                                    "withdrawers"     : state.get("withdrawers"),
+                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                                    "randomImages"    : state.get("randomImages"),
+                                                    "randomNumbers"   : state.get("randomNumbers")
+                                                  },
+                                                  (true, Nil))
+                                                }
+                                                (_, errorMessage) => {
+                                                  stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                                }
                                               }
                                             }
                                           }

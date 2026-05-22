@@ -11,6 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStor
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
@@ -80,7 +81,7 @@ pub struct TestFixture {
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
     pub rspace_state_manager: RSpaceStateManager,
     // Scala: implicit val runtimeManager = RuntimeManager[Task](rspace, replay, historyRepo, mStore, Genesis.NonNegativeMergeableTagName)
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
     pub estimator: Estimator,
     pub rspace_store: rspace_plus_plus::rspace::rspace::RSpaceStore,
@@ -126,6 +127,7 @@ pub struct TestFixture {
     pub block_dag_storage: BlockDagKeyValueStorage,
     // Scala: implicit val deployStorage = KeyValueDeployStorage[Task](kvm).unsafeRunSync(...)
     pub deploy_storage: KeyValueDeployStorage,
+    pub rejected_deploy_buffer: Arc<std::sync::Mutex<KeyValueRejectedDeployBuffer>>,
     // Scala: implicit val casperBuffer = CasperBufferKeyValueStorage.create[Task](spaceKVManager).unsafeRunSync(...)
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
 }
@@ -182,7 +184,7 @@ impl TestFixture {
         let (runtime_manager, history_repo) = RuntimeManager::create_with_history(
             rspace_store.clone(), // Clone the Arc-wrapped store (cheap operation)
             m_store,
-            Genesis::non_negative_mergeable_tag_name(),
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
 
@@ -298,6 +300,15 @@ impl TestFixture {
             store: deploy_storage_typed_store,
         };
 
+        // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
+        let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
+        let rejected_buffer_typed_store =
+            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
+        let rejected_deploy_buffer =
+            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
+                store: rejected_buffer_typed_store,
+            }));
+
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply(Estimator::UNLIMITED_PARENTS, None);
 
@@ -310,7 +321,7 @@ impl TestFixture {
             .expect("dag representation");
 
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
-        let runtime_manager_shared = Arc::new(tokio::sync::Mutex::new(runtime_manager));
+        let runtime_manager_shared = Arc::new(runtime_manager);
 
         let casper = NoOpsCasperEffect::new_with_shared_kvm(
             None, // estimator_func
@@ -508,6 +519,7 @@ impl TestFixture {
             engine_cell,
             block_dag_storage: block_dag_storage_unwrapped,
             deploy_storage,
+            rejected_deploy_buffer,
             casper_buffer_storage,
         }
         // Note: space_kv_manager will be dropped here, triggering its Drop implementation

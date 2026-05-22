@@ -37,6 +37,13 @@ fixes a Rust-only deviation). "Deliberate widening" = the fix is a
 documented Rust-side improvement that breaks strict bisimilarity by
 design; T-9.9 establishes that the widening is sound.
 
+The current dev merge adds a recovery refinement to #12/#13: a slash
+that is itself rejected by multi-parent merge conflict resolution is
+surfaced as `RejectedSlash` and reissued by the merge proposer. Recovery
+dedups by `invalid_block_hash`, drops hashes already covered by the
+proposer's own slash pass, and relies on PoS slash idempotence when the
+offender has already reached zero bond.
+
 Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
 `posVault.transfer`-failure FIXMEs in `PoS.rhox`. Bug #4 fixed the
 slash arm (line 469); Bug #10 fixes the post-quarantine
@@ -51,8 +58,8 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | Bug | Theorem | Production location                                                  |
 > |-----|---------|----------------------------------------------------------------------|
 > | #1  | T-9.1   | `block_status.rs:191` — `IgnorableEquivocation` in `is_slashable()`  |
-> | #2  | T-9.2   | `multi_parent_casper_impl.rs:1056` — RMW via `access_equivocations_tracker` |
-> | #3  | T-9.3   | `multi_parent_casper_impl.rs:1105` — `status if status.is_slashable()` catch-all |
+> | #2  | T-9.2   | `engine/multi_parent_casper/mod.rs:1056` — RMW via `access_equivocations_tracker` |
+> | #3  | T-9.3   | `engine/multi_parent_casper/mod.rs:1105` — `status if status.is_slashable()` catch-all |
 > | #4  | T-9.4   | `PoS.rhox:487-509` — `match transferResult` with deterministic failure |
 > | #5  | T-9.5   | `equivocation_detector.rs:184` — `if stake > 0` guard                |
 > | #6  | T-9.6   | `validate.rs:875-898` — self-regression filter dropped               |
@@ -77,7 +84,7 @@ vector if not fixed."*
 **Cause.** Pre-fix, `IgnorableEquivocation` is *not* in
 `is_slashable() = ⊤`. Equivocations that arrive *unsolicited* (no
 other block cites them) are silently dropped at
-`multi_parent_casper_impl.rs:1077-1088` with only a `tracing::info!`
+`engine/multi_parent_casper/mod.rs:1077-1088` with only a `tracing::info!`
 log. A Byzantine validator can flood the network with such blocks
 without economic cost.
 
@@ -107,7 +114,7 @@ the offender their entire bond.
 
 **Origin.** Rust-introduced regression.
 
-**Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
+**Cause.** `engine/multi_parent_casper/mod.rs:1046-1075` reads then writes
 the equivocation tracker without a lock, allowing two threads
 processing `AdmissibleEquivocation` for the same `(validator,
 baseSeqNum)` to both observe `record-absent` and both insert,
@@ -145,7 +152,7 @@ catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)`
 arm only invokes `handleInvalidBlockEffect` (mark-invalid +
 buffer-remove); no `EquivocationRecord` is created.
 
-**Cause.** `multi_parent_casper_impl.rs:1090-1099` carries
+**Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` carries
 *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
 The 15 non-equivocation slashable variants (`JustificationRegression`,
 `InvalidBondsCache`, `NeglectedInvalidBlock`, etc.) only get marked
@@ -356,6 +363,7 @@ property; the Rust source implements the short-circuit before reading
 
 ```
 ∀ ilm bonds proposer seqNum seed_fn,
+   seed_fn : Validator → SeqNum → BlockHash → Seed
    bm_lookup(bonds, proposer) = 0
  ⟹ prepare_slashing_deploys_post_fix(ilm, bonds, proposer, seqNum, seed_fn) = []
 
@@ -583,8 +591,9 @@ PoS state on the basis of evidence the local node had not validated.
 **Post-fix behavior.** Validation rejects unauthorized slash deploys before
 Rholang replay. The issuer must equal the block sender, the invalid hash must
 name a locally known invalid block, the target epoch must match both evidence
-and current epoch, the target must be currently bonded, and a block may target
-each `(validator, epoch)` at most once.
+and current epoch, the target must have positive bond in the block's actual
+parent pre-state, and a block may target each `(validator, epoch)` at most
+once.
 
 **Proofs and tests.** Rocq: `execute_unknown_evidence_noop`,
 `main_T9_13_unknown_slash_evidence_noop`. TLA+:

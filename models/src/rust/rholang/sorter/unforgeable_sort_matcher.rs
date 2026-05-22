@@ -40,7 +40,7 @@ impl Sortable<GUnforgeable> for UnforgeableSortMatcher {
 
                 UnfInstance::GSysAuthTokenBody(token) => ScoredTerm {
                     term: GUnforgeable {
-                        unf_instance: Some(UnfInstance::GSysAuthTokenBody(*token)),
+                        unf_instance: Some(UnfInstance::GSysAuthTokenBody(token.clone())),
                     },
                     score: Tree::<ScoreAtom>::create_node_from_i32(Score::SYS_AUTH_TOKEN, vec![]),
                 },

@@ -415,7 +415,7 @@ equivalence argument and the 10,896× state-space reduction.
 
 The orchestrator. It composes `Validate`, `EquivocationDetector`, and
 `BlockDagStorage` to process incoming blocks. The critical method is
-`handle_invalid_block(block, ib)` at `multi_parent_casper_impl.rs:1018-1112`:
+`handle_invalid_block(block, ib)` at `engine/multi_parent_casper/mod.rs:1018-1112`:
 
 ```
 match ib with
@@ -501,6 +501,9 @@ authorized         ← filter h ∈ evidence where
                        bonds_map[sender(h)] > 0
 deduped            ← minimum block hash per sender in canonical byte order
 slashingDeploys    ← map h → SlashDeploy(h, proposer, currentEpoch, ...)
+recovered          ← merge-rejected SlashDeploys from parent merge
+recoverable        ← recovered \ own-detected hashes, deduped by invalid hash
+slashingDeploys   += map recoverable h → SlashDeploy(h, proposer, currentEpoch, ...)
 return slashingDeploys
 ```
 
@@ -509,6 +512,13 @@ produces only when the proposer itself is bonded. Pre-fix, an unbonded
 proposer generated wasted deploys that the PoS contract rejected at the
 auth-token check. The current implementation also rejects stale evidence
 and unknown or forged received slash deploys before replay.
+
+For received blocks, the positive-bond part of authorization is evaluated
+against the block's actual parent pre-state, not against the receiver's
+ambient snapshot. This matters during multi-parent merge recovery: the
+receiver may already know a sibling where the offender has been slashed,
+while the block being validated may correctly build on parents where the
+offender still had positive stake.
 
 #### 3.3.2 `SlashDeploy`
 
@@ -541,9 +551,11 @@ remaining names to the unforgeable channels `sys:casper:deployerId`,
 deploy and must be converted via `.hexToBytes()` before being passed
 to `slash` (which expects raw bytes per `PoS.rhox:446`).
 
-Source seed: `splitByte(1)` of `generateSlashDeployRandomSeed(selfId,
-seqNum)`. Endianness is little-endian on both sides; the bisimulation
-account holds.
+Source seed: `splitByte(1)` of
+`generateSlashDeployRandomSeed(selfId, seqNum, invalidBlockHash)`.
+Including `invalidBlockHash` is consensus-relevant: a single block can
+contain multiple slash deploys, and each must allocate distinct
+unforgeable names during replay.
 
 Rust: `casper/src/rust/util/rholang/costacc/slash_deploy.rs`. Scala:
 `coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala`.
@@ -552,8 +564,11 @@ Rust: `casper/src/rust/util/rholang/costacc/slash_deploy.rs`. Scala:
 
 Helper module that produces deterministic random seeds for system deploys.
 The slash-marker byte is the literal `1` (no named `SLASH_MARKER`
-constant in Scala — verified at `SystemDeployUtil.scala:55`). Bisimilar
-across implementations — same byte layout, same `splitByte(1)` semantics.
+constant in Scala — verified at `SystemDeployUtil.scala:55`). The Rust
+slash seed extends the historical `(selfId, seqNum)` layout with the
+target `invalidBlockHash`; the formal model treats the seed input tuple
+as injective in that hash, while the runtime hash function supplies the
+deterministic byte projection.
 
 ### 3.4 Effect layer
 
@@ -570,14 +585,17 @@ construction. The contract:
 2. Looks up the offender via `invalidBlocks[blockHash]` (defaulting to
    the deployer if the lookup misses — a degraded-mode fallback).
 3. Reads the offender's bond.
-4. Transfers the bond to the Coop vault.
-5. Updates `state.allBonds`, `state.activeValidators`,
+4. If the bond is already zero, returns `(true, Nil)` without mutation.
+5. Otherwise transfers the bond to the Coop vault.
+6. Updates `state.allBonds`, `state.activeValidators`,
    `state.committedRewards` as a single atomic `stateUpdateCh!`
    map-construction at `PoS.rhox:477-486` (one map write, not three
    field writes).
-6. Returns `(true, Nil)` on `returnCh`.
+7. Returns `(true, Nil)` on `returnCh`.
 
 Bug fix #4 (T-9.4) addresses the missing error path on transfer failure.
+The zero-bond no-op branch is the implementation hook that makes
+merge-rejected slash reissuance idempotent.
 
 #### 3.4.2 Bond map / Validator registry
 
@@ -918,7 +936,7 @@ formalized in `MainTheorem.v`.
 
 ### 7.2 Pre-fix vs post-fix behavior
 
-The pre-fix pipeline at `multi_parent_casper_impl.rs:1018-1112` exhibits
+The pre-fix pipeline at `engine/multi_parent_casper/mod.rs:1018-1112` exhibits
 three documented gaps that prevent the pipeline from completing for some
 inputs:
 
@@ -1305,7 +1323,7 @@ design*; T-9.9 establishes that the widening is sound.
 ### 10.2 Bug #2 — Lock-free tracker access (Rust regression)
 
 - **Origin.** Rust-introduced regression.
-- **Cause.** `multi_parent_casper_impl.rs:1046-1075` reads then writes
+- **Cause.** `engine/multi_parent_casper/mod.rs:1046-1075` reads then writes
   the equivocation tracker without a lock, allowing two threads
   processing `AdmissibleEquivocation` for the same `(validator,
   baseSeqNum)` to both observe `record-absent` and both insert,
@@ -1347,7 +1365,7 @@ design*; T-9.9 establishes that the widening is sound.
   catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)` arm
   only invokes `handleInvalidBlockEffect` (mark-invalid + buffer-remove);
   no `EquivocationRecord` is created.
-- **Cause.** `multi_parent_casper_impl.rs:1090-1099` carries
+- **Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` carries
   *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
   The 15 non-equivocation slashable variants
   (`JustificationRegression`, `InvalidBondsCache`,
@@ -1536,7 +1554,9 @@ design*; T-9.9 establishes that the widening is sound.
 - **Statement.** *(`t_9_8_unbonded_proposer_no_slash`,
   `BugFixUnbondedProposer.v:44`; equivalence
   `t_9_8_post_fix_equivalent_when_bonded`, line 55.)*
-  ∀ `ilm bonds proposer seqNum seed_fn`, `bm_lookup(bonds, proposer) = 0` ⟹
+  ∀ `ilm bonds proposer seqNum seed_fn`, where
+  `seed_fn : Validator → SeqNum → BlockHash → Seed`,
+  `bm_lookup(bonds, proposer) = 0` ⟹
   `prepare_slashing_deploys_post_fix(ilm, bonds, proposer, seqNum, seed_fn) = []`.
   When `bm_lookup(bonds, proposer) > 0`, post-fix is pointwise equal to
   pre-fix.
@@ -1886,7 +1906,7 @@ Trace (showing only the slashing-relevant transitions):
 2. validate(bX) = JustificationRegression
 3. is_slashable(JustificationRegression) = TRUE
 
-   Pre-fix dispatcher (multi_parent_casper_impl.rs:1090-1099):
+   Pre-fix dispatcher (engine/multi_parent_casper/mod.rs:1090-1099):
 4. handle_invalid_block_effect(bX, invalid = true)
    ⟶ DAG marks bX invalid; NO EquivocationRecord;
       A continues with bond intact unless a future proposer
@@ -2327,7 +2347,7 @@ For an invalid block hash `h`, offender `v`, and epoch `e`:
 authorized(h, v, e) ≜
   invalidEvidence[h] = (v, e, …)
   ∧ currentEpoch = e
-  ∧ currentBond(v) > 0
+  ∧ parentPreStateBond(v) > 0
 ```
 
 A `SlashDeploy(h, issuer, e)` is valid in a block from proposer `p` iff:
@@ -2338,9 +2358,9 @@ issuer = p
 ∧ no other slash deploy in the same block targets (v, e)
 ```
 
-Unknown invalid hashes, stale epochs, issuer mismatch, unbonded targets, and
-duplicate `(v, e)` slash targets are invalid block conditions. They are
-classified as slashable proposer faults.
+Unknown invalid hashes, stale epochs, issuer mismatch, non-positive
+parent-pre-state target bonds, and duplicate `(v, e)` slash targets are
+invalid block conditions. They are classified as slashable proposer faults.
 
 ### 15.3 Candidate generation
 
@@ -2352,9 +2372,10 @@ currentEpoch ← epoch(nextBlockNumber)
 candidates   ← ∅
 for invalid block metadata m in invalidEvidence:
   e ← epoch(m.blockNumber)
-  if e = currentEpoch ∧ currentBond(m.sender) > 0:
+  if e = currentEpoch ∧ parentPreStateBond(m.sender) > 0:
     candidates[m.sender] ← minHash(candidates[m.sender], m.blockHash)
-emit SlashDeploy(hash, self, currentEpoch) for each candidate in key order
+emit SlashDeploy(hash, self, currentEpoch, seed_fn(self, seqNum, hash))
+  for each candidate in key order
 ```
 
 This removes the liveness dependency on whether an invalid block happens to be

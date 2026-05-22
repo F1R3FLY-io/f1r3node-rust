@@ -15,8 +15,6 @@ pub mod helper;
 pub mod last_finalized_height_constraint_checker;
 pub mod merging;
 pub mod metrics_constants;
-pub mod casper_engine;
-pub mod multi_parent_casper_impl;
 pub mod protocol;
 pub mod report_store;
 pub mod reporting_casper;

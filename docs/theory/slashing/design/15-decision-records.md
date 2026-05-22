@@ -13,11 +13,12 @@ For the implemented Rust rule, evidence is authorized only when:
 authorized(hash, v, e) ≜
   invalidEvidence[hash] = (v, e, …)
   ∧ currentEpoch = e
-  ∧ currentBond(v) > 0
+  ∧ parentPreStateBond(v) > 0
 ```
 
 where `v` is the validator public key and `e` is the target activation epoch.
-The current implementation derives `e` from block numbers and `epochLength`.
+The current implementation derives `e` from block numbers and `epochLength`;
+the bond check is evaluated against the block's actual parent pre-state.
 
 **Rationale.** A raw public key is not enough to distinguish an old validator
 lifetime from a later same-key rebond. Epoch scoping prevents stale evidence

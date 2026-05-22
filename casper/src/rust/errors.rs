@@ -23,7 +23,7 @@ pub enum CasperError {
     LockError(String),
     /// Phase 9 (R-2): typed `Slash`-deploy authorization failure. Carries
     /// the [`SlashAuthError`] variant so callers in
-    /// `casper_engine::validation_dispatcher` can `match` on the structured
+    /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
     /// reason instead of grepping a stringified error.
     SlashAuth(SlashAuthError),
     Other(String),

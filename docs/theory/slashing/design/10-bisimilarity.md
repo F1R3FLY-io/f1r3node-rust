@@ -76,7 +76,7 @@ Each component projection has its own sub-bisimulation in
 
 | Sub-bisimulation       | File:line              | Reflexive | Symmetric | Transitive              |
 |------------------------|------------------------|-----------|-----------|-------------------------|
-| `bonds_bisim`          | `Bisimulation.v:30`    | ✓         | ✓         | ✓ (`Bisimulation.v:55`) |
+| `bonds_bisim`          | `Bisimulation.v:30`    | ✓         | ✓         | ✓ (`Bisimulation.v:30`) |
 | `records_bisim_strong` | `Bisimulation.v` §7    | ✓         | ✓         | ✓                       |
 | `slashed_bisim`        | `Bisimulation.v:39-40` | ✓         | ✓         | ✓                       |
 | `vault_bisim`          | (definitional `=`)     | ✓         | ✓         | ✓ (`eq_trans`)          |
@@ -141,7 +141,7 @@ weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)
   consistently on both sides preserves all five components.
 
 - **T-15b (Composed bisimulation closure).** *(`main_bisimilarity_theorem`,
-  `MainTheorem.v:428`.)* For every component triple, the slash
+  `MainTheorem.v:475`.)* For every component triple, the slash
   transition preserves component-wise R-equivalence.
 
 ## 10.8 What T-15 lets you conclude

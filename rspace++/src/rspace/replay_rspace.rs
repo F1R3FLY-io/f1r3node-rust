@@ -364,8 +364,10 @@ where
                 Event::Comm(comm) => {
                     let comm_cloned = comm.clone();
                     let (consume, produces) = (comm_cloned.consume, comm_cloned.produces);
-                    let produce_io_events: Vec<IOEvent> =
-                        produces.into_iter().map(IOEvent::Produce).collect();
+                    let produce_io_events: Vec<IOEvent> = produces
+                        .into_iter()
+                        .map(|produce| IOEvent::Produce(produce))
+                        .collect();
 
                     let mut io_events = produce_io_events.clone();
                     io_events.insert(0, IOEvent::Consume(consume));
@@ -436,9 +438,9 @@ where
                             .iter()
                             .map(|(k, v)| {
                                 if k.hash == produce_ref.hash {
-                                    (produce_ref.clone(), *v)
+                                    (produce_ref.clone(), v.clone())
                                 } else {
-                                    (k.clone(), *v)
+                                    (k.clone(), v.clone())
                                 }
                             })
                             .collect(),
@@ -596,12 +598,12 @@ where
             .map(|p| {
                 (
                     p.clone(),
-                    *self
-                        .produce_counter
+                    self.produce_counter
                         .lock()
                         .expect("produce counter lock")
                         .get(&p)
-                        .unwrap_or(&0),
+                        .unwrap_or(&0)
+                        .clone(),
                 )
             })
             .collect()
@@ -755,7 +757,7 @@ where
         let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> =
             channel_to_indexed_data_list.into_iter().collect();
 
-        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns).collect();
+        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns.into_iter()).collect();
 
         self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
             .into_iter()
@@ -777,22 +779,26 @@ where
 
         self.log_produce(produce_ref.clone(), &channel, &data, persist);
 
-        let io_event_and_comm = self
+        // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
+        // manual impls hash/compare on `self.hash` only — the metadata
+        // fields (`is_deterministic`, `output_value`, `failed`) are
+        // documented as non-identity, so this is semantically identical
+        // to a hash-only linear scan over the map.
+        let comms_option = self
             .replay_data
             .lock()
             .unwrap()
             .map
-            .clone()
-            .into_iter()
-            .find(|(io_event, _)| match io_event {
-                IOEvent::Produce(p) => p.hash == produce_ref.hash,
-                _ => false,
+            .get(&IOEvent::Produce(produce_ref.clone()))
+            .map(|comms| {
+                comms
+                    .iter()
+                    .map(|tuple| tuple.0.clone())
+                    .collect::<Vec<_>>()
             });
-        match io_event_and_comm {
+        match comms_option {
             None => Ok(self.store_data(channel, data, persist, produce_ref)),
-            Some((_, comms_list)) => {
-                let comms: Vec<_> = comms_list.iter().map(|tuple| tuple.0.clone()).collect();
-
+            Some(comms) => {
                 match self.get_comm_or_produce_candidate(
                     channel.clone(),
                     data.clone(),

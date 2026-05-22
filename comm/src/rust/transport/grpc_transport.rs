@@ -37,6 +37,7 @@ impl TransportLayerClientTrait
         self.send(Request::new(request))
             .await
             .map(|response| response.into_inner())
+            .map_err(|status| status)
     }
 
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
@@ -44,6 +45,7 @@ impl TransportLayerClientTrait
         self.stream(Request::new(input))
             .await
             .map(|response| response.into_inner())
+            .map_err(|status| status)
     }
 }
 

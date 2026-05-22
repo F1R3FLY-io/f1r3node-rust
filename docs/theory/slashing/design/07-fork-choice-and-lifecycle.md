@@ -185,12 +185,12 @@ influence.
 
 | Theorem      | Statement                                                                                 | File:line                    |
 |--------------|-------------------------------------------------------------------------------------------|------------------------------|
-| T-7          | After `slash(ps, v)`, `allBonds[v] = 0`.                                                  | `PoSContract.v:75`           |
-| T-8          | If transfer succeeds, `coopVaultBalance += allBonds[v]` (pre-slash).                      | `PoSContract.v:95`           |
-| T-Idem (T-9) | A second slash on `v` is a no-op.                                                         | `PoSContract.v:117`          |
-| T-10         | `v ∈ slashedSet ⟹ v`'s latest message filtered from GHOST.                                | `ForkChoice.v:60`            |
-| T-9.5        | `active_implies_bonded(ps)` is preserved by `slash`.                                      | `BugFixStakeZero.v:36`       |
-| T-9.4        | The slash transition either succeeds with bond-zero or returns `false` deterministically. | `BugFixTransferFailure.v:40` |
+| T-7          | `slash_zeros_bond`: after slash, the offender bond is zero.                               | `PoSContract.v:75`           |
+| T-8          | `slash_transfers_stake`: positive pre-slash stake is transferred to the Coop vault.       | `PoSContract.v:95`           |
+| T-Idem (T-9) | `slash_idempotent`: a second slash on the same validator is a no-op.                      | `PoSContract.v:117`          |
+| T-10         | `fork_choice_exclusion`: slashed validators are removed from latest-message input.        | `ForkChoice.v:60`            |
+| T-9.5        | `t_9_5_slash_preserves_invariant`: slash preserves active-implies-bonded.                 | `BugFixStakeZero.v:36`       |
+| T-9.4        | `t_9_4_transfer_failure_safety`: slash either succeeds with bond-zero or fails no-op.     | `BugFixTransferFailure.v:40` |
 
 These six theorems together define the formal semantics of the
 lifecycle: *what* happens on each transition (T-7, T-8, T-Idem,

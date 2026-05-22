@@ -29,10 +29,6 @@ pub struct PrettyPrinter {
     pub is_building_channel: bool,
 }
 
-impl Default for PrettyPrinter {
-    fn default() -> Self { Self::new() }
-}
-
 impl PrettyPrinter {
     pub fn new() -> Self { PrettyPrinter::create(0, 0) }
 

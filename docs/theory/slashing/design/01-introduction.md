@@ -134,7 +134,7 @@ itself slashable) which Ethereum FFG does not have.
 - **Not an operations manual.** Operating a validator (key generation,
   bond posting, monitoring) is a separate concern handled by
   `node/` and the operations runbooks under
-  [`docs/run-local/`](../../../run-local/).
+  [`run-local/`](../../../../run-local/).
 - **Not a specification.** When the spec and this design document
   disagree, the spec is authoritative. (We make every effort to keep
   them in sync; if you find a discrepancy, file an issue.)

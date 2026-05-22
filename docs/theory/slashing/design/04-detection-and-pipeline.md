@@ -197,7 +197,7 @@ are recorded identically.
 ## 4.5 The dispatcher — what happens after `detect`
 
 The `MultiParentCasperImpl.handle_invalid_block` dispatcher (Rust:
-`multi_parent_casper_impl.rs:1018-1112`) receives the verdict and
+`engine/multi_parent_casper/mod.rs:1018-1112`) receives the verdict and
 decides what to do. The relevant branches:
 
 ```
@@ -255,6 +255,11 @@ has_slash ← scan b_B.body.system_deploys for SystemDeployData::Slash
 
 reject ⟺ neglected ∧ ¬has_slash    -- post-fix #9
 ```
+
+For received `SlashDeploy`s, the corresponding positive-bond check is
+bound to the block's actual parent pre-state. This keeps recovery blocks
+valid when the receiver's current snapshot already includes a sibling
+where the same offender has been slashed.
 
 The post-fix `¬has_slash` clause is the *Rust widening* of bug #9
 (§09): a block that *self-corrects* by attaching its own

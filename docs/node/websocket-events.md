@@ -109,8 +109,8 @@ Events that arrive both via replay and live stream are deduplicated.
 | Event | Source File |
 |-------|------------|
 | `block-created` | `casper/src/rust/blocks/proposer/proposer.rs` |
-| `block-added` | `casper/src/rust/multi_parent_casper_impl.rs` |
-| `block-finalised` | `casper/src/rust/multi_parent_casper_impl.rs` |
+| `block-added` | `casper/src/rust/engine/multi_parent_casper/mod.rs` |
+| `block-finalised` | `casper/src/rust/engine/multi_parent_casper/mod.rs` |
 | `transfers-available` | `node/src/rust/runtime/setup.rs` (after block report cache warming) |
 | `sent-unapproved-block` | `casper/src/rust/engine/approve_block_protocol.rs` |
 | `block-approval-received` | `casper/src/rust/engine/approve_block_protocol.rs` |

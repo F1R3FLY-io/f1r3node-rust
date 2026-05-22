@@ -692,6 +692,28 @@ impl BlockDagKeyValueStorage {
         }
     }
 
+    /// Test-only accessor for the deploy-index handle. The field itself
+    /// is `pub(crate)` so production callers route through
+    /// `lookup_by_deploy_id` / `insert`. Tests in other crates that need to
+    /// inject corrupt entries (e.g. resolver / deploy-finalization-status
+    /// regression tests) enable the `test-internals` feature to reach this
+    /// accessor.
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn deploy_index_for_tests(
+        &self,
+    ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>> {
+        self.deploy_index.clone()
+    }
+
+    /// Test-only accessor for the block-metadata-index handle. Same
+    /// rationale as `deploy_index_for_tests`.
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn metadata_index_for_tests(&self) -> Arc<PlRwLock<BlockMetadataStore>> {
+        self.block_metadata_index.clone()
+    }
+
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
@@ -763,8 +785,16 @@ impl BlockDagKeyValueStorage {
         mode: InsertMode,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         // P2-12: insert mutates state; acquire exclusive write lock.
+        // The `dag.insert.time` histogram instruments the post-lock critical
+        // section so percentile graphs reflect actual contention + work, not
+        // wait time queuing for the lock (which is captured by the LMDB
+        // dashboard's lock-contention metric).
+        let __insert_start = std::time::Instant::now();
         let _lock_guard = self.global_lock.write();
-        self.insert_internal(block, mode)
+        let result = self.insert_internal(block, mode);
+        metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
+            .record(__insert_start.elapsed().as_secs_f64());
+        result
     }
 
     /// Internal method to insert without acquiring lock.
@@ -794,11 +824,40 @@ impl BlockDagKeyValueStorage {
             PrettyPrinter::build_string_block_message(block, true)
         );
 
+        // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
+        // (and other invalid blocks) advance the sender's latest message and
+        // register newly-bonded validators just like valid blocks. This matches
+        // the Scala source-of-truth (`BlockDagKeyValueStorage.scala`, where
+        // `newLatestMessages` and `shouldAddAsLatest` never reference `invalid`).
+        //
+        // Safety argument:
+        //   - Fork choice and finalization are unaffected. Parent selection filters
+        //     `latest_messages` through `invalid_latest_messages_from_hashes` to
+        //     produce `valid_latest_msgs` (see
+        //     `engine::multi_parent_casper::create_block_data`, ~line 160). Only
+        //     valid-latest validators contribute candidate parents; invalid blocks
+        //     therefore cannot become parents, cannot enter the ancestor chain of
+        //     any parent, and cannot influence the Estimator's fork-choice scoring
+        //     or finalization depth.
+        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
+        //     detector reads `invalid_latest_messages` and feeds it to
+        //     `prepare_slashing_deploys`. The pre-fix `if invalid { return empty }`
+        //     guard had no Scala counterpart and silently disabled the slashing
+        //     pipeline (no slashes ever issued, equivocators never punished).
+        //   - `justification_follows` validation requires every bonded validator
+        //     to appear in a new block's justifications. Without the LMM advancing
+        //     on invalid blocks, validators whose latest is invalid would be
+        //     missing from the creator's view and `justification_follows` would
+        //     reject otherwise-valid blocks.
+        //
+        // Companion sites that depend on this invariant:
+        //   - `engine::multi_parent_casper::create_block_data` (justifications
+        //     and max_seq_nums both read the unfiltered `latest_msgs_hashes`).
+        //   - The
+        //     `dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender`
+        //     test in `block-storage/tests/block_dag_storage_test.rs` exercises
+        //     this directly.
         let new_latest_messages = || -> Result<HashMap<Validator, BlockHash>, KvStoreError> {
-            if invalid {
-                return Ok(HashMap::new());
-            }
-
             let block_hash: BlockHash = block.block_hash.clone();
 
             let newly_bonded_set: HashSet<_> = block
@@ -840,7 +899,7 @@ impl BlockDagKeyValueStorage {
             self.get_representation_internal()
         } else {
             let block_hash = block.block_hash.clone();
-            let block_hash_is_invalid = block_hash.len() != block_hash::LENGTH;
+            let block_hash_is_invalid = !(block_hash.len() == block_hash::LENGTH);
 
             if sender_has_invalid_format {
                 return Err(KvStoreError::InvalidArgument(format!(
@@ -886,7 +945,7 @@ impl BlockDagKeyValueStorage {
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
-            let new_latest_from_sender = if !sender_is_empty && !invalid {
+            let new_latest_from_sender = if !sender_is_empty {
                 // Add LM either if there is no existing message for the sender, or if sequence number advances
                 // - assumes block sender is not valid hash
                 if match self

@@ -80,7 +80,7 @@ pub fn normalize_p_contr<'ast>(
         binds: vec![ReceiveBind {
             patterns: init_acc.0.clone().into_iter().rev().collect(),
             source: Some(name_match_result.par.clone()),
-            remainder: remainder_result.0,
+            remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
         }],
         body: Some(body_result.par.clone()),

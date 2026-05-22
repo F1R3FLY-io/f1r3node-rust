@@ -478,7 +478,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                         .ps
                         .sorted_pars
                         .iter()
-                        .map(ParSortMatcher::sort_match)
+                        .map(|p| ParSortMatcher::sort_match(p))
                         .collect();
 
                     let remainder_score = remainder_score(&par_set.remainder);
@@ -510,8 +510,11 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::EPathmapBody(pathmap) => {
                     // Similar to EListBody - sort all Par elements in the pathmap
-                    let pars: Vec<ScoredTerm<Par>> =
-                        pathmap.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = pathmap
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let remainder_score = remainder_score(&pathmap.remainder);
                     let connective_used_score: i64 = if pathmap.connective_used { 1 } else { 0 };
@@ -521,7 +524,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                             ps: pars.clone().into_iter().map(|p| p.term).collect(),
                             locally_free: pathmap.locally_free.clone(),
                             connective_used: pathmap.connective_used,
-                            remainder: pathmap.remainder,
+                            remainder: pathmap.remainder.clone(),
                         }),
                         Tree::Node(
                             vec![
@@ -539,8 +542,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::EListBody(list) => {
-                    let pars: Vec<ScoredTerm<Par>> =
-                        list.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = list
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let remainder_score = remainder_score(&list.remainder);
                     let connective_used_score: i64 = if list.connective_used { 1 } else { 0 };
@@ -550,7 +556,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                             ps: pars.clone().into_iter().map(|p| p.term).collect(),
                             locally_free: list.locally_free.clone(),
                             connective_used: list.connective_used,
-                            remainder: list.remainder,
+                            remainder: list.remainder.clone(),
                         }),
                         Tree::Node(
                             vec![
@@ -570,8 +576,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 ExprInstance::EZipperBody(zipper) => {
                     // Sort the zipper's PathMap and maintain zipper metadata
                     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                    let pars: Vec<ScoredTerm<Par>> =
-                        pathmap.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let pars: Vec<ScoredTerm<Par>> = pathmap
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let connective_used_score: i64 = if zipper.connective_used { 1 } else { 0 };
 
@@ -581,7 +590,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                                 ps: pars.clone().into_iter().map(|p| p.term).collect(),
                                 locally_free: pathmap.locally_free.clone(),
                                 connective_used: pathmap.connective_used,
-                                remainder: pathmap.remainder,
+                                remainder: pathmap.remainder.clone(),
                             }),
                             current_path: zipper.current_path.clone(),
                             is_write_zipper: zipper.is_write_zipper,
@@ -603,8 +612,11 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::ETupleBody(tuple) => {
-                    let sorted_pars: Vec<ScoredTerm<Par>> =
-                        tuple.ps.iter().map(ParSortMatcher::sort_match).collect();
+                    let sorted_pars: Vec<ScoredTerm<Par>> = tuple
+                        .ps
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
 
                     let connective_used_score: i64 = if tuple.connective_used { 1 } else { 0 };
                     let mut tuple_cloned = tuple.clone();
@@ -630,7 +642,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                     let args: Vec<ScoredTerm<Par>> = em
                         .arguments
                         .iter()
-                        .map(ParSortMatcher::sort_match)
+                        .map(|p| ParSortMatcher::sort_match(p))
                         .collect();
 
                     let sorted_target = ParSortMatcher::sort_match(
