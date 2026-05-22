@@ -253,8 +253,7 @@ found, repeat:
    as #1–#11: cause, pre-fix behavior, post-fix behavior, theorem
    T-9.N, bisimilarity impact, worked example, diagram.
 2. **Mechanize the fix** in a new `BugFix*.v` module under
-   `formal/rocq/slashing/theories/` on the `analysis/slashing` branch
-   (and add it to `_CoqProject` there).
+   `formal/rocq/slashing/theories/` and add it to `_CoqProject`.
 3. **Add the bug to the spec §10 bug-class table** with origin
    classification (Scala-inherited / Rust-introduced / deliberate
    widening).
@@ -263,10 +262,9 @@ found, repeat:
 5. **Compose the new theorem** into `MainTheorem.v` as
    `main_T9_N_*` so the headline `main_bisimilarity_theorem` chain
    transitively depends on it.
-6. **Add an MC config** under `formal/tlaplus/slashing/` on the
-   `analysis/slashing` branch if the fix introduces new state-machine
-   behaviour, and register it in the search-program's TLA+ invariant
-   runner (also preserved on `analysis/slashing`). Re-run TLA+
+6. **Add an MC config** under `formal/tlaplus/slashing/` if the fix
+   introduces new state-machine behaviour, and register it in the
+   search-program's TLA+ invariant runner. Re-run TLA+
    model-checking for any existing invariant the new fix touches.
 7. **Add a worked-example trace** in design §11 with a sequence
    diagram (and add the diagram to `docs/theory/slashing/diagrams/`).
@@ -277,8 +275,8 @@ found, repeat:
    in `tla_trace_replay.rs`. **Trace JSONs are hand-authored**,
    not auto-generated: the workflow for coaxing a TLC counter-example
    trace out (by deliberately injecting a false invariant, then
-   transcribing the action sequence into the JSON schema) is preserved
-   on the `analysis/slashing` branch under `scripts/ci/dump-tla-traces.sh`.
+   transcribing the action sequence into the JSON schema) is documented
+   in `scripts/ci/dump-tla-traces.sh`.
    The Rust harness replays the JSON; if the TLA+ action signature
    changes, the JSON must be regenerated manually.
 10. **Apply the fix** in the relevant production source location

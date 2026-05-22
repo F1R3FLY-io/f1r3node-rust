@@ -8,15 +8,14 @@
 > prose proof. The underlying mechanizations — Rocq theories at
 > `formal/rocq/slashing/theories/`, TLA+ correctness models at
 > `formal/tlaplus/slashing/`, and Sage exploratory verification at
-> `formal/sage/slashing/` — are preserved on the `analysis/slashing`
-> branch and are cited by name for traceability; this article does
-> not require fetching them to verify the proofs.
+> `formal/sage/slashing/` — live in this repository and are cited by
+> name for traceability.
 >
 > The development is **closed under the global context**: every
 > theorem from `main_bisimilarity_theorem` downward depends only on
 > Rocq's standard library and the slashing theories — zero `Admitted`,
 > zero custom `Axiom`. This is verified via `Print Assumptions` (§14)
-> against the mechanization preserved on `analysis/slashing`.
+> against the mechanization in `formal/rocq/slashing/`.
 >
 > **Contributions.** This article proves three principal results:
 > (i) the Rust slashing pipeline is observationally equivalent (weak
@@ -297,8 +296,7 @@ where:
   propose(p, deploys), executeSlash(o, ok), filterFC(v),
   neglectDetect(v, target)}`.
 - **Transitions** `→` are defined per-label by the corresponding
-  component (Rocq mechanization preserved on `analysis/slashing` under
-  `formal/rocq/slashing/theories/`).
+  component in `formal/rocq/slashing/theories/`.
 
 ### 3.1 Reduction rules
 
@@ -2017,10 +2015,18 @@ the authorization-rejection branch has identity post-image on
 **Proof.** The Rocq predicate uses the parent bond map as an explicit
 argument to `authorized_slash_candidate`. The positive case reduces to
 `Nat.ltb_lt`; the zero-bond case reduces to the false right conjunct of
-the authorization conjunction. ∎
+the authorization conjunction. The strengthened wrapper
+`authorized_slash_candidate_with_ambient` makes the receiver's ambient
+snapshot an explicit but unused argument, proving that an already-zero
+ambient bond cannot reject a deploy authorized by the block's actual
+parent pre-state. ∎
 
 **TLA+ mirror.** `Authorized` in `AuthorizedSlashFlow.tla` and
-`Inv_OnlyAuthorizedSlashCanBePending` in `MC_AuthorizedSlashFlow.cfg`.
+`Inv_OnlyAuthorizedSlashCanBePending`,
+`Inv_AuthorizationUsesParentPreState`,
+`Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, and
+`Inv_ParentZeroRejectsEvenAmbientPositive` in
+`MC_AuthorizedSlashFlow.cfg`.
 
 #### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
 
@@ -2029,16 +2035,19 @@ the authorization conjunction. ∎
 `uncovered_rejected_hash_recovered`; also the corresponding
 `main_T9_13_*` wrappers.)*
 ```
-  recoverable = dedup_by_invalid_hash(rejected \ own_detected)
+  recoverable = current_evidence_filter(dedup_by_invalid_hash(rejected \ own_detected))
   ⟹ NoDup(recoverable)
      ∧ own_detected_hash ∉ recoverable
-     ∧ uncovered rejected hash ∈ recoverable.
+     ∧ recovered hash has current invalid evidence
+     ∧ current uncovered rejected hash ∈ recoverable.
 ```
 
 **Proof.** Rocq projects rejected slash records to `invalid_block_hash`,
 filters hashes present in the proposer's own-detected set, and applies
-`nodup hash_eq_dec`. `NoDup_nodup`, `filter_In`, and the boolean membership
-lemma for `hash_member` establish the three clauses. ∎
+`nodup hash_eq_dec`. The current-evidence refinement then filters the
+survivors by the current invalid-evidence hash set. `NoDup_nodup`,
+`filter_In`, and the boolean membership lemma for `hash_member` establish
+the clauses. ∎
 
 **TLA+ mirror.** `Inv_RecoveredSlashHasEvidence`,
 `Inv_RecoveredSlashCoveredByPendingOrExecuted`, and
@@ -2403,17 +2412,19 @@ The rewrite is observationally bisimilar to the original (every reachable
 state of the original maps to one in the rewrite via the natural
 projection that classifies pending blocks).
 
-### 10.5 Model-checking results (verified through 2026-05-21 run)
+### 10.5 Model-checking results (verified through 2026-05-22 run)
 
 Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`;
-for `MC_SlashFlow`, the 2026-05-21 rerun used `tlc -workers 1`.
+for the 2026-05-22 focused reruns, `MC_SlashFlow` and
+`MC_AuthorizedSlashFlow` used `tlc -workers 1`.
 
 | Spec                                                                                                                    | Result                                                                                                     | States explored                                                      |
 |-------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
 | `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, weighted closure bound, quorum-intersection, fixed-point, epoch, visibility/report, evidence-view, carryover, retention, canonical-key, batch-projection, proposer-fairness, semantic-campaign, scheduler, assumption-classification, arithmetic-stress, and arithmetic-envelope invariants) | ✅ Exhausted, 0 violations on 2026-05-05 with `tlc -workers 1`                                             | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
-| `MC_SlashFlow` (full invariants incl. rejected-slash recovery, slash-seed injectivity, `Inv_ForfeitedToCoopVault`, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-05-21                                                                   | 1,591,417 generated; **238,328 distinct**; depth 28                  |
+| `MC_SlashFlow` (full invariants incl. rejected-slash recovery, zero-bond no-transfer, slash-seed injectivity, `Inv_ForfeitedToCoopVault`, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 1,591,417 generated; **238,328 distinct**; depth 28                  |
+| `MC_AuthorizedSlashFlow` (current evidence, parent-pre-state authorization, ambient-zero receiver state, and merge-rejected recovery) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 141,058,049 generated; **4,943,872 distinct**; depth 21              |
 | `MC_EquivocationDetector` (combined safety + `Live_DetectionComplete`, 2v × 2s × 2b)                                    | ⚠️ JVM heap exhausted at 14.9M distinct states during liveness graph construction (after 65 min, 32 GB cap) | Liveness graph hit ~120M distinct states before OOM                  |
 | `MC_EquivocationDetector_safety` (full bounds, safety only)                                                             | ✅ Exhausted, 0 violations                                                                                 | **191,849,257 generated; 22,667,121 distinct**; depth 29; 2 min 26 s |
 | `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations                                                                                 | 147 generated; **69 distinct**; depth 8                              |
@@ -2443,6 +2454,7 @@ confirming the fix.
 | `Inv_DetectedHashDetects`                                                            | `fixed_detectable_detected_hash_true`                                     | yes            |
 | `Inv_RecordMonotone` (Locked=⊤)                                                      | `t_9_2_atomic_no_overwrite`                                               | yes            |
 | `Inv_BondsZeroAfterSlash`                                                            | `slash_zeros_bond`                                                        | yes            |
+| `Inv_ZeroBondSlashNoTransfer`                                                        | `slash_zero_bond_noop`                                                     | yes            |
 | `Inv_SlashedExcludedFromFC`                                                          | `fork_choice_exclusion`                                                   | yes            |
 | `Inv_LevelClosureTerminates`                                                         | `t_11_level_2_termination`                                                | yes            |
 | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | `weighted_slash_iter_quorum_preservation`                                 | yes            |
@@ -2464,6 +2476,8 @@ confirming the fix.
 | `Inv_CanonicalRecordKeyInjective`                                                    | `canonical_key_pair_injective`                                            | yes            |
 | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` | yes            |
 | `Inv_ProposerFairnessForBoundedLiveness`                                             | `proposer_fairness_boundary_requires_review`                              | yes            |
+| `Inv_AuthorizationUsesParentPreState` / `Inv_AmbientZeroDoesNotBlockParentPositiveAuth` / `Inv_ParentZeroRejectsEvenAmbientPositive` | `ambient_bonds_do_not_affect_authorization`; `parent_pre_state_authorizes_when_ambient_zero`; `parent_zero_rejects_even_if_ambient_positive` | yes |
+| `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCoveredByPendingOrExecuted`      | `recoverable_rejected_slash_requires_current_evidence`; `current_uncovered_rejected_hash_recovered` | yes |
 
 The table lists the safety invariants with the closest 1:1 Rocq
 counterparts. Additional TLA+ invariants —
@@ -2499,8 +2513,8 @@ inadvertently strong hypotheses.
 `casper/tests/slashing/tla_trace_replay.rs` consume JSON schedules
 under `casper/tests/slashing/tla_traces/*.json`. These JSON traces
 are **hand-authored canonical schedules**, *not* automated `tlc
--dump` output. The workflow (preserved on `analysis/slashing` under
-`scripts/ci/dump-tla-traces.sh`) explains how to obtain a TLC
+-dump` output. The workflow in `scripts/ci/dump-tla-traces.sh`
+explains how to obtain a TLC
 counter-example (by injecting a deliberately-false invariant) and
 then transcribe its action sequence into the JSON schema the Rust
 harness consumes. The reason
@@ -2551,7 +2565,7 @@ classification), or a documented assumption-counterexample.
 
 ### 11.2 Models by purpose
 
-The thirty-one Sage models (preserved on `analysis/slashing` under `formal/sage/slashing/`) group into
+The thirty-two Sage models under `formal/sage/slashing/` group into
 five families by what they search:
 
 **Closure and graph models** — `closure_model.sage`,
@@ -2855,7 +2869,7 @@ and Rust file that realize it):
 
 ### 13.1 Files
 
-All directories below are preserved on the `analysis/slashing` branch.
+All directories below are present in this repository.
 
 ```
 formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
@@ -2896,10 +2910,11 @@ formal/tlaplus/slashing/               (19 TLA+ specs + 13 MC configs; cf. §10.
 └── JustificationProjection.tla
    (each paired with MC_*.tla + MC_*.cfg model-check harness)
 
-formal/sage/slashing/                  (31 Sage models; cf. §11.2)
+formal/sage/slashing/                  (32 Sage models; cf. §11.2)
 ├── closure_model.sage, weighted_closure_model.sage
 ├── damage_optimizer.sage, weighted_stake_optimization.sage
 ├── horizon_search_model.sage, horizon_v2_search_model.sage
+├── parent_prestate_authorization_model.sage
 ├── deep_threat_model.sage, adversarial_campaign_model.sage
 └── (27 more — see §11.2 for the full grouping)
 ```
@@ -3313,8 +3328,7 @@ by a prose proof, every headline theorem cites a worked example,
 every bug-fix proof exhibits the pre-fix counter-example that
 motivated it, and the divergence calculus of §8.8 makes the "modulo"
 qualifier of T-15 a first-class formal object. The Rocq mechanization
-(preserved on the `analysis/slashing` branch under
-`formal/rocq/slashing/theories/`) remains the authoritative source
+under `formal/rocq/slashing/theories/` remains the authoritative source
 of truth; this article is the English shadow that makes the
 development *readable* without sacrificing *precision*.
 

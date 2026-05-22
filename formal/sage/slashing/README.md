@@ -12,6 +12,8 @@ The models use Sage exact integers, sets, combinatorics, graph APIs, schedule pe
 
 `pipeline_effect_model.sage` enumerates small bond maps and slash sets with Sage `cartesian_product`, `Subsets`, `Integer`, `ZZ`, and `vector`. It checks exact accounting, idempotence, zeroing of slashed bonds, preservation of unslashed bonds, non-negative balances, and rejected-slash reissue no-op behavior.
 
+`parent_prestate_authorization_model.sage` checks the receive-side split between ambient snapshot bonds, block parent-pre-state bonds, and PoS execution bonds. It also checks that recovered rejected slashes are reissued only when their invalid-block evidence is still current.
+
 `weighted_closure_model.sage` models the same neglect closure with stake weights and searches for active-stake quorum failures.
 
 `damage_optimizer.sage` searches bounded graphs and stake vectors for maximum slashed stake and validator-count amplification under a bounded direct-equivocator stake budget.
@@ -82,6 +84,7 @@ Run the self-tests:
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/closure_model.sage -- --self-test
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/tracker_race_model.sage -- --self-test
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/pipeline_effect_model.sage -- --self-test
+DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/parent_prestate_authorization_model.sage -- --self-test
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/weighted_closure_model.sage -- --self-test
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/damage_optimizer.sage -- --self-test
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/validator_boundary_model.sage -- --self-test
@@ -119,6 +122,7 @@ Run bounded analyses:
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/closure_model.sage -- --max-n 4
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/tracker_race_model.sage -- --threads 2 --hashes 2
 DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/pipeline_effect_model.sage -- --max-validators 5 --max-bond 3
+DOT_SAGE=/tmp/codex-sage sage formal/sage/slashing/parent_prestate_authorization_model.sage -- --max-bond 3
 ```
 
 Run targeted searches for useful edge cases:

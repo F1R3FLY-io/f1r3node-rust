@@ -37,11 +37,13 @@ VARIABLES
     pendingSlashDeploys,\* SUBSET BlockId: slash deploys queued by invalid hash
     rejectedSlashDeploys,
     recoveredSlashDeploys,
+    noopSlashHashes,
     forkChoiceLatest    \* [Validators -> Nat]: latest seq considered by FC
 
 vars == <<bonds, activeValidators, coopVaultBalance, slashedSet,
           blocks, invalidBlocks, equivocationRecords,
           pendingSlashDeploys, rejectedSlashDeploys, recoveredSlashDeploys,
+          noopSlashHashes,
           forkChoiceLatest>>
 
 \* Block IDs are encoded as (validator, seqNum, blockNum) triples.
@@ -61,6 +63,7 @@ TypeOK ==
     /\ pendingSlashDeploys \in SUBSET BlockId
     /\ rejectedSlashDeploys \in SUBSET BlockId
     /\ recoveredSlashDeploys \in SUBSET BlockId
+    /\ noopSlashHashes \in SUBSET BlockId
     /\ forkChoiceLatest \in [Validators -> Nat]
 
 (****************************************************************************)
@@ -78,6 +81,7 @@ Init ==
     /\ pendingSlashDeploys = {}
     /\ rejectedSlashDeploys = {}
     /\ recoveredSlashDeploys = {}
+    /\ noopSlashHashes = {}
     /\ forkChoiceLatest = [v \in Validators |-> 0]
 
 (****************************************************************************)
@@ -91,7 +95,7 @@ SignHonest(v, s) ==
     /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![v] = s]
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
                     invalidBlocks, equivocationRecords, pendingSlashDeploys,
-                    rejectedSlashDeploys, recoveredSlashDeploys>>
+                    rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes>>
 
 (****************************************************************************)
 (* Action: validator v equivocates by signing a SECOND block at seq s.      *)
@@ -105,7 +109,7 @@ SignEquivocating(v, s) ==
     /\ equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
     /\ pendingSlashDeploys' = pendingSlashDeploys \cup {<<v, s, 2>>}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
-                    rejectedSlashDeploys, recoveredSlashDeploys, forkChoiceLatest>>
+                    rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
 (****************************************************************************)
 (* Action: a merge rejects a slash branch carrying invalid block h.         *)
@@ -116,7 +120,7 @@ ObserveRejectedSlash(h) ==
     /\ rejectedSlashDeploys' = rejectedSlashDeploys \cup {h}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
                     blocks, invalidBlocks, equivocationRecords,
-                    pendingSlashDeploys, recoveredSlashDeploys, forkChoiceLatest>>
+                    pendingSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
 RecoverRejectedSlash(h) ==
     /\ h \in rejectedSlashDeploys
@@ -129,7 +133,7 @@ RecoverRejectedSlash(h) ==
         ELSE pendingSlashDeploys \cup {h}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
                     blocks, invalidBlocks, equivocationRecords,
-                    rejectedSlashDeploys, forkChoiceLatest>>
+                    rejectedSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
 SlashSeedInput(proposer, seq, h) ==
     <<proposer, seq, h>>
@@ -151,6 +155,7 @@ ExecuteSlash(h) ==
                 /\ pendingSlashDeploys' =
                     {d \in pendingSlashDeploys : d[1] # o}
                 /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
+                /\ noopSlashHashes' = noopSlashHashes
           ELSE
             /\ bonds' = bonds
             /\ activeValidators' = activeValidators
@@ -158,6 +163,7 @@ ExecuteSlash(h) ==
             /\ slashedSet' = slashedSet
             /\ pendingSlashDeploys' = pendingSlashDeploys \ {h}
             /\ forkChoiceLatest' = forkChoiceLatest
+            /\ noopSlashHashes' = noopSlashHashes \cup {h}
     /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords,
                     rejectedSlashDeploys, recoveredSlashDeploys>>
 
@@ -225,6 +231,12 @@ Inv_RecoveredSlashHasEvidence ==
 Inv_RecoveredSlashCovered ==
     \A h \in recoveredSlashDeploys :
         h \in pendingSlashDeploys \/ h[1] \in slashedSet
+
+Inv_ZeroBondSlashNoTransfer ==
+    \A h \in noopSlashHashes :
+        /\ bonds[h[1]] = 0
+        /\ h \notin pendingSlashDeploys
+        /\ coopVaultBalance = SumInitialBonds(slashedSet)
 
 Inv_SlashSeedInputInjectiveByHash ==
     \A p \in Validators :

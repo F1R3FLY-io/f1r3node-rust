@@ -88,6 +88,14 @@ Definition recoverable_rejected_slash_hashes
        (fun h => negb (hash_member h own_invalid_hashes))
        (map rejected_slash_hash rejected)).
 
+Definition recoverable_current_rejected_slash_hashes
+  (rejected : list RejectedSlash)
+  (own_invalid_hashes current_evidence_hashes : list BlockHash)
+  : list BlockHash :=
+  filter
+    (fun h => hash_member h current_evidence_hashes)
+    (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — Properties
    ═══════════════════════════════════════════════════════════════════════════ *)
@@ -220,4 +228,33 @@ Proof.
   apply filter_In. split.
   - apply in_map. assumption.
   - rewrite Bool.negb_true_iff. apply hash_member_false_iff. assumption.
+Qed.
+
+Theorem recoverable_rejected_slash_requires_current_evidence :
+  forall rejected own_invalid_hashes current_evidence_hashes h,
+    In h (recoverable_current_rejected_slash_hashes
+            rejected own_invalid_hashes current_evidence_hashes) ->
+    In h current_evidence_hashes.
+Proof.
+  intros rejected own_invalid_hashes current_evidence_hashes h Hin.
+  unfold recoverable_current_rejected_slash_hashes in Hin.
+  apply filter_In in Hin.
+  destruct Hin as [_ Hcurrent].
+  apply hash_member_true_iff. assumption.
+Qed.
+
+Theorem current_uncovered_rejected_hash_recovered :
+  forall rejected own_invalid_hashes current_evidence_hashes rs,
+    In rs rejected ->
+    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
+    In (rejected_slash_hash rs) current_evidence_hashes ->
+    In (rejected_slash_hash rs)
+       (recoverable_current_rejected_slash_hashes
+          rejected own_invalid_hashes current_evidence_hashes).
+Proof.
+  intros rejected own_invalid_hashes current_evidence_hashes rs Hrej Hnotown Hcurrent.
+  unfold recoverable_current_rejected_slash_hashes.
+  apply filter_In. split.
+  - apply uncovered_rejected_hash_recovered; assumption.
+  - apply hash_member_true_iff. assumption.
 Qed.

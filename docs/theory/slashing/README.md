@@ -7,14 +7,11 @@ level between the Rust slashing logic in this repository and the Scala original
 from which it was migrated, with explicit, proven *bug-fix deltas* where the
 Scala source is faulty.
 
-> **Audit corpus preserved separately.** The full audit methodology, Sage
-> search corpus, traceability ledger, search-horizon program, and all three
-> mechanized proof stacks (Rocq, TLA+, Sage models) are preserved on the
-> `analysis/slashing` branch. This branch (`feature/slashing`) keeps the
-> normative and design surface plus the self-contained
-> `slashing-verification.md` mathematical article. Citations below that
-> reference the audit corpus or mechanized proofs by file path point at the
-> preserved-on-`analysis/slashing` artifacts.
+> **Formal artifacts on this branch.** The normative specification, design
+> docs, Rocq theories, TLA+ models, and Sage models are present in this
+> repository under `docs/theory/slashing/` and `formal/{rocq,tlaplus,sage}/slashing/`.
+> References to `analysis/slashing` identify preserved historical audit
+> material, not the current source of the mechanized slashing models.
 
 ## Reading order
 
@@ -38,13 +35,12 @@ Scala source is faulty.
    stating every theorem with its prose proof, the TLA+ model summary, the
    Rocq↔TLA+ correspondence table, and the trust base. Citations to
    `formal/rocq/slashing/`, `formal/tlaplus/slashing/`, and
-   `formal/sage/slashing/` point at the mechanized sources preserved on
-   `analysis/slashing`.
+   `formal/sage/slashing/` point at the mechanized sources in this branch.
 4. **`slashing-threat-model.md`** — *Defensive threat catalog.* Read alongside
    the verification doc to see every modeled attack surface and the protection
-   mechanism that covers it. The cross-reference column points at Rust artifacts
-   on this branch; Rocq/TLA+/Sage artifacts cited there live on
-   `analysis/slashing`.
+   mechanism that covers it. The cross-reference column points at Rust,
+   Rocq, TLA+, and Sage artifacts in this branch unless it explicitly says
+   it is citing historical audit material.
 5. **`diagrams/`** — PlantUML sources and rendered SVGs for the 11 diagrams
    referenced in the spec. Each is embedded inline at its first relevant
    mention in the spec/verification docs; the visuals and the LTS rules
@@ -110,13 +106,14 @@ Scala source is faulty.
   view-indexed closure, duplicate-edge idempotence, cycle edge cases,
   projection-risk witnesses, and safe arithmetic envelopes are stated
   and proved in `slashing-verification.md`; the underlying Rocq and TLA+
-  mechanizations are preserved on `analysis/slashing`.
-- **T-12PF / T-5DF.** Hypothesis-backed Sage search results (preserved on
-  `analysis/slashing`) reduce proposer evidence-inclusion fairness and
+  mechanizations are in `formal/rocq/slashing/` and
+  `formal/tlaplus/slashing/`.
+- **T-12PF / T-5DF.** Hypothesis-backed Sage search results reduce proposer
+  evidence-inclusion fairness and
   delimiter-free record-key collisions to deterministic witnesses, promoted
   to theorems in `slashing-verification.md` and use cases in the spec.
 - **T-12HYP / deep Sage threat modeling.** Hypothesis frontier and Sage
-  threat-ranking results (preserved on `analysis/slashing`) explore
+  threat-ranking results explore
   partition/gossip schedules, objective-guided campaigns, production-shaped
   DAG traces, defensive adversarial vulnerability campaigns, precondition
   fuzzing, Rust replay fixtures, graph attack paths, stake damage,
@@ -159,7 +156,7 @@ See `slashing-specification.md` §10 for the full bug-fix manifest and
 ## Building and verifying
 
 The mechanized Rocq proofs, TLA+ model-checking instances, and Sage models
-live on the `analysis/slashing` branch. On that branch, build with:
+live in `formal/{rocq,tlaplus,sage}/slashing/`. Build with:
 
 ```sh
 # Rocq proofs (use systemd-run resource limits per CLAUDE.md)

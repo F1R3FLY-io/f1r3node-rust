@@ -252,7 +252,7 @@ upstream specification at
 | **[LSZ15]**         | Block-DAG / inclusive-chain background; cited where DAG-variant fork-choice is discussed.  |
 | **[HW90]**          | §05 (atomic Read-Modify-Write contract); T-9.2 (linearizability of tracker insertion).     |
 | **[Sal21]**         | §01.1 (rational-adversary model motivating slashing); threat-model §5.A.                   |
-| **[Rocq]**          | Every Rocq proof artifact (preserved on `analysis/slashing` under `formal/rocq/slashing/theories/*.v`); §10 (mechanization summary).      |
+| **[Rocq]**          | Every Rocq proof artifact under `formal/rocq/slashing/theories/*.v`; §10 (mechanization summary).      |
 | **[Lamport02]**     | §10 (TLA+ language and TLC).                                                               |
 | **[YML99]**         | §10 (TLC model-checking algorithm).                                                        |
 | **[Apalache19]**    | §10 (optional symbolic TLA+ verification).                                                 |
@@ -275,7 +275,7 @@ this repository. They are listed here for completeness:
   Normative specification.
 - [`../slashing-verification.md`](../slashing-verification.md) —
   Proof artifact (self-contained prose presentation of every theorem;
-  Rocq + TLA+ + Sage mechanizations preserved on `analysis/slashing`).
+  Rocq + TLA+ + Sage mechanizations under `formal/`).
 - [`../README.md`](../README.md) — Index for the slashing
   documentation directory.
 - [`../diagrams/`](../diagrams/) — **Eleven** PlantUML source files
@@ -284,7 +284,7 @@ this repository. They are listed here for completeness:
   Threat model.
 - *Defensive search-horizon program* and *Sage/Hypothesis finding
   ledger* (`slashing-search-horizon.md` and `slashing-traceability.md`)
-  are preserved on the `analysis/slashing` branch.
+  are in this documentation tree.
 
 ## 13.13 Changelog
 

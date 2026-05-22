@@ -924,8 +924,7 @@ via the trace-replay infrastructure at:
   harness's projected final state matches the TLA+ model's
   expected post-state for that schedule.
 - The sanity-check + workflow doc for regenerating traces from TLC
-  counter-examples is preserved on `analysis/slashing` as
-  `scripts/ci/dump-tla-traces.sh`.
+  counter-examples is `scripts/ci/dump-tla-traces.sh`.
 
 Five spec-trace pairs are checked in:
 - `MC_EquivocationDetector` ↔ `mc_equivocation_detector.json`
@@ -1084,7 +1083,7 @@ LOOM_MAX_PREEMPTIONS=3 LOOM_LOG=off cargo test --release -p casper -- slashing::
 ```
 
 Manual equivalent of the former **tla-model-check** job (TLA+ sources +
-`scripts/ci/check-tla-invariants.sh` are preserved on `analysis/slashing`):
+`scripts/ci/check-tla-invariants.sh` are in this repository):
 
 ```sh
 sudo apt-get update
@@ -1104,8 +1103,7 @@ RUN_EXHAUSTIVE_TLA=1 TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
   bash scripts/ci/check-tla-invariants.sh
 ```
 
-Manual equivalent of the former **rocq-build** job (Rocq sources are
-preserved on `analysis/slashing`):
+Manual equivalent of the former **rocq-build** job:
 
 ```sh
 sudo apt-get update

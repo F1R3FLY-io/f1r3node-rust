@@ -23,7 +23,7 @@ where
 {
     fn find_matching_data_candidate(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
         data: &[(Datum<A>, i32)],
         pattern: &P,
@@ -71,7 +71,7 @@ where
     /// Records mutations in `rollback` so the caller can undo them on failure.
     fn extract_data_candidates_rollback(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
@@ -111,7 +111,7 @@ where
     /// Non-rollback version for consume path (no speculative matching).
     fn extract_data_candidates(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
@@ -126,7 +126,7 @@ where
 
     fn extract_first_match(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
         match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
         mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
@@ -154,6 +154,22 @@ where
             );
 
             if data_candidates.iter().all(|x| x.is_some()) {
+                // Cross-channel commit hook: gives the matcher a chance
+                // to veto a commit even after every spatial bind has
+                // matched. Used for `where`-clause guards that mention
+                // bindings from multiple channels (plan §7.12).
+                let matched_data: Vec<A> = data_candidates
+                    .iter()
+                    .map(|c| c.as_ref().unwrap().datum.a.clone())
+                    .collect();
+                if !matcher.check_commit(&cont.continuation, &matched_data) {
+                    // Guard rejected: roll back and try the next
+                    // waiting continuation, just like a spatial miss.
+                    for (ch, original) in rollback {
+                        channel_to_index_data.insert(ch, original);
+                    }
+                    continue;
+                }
                 metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
                 return Some(ProduceCandidate {

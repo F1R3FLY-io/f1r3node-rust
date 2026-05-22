@@ -89,6 +89,12 @@ Theorem main_T9_slash_idempotent :
     /\ ps_active   ps2 = ps_active   ps1.
 Proof. exact slash_idempotent. Qed.
 
+Theorem main_TIdem_zero_bond_noop :
+  forall ps v,
+    bm_lookup (ps_allBonds ps) v = 0 ->
+    slash ps v = (ps, true).
+Proof. exact slash_zero_bond_noop. Qed.
+
 Theorem main_T10_fork_choice_exclusion :
   forall lm bonds v,
     bm_lookup bonds v = 0 ->
@@ -230,6 +236,25 @@ Theorem main_T9_13_positive_parent_bond_authorizes_matching_candidate :
     authorized_slash_candidate current_epoch parent_bonds sd evidence = true.
 Proof. exact positive_parent_bond_authorizes_matching_candidate. Qed.
 
+Theorem main_T9_13_parent_pre_state_authorizes_when_ambient_zero :
+  forall current_epoch ambient_bonds parent_bonds sd evidence offender,
+    evidence_lookup evidence (sd_target_hash sd) = Some (offender, current_epoch) ->
+    sd_target_epoch sd = current_epoch ->
+    bm_lookup ambient_bonds offender = 0 ->
+    bm_lookup parent_bonds offender > 0 ->
+    authorized_slash_candidate_with_ambient
+      current_epoch ambient_bonds parent_bonds sd evidence = true.
+Proof. exact parent_pre_state_authorizes_when_ambient_zero. Qed.
+
+Theorem main_T9_13_parent_zero_rejects_even_if_ambient_positive :
+  forall current_epoch ambient_bonds parent_bonds sd evidence offender evidence_epoch,
+    evidence_lookup evidence (sd_target_hash sd) = Some (offender, evidence_epoch) ->
+    bm_lookup ambient_bonds offender > 0 ->
+    bm_lookup parent_bonds offender = 0 ->
+    authorized_slash_candidate_with_ambient
+      current_epoch ambient_bonds parent_bonds sd evidence = false.
+Proof. exact parent_zero_rejects_even_if_ambient_positive. Qed.
+
 Theorem main_T9_13_recoverable_rejected_slash_hashes_nodup :
   forall rejected own_invalid_hashes,
     NoDup (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
@@ -248,6 +273,13 @@ Theorem main_T9_13_uncovered_rejected_hash_recovered :
     In (rejected_slash_hash rs)
        (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
 Proof. exact uncovered_rejected_hash_recovered. Qed.
+
+Theorem main_T9_13_recoverable_rejected_slash_requires_current_evidence :
+  forall rejected own_invalid_hashes current_evidence_hashes h,
+    In h (recoverable_current_rejected_slash_hashes
+            rejected own_invalid_hashes current_evidence_hashes) ->
+    In h current_evidence_hashes.
+Proof. exact recoverable_rejected_slash_requires_current_evidence. Qed.
 
 Theorem main_TAuth_invalid_token_noop :
   forall ps sd lookup current_epoch,

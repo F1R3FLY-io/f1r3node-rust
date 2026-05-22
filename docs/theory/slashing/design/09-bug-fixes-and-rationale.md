@@ -41,8 +41,9 @@ The current dev merge adds a recovery refinement to #12/#13: a slash
 that is itself rejected by multi-parent merge conflict resolution is
 surfaced as `RejectedSlash` and reissued by the merge proposer. Recovery
 dedups by `invalid_block_hash`, drops hashes already covered by the
-proposer's own slash pass, and relies on PoS slash idempotence when the
-offender has already reached zero bond.
+proposer's own slash pass, filters out stale/non-current invalid evidence,
+and relies on PoS slash idempotence when the offender has already reached
+zero bond.
 
 Bug #10 is the **withdrawal-flow analog** of Bug #4: both close
 `posVault.transfer`-failure FIXMEs in `PoS.rhox`. Bug #4 fixed the
@@ -184,19 +185,18 @@ standard pipeline.
 
 **Origin.** Scala-inherited.
 
-**Cause.** `casper/src/main/resources/PoS.rhox:469` carries the
-comment *"FIXME handle transfer failing case"*. If
-`posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
-*transferDoneCh)` fails, the `for (_ <- transferDoneCh)`
-continuation never fires and there is no error path back to
-`returnCh`. The slash deploy hangs.
+**Cause.** The pre-fix slash arm waited only for the successful transfer
+acknowledgement. If `posVault!("transfer", coopMultiVaultAddr, valBond,
+posAuthKey, *transferDoneCh)` failed, there was no deterministic error
+path back to `returnCh`.
 
 **Pre-fix behavior.** The validator stays in `SlashPending`
 indefinitely; replay fails to converge.
 
-**Post-fix behavior.** Add an alternate continuation that listens
-for an error signal on `transferDoneCh` (or a timeout) and writes
-`(false, "transfer failed")` to `returnCh` deterministically.
+**Post-fix behavior.** The current contract handles the transfer result:
+success performs the atomic state update, while failure returns
+`(false, "transfer failed: ...")` deterministically with PoS state
+unchanged.
 
 **Theorem T-9.4.** *(`t_9_4_transfer_failure_safety`,
 `BugFixTransferFailure.v:40`.)* Under the fix, the slash transition
@@ -520,7 +520,7 @@ of the obligation and cannot retry. Post-fix, the validator stays in
 `withdrawers` until a successful transfer, with the per-validator
 state intact across block boundaries.
 
-**Companion TLA+ model.** `formal/tlaplus/slashing/WithdrawFlow.tla` (preserved on `analysis/slashing`)
+**Companion TLA+ model.** `formal/tlaplus/slashing/WithdrawFlow.tla`
 + `MC_WithdrawFlow.cfg` model the withdrawal pipeline with
 explicit success / fail / retry actions and verify
 `Inv_NoFundsLost`, `Inv_TotalFundsConst`, `Inv_RemovedImpliesPaid`,
@@ -596,9 +596,13 @@ parent pre-state, and a block may target each `(validator, epoch)` at most
 once.
 
 **Proofs and tests.** Rocq: `execute_unknown_evidence_noop`,
-`main_T9_13_unknown_slash_evidence_noop`. TLA+:
-`Inv_RejectedSlashWithoutEvidenceNoPending`. Rust:
-`slash_authorization_regressions`.
+`main_T9_13_unknown_slash_evidence_noop`,
+`parent_pre_state_authorizes_when_ambient_zero`, and
+`recoverable_rejected_slash_requires_current_evidence`. TLA+:
+`Inv_RejectedSlashWithoutEvidenceNoPending`,
+`Inv_AuthorizationUsesParentPreState`, and
+`Inv_AmbientZeroDoesNotBlockParentPositiveAuth`. Rust:
+`slash_authorization_regressions` and recovered-slash evidence-filter tests.
 
 **Why this matters.** Without the fix, slash authorization is *delegated to
 the block sender*: any block author could fire arbitrary slashes against
@@ -834,7 +838,7 @@ then A.
 
 **Proofs and tests.** Rocq: `t_9_20_recon`,
 `t_9_20_reconcile_idempotent`, `t_9_20_step_idempotent_on_projection`
-(file `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`, preserved on `analysis/slashing`).
+(file `formal/rocq/slashing/theories/BugFixAtomicBufferDagTransition.v`).
 Rust integration: `block-storage/tests/atomic_buffer_dag_transition.rs`
 (8 tests against real LMDB stores via `InMemoryStoreManager`). Rust
 model-level: `casper/tests/slashing/uc_55_buffer_dag_atomic_transition.rs`
