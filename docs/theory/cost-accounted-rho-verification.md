@@ -4106,4 +4106,77 @@ the formal specification.
 
 ---
 
+## Appendix A. Option E: Post-Hoc Canonical Reconciliation
+
+The `RuntimeBudget` Rust implementation uses lock-free CAS attempts
+against a shared `consumed_tokens` counter. Multiple concurrent
+parallel-reduction tasks race for the CAS; whichever wins gets the
+weight. The runtime's grant/oop decision is for *liveness* — once
+the budget is exhausted, no further branches do paid work. But the
+*consensus-relevant* values (`deploy.cost`, `cost_trace_digest`,
+`last_oop_event`, `cost_trace_event_count`) come from a separate
+post-execution **canonical reconciliation**, NOT from the runtime
+CAS outcomes.
+
+### A.1 Paper alignment
+
+Per §3 Rule 1 of `cost-accounted-rho.tex`: within a single deploy,
+all sub-processes share the deploy signature `σ_deploy`. The
+applicable rule is the shared-token form `(P)^σ | σ:T → P^σ | T`.
+The paper does NOT prescribe an ordering between sibling sub-processes
+that both consume from the shared `σ:T` — only that the final state
+is bisimilar across reductions.
+
+Option E picks **the canonical-rank order** as the consensus
+ordering: events sorted by `(deploy_id, source_path, redex_id,
+local_index, kind, weight)` (all program-structure-derived). Two
+runtime executions over the same deploy + initial budget produce
+identical canonical sequences regardless of Tokio scheduling.
+
+This is a strict *refinement* of the paper: any property the paper
+proves about `(P)^σ | σ:T` reductions holds for the canonical order
+(as one specific schedule), and Option E adds schedule-invariance.
+
+### A.2 Implementation contract
+
+- `attempt_log: Arc<Mutex<Vec<AttemptRecord>>>` — every reservation
+  ATTEMPT recorded (whether or not the runtime CAS race granted it),
+  briefly mutex-protected per push.
+- `consumed_tokens: Arc<AtomicI64>` — runtime liveness counter; CASed
+  by parallel workers. May NOT equal the canonical consumed value if
+  races occur.
+- `canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>`
+  — cached output of `reconcile()`; invalidated by `reset_from_token`.
+- `reconcile()` — snapshot-clones `attempt_log`, sorts canonically,
+  walks once to find canonical `(committed, oop, consumed_units)`,
+  caches the result. Pure function of `(initial, attempts)`.
+- `reset_serializer: Arc<RwLock<()>>` — reset takes write; per-batch
+  reservation entry points take read. Uncontested when no reset is
+  pending — effectively atomic.
+
+### A.3 Theorem chain
+
+| Layer | Theorem | What it proves |
+|-------|---------|----------------|
+| Rocq | `rb_event_weight_sum_permutation_invariant` | Multiset weight is permutation-invariant. |
+| Rocq | `rb_reconcile_consumed_eq_min_initial_or_sum` | Canonical consumed = `min(initial, consumed_initial + Σ weights)`. |
+| Rocq | `rb_reconcile_consumed_invariant_under_permutation` | Two permutations agree on canonical consumed. |
+| Rocq | `rb_reconcile_oop_iff_sum_overflows` | OOP fires iff cumulative weight exceeds budget. |
+| Rocq | `rb_reconcile_oop_occurrence_invariant_under_permutation` | Two permutations agree on whether OOP fires. |
+| TLA+ | `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial` | Finalized digest equals canonical-walk output. |
+| TLA+ | `RuntimeBudgetReplay.ConsumedFollowsReconciliationContract` | Consumed at finalization matches reconciliation contract. |
+| Sage | `sage_concurrency_reconciliation_is_schedule_independent` | Sage scenario record cross-references all five layers. |
+| Loom | `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule` | Two concurrent attempts produce same canonical OOP under every loom-explored schedule. |
+| Rust | `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable` | 16-thread concurrent reservation produces canonical-walk-derived `cost_trace_event_count` AND identical digest across two independent runs. |
+
+### A.4 What this fix closes
+
+- **Direct**: `ReplayCostTraceMismatch` (the consensus-relevant
+  `cost_trace_digest` is now schedule-independent).
+- **Cascade-closed**: the secondary `Missing mergeable entry`
+  KvStoreError, `RootRepositoryDivergence` / `UnknownRootError`,
+  and `UnauthorizedSlashDeploy` entries that previously stemmed
+  from the digest mismatch (see `cost-accounting-threat-model.md`
+  TM-CA-144).
+
 *E Pluribus Potentia*

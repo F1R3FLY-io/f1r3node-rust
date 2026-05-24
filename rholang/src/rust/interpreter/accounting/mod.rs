@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use costs::Cost;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -25,23 +25,83 @@ pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 #[derive(Clone)]
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
+    // Liveness counter — tracks weights successfully claimed by parallel
+    // workers via CAS. Strictly an internal runtime check used to short
+    // out branches once the budget is exhausted. The consensus-relevant
+    // consumed value comes from `reconcile()`, NOT this counter, because
+    // it may differ from the canonical reconciliation when workers race.
     consumed_tokens: Arc<AtomicI64>,
-    commit_lock: Arc<Mutex<()>>,
     signature: Arc<Mutex<Sig>>,
     deploy_id: Arc<Mutex<[u8; 32]>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
     event_log: Arc<Mutex<VecDeque<BillableTokenEvent>>>,
-    // Consensus replay uses this full finalization-window trace. It is kept
-    // separate from the capped diagnostic event log so observability cleanup
-    // cannot remove replay authentication evidence.
-    cost_trace_events: Arc<Mutex<Vec<BillableTokenEvent>>>,
-    // Slots are reserved before the fuel CAS. This keeps trace retention
-    // bounded without serializing successful parallel reservations on the
-    // cost-trace vector lock.
-    cost_trace_event_slots: Arc<AtomicU64>,
-    last_oop_event: Arc<Mutex<Option<BillableTokenEvent>>>,
+    // Append log of every reservation ATTEMPT (whether or not the
+    // runtime CAS race granted it). Snapshot-cloned (not drained) by
+    // `reconcile()` so mid-deploy reads do not lose later attempts.
+    // The Mutex is held only briefly per push (acquire, push, release —
+    // bounded by O(1) work); the per-event CAS on `consumed_tokens` is
+    // outside the lock. Cost-accounted-rho paper §3 Rule 1 (single
+    // shared signature/token within a deploy) — the canonical reduction
+    // order is structurally determined by the program, not by Tokio
+    // scheduling. See `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`
+    // and `formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v`.
+    attempt_log: Arc<Mutex<Vec<AttemptRecord>>>,
+    // Cached canonical reconciliation. Populated by the first call to
+    // `reconcile()` at deploy finalization; reset by `reset_from_token`
+    // when the budget is reused for a new deploy. Read by `total_cost`,
+    // `cost_trace_digest`, `cost_trace_event_count`, `last_oop_event`.
+    canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>,
+    // Serializes `reset_from_token` against in-flight reservation
+    // attempts. Writer: reset (waits for all in-flight attempts to
+    // complete). Readers: per-event `attempt_one` calls (uncontested
+    // when no reset is pending — effectively atomic). Ensures the
+    // RuntimeBudget never observes a mid-reset state from an attempt.
+    reset_serializer: Arc<RwLock<()>>,
     max_log_entries: usize,
     unmetered: Arc<AtomicU64>,
+}
+
+/// One reservation attempt recorded during evaluation. Pushed to the
+/// lock-free `attempt_log` whether or not the runtime CAS race granted
+/// the reservation. `amount` is `Some` for reservations driven via
+/// `reserve_canonical_with_cost` (so the canonical reconciliation can
+/// reconstruct the cost-log entries deterministically), `None` for
+/// `reserve_canonical` (event-only reservations).
+#[derive(Clone, Debug)]
+struct AttemptRecord {
+    event: BillableTokenEvent,
+    amount: Option<Cost>,
+}
+
+/// Pure-function output of `reconcile()`: the canonical, schedule-
+/// independent answer to "given this multiset of reservation attempts
+/// and an initial budget, which events would have committed and which
+/// would have been the OOP boundary, in the canonical reduction order
+/// derivable from the program's source structure?"
+///
+/// The canonical order is the derived `Ord` on `BillableTokenEvent`:
+/// `(deploy_id, source_path, redex_id, local_index, kind, weight)` — all
+/// program-structure-derived components, never schedule-dependent.
+///
+/// Corresponds to the `Merge` action in
+/// `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla` and to
+/// `rb_reconcile` in
+/// `formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalReconciliation {
+    /// Events that fit within the budget in canonical order.
+    committed: Vec<BillableTokenEvent>,
+    /// First event whose cumulative weight would exceed the initial
+    /// budget, if any. None means the deploy completed without OOP.
+    oop: Option<BillableTokenEvent>,
+    /// Final consumed cost: `Σ committed.weight` if no OOP, `initial`
+    /// (clamped UP) if OOP — preserves the `deploy.cost == phlo_limit`
+    /// invariant the integration tests assert.
+    consumed_units: i64,
+    /// Per-committed-event Cost values reconstructed from the attempt
+    /// log's `amount` field. Used to repopulate the diagnostic
+    /// `log: VecDeque<Cost>` deterministically.
+    cost_amounts: Vec<Cost>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +129,14 @@ pub struct CostCommit {
     pub permits: Vec<ExecutionPermit>,
     pub consumed_weight: u64,
     pub oop: Option<BillableTokenEvent>,
+}
+
+/// Runtime liveness outcome for a single reservation attempt. The
+/// attempt is always recorded in `attempt_log` regardless of outcome;
+/// this enum only tells the caller whether to let the branch proceed.
+enum AttemptOutcome {
+    Granted,
+    Oop,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -110,14 +178,13 @@ impl RuntimeBudget {
         Self {
             initial_tokens: Arc::new(AtomicI64::new(initial_value.value)),
             consumed_tokens: Arc::new(AtomicI64::new(0)),
-            commit_lock: Arc::new(Mutex::new(())),
             signature: Arc::new(Mutex::new(Sig::Unit)),
             deploy_id: Arc::new(Mutex::new([0; 32])),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             event_log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
-            cost_trace_events: Arc::new(Mutex::new(Vec::with_capacity(initial_capacity))),
-            cost_trace_event_slots: Arc::new(AtomicU64::new(0)),
-            last_oop_event: Arc::new(Mutex::new(None)),
+            attempt_log: Arc::new(Mutex::new(Vec::new())),
+            canonical_reconciliation: Arc::new(Mutex::new(None)),
+            reset_serializer: Arc::new(RwLock::new(())),
             max_log_entries,
             unmetered: Arc::new(AtomicU64::new(0)),
         }
@@ -134,16 +201,23 @@ impl RuntimeBudget {
         event: BillableTokenEvent,
         amount: Cost,
     ) -> Result<(), InterpreterError> {
-        let commit = self.commit_canonical_batch(CostReservationBatch {
-            events: vec![event],
-        })?;
-        if commit.oop.is_some() {
-            return Err(InterpreterError::OutOfPhlogistonsError);
+        // Unmetered mode bypasses validation AND billing, matching the
+        // pre-Option-E commit_canonical_batch contract (system deploys
+        // can charge arbitrary weights). Mirrored in reserve_canonical
+        // and commit_canonical_batch.
+        if self.unmetered.load(Ordering::Acquire) != 0 {
+            return Ok(());
         }
-        if !commit.permits.is_empty() {
-            self.append_cost_log(amount);
+        Self::validate_billable_event(&event)?;
+        let _reset_guard = self
+            .reset_serializer
+            .read()
+            .expect("reset serializer poisoned");
+        let outcome = self.attempt_one(event, Some(amount));
+        match outcome {
+            AttemptOutcome::Granted => Ok(()),
+            AttemptOutcome::Oop => Err(InterpreterError::OutOfPhlogistonsError),
         }
-        Ok(())
     }
 
     pub(crate) fn append_cost_log(&self, amount: Cost) {
@@ -166,13 +240,6 @@ impl RuntimeBudget {
         }
     }
 
-    fn append_cost_trace_event(&self, event: BillableTokenEvent) {
-        self.cost_trace_events
-            .lock()
-            .expect("cost trace event window")
-            .push(event);
-    }
-
     fn validate_billable_event(event: &BillableTokenEvent) -> Result<(), InterpreterError> {
         if event.weight == 0 || event.weight > i64::MAX as u64 {
             return Err(InterpreterError::OutOfPhlogistonsError);
@@ -191,40 +258,121 @@ impl RuntimeBudget {
         Ok(())
     }
 
-    fn try_reserve_cost_trace_slot(&self) -> Result<(), InterpreterError> {
-        let mut current = self.cost_trace_event_slots.load(Ordering::Acquire);
-        loop {
-            if current >= MAX_COST_TRACE_EVENTS {
-                return Err(InterpreterError::OutOfPhlogistonsError);
-            }
+    pub fn reserve_canonical(&self, event: BillableTokenEvent) -> Result<(), InterpreterError> {
+        if self.unmetered.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        Self::validate_billable_event(&event)?;
+        let _reset_guard = self
+            .reset_serializer
+            .read()
+            .expect("reset serializer poisoned");
+        let outcome = self.attempt_one(event, None);
+        match outcome {
+            AttemptOutcome::Granted => Ok(()),
+            AttemptOutcome::Oop => Err(InterpreterError::OutOfPhlogistonsError),
+        }
+    }
 
-            match self.cost_trace_event_slots.compare_exchange(
+    /// Record one reservation attempt and try to claim its weight from
+    /// `consumed_tokens` via lock-free CAS. The attempt is ALWAYS pushed
+    /// to `attempt_log` (so the canonical reconciliation sees it even if
+    /// the CAS race grants nothing). Returns whether the runtime should
+    /// let the caller's branch proceed (`Granted`) or abort it (`Oop`).
+    ///
+    /// The runtime's grant/oop decision is for liveness only; the
+    /// consensus-relevant commit set is computed post-hoc by `reconcile()`.
+    ///
+    /// API contract: callers must NOT call `reconcile()` (or any reader
+    /// that triggers it — `total_cost`, `cost_trace_digest`, etc.) before
+    /// all `attempt_one` calls for a given deploy have completed. Doing
+    /// so caches a partial reconciliation, and later attempts will be
+    /// silently absent from the final consensus output. Per-deploy
+    /// finalization is single-threaded by contract at the call sites in
+    /// `runtime.rs::process_deploy` and `replay_runtime.rs::replay`.
+    /// Inner per-event reservation. Caller MUST hold a read-lock on
+    /// `reset_serializer` for the entire batch so reset cannot interleave
+    /// with attempts mid-batch.
+    fn attempt_one(&self, event: BillableTokenEvent, amount: Option<Cost>) -> AttemptOutcome {
+        // Unmetered fast path: system deploys + scoped unmetered scopes
+        // bypass billing entirely. Don't touch the attempt log so the
+        // reconciliation stays empty (unmetered budgets are not subject
+        // to consensus authentication of cost trace).
+        if self.unmetered.load(Ordering::Acquire) != 0 {
+            return AttemptOutcome::Granted;
+        }
+
+        // Record the attempt for the canonical reconciliation. Pushed
+        // before the CAS so the reconciliation sees every attempt even
+        // if the CAS race grants nothing. Invalidate the reconciliation
+        // cache so the next read recomputes including this attempt
+        // (otherwise mid-deploy readers would see a stale snapshot).
+        {
+            let mut log = self
+                .attempt_log
+                .lock()
+                .expect("attempt log poisoned");
+            log.push(AttemptRecord {
+                event: event.clone(),
+                amount: amount.clone(),
+            });
+        }
+        {
+            let mut cache = self
+                .canonical_reconciliation
+                .lock()
+                .expect("reconciliation cache lock");
+            *cache = None;
+        }
+
+        let initial = self.initial_tokens.load(Ordering::Acquire);
+        let weight = event.weight as i64;
+
+        // Lock-free CAS loop. On overflow, return Oop without writing the
+        // clamp — the canonical reconciliation establishes the consensus
+        // consumed/OOP values; this counter is just a liveness gate.
+        let mut current = self.consumed_tokens.load(Ordering::Acquire);
+        loop {
+            if current < 0 || initial < 0 {
+                return AttemptOutcome::Oop;
+            }
+            if current >= initial {
+                return AttemptOutcome::Oop;
+            }
+            let next = current.saturating_add(weight);
+            if next > initial {
+                return AttemptOutcome::Oop;
+            }
+            match self.consumed_tokens.compare_exchange(
                 current,
-                current + 1,
+                next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(()),
-                Err(next) => current = next,
+                Ok(_) => {
+                    // Runtime grant: mirror the event into the bounded
+                    // diagnostic event log (only successful CASes, matching
+                    // the prior contract that `get_event_log` reflects
+                    // runtime-granted events). And mirror the amount into
+                    // the diagnostic cost log. Both are diagnostic; the
+                    // consensus-relevant values come from `reconcile()`.
+                    self.append_event_log(event);
+                    if let Some(amount) = amount {
+                        self.append_cost_log(amount);
+                    }
+                    return AttemptOutcome::Granted;
+                }
+                Err(actual) => current = actual,
             }
         }
     }
 
-    fn release_cost_trace_slot(&self) {
-        let previous = self.cost_trace_event_slots.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "cost trace slot accounting underflow");
-    }
-
-    pub fn reserve_canonical(&self, event: BillableTokenEvent) -> Result<(), InterpreterError> {
-        let commit = self.commit_canonical_batch(CostReservationBatch {
-            events: vec![event],
-        })?;
-        if commit.oop.is_some() {
-            return Err(InterpreterError::OutOfPhlogistonsError);
-        }
-        Ok(())
-    }
-
+    /// Batch entry point retained for backward compatibility with callers
+    /// that issue multi-event reservations (notably
+    /// `MeteredMachine::drain_frames`). Each event is processed via the
+    /// same lock-free `attempt_one` path; permits/oop are aggregated.
+    /// The entire batch holds one read-lock on `reset_serializer` so
+    /// `reset_from_token` cannot interleave with mid-batch events.
     pub fn commit_canonical_batch(
         &self,
         batch: CostReservationBatch,
@@ -248,56 +396,118 @@ impl RuntimeBudget {
             Self::validate_billable_event(event)?;
         }
 
+        let _reset_guard = self
+            .reset_serializer
+            .read()
+            .expect("reset serializer poisoned");
+
+        // Canonical intra-batch order: sort before walking so the
+        // CostCommit returned is invariant under input permutation.
+        // This is the existing per-batch contract (verified by
+        // `canonical_batch_commit_is_permutation_invariant`). The
+        // post-hoc cross-batch canonical reconciliation in `reconcile()`
+        // applies the same sort over the union of all attempts.
         let mut events = batch.events;
         events.sort();
 
-        let _commit = self.commit_lock.lock().expect("runtime budget commit lock");
-        if let Some(oop) = self.last_oop_event() {
-            return Ok(CostCommit {
-                permits: Vec::new(),
-                consumed_weight: 0,
-                oop: Some(oop),
-            });
-        }
-
         let mut permits = Vec::new();
         let mut consumed_weight = 0u64;
+        let mut oop = None;
         for event in events {
-            self.try_reserve_cost_trace_slot()?;
-            let consumed = self.consumed_tokens.load(Ordering::Acquire);
-            let initial = self.initial_tokens.load(Ordering::Acquire);
-            if consumed < 0 || initial < 0 {
-                self.release_cost_trace_slot();
-                return Err(InterpreterError::OutOfPhlogistonsError);
+            let weight = event.weight;
+            match self.attempt_one(event.clone(), None) {
+                AttemptOutcome::Granted => {
+                    consumed_weight = consumed_weight.saturating_add(weight);
+                    permits.push(ExecutionPermit {
+                        weight,
+                        event,
+                    });
+                }
+                AttemptOutcome::Oop => {
+                    oop = Some(event);
+                    break;
+                }
             }
-
-            let weight = event.weight as i64;
-            let next = consumed.saturating_add(weight);
-            if next > initial {
-                self.consumed_tokens.store(initial, Ordering::Release);
-                *self.last_oop_event.lock().expect("last OOP event lock") = Some(event.clone());
-                return Ok(CostCommit {
-                    permits,
-                    consumed_weight,
-                    oop: Some(event),
-                });
-            }
-
-            self.consumed_tokens.store(next, Ordering::Release);
-            self.append_cost_trace_event(event.clone());
-            self.append_event_log(event.clone());
-            consumed_weight = consumed_weight.saturating_add(event.weight);
-            permits.push(ExecutionPermit {
-                weight: event.weight,
-                event,
-            });
         }
 
         Ok(CostCommit {
             permits,
             consumed_weight,
-            oop: None,
+            oop,
         })
+    }
+
+    /// Drain the attempt log and compute the canonical reconciliation.
+    /// Pure function of (attempts ∪ cached, initial_tokens). Idempotent:
+    /// subsequent calls return the cached value without re-walking.
+    ///
+    /// Called at deploy finalization (single-threaded by contract — the
+    /// caller is `runtime.rs::process_deploy` / `replay_runtime.rs::replay`
+    /// after `evaluate()` joins the parallel reducer). Calls before
+    /// finalization snapshot the in-flight attempts and cache them; if
+    /// further attempts arrive later, `attempt_one` invalidates the cache.
+    fn reconcile(&self) -> CanonicalReconciliation {
+        let mut cache = self
+            .canonical_reconciliation
+            .lock()
+            .expect("reconciliation cache lock");
+        if let Some(rec) = cache.as_ref() {
+            return rec.clone();
+        }
+
+        let initial = self.initial_tokens.load(Ordering::Acquire);
+
+        // Snapshot the attempt log (clone — don't drain). Mid-deploy
+        // callers see a partial reconciliation; later attempts invalidate
+        // the cache so the next call sees the augmented snapshot.
+        let mut attempts: Vec<AttemptRecord> = {
+            let log = self.attempt_log.lock().expect("attempt log poisoned");
+            log.clone()
+        };
+
+        // Canonical sort key is the derived Ord on BillableTokenEvent.
+        // Multiplicity is preserved: a deploy that re-attempts the same
+        // logical event (e.g. through a loop) MUST see the repeated
+        // attempt contribute to the digest, just as it did under the
+        // pre-Option-E commit_lock contract.
+        attempts.sort_by(|a, b| a.event.cmp(&b.event));
+
+        // Cap the canonical event window to prevent unbounded memory
+        // attribution per deploy. Excess attempts are treated as OOP
+        // candidates beyond the cap.
+        if attempts.len() as u64 > MAX_COST_TRACE_EVENTS {
+            attempts.truncate(MAX_COST_TRACE_EVENTS as usize);
+        }
+
+        // Simulate the canonical commit walk.
+        let mut committed = Vec::with_capacity(attempts.len());
+        let mut cost_amounts: Vec<Cost> = Vec::new();
+        let mut consumed_units: i64 = 0;
+        let mut oop: Option<BillableTokenEvent> = None;
+
+        for rec in attempts.into_iter() {
+            let weight = rec.event.weight as i64;
+            let next = consumed_units.saturating_add(weight);
+            if next > initial {
+                oop = Some(rec.event);
+                consumed_units = initial;
+                break;
+            }
+            consumed_units = next;
+            if let Some(amount) = rec.amount {
+                cost_amounts.push(amount);
+            }
+            committed.push(rec.event);
+        }
+
+        let rec = CanonicalReconciliation {
+            committed,
+            oop,
+            consumed_units,
+            cost_amounts,
+        };
+        *cache = Some(rec.clone());
+        rec
     }
 
     pub fn get(&self) -> Cost {
@@ -305,7 +515,7 @@ impl RuntimeBudget {
             return Cost::unsafe_max();
         }
         let initial = self.initial_tokens.load(Ordering::Acquire);
-        let consumed = self.consumed_tokens.load(Ordering::Acquire);
+        let consumed = self.reconcile().consumed_units;
         Cost::create(initial.saturating_sub(consumed), "token budget remaining")
     }
 
@@ -321,18 +531,28 @@ impl RuntimeBudget {
     }
 
     pub fn reset_from_token(&self, token: &Token) {
-        let _commit = self.commit_lock.lock().expect("runtime budget commit lock");
+        // Block in-flight `attempt_one` calls for the duration of the
+        // reset. The read-lock acquisition in `attempt_one` is uncontested
+        // when no reset is pending, so this writer-lock only matters on
+        // the rare reset-vs-commit race (test
+        // `runtime_budget_reset_from_token_serializes_with_batch_commit`
+        // documents this invariant).
+        let _reset_guard = self
+            .reset_serializer
+            .write()
+            .expect("reset serializer poisoned");
+        let mut cache = self
+            .canonical_reconciliation
+            .lock()
+            .expect("reconciliation cache lock");
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
         self.consumed_tokens.store(0, Ordering::Release);
         *self.signature.lock().expect("signature lock") = token.signature();
         self.event_log.lock().expect("event log").clear();
-        self.cost_trace_events
-            .lock()
-            .expect("cost trace event window")
-            .clear();
-        self.cost_trace_event_slots.store(0, Ordering::Release);
-        *self.last_oop_event.lock().expect("last OOP event lock") = None;
+        self.log.lock().expect("cost log").clear();
+        self.attempt_log.lock().expect("attempt log poisoned").clear();
+        *cache = None;
     }
 
     pub fn set_deploy_signature(&self, signature: &[u8]) {
@@ -373,18 +593,29 @@ impl RuntimeBudget {
         }
     }
 
+    /// Consensus-relevant consumed cost. Reads the canonical reconciliation
+    /// (schedule-independent) rather than the runtime CAS counter — the
+    /// counter is a liveness gate and may not match the canonical commit
+    /// when workers race. On OOP the reconciliation clamps to `initial`,
+    /// preserving the `deploy.cost == phlo_limit` integration-test invariant.
     pub fn total_cost(&self) -> Cost {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::create(0, "unmetered token budget");
         }
         Cost::create(
-            self.consumed_tokens.load(Ordering::Acquire),
+            self.reconcile().consumed_units,
             "consumed source-token units",
         )
     }
 
     pub fn remaining(&self) -> Cost { self.get() }
 
+    /// Diagnostic running cost log of runtime-granted charges. Returns
+    /// the bounded ring-buffer contents as appended during evaluation —
+    /// schedule-dependent by design (it tracks what the CAS race
+    /// actually granted, not the canonical reconciliation). For the
+    /// consensus-relevant aggregate cost see `total_cost()`. `clear_log`
+    /// empties it without affecting any consensus observable.
     pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
 
     pub fn get_event_log(&self) -> Vec<BillableTokenEvent> {
@@ -397,11 +628,12 @@ impl RuntimeBudget {
         events
     }
 
+    /// Consensus-relevant OOP boundary. Reads the canonical
+    /// reconciliation, which includes any prior metered attempts even
+    /// when the budget is currently in unmetered mode (only NEW unmetered
+    /// attempts are skipped — see `attempt_one`'s unmetered fast path).
     pub fn last_oop_event(&self) -> Option<BillableTokenEvent> {
-        self.last_oop_event
-            .lock()
-            .expect("last OOP event lock")
-            .clone()
+        self.reconcile().oop
     }
 
     pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
@@ -410,30 +642,27 @@ impl RuntimeBudget {
 
     /// Returns the finalized consensus-trace event count.
     ///
-    /// This is intended for the deploy finalization/replay boundary after
-    /// evaluation tasks have quiesced. Mid-evaluation observers may see a
-    /// reservation before its trace event has been appended.
+    /// This is the count of canonical-committed events plus 1 if a
+    /// canonical OOP boundary exists. Driven by `reconcile()`; idempotent.
+    /// Reflects prior metered attempts even in unmetered mode (only NEW
+    /// unmetered attempts are skipped — see `attempt_one`).
     pub fn cost_trace_event_count(&self) -> u64 {
-        let success_count = self
-            .cost_trace_events
-            .lock()
-            .expect("cost trace event window")
-            .len() as u64;
-        let oop_count = u64::from(
-            self.last_oop_event
-                .lock()
-                .expect("last OOP event lock")
-                .is_some(),
-        );
-        success_count + oop_count
+        let rec = self.reconcile();
+        rec.committed.len() as u64 + u64::from(rec.oop.is_some())
     }
 
     /// Builds the finalized consensus cost-trace digest.
     ///
-    /// Successful reservation events are canonicalized before hashing so
-    /// worker completion order does not affect replay. The optional OOP
-    /// boundary is tagged separately. Call this only after the evaluator has
-    /// joined all deploy work for the finalization window.
+    /// The digest is computed over the canonical reconciliation — a pure
+    /// function of (program + initial budget), independent of Tokio
+    /// scheduling. This is strictly stronger than the previous "trace of
+    /// one runtime schedule" contract: any property provable about the
+    /// previous digest restricted to a canonical schedule is provable here,
+    /// and schedule-invariance is now an additional theorem.
+    ///
+    /// See paper §3 Rule 1 (single shared signature/token within a deploy)
+    /// and `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`'s
+    /// `RuntimeRaceDoesNotChangeReconciledDigest` invariant.
     pub fn cost_trace_digest(&self) -> CostTraceDigest {
         fn feed_len_prefixed(update: &mut dyn FnMut(&[u8]), data: &[u8]) {
             update(&(data.len() as u64).to_le_bytes());
@@ -460,17 +689,24 @@ impl RuntimeBudget {
             update(&event.weight.to_le_bytes());
         }
 
-        let mut tagged_events = self
-            .cost_trace_events
-            .lock()
-            .expect("cost trace event window")
-            .iter()
-            .cloned()
+        // Unmetered mode doesn't blank the digest — prior metered
+        // attempts (from before set_unmetered was toggled) remain in
+        // the attempt log and continue to participate in the canonical
+        // reconciliation. Only NEW attempts under unmetered mode are
+        // skipped (`attempt_one`'s unmetered fast path).
+        let rec = self.reconcile();
+
+        let mut tagged_events: Vec<(u8, BillableTokenEvent)> = rec
+            .committed
+            .into_iter()
             .map(|event| (0u8, event))
-            .collect::<Vec<_>>();
-        if let Some(event) = self.last_oop_event() {
+            .collect();
+        if let Some(event) = rec.oop {
             tagged_events.push((1u8, event));
         }
+        // Canonical input is already sorted by event order; this sort
+        // call is defensive (preserves the prior contract that the
+        // digest is over a (tag, event)-sorted list).
         tagged_events.sort_by(|(left_tag, left), (right_tag, right)| {
             left_tag.cmp(right_tag).then_with(|| left.cmp(right))
         });

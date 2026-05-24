@@ -1,0 +1,105 @@
+' Option E: Post-Hoc Canonical Reconciliation
+'
+' Source of truth for Appendix A in
+' docs/theory/cost-accounted-rho-verification.md (Option E section).
+'
+' Shows the runtime lifecycle of a deploy under the Option E design:
+'   Phase 1 — N parallel reducer tasks attempt reservations concurrently
+'             (lock-free CAS on consumed_tokens + brief Mutex<Vec> push
+'              to attempt_log). The runtime CAS race winners are
+'              schedule-dependent — irrelevant to consensus.
+'   Phase 2 — at deploy join (FuturesUnordered drained), reconcile()
+'             snapshot-clones attempt_log, sorts by canonical rank,
+'             walks once to find canonical (committed, oop, consumed).
+'             Cached in canonical_reconciliation.
+'   Phase 3 — consensus reads (total_cost, cost_trace_digest,
+'             last_oop_event, cost_trace_event_count) all return values
+'             from the cached canonical reconciliation. Schedule-INDEPENDENT.
+'
+' Color palette:
+'   Deployer / Caller    : salmon       (#F8C3B8)
+'   Parallel reducer task: amber        (#FFECB3)
+'   RuntimeBudget atomics: mint         (#C8E6C9)
+'   attempt_log (Mutex)  : lavender     (#D4C4E8)
+'   reconcile() function : teal         (#B2DFDB)
+'   Consensus reader     : blue         (#BBDEFB)
+'
+' Semantic arrow colors:
+'   Lock-free CAS attempt: red-ish (#C62828)
+'   Canonical sort + walk: green-ish (#2E7D32)
+'
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/option-e-reconciliation.puml
+
+@startuml option-e-reconciliation
+!theme plain
+
+skinparam BackgroundColor white
+skinparam SequenceMessageAlign center
+skinparam ParticipantPadding 8
+skinparam BoxPadding 6
+
+actor "Deploy\nCaller" as Caller #F8C3B8
+participant "Reducer\nTask 1" as T1 #FFECB3
+participant "Reducer\nTask k" as Tk #FFECB3
+participant "Reducer\nTask N" as TN #FFECB3
+participant "attempt_log\nMutex<Vec>" as Log #D4C4E8
+participant "consumed_tokens\nAtomicI64" as Counter #C8E6C9
+participant "reconcile()" as Reconcile #B2DFDB
+participant "canonical_\nreconciliation\nMutex<Option<...>>" as Cache #C8E6C9
+participant "ProcessedDeploy\n(consensus reader)" as Consensus #BBDEFB
+
+Caller -> T1: spawn
+Caller -> Tk: spawn
+Caller -> TN: spawn
+
+note over T1, TN: ── Phase 1: Lock-free parallel attempts (schedule-dependent) ──
+
+T1 -> Log: push attempt₁ (brief lock)
+T1 -> Counter: CAS consumed += w₁\n(grant if fits, Oop if overflow)
+Counter -[#C62828]-> T1: AttemptOutcome
+
+Tk -> Log: push attemptₖ (brief lock)
+Tk -> Counter: CAS consumed += wₖ
+Counter -[#C62828]-> Tk: AttemptOutcome
+
+TN -> Log: push attemptₙ (brief lock)
+TN -> Counter: CAS consumed += wₙ
+Counter -[#C62828]-> TN: AttemptOutcome
+
+T1 --> Caller: task complete
+Tk --> Caller: task complete
+TN --> Caller: task complete
+
+note over Caller: ── Phase 2: Canonical reconciliation (single-threaded, post-execution) ──
+
+Caller -> Reconcile: cost_trace_digest()\nor total_cost()\nor last_oop_event()
+Reconcile -> Cache: lock, check cache
+alt Cache miss
+    Reconcile -> Log: snapshot-clone all attempts
+    Log -[#2E7D32]-> Reconcile: Vec<AttemptRecord>
+    Reconcile -> Reconcile: sort by canonical rank\n(deploy_id, source_path,\nredex_id, local_index, kind, weight)
+    Reconcile -> Reconcile: walk events:\nconsumed += w until\nwould exceed initial → OOP
+    Reconcile -> Cache: store CanonicalReconciliation\n{committed, oop, consumed_units}
+end
+Cache -[#2E7D32]-> Consensus: canonical (committed, oop, consumed_units)
+
+note over Consensus: ── Phase 3: Schedule-INDEPENDENT consensus values ──
+
+Consensus -> Consensus: deploy.cost = consumed_units\ncost_trace_digest = hash(committed ++ oop)\ncost_trace_event_count = |committed| + (oop is Some)\nlast_oop_event = oop
+
+note over Caller, Consensus
+  The canonical reconciliation is a **pure function** of
+  (initial_budget, multiset of attempts). Any two play/replay
+  executions over the same deploy and budget produce identical
+  consensus values, regardless of which CAS race winners
+  occurred at runtime.
+
+  See:
+  - Rocq: rb_reconcile_consumed_invariant_under_permutation
+  - TLA+: RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial
+  - Loom: loom_runtime_budget_reconciliation::*
+  - Rust: cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable
+end note
+
+@enduml

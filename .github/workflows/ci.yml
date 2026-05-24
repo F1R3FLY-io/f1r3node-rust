@@ -149,6 +149,69 @@ jobs:
             './**/*.md'
           fail: true
 
+  formal_checks:
+    name: Formal (Rocq + TLA+)
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rocq (Coq) toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y opam libgmp-dev
+          opam init --bare --disable-sandboxing -y
+          opam switch create rocq-9.1.0 ocaml-base-compiler.4.14.2 || true
+          eval "$(opam env --switch=rocq-9.1.0)"
+          opam install -y rocq-prover.9.1.0
+
+      - name: Build cost-accounted-rho Rocq theories
+        run: |
+          eval "$(opam env --switch=rocq-9.1.0)"
+          # Avoid systemd-run in CI (no user session); resource limits
+          # are inherited from the runner environment.
+          make -C formal/rocq/cost_accounted_rho -j1
+
+      - name: Reject Admitted/Axiom in cost-accounted-rho theories
+        run: |
+          # Option E theorems must remain admit-free, axiom-free.
+          set -e
+          if grep -rnE '^(Admitted|Axiom|Parameter)\b' \
+              formal/rocq/cost_accounted_rho/theories/ ; then
+            echo "ERROR: cost-accounted-rho theories contain Admitted/Axiom/Parameter" >&2
+            exit 1
+          fi
+
+      - name: Install TLA+ Tools (tlc)
+        run: |
+          sudo apt-get install -y tlaplus
+
+      - name: Run TLC on RuntimeBudgetReplay (Option E invariants)
+        working-directory: formal/tlaplus/cost_accounted_rho
+        run: |
+          tlc -deadlock \
+            -config RuntimeBudgetReplay.cfg \
+            MCRuntimeBudgetReplay.tla 2>&1 | tee tlc-runtime-budget-replay.log
+          if grep -E "Error|Invariant .* is violated" tlc-runtime-budget-replay.log ; then
+            echo "ERROR: TLC reported an error or invariant violation" >&2
+            exit 1
+          fi
+
+      - name: Install SageMath (for cost-accounting frontier models)
+        run: |
+          sudo apt-get install -y sagemath || true
+          which sage || (echo "SageMath unavailable on this runner; skipping Sage step" && exit 0)
+
+      - name: Run concurrency_schedule_model (Option E coverage record)
+        working-directory: formal/sage/cost_accounting
+        run: |
+          if which sage >/dev/null 2>&1 ; then
+            sage concurrency_schedule_model.sage -- --json-out /tmp/cs-model.json
+            python3 -c "import json,sys; d=json.load(open('/tmp/cs-model.json')); names=[r.get('name','') for r in d.get('records',[])]; assert 'sage_concurrency_reconciliation_is_schedule_independent' in names, 'Option E Sage record missing'"
+          fi
+
   test:
     name: Test (${{ matrix.crate }})
     needs: lint

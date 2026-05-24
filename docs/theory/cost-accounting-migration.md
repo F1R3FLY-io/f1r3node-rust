@@ -1660,3 +1660,67 @@ Implementation paths, formal-verification artifacts, and regression tests are co
 [7] G. Winskel, *The Formal Semantics of Programming Languages: An Introduction*. MIT Press, 1993. ISBN: 0-262-23169-7.
 
 [8] B. C. Pierce, *Types and Programming Languages*. MIT Press, 2002. ISBN: 0-262-16209-1.
+
+---
+
+## 10. Migration Note: Option E (Post-Hoc Canonical Reconciliation)
+
+**Audience:** downstream contract authors and node operators who
+previously relied on the legacy schedule-dependent cost-trace semantics.
+
+**Summary.** As of the cost-accounted-rho `feature/...` integration,
+`RuntimeBudget`'s `cost_trace_digest`, `cost_trace_event_count`,
+`last_oop_event`, and `total_cost` are derived from a post-hoc
+**canonical reconciliation** instead of from runtime CAS race
+outcomes. The runtime still races lock-free attempts at full
+parallelism; only the *consensus-relevant* values are canonicalized.
+
+**Behavioral changes you may observe:**
+
+1. `cost_trace_digest` is now schedule-INDEPENDENT. Two play/replay
+   runs of the same deploy produce byte-identical digests. The prior
+   schedule-dependent digest was the root cause of the
+   `ReplayCostTraceMismatch` cascade that surfaced in
+   `test_cost_accounting.py::test_low_phlo_parallel_fanout_*`.
+2. `cost_trace_event_count()` may differ from
+   `get_event_log().len() + last_oop_event.is_some()`. The runtime
+   `event_log` still tracks CAS-granted events (schedule-dependent),
+   but the canonical event count comes from the canonical-walk
+   reconciliation.
+3. `total_cost()` always returns the canonical clamp value: either
+   `Σ canonical-committed weights` (no OOP) or `initial` (OOP).
+4. `last_oop_event()` returns the **canonical** OOP boundary — the
+   smallest-rank event whose cumulative weight would have exceeded
+   the budget under the canonical walk — NOT the runtime CAS loser
+   that happened to fire OOP first.
+5. `get_log()` is unchanged in semantics — still the runtime-appended
+   diagnostic log; cleared by `clear_log()` without affecting
+   consensus observables.
+
+**What contract authors should NOT rely on:**
+
+- The IDENTITY of which events succeed at runtime when the deploy
+  OOPs. The runtime CAS race winners are schedule-dependent (and
+  are correctly bounded by `phlo_limit`); the canonical reconciliation
+  is the only consensus answer.
+- Per-fork private budgets (an alternative design that was considered
+  and rejected — see TM-CA-147 in the threat model). All parallel
+  sub-processes within a deploy share ONE budget, per paper §3 Rule 1.
+
+**Migration steps for downstream consumers:**
+
+- Reads of `RuntimeBudget` accounting fields are unchanged at the API
+  surface. The semantic refinement happens transparently.
+- Tests asserting "event_log == cost_trace_events" (or equivalent
+  schedule-dependent invariants) must be updated to assert against
+  the canonical reconciliation. See
+  `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`
+  for the canonical-walk simulator pattern.
+
+**Reset/lifecycle considerations:**
+
+- `reset_from_token` now also clears the `attempt_log` and the
+  `canonical_reconciliation` cache. The reset is serialized against
+  in-flight batch reservations via `reset_serializer: RwLock<()>`.
+  Per-batch reservation entry points take a brief read lock —
+  uncontested when no reset is pending.

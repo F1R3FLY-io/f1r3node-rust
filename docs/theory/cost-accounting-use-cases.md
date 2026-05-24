@@ -198,3 +198,55 @@ The proof side remains the Rocq hygiene script:
 The combination gives three levels of coverage: universal Rocq proofs for the
 semantic invariants, finite-state TLA+ exploration for interleavings, and Rust
 use-case/property tests for the production APIs that implement the design.
+
+## UC-CA-Option-E: Low-Phlo Parallel Fanout under Post-Hoc Canonical Reconciliation
+
+**Scenario.** A deploy submits `@0!(0) | @1!(1) | … | @7!(7)` with
+`phlo_limit = 20`. Each send costs ~11 phlo; cumulative weight is ~88,
+greatly exceeding the budget. The deploy is expected to error
+(out-of-phlogistons) with `deploy.cost == 20` (clamped to phlo_limit).
+
+**Pre-Option-E behavior (bug).** 8 Tokio tasks raced for the budget's
+`commit_lock`. The CAS race winners — schedule-dependent — determined
+which subset of sends committed before OOP. Different runs (different
+nodes, different retries on the same node) committed different subsets
+of events, producing different `cost_trace_digest` values. Replay
+validators saw `ReplayCostTraceMismatch`, cascading to
+`InvalidTransaction`, `Missing mergeable entry`,
+`validateAndSetCurrentRoot FAILED`, `UnknownRootError`, and eventually
+`UnauthorizedSlashDeploy`.
+
+**Option-E behavior (fixed).**
+
+1. Each task records its reservation in `attempt_log` (briefly mutex-protected
+   per push, lock-free CAS on `consumed_tokens`).
+2. The runtime grants weight via CAS until the budget is exhausted; at
+   that point, further `attempt_one` calls return Oop (their branches
+   abort cleanly).
+3. At deploy finalization (`runtime.rs::process_deploy`), `reconcile()`
+   snapshot-clones the attempt log, sorts by canonical rank
+   `(deploy_id, source_path, redex_id, local_index, kind, weight)`,
+   and walks: events fit until cumulative exceeds 20; canonical OOP
+   = the smallest-rank event whose cumulative weight would exceed 20.
+4. `cost_trace_digest`, `cost_trace_event_count`, `last_oop_event`,
+   and `total_cost` are computed over the canonical reconciliation —
+   schedule-INDEPENDENT.
+5. Every honest node computes the same canonical digest. No
+   `ReplayCostTraceMismatch`, no cascade.
+
+**Worked example.** For `@N!(N)` with weight 11 each and phlo=20:
+- Canonical walk in source-path order: event 0 commits (cumulative 11),
+  event 1 would push to 22 > 20 → OOP at event 1.
+- Canonical committed = `{event 0}`; canonical OOP = `event 1`;
+  consumed_units = 20 (clamp). `deploy.cost == 20` ✓.
+- At runtime: which CAS winners actually committed at the OS scheduler's
+  whim doesn't matter — the post-hoc reconciliation is the consensus
+  answer.
+
+**Coverage:**
+
+- Rust unit + concurrent stress: `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`.
+- Loom: `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule`.
+- Rocq: `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_occurrence_invariant_under_permutation`.
+- TLA+: `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial`.
+- End-to-end: the original failing `test_low_phlo_parallel_fanout_charges_to_limit_and_finalizes` in `system-integration` now passes with no FORBIDDEN log entries.

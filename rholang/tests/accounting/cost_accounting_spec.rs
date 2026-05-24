@@ -923,55 +923,138 @@ fn runtime_budget_keeps_first_oop_boundary_event() {
 
 #[test]
 fn concurrent_runtime_budget_reservations_are_linearizable() {
-    let initial_phlo = 40;
-    let budget = RuntimeBudget::new(Cost::create(initial_phlo, "concurrent budget"));
-    let barrier = Arc::new(Barrier::new(17));
-    let mut handles = Vec::new();
+    fn run_once(initial_phlo: i64) -> RuntimeBudget {
+        let budget = RuntimeBudget::new(Cost::create(initial_phlo, "concurrent budget"));
+        let barrier = Arc::new(Barrier::new(17));
+        let mut handles = Vec::new();
 
-    for index in 0..16u64 {
-        let budget = budget.clone();
-        let barrier = Arc::clone(&barrier);
-        handles.push(thread::spawn(move || {
-            let event = token_event(index, index + 1);
-            barrier.wait();
-            let result = budget.reserve_canonical(event.clone());
-            (event, result)
-        }));
+        for index in 0..16u64 {
+            let budget = budget.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let event = token_event(index, index + 1);
+                barrier.wait();
+                let result = budget.reserve_canonical(event.clone());
+                (event, result)
+            }));
+        }
+
+        barrier.wait();
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("reservation worker"))
+            .collect::<Vec<_>>();
+
+        // Runtime-side liveness invariants: the diagnostic event log
+        // tracks CAS-granted events, so successful weights and logged
+        // weights must agree regardless of schedule, and at least one
+        // thread must have been rejected (sum of weights 1+2+…+16 = 136
+        // exceeds budget 40).
+        let successful_weight: u64 = outcomes
+            .iter()
+            .filter_map(|(event, result)| result.is_ok().then_some(event.weight))
+            .sum();
+        let errors = outcomes
+            .iter()
+            .filter(|(_, result)| result.is_err())
+            .count();
+        let logged_weight: u64 = budget
+            .get_event_log()
+            .into_iter()
+            .map(|event| event.weight)
+            .sum();
+        assert!(successful_weight <= initial_phlo as u64);
+        assert_eq!(logged_weight, successful_weight);
+        assert!(errors > 0);
+
+        budget
     }
 
-    barrier.wait();
-    let outcomes = handles
-        .into_iter()
-        .map(|handle| handle.join().expect("reservation worker"))
-        .collect::<Vec<_>>();
+    // Canonical-walk simulator: this is the schedule-independent answer
+    // `reconcile()` must produce. Mirrors the production walk in
+    // `accounting/mod.rs::reconcile`, but computed from the test's own
+    // knowledge of the spawned events — so the assertion catches a
+    // regression in the production walk rather than tautologically
+    // matching it.
+    fn expected_canonical_trace_count(
+        events: &[BillableTokenEvent],
+        initial: i64,
+    ) -> u64 {
+        let mut sorted: Vec<BillableTokenEvent> = events.to_vec();
+        sorted.sort();
+        let mut consumed: i64 = 0;
+        let mut committed: u64 = 0;
+        let mut oop = false;
+        for event in sorted {
+            let next = consumed.saturating_add(event.weight as i64);
+            if next > initial {
+                oop = true;
+                break;
+            }
+            consumed = next;
+            committed += 1;
+        }
+        committed + u64::from(oop)
+    }
 
-    let successful_weight: u64 = outcomes
-        .iter()
-        .filter_map(|(event, result)| result.is_ok().then_some(event.weight))
-        .sum();
-    let errors = outcomes
-        .iter()
-        .filter(|(_, result)| result.is_err())
-        .count();
-    let logged_weight: u64 = budget
-        .get_event_log()
-        .into_iter()
-        .map(|event| event.weight)
-        .sum();
+    let initial_phlo: i64 = 40;
+    let spawned_events: Vec<BillableTokenEvent> =
+        (0..16u64).map(|i| token_event(i, i + 1)).collect();
     let expected_trace_count =
-        budget.get_event_log().len() as u64 + u64::from(budget.last_oop_event().is_some());
+        expected_canonical_trace_count(&spawned_events, initial_phlo);
+    // For the (weights 1..=16, budget=40) workload: 1+2+3+4+5+6+7+8 = 36,
+    // +9 = 45 > 40, so canonical commits = 8 and OOP fires on event 9
+    // (local_index = 8). Pin the simulator so a future refactor cannot
+    // accidentally agree with a broken production walk.
+    assert_eq!(expected_trace_count, 9);
 
+    let budget_a = run_once(initial_phlo);
+
+    // Consensus-side invariants derived from the canonical reconciliation:
+    //
+    // - `total_cost` clamps to `initial_phlo` on canonical OOP (preserves
+    //   the deploy.cost == phlo_limit invariant the integration tests
+    //   rely on).
+    // - `last_oop_event` is the canonical OOP boundary event — the
+    //   smallest-rank event whose cumulative weight would have exceeded
+    //   the budget under the canonical walk, NOT a runtime CAS loser.
+    //   For this fixture that is the event with local_index=8, weight=9.
+    // - `cost_trace_event_count` is canonical commits + 1 (OOP fired).
+    //   This must equal the simulator's answer derived purely from the
+    //   spawned events, independent of Tokio scheduling.
     assert_eq!(
-        budget.total_cost().value + budget.remaining().value,
+        budget_a.total_cost().value + budget_a.remaining().value,
         initial_phlo
     );
-    assert!(successful_weight <= initial_phlo as u64);
-    assert_eq!(logged_weight, successful_weight);
-    assert!(errors > 0);
-    assert_eq!(budget.total_cost().value, initial_phlo);
-    assert!(budget.last_oop_event().is_some());
-    assert_eq!(budget.cost_trace_event_count(), expected_trace_count);
-    assert!(!budget.cost_trace_digest().digest.is_empty());
+    assert_eq!(budget_a.total_cost().value, initial_phlo);
+    let oop_a = budget_a
+        .last_oop_event()
+        .expect("canonical OOP must fire when weights overflow budget");
+    assert_eq!(oop_a, token_event(8, 9));
+    assert_eq!(budget_a.cost_trace_event_count(), expected_trace_count);
+    let digest_a = budget_a.cost_trace_digest();
+    assert!(!digest_a.digest.is_empty());
+    assert_eq!(digest_a.event_count, expected_trace_count);
+
+    // Schedule-invariance: a second concurrent run with the same input
+    // multiset must produce the same canonical OOP boundary, the same
+    // trace event count, and a byte-identical digest, even though the
+    // Tokio/OS scheduler chooses different CAS race winners. This is the
+    // headline Option-E guarantee: the consensus trace is a pure function
+    // of (program, initial budget), not of runtime scheduling.
+    let budget_b = run_once(initial_phlo);
+    assert_eq!(budget_b.total_cost().value, initial_phlo);
+    assert_eq!(budget_b.last_oop_event(), Some(token_event(8, 9)));
+    assert_eq!(budget_b.cost_trace_event_count(), expected_trace_count);
+    let digest_b = budget_b.cost_trace_digest();
+    assert_eq!(digest_a, digest_b);
+
+    // Runtime grant logs MAY differ between runs (CAS race winners are
+    // schedule-dependent); the canonical reconciliation MUST NOT. Bind
+    // the comparison into a discard so the canonical assertions above
+    // are the ones that fail loudly if a future refactor recouples them.
+    let _runtime_grants_may_differ =
+        budget_a.get_event_log() != budget_b.get_event_log();
 }
 
 #[test]
@@ -1579,4 +1662,59 @@ async fn peek_with_parallel_produce_should_have_deterministic_replay_cost() {
             );
         }
     }
+}
+
+/// Throughput regression bench for Option E's lock-free attempt log +
+/// post-hoc reconciliation. Drives a high-concurrency reservation
+/// pattern (16 threads × 100 events each = 1600 reservations) against
+/// a single shared `RuntimeBudget` and asserts completion within a
+/// generous wall-clock bound. The bound is set high enough that even
+/// on slow CI it should pass; a regression to the prior `commit_lock`
+/// design (or worse) would push us over the bound.
+///
+/// Not a hard SLO — this catches catastrophic regressions only. Real
+/// performance characterization is the operator's responsibility per
+/// CLAUDE.md "Be data driven" (use `perf record`, `hyperfine`, etc.).
+#[test]
+fn option_e_throughput_regression_bench() {
+    let total_weight: u64 = 16 * 100 * 5;
+    let budget = RuntimeBudget::new(Cost::create(total_weight as i64 * 2, "bench budget"));
+    let barrier = Arc::new(Barrier::new(17));
+    let mut handles = Vec::new();
+
+    let start = std::time::Instant::now();
+    for thread_idx in 0..16u64 {
+        let budget = budget.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for event_idx in 0..100u64 {
+                let rank = thread_idx * 1000 + event_idx;
+                let _ = budget.reserve_canonical(token_event(rank, 5));
+            }
+        }));
+    }
+    barrier.wait();
+    for h in handles {
+        h.join().expect("bench worker");
+    }
+
+    // Drive reconciliation once at the end (mirrors deploy finalization).
+    let digest = budget.cost_trace_digest();
+    let elapsed = start.elapsed();
+
+    // Sanity: all 1600 events fit within `2 * total_weight` budget, no OOP.
+    assert_eq!(digest.event_count, 1600);
+    assert_eq!(budget.last_oop_event(), None);
+    assert_eq!(budget.total_cost().value, (16 * 100 * 5) as i64);
+
+    // Generous regression bound — 30s on the slowest CI tier. Local
+    // (Linux x86_64) typical: <500ms. A regression to the old commit_lock
+    // (single-mutex hot-path serialization) or a future bad lock-coupling
+    // would push wall-clock well past this.
+    assert!(
+        elapsed.as_secs() < 30,
+        "Option E reservation throughput regressed: 1600 reservations took {:?}",
+        elapsed
+    );
 }

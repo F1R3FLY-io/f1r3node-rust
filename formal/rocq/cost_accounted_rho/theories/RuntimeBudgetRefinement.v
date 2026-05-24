@@ -2082,3 +2082,278 @@ Proof.
     + reflexivity.
     + unfold rb_total_cost. rewrite Hunmetered. reflexivity.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Option E Reconciliation Theorems
+   ═══════════════════════════════════════════════════════════════════════════
+
+   These theorems formalize the post-hoc canonical reconciliation
+   implemented in `rholang/src/rust/interpreter/accounting/mod.rs::reconcile`
+   and modeled as the `Merge` action in
+   `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`.
+
+   The Rust runtime races lock-free CAS attempts against a shared
+   `consumed_tokens` counter. The consensus-relevant `total_cost`,
+   `cost_trace_digest`, and `last_oop_event` come from a post-execution
+   canonical walk over the attempt log — NOT from the runtime CAS
+   outcomes (which depend on Tokio scheduling). This module proves the
+   invariants that justify that decoupling:
+
+   - `rb_event_weight_sum_permutation_invariant`: the multiset weight
+     is independent of input order (the foundation of permutation
+     invariance).
+   - `rb_reconcile_consumed_eq_min_initial_or_sum`: the canonical
+     consumed value is `min(initial, sum_of_weights)`, a pure function
+     of (initial, weight multiset) — schedule-independent.
+   - `rb_reconcile_consumed_invariant_under_permutation`: a direct
+     consequence — any two permutations of the same attempts produce
+     the same consumed value.
+   - `rb_reconcile_oop_iff_overflow`: the canonical OOP fires iff
+     sum_of_weights > initial; otherwise no OOP. Permutation-invariant.
+
+   Together these mirror the headline Option E theorem:
+     "for the same multiset of attempts and the same initial budget,
+      reconciliation produces the same observable accounting state
+      regardless of which CAS race winners occurred at runtime."
+
+   No `Axiom`, no `Admitted`. Proofs use only stdlib `Permutation`
+   and `Nat` lemmas. *)
+
+Theorem rb_event_weight_sum_permutation_invariant :
+  forall a b,
+  Permutation a b ->
+  rb_event_weight_sum a = rb_event_weight_sum b.
+Proof.
+  induction 1; simpl; lia.
+Qed.
+
+(* Canonical reconciliation result: just the final state of
+   `rb_reserve_many`. The Rust implementation additionally sorts
+   attempts canonically before walking; for the consumed/OOP invariants
+   below the sort is irrelevant because they hold for ANY permutation.
+   The sort matters only for the DIGEST identity (which event becomes
+   the OOP boundary record), and is verified via the TLA+ model + the
+   Rust `cost_trace_digest_invariant_under_concurrent_commits` test. *)
+Definition rb_reconcile (b : rb_state) (events : list rb_event) : rb_state :=
+  fst (rb_reserve_many b events).
+
+Theorem rb_reconcile_preserves_valid :
+  forall b events,
+  rb_valid b ->
+  rb_valid (rb_reconcile b events).
+Proof.
+  intros b events Hvalid.
+  unfold rb_reconcile.
+  destruct (rb_reserve_many b events) as [b' results] eqn:Hmany.
+  simpl.
+  eapply rb_reserve_many_preserves_valid; eassumption.
+Qed.
+
+(* Helper: when not unmetered and `rb_reserve` returns Ok, the consumed
+   counter advances by the event weight; when it returns Oop, the
+   consumed counter clamps to initial. *)
+Lemma rb_reserve_ok_advances_consumed :
+  forall b e b',
+  rb_unmetered b = false ->
+  rb_reserve b e = (b', RbReserveOk) ->
+  rb_consumed b' = rb_consumed b + rb_event_weight e
+  /\ rb_initial b' = rb_initial b
+  /\ rb_unmetered b' = false.
+Proof.
+  intros b e b' Hunmetered Hreserve.
+  unfold rb_reserve in Hreserve.
+  rewrite Hunmetered in Hreserve.
+  destruct (rb_initial b <? rb_consumed b + rb_event_weight e) eqn:Hcond.
+  - inversion Hreserve.
+  - inversion Hreserve. subst. simpl. auto.
+Qed.
+
+Lemma rb_reserve_oop_clamps_consumed :
+  forall b e b',
+  rb_unmetered b = false ->
+  rb_reserve b e = (b', RbReserveOop) ->
+  rb_consumed b' = rb_initial b
+  /\ rb_initial b' = rb_initial b
+  /\ rb_unmetered b' = false.
+Proof.
+  intros b e b' Hunmetered Hreserve.
+  unfold rb_reserve in Hreserve.
+  rewrite Hunmetered in Hreserve.
+  destruct (rb_initial b <? rb_consumed b + rb_event_weight e) eqn:Hcond.
+  - inversion Hreserve. subst. simpl. auto.
+  - inversion Hreserve.
+Qed.
+
+(* The OOP branch fires iff `consumed + weight > initial`. *)
+Lemma rb_reserve_oop_iff_would_overflow :
+  forall b e b' r,
+  rb_unmetered b = false ->
+  rb_reserve b e = (b', r) ->
+  (r = RbReserveOop <-> rb_initial b < rb_consumed b + rb_event_weight e).
+Proof.
+  intros b e b' r Hunmetered Hreserve.
+  unfold rb_reserve in Hreserve.
+  rewrite Hunmetered in Hreserve.
+  destruct (rb_initial b <? rb_consumed b + rb_event_weight e) eqn:Hcond.
+  - rewrite Nat.ltb_lt in Hcond.
+    inversion Hreserve. subst. split; intros; [exact Hcond | reflexivity].
+  - rewrite Nat.ltb_ge in Hcond.
+    inversion Hreserve. subst. split; intros; try discriminate.
+    lia.
+Qed.
+
+(* The key canonical-consumed identity: starting from any valid metered
+   state, the final consumed after walking any list of events equals
+   `min(initial, consumed_initial + sum_of_event_weights)`. The walk
+   either runs the full list (no OOP) and totals consumed + sum, or
+   it OOPs at some point and clamps to initial. Both cases are equal
+   to the `min` formula.
+
+   This is the source of permutation-invariance: the right-hand side
+   depends only on `initial`, `consumed_initial`, and `sum_of_weights`
+   — none of which depend on the order of events in the input list. *)
+Theorem rb_reconcile_consumed_eq_min_initial_or_sum :
+  forall events b b' results,
+  rb_valid b ->
+  rb_unmetered b = false ->
+  rb_reserve_many b events = (b', results) ->
+  rb_consumed b' =
+    Nat.min (rb_initial b) (rb_consumed b + rb_event_weight_sum events).
+Proof.
+  induction events as [| e rest IH]; intros b b' results Hvalid Hunmetered Hmany.
+  - simpl in Hmany. injection Hmany as Hb' _. subst b'. simpl.
+    rewrite Nat.add_0_r.
+    unfold rb_valid in Hvalid. rewrite Nat.min_r by lia. reflexivity.
+  - simpl in Hmany.
+    destruct (rb_reserve b e) as [b1 r] eqn:Hreserve.
+    destruct r.
+    + (* RbReserveOk: advances consumed by e.weight, then recurse on rest. *)
+      destruct (rb_reserve_many b1 rest) as [b2 rs] eqn:Hrest.
+      injection Hmany as Hb' _. subst b'.
+      pose proof (rb_reserve_ok_advances_consumed b e b1 Hunmetered Hreserve)
+        as [Hconsumed1 [Hinitial1 Hunmet1]].
+      pose proof (rb_reserve_preserves_valid b e b1 RbReserveOk Hvalid Hreserve)
+        as Hvalid1.
+      pose proof (IH b1 b2 rs Hvalid1 Hunmet1 Hrest) as IHrest.
+      rewrite IHrest. rewrite Hinitial1, Hconsumed1.
+      simpl. f_equal. lia.
+    + (* RbReserveOop: clamps consumed to initial, returns immediately. *)
+      injection Hmany as Hb' _. subst b'.
+      pose proof (rb_reserve_oop_clamps_consumed b e b1 Hunmetered Hreserve)
+        as [Hconsumed' [_ _]].
+      pose proof (rb_reserve_oop_iff_would_overflow b e b1 RbReserveOop
+                   Hunmetered Hreserve) as [Hoop_to_overflow _].
+      pose proof (Hoop_to_overflow eq_refl) as Hoverflow.
+      rewrite Hconsumed'.
+      simpl.
+      symmetry. apply Nat.min_l. lia.
+Qed.
+
+(* Permutation invariance of canonical consumed: the immediate
+   corollary of the min-formula theorem above. Two reservation lists
+   that are permutations of each other agree on the final consumed
+   value, regardless of which order they were walked in. *)
+Theorem rb_reconcile_consumed_invariant_under_permutation :
+  forall events1 events2 b b1 b2 r1 r2,
+  rb_valid b ->
+  rb_unmetered b = false ->
+  Permutation events1 events2 ->
+  rb_reserve_many b events1 = (b1, r1) ->
+  rb_reserve_many b events2 = (b2, r2) ->
+  rb_consumed b1 = rb_consumed b2.
+Proof.
+  intros events1 events2 b b1 b2 r1 r2
+         Hvalid Hunmetered Hperm Hmany1 Hmany2.
+  pose proof (rb_reconcile_consumed_eq_min_initial_or_sum
+                events1 b b1 r1 Hvalid Hunmetered Hmany1) as Heq1.
+  pose proof (rb_reconcile_consumed_eq_min_initial_or_sum
+                events2 b b2 r2 Hvalid Hunmetered Hmany2) as Heq2.
+  rewrite Heq1, Heq2.
+  rewrite (rb_event_weight_sum_permutation_invariant events1 events2 Hperm).
+  reflexivity.
+Qed.
+
+(* The canonical OOP boundary fires iff the cumulative weight exceeds
+   the budget. This is decided by the multiset alone (sum of weights),
+   independent of input order. *)
+Theorem rb_reconcile_oop_iff_sum_overflows :
+  forall events b b' results,
+  rb_valid b ->
+  rb_unmetered b = false ->
+  rb_reserve_many b events = (b', results) ->
+  (rb_oop_count results = 1 <->
+   rb_initial b < rb_consumed b + rb_event_weight_sum events).
+Proof.
+  induction events as [| e rest IH]; intros b b' results Hvalid Hunmetered Hmany.
+  - simpl in Hmany. injection Hmany as _ Hres. subst results. simpl.
+    unfold rb_valid in Hvalid. rewrite Nat.add_0_r.
+    split; intros; [discriminate | lia].
+  - simpl in Hmany.
+    destruct (rb_reserve b e) as [b1 r] eqn:Hreserve.
+    destruct r.
+    + (* RbReserveOk: e fit within budget. Recurse on rest. *)
+      destruct (rb_reserve_many b1 rest) as [b2 rs] eqn:Hrest.
+      injection Hmany as Hb' Hres. subst b'. subst results.
+      pose proof (rb_reserve_ok_advances_consumed b e b1 Hunmetered Hreserve)
+        as [Hconsumed1 [Hinitial1 Hunmet1]].
+      pose proof (rb_reserve_preserves_valid b e b1 RbReserveOk Hvalid Hreserve)
+        as Hvalid1.
+      pose proof (IH b1 b2 rs Hvalid1 Hunmet1 Hrest) as IHrest.
+      simpl. rewrite IHrest.
+      rewrite Hconsumed1, Hinitial1. simpl. split; intros; lia.
+    + (* RbReserveOop: e overflowed. OOP count is exactly 1. *)
+      injection Hmany as Hb' Hres. subst b'. subst results.
+      pose proof (rb_reserve_oop_iff_would_overflow b e b1 RbReserveOop
+                   Hunmetered Hreserve) as [Hoop_to_overflow _].
+      pose proof (Hoop_to_overflow eq_refl) as Hoverflow.
+      simpl. split.
+      * intros _.
+        assert (rb_event_weight e <=
+                rb_event_weight e + rb_event_weight_sum rest) by lia.
+        lia.
+      * intros _. reflexivity.
+Qed.
+
+(* Permutation invariance of OOP boundary occurrence: whether OOP fires
+   (not which specific event triggered it — that requires the canonical
+   sort, modeled in the TLA+ spec) is permutation-invariant. *)
+Theorem rb_reconcile_oop_occurrence_invariant_under_permutation :
+  forall events1 events2 b b1 b2 r1 r2,
+  rb_valid b ->
+  rb_unmetered b = false ->
+  Permutation events1 events2 ->
+  rb_reserve_many b events1 = (b1, r1) ->
+  rb_reserve_many b events2 = (b2, r2) ->
+  rb_oop_count r1 = rb_oop_count r2.
+Proof.
+  intros events1 events2 b b1 b2 r1 r2
+         Hvalid Hunmetered Hperm Hmany1 Hmany2.
+  pose proof (rb_reconcile_oop_iff_sum_overflows
+                events1 b b1 r1 Hvalid Hunmetered Hmany1) as Hiff1.
+  pose proof (rb_reconcile_oop_iff_sum_overflows
+                events2 b b2 r2 Hvalid Hunmetered Hmany2) as Hiff2.
+  pose proof (rb_reserve_many_oop_count_le_one events1 b b1 r1 Hmany1)
+    as Hle1.
+  pose proof (rb_reserve_many_oop_count_le_one events2 b b2 r2 Hmany2)
+    as Hle2.
+  pose proof (rb_event_weight_sum_permutation_invariant
+                events1 events2 Hperm) as Hsum_eq.
+  destruct (Compare_dec.lt_dec (rb_initial b)
+              (rb_consumed b + rb_event_weight_sum events1))
+    as [Hlt | Hge].
+  - (* Overflow on events1: count1 = 1. By Hsum_eq, also overflow on events2: count2 = 1. *)
+    rewrite (proj2 Hiff1 Hlt). rewrite Hsum_eq in Hlt.
+    rewrite (proj2 Hiff2 Hlt). reflexivity.
+  - (* No overflow: count1 ≠ 1 by Hiff1, and count1 ≤ 1 by Hle1, so count1 = 0.
+       Same for count2 via Hsum_eq. *)
+    assert (Hcount1_zero : rb_oop_count r1 = 0).
+    { destruct (Nat.eq_dec (rb_oop_count r1) 1) as [Heq | Hneq].
+      - apply (proj1 Hiff1) in Heq. contradiction.
+      - lia. }
+    assert (Hcount2_zero : rb_oop_count r2 = 0).
+    { destruct (Nat.eq_dec (rb_oop_count r2) 1) as [Heq | Hneq].
+      - apply (proj1 Hiff2) in Heq.
+        rewrite <- Hsum_eq in Heq. contradiction.
+      - lia. }
+    rewrite Hcount1_zero, Hcount2_zero. reflexivity.
+Qed.

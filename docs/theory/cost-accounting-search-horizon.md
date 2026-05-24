@@ -353,3 +353,25 @@ production disposition.
 | `TLC_MAX_HEAP=28g` | Default TLC heap inside the 32GB process envelope. |
 | `ALLOW_UNBOUNDED_SEARCH=1` | Explicit escape hatch when cgroup limiting is unavailable. |
 | `SYSTEMD_CPU_QUOTA` | Optional CPU quota when `systemd-run --user` is available. |
+
+## Option E — Reconciliation Search Anchors
+
+The post-hoc canonical reconciliation introduced for the
+`cost_trace_digest` schedule-invariance fix (see TM-CA-144 in the
+threat model and Appendix A of the verification doc) adds the
+following Sage scenario record to the search frontier:
+
+| Sage record | Scenario | Promotion target |
+|-------------|----------|------------------|
+| `sage_concurrency_reconciliation_is_schedule_independent` | 2-event OOP race against budget=4 | `rocq:rb_reconcile_consumed_invariant_under_permutation` |
+
+The accompanying coverage anchors:
+
+- Rust: `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`, `loom_runtime_budget_reconciliation::*`.
+- Rocq: `rb_reconcile_consumed_eq_min_initial_or_sum`, `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_iff_sum_overflows`, `rb_reconcile_oop_occurrence_invariant_under_permutation`.
+- TLA+: `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial`, `ConsumedFollowsReconciliationContract`, `NoCrossWorkerStateMixing`.
+
+The search horizon still has a checked adequacy gate on
+`concurrency_schedule` coverage; the Option-E record is admitted on
+the same gate as the prior `repeated_oop` and
+`finalization_completion` records.

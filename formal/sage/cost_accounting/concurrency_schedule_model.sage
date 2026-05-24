@@ -75,6 +75,39 @@ def records():
             {"slot_count": 0, "consumed": 0, "trace_count": 0},
             ["Rocq: rb_zero_weight_admission_rejection_preserves_trace", "Loom: invalid admission"],
         ),
+        record(
+            "concurrency_schedule",
+            "proof_or_model_strengthening",
+            "sage_concurrency_reconciliation_is_schedule_independent",
+            "Option E: post-hoc canonical reconciliation produces the same (committed_set, oop_event, consumed_units) triple under any concurrent attempt-log permutation. The Rust runtime races lock-free CAS attempts; the consensus-relevant values come from the canonical walk, not from CAS race winners.",
+            canonical_scenario(
+                "concurrency_reconciliation_schedule_independent",
+                events=oop_race,
+                initial_budget=4,
+                concurrency={"option_e_reconciliation": True},
+                threat_family="concurrency_schedule",
+                expected_invariants=[
+                    "rb_reconcile_consumed_invariant_under_permutation",
+                    "rb_reconcile_oop_occurrence_invariant_under_permutation",
+                ],
+                rust_reproducer={
+                    "test": "loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule",
+                },
+                promotion_target="rocq:rb_reconcile_consumed_invariant_under_permutation",
+                expected_classification="proof_or_model_strengthening",
+            ),
+            {
+                "consumed_units": "min(initial, sum_weights)",
+                "schedule_invariant": True,
+                "canonical_oop_identity": "rank_minimum_overflow",
+            },
+            [
+                "Rocq: rb_reconcile_consumed_eq_min_initial_or_sum",
+                "Rocq: rb_reconcile_oop_occurrence_invariant_under_permutation",
+                "TLA+: RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial",
+                "Loom: reconcile_canonical_oop_is_higher_rank_event_under_any_schedule",
+            ],
+        ),
     ]
 
 
