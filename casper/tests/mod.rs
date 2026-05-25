@@ -15,6 +15,7 @@ mod genesis;
 mod helper;
 mod merging;
 mod multi_node;
+mod multi_sig_pipeline_spec;
 mod slashing;
 mod sync;
 mod util;
