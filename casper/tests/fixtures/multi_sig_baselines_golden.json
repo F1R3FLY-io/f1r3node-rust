@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "purpose": "Phase 4.14 — golden record of canonical Cosigned envelope invariants. Cross-checked by `multi_sig_pipeline_spec.rs`, `multi_sig_runtime_integration_spec.rs`, and `mixed_algorithm_cosigned_test.rs`.",
+  "recorded_at": "2026-05-25",
+  "envelope_invariants": {
+    "canonical_pk_sort": "ascending by pk.bytes — enforced in Cosigned::from_signed_data at crypto/src/rust/signatures/signed.rs:148-149",
+    "no_duplicates": "DuplicateSigner returned when window[0].pk.bytes == window[1].pk.bytes",
+    "phlo_share_sum": "Σ phlo_share over non-placeholder signers == phlo_limit",
+    "threshold_range": "0 ≤ cosigner_threshold ≤ cosigners.len() + 1"
+  },
+  "error_taxonomy": {
+    "rejection_categories": [
+      "SignatureVerifyFailed — per-signer signature didn't verify",
+      "DuplicateSigner — same pk listed twice",
+      "PhloShareMismatch — Σ shares != phlo_limit",
+      "EmptySignerList — no signers provided",
+      "NegativePhloShare — share < 0 or placeholder has nonzero share",
+      "PhloShareOverflow — Σ overflows i64",
+      "QuorumNotMet — fewer than threshold valid signatures",
+      "InvalidQuorumThreshold — threshold == 0 or threshold > total_signers"
+    ],
+    "ll_algebra_specific_rejections": [
+      "SigAlgebraValidationFailed { connective, message }",
+      "PlusInvalidChosenBranch { got }",
+      "WhyNotInvalidSignature"
+    ]
+  },
+  "back_compat_invariants": {
+    "single_sig_path": {
+      "input_shape": "Signed<DeployData> via Cosigned::from_single_signer",
+      "envelope_phlo_share": "primary covers entire phlo_limit (single-element signer list with phlo_share == phlo_limit)",
+      "cosigner_threshold": 0,
+      "is_compound": false
+    },
+    "multi_sig_path": {
+      "input_shape": "Cosigned::from_signed_data with multiple signers",
+      "envelope_phlo_share": "Σ over signers equals phlo_limit",
+      "cosigner_threshold": "0 for N-of-N (Phase 1); k > 0 for M-of-N (Phase 2)",
+      "is_compound": true
+    }
+  },
+  "ll_algebra_dispatch": {
+    "tensor_min_required": "min(a) + min(b)",
+    "plus_min_required": "min(left) if chosen_branch=0 else min(right)",
+    "with_min_required": "min(a) + min(b)",
+    "bang_min_required": "min(inner)",
+    "whynot_min_required": "0 (entirely optional)",
+    "lolly_min_required": "min(from) + min(to)",
+    "threshold_min_required": "k (the threshold value)",
+    "verified_in_rust": "models/src/rust/casper/protocol/casper_message.rs::min_required_for"
+  }
+}
