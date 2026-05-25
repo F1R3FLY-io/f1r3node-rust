@@ -4,6 +4,7 @@ pub mod test_util;
 
 pub mod auth_key_spec;
 pub mod block_data_contract_spec;
+pub mod capabilities_registry_spec;
 pub mod deep_recursion_spec;
 pub mod either_spec;
 pub mod failing_result_collector_spec;
