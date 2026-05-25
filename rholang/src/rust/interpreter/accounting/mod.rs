@@ -819,12 +819,17 @@ impl Drop for UnmeteredBudgetScope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Sig {
+    /// `1` — multiplicative unit. Identity for `And` / `Tensor`: σ ⊗ 1 ≡ σ.
     Unit,
+    /// Atomic signature: Blake2b256 of the domain-separated wire signature.
     Hash(Vec<u8>),
     /// Compound conjunction — both signature channels must contribute fuel.
     /// Corresponds to the cost-accounted-rho paper's `σ₁ & σ₂` operator
     /// (`publications/cost-accounting/cost-accounted-rho.tex` line 288).
-    /// In linear-logic terms, this is the multiplicative tensor `⊗`.
+    /// In linear-logic terms, this is the multiplicative tensor `⊗`. The
+    /// variant name `And` is preserved for backward compatibility with the
+    /// existing Phase 1 substrate; Phase 3's full LL-rich rename to
+    /// `Tensor` is deferred to a coordinated rename PR per plan §3.1.
     And(Box<Sig>, Box<Sig>),
     /// Phase 2: M-of-N quorum threshold. The deploy is authorized when
     /// at least `threshold` of the `members` signatures verify. Canonical
@@ -837,6 +842,34 @@ pub enum Sig {
         threshold: u32,
         members: Vec<Sig>,
     },
+    /// Phase 3 LL-rich algebra — additive disjunction `⊕`.
+    /// Signer's choice: at construction time, the signer commits to one
+    /// branch (left = 0, right = 1) and only that branch's signature is
+    /// required. The verifier reads the branch witness from the wire
+    /// envelope. Inspired by `publications/TypedCurrency/typed_value.tex`
+    /// §"Linearity: why the calculus must reject contraction" (line 307+).
+    Plus(Box<Sig>, Box<Sig>),
+    /// Phase 3 LL-rich algebra — additive conjunction (LL's *with*) `&`.
+    /// Verifier's choice: both branches' signatures must be present; the
+    /// verifier (block proposer) picks which branch's fuel actually flows
+    /// at evaluation time. Dual to `Plus`.
+    With(Box<Sig>, Box<Sig>),
+    /// Phase 3 LL-rich algebra — exponential `!` (of-course / bang).
+    /// Replicable signature: same authorization witnesses many reductions.
+    /// LL-canonical: unbounded uses. Bounded variant available via the
+    /// `rho:system:capabilities` registry (Phase 3 §3.5).
+    Bang(Box<Sig>),
+    /// Phase 3 LL-rich algebra — exponential `?` (why-not).
+    /// Optional / zero-or-more uses. Dual to `Bang`. Allows deploys whose
+    /// authorization is "may be present" — verifier accepts whether or
+    /// not the wrapped signature is presented.
+    WhyNot(Box<Sig>),
+    /// Phase 3 LL-rich algebra — linear implication `⊸` (lolly).
+    /// Capability delegation: presenting a `from` signature produces a
+    /// `to` signature via the registered transformer process. Stored
+    /// on-chain in the `rho:system:capabilities` registry contract per
+    /// Phase 3 §3.5 design.
+    Lolly(Box<Sig>, Box<Sig>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -951,6 +984,60 @@ impl SignatureChannel {
                     let member_channel = Self::from_sig(member).par;
                     combined = concatenate_pars(combined, member_channel);
                 }
+                SignatureChannel {
+                    par: ParSortMatcher::sort_match(&combined).term,
+                }
+            }
+            Sig::Plus(left, right) => {
+                // Additive disjunction: signer's choice. The wire envelope
+                // carries an explicit branch witness; at the substrate level
+                // the reflected channel is the canonical-sorted union of
+                // both branch channels (verifier reads the witness from the
+                // envelope to know which branch's signature to validate).
+                let left_channel = Self::from_sig(left).par;
+                let right_channel = Self::from_sig(right).par;
+                let combined = concatenate_pars(left_channel, right_channel);
+                SignatureChannel {
+                    par: ParSortMatcher::sort_match(&combined).term,
+                }
+            }
+            Sig::With(left, right) => {
+                // Additive conjunction (LL "with"): verifier's choice. Both
+                // branches' channels are exposed; verifier picks at
+                // evaluation time which branch's fuel flows. Reflection is
+                // identical-shape to Plus at the substrate (channel
+                // composition), with the distinction enforced by the
+                // verifier's branch-selection logic.
+                let left_channel = Self::from_sig(left).par;
+                let right_channel = Self::from_sig(right).par;
+                let combined = concatenate_pars(left_channel, right_channel);
+                SignatureChannel {
+                    par: ParSortMatcher::sort_match(&combined).term,
+                }
+            }
+            Sig::Bang(inner) => {
+                // Exponential bang `!σ`: replicable. The reflected channel
+                // is the inner signature's channel; the replication semantic
+                // is enforced by the registry contract layer (capability
+                // store yields fresh fuel on each invocation). Phase 3 §3.5
+                // capability registry implements the replication state.
+                Self::from_sig(inner)
+            }
+            Sig::WhyNot(inner) => {
+                // Exponential why-not `?σ`: optional. Reflected channel is
+                // the inner signature's channel; the verifier accepts the
+                // deploy whether or not this channel actually carries fuel.
+                Self::from_sig(inner)
+            }
+            Sig::Lolly(from, to) => {
+                // Linear implication `σ_from ⊸ σ_to`: capability. The
+                // reflected channel is the union of `from` and `to`
+                // channels (substrate composition); the capability-store
+                // transformer (rho:system:capabilities) operationally
+                // consumes σ_from to produce σ_to at invocation time.
+                let from_channel = Self::from_sig(from).par;
+                let to_channel = Self::from_sig(to).par;
+                let combined = concatenate_pars(from_channel, to_channel);
                 SignatureChannel {
                     par: ParSortMatcher::sort_match(&combined).term,
                 }
