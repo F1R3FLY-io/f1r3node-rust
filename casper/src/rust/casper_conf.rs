@@ -156,6 +156,15 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
 
+/// Default value for `max_cosigners_per_deploy`. 64 is generous
+/// defense-in-depth — real-world multi-sig wallets rarely exceed 10–15
+/// cosigners. The PoS contract enforces this cap inside `chargeDeploy`.
+/// Test fixtures and other defaulting paths MUST reference this constant
+/// rather than hardcoding `64` so the default has a single source of truth.
+pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
+
+fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
+
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoundRobinDispatcher {
@@ -201,6 +210,16 @@ pub struct GenesisBlockData {
 
     #[serde(rename = "pos-multi-sig-quorum")]
     pub pos_multi_sig_quorum: u32,
+
+    /// Per-deploy hard cap on the number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$`; `chargeDeploy` rejects when the
+    /// in-flight cosigner Map reaches this size. Defense-in-depth against
+    /// adversarial deploys with thousands of cosigners exhausting block
+    /// resources. Default `64` (generous — real-world multi-sig wallets
+    /// rarely exceed 10–15). Must be `>= 1`.
+    #[serde(rename = "max-cosigners-per-deploy", default = "default_max_cosigners_per_deploy")]
+    pub max_cosigners_per_deploy: u32,
 
     /// Full display name of the native token. Substituted into the
     /// TokenMetadata Rholang contract at genesis and registered at
@@ -504,6 +523,7 @@ mod native_token_validation_tests {
             genesis_block_number: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
+            max_cosigners_per_deploy: DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,

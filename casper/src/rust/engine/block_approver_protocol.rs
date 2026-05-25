@@ -39,6 +39,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
+    pub max_cosigners_per_deploy: u32,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
@@ -63,6 +64,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
+        max_cosigners_per_deploy: u32,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -100,6 +102,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
+            max_cosigners_per_deploy,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -154,6 +157,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
+        max_cosigners_per_deploy: u32,
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
@@ -201,6 +205,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             number_of_active_validators,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
+            max_cosigners_per_deploy,
         };
 
         tracing::warn!("GENESIS DEBUG ---");
@@ -315,6 +320,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
+            self.max_cosigners_per_deploy,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,

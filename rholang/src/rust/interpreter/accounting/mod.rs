@@ -17,6 +17,12 @@ pub mod costs;
 pub mod has_cost;
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
+/// Domain separator for compound (multi-signer) deploy signatures. Distinct
+/// from the legacy single-sig `DEPLOY_SIGNATURE_DOMAIN` so legacy deploys on
+/// chain retain their existing `deploy_id`s, while multi-sig deploys get a
+/// distinguishable id derived from the canonically-ordered set of signatures.
+const COMPOUND_DEPLOY_SIGNATURE_DOMAIN: &[u8] =
+    b"f1r3node:cost-accounted-rho:compound-deploy-signature:v1";
 const COST_TRACE_DIGEST_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:cost-trace:v1";
 pub const MAX_COST_TRACE_EVENTS: u64 = 1_048_576;
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
@@ -568,6 +574,78 @@ impl RuntimeBudget {
         // but not equal to, the wire signature. Domain separation prevents
         // accidental reuse of raw signature bytes as another protocol hash.
         *self.signature.lock().expect("signature lock") = Sig::Hash(hash);
+    }
+
+    /// Install a compound (multi-signer) deploy signature into the budget.
+    ///
+    /// `signatures` MUST be non-empty and in canonical (ascending pk.bytes)
+    /// order — the caller (the deploy-decoder boundary at
+    /// [`Cosigned::from_signed_data`](crypto::rust::signatures::signed::Cosigned))
+    /// enforces this. Each entry is the raw wire signature bytes of one cosigner.
+    ///
+    /// Folds the hashes into a **left-associated** `Sig::And` tree, matching
+    /// the operational semantics of the cost-accounted rho-calculus paper's
+    /// `σ₁ & σ₂` compound-signature operator (§3.2 Rules 2-5): fuel must come
+    /// from BOTH (all) component signature channels. The signature commutativity
+    /// at the `SignatureChannel::from_sig` reflection layer (via
+    /// `ParSortMatcher::sort_match`) means the choice of left-associativity is
+    /// observable only in the wire-level `Sig` value, never in the reflected
+    /// signature channel.
+    ///
+    /// The `deploy_id` is derived as
+    /// `Blake2b256(COMPOUND_DEPLOY_SIGNATURE_DOMAIN || concat(domain_separated_hash(sig_i) for i))`,
+    /// using a distinct domain separator from the legacy single-sig path so
+    /// existing on-chain deploys keep their `deploy_id`s while multi-sig
+    /// deploys obtain distinguishable ones.
+    ///
+    /// For `signatures.len() == 1` this is observably distinct from
+    /// [`set_deploy_signature`] (different `deploy_id` due to different domain
+    /// separator), but operationally equivalent in terms of the resulting
+    /// `Sig::Hash` value and `SignatureChannel` reflection.
+    pub fn set_deploy_signatures(&self, signatures: &[&[u8]]) {
+        assert!(
+            !signatures.is_empty(),
+            "set_deploy_signatures requires at least one signature"
+        );
+
+        // Domain-separated hash of each individual wire signature. Per-signature
+        // domain separation uses the COMPOUND domain so single-element calls
+        // remain distinguishable from legacy single-sig deploys.
+        let mut sig_hashes: Vec<Vec<u8>> = Vec::with_capacity(signatures.len());
+        for sig_bytes in signatures.iter() {
+            let mut domain_separated =
+                Vec::with_capacity(COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + sig_bytes.len());
+            domain_separated.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
+            domain_separated.extend_from_slice(sig_bytes);
+            sig_hashes.push(Blake2b256::hash(domain_separated));
+        }
+
+        // Fold into a left-associated Sig::And tree:
+        //   [h0]          => Sig::Hash(h0)
+        //   [h0, h1]      => Sig::And(Sig::Hash(h0), Sig::Hash(h1))
+        //   [h0, h1, h2]  => Sig::And(Sig::And(Sig::Hash(h0), Sig::Hash(h1)), Sig::Hash(h2))
+        let mut iter = sig_hashes.iter().cloned();
+        let first = iter.next().expect("non-empty per assert above");
+        let folded_sig: Sig = iter.fold(Sig::Hash(first), |acc, hash| {
+            Sig::And(Box::new(acc), Box::new(Sig::Hash(hash)))
+        });
+
+        // deploy_id derives from the full ordered concatenation of per-sig
+        // hashes under the COMPOUND domain. Canonical-order input means
+        // permutation-equal multi-sig deploys produce identical deploy_ids.
+        let mut id_buf = Vec::with_capacity(
+            COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + 32 * sig_hashes.len(),
+        );
+        id_buf.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
+        for h in &sig_hashes {
+            id_buf.extend_from_slice(h);
+        }
+        let deploy_id_hash = Blake2b256::hash(id_buf);
+        let mut deploy_id = [0_u8; 32];
+        deploy_id.copy_from_slice(&deploy_id_hash[..32]);
+
+        *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
+        *self.signature.lock().expect("signature lock") = folded_sig;
     }
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }

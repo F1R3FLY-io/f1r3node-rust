@@ -133,9 +133,19 @@ message HeaderProto {
 }
 
 /**
- * Note: deploys are uniquely keyed by `user`, `timestamp`.
+ * Note: deploys are uniquely keyed by (`deployer`, `timestamp`).
  *
- * **TODO**: details of signatures and payment. See RHOL-781
+ * Multi-signature support is provided via the `cosigners` and `primary_phlo_share`
+ * fields, realizing the compound-signature operational semantics of the
+ * cost-accounted rho-calculus paper (`publications/cost-accounting/cost-accounted-rho.tex`,
+ * §3.2 Rules 2-5). When `cosigners` is empty, the deploy is a legacy single-signer
+ * deploy: fields 1/4/5 hold the only signer and `phloLimit` (field 8) is its share.
+ * When `cosigners` is non-empty, the primary signer occupies index 0 (fields 1/4/5)
+ * with phlo share `primary_phlo_share` (field 15), and additional cosigners occupy
+ * `cosigners` (field 14) entries with their own (pk, sig, sig_algorithm, phlo_share).
+ * The wire decoder enforces canonical `pk.bytes` ascending sort, no duplicate signers,
+ * Σ(primary_phlo_share + cosigners[i].phlo_share) == phloLimit, and that every
+ * signer's signature verifies against the canonical message hash.
  */
 message DeployDataProto {
   bytes  deployer             = 1; //public key
@@ -149,6 +159,18 @@ message DeployDataProto {
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
   string language             = 12;//language (rholang or metta) of the source code
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
+  repeated CompoundSigner cosigners = 14; //additional cosigners (empty = legacy single-sig)
+  int64 primary_phlo_share   = 15; //primary signer's phlo share; required iff cosigners != []; Σ shares == phloLimit
+}
+
+// One cosigner in a multi-signature deploy. Sorted ascending by `pk` bytes
+// in `DeployDataProto.cosigners` (decoder enforces). Each cosigner signs
+// the same canonical message hash as the primary deployer.
+message CompoundSigner {
+  bytes  pk           = 1; //cosigner public key
+  bytes  sig          = 2; //cosigner signature of (hash(term) + timestamp) using private key
+  string sigAlgorithm = 3; //name of the algorithm used to sign (e.g., "secp256k1", "ed25519")
+  int64  phloShare    = 4; //this cosigner's contribution to phloLimit
 }
 
 message ProcessedDeployProto {

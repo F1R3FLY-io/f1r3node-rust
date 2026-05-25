@@ -183,6 +183,7 @@ async fn measure_precharge_and_refund_cost() {
                 let before = snapshot_rspace_counts(snapshotter);
                 let mut refund = RefundDeploy {
                     refund_amount: 50_000,
+                    pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![i as u8, 1]),
                 };
                 let (state_after_refund, refund_time) = play_system_deploy_timed(
@@ -532,6 +533,7 @@ async fn time_replay_one_deploy(
     let refund_start = Instant::now();
     let mut refund = RefundDeploy {
         refund_amount: processed_deploy.refund_amount(),
+        pk: processed_deploy.deploy.pk.clone(),
         rand: system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy),
     };
     let (_, mut refund_eval) = replay_ops

@@ -511,6 +511,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
+            self.conf.genesis_block_data.max_cosigners_per_deploy,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
@@ -623,6 +624,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .pos_multi_sig_public_keys
                 .clone(),
             self.conf.genesis_block_data.pos_multi_sig_quorum,
+            self.conf.genesis_block_data.max_cosigners_per_deploy,
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,

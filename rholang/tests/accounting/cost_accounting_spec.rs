@@ -1330,6 +1330,103 @@ fn deploy_signature_scope_is_domain_separated_from_raw_signature_bytes() {
     );
 }
 
+#[test]
+fn set_deploy_signatures_folds_into_left_associated_sig_and() {
+    let budget = RuntimeBudget::new(Cost::create(10, "compound signature scope"));
+    let sig_a: &[u8] = &[0xaa, 0xaa];
+    let sig_b: &[u8] = &[0xbb, 0xbb];
+    let sig_c: &[u8] = &[0xcc, 0xcc];
+
+    budget.set_deploy_signatures(&[sig_a, sig_b, sig_c]);
+
+    let sig = budget.signature();
+    // Expected shape: Sig::And(Sig::And(Sig::Hash(h_a), Sig::Hash(h_b)), Sig::Hash(h_c))
+    match sig {
+        Sig::And(outer_left, outer_right) => {
+            assert!(matches!(*outer_right, Sig::Hash(_)));
+            match *outer_left {
+                Sig::And(inner_left, inner_right) => {
+                    assert!(matches!(*inner_left, Sig::Hash(_)));
+                    assert!(matches!(*inner_right, Sig::Hash(_)));
+                }
+                other => panic!(
+                    "inner Sig::And expected, got {:?} — folding must be left-associated",
+                    other
+                ),
+            }
+        }
+        other => panic!("Sig::And expected at outer level, got {:?}", other),
+    }
+}
+
+#[test]
+fn set_deploy_signatures_single_signer_is_sig_hash() {
+    let budget = RuntimeBudget::new(Cost::create(10, "single-signer compound scope"));
+    let single_sig: &[u8] = &[0xde, 0xad, 0xbe, 0xef];
+    budget.set_deploy_signatures(&[single_sig]);
+
+    match budget.signature() {
+        Sig::Hash(_) => {
+            // Single-signer fold collapses to a flat Sig::Hash.
+        }
+        other => panic!("single-signer set_deploy_signatures must produce Sig::Hash, got {:?}", other),
+    }
+}
+
+#[test]
+fn set_deploy_signatures_distinct_domain_from_legacy_single_sig() {
+    // The compound-deploy domain separator must produce a DIFFERENT deploy_id
+    // than the legacy single-sig domain, even for the same wire signature
+    // bytes. This guarantees that pre-existing single-sig deploys keep their
+    // on-chain deploy_ids while multi-sig deploys obtain distinguishable ones.
+    let raw_sig: &[u8] = &[0x42; 64];
+
+    let legacy_budget = RuntimeBudget::new(Cost::create(10, "legacy single-sig"));
+    legacy_budget.set_deploy_signature(raw_sig);
+
+    let compound_budget = RuntimeBudget::new(Cost::create(10, "compound single-sig"));
+    compound_budget.set_deploy_signatures(&[raw_sig]);
+
+    assert_ne!(
+        legacy_budget.deploy_id(),
+        compound_budget.deploy_id(),
+        "compound domain separator must produce distinct deploy_id from legacy"
+    );
+}
+
+#[test]
+fn set_deploy_signatures_deploy_id_depends_on_order() {
+    // deploy_id is the Blake2b256 of the canonical-order concatenation of
+    // per-sig hashes. Different input orders produce different deploy_ids
+    // (deploy_id is NOT permutation-invariant by design — canonical ordering
+    // is enforced UPSTREAM at Cosigned::from_signed_data, so the budget
+    // always receives sorted input).
+    let sig_a: &[u8] = &[0xaa];
+    let sig_b: &[u8] = &[0xbb];
+
+    let budget_ab = RuntimeBudget::new(Cost::create(10, "order ab"));
+    budget_ab.set_deploy_signatures(&[sig_a, sig_b]);
+
+    let budget_ba = RuntimeBudget::new(Cost::create(10, "order ba"));
+    budget_ba.set_deploy_signatures(&[sig_b, sig_a]);
+
+    assert_ne!(budget_ab.deploy_id(), budget_ba.deploy_id());
+
+    // BUT the resulting signature CHANNEL is permutation-invariant via
+    // SignatureChannel::from_sig (existing `ParSortMatcher::sort_match` guarantee).
+    let channel_ab = SignatureChannel::from_sig(&budget_ab.signature());
+    let channel_ba = SignatureChannel::from_sig(&budget_ba.signature());
+    assert_eq!(channel_ab, channel_ba);
+}
+
+#[test]
+#[should_panic(expected = "set_deploy_signatures requires at least one signature")]
+fn set_deploy_signatures_empty_panics() {
+    let budget = RuntimeBudget::new(Cost::create(10, "empty"));
+    let empty: &[&[u8]] = &[];
+    budget.set_deploy_signatures(empty);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_permutation_use_cases_preserve_cost() {
     let variants = vec![

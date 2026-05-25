@@ -15,6 +15,13 @@ pub struct ProofOfStake {
     pub number_of_active_validators: u32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
+    /// Per-deploy hard cap on the number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$`. Default `64`; configurable per shard via
+    /// `casper_conf.rs::max_cosigners_per_deploy`. Defense-in-depth against
+    /// adversarial deploys exhausting block resources via runaway cosigner
+    /// lists.
+    pub max_cosigners_per_deploy: u32,
 }
 
 impl ProofOfStake {

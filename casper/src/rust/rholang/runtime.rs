@@ -21,7 +21,11 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::rust::normalizer_env::normalizer_env_from_deploy;
+// `normalizer_env_from_deploy` is replaced by `normalizer_env_from_cosigned_deploy`
+// at the only remaining call site (inside `evaluate_cosigned`). The legacy `evaluate`
+// path uplifts `Signed<DeployData>` to `Cosigned<DeployData>` via
+// `Cosigned::from_single_signer` and delegates, so the legacy env builder is no
+// longer reached from runtime.rs.
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -363,11 +367,58 @@ impl RuntimeOps {
     }
 
     /**
-     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
+     * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls).
+     *
+     * Legacy single-signature adapter. Byte-identical observable behavior to
+     * the pre-multi-signature implementation — same `deploy_id`, same vault
+     * deltas, same cost-trace digests, same `ProcessedDeploy::empty` failure
+     * envelope on pre-charge failure. Achieved by uplifting `Signed<DeployData>`
+     * to a single-signer `Cosigned<DeployData>` envelope (via
+     * `Cosigned::from_single_signer`) and delegating to the canonical
+     * `play_deploy_with_cost_accounting_cosigned` implementation. The legacy
+     * seed-derivation path (via `as_legacy_signed_ref` in the cosigned method)
+     * preserves replay determinism for existing on-chain deploys.
      */
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        let phlo_limit = deploy.data.phlo_limit;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            deploy, phlo_limit,
+        )
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
+        })?;
+        self.play_deploy_with_cost_accounting_cosigned(cosigned).await
+    }
+
+    /// Multi-signature aware deploy execution with cost accounting.
+    ///
+    /// Realizes the cost-accounted rho-calculus `σ₁ & σ₂` operational
+    /// semantics at the protocol level: each cosigner pre-charges their
+    /// share of `phlo_limit * phlo_price` to the PoS vault under a single
+    /// atomic soft-checkpoint scope; the user deploy evaluates against the
+    /// shared budget; unused phlo refunds FIFO in canonical pk-ascending
+    /// order (leftmost-by-pk consumed first, refunded last).
+    ///
+    /// Soft-checkpoint architecture (per §1.7.5):
+    /// - **OUTER** scope (this method) wraps all per-cosigner pre-charges.
+    ///   Revert on pre-charge failure rolls back ALL preceding cosigner
+    ///   debits AND the PoS Map state atomically.
+    /// - **INNER** scope (at `process_deploy_cosigned`) wraps the USER
+    ///   DEPLOY only. Revert on user-deploy errors keeps pre-charge entries
+    ///   in the PoS Map so refunds can drain them.
+    /// - Refund-side failure is platform-level (existing
+    ///   `SystemDeployPlatformFailure::GasRefundFailure` semantics).
+    ///
+    /// Legacy single-sig (`!cosigned.is_compound()`) routes through the
+    /// legacy `generate_{pre_charge,refund}_deploy_random_seed` helpers and
+    /// the legacy `DEPLOY_SIGNATURE_DOMAIN` (via `set_deploy_signature` in
+    /// `evaluate_cosigned`), preserving byte-identical on-chain effects.
+    pub async fn play_deploy_with_cost_accounting_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
         let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
         let read_vm_rss_kb =
@@ -399,168 +450,245 @@ impl RuntimeOps {
             }
         };
 
-        // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
         tracing::debug!(target: "f1r3fly.casper.play-deploy", "play-deploy-started");
         log_mem_step("start");
         let mut eval_collector_state = EvalCollector::new();
 
-        let deploy_pk = deploy.pk.bytes.clone();
-        let deploy_pk_hex = hex::encode(&deploy_pk);
-        let deploy_sig_hex = hex::encode(&deploy.sig);
-        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
-        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
-        let total_phlo_charge = deploy
-            .data
-            .checked_total_phlo_charge()
-            .map_err(CasperError::RuntimeError)?;
+        let primary_pk_hex = hex::encode(&cosigned.primary().pk.bytes);
+        let primary_sig_hex = hex::encode(&cosigned.primary().sig);
+        let phlo_price = cosigned.data.phlo_price;
+        let is_compound = cosigned.is_compound();
 
-        // Evaluates Pre-charge system deploy
-        let pre_charge_result = {
-            // Using tracing events for async - Span[F].traceI("precharge") from Scala
-            tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
+        // OUTER soft-checkpoint — covers per-cosigner pre-charge fan-out and
+        // the user deploy. INNER scope at process_deploy_cosigned wraps the
+        // user deploy only (existing behavior preserved). Pre-charge revert
+        // rolls back ALL preceding cosigner debits + PoS Map state.
+        let outer_fallback = self.runtime.create_soft_checkpoint().await;
+
+        // (B) Pre-charge fan-out — canonical pk-ascending order.
+        // For single-signer cosigned (legacy uplift), the loop runs exactly
+        // once with the primary signer.
+        log_mem_step("before_precharge_fanout");
+        for (i, signer) in cosigned.signers().iter().enumerate() {
+            let charge = signer.phlo_share.saturating_mul(phlo_price);
+            let rand = if is_compound {
+                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(
+                    &cosigned, i,
+                )
+            } else {
+                // Legacy single-sig: byte-identical seed to existing on-chain
+                // deploys (preserves replay determinism for legacy state).
+                let legacy = cosigned.as_legacy_signed_ref();
+                system_deploy_util::generate_pre_charge_deploy_random_seed(&legacy)
+            };
+            tracing::debug!(target: "f1r3fly.casper.precharge",
+                "precharge-started cosigner_index={} pk={}", i, hex::encode(&signer.pk.bytes));
             tracing::debug!(
-                "PreCharging {} for {}",
-                deploy_pk_hex.as_str(),
-                total_phlo_charge
+                "PreCharging {} for {} (cosigner {} of {})",
+                hex::encode(&signer.pk.bytes),
+                charge,
+                i,
+                cosigned.signers().len()
             );
-            log_mem_step("before_precharge_internal");
             let (event_log, result, mergeable_channels) = self
                 .play_system_deploy_internal(&mut PreChargeDeploy {
-                    charge_amount: total_phlo_charge,
-                    pk: deploy.pk.clone(),
-                    rand: pre_charge_rand,
+                    charge_amount: charge,
+                    pk: signer.pk.clone(),
+                    rand,
                 })
                 .await?;
-            log_mem_step("after_precharge_internal");
             eval_collector_state.add(event_log, mergeable_channels);
-            log_mem_step("after_precharge_collect");
-            result
-        };
-        log_mem_step("after_precharge");
-
-        match pre_charge_result {
-            Either::Right(_) => {
-                // Evaluates user deploy
-                let pd = {
-                    // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.user-deploy", "user-deploy-started");
-                    tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
-                    // Evaluates user deploy and append event log to local state
-                    {
-                        let (mut pd, mc) = self.process_deploy(deploy).await?;
-                        let deploy_log = mem::take(&mut pd.deploy_log);
-                        eval_collector_state.add(deploy_log, mc);
-                        pd
-                    }
-                };
-                log_mem_step("after_user_deploy");
-                let refund_amount = pd.try_refund_amount().map_err(CasperError::RuntimeError)?;
-
-                // Evaluates Refund system deploy
-                let refund_result = {
-                    // Using tracing events for async - Span[F].traceI("refund") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.refund", "refund-started");
-                    tracing::debug!(
-                        "Refunding {} with {}",
-                        deploy_pk_hex.as_str(),
-                        refund_amount
-                    );
-                    let (event_log, result, mergeable_channels) = self
-                        .play_system_deploy_internal(&mut RefundDeploy {
-                            refund_amount,
-                            rand: refund_rand,
-                        })
+            if let Either::Left(error) = result {
+                // Atomic rollback of ALL preceding pre-charges + PoS Map state.
+                self.runtime.revert_to_soft_checkpoint(outer_fallback).await;
+                tracing::error!(
+                    "Pre-charge failure for cosigner {} (pk={}): {}",
+                    i, hex::encode(&signer.pk.bytes), error.error_message
+                );
+                if !is_compound {
+                    // Legacy single-sig path: preserve byte-identical
+                    // ProcessedDeploy::empty + system_deploy_error envelope
+                    // so block validators see the same error envelope as
+                    // existing on-chain deploys.
+                    let legacy_signed = cosigned.into_legacy_signed_unchecked();
+                    let mut empty_pd = ProcessedDeploy::empty(legacy_signed);
+                    empty_pd.system_deploy_error = Some(error.error_message);
+                    let mergeable_channels_data = self
+                        .get_number_channels_data(&eval_collector_state.mergeable_channels)
                         .await?;
-                    eval_collector_state.add(event_log, mergeable_channels);
-                    result
-                };
-                log_mem_step("after_refund");
-
-                match refund_result {
-                    Either::Right(_) => {
-                        // Get mergeable channels data
-                        let mergeable_channels_data = self
-                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                            .await?;
-
-                        let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                        log_mem_step("after_collect_result");
-
-                        Ok((
-                            ProcessedDeploy { deploy_log, ..pd },
-                            mergeable_channels_data,
-                        ))
-                    }
-
-                    Either::Left(error) => {
-                        // If Pre-charge succeeds and Refund fails, it's a platform error.
-                        // Include deploy identifiers so operators can quickly isolate toxic deploys.
-                        let failure_context = format!(
-                            "{}, deploy_sig={}, deployer_pk={}, refund_amount={}",
-                            error.error_message,
-                            deploy_sig_hex,
-                            deploy_pk_hex.as_str(),
-                            refund_amount
-                        );
-                        metrics::counter!(
-                            "casper_runtime_refund_failures_total",
-                            "source" => CASPER_METRICS_SOURCE
-                        )
-                        .increment(1);
-                        tracing::warn!("Refund failure '{}'", failure_context);
-                        Err(CasperError::SystemRuntimeError(
-                            SystemDeployPlatformFailure::GasRefundFailure(failure_context),
-                        ))
-                    }
+                    let deploy_log = mem::take(&mut eval_collector_state.event_log);
+                    return Ok((
+                        ProcessedDeploy {
+                            deploy_log,
+                            ..empty_pd
+                        },
+                        mergeable_channels_data,
+                    ));
                 }
-            }
-
-            Either::Left(error) => {
-                tracing::error!("Pre-charge failure '{}'", error.error_message);
-
-                // Handle evaluation errors from PreCharge
-                // - assigning 0 cost - replay should reach the same state
-                let mut empty_pd = ProcessedDeploy::empty(deploy);
-                empty_pd.system_deploy_error = Some(error.error_message);
-
-                // Update result with accumulated event logs
-                // Get mergeable channels data
-                let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                    .await?;
-
-                let deploy_log = mem::take(&mut eval_collector_state.event_log);
-
-                Ok((
-                    ProcessedDeploy {
-                        deploy_log,
-                        ..empty_pd
-                    },
-                    mergeable_channels_data,
-                ))
+                // Multi-sig: surface precise per-cosigner error.
+                return Err(CasperError::InsufficientPhloByCosigner {
+                    signer_index: i,
+                    pk_hex: hex::encode(&signer.pk.bytes),
+                    message: error.error_message,
+                });
             }
         }
+        log_mem_step("after_precharge_fanout");
+
+        // (C) USER DEPLOY (has its own inner soft-checkpoint).
+        tracing::debug!(target: "f1r3fly.casper.user-deploy",
+            "user-deploy-started primary_pk={}", primary_pk_hex);
+        let (mut pd, mc) = self.process_deploy_cosigned(cosigned.clone()).await?;
+        let deploy_log = mem::take(&mut pd.deploy_log);
+        eval_collector_state.add(deploy_log, mc);
+        log_mem_step("after_user_deploy");
+
+        // (D) Refund fan-out — FIFO drain in canonical pk-ascending order.
+        // Leftmost-by-pk cosigner's tokens consumed first (refunded last);
+        // rightmost cosigner's tokens consumed last (refunded most of any
+        // unused phlo). Matches the operational reading of
+        // left-associated Sig::And and Token::Gate.
+        let total_refund = pd
+            .try_refund_amount()
+            .map_err(CasperError::RuntimeError)?;
+        let total_charge = cosigned.total_phlo_share().saturating_mul(phlo_price);
+        let total_used = total_charge.saturating_sub(total_refund);
+        let mut remaining_used = total_used;
+        for (i, signer) in cosigned.signers().iter().enumerate() {
+            let signer_charged = signer.phlo_share.saturating_mul(phlo_price);
+            let signer_consumed = signer_charged.min(remaining_used);
+            remaining_used -= signer_consumed;
+            let refund_amount = signer_charged - signer_consumed;
+            let rand = if is_compound {
+                system_deploy_util::generate_refund_deploy_random_seed_for_signer(
+                    &cosigned, i,
+                )
+            } else {
+                let legacy = cosigned.as_legacy_signed_ref();
+                system_deploy_util::generate_refund_deploy_random_seed(&legacy)
+            };
+            tracing::debug!(target: "f1r3fly.casper.refund",
+                "refund-started cosigner_index={} pk={}", i, hex::encode(&signer.pk.bytes));
+            tracing::debug!(
+                "Refunding {} with {} (cosigner {} of {}; consumed={}, charged={})",
+                hex::encode(&signer.pk.bytes),
+                refund_amount,
+                i,
+                cosigned.signers().len(),
+                signer_consumed,
+                signer_charged
+            );
+            let (event_log, result, mergeable_channels) = self
+                .play_system_deploy_internal(&mut RefundDeploy {
+                    refund_amount,
+                    pk: signer.pk.clone(),
+                    rand,
+                })
+                .await?;
+            eval_collector_state.add(event_log, mergeable_channels);
+            if let Either::Left(error) = result {
+                // Refund failure is platform-level — existing semantics
+                // (SystemDeployPlatformFailure::GasRefundFailure). The outer
+                // soft-checkpoint is NOT reverted; the block will be rejected
+                // by the validator and operators investigate.
+                let failure_context = format!(
+                    "{}, primary_sig={}, primary_pk={}, cosigner_index={}, \
+                     cosigner_pk={}, refund_amount={}",
+                    error.error_message,
+                    primary_sig_hex,
+                    primary_pk_hex,
+                    i,
+                    hex::encode(&signer.pk.bytes),
+                    refund_amount
+                );
+                metrics::counter!(
+                    "casper_runtime_refund_failures_total",
+                    "source" => CASPER_METRICS_SOURCE
+                )
+                .increment(1);
+                tracing::warn!("Refund failure '{}'", failure_context);
+                return Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::GasRefundFailure(failure_context),
+                ));
+            }
+        }
+        log_mem_step("after_refund_fanout");
+        debug_assert_eq!(
+            remaining_used, 0,
+            "FIFO drain incomplete: remaining_used={} after fan-out; \
+             total_used={} > Σ(phlo_share × phlo_price)={} — multi-payer \
+             accounting bug",
+            remaining_used, total_used, total_charge
+        );
+
+        let mergeable_channels_data = self
+            .get_number_channels_data(&eval_collector_state.mergeable_channels)
+            .await?;
+        let deploy_log = mem::take(&mut eval_collector_state.event_log);
+        log_mem_step("after_collect_result");
+        Ok((
+            ProcessedDeploy { deploy_log, ..pd },
+            mergeable_channels_data,
+        ))
     }
 
+    /// Legacy single-signature user-deploy execution. Uplifts to
+    /// `Cosigned<DeployData>` and delegates to [`Self::process_deploy_cosigned`]
+    /// for byte-identical observable behavior.
     pub async fn process_deploy(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        // Keep a soft checkpoint before user deploy execution so failed deploy rollback
-        // preserves pre-charge side effects required by refundDeploy.
+        let phlo_limit = deploy.data.phlo_limit;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            deploy, phlo_limit,
+        )
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "legacy uplift to Cosigned failed in process_deploy: {e}"
+            ))
+        })?;
+        self.process_deploy_cosigned(cosigned).await
+    }
+
+    /// Multi-signature aware user-deploy execution. Keeps the INNER
+    /// soft-checkpoint (line 560 in the legacy implementation) that wraps
+    /// the user deploy ONLY — on user-deploy errors the inner scope
+    /// reverts user-deploy effects but pre-charge state remains intact so
+    /// refunds can drain the PoS Map.
+    ///
+    /// The `ProcessedDeploy.deploy: Signed<DeployData>` storage shape is
+    /// preserved by reconstituting the primary signer's `Signed<DeployData>`
+    /// envelope via `Cosigned::into_legacy_signed_unchecked` — invariants
+    /// were already enforced at `Cosigned::from_signed_data` construction so
+    /// no re-verification is needed.
+    pub async fn process_deploy_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // INNER soft-checkpoint — wraps USER DEPLOY only. Back-compat
+        // semantics preserved exactly: pre-charge state (in the outer scope
+        // at `play_deploy_with_cost_accounting_cosigned`) is NOT reverted by
+        // user-deploy errors, so refunds can drain the PoS Map.
         let fallback = self.runtime.create_soft_checkpoint().await;
 
-        // Evaluate deploy
-        let eval_result = self.evaluate(&deploy).await?;
+        let eval_result = self.evaluate_cosigned(&cosigned).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
         let cost_trace = self.runtime.cost.cost_trace_digest();
 
         let eval_succeeded = eval_result.errors.is_empty();
-        let deploy_sig = deploy.sig.clone();
+        let primary_sig = cosigned.primary().sig.clone();
+        // Reconstitute the legacy Signed<DeployData> shape for ProcessedDeploy
+        // storage. For single-sig (legacy uplift), this returns a byte-identical
+        // legacy envelope. For multi-sig, the additional cosigners are dropped
+        // from the storage shape — when §1.9 lands, ProcessedDeploy will be
+        // extended to carry the cosigner list; for now back-compat with the
+        // existing on-disk shape is preserved.
+        let legacy_signed = cosigned.into_legacy_signed_unchecked();
 
         let deploy_result = ProcessedDeploy {
-            deploy,
+            deploy: legacy_signed,
             cost: Cost::to_proto(eval_result.cost),
             deploy_log: deploy_log
                 .into_iter()
@@ -574,17 +702,35 @@ impl RuntimeOps {
 
         if !eval_succeeded {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
-            interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            interpreter_util::print_deploy_errors(&primary_sig, &eval_result.errors);
         }
 
         Ok((deploy_result, eval_result.mergeable))
     }
 
+    /// Legacy single-signature variant. Thin wrapper around
+    /// [`Self::process_deploy_with_mergeable_data_cosigned`].
     pub async fn process_deploy_with_mergeable_data(
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let (pd, merge_chs) = self.process_deploy(deploy).await?;
+        let phlo_limit = deploy.data.phlo_limit;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            deploy, phlo_limit,
+        )
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
+            ))
+        })?;
+        self.process_deploy_with_mergeable_data_cosigned(cosigned).await
+    }
+
+    pub async fn process_deploy_with_mergeable_data_cosigned(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        let (pd, merge_chs) = self.process_deploy_cosigned(cosigned).await?;
         let data = self.get_number_channels_data(&merge_chs).await?;
         Ok((pd, data))
     }
@@ -1106,22 +1252,70 @@ impl RuntimeOps {
 
     /* Evaluates Rholang source code */
 
+    /// Legacy single-signature evaluate. Preserves byte-identical
+    /// observable behavior for existing on-chain deploys (same `deploy_id`,
+    /// same `Sig::Hash` value, same normalizer env). Multi-signature
+    /// dispatch happens in [`Self::evaluate_cosigned`] which this
+    /// method delegates to via legacy uplift.
     pub async fn evaluate(
         &mut self,
         deploy: &Signed<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
-        let deploy_data = SystemProcessDeployData::from_deploy(deploy);
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            deploy.clone(),
+            deploy.data.phlo_limit,
+        )
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("legacy uplift to Cosigned failed in evaluate: {e}"))
+        })?;
+        self.evaluate_cosigned(&cosigned).await
+    }
+
+    /// Multi-signature aware deploy evaluation. Single source of truth for
+    /// the signature install + normalizer-env construction logic.
+    ///
+    /// Single-sig deploys (`!cosigned.is_compound()`) route through the
+    /// legacy `set_deploy_signature` (legacy `DEPLOY_SIGNATURE_DOMAIN`) so
+    /// existing on-chain deploy_ids are preserved bit-for-bit. Multi-sig
+    /// deploys route through `set_deploy_signatures` (compound domain
+    /// separator) folding all signers into a left-associated `Sig::And` tree.
+    ///
+    /// The normalizer env is built via `normalizer_env_from_cosigned_deploy`
+    /// in both cases — for single-sig that produces a one-element
+    /// `rho:system:cosigners` list, observably equivalent to the legacy
+    /// `normalizer_env_from_deploy(signed)` output (Cosigned uplift
+    /// equivalence verified by
+    /// `cosigned_envelope_legacy_uplift_yields_single_element_cosigners`).
+    pub async fn evaluate_cosigned(
+        &mut self,
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<EvaluateResult, CasperError> {
+        let deploy_data = SystemProcessDeployData::from_cosigned(cosigned);
         self.runtime.set_deploy_data(deploy_data).await;
         self.runtime.cost.set_unmetered(false);
-        self.runtime.cost.set_deploy_signature(&deploy.sig);
 
+        if cosigned.is_compound() {
+            // Multi-sig: fold all signatures into Sig::And, derive
+            // compound-domain deploy_id from canonical-order signer set.
+            let sigs: Vec<&[u8]> =
+                cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
+            self.runtime.cost.set_deploy_signatures(&sigs);
+        } else {
+            // Legacy single-sig path — byte-identical deploy_id to existing
+            // on-chain deploys (legacy DEPLOY_SIGNATURE_DOMAIN).
+            self.runtime
+                .cost
+                .set_deploy_signature(&cosigned.primary().sig);
+        }
+
+        let primary = cosigned.primary();
         let result = self
             .runtime
             .evaluate(
-                &deploy.data.term,
-                Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
-                normalizer_env_from_deploy(deploy),
-                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+                &cosigned.data.term,
+                Cost::create(cosigned.data.phlo_limit, "Evaluate deploy".to_string()),
+                models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned),
+                Tools::unforgeable_name_rng(&primary.pk, cosigned.data.time_stamp),
             )
             .await;
 

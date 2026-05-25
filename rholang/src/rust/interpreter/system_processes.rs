@@ -382,6 +382,26 @@ impl DeployData {
             deploy_id: template.sig.to_vec(),
         }
     }
+
+    /// Multi-signer variant. The `timestamp`, `deployer_id`, and `deploy_id`
+    /// are taken from the PRIMARY signer (`cosigned.primary()`), matching
+    /// the legacy single-sig semantics for `rho:system:deployId` and
+    /// `rho:system:deployerId`. Multi-cosigner introspection happens via
+    /// the separate `rho:system:cosigners` channel populated by
+    /// `normalizer_env_from_cosigned_deploy` — this struct intentionally
+    /// keeps the legacy primary-only shape so that downstream consumers
+    /// (PoS contract calls, slashing, etc.) see the same per-deploy
+    /// identity they always have.
+    pub fn from_cosigned(
+        template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
+    ) -> Self {
+        let primary = template.primary();
+        DeployData {
+            timestamp: template.data.time_stamp,
+            deployer_id: primary.pk.clone(),
+            deploy_id: primary.sig.to_vec(),
+        }
+    }
 }
 
 // TODO: Remove Clone

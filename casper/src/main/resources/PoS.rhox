@@ -376,22 +376,50 @@ in {
               // Private method which charges a deployer for a deploy.
               // Deployer's funds are deposited into the block sender's vault.
               // Return expects (Boolean, Either[Nil, String])
-              new currentDeployerData in {
+              // Per-deploy state holding `Map[deployerId -> initialPaymentAmount]`
+              // for in-flight charges awaiting refund. Multi-signature deploys
+              // accumulate one entry per cosigner; legacy single-sig deploys
+              // hold exactly one entry. The Map shape eliminates the
+              // non-deterministic `for` consumption hazard of the previous
+              // single-tuple channel design when N > 1 cosigners are charged
+              // in parallel — see the cost-accounted rho-calculus §3.2 Rules
+              // 2-5 for the operational semantics this realizes.
+              new currentDeploysStateCh in {
+                currentDeploysStateCh!({}) |
+                // Private method which charges a deployer for a deploy.
+                // Deployer's funds are deposited into the block sender's vault.
+                // Return expects (Boolean, Either[Nil, String])
                 contract PoS(@"chargeDeploy", @deployerId, @amount, @sysAuthToken, return) = {
-                  new isValidTokenCh in {
+                  new isValidTokenCh, processCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        new depositCh in {
-                          deposit!(deployerId, amount, posVaultAddr, *depositCh) |
-                          for (@depositResult <- depositCh){
-                            match depositResult {
-                              (true, _) => {
-                                currentDeployerData!((deployerId, amount)) |
-                                return!(depositResult)
-                              }
-                              (_, errorMessage) => {
-                                return!((false, "Deploy payment failed: " ++ errorMessage))
+                        runMVar!(*currentDeploysStateCh, *processCh, *return) |
+                        for (@state, resultCh <- processCh) {
+                          if (state.contains(deployerId)) {
+                            // Defensive: never charge the same cosigner twice
+                            // per deploy. Unreachable if the deploy-decode
+                            // boundary's `Cosigned::from_signed_data`
+                            // dedup invariant holds; surfaced as an explicit
+                            // error for debuggability.
+                            resultCh!(state, (false, "Cosigner already charged for this deploy"))
+                          } else if (state.size() >= $$maxCosignersPerDeploy$$) {
+                            // Defense-in-depth: bound per-deploy cosigner
+                            // count (configurable per shard via
+                            // `casper_conf.rs::max_cosigners_per_deploy`).
+                            resultCh!(state, (false, "Cosigner cap exceeded for this deploy"))
+                          } else {
+                            new depositCh in {
+                              deposit!(deployerId, amount, posVaultAddr, *depositCh) |
+                              for (@depositResult <- depositCh){
+                                match depositResult {
+                                  (true, _) => {
+                                    resultCh!(state.set(deployerId, amount), depositResult)
+                                  }
+                                  (_, errorMessage) => {
+                                    resultCh!(state, (false, "Deploy payment failed: " ++ errorMessage))
+                                  }
+                                }
                               }
                             }
                           }
@@ -404,37 +432,52 @@ in {
                 } |
                 // Private method which refunds a deployer if too much was charged in chargeDeploy.
                 // Funds are transferred from the block sender's vault to the deployer.
+                // Takes an explicit `@deployerId` argument so multi-signature
+                // refunds (one per cosigner) route to the correct vault.
                 // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"refundDeploy", @refundAmount, @sysAuthToken, return) = {
-                  new isValidTokenCh in {
+                contract PoS(@"refundDeploy", @deployerId, @refundAmount, @sysAuthToken, return) = {
+                  new isValidTokenCh, processCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount < 0) {
-                            return!((false, "Invalid refund amount"))
-                          } else if (refundAmount > initialPaymentAmount) {
-                            return!((false, "Refund exceeds initial deploy payment"))
-                          } else if (refundAmount > 0) {
-                            new vaultAddressCh, transferCh in {
-                              vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
-                              for (@deployerVaultAddress <- vaultAddressCh) {
-                                // Transfer (from sender to deployer) called in refundDeploy.
-                                @posVault!("transfer", deployerVaultAddress, refundAmount, posAuthKey, *transferCh) |
-                                for (@transferResult <- transferCh) {
-                                  match transferResult {
-                                    (true, _) => {
-                                      return!((true, Nil))
-                                    }
-                                    (_, errorMessage) => {
-                                      return!((false, "(Bug found) Deploy refund failed: " ++ errorMessage))
+                        runMVar!(*currentDeploysStateCh, *processCh, *return) |
+                        for (@state, resultCh <- processCh) {
+                          match state.get(deployerId) {
+                            Nil => {
+                              // No in-flight charge recorded for this deployerId.
+                              // Map remains unchanged.
+                              resultCh!(state, (false, "No in-flight charge for this deployer"))
+                            }
+                            initialPaymentAmount => {
+                              if (refundAmount < 0) {
+                                resultCh!(state.delete(deployerId), (false, "Invalid refund amount"))
+                              } else if (refundAmount > initialPaymentAmount) {
+                                resultCh!(state.delete(deployerId), (false, "Refund exceeds initial deploy payment"))
+                              } else if (refundAmount > 0) {
+                                new vaultAddressCh, transferCh in {
+                                  vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
+                                  for (@deployerVaultAddress <- vaultAddressCh) {
+                                    // Transfer (from sender to deployer) called in refundDeploy.
+                                    @posVault!("transfer", deployerVaultAddress, refundAmount, posAuthKey, *transferCh) |
+                                    for (@transferResult <- transferCh) {
+                                      match transferResult {
+                                        (true, _) => {
+                                          resultCh!(state.delete(deployerId), (true, Nil))
+                                        }
+                                        (_, errorMessage) => {
+                                          resultCh!(state.delete(deployerId), (false, "(Bug found) Deploy refund failed: " ++ errorMessage))
+                                        }
+                                      }
                                     }
                                   }
                                 }
+                              } else {
+                                // refundAmount == 0: no transfer needed; clean
+                                // up the Map entry so the cosigner cannot be
+                                // re-refunded.
+                                resultCh!(state.delete(deployerId), (true, Nil))
                               }
                             }
-                          } else {
-                            return!((true, Nil))
                           }
                         }
                       } else {

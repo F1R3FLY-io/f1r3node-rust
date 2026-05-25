@@ -54,6 +54,8 @@ mod tests {
                 genesis_block_number: 0,
                 pos_multi_sig_public_keys: vec![],
                 pos_multi_sig_quorum: 0,
+                max_cosigners_per_deploy:
+                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,

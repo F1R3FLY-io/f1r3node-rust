@@ -3,7 +3,7 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::validator::Validator;
@@ -83,6 +83,61 @@ pub fn generate_refund_deploy_random_seed(deploy: &Signed<DeployData>) -> Blake2
     Tools::rng(&deploy.sig).split_byte(1)
 }
 
+/// Per-cosigner pre-charge seed derivation for multi-signature deploys.
+///
+/// Multi-sig deploys cannot reuse `generate_pre_charge_deploy_random_seed`
+/// because that produces the same seed for every cosigner (it only hashes
+/// `deploy.sig`, ignoring signer identity). The PoS `chargeDeploy` system
+/// contract allocates `new rl, poSCh, depositCh, ...` channels using the
+/// rng, and identical seeds across cosigners would alias those unforgeable
+/// channel names, corrupting tuplespace state.
+///
+/// Derivation: `Tools::rng(b"pcs:" || 0u8 || primary_sig || signer_index_le).split_byte(0)`,
+/// where `0u8` is the per-cosigner domain tag for pre-charge (refund uses
+/// `1u8` — see `generate_refund_deploy_random_seed_for_signer`).
+///
+/// Replay determinism: the seed is a pure function of
+/// `(cosigned.primary().sig, signer_index)`. Both inputs are stable under
+/// replay: the primary signature is fixed at deploy submission; the
+/// canonical signer order (sorted by `pk.bytes` ascending) makes
+/// `signer_index` stable too.
+///
+/// **Legacy single-sig deploys MUST continue to use
+/// `generate_pre_charge_deploy_random_seed` (NOT this function).** The
+/// legacy seed scheme is preserved bit-for-bit for back-compat with
+/// existing on-chain deploys; only multi-sig deploys use this new scheme.
+pub fn generate_pre_charge_deploy_random_seed_for_signer(
+    cosigned: &Cosigned<DeployData>,
+    signer_index: usize,
+) -> Blake2b512Random {
+    let primary_sig = &cosigned.primary().sig;
+    let mut seed = Vec::with_capacity(b"pcs:".len() + 1 + primary_sig.len() + 4);
+    seed.extend_from_slice(b"pcs:");
+    seed.push(0u8); // domain tag: 0 = pre-charge
+    seed.extend_from_slice(primary_sig);
+    seed.extend_from_slice(&(signer_index as u32).to_le_bytes());
+    Tools::rng(&seed).split_byte(0)
+}
+
+/// Per-cosigner refund seed derivation. Symmetric counterpart to
+/// `generate_pre_charge_deploy_random_seed_for_signer`. The domain tag
+/// `1u8` distinguishes refund seeds from pre-charge seeds so a cosigner's
+/// pre-charge and refund operations cannot alias each other's rng-derived
+/// channel names. Replay-deterministic and legacy-back-compat-preserving
+/// per the same reasoning as the pre-charge counterpart.
+pub fn generate_refund_deploy_random_seed_for_signer(
+    cosigned: &Cosigned<DeployData>,
+    signer_index: usize,
+) -> Blake2b512Random {
+    let primary_sig = &cosigned.primary().sig;
+    let mut seed = Vec::with_capacity(b"pcs:".len() + 1 + primary_sig.len() + 4);
+    seed.extend_from_slice(b"pcs:");
+    seed.push(1u8); // domain tag: 1 = refund
+    seed.extend_from_slice(primary_sig);
+    seed.extend_from_slice(&(signer_index as u32).to_le_bytes());
+    Tools::rng(&seed).split_byte(1)
+}
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
@@ -136,5 +191,75 @@ mod tests {
             seed_second.to_bytes(),
             "same inputs must produce same seed for replay determinism"
         );
+    }
+
+    fn build_test_cosigned(n_signers: usize) -> Cosigned<DeployData> {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigner, ToMessage};
+        use prost::Message;
+
+        let secp = Secp256k1;
+        let data = DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 1,
+            phlo_price: 1,
+            phlo_limit: (n_signers as i64) * 100,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        };
+        let serialized = data.to_message().encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let mut signers = Vec::with_capacity(n_signers);
+        for _ in 0..n_signers {
+            let (sk, pk) = secp.new_key_pair();
+            let sig = secp.sign(&hash, &sk.bytes);
+            signers.push(Cosigner {
+                pk,
+                sig: Bytes::from(sig),
+                sig_algorithm: Box::new(secp.clone()),
+                phlo_share: 100,
+            });
+        }
+        Cosigned::from_signed_data(data, signers, (n_signers as i64) * 100)
+            .expect("valid cosigned envelope")
+    }
+
+    /// Distinct cosigners (different `signer_index`) must produce distinct
+    /// pre-charge seeds. Without this, the PoS contract's per-cosigner
+    /// `chargeDeploy` calls would allocate aliasing unforgeable channel
+    /// names via `new rl, poSCh, depositCh, ...` from identical rng states,
+    /// corrupting tuplespace state.
+    #[test]
+    fn pre_charge_signer_seed_distinct_per_signer_index() {
+        let cosigned = build_test_cosigned(3);
+        let seed_0 = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 0);
+        let seed_1 = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 1);
+        let seed_2 = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 2);
+        assert_ne!(seed_0.to_bytes(), seed_1.to_bytes());
+        assert_ne!(seed_1.to_bytes(), seed_2.to_bytes());
+        assert_ne!(seed_0.to_bytes(), seed_2.to_bytes());
+    }
+
+    /// Same cosigned envelope + same signer_index must yield the SAME seed
+    /// across calls. Replay determinism depends on this.
+    #[test]
+    fn pre_charge_signer_seed_deterministic() {
+        let cosigned = build_test_cosigned(2);
+        let seed_a = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 0);
+        let seed_b = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 0);
+        assert_eq!(seed_a.to_bytes(), seed_b.to_bytes());
+    }
+
+    /// Pre-charge and refund seeds for the same cosigner must differ.
+    /// Without this, the cosigner's pre-charge and refund would allocate
+    /// aliasing channel names within the same deploy.
+    #[test]
+    fn pre_charge_and_refund_signer_seeds_distinct() {
+        let cosigned = build_test_cosigned(2);
+        let pre = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 0);
+        let refund = generate_refund_deploy_random_seed_for_signer(&cosigned, 0);
+        assert_ne!(pre.to_bytes(), refund.to_bytes());
     }
 }

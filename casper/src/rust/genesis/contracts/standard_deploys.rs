@@ -256,6 +256,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
             ),
             ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
+            ("maxCosignersPerDeploy", &pos.max_cosigners_per_deploy.to_string()),
         ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,

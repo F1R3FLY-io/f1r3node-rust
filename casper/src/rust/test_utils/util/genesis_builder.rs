@@ -252,6 +252,8 @@ impl GenesisBuilder {
                     .collect(),
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+                max_cosigners_per_deploy:
+                    crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             },
             vaults,
             supply: i64::MAX,

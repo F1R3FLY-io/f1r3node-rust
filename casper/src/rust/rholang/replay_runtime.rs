@@ -278,6 +278,7 @@ impl ReplayRuntimeOps {
                 .map_err(CasperError::RuntimeError)?;
             let mut refund_deploy = RefundDeploy {
                 refund_amount,
+                pk: processed_deploy.deploy.pk.clone(),
                 rand: system_deploy_util::generate_refund_deploy_random_seed(
                     &processed_deploy.deploy,
                 ),

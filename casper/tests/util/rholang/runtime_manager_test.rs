@@ -330,10 +330,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_1,
                 &mut RefundDeploy {
                     refund_amount: 9000000,
+                    pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![2]),
                 },
                 &mut RefundDeploy {
                     refund_amount: 9000000,
+                    pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![2]),
                 },
                 |_| true,
@@ -400,6 +402,7 @@ async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
             let result = runtime_ops
                 .play_system_deploy(&state_hash, &mut RefundDeploy {
                     refund_amount: 101,
+                    pk: construct_deploy::DEFAULT_PUB.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![1]),
                 })
                 .await

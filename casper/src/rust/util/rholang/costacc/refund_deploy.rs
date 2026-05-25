@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
 use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
@@ -12,8 +13,25 @@ use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 
+/// Refund the unused portion of a deploy's pre-charge back to a specific
+/// signer's REV vault.
+///
+/// `pk` identifies which cosigner's vault receives the refund. For legacy
+/// single-sig deploys this is the primary deployer's pk; for multi-sig deploys
+/// the runtime fan-out at `runtime.rs::play_deploy_with_cost_accounting_cosigned`
+/// constructs one `RefundDeploy { pk: signer.pk, refund_amount: ..., rand: ... }`
+/// per cosigner in canonical pk-ascending FIFO drain order.
+///
+/// The on-contract `refundDeploy` method (per §1.7 PoS refinement) is
+/// 4-argument `(deployerId, refundAmount, sysAuthToken, return)`. The
+/// `deployerId` argument is wired into the env binding `sys:casper:deployerId`
+/// (mirrors `PreChargeDeploy::env` at `pre_charge_deploy.rs:57`), and the
+/// `source()` Rholang passes `*initialDeployerId` into the contract call.
+/// The PoS Map `currentDeploysStateCh` then looks up this specific deployer's
+/// pre-charge entry, validates the refund, transfers, and deletes the entry.
 pub struct RefundDeploy {
     pub refund_amount: i64,
+    pub pk: PublicKey,
     pub rand: Blake2b512Random,
 }
 
@@ -25,13 +43,14 @@ impl SystemDeployTrait for RefundDeploy {
         r#"
           new rl(`rho:registry:lookup`),
           poSCh,
+          initialDeployerId(`sys:casper:deployerId`),
           refundAmount(`sys:casper:refundAmount`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-                @PoS!("refundDeploy", *refundAmount, *sysAuthToken, *return)
+                @PoS!("refundDeploy", *initialDeployerId, *refundAmount, *sysAuthToken, *return)
             }
         }"#
     }
@@ -50,6 +69,12 @@ impl SystemDeployTrait for RefundDeploy {
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
+
+        // Bind `sys:casper:deployerId` so the contract source's
+        // `initialDeployerId(`sys:casper:deployerId`)` resolves to THIS
+        // cosigner's pk. This is what the PoS Map keys lookups on.
+        let (d_key, d_value) = self.mk_deployer_id(&self.pk);
+        env.insert(d_key, d_value);
 
         env.insert(
             "sys:casper:refundAmount".to_string(),
