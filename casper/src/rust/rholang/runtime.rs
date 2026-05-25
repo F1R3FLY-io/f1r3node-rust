@@ -818,6 +818,7 @@ impl RuntimeOps {
         let eval_succeeded = eval_result.errors.is_empty();
         let primary_sig = cosigned.primary().sig.clone();
         let is_compound = cosigned.is_compound();
+        let extracted_threshold = cosigned.cosigner_threshold() as i32;
         // For multi-sig deploys (§1.9): extract cosigner data BEFORE the
         // `into_legacy_signed_unchecked` consumes the envelope, so the
         // ProcessedDeploy carries the full cosigner list and primary share
@@ -858,6 +859,7 @@ impl RuntimeOps {
             cost_trace_event_count: cost_trace.event_count,
             cosigners: extracted_cosigners,
             primary_phlo_share: extracted_primary_share,
+            cosigner_threshold: extracted_threshold,
         };
 
         if !eval_succeeded {

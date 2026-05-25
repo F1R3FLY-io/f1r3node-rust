@@ -161,6 +161,13 @@ message DeployDataProto {
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
   repeated CompoundSigner cosigners = 14; //additional cosigners (empty = legacy single-sig)
   int64 primary_phlo_share   = 15; //primary signer's phlo share; required iff cosigners != []; Σ shares == phloLimit
+  // Phase 2: M-of-N threshold quorum size.
+  //   0  → N-of-N (Phase 1 semantics): every signer must verify.
+  //   k>0 → M-of-N: at least `k` of `cosigners.len() + 1` signers must
+  //         present a valid signature. Placeholder signers (sig.is_empty())
+  //         are allowed and do not count toward quorum.
+  // Constraint at decode: 0 ≤ cosigner_threshold ≤ cosigners.len() + 1.
+  int32 cosigner_threshold   = 16;
 }
 
 // One cosigner in a multi-signature deploy. Sorted ascending by `pk` bytes

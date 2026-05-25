@@ -582,6 +582,11 @@ pub struct ProcessedDeploy {
     /// value when `cosigners` is non-empty. Round-trips through
     /// `DeployDataProto.primary_phlo_share` (proto field 15).
     pub primary_phlo_share: i64,
+    /// M-of-N quorum threshold (Phase 2). 0 = N-of-N semantics (every
+    /// signer's signature must verify); k > 0 = at least k signatures
+    /// must verify. Round-trips through `DeployDataProto.cosigner_threshold`
+    /// (proto field 16).
+    pub cosigner_threshold: i32,
 }
 
 impl ProcessedDeploy {
@@ -611,6 +616,7 @@ impl ProcessedDeploy {
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         }
     }
 
@@ -657,6 +663,9 @@ impl ProcessedDeploy {
             cost_trace_event_count: 0,
             cosigners,
             primary_phlo_share,
+            // empty_from_cosigned has no view of the runtime threshold —
+            // callers needing M-of-N must set the field after construction.
+            cosigner_threshold: 0,
         }
     }
 
@@ -700,8 +709,30 @@ impl ProcessedDeploy {
                     phlo_share: cs.phlo_share,
                 });
             }
-            Cosigned::from_signed_data(self.deploy.data.clone(), signers, self.deploy.data.phlo_limit)
+            // Phase 2 dispatch on threshold; preserves replay determinism
+            // because the threshold is a wire-level constant captured at
+            // proposal time.
+            if self.cosigner_threshold > 0 {
+                Cosigned::from_signed_data_threshold(
+                    self.deploy.data.clone(),
+                    signers,
+                    self.deploy.data.phlo_limit,
+                    self.cosigner_threshold as u32,
+                )
+                .map_err(|e| {
+                    format!(
+                        "ProcessedDeploy to_cosigned threshold reconstruction failed (threshold={}): {}",
+                        self.cosigner_threshold, e
+                    )
+                })
+            } else {
+                Cosigned::from_signed_data(
+                    self.deploy.data.clone(),
+                    signers,
+                    self.deploy.data.phlo_limit,
+                )
                 .map_err(|e| format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e))
+            }
         }
     }
 
@@ -734,6 +765,7 @@ impl ProcessedDeploy {
         // shape survives serialization.
         let cosigners = deploy_proto.cosigners.clone();
         let primary_phlo_share = deploy_proto.primary_phlo_share;
+        let cosigner_threshold = deploy_proto.cosigner_threshold;
         Ok(Self {
             deploy: DeployData::from_proto(deploy_proto)?,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
@@ -754,6 +786,7 @@ impl ProcessedDeploy {
             cost_trace_event_count: proto.cost_trace_event_count,
             cosigners,
             primary_phlo_share,
+            cosigner_threshold,
         })
     }
 
@@ -764,6 +797,7 @@ impl ProcessedDeploy {
         // wire shape carries it through block-storage round-trip.
         deploy_proto.cosigners = self.cosigners;
         deploy_proto.primary_phlo_share = self.primary_phlo_share;
+        deploy_proto.cosigner_threshold = self.cosigner_threshold;
         ProcessedDeployProto {
             deploy: Some(deploy_proto),
             cost: Some(self.cost),
@@ -1143,6 +1177,16 @@ impl DeployData {
         // Capture phlo_limit before consuming `proto` for _from_proto.
         let phlo_limit = proto.phlo_limit;
         let is_multi_sig = !proto.cosigners.is_empty();
+        let cosigner_threshold = proto.cosigner_threshold;
+        let total_signers = 1 + proto.cosigners.len() as i32;
+        // Validate threshold range at the wire boundary so we can return
+        // a clear protocol-level error before signer construction.
+        if cosigner_threshold < 0 || cosigner_threshold > total_signers {
+            return Err(format!(
+                "Invalid cosigner_threshold {}: must satisfy 0 ≤ threshold ≤ {} (total signers)",
+                cosigner_threshold, total_signers
+            ));
+        }
         let primary_phlo_share = if is_multi_sig {
             // Multi-sig: explicit share from wire field 15.
             proto.primary_phlo_share
@@ -1177,12 +1221,31 @@ impl DeployData {
         }
 
         let data = DeployData::_from_proto(proto);
-        Cosigned::from_signed_data(data, signers, phlo_limit).map_err(|e| {
-            format!(
-                "Cosigned envelope validation failed (is_multi_sig={}): {}",
-                is_multi_sig, e
+        // Phase 2 dispatch: cosigner_threshold == 0 → N-of-N (Phase 1
+        // semantics; every signer must verify); cosigner_threshold > 0 →
+        // M-of-N (at least `threshold` valid signatures required;
+        // placeholder signers with empty sig are admitted).
+        if cosigner_threshold == 0 {
+            Cosigned::from_signed_data(data, signers, phlo_limit).map_err(|e| {
+                format!(
+                    "Cosigned envelope validation failed (is_multi_sig={}): {}",
+                    is_multi_sig, e
+                )
+            })
+        } else {
+            Cosigned::from_signed_data_threshold(
+                data,
+                signers,
+                phlo_limit,
+                cosigner_threshold as u32,
             )
-        })
+            .map_err(|e| {
+                format!(
+                    "Cosigned threshold envelope validation failed (threshold={}, total_signers={}): {}",
+                    cosigner_threshold, total_signers, e
+                )
+            })
+        }
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -1261,6 +1324,11 @@ impl DeployData {
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
             cosigners: cosigners_proto,
             primary_phlo_share,
+            // Single-signer / N-of-N round-trip emits 0 (legacy semantics).
+            // M-of-N round-trip requires the caller to set this directly on
+            // the proto AFTER calling this routine; the Cosigned envelope
+            // does not carry the threshold value through the data path.
+            cosigner_threshold: 0,
             ..Default::default()
         }
     }
@@ -1745,6 +1813,7 @@ mod tests {
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         };
         assert_eq!(partial.try_refund_amount(), Ok(8));
 
@@ -1758,6 +1827,7 @@ mod tests {
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         };
         assert_eq!(exhausted.try_refund_amount(), Ok(0));
 
@@ -1771,6 +1841,7 @@ mod tests {
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         };
         assert!(negative_price.try_refund_amount().is_err());
 
@@ -1784,6 +1855,7 @@ mod tests {
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         };
         assert!(oversized_cost.try_refund_amount().is_err());
     }
@@ -1822,6 +1894,7 @@ mod tests {
             cost_trace_event_count: 4,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
         };
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
@@ -1831,6 +1904,26 @@ mod tests {
             decoded.cost_trace_event_count,
             processed.cost_trace_event_count
         );
+    }
+
+    #[test]
+    fn processed_deploy_cosigner_threshold_roundtrips_through_proto() {
+        let processed = ProcessedDeploy {
+            deploy: signed_deploy(deploy_data(100, 1)),
+            cost: PCost { cost: 0 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 100,
+            cosigner_threshold: 2,
+        };
+
+        let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
+        assert_eq!(decoded.cosigner_threshold, 2);
+        assert_eq!(decoded.primary_phlo_share, 100);
     }
 
     proptest! {
@@ -1852,6 +1945,7 @@ mod tests {
                 cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+            cosigner_threshold: 0,
             };
 
             let refund = processed.try_refund_amount().unwrap();

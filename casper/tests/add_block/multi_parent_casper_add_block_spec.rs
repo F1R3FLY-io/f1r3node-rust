@@ -678,6 +678,7 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
+cosigner_threshold: 0,
         })
         .collect();
 

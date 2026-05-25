@@ -79,6 +79,7 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
         expiration_timestamp: 0,
         cosigners,
         primary_phlo_share: primary_share,
+cosigner_threshold: 0,
     }
 }
 
@@ -100,6 +101,7 @@ fn build_single_sig_proto() -> DeployDataProto {
         expiration_timestamp: 0,
         cosigners: Vec::new(),
         primary_phlo_share: 0,
+cosigner_threshold: 0,
     }
 }
 
@@ -226,6 +228,7 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         cost_trace_event_count: 0,
         cosigners: Vec::new(),
         primary_phlo_share: 0,
+cosigner_threshold: 0,
     };
 
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
@@ -276,6 +279,7 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         cost_trace_event_count: 0,
         cosigners: extras,
         primary_phlo_share: primary.phlo_share,
+cosigner_threshold: 0,
     };
 
     let reconstructed = pd.to_cosigned().expect("multi-sig reconstruction must succeed");
@@ -335,6 +339,7 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         cost_trace_event_count: 42,
         cosigners: extras,
         primary_phlo_share: primary.phlo_share,
+cosigner_threshold: 0,
     };
 
     let pd_proto = pd_before.clone().to_proto();
@@ -372,6 +377,7 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
         cost_trace_event_count: 7,
         cosigners: Vec::new(),
         primary_phlo_share: 0,
+cosigner_threshold: 0,
     };
 
     let pd_proto = pd_before.clone().to_proto();

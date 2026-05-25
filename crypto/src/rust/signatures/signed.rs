@@ -106,11 +106,19 @@ impl std::hash::Hash for Cosigner {
 pub struct Cosigned<A> {
     pub data: A,
     signers: Vec<Cosigner>,
+    /// Phase 2 M-of-N quorum threshold. Zero for N-of-N (Phase 1)
+    /// semantics where every signer must verify; k > 0 indicates at
+    /// least `k` of `signers.len()` valid signatures suffice. Carried on
+    /// the envelope so it survives ProcessedDeploy round-trip and replay.
+    #[serde(default)]
+    cosigner_threshold: u32,
 }
 
 impl<A: PartialEq> PartialEq for Cosigned<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.data == other.data && self.signers == other.signers
+        self.data == other.data
+            && self.signers == other.signers
+            && self.cosigner_threshold == other.cosigner_threshold
     }
 }
 
@@ -122,6 +130,7 @@ impl<A: std::hash::Hash> std::hash::Hash for Cosigned<A> {
         for signer in &self.signers {
             signer.hash(state);
         }
+        self.cosigner_threshold.hash(state);
     }
 }
 
@@ -204,6 +213,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
         Ok(Cosigned {
             data,
             signers: canonical,
+            cosigner_threshold: 0,
         })
     }
 
@@ -306,6 +316,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
         Ok(Cosigned {
             data,
             signers: canonical,
+            cosigner_threshold: threshold,
         })
     }
 
@@ -334,8 +345,12 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
         Ok(Cosigned {
             data: signed.data,
             signers: vec![signer],
+            cosigner_threshold: 0,
         })
     }
+
+    /// Phase 2 M-of-N quorum threshold. 0 = N-of-N (Phase 1) semantics.
+    pub fn cosigner_threshold(&self) -> u32 { self.cosigner_threshold }
 
     /// All signers, in canonical ascending `pk.bytes` order. Always non-empty.
     pub fn signers(&self) -> &[Cosigner] { &self.signers }
