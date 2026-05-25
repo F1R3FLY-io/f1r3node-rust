@@ -452,6 +452,191 @@ impl BlockAPI {
         }
     }
 
+    /// Multi-signature-aware deploy submission. Mirrors `deploy(Signed)`
+    /// but takes a `Cosigned<DeployData>` envelope so the cosigner list
+    /// survives ingest. Validation (shard_id, forbidden keys, phlo
+    /// bounds, expiration) is performed against the PRIMARY signer's
+    /// fields — the cosigners' validation already happened at envelope
+    /// construction (`Cosigned::from_signed_data` enforces all signers
+    /// signing the canonical message hash). For single-signer Cosigned
+    /// envelopes (the legacy uplift case), this routes through
+    /// `casper.deploy_cosigned` which falls back to `casper.deploy` via
+    /// the trait's default impl — preserving byte-identical observable
+    /// behavior for legacy clients.
+    #[tracing::instrument(
+        name = "deploy_cosigned",
+        target = "f1r3fly.block-api.deploy_cosigned",
+        skip_all
+    )]
+    pub async fn deploy_cosigned(
+        engine_cell: &EngineCell,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+        trigger_propose: &Option<Arc<ProposeFunction>>,
+        min_phlo_price: i64,
+        is_node_read_only: bool,
+        shard_id: &str,
+    ) -> ApiErr<String> {
+        async fn casper_deploy_cosigned(
+            casper: Arc<dyn MultiParentCasper + Send + Sync>,
+            cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+            trigger_propose: &Option<Arc<ProposeFunction>>,
+        ) -> ApiErr<String> {
+            let deploy_result = casper.deploy_cosigned(cosigned)?;
+            let r: ApiErr<String> = match deploy_result {
+                Either::Left(err) => Err(err.into()),
+                Either::Right(deploy_id) => Ok(format!(
+                    "Success!\nDeployId is: {}",
+                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+                )),
+            };
+            // Trigger propose asynchronously (mirrors `casper_deploy`).
+            if let Some(tp) = trigger_propose {
+                let tp = Arc::clone(tp);
+                let casper_for_propose = casper.clone();
+                let max_attempts = deploy_propose_max_attempts();
+                let retry_delay = deploy_propose_retry_delay();
+                tokio::spawn(async move {
+                    let mut attempt = 1u32;
+                    loop {
+                        match tp(casper_for_propose.clone(), true).await {
+                            Ok(proposer_result) => match proposer_result {
+                                ProposerResult::Failure(status, seq_number) => {
+                                    if should_retry_deploy_propose(&status)
+                                        && attempt < max_attempts
+                                    {
+                                        attempt += 1;
+                                        tokio::time::sleep(retry_delay).await;
+                                        continue;
+                                    }
+                                    if let Some(msg) =
+                                        recoverable_propose_failure_message(&status)
+                                    {
+                                        tracing::info!("{} (seqNum {})", msg, seq_number);
+                                    } else {
+                                        tracing::error!(
+                                            "Failure: {} (seqNum {})",
+                                            status,
+                                            seq_number
+                                        );
+                                    }
+                                }
+                                ProposerResult::Empty => {
+                                    tracing::debug!("Propose already in progress");
+                                }
+                                ProposerResult::Started(seq_number) => {
+                                    tracing::debug!(
+                                        "Propose started (seqNum {})",
+                                        seq_number
+                                    );
+                                }
+                                ProposerResult::Success(_, block) => {
+                                    let block_hash_hex =
+                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
+                                    tracing::info!(
+                                        "Success! Block {} created and added.",
+                                        block_hash_hex
+                                    );
+                                }
+                            },
+                            Err(err) => {
+                                if attempt < max_attempts {
+                                    attempt += 1;
+                                    tokio::time::sleep(retry_delay).await;
+                                    continue;
+                                }
+                                tracing::error!(
+                                    "Failed to trigger propose from deploy path: {}",
+                                    err
+                                );
+                            }
+                        }
+                        break;
+                    }
+                });
+            }
+            r
+        }
+
+        // Validation against the PRIMARY signer's fields. The cosigner
+        // list is already validated by Cosigned::from_signed_data
+        // (signature verification, canonical sort, no duplicates,
+        // share-sum).
+        let primary = cosigned.primary();
+        let validation_result: Result<(), String> = Ok(())
+            .and_then(|_| {
+                if is_node_read_only {
+                    Err(
+                        "Deploy was rejected because node is running in read-only mode."
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|_| {
+                if cosigned.data.shard_id != shard_id {
+                    Err(format!(
+                        "Deploy shardId '{}' is not as expected network shard '{}'.",
+                        cosigned.data.shard_id, shard_id
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|_| {
+                // Any cosigner using a forbidden system key is rejected.
+                for (i, signer) in cosigned.signers().iter().enumerate() {
+                    let is_forbidden = standard_deploys::system_public_keys()
+                        .iter()
+                        .any(|pk| **pk == signer.pk);
+                    if is_forbidden {
+                        return Err(format!(
+                            "Deploy refused because cosigner at index {} is \
+                             signed with a forbidden system private key.",
+                            i
+                        ));
+                    }
+                }
+                Ok(())
+            })
+            .and_then(|_| cosigned.data.validate_phlo(min_phlo_price))
+            .and_then(|_| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                if cosigned.data.is_expired_at(now) {
+                    Err(DeployExpiredError {
+                        message: format!(
+                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                            cosigned.data.expiration_timestamp
+                        ),
+                    }
+                    .to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        // Suppress unused-binding warning under the cosigned path
+        // (primary used only in the validation chain above).
+        let _ = primary;
+
+        validation_result.map_err(|e| eyre::eyre!(e))?;
+
+        let log_error_message =
+            "Error: Could not deploy, casper instance was not available yet.".to_string();
+        let eng = engine_cell.get().await;
+        let log_warn = |msg: &str| -> ApiErr<String> {
+            tracing::warn!("{}", msg);
+            Err(eyre::eyre!("{}", msg))
+        };
+        if let Some(casper) = eng.with_casper() {
+            casper_deploy_cosigned(casper, cosigned, trigger_propose).await
+        } else {
+            log_warn(&log_error_message)
+        }
+    }
+
     pub async fn create_block(
         engine_cell: &EngineCell,
         trigger_propose_f: &Arc<ProposeFunction>,
