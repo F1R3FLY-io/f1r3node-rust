@@ -105,8 +105,9 @@ impl Genesis {
             shard_id,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
+        let capabilities_registry = standard_deploys::capabilities_registry(shard_id);
 
-        let mut all_deploys = Vec::with_capacity(11 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
@@ -119,6 +120,10 @@ impl Genesis {
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
+        // Phase 3 LL-rich algebra: capability registry for Bang/Lolly.
+        // Deployed last among system contracts because it has no
+        // dependencies on any other genesis deploy.
+        all_deploys.push(capabilities_registry);
 
         all_deploys
     }

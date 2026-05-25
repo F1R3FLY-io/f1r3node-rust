@@ -54,6 +54,8 @@ pub const STACK_PK: &str = "c94e647de6876c954ebb7b64c40a220227770f9be003635edfe3
 // one-off generator and the derivation table at the top of TokenMetadata.rhox.
 pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
+pub const CAPABILITIES_REGISTRY_PK: &str =
+    "0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450";
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
@@ -66,6 +68,7 @@ pub const MULTI_SIG_SYSTEM_VAULT_TIMESTAMP: i64 = 1571408470880;
 pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
+pub const CAPABILITIES_REGISTRY_TIMESTAMP: i64 = 1748678400000;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
@@ -80,6 +83,7 @@ lazy_static! {
     pub static ref VAULTS_GENERATOR_PUB_KEY: PublicKey = to_public(VAULTS_GENERATOR_PK);
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
+    pub static ref CAPABILITIES_REGISTRY_PUB_KEY: PublicKey = to_public(CAPABILITIES_REGISTRY_PK);
 }
 
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
@@ -96,6 +100,7 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &VAULTS_GENERATOR_PUB_KEY,
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
+        &CAPABILITIES_REGISTRY_PUB_KEY,
     ]
 }
 
@@ -260,6 +265,42 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
         ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Genesis deploy for the Phase 3 LL-rich algebra capability registry
+/// (`rho:system:capabilities`). Derives the per-genesis-shard
+/// `(pub_key, sig)` pair via [`RegistrySigGen`] and substitutes them
+/// into the `CapabilitiesRegistry.rhox` template so the contract
+/// bundle is signed with a stable per-shard key.
+pub fn capabilities_registry(shard_id: &str) -> Signed<DeployData> {
+    use crypto::rust::private_key::PrivateKey;
+    use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+
+    let sk = PrivateKey::from_bytes(
+        &hex::decode(CAPABILITIES_REGISTRY_PK).expect("Invalid CAPABILITIES_REGISTRY_PK hex"),
+    );
+    let args = Args::new(
+        Some("CapabilitiesRegistry".to_string()),
+        Some(CAPABILITIES_REGISTRY_TIMESTAMP),
+        Some(sk),
+    );
+    let derivation = RegistrySigGen::derive_from(&args);
+    let pub_key_hex = derivation.result.pk.to_string();
+    let sig_hex = derivation.result.sig.to_string();
+    to_deploy(
+        CompiledRholangTemplate::new(
+            "CapabilitiesRegistry.rhox",
+            embedded_rho::CAPABILITIES_REGISTRY,
+            HashMap::new(),
+            &[
+                ("capabilitiesRegistryPubKey", pub_key_hex.as_str()),
+                ("capabilitiesRegistrySig", sig_hex.as_str()),
+            ],
+        ),
+        CAPABILITIES_REGISTRY_PK,
+        CAPABILITIES_REGISTRY_TIMESTAMP,
         shard_id,
     )
 }
