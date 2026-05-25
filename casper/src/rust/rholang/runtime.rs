@@ -108,6 +108,77 @@ impl RuntimeOps {
 
     /* Compute state with deploys (genesis block) and System deploys (regular block) */
 
+    /// Multi-sig-aware variant of [`Self::compute_state`]. Takes
+    /// `Vec<Cosigned<DeployData>>` so multi-signature deploys execute
+    /// through the per-cosigner pre-charge + FIFO refund fan-out at
+    /// `play_deploys_for_state_cosigned`. For legacy single-signature
+    /// deploys (1-element Cosigned envelopes), behavior is byte-identical.
+    pub async fn compute_state_cosigned(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
+            Vec<(ProcessedSystemDeploy, NumberChannelsEndVal)>,
+        ),
+        CasperError,
+    > {
+        tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-cosigned-started");
+        self.runtime.set_block_data(block_data).await;
+        self.runtime.set_invalid_blocks(invalid_blocks).await;
+
+        let (start_hash, processed_deploys) =
+            self.play_deploys_for_state_cosigned(start_hash, terms).await?;
+
+        let mut current_hash = start_hash;
+        let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
+        for system_deploy_enum in system_deploys.into_iter() {
+            let result = match system_deploy_enum {
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
+                    mut slash_deploy,
+                ) => self.play_system_deploy(&current_hash, &mut slash_deploy).await?,
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
+                    mut close_deploy,
+                ) => self.play_system_deploy(&current_hash, &mut close_deploy).await?,
+            };
+            match result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    mergeable_channels,
+                    result: _,
+                } => {
+                    processed_system_deploys
+                        .push((processed_system_deploy, mergeable_channels));
+                    current_hash = state_hash;
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
+                } => {
+                    return Err(CasperError::RuntimeError(format!(
+                        "Unexpected system error during cosigned play of system deploy: {}",
+                        error_msg
+                    )));
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy: ProcessedSystemDeploy::Succeeded { .. },
+                } => {
+                    return Err(CasperError::RuntimeError(
+                        "Unreachable code path. This is likely caused by a bug in the runtime."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok((current_hash, processed_deploys, processed_system_deploys))
+    }
+
     /**
      * Evaluates deploys and System deploys with checkpoint to get final state hash
      */
@@ -276,6 +347,73 @@ impl RuntimeOps {
     /**
      * Evaluates deploys on root hash with checkpoint to get final state hash
      */
+    /// Multi-signature-aware variant of [`Self::play_deploys_for_state`].
+    /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys
+    /// route through the per-cosigner pre-charge + FIFO refund fan-out
+    /// at `play_deploy_with_cost_accounting_cosigned`. For legacy
+    /// single-signature deploys (1-element Cosigned envelopes), behavior
+    /// is byte-identical to `play_deploys_for_state`.
+    pub async fn play_deploys_for_state_cosigned(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+    ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
+        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
+        let read_vm_rss_kb =
+            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
+        let mut rss_baseline = if mem_profile_enabled {
+            read_vm_rss_kb()
+        } else {
+            None
+        };
+        let mut rss_prev = rss_baseline;
+        let mut log_mem_step = |step: &str| {
+            if !mem_profile_enabled {
+                return;
+            }
+            if let Some(curr) = read_vm_rss_kb() {
+                let prev = rss_prev.unwrap_or(curr);
+                let baseline = rss_baseline.unwrap_or(curr);
+                eprintln!(
+                    "play_deploys_for_state_cosigned.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
+                    step, curr, curr as i64 - prev as i64, curr as i64 - baseline as i64
+                );
+                rss_prev = Some(curr);
+                if rss_baseline.is_none() {
+                    rss_baseline = Some(curr);
+                }
+            }
+        };
+
+        tracing::info!(target: "f1r3fly.casper.play-deploys-cosigned", "play-deploys-cosigned-started");
+        log_mem_step("start");
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
+            .await?;
+        log_mem_step("after_reset");
+
+        let mut res = Vec::with_capacity(terms.len());
+        for (idx, cosigned) in terms.into_iter().enumerate() {
+            if mem_profile_enabled {
+                let before = format!("before_deploy_{}", idx + 1);
+                log_mem_step(&before);
+            }
+            res.push(
+                self.play_deploy_with_cost_accounting_cosigned(cosigned).await?,
+            );
+            if mem_profile_enabled {
+                let after = format!("after_deploy_{}", idx + 1);
+                log_mem_step(&after);
+            }
+        }
+
+        log_mem_step("before_final_checkpoint");
+        let final_checkpoint = self.runtime.create_checkpoint().await;
+        let final_root = final_checkpoint.root.to_bytes_prost();
+        log_mem_step("after_final_checkpoint");
+        Ok((final_root, res))
+    }
+
     pub async fn play_deploys_for_state(
         &mut self,
         start_hash: &StateHash,
