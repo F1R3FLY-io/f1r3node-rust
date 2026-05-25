@@ -168,10 +168,10 @@ in {
           pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
-            new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
+            new stateCh, posStateTag(`rho:system:singleValueChannel`), pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState in {
               // Initializes PoS state structure.
-              stateCh!({
+              @(*posStateTag, *stateCh)!({
                 // Map[PublicKey, Int] - each validator stake
                 "allBonds"        : $$initialBonds$$,
                 // Set[PublicKey]     - the active validators
@@ -197,7 +197,7 @@ in {
                   accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
                   for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
                        @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
-                    for (@state <<- stateCh) {
+                    for (@state <<- @(*posStateTag, *stateCh)) {
                       retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
                     }
                   }
@@ -205,7 +205,7 @@ in {
               } |
               contract calTotalActiveBonds(returnCh) = {
                 new computeSum in {
-                  for (@state <<- stateCh){
+                  for (@state <<- @(*posStateTag, *stateCh)){
                     @ListOps!("fold", state.get("allBonds").toList(), 0, *computeSum, *returnCh) |
                     contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
                       if (state.get("activeValidators").contains(pk)){
@@ -224,7 +224,7 @@ in {
                 resultCh!(acc + amount)
               } |
               contract accumulateItemInState(returnCh, @stateKey, accumulateAlgo) = {
-                for (@state <<- stateCh){
+                for (@state <<- @(*posStateTag, *stateCh)){
                   @ListOps!("fold", state.get(stateKey).toList(), 0, *accumulateAlgo, *returnCh)
                 }
               }|
@@ -246,7 +246,7 @@ in {
               } |
               contract PoS(@"getRewards", returnCh) = {
                 new currentEpochRewardCh, accumulateReward in {
-                  for (@state <<- stateCh) {
+                  for (@state <<- @(*posStateTag, *stateCh)) {
                     PoS!("getCurrentEpochRewards", *currentEpochRewardCh)|
                     for (@currentEpochReward <- currentEpochRewardCh) {
                       @ListOps!("fold", currentEpochReward.toList(), state.get("committedRewards"), *accumulateReward, *returnCh) |
@@ -259,24 +259,24 @@ in {
               } |
               // Peeks at bonds map.
               contract PoS(@"getBonds", returnCh) = {
-                for (@state <<- stateCh) {
+                for (@state <<- @(*posStateTag, *stateCh)) {
                   returnCh!(state.get("allBonds"))
                 }
               } |
               // Peeks at active validator list.
               contract PoS(@"getActiveValidators", returnCh) = {
-                for (@state <<- stateCh) {
+                for (@state <<- @(*posStateTag, *stateCh)) {
                   returnCh!(state.get("activeValidators"))
                 }
               } |
               // Peeks at active validator list.
               contract PoS(@"getWithdrawers", returnCh) = {
-                for (@state <<- stateCh) {
+                for (@state <<- @(*posStateTag, *stateCh)) {
                   returnCh!(state.get("withdrawers"))
                 }
               } |
               contract PoS(@"getPendingWithdrawer", returnCh) = {
-                for (@state <<- stateCh) {
+                for (@state <<- @(*posStateTag, *stateCh)) {
                   returnCh!(state.get("pendingWithdrawers"))
                 }
               } |
@@ -307,7 +307,7 @@ in {
                 new userCh, depositCh,
                     processCh
                 in {
-                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  runMVar!((*posStateTag, *stateCh), *processCh, *returnCh) |
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh <- processCh &
                        @userPk          <- userCh) {
@@ -342,7 +342,7 @@ in {
                     getBlockData(`rho:block:data`)
                 in {
                   // Consumes state and updates withdrawers map.
-                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  runMVar!((*posStateTag, *stateCh), *processCh, *returnCh) |
                   getBlockData!(*blockDataCh) |
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh   <- processCh &
@@ -442,7 +442,7 @@ in {
                         in {
                           getInvalidBlocks!(*invalidBlocksCh) |
                           getUser!(deployerId, *userCh) |
-                          runMVar!(*stateCh, *stateProcessCh, *returnCh) |
+                          runMVar!((*posStateTag, *stateCh), *stateProcessCh, *returnCh) |
                           for (@invalidBlocks        <- invalidBlocksCh &
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
@@ -515,7 +515,7 @@ in {
                               in {
                                 PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
                                 for (@currentRewards <- currentEpochRewardCh) {
-                                  runMVar!(*stateCh, *stateProcessCh, *ackCh) |
+                                  runMVar!((*posStateTag, *stateCh), *stateProcessCh, *ackCh) |
                                   for (@state, stateUpdateCh <- stateProcessCh) {
                                     // 1. Calculate all the validator current epoch rewards based on active validator bonding proportion
                                     // 2. Accumulate `committedRewards` with the result of step 1
@@ -621,7 +621,7 @@ in {
               contract PoS(@"commitRandomImage", @deployerId, @hash, ackCh) = {
                 new userCh, mvarCh in {
                   getUser!(deployerId, *userCh) |
-                  runMVar!(*stateCh, *mvarCh, *ackCh) |
+                  runMVar!((*posStateTag, *stateCh), *mvarCh, *ackCh) |
                   for (@validator       <- userCh &
                        @state, resultCh <- mvarCh) {
                     if (state.get("randomImages").contains(validator)) {
@@ -637,7 +637,7 @@ in {
               contract PoS(@"revealRandom", @deployerId, @random, ackCh) = {
                 new userCh, mvarCh, computeHash(`rho:crypto:keccak256Hash`), hashCh in {
                   getUser!(deployerId, *userCh) |
-                  runMVar!(*stateCh, *mvarCh, *ackCh) |
+                  runMVar!((*posStateTag, *stateCh), *mvarCh, *ackCh) |
                   computeHash!(random, *hashCh) |
                   for (@validator       <- userCh &
                        @state, resultCh <- mvarCh &

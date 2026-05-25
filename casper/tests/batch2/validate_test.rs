@@ -20,6 +20,7 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
+use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy,
 };
@@ -891,9 +892,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         );
 
         // block_x carries the deploy in body.deploys but is NOT marked
-        // approved/finalized (insert_indexed only marks genesis approved).
-        // The resolver's LFB BFS walks main parents up from genesis and
-        // never visits block_x, so the resolver returns `Pending`.
+        // approved/finalized.
         let block_x = create_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -910,14 +909,42 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
         );
 
-        // block_w re-includes the deploy. repeat_deploy walks block_w's
-        // ancestor chain and finds block_x with deploy in body.deploys —
-        // an "ancestor occurrence" that without the exemption would be
-        // flagged as repeat.
-        let block_w = create_block(
+        // block_y rejects the deploy (downstream merge-rejection). Without
+        // this real rejection in the DAG, the new parents-anchored
+        // resolver would correctly identify block_x's clean inclusion as
+        // still in pre-state and decline exemption — re-inclusion would
+        // be Bug-B-style double-execution. The recovery semantic requires
+        // an actual rejection event to legitimize re-proposal.
+        let mut block_y = create_block(
             &mut block_store,
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_y.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy_sig.clone(),
+        }];
+        block_store
+            .put(block_y.block_hash.clone(), &block_y)
+            .unwrap();
+
+        // block_w re-includes the deploy. Parent = block_y (the rejecting
+        // block). resolve_at_parents finds clean inclusion in block_x AND
+        // canonical-from-parents rejection in block_y descending from
+        // block_x → RejectedCanonically → exemption is allowed.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_y.block_hash.clone()],
             &genesis,
             None,
             None,
@@ -933,9 +960,8 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
 
-        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
-        // This is the signal the block-creator and Phase D recovery pipelines use
-        // to justify re-inclusion; validation must honor it.
+        // rejected_in_scope is now real (block_y rejected the sig). The
+        // resolver verifies this via its DAG scan.
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);

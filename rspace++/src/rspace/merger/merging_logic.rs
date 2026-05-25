@@ -33,6 +33,35 @@ pub type NumberChannelsEndVal = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 
 pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 
+/// Per-deploy summary of all identity-tagged channels touched, split into
+/// two subsets:
+///
+/// - `commutative` carries the (channel, value, MergeType) entries whose
+///   runtime end-value was extractable as a numeric `i64`. These are the
+///   channels eligible for commutative merge via `calculate_number_channel_merge`.
+///   Mirrors the existing `NumberChannelsEndVal` shape.
+///
+/// - `identity_tagged` carries the channel hashes of every identity-tagged
+///   channel observed during deploy execution, INCLUDING those that have
+///   no extractable numeric end-value (the "contract seam" cases per
+///   `docs/casper/STATE_MERGING.md`). Superset of `commutative.keys()`.
+///   This subset enables Check #4 to enforce the Layer-2 single-value
+///   contract on tagged channels that lack a commutative-merge representation.
+#[derive(Debug, Clone)]
+pub struct MergeableChsForDeploy {
+    pub commutative: NumberChannelsEndVal,
+    pub identity_tagged: HashableSet<Blake2b256Hash>,
+}
+
+impl MergeableChsForDeploy {
+    pub fn empty() -> Self {
+        Self {
+            commutative: BTreeMap::new(),
+            identity_tagged: HashableSet::new(),
+        }
+    }
+}
+
 /// Combine two values according to the strategy. Used by
 /// `EventLogIndex::combine` to aggregate diffs within a chain and by the merge
 /// engine to combine across chains. For `IntegerAdd` semantics, this performs
@@ -521,6 +550,7 @@ pub fn compute_relation_map<A: Eq + std::hash::Hash + Clone + PartialOrd>(
 pub fn compute_conflict_map_event_indexed<R>(
     branches: &[R],
     event_logs: &[&EventLogIndex],
+    identity_tagged_pending_produces: &[&HashSet<Blake2b256Hash>],
 ) -> HashMap<R, HashableSet<R>>
 where
     R: Clone + Eq + std::hash::Hash,
@@ -529,6 +559,11 @@ where
         branches.len(),
         event_logs.len(),
         "branches and event_logs must be parallel arrays of the same length"
+    );
+    assert_eq!(
+        branches.len(),
+        identity_tagged_pending_produces.len(),
+        "branches and identity_tagged_pending_produces must be parallel arrays of the same length"
     );
     let n = branches.len();
 
@@ -555,35 +590,22 @@ where
         HashMap::new();
     let mut global_branches: HashSet<usize> = HashSet::new();
 
-    // Check #4 inputs — channel-keyed consume-then-produce signature.
-    // For each branch, find channels where the branch BOTH consumed a
-    // pre-state produce AND emitted a new produce (linear or persistent).
-    // This is the structural signature of `runMVar(ch, ...)` and any
-    // contract pattern that treats `ch` as single-value.
+    // Check #4 (Layer-2 identity-tagged single-value contract).
     //
-    // Refinement: the bare presence of the signature in 2+ branches is
-    // not sufficient to imply conflict. If all branches produce
-    // identical Datums on the channel, `ChannelChange::combine`'s
-    // multiset-max-count merge dedupes them to a single Datum — no
-    // multi-Datum results. Conflict only when 2+ branches produce
-    // DIFFERENT Datums on a non-commutative channel (per CSV cell
-    // `4 ! × 4 !`: "Could have matched same produce. Mergeable if
-    // different linear produces.").
+    // For each pair of branches (i, j), intersect their
+    // `identity_tagged_pending_produces` sets (computed in
+    // `compute_branch_derived`). For each shared channel:
+    //   * if both branches have a commutative diff entry for the channel in
+    //     `number_channels_data`, the commutative-merge path handles it
+    //     (IntegerAdd / BitmaskOr fold), no conflict
+    //   * else compare emitted produce hashes on the channel — identical
+    //     writes are dedup'd by `ChannelChange::combine`, no conflict
+    //   * else emit conflict pair (i, j)
     //
-    // Track per channel: which branches have the signature, and the
-    // set of distinct produces each branch emitted on the channel.
-    // A pair of branches conflicts on the channel iff their emitted
-    // produce sets differ (and the channel isn't in number_channels_data
-    // for both, which is the existing commutative-merge bypass).
-    let mut consume_then_produce_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
-        HashMap::new();
-    let mut produces_emitted_by_channel_branch: HashMap<
-        (&Blake2b256Hash, usize),
-        HashSet<&Blake2b256Hash>,
-    > = HashMap::new();
-    // For the commutative bypass: which branches treat which channels as
-    // mergeable (IntegerAdd / BitmaskOr).
-    let mut mergeable_chs_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> = HashMap::new();
+    // Per CSV cell `4 ! × 4 !` "Could have matched same produce. Mergeable
+    // if different linear produces." — non-identical writes on a single-
+    // value channel must be cost-optimally rejected to preserve the
+    // Layer-2 contract.
 
     for (idx, e) in event_logs.iter().enumerate() {
         // #1 race candidates: events destroyed in COMM (consumed produces /
@@ -659,49 +681,10 @@ where
             global_branches.insert(idx);
         }
 
-        // #4 channel-keyed consume-then-produce signature (Run 6 architecture).
-        //
-        // A branch has the runMVar-style signature on channel C iff:
-        //   * branch.produces_consumed contains any produce on C, AND
-        //   * branch.produces_linear ∪ produces_persistent contains any
-        //     produce on C.
-        //
-        // Pure structural detection — no provenance filter on whether
-        // the consumed produce was external (LFB) or local (created
-        // within the branch). The external-consume refinement was tried
-        // (Run 8) and empirically regressed: too restrictive, lost the
-        // bonding-bug coverage.
-        let consumed_channels: HashSet<&Blake2b256Hash> = e
-            .produces_consumed
-            .0
-            .iter()
-            .map(|p| &p.channel_hash)
-            .collect();
-        let produced_channels: HashSet<&Blake2b256Hash> = e
-            .produces_linear
-            .0
-            .iter()
-            .chain(e.produces_persistent.0.iter())
-            .map(|p| &p.channel_hash)
-            .collect();
-        for ch in consumed_channels.intersection(&produced_channels) {
-            consume_then_produce_by_channel
-                .entry(*ch)
-                .or_default()
-                .insert(idx);
-            // Collect produce hashes emitted by this branch on this channel.
-            let emitted_set = produces_emitted_by_channel_branch
-                .entry((*ch, idx))
-                .or_default();
-            for p in e.produces_linear.0.iter().chain(e.produces_persistent.0.iter()) {
-                if &p.channel_hash == *ch {
-                    emitted_set.insert(&p.hash);
-                }
-            }
-        }
-        for ch in e.number_channels_data.keys() {
-            mergeable_chs_by_channel.entry(ch).or_default().insert(idx);
-        }
+        // #4 inputs are now provided via the `identity_tagged_pending_produces`
+        // parallel array (computed in `compute_branch_derived`). The pairwise
+        // intersection + emitted-hash comparison happens below, after this
+        // per-branch index-building loop completes.
     }
 
     // Diagnostic: dump the branch-count distribution for produces_consumed
@@ -870,53 +853,63 @@ where
     // multiset-max-count combine dedupes to a single Datum and no
     // multi-Datum results. Bypassed when the channel is in
     // `number_channels_data` for both branches (commutative merge).
-    for (channel, branches_set) in &consume_then_produce_by_channel {
-        if branches_set.len() < 2 {
-            continue;
-        }
-        tracing::info!(
-            target: "f1r3.trace.conflict_map",
-            "[TRACE-CHECK-4-CANDIDATE] channel={} branch_count={}",
-            hex::encode(channel.bytes()),
-            branches_set.len()
-        );
-        let mergeable_branches = mergeable_chs_by_channel.get(channel);
-        let pos: Vec<usize> = branches_set.iter().copied().collect();
-        for i in 0..pos.len() {
-            for j in (i + 1)..pos.len() {
-                let (a, b) = (pos[i], pos[j]);
-                let both_mergeable = mergeable_branches
-                    .map(|m| m.contains(&a) && m.contains(&b))
-                    .unwrap_or(false);
+    // Check #4 — identity-tagged channels with non-commutative pending writes.
+    // Pairwise: for each branch pair (i, j), intersect their
+    // `identity_tagged_pending_produces` sets. For each shared channel:
+    //   * skip if both branches have a commutative diff entry on the channel
+    //     in `number_channels_data` (commutative-merge bypass)
+    //   * collect emitted produce hashes on the channel from each branch's
+    //     produces_linear ∪ produces_persistent
+    //   * skip if the two sets are identical (cross-cancel handles duplicates)
+    //   * else emit conflict pair
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let shared: HashSet<&Blake2b256Hash> = identity_tagged_pending_produces[i]
+                .intersection(identity_tagged_pending_produces[j])
+                .collect();
+            for channel in shared {
+                let both_mergeable = event_logs[i]
+                    .number_channels_data
+                    .contains_key(channel)
+                    && event_logs[j].number_channels_data.contains_key(channel);
                 if both_mergeable {
                     continue;
                 }
-                let empty: HashSet<&Blake2b256Hash> = HashSet::new();
-                let emitted_a = produces_emitted_by_channel_branch
-                    .get(&(*channel, a))
-                    .unwrap_or(&empty);
-                let emitted_b = produces_emitted_by_channel_branch
-                    .get(&(*channel, b))
-                    .unwrap_or(&empty);
-                if emitted_a == emitted_b {
+                tracing::info!(
+                    target: "f1r3.trace.conflict_map",
+                    "[TRACE-CHECK-4-CANDIDATE] channel={} branches=({},{})",
+                    hex::encode(channel.bytes()), i, j
+                );
+                let emitted_i: HashSet<&Blake2b256Hash> = event_logs[i]
+                    .produces_linear
+                    .0
+                    .iter()
+                    .chain(event_logs[i].produces_persistent.0.iter())
+                    .filter(|p| &p.channel_hash == channel)
+                    .map(|p| &p.hash)
+                    .collect();
+                let emitted_j: HashSet<&Blake2b256Hash> = event_logs[j]
+                    .produces_linear
+                    .0
+                    .iter()
+                    .chain(event_logs[j].produces_persistent.0.iter())
+                    .filter(|p| &p.channel_hash == channel)
+                    .map(|p| &p.hash)
+                    .collect();
+                if emitted_i == emitted_j {
                     tracing::info!(
                         target: "f1r3.trace.conflict_map",
                         "[TRACE-CHECK-4-SKIP-IDENTICAL] channel={} branches=({},{}) emitted_count={}",
-                        hex::encode(channel.bytes()),
-                        a, b,
-                        emitted_a.len()
+                        hex::encode(channel.bytes()), i, j, emitted_i.len()
                     );
                     continue;
                 }
                 tracing::info!(
                     target: "f1r3.trace.conflict_map",
-                    "[TRACE-CHECK-4-CONFLICT] channel={} branches=({},{}) emitted_a={} emitted_b={}",
-                    hex::encode(channel.bytes()),
-                    a, b,
-                    emitted_a.len(), emitted_b.len()
+                    "[TRACE-CHECK-4-CONFLICT] channel={} branches=({},{}) emitted_i={} emitted_j={}",
+                    hex::encode(channel.bytes()), i, j, emitted_i.len(), emitted_j.len()
                 );
-                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-                pairs.push((lo, hi));
+                pairs.push((i, j));
             }
         }
     }

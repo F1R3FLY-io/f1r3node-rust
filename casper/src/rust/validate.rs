@@ -407,9 +407,10 @@ impl Validate {
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
         use crate::rust::api::deploy_finalization_status::{
-            resolve as resolve_finalization_status, DeployFinalizationState,
+            resolve_at_parents, EffectsInParentsState,
         };
 
+        let parent_hashes: Vec<BlockHash> = block.header.parents_hash_list.clone();
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
@@ -419,40 +420,36 @@ impl Validate {
                     return true; // not rejected — must check
                 }
                 // Sig is in rejected_in_scope. Apply the exemption only if
-                // the sig is NOT Finalized — otherwise re-inclusion is
-                // double-execution and the repeat check must catch it.
-                match resolve_finalization_status(
+                // the sig's effects are NOT in canonical-from-parents
+                // pre-state — otherwise re-inclusion is double-execution
+                // and the repeat check must catch it.
+                match resolve_at_parents(
                     &s.dag,
                     block_store,
+                    &parent_hashes,
                     expiration_threshold as i64,
                     &pd.deploy.sig,
                 ) {
-                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
-                        let canonical_block_str = status
-                            .latest_block_hash
-                            .as_ref()
-                            .map(|h| PrettyPrinter::build_string_bytes(h))
-                            .unwrap_or_else(|| "<none>".to_string());
+                    Ok(EffectsInParentsState::InCanonicalState) => {
                         tracing::warn!(
                             "repeat_deploy: sig {} is in rejected_in_scope but \
-                             resolves to Finalized (clean canonical inclusion at \
-                             {}); declining the recovery exemption to prevent \
+                             has clean canonical inclusion in parents' ancestry; \
+                             declining the recovery exemption to prevent \
                              double-execution",
                             hex::encode(&pd.deploy.sig),
-                            canonical_block_str,
                         );
                         true // keep in check set so the ancestor scan finds the repeat
                     }
-                    Ok(_) => false, // status != Finalized → exempt (recovery)
+                    Ok(_) => false, // NotInState or RejectedCanonically → exempt (recovery)
                     Err(err) => {
                         // Resolver failures are conservative-fail: keep the sig
                         // in the check set so an inconsistency surfaces as
                         // InvalidRepeatDeploy rather than being silently
                         // exempted as a recovery candidate.
                         tracing::warn!(
-                            "repeat_deploy: deploy_finalization_status::resolve \
-                             failed for sig {}: {} — keeping sig in check set \
-                             rather than granting recovery exemption",
+                            "repeat_deploy: resolve_at_parents failed for sig \
+                             {}: {} — keeping sig in check set rather than \
+                             granting recovery exemption",
                             hex::encode(&pd.deploy.sig),
                             err,
                         );

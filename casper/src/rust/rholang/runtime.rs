@@ -26,7 +26,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
-use models::rust::utils::new_freevar_par;
+use models::rust::utils::{new_freevar_par, new_gint_par};
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
@@ -41,9 +41,14 @@ use rholang::rust::interpreter::system_processes::{
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use rspace_plus_plus::rspace::merger::merging_logic::{
+    MergeType, MergeableChsForDeploy, NumberChannelsEndVal,
+};
+use shared::rust::hashable_set::HashableSet;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -102,6 +107,104 @@ impl RuntimeOps {
         Ok(checkpoint.root.bytes().into())
     }
 
+    /// Heal multi-Datum on tagged channels in the hot store by folding
+    /// to a single value via the channel's `MergeType`. Called between
+    /// deploy execution and checkpoint creation so the trie always sees
+    /// the "tagged channels = single value" architectural invariant.
+    ///
+    /// Deterministic across validators: all validators reach the same
+    /// hot-store state at this point, fold via the same MergeType-based
+    /// rule (max for IntegerAdd, OR for BitmaskOr), and write the same
+    /// folded datum. Post-state hashes match.
+    ///
+    /// Returns the count of channels healed (typically 0 in steady state).
+    pub async fn heal_tagged_channels(&mut self) -> Result<usize, CasperError> {
+        let merge_chs = self.runtime.merge_chs.read().await.clone();
+        let mut healed_count = 0usize;
+        for (channel, merge_type) in merge_chs.iter() {
+            let data = self.runtime.get_data(channel).await;
+            if data.len() <= 1 {
+                continue;
+            }
+            // Extract numeric values for fold.
+            let values: Vec<i64> = data
+                .iter()
+                .filter_map(|d| {
+                    RholangMergingLogic::try_get_number_with_rnd(&d.a).map(|(n, _)| n)
+                })
+                .collect();
+            if values.is_empty() {
+                // No numeric values to fold (channel might hold non-numeric
+                // tagged data — out of scope for numeric heal). Leave alone;
+                // read-side sanitize will fall back to default handling.
+                continue;
+            }
+            let folded = match Self::fold_multi_value(&values, *merge_type) {
+                Some(v) => v,
+                None => continue,
+            };
+            // Build the replacement datum. Use the first datum's
+            // random_state as the template — deterministic across
+            // validators since `data` ordering is deterministic at this
+            // hot-store boundary.
+            let template_rand_state = data[0].a.random_state.clone();
+            let folded_par = new_gint_par(folded, Vec::new(), false);
+            let new_data = ListParWithRandom {
+                pars: vec![folded_par],
+                random_state: template_rand_state,
+            };
+            let produce_ref = Produce::create(channel, &new_data, false);
+            let new_datum = Datum {
+                a: new_data,
+                persist: false,
+                source: produce_ref,
+            };
+            self.runtime
+                .replace_channel_data(channel, vec![new_datum])
+                .await
+                .map_err(|e| CasperError::RuntimeError(format!("heal_tagged_channels: replace_channel_data failed: {}", e)))?;
+
+            healed_count += 1;
+            let ch_hash = stable_hash_provider::hash(channel);
+            tracing::warn!(
+                target: "f1r3fly.write_time_heal",
+                "Healed tagged channel {} from {} datums to 1 via {:?} fold (folded_value={})",
+                hex::encode(ch_hash.bytes()),
+                data.len(),
+                merge_type,
+                folded
+            );
+            metrics::counter!(
+                "write_time_heal_total",
+                "merge_type" => format!("{:?}", merge_type)
+            )
+            .increment(1);
+        }
+        if healed_count > 0 {
+            tracing::info!(
+                target: "f1r3fly.write_time_heal",
+                "heal_tagged_channels: folded {} multi-Datum tagged channel(s) before checkpoint",
+                healed_count
+            );
+        }
+        Ok(healed_count)
+    }
+
+    /// Run heal first, then create checkpoint. Use this in place of
+    /// direct `self.runtime.create_checkpoint()` at all compute_state
+    /// boundaries that write to the trie.
+    pub async fn create_checkpoint_with_heal(
+        &mut self,
+    ) -> Result<rspace_plus_plus::rspace::checkpoint::Checkpoint, CasperError> {
+        if let Err(e) = self.heal_tagged_channels().await {
+            tracing::warn!(
+                "create_checkpoint_with_heal: heal failed: {} — proceeding with checkpoint anyway",
+                e
+            );
+        }
+        Ok(self.runtime.create_checkpoint().await)
+    }
+
     /* Compute state with deploys (genesis block) and System deploys (regular block) */
 
     /**
@@ -117,8 +220,8 @@ impl RuntimeOps {
     ) -> Result<
         (
             StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
-            Vec<(ProcessedSystemDeploy, NumberChannelsEndVal)>,
+            Vec<(ProcessedDeploy, MergeableChsForDeploy)>,
+            Vec<(ProcessedSystemDeploy, MergeableChsForDeploy)>,
         ),
         CasperError,
     > {
@@ -241,7 +344,7 @@ impl RuntimeOps {
         (
             StateHash,
             StateHash,
-            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
+            Vec<(ProcessedDeploy, MergeableChsForDeploy)>,
         ),
         CasperError,
     > {
@@ -276,7 +379,7 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
-    ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
+    ) -> Result<(StateHash, Vec<(ProcessedDeploy, MergeableChsForDeploy)>), CasperError> {
         let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
         let read_vm_rss_kb =
             || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
@@ -346,7 +449,7 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
-    ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
+    ) -> Result<(StateHash, Vec<(ProcessedDeploy, MergeableChsForDeploy)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play-deploys-genesis", "play-deploys-genesis-started");
         self.runtime
@@ -368,7 +471,19 @@ impl RuntimeOps {
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+    ) -> Result<(ProcessedDeploy, MergeableChsForDeploy), CasperError> {
+        self.runtime
+            .set_current_deploy_sig(deploy.sig.clone())
+            .await;
+        let result = self.play_deploy_with_cost_accounting_inner(deploy).await;
+        self.runtime.clear_current_deploy_sig().await;
+        result
+    }
+
+    async fn play_deploy_with_cost_accounting_inner(
+        &mut self,
+        deploy: Signed<DeployData>,
+    ) -> Result<(ProcessedDeploy, MergeableChsForDeploy), CasperError> {
         let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
         let read_vm_rss_kb =
             || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
@@ -475,7 +590,7 @@ impl RuntimeOps {
                     Either::Right(_) => {
                         // Get mergeable channels data
                         let mergeable_channels_data = self
-                            .get_number_channels_data(&eval_collector_state.mergeable_channels)
+                            .get_mergeable_chs_for_deploy(&eval_collector_state.mergeable_channels)
                             .await?;
 
                         let deploy_log = mem::take(&mut eval_collector_state.event_log);
@@ -522,7 +637,7 @@ impl RuntimeOps {
                 // Update result with accumulated event logs
                 // Get mergeable channels data
                 let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
+                    .get_mergeable_chs_for_deploy(&eval_collector_state.mergeable_channels)
                     .await?;
 
                 let deploy_log = mem::take(&mut eval_collector_state.event_log);
@@ -576,9 +691,21 @@ impl RuntimeOps {
     pub async fn process_deploy_with_mergeable_data(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+    ) -> Result<(ProcessedDeploy, MergeableChsForDeploy), CasperError> {
+        self.runtime
+            .set_current_deploy_sig(deploy.sig.clone())
+            .await;
+        let result = self.process_deploy_with_mergeable_data_inner(deploy).await;
+        self.runtime.clear_current_deploy_sig().await;
+        result
+    }
+
+    async fn process_deploy_with_mergeable_data_inner(
+        &mut self,
+        deploy: Signed<DeployData>,
+    ) -> Result<(ProcessedDeploy, MergeableChsForDeploy), CasperError> {
         let (pd, merge_chs) = self.process_deploy(deploy).await?;
-        let data = self.get_number_channels_data(&merge_chs).await?;
+        let data = self.get_mergeable_chs_for_deploy(&merge_chs).await?;
         Ok((pd, data))
     }
 
@@ -623,6 +750,55 @@ impl RuntimeOps {
             result.len()
         );
         Ok(result)
+    }
+
+    /// Per-deploy summary of all identity-tagged channels touched, split into
+    /// the commutative subset (channels with extractable numeric end-values,
+    /// eligible for `calculate_number_channel_merge`) and the full identity-
+    /// tagged set (every tagged channel, including contract-seam cases that
+    /// have no commutative-merge representation). The identity_tagged subset
+    /// feeds Check #4 in `compute_conflict_map_event_indexed` so the
+    /// Layer-2 single-value contract is enforced via cross-branch conflict
+    /// detection even when commutative folding isn't applicable.
+    ///
+    /// Distinct from `get_number_channels_data` which returns only the
+    /// commutative subset; both are valid APIs for different consumers.
+    pub async fn get_mergeable_chs_for_deploy(
+        &self,
+        channels: &std::collections::HashMap<Par, MergeType>,
+    ) -> Result<MergeableChsForDeploy, CasperError> {
+        tracing::info!(
+            target: "f1r3.trace.classify",
+            "[TRACE-GET-MERGEABLE-CHS-FOR-DEPLOY-ENTRY] tagged_channels_count={}",
+            channels.len()
+        );
+        let mut commutative: NumberChannelsEndVal = BTreeMap::new();
+        let mut identity_tagged: std::collections::HashSet<Blake2b256Hash> =
+            std::collections::HashSet::new();
+        for (channel, merge_type) in channels {
+            let ch_hash = stable_hash_provider::hash(channel);
+            identity_tagged.insert(ch_hash.clone());
+            match self.get_number_channel(channel, *merge_type).await? {
+                Some((hash, value)) => {
+                    commutative.insert(hash, (value, *merge_type));
+                }
+                None => {
+                    // Tagged but no numeric end-value at observation —
+                    // contract-seam case. Layer-2 contract still enforced
+                    // via identity_tagged + Check #4.
+                }
+            }
+        }
+        tracing::info!(
+            target: "f1r3.trace.classify",
+            "[TRACE-GET-MERGEABLE-CHS-FOR-DEPLOY-EXIT] commutative_size={} identity_tagged_size={}",
+            commutative.len(),
+            identity_tagged.len()
+        );
+        Ok(MergeableChsForDeploy {
+            commutative,
+            identity_tagged: HashableSet(identity_tagged),
+        })
     }
 
     /// Deterministic multi-value fold for a mergeable channel that holds more
@@ -764,7 +940,7 @@ impl RuntimeOps {
 
         match result {
             Either::Right(system_deploy_result) => {
-                let mcl = self.get_number_channels_data(&mergeable_channels).await?;
+                let mcl = self.get_mergeable_chs_for_deploy(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
                     invalid_block_hash,
                     pk,

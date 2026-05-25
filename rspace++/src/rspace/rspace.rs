@@ -64,6 +64,7 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A>>>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    current_deploy_sig: Arc<std::sync::RwLock<Option<Vec<u8>>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -75,6 +76,18 @@ where
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
         self.store.read().expect("store read lock").clone()
+    }
+
+    fn current_deploy_sig_short(&self) -> String {
+        match self
+            .current_deploy_sig
+            .read()
+            .expect("current_deploy_sig read lock")
+            .as_ref()
+        {
+            Some(sig) => hex::encode(&sig[..sig.len().min(8)]),
+            None => "none".to_string(),
+        }
     }
 
     fn channel_hash(channel: &C) -> u64 {
@@ -167,9 +180,12 @@ where
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
         event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
         tracing::info!(
             target: "f1r3.trace.rspace_checkpoint",
-            "[TRACE-RSPACE-CREATE-CHECKPOINT-ENTRY]"
+            "[TRACE-RSPACE-CREATE-CHECKPOINT-ENTRY] thread={:?} hsid={:x}",
+            std::thread::current().id(),
+            hsid
         );
 
         // Get changes with span
@@ -438,6 +454,36 @@ where
             }
         }
     }
+
+    fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = Some(sig);
+    }
+
+    fn clear_current_deploy_sig(&self) {
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = None;
+    }
+
+    async fn replace_channel_data(
+        &self,
+        channel: &C,
+        new_data: Vec<Datum<A>>,
+    ) -> Result<(), RSpaceError> {
+        let store = self.get_store();
+        let existing_len = store.get_data(channel).len();
+        for idx in (0..existing_len as i32).rev() {
+            store.remove_datum(channel, idx)?;
+        }
+        for d in new_data {
+            store.put_datum(channel, d);
+        }
+        Ok(())
+    }
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -470,6 +516,7 @@ where
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -919,6 +966,17 @@ where
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        tracing::info!(
+            target: "f1r3.trace.hotstore_diag",
+            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} (rspace.store_data invoked from deploy execution)",
+            std::thread::current().id(),
+            hsid,
+            self.current_deploy_sig_short(),
+            hex::encode(produce_ref.channel_hash.bytes()),
+            hex::encode(produce_ref.hash.bytes()),
+            persist
+        );
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,
@@ -941,14 +999,30 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, .. },
+                    datum: Datum { persist, source, .. },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
 
                 if !persist {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME] deploy_sig={} channel_hash={} produce_hash={} datum_index={} persistent={} (rspace.store_persistent_data → remove_datum)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(source.channel_hash.bytes()),
+                        hex::encode(source.hash.bytes()),
+                        datum_index, persist
+                    );
                     self.get_store().remove_datum(channel, *datum_index).ok()
                 } else {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME-SKIP-PERSISTENT] deploy_sig={} channel_hash={} produce_hash={} datum_index={} (persistent datum NOT removed)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(source.channel_hash.bytes()),
+                        hex::encode(source.hash.bytes()),
+                        datum_index
+                    );
                     Some(())
                 }
             })
@@ -1088,13 +1162,21 @@ where
                     datum_index,
                 } = consume_candidate;
 
-                if *datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
+                if *datum_index >= 0 && !persist {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME] deploy_sig={} channel_hash={} produce_hash={} datum_index={} persistent={} (rspace consume path L1094 → remove_datum)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(consume_candidate.datum.source.channel_hash.bytes()),
+                        hex::encode(consume_candidate.datum.source.hash.bytes()),
+                        datum_index, persist
+                    );
+                    if self.get_store()
                         .remove_datum(channel, *datum_index)
                         .is_err()
-                {
-                    return None;
+                    {
+                        return None;
+                    }
                 }
                 self.get_store().remove_join(channel, channels);
 

@@ -169,7 +169,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let deploy_sig: Bytes = signed_deploy.sig.clone();
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
-        let _genesis = create_genesis_block(
+        let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
             None,
@@ -207,6 +207,9 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         snapshot.last_finalized_block = block_dag_storage
             .get_representation()
             .last_finalized_block();
+        // We're building on genesis — its body.deploys contains D, so D's
+        // effects ARE in pre-state.
+        snapshot.parents = vec![genesis.clone()];
         snapshot.deploys_in_scope.insert(deploy_sig.clone());
         snapshot.rejected_in_scope.insert(deploy_sig.clone());
 
@@ -237,6 +240,140 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             "prepare_user_deploys must skip a buffered deploy whose effects are \
              already in canonical state (re-including it would be double-execution \
              and the resulting block would be slashed by `repeat_deploy`).\n\
+             Included: {:?}\nD's sig:  {}",
+            included_sigs,
+            hex::encode(&deploy_sig),
+        );
+    })
+    .await
+}
+
+// Pending-canonical variant of the proposer-side test above.
+//
+// Shape: D is in a NON-finalized canonical ancestor (block_a, a descendant of
+// genesis), AND in `rejected_in_scope` (via a sibling-merge rejection that
+// the proposer's scope union picks up). D's effects ARE in the pre-state that
+// the proposer will build on — re-including D is double-execution.
+//
+// The existing `Finalized` gate misses this case because resolve_batch returns
+// Pending (block_a is not finalized), so stale_recoveries is empty and the
+// exemption fires.
+//
+// Active guard for the Bug B fix: the recovery-exemption gate must anchor on
+// canonical-from-our-parents inclusion (`resolve_at_parents`) rather than
+// LFB-anchored `Finalized` state. Before the fix this test failed; the
+// `Finalized`-only gate let block_a's pending inclusion slip through and the
+// exemption fired, causing double-execution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proposer_must_skip_recovery_when_deploy_is_in_pending_canonical_ancestor() {
+    use std::sync::Mutex as StdMutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use casper::rust::blocks::proposer::block_creator;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let processed_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let signed_deploy = processed_deploy.deploy.clone();
+        let deploy_sig: Bytes = signed_deploy.sig.clone();
+
+        // Genesis carries NO deploys — D will be in a post-genesis block that
+        // remains unfinalized (LFB = genesis throughout the test).
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // block_a: D in body.deploys, descendant of genesis, NOT finalized.
+        let block_a = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![processed_deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mut aux_kvm = InMemoryStoreManager::new();
+        let deploy_storage = std::sync::Arc::new(StdMutex::new(
+            KeyValueDeployStorage::new(&mut aux_kvm)
+                .await
+                .expect("Failed to create deploy storage"),
+        ));
+        let rejected_deploy_buffer = std::sync::Arc::new(StdMutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut aux_kvm)
+                .await
+                .expect("Failed to create rejected deploy buffer"),
+        ));
+
+        // D sits in the recovery buffer — the stale entry the exemption would
+        // re-propose.
+        {
+            let mut buf = rejected_deploy_buffer.lock().unwrap();
+            buf.add(vec![signed_deploy.clone()])
+                .expect("Failed to add deploy to buffer");
+        }
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+        snapshot.last_finalized_block = block_dag_storage
+            .get_representation()
+            .last_finalized_block();
+        // We're building on block_a — its body.deploys contains D, so D's
+        // effects ARE in pre-state. The parents-anchored resolver should
+        // detect this.
+        snapshot.parents = vec![block_a.clone()];
+        // Trigger shape: D is in BOTH scope sets (accepted in pending
+        // ancestor block_a; rejected somewhere upstream).
+        snapshot.deploys_in_scope.insert(deploy_sig.clone());
+        snapshot.rejected_in_scope.insert(deploy_sig.clone());
+
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let prepared = block_creator::prepare_user_deploys(
+            &snapshot,
+            10,
+            now_millis,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+        )
+        .await
+        .expect("prepare_user_deploys should not error");
+
+        let included_sigs: Vec<String> = prepared
+            .deploys
+            .iter()
+            .map(|d| hex::encode(&d.sig))
+            .collect();
+
+        assert!(
+            !prepared.deploys.iter().any(|d| d.sig == deploy_sig),
+            "prepare_user_deploys must skip a buffered deploy whose sig is in \
+             deploys_in_scope via a pending canonical ancestor — its effects are \
+             in pre-state, so re-execution is double-execution.\n\
              Included: {:?}\nD's sig:  {}",
             included_sigs,
             hex::encode(&deploy_sig),

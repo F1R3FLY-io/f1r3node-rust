@@ -336,6 +336,28 @@ where
         match hot_store_action {
             HotStoreAction::Insert(InsertData(i)) => {
                 let key = hash(&i.channel);
+                let channel_hex: String = key.encode_hex();
+                tracing::info!(
+                    target: "f1r3.trace.hotstore_diag",
+                    "[TRACE-HOTSTORE-FLUSH] thread={:?} channel={} flush_datum_count={} (transform() Insert→TrieInsertProduce)",
+                    std::thread::current().id(),
+                    channel_hex,
+                    i.data.len()
+                );
+                if i.data.len() > 1 {
+                    for (idx, datum) in i.data.iter().enumerate() {
+                        tracing::info!(
+                            target: "f1r3.trace.hotstore_diag",
+                            "[TRACE-HOTSTORE-FLUSH-DATUM] thread={:?} channel={} idx={} source_channel_hash={} source_produce_hash={} persistent_flag_on_source={}",
+                            std::thread::current().id(),
+                            channel_hex,
+                            idx,
+                            hex::encode(datum.source.channel_hash.bytes()),
+                            hex::encode(datum.source.hash.bytes()),
+                            datum.source.persistent
+                        );
+                    }
+                }
                 HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(
                     TrieInsertProduce::new(key, i.data),
                 ))

@@ -2347,12 +2347,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
+            shared::rust::hashable_set::HashableSet::new(),
         );
         let eli_b = create_event_log_index(
             &pd_b[0].deploy_log,
             history_repo.clone(),
             &genesis_hash_b256,
             std::collections::BTreeMap::new(),
+            shared::rust::hashable_set::HashableSet::new(),
         );
 
         let reason = conflict_reason(&eli_a, &eli_b);

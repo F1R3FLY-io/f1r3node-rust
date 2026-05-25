@@ -6,7 +6,7 @@ use std::hash::Hash;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use hex::ToHex;
 use indexmap::IndexSet;
-use tracing::info;
+use tracing::{info, warn};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -105,10 +105,11 @@ impl RholangMergingLogic {
             ch_hex, merge_type, diff, changes.added.len(), changes.removed.len()
         );
         // Read initial value of number channel from base state.
-        // None = channel doesn't exist yet (treat as 0); Err = invariant
-        // violation (non-numeric or multi-value pre-state) — propagate so the
-        // merge is rejected rather than silently substituting 0.
-        let init_num = match Self::convert_to_read_number(get_base_data)(channel_hash)? {
+        // None = channel doesn't exist yet (treat as 0). Multi-Datum or
+        // non-numeric pre-state is recovered via `read_number_with_recovery`
+        // so a buggy contract on a tagged channel can't wedge the merge
+        // layer (architectural principle: contracts must not halt the shard).
+        let init_num = match Self::read_number_with_recovery(get_base_data, channel_hash, merge_type)? {
             Some(n) => {
                 info!(
                     target: "f1r3.trace.fold",
@@ -280,11 +281,130 @@ impl RholangMergingLogic {
             }
         }
     }
+
+    /// Liveness-first pre-state reader for a tagged number channel.
+    ///
+    /// Same role as `convert_to_read_number` but recovers from contract-level
+    /// invariant violations instead of erroring. Pairs with the sibling
+    /// liveness-fallback in `RuntimeOps::get_number_channel` and with the
+    /// recovery path in `RuntimeManager::convert_number_channels_to_diff`.
+    /// Architectural principle: a buggy/adversarial contract MUST NOT halt
+    /// block production for the shard. Detect, log, fold, continue.
+    ///
+    /// Outcome map:
+    /// - `Ok(None)` — channel has no data (legitimate; treat as 0 upstream).
+    /// - `Ok(Some(n))` — numeric value successfully read or recovered:
+    ///   * single numeric datum → `n` (clean path)
+    ///   * multi-Datum → `fold_multi_value(nums, merge_type)`:
+    ///     - `IntegerAdd → max` (preserves withdrawal liveness; see review
+    ///       note: economically permissive on buggy vaults — recoverable
+    ///       once the contract is fixed; alert via metric below)
+    ///     - `BitmaskOr → bitwise-OR` (no set bit lost; precise)
+    ///   * non-numeric single datum → 0 (treat as cleared channel)
+    ///   * multi-Datum with no numeric values → 0
+    /// - `Err(_)` — only true I/O failures from the underlying reader (not
+    ///   contract-level invariant violations).
+    ///
+    /// Observability: every recovery path emits a `tracing::warn!` with
+    /// channel hash + folded value + reason, and increments
+    /// `mergeable_channel_number_sanitized_total`. Operators alert on
+    /// the counter to find and fix the originating contract.
+    pub fn read_number_with_recovery<F>(
+        get_data_func: F,
+        hash: &Blake2b256Hash,
+        merge_type: MergeType,
+    ) -> Result<Option<i64>, HistoryError>
+    where
+        F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
+    {
+        let data = get_data_func(hash)?;
+        let ch_hex: String = hash.encode_hex();
+
+        if data.len() > 1 {
+            let nums: Vec<i64> = data
+                .iter()
+                .filter_map(|d| Self::try_get_number_with_rnd(&d.a).map(|(n, _)| n))
+                .collect();
+            let folded = match merge_type {
+                MergeType::IntegerAdd => nums.iter().copied().max(),
+                MergeType::BitmaskOr => {
+                    if nums.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            nums.iter()
+                                .fold(0i64, |acc, v| ((acc as u64) | (*v as u64)) as i64),
+                        )
+                    }
+                }
+            };
+            return match folded {
+                Some(n) => {
+                    warn!(
+                        target: "f1r3fly.mergeable_channel.sanitize",
+                        "read_number_with_recovery: tagged channel {} has multi-Datum \
+                         (count={}); folded via {:?} → value={} (recovery; shard not wedged)",
+                        ch_hex, data.len(), merge_type, n
+                    );
+                    metrics::counter!(
+                        "mergeable_channel_number_sanitized_total",
+                        "source" => "rholang_merging_logic"
+                    )
+                    .increment(1);
+                    Ok(Some(n))
+                }
+                None => {
+                    warn!(
+                        target: "f1r3fly.mergeable_channel.sanitize",
+                        "read_number_with_recovery: tagged channel {} has multi-Datum \
+                         (count={}) with no numeric values; defaulting to 0 (recovery; \
+                         shard not wedged)",
+                        ch_hex, data.len()
+                    );
+                    metrics::counter!(
+                        "mergeable_channel_number_sanitized_total",
+                        "source" => "rholang_merging_logic"
+                    )
+                    .increment(1);
+                    Ok(Some(0))
+                }
+            };
+        }
+
+        match data.first() {
+            None => Ok(None),
+            Some(datum) => match Self::try_get_number_with_rnd(&datum.a) {
+                Some((n, _)) => Ok(Some(n)),
+                None => {
+                    warn!(
+                        target: "f1r3fly.mergeable_channel.sanitize",
+                        "read_number_with_recovery: tagged channel {} has a single \
+                         non-numeric value; defaulting to 0 (recovery; shard not wedged)",
+                        ch_hex
+                    );
+                    metrics::counter!(
+                        "mergeable_channel_number_sanitized_total",
+                        "source" => "rholang_merging_logic"
+                    )
+                    .increment(1);
+                    Ok(Some(0))
+                },
+            }
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeployMergeableData {
     pub channels: Vec<NumberChannel>,
+    /// Channel hashes for identity-tagged channels touched by this deploy
+    /// (per `is_mergeable_channel` matching `default_mergeable_tags()`).
+    /// Superset of `channels.iter().map(|c| c.hash)`. Carries the Layer-2
+    /// contract-seam channels (identity-tagged but no commutative-merge
+    /// representation) so the merge layer's Check #4 can enforce the
+    /// single-value contract on them.
+    #[serde(default)]
+    pub identity_tagged: Vec<Blake2b256Hash>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

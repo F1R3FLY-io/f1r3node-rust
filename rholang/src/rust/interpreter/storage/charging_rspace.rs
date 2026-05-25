@@ -223,6 +223,22 @@ impl ChargingRSpace {
             async fn update_produce(&self, produce: Produce) -> () {
                 self.space.update_produce(produce).await
             }
+
+            fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+                self.space.set_current_deploy_sig(sig);
+            }
+
+            fn clear_current_deploy_sig(&self) {
+                self.space.clear_current_deploy_sig();
+            }
+
+            async fn replace_channel_data(
+                &self,
+                channel: &Par,
+                new_data: Vec<Datum<ListParWithRandom>>,
+            ) -> Result<(), RSpaceError> {
+                self.space.replace_channel_data(channel, new_data).await
+            }
         }
 
         ChargingRSpace { space, cost }

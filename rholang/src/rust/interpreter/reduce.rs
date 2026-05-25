@@ -164,6 +164,20 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        let par_hash = stable_hash_provider::hash(&par);
+        let rand_path_hex = hex::encode(&rand.path_view[..rand.path_position]);
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-PAR-EVAL] par_hash={} rand_path={} sends={} receives={} news={} matches={} bundles={} exprs={}",
+            hex::encode(&par_hash.bytes()[..8]),
+            rand_path_hex,
+            par.sends.len(),
+            par.receives.len(),
+            par.news.len(),
+            par.matches.len(),
+            par.bundles.len(),
+            par.exprs.len(),
+        );
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
                 .into_iter()
@@ -743,6 +757,32 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        let body_hash_hex = match &continuation.tagged_cont {
+            Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(par_with_random)) => {
+                match &par_with_random.body {
+                    Some(body) => {
+                        hex::encode(&stable_hash_provider::hash(body).bytes()[..8])
+                    }
+                    None => "none".to_string(),
+                }
+            }
+            _ => "scala-cont".to_string(),
+        };
+        let matched_randoms: Vec<String> = data_list
+            .iter()
+            .map(|tuple| {
+                let rs = &tuple.1.random_state;
+                hex::encode(&rs[..rs.len().min(16)])
+            })
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-COMM] body_hash={} produce_count={} matched_randoms={:?} is_replay={}",
+            body_hash_hex,
+            data_list.len(),
+            matched_randoms,
+            is_replay
+        );
         self.dispatcher
             .dispatch(
                 continuation,
@@ -786,10 +826,28 @@ impl DebruijnInterpreter {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let ch_hash = stable_hash_provider::hash(chan);
             let ch_hex = hex::encode(ch_hash.bytes());
+            // Extract the SECOND tuple element (the bare valueStore channel) so
+            // we can correlate the tagged channel to its underlying TRACE-CHANNEL-CREATED.
+            let value_store_hash_hex = chan
+                .exprs
+                .iter()
+                .find_map(|y| match &y.expr_instance {
+                    Some(ExprInstance::ETupleBody(etuple)) if etuple.ps.len() >= 2 => {
+                        Some(hex::encode(
+                            stable_hash_provider::hash(&etuple.ps[1]).bytes(),
+                        ))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| "none".to_string());
+            let par_debug = {
+                let s = format!("{:?}", chan);
+                if s.len() > 500 { format!("{}...", &s[..500]) } else { s }
+            };
             tracing::info!(
                 target: "f1r3.trace.classify",
-                "[TRACE-UPDATE-MERGEABLE-CHANNELS] channel={} merge_type={:?} (classified by tag match)",
-                ch_hex, merge_type
+                "[TRACE-UPDATE-MERGEABLE-CHANNELS] channel={} value_store_hash={} merge_type={:?} par_debug={} (classified by tag match)",
+                ch_hex, value_store_hash_hex, merge_type, par_debug
             );
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
@@ -979,6 +1037,18 @@ impl DebruijnInterpreter {
         self.cost.charge(send_eval_cost())?;
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
+        let send_chan_hash = stable_hash_provider::hash(&sub_chan);
+        let send_rand_path = hex::encode(&rand.path_view[..rand.path_position]);
+        let send_rand_full = hex::encode(&rand.to_bytes());
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-SEND] channel_hash={} data_count={} persistent={} rand_path={} rand_full={}",
+            hex::encode(send_chan_hash.bytes()),
+            send.data.len(),
+            send.persistent,
+            send_rand_path,
+            send_rand_full
+        );
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -1020,6 +1090,16 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+        let recv_rand_path = hex::encode(&rand.path_view[..rand.path_position]);
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-RECEIVE] persistent={} peek={} binds_count={} bind_count={} rand_path={}",
+            receive.persistent,
+            receive.peek,
+            receive.binds.len(),
+            receive.bind_count,
+            recv_rand_path
+        );
         let binds = receive
             .binds
             .clone()
@@ -1115,7 +1195,17 @@ impl DebruijnInterpreter {
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
 
-        for single_case in mat.cases.iter() {
+        let target_hash = stable_hash_provider::hash(&subst_target);
+        let match_rand_path = hex::encode(&rand.path_view[..rand.path_position]);
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-MATCH-ENTRY] target_hash={} cases_total={} rand_path={}",
+            hex::encode(&target_hash.bytes()[..8]),
+            mat.cases.len(),
+            match_rand_path
+        );
+
+        for (case_idx, single_case) in mat.cases.iter().enumerate() {
             let pattern = self.substitute.substitute_and_charge(
                 &unwrap_option_safe(single_case.pattern.clone())?,
                 1,
@@ -1126,15 +1216,37 @@ impl DebruijnInterpreter {
             if let Some(free_map) =
                 spatial_matcher.spatial_match_result(subst_target.clone(), pattern)
             {
+                let body_par = single_case.source.clone().unwrap();
+                let body_hash = stable_hash_provider::hash(&body_par);
+                tracing::info!(
+                    target: "f1r3.trace.reducer",
+                    "[TRACE-REDUCE-MATCH-DISPATCH] target_hash={} case_idx={} cases_total={} body_hash={} body_sends={} body_news={} body_matches={} rand_path={}",
+                    hex::encode(&target_hash.bytes()[..8]),
+                    case_idx,
+                    mat.cases.len(),
+                    hex::encode(&body_hash.bytes()[..8]),
+                    body_par.sends.len(),
+                    body_par.news.len(),
+                    body_par.matches.len(),
+                    match_rand_path
+                );
                 return self
                     .eval(
-                        single_case.source.clone().unwrap(),
+                        body_par,
                         &add_to_env(env, free_map.clone(), single_case.free_count),
                         rand,
                     )
                     .await;
             }
         }
+
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-MATCH-NO-MATCH] target_hash={} cases_total={} rand_path={}",
+            hex::encode(&target_hash.bytes()[..8]),
+            mat.cases.len(),
+            match_rand_path
+        );
 
         Ok(())
     }
@@ -1162,6 +1274,16 @@ impl DebruijnInterpreter {
         // Rand path: identifies the execution-path context at this `new`.
         // Stable for the same deploy + same control-flow path.
         let path_hex = hex::encode(&rand.path_view[..rand.path_position]);
+        let rand_full_hex = hex::encode(&rand.to_bytes());
+        tracing::info!(
+            target: "f1r3.trace.reducer",
+            "[TRACE-REDUCE-NEW-ENTRY] bind_count={} uri_count={} body_hash={} path={} rand_full={}",
+            new.bind_count,
+            new.uri.len(),
+            body_hex,
+            path_hex,
+            rand_full_hex
+        );
         let mut alloc = |count: usize, urns: Vec<String>| {
             let total_simple_news = count - urns.len();
             let mut new_idx: usize = 0;
@@ -1177,14 +1299,15 @@ impl DebruijnInterpreter {
                         let ch_hash = stable_hash_provider::hash(&addr);
                         tracing::info!(
                             target: "f1r3.trace.channel_created",
-                            "[TRACE-CHANNEL-CREATED] channel={} new_idx={} total={} urns_count={} uri_count={} body_hash={} path={}",
+                            "[TRACE-CHANNEL-CREATED] channel={} new_idx={} total={} urns_count={} uri_count={} body_hash={} path={} rand_full={}",
                             hex::encode(ch_hash.bytes()),
                             new_idx,
                             total_simple_news,
                             urns.len(),
                             new_uri.len(),
                             body_hex,
-                            path_hex
+                            path_hex,
+                            rand_full_hex
                         );
                         new_idx += 1;
                         _env.put(addr)

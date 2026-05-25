@@ -114,7 +114,20 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
-        if self.finalization_in_progress.load(Ordering::SeqCst) {
+        let self_validator_hex = self
+            .validator_id
+            .as_ref()
+            .map(|v| hex::encode(&v.public_key.bytes[..8.min(v.public_key.bytes.len())]))
+            .unwrap_or_else(|| "<none>".to_string());
+
+        let fip = self.finalization_in_progress.load(Ordering::SeqCst);
+        tracing::info!(
+            target: "f1r3.trace.parent_selection",
+            "[TRACE-PARENT-SEL-ENTRY] self_validator={} finalization_in_progress={}",
+            self_validator_hex,
+            fip,
+        );
+        if fip {
             tracing::debug!(
                 "Finalization in progress while creating snapshot; using best-effort snapshot"
             );
@@ -130,9 +143,37 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .iter()
             .map(|(validator, hash)| (validator.clone(), hash.clone()))
             .collect();
+
+        for (validator, hash) in &latest_msgs_hashes {
+            let block_number = dag
+                .lookup_unsafe(hash)
+                .ok()
+                .map(|m| m.block_number)
+                .unwrap_or(-1);
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-LATEST-MSG] self_validator={} validator={} hash={} block_number={}",
+                self_validator_hex,
+                hex::encode(&validator[..8.min(validator.len())]),
+                hex::encode(&hash[..8.min(hash.len())]),
+                block_number,
+            );
+        }
+
         // Filter out invalid latest messages (e.g., from slashed validators)
         let invalid_latest_msgs =
             dag.invalid_latest_messages_from_hashes(latest_msgs_hashes.clone())?;
+
+        for (validator, hash) in &invalid_latest_msgs {
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-INVALID-LM] self_validator={} validator={} hash={}",
+                self_validator_hex,
+                hex::encode(&validator[..8.min(validator.len())]),
+                hex::encode(&hash[..8.min(hash.len())]),
+            );
+        }
+
         let valid_latest_msgs: HashMap<Validator, BlockHash> = latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| !invalid_latest_msgs.contains_key(*validator))
@@ -145,6 +186,18 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .iter()
             .filter_map(|hash| self.block_store.get(hash).ok().flatten())
             .collect();
+
+        for b in &parent_blocks_list {
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-CANDIDATE] self_validator={} hash={} block_number={} sender={} bonds_count={}",
+                self_validator_hex,
+                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                b.body.state.block_number,
+                hex::encode(&b.sender[..8.min(b.sender.len())]),
+                b.body.state.bonds.len(),
+            );
+        }
 
         // Sort parents deterministically with a near-tip tolerance:
         // - if both parents are near the maximum parent height, order by hash only to keep
@@ -180,34 +233,48 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             }
         });
 
-        // Filter to blocks with matching bond maps (required for merge compatibility)
-        // If no parent blocks exist (genesis case), use approved block as the parent
+        for (rank, b) in sorted_parents_list.iter().enumerate() {
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-SORTED] self_validator={} rank={} hash={} block_number={} bonds_count={}",
+                self_validator_hex,
+                rank,
+                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                b.body.state.block_number,
+                b.body.state.bonds.len(),
+            );
+        }
+
+        // Bonds-equality filter removed. `block.body.state.bonds` is a derived
+        // quantity of the merged post-state (computed via
+        // `compute_deploys_checkpoint` → `compute_state_with_bonds` from PoS
+        // contract state at the post-state hash). Multi-parent merge is
+        // responsible for replaying bonds-changing deploys (bond / unbond /
+        // slash) across all parents to produce a consistent bonds map. The
+        // bonds_cache validation step (`validate.rs::bonds_cache`) enforces
+        // internal consistency between `block.body.state.bonds` and the
+        // recomputed bonds from `post_state_hash`; an inconsistent merge
+        // surfaces as `InvalidBondsCache`, not silent corruption.
+        //
+        // Historical note: the previous code filtered parents to those whose
+        // `body.state.bonds` matched a hash-tiebroken "reference" block. This
+        // originated in f1r3node Scala (`MultiParentCasperImpl.scala:286`) and
+        // was ported into the Rust extract. It was over-conservative: any
+        // block whose bonds map differed from the reference (because it had
+        // already executed a bond / unbond / slash deploy that other racing
+        // blocks hadn't yet seen) got dropped, orphaning the bonds-changing
+        // block and the deploys it carried.
+        //
+        // If no parent blocks exist (genesis case), use approved block as the parent.
         let unfiltered_parents = if sorted_parents_list.is_empty() {
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-EMPTY] self_validator={} using approved_block as parent",
+                self_validator_hex,
+            );
             vec![self.approved_block.clone()]
         } else {
-            // Use the newest block as the bond-reference baseline.
-            // Relying on the first (hash-sorted near-tip) block can select an older
-            // parent and regress snapshot max_block_num when a joiner/fresh bond-map
-            // divergence is present.
-            let reference_bonds = sorted_parents_list
-                .iter()
-                .max_by(|a, b| {
-                    a.body
-                        .state
-                        .block_number
-                        .cmp(&b.body.state.block_number)
-                        .then_with(|| a.block_hash.cmp(&b.block_hash))
-                })
-                .expect("sorted_parents_list is non-empty after is_empty() check")
-                .body
-                .state
-                .bonds
-                .clone();
-
             sorted_parents_list
-                .into_iter()
-                .filter(|block| block.body.state.bonds == reference_bonds)
-                .collect()
         };
 
         let unfiltered_parents_count = unfiltered_parents.len();
@@ -272,14 +339,27 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
-        // Log parent selection for debugging
-        tracing::debug!(
-            "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} parents",
+        for (rank, b) in parents.iter().enumerate() {
+            tracing::info!(
+                target: "f1r3.trace.parent_selection",
+                "[TRACE-PARENT-SEL-FINAL] self_validator={} rank={} hash={} block_number={} bonds_count={}",
+                self_validator_hex,
+                rank,
+                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                b.body.state.block_number,
+                b.body.state.bonds.len(),
+            );
+        }
+
+        tracing::info!(
+            target: "f1r3.trace.parent_selection",
+            "[TRACE-PARENT-SEL-SUMMARY] self_validator={} latest_msgs={} invalid={} valid={} candidates={} final_parents={}",
+            self_validator_hex,
             latest_msgs_hashes.len(),
             invalid_latest_msgs.len(),
             valid_latest_msgs.len(),
             unfiltered_parents_count,
-            parents.len()
+            parents.len(),
         );
 
         let on_chain_state = self
@@ -721,7 +801,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 );
 
                 match maybe_mergeable {
-                    Ok(mergeable_chs) => {
+                    Ok((mergeable_chs, identity_tagged_per_deploy)) => {
                         if let Err(err) = self.runtime_manager.get_or_compute_block_index(
                             &block.block_hash,
                             block.body.state.block_number,
@@ -730,6 +810,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                             &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
                             &Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash),
                             &mergeable_chs,
+                            &identity_tagged_per_deploy,
                         ) {
                             tracing::warn!(
                                 "Skipping block index cache update for block {}: {}",
@@ -942,7 +1023,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 );
 
                 match maybe_mergeable {
-                    Ok(mergeable_chs) => {
+                    Ok((mergeable_chs, identity_tagged_per_deploy)) => {
                         if let Err(err) = self.runtime_manager.get_or_compute_block_index(
                             &block.block_hash,
                             block.body.state.block_number,
@@ -951,6 +1032,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                             &Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash),
                             &Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash),
                             &mergeable_chs,
+                            &identity_tagged_per_deploy,
                         ) {
                             tracing::warn!(
                                 "Skipping block index cache update for self-created block {}: {}",

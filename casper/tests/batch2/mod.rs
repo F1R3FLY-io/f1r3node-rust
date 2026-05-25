@@ -1,5 +1,6 @@
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
+pub mod dup_in_both_filter_spec;
 pub mod estimator_test;
 pub mod finalizer_test;
 pub mod limited_parent_depth_spec;

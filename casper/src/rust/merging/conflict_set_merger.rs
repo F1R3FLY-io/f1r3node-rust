@@ -160,33 +160,47 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
 
     // Get base mergeable channel results
     let channel_reads_start = Instant::now();
-    // Sort keys for deterministic ordering across instances
-    let mut all_channel_keys_set: std::collections::HashSet<Blake2b256Hash> =
-        std::collections::HashSet::new();
+    // Track channel → MergeType alongside channel hashes. The MergeType is
+    // needed for the liveness-first fallback in `read_number_with_recovery`
+    // (folds multi-Datum via the channel's merge semantic). A tagged channel
+    // has a single MergeType across all deploys, so we just retain whichever
+    // we see first.
+    let mut channel_merge_types: HashMap<Blake2b256Hash, rspace_plus_plus::rspace::merger::merging_logic::MergeType> =
+        HashMap::new();
     for branch in &branches {
         for item in branch {
             let item_channels = mergeable_channels(item);
-            for (channel_hash, _) in item_channels.iter() {
-                all_channel_keys_set.insert(channel_hash.clone());
+            for (channel_hash, (_value, merge_type)) in item_channels.iter() {
+                channel_merge_types
+                    .entry(channel_hash.clone())
+                    .or_insert(*merge_type);
             }
         }
     }
-    let mut all_channel_keys: Vec<Blake2b256Hash> = all_channel_keys_set.into_iter().collect();
+    let mut all_channel_keys: Vec<Blake2b256Hash> =
+        channel_merge_types.keys().cloned().collect();
     // Sort channel keys for deterministic processing order
     all_channel_keys.sort();
 
     let mut base_mergeable_ch_res = HashMap::new();
 
-    // Use RholangMergingLogic to convert the data reader function
+    // Liveness-first reader: recovers from contract-level invariant violations
+    // (multi-Datum on tagged channel, non-numeric value) by folding via the
+    // channel's MergeType. A buggy/adversarial contract MUST NOT halt the
+    // merge layer. See `RholangMergingLogic::read_number_with_recovery`
+    // docstring for the fold semantics and observability hooks.
     let get_data_ref = |hash: &Blake2b256Hash| get_data(hash.clone());
-    let read_number = RholangMergingLogic::convert_to_read_number(get_data_ref);
-
-    // Read channel numbers from storage in sorted order. `read_number` distinguishes
-    // three outcomes: Ok(Some(n)) = numeric value present; Ok(None) = channel doesn't
-    // exist (legitimate, start from 0); Err(_) = invariant violation or I/O error
-    // (propagate to reject the merge rather than silently substituting 0).
     for channel_hash in &all_channel_keys {
-        let value = read_number(channel_hash)?.unwrap_or(0);
+        let merge_type = channel_merge_types
+            .get(channel_hash)
+            .copied()
+            .expect("channel_merge_types populated above for every key in all_channel_keys");
+        let value = RholangMergingLogic::read_number_with_recovery(
+            &get_data_ref,
+            channel_hash,
+            merge_type,
+        )?
+        .unwrap_or(0);
         base_mergeable_ch_res.insert(channel_hash.clone(), value);
     }
 

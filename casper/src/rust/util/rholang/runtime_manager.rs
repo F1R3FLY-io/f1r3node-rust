@@ -21,12 +21,15 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
     DeployMergeableData, NumberChannel, RholangMergingLogic,
 };
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rholang::rust::interpreter::rho_runtime::{
     self, RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl,
 };
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
+use rspace_plus_plus::rspace::merger::merging_logic::{
+    MergeableChsForDeploy, NumberChannelsDiff, NumberChannelsEndVal,
+};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -312,16 +315,16 @@ impl RuntimeManager {
             )
             .await?;
 
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<MergeableChsForDeploy>) =
             usr_deploy_res.into_iter().unzip();
         let (sys_processed, sys_mergeable): (
             Vec<ProcessedSystemDeploy>,
-            Vec<NumberChannelsEndVal>,
+            Vec<MergeableChsForDeploy>,
         ) = sys_deploy_res.into_iter().unzip();
         let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
 
         // Concat user and system deploys mergeable channel maps
-        let mergeable_chs = usr_mergeable
+        let mergeable_chs: Vec<MergeableChsForDeploy> = usr_mergeable
             .into_iter()
             .chain(sys_mergeable.into_iter())
             .collect();
@@ -432,6 +435,18 @@ impl RuntimeManager {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
 
+        tracing::info!(
+            target: "f1r3.trace.divergence",
+            "[TRACE-DIVERGENCE-COMPUTE-STATE-ENTRY] thread={:?} start_hash={} sender={} seq_num={} block_number={} time_stamp={} user_deploys={}",
+            std::thread::current().id(),
+            hex::encode(start_hash),
+            hex::encode(&sender.bytes),
+            seq_num,
+            block_data.block_number,
+            block_data.time_stamp,
+            terms.len()
+        );
+
         let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
             .compute_state(
                 start_hash,
@@ -441,18 +456,28 @@ impl RuntimeManager {
                 invalid_blocks,
             )
             .await?;
+
+        tracing::info!(
+            target: "f1r3.trace.divergence",
+            "[TRACE-DIVERGENCE-COMPUTE-STATE-EXIT] thread={:?} start_hash={} post_state={} sender={} seq_num={}",
+            std::thread::current().id(),
+            hex::encode(start_hash),
+            hex::encode(&state_hash),
+            hex::encode(&sender.bytes),
+            seq_num
+        );
         log_mem_step("after_compute_state");
 
-        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<MergeableChsForDeploy>) =
             usr_deploy_res.into_iter().unzip();
         let (sys_processed, sys_mergeable): (
             Vec<ProcessedSystemDeploy>,
-            Vec<NumberChannelsEndVal>,
+            Vec<MergeableChsForDeploy>,
         ) = sys_deploy_res.into_iter().unzip();
         let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
 
         // Concat user and system deploys mergeable channel maps
-        let mergeable_chs = usr_mergeable
+        let mergeable_chs: Vec<MergeableChsForDeploy> = usr_mergeable
             .into_iter()
             .chain(sys_mergeable.into_iter())
             .collect();
@@ -557,6 +582,19 @@ impl RuntimeManager {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+
+        tracing::info!(
+            target: "f1r3.trace.divergence",
+            "[TRACE-DIVERGENCE-REPLAY-ENTRY] thread={:?} start_hash={} sender={} seq_num={} block_number={} time_stamp={} user_deploys={} system_deploys={}",
+            std::thread::current().id(),
+            hex::encode(start_hash),
+            hex::encode(&sender.bytes),
+            seq_num,
+            block_data.block_number,
+            block_data.time_stamp,
+            terms.len(),
+            system_deploys.len()
+        );
 
         // Step 1: Check state-hash cache.
         //
@@ -836,6 +874,7 @@ impl RuntimeManager {
         pre_state_hash: &Blake2b256Hash,
         post_state_hash: &Blake2b256Hash,
         mergeable_chs: &Vec<NumberChannelsDiff>,
+        identity_tagged_per_deploy: &Vec<shared::rust::hashable_set::HashableSet<Blake2b256Hash>>,
     ) -> Result<BlockIndex, CasperError> {
         if let Some(cached) = self.block_index_cache.get(block_hash) {
             Self::touch_cache_key(&self.block_index_cache_order, block_hash);
@@ -854,6 +893,7 @@ impl RuntimeManager {
             post_state_hash,
             &self.history_repo,
             mergeable_chs,
+            identity_tagged_per_deploy,
         )?;
 
         // Keep index cache bounded for long-running validators.
@@ -911,14 +951,25 @@ impl RuntimeManager {
     }
 
     /**
-     * Load mergeable channels from store
+     * Load mergeable channels from store. Returns parallel vectors:
+     * - `commutative` diffs (per-deploy NumberChannelsDiff for the existing
+     *   merge-layer commutative path)
+     * - `identity_tagged` per-deploy hash sets for the Layer-2 contract
+     *   enforcement via Check #4 (populated since Step 5c persistence
+     *   extension; legacy entries return empty vectors via `#[serde(default)]`).
      */
     pub fn load_mergeable_channels(
         &self,
         state_hash_bs: &StateHash,
         creator: prost::bytes::Bytes,
         seq_num: i32,
-    ) -> Result<Vec<NumberChannelsDiff>, CasperError> {
+    ) -> Result<
+        (
+            Vec<NumberChannelsDiff>,
+            Vec<shared::rust::hashable_set::HashableSet<Blake2b256Hash>>,
+        ),
+        CasperError,
+    > {
         let state_hash = Blake2b256Hash::from_bytes_prost(state_hash_bs);
         let mergeable_key = MergeableKey {
             state_hash: StateHashSerde(state_hash.to_bytes_prost()),
@@ -933,24 +984,37 @@ impl RuntimeManager {
 
         match res {
             Some(res) => {
-                let res_map = res
-                    .into_iter()
+                let res_map: Vec<NumberChannelsDiff> = res
+                    .iter()
                     .map(|x| {
                         x.channels
-                            .into_iter()
-                            .map(|y| (y.hash, (y.diff, y.merge_type)))
+                            .iter()
+                            .map(|y| (y.hash.clone(), (y.diff, y.merge_type)))
                             .collect::<BTreeMap<_, _>>()
                     })
                     .collect::<Vec<_>>();
+                let identity_tagged_per_deploy: Vec<
+                    shared::rust::hashable_set::HashableSet<Blake2b256Hash>,
+                > = res
+                    .iter()
+                    .map(|x| {
+                        shared::rust::hashable_set::HashableSet(
+                            x.identity_tagged.iter().cloned().collect(),
+                        )
+                    })
+                    .collect();
                 let total_channels: usize = res_map.iter().map(|m| m.len()).sum();
+                let total_identity_tagged: usize =
+                    identity_tagged_per_deploy.iter().map(|s| s.0.len()).sum();
                 tracing::info!(
                     target: "f1r3.trace.mergeable_store",
-                    "[TRACE-LOAD-MERGEABLE-CHANNELS] state_hash={} creator={} seq={} deploys={} total_channels={}",
+                    "[TRACE-LOAD-MERGEABLE-CHANNELS] state_hash={} creator={} seq={} deploys={} total_channels={} total_identity_tagged={}",
                     state_hash.bytes().encode_hex::<String>(),
                     creator.encode_hex::<String>(),
                     seq_num,
                     res_map.len(),
-                    total_channels
+                    total_channels,
+                    total_identity_tagged
                 );
                 for (deploy_idx, m) in res_map.iter().enumerate() {
                     for (ch, (diff, mt)) in m.iter() {
@@ -965,7 +1029,7 @@ impl RuntimeManager {
                         );
                     }
                 }
-                Ok(res_map)
+                Ok((res_map, identity_tagged_per_deploy))
             }
             None => {
                 let msg = format!(
@@ -1096,23 +1160,48 @@ impl RuntimeManager {
         post_state_hash: Blake2b256Hash,
         creator: prost::bytes::Bytes,
         seq_num: i32,
-        channels_data: Vec<NumberChannelsEndVal>,
+        channels_data: Vec<MergeableChsForDeploy>,
         // Used to calculate value difference from final values
         pre_state_hash: &Blake2b256Hash,
     ) -> Result<(), CasperError> {
-        let total_endvals: usize = channels_data.iter().map(|m| m.len()).sum();
+        // Split MergeableChsForDeploy into parallel vectors of commutative
+        // end-values and identity-tagged channel hashes. The commutative subset
+        // flows through the existing convert-to-diff + storage path; the
+        // identity_tagged subset is persisted alongside in DeployMergeableData
+        // so the load path can populate EventLogIndex.identity_tagged_channels.
+        //
+        // SORT the identity_tagged Vec to ensure deterministic byte serialization
+        // across nodes — HashSet iteration is non-deterministic, but
+        // `mergeable_store` (LMDB) values are compared byte-for-byte in LFS sync
+        // and other transport paths.
+        let identity_tagged_per_deploy: Vec<Vec<Blake2b256Hash>> = channels_data
+            .iter()
+            .map(|mcfd| {
+                let mut v: Vec<Blake2b256Hash> = mcfd.identity_tagged.0.iter().cloned().collect();
+                v.sort();
+                v
+            })
+            .collect();
+        let commutative_per_deploy: Vec<NumberChannelsEndVal> = channels_data
+            .into_iter()
+            .map(|mcfd| mcfd.commutative)
+            .collect();
+        let total_endvals: usize = commutative_per_deploy.iter().map(|m| m.len()).sum();
+        let total_identity_tagged: usize =
+            identity_tagged_per_deploy.iter().map(|v| v.len()).sum();
         tracing::info!(
             target: "f1r3.trace.mergeable_store",
-            "[TRACE-SAVE-MERGEABLE-CHANNELS-ENTRY] post_state={} pre_state={} creator={} seq={} deploys={} total_endval_channels={}",
+            "[TRACE-SAVE-MERGEABLE-CHANNELS-ENTRY] post_state={} pre_state={} creator={} seq={} deploys={} total_endval_channels={} total_identity_tagged_channels={}",
             post_state_hash.bytes().encode_hex::<String>(),
             pre_state_hash.bytes().encode_hex::<String>(),
             creator.encode_hex::<String>(),
             seq_num,
-            channels_data.len(),
-            total_endvals
+            commutative_per_deploy.len(),
+            total_endvals,
+            total_identity_tagged
         );
         // Calculate difference values from final values on number channels
-        let diffs = self.convert_number_channels_to_diff(channels_data, pre_state_hash)?;
+        let diffs = self.convert_number_channels_to_diff(commutative_per_deploy, pre_state_hash)?;
         let total_diffs: usize = diffs.iter().map(|m| m.len()).sum();
         tracing::info!(
             target: "f1r3.trace.mergeable_store",
@@ -1134,10 +1223,12 @@ impl RuntimeManager {
             }
         }
 
-        // Convert to storage types
-        let deploy_channels = diffs
+        // Convert to storage types. Zip the per-deploy identity_tagged
+        // vectors alongside the diffs (parallel by index).
+        let deploy_channels: Vec<DeployMergeableData> = diffs
             .into_iter()
-            .map(|data| {
+            .zip(identity_tagged_per_deploy.into_iter())
+            .map(|(data, identity_tagged)| {
                 let channels: Vec<NumberChannel> = data
                     .into_iter()
                     .map(|(hash, (diff, merge_type))| NumberChannel {
@@ -1147,7 +1238,10 @@ impl RuntimeManager {
                     })
                     .collect::<Vec<_>>();
 
-                DeployMergeableData { channels }
+                DeployMergeableData {
+                    channels,
+                    identity_tagged,
+                }
             })
             .collect();
 
@@ -1196,6 +1290,14 @@ impl RuntimeManager {
                 ))
             })?;
 
+        // Build channel → MergeType map. A tagged channel always has the
+        // same MergeType across all deploys; we just need any entry for the
+        // channel to recover the type for the fold-on-multi-Datum path.
+        let merge_types: BTreeMap<Blake2b256Hash, MergeType> = channels_data
+            .iter()
+            .flat_map(|m| m.iter().map(|(ch, (_, mt))| (ch.clone(), *mt)))
+            .collect();
+
         // Build a one-shot base-value map to avoid repeatedly creating history readers per key.
         let unique_channels = channels_data
             .iter()
@@ -1209,29 +1311,89 @@ impl RuntimeManager {
                     ch, e
                 ))
             })?;
-            if data.len() > 1 {
-                return Err(CasperError::RuntimeError(format!(
-                    "Expected at most one value for number channel {:?}, found {}",
-                    ch,
-                    data.len()
-                )));
-            }
-            // None = channel doesn't exist (legitimate; start from 0). Some-but-non-numeric
-            // is an invariant violation (channel-type stability is a contract-level
-            // guarantee — interior nodes always numeric, leaves always Map). Treat as
-            // hard failure so the merge is rejected rather than silently substituting 0.
-            let value = match data.first() {
-                None => 0,
-                Some(datum) => match RholangMergingLogic::try_get_number_with_rnd(&datum.a) {
-                    Some((n, _)) => n,
-                    None => {
-                        return Err(CasperError::RuntimeError(format!(
-                            "Pre-state value for number channel {:?} is non-numeric; \
-                             channel-type invariant violated",
-                            ch,
-                        )));
+
+            // Liveness-first fallback: contract-level invariant violations
+            // on tagged channels (multi-Datum, non-numeric value) MUST NOT
+            // wedge the proposer. A buggy or adversarial contract should
+            // only damage its own state — not halt block production for
+            // the shard. Mirror the sanitize semantics already in
+            // `RuntimeOps::get_number_channel`: fold via MergeType to
+            // produce a deterministic single value, warn, and continue.
+            let value = if data.len() > 1 {
+                let merge_type = merge_types
+                    .get(&ch)
+                    .copied()
+                    .unwrap_or(MergeType::IntegerAdd);
+                let nums: Vec<i64> = data
+                    .iter()
+                    .filter_map(|d| {
+                        RholangMergingLogic::try_get_number_with_rnd(&d.a).map(|(n, _)| n)
+                    })
+                    .collect();
+                match RuntimeOps::fold_multi_value(&nums, merge_type) {
+                    Some(n) => {
+                        tracing::warn!(
+                            target: "f1r3fly.mergeable_channel.sanitize",
+                            "convert_number_channels_to_diff: tagged channel {} has multi-Datum \
+                             (count={}); folded via {:?} → value={} (recovery; shard not wedged)",
+                            hex::encode(ch.bytes()),
+                            data.len(),
+                            merge_type,
+                            n
+                        );
+                        metrics::counter!(
+                            "mergeable_channel_number_sanitized_total",
+                            "source" => "casper_runtime_manager"
+                        )
+                        .increment(1);
+                        n
                     }
-                },
+                    None => {
+                        // Multi-Datum with no numeric values — exotic. Treat
+                        // the channel as zero and continue. The proposer
+                        // will produce a block; downstream consensus will
+                        // catch any state divergence.
+                        tracing::warn!(
+                            target: "f1r3fly.mergeable_channel.sanitize",
+                            "convert_number_channels_to_diff: tagged channel {} has multi-Datum \
+                             (count={}) with no numeric values; defaulting to 0 \
+                             (recovery; shard not wedged)",
+                            hex::encode(ch.bytes()),
+                            data.len()
+                        );
+                        metrics::counter!(
+                            "mergeable_channel_number_sanitized_total",
+                            "source" => "casper_runtime_manager"
+                        )
+                        .increment(1);
+                        0
+                    }
+                }
+            } else {
+                match data.first() {
+                    None => 0,
+                    Some(datum) => match RholangMergingLogic::try_get_number_with_rnd(&datum.a) {
+                        Some((n, _)) => n,
+                        None => {
+                            // Single value but non-numeric (e.g., a TreeHashMap
+                            // leaf Map on a channel that's elsewhere used as a
+                            // number). Contract-type misuse. Default to 0 and
+                            // continue rather than wedge the proposer.
+                            tracing::warn!(
+                                target: "f1r3fly.mergeable_channel.sanitize",
+                                "convert_number_channels_to_diff: tagged channel {} has a single \
+                                 non-numeric value; defaulting to 0 (recovery; shard not wedged)",
+                                hex::encode(ch.bytes())
+                            );
+                            metrics::counter!(
+                                "mergeable_channel_number_sanitized_total",
+                                "source" => "casper_runtime_manager"
+                            )
+                            .increment(1);
+                            0
+                        }
+                    },
+                }
             };
             initial_values.insert(ch, value);
         }

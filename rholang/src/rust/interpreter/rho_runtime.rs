@@ -233,6 +233,24 @@ pub trait RhoRuntime: HasCost {
     async fn set_deploy_data(&self, deploy_data: DeployData) -> ();
 
     /**
+     * Tag the runtime's rspace with the currently-executing deploy's
+     * signature. Diagnostic only — used by the TRACE-HOTSTORE-* events
+     * to correlate produce/consume back to the originating deploy.
+     */
+    async fn set_current_deploy_sig(&self, sig: prost::bytes::Bytes) -> ();
+
+    async fn clear_current_deploy_sig(&self) -> ();
+
+    /// Atomically replace all data on `channel` with `new_data`. Used by
+    /// write-time healing in casper layer to fold multi-Datum on tagged
+    /// channels to a single value before checkpoint.
+    async fn replace_channel_data(
+        &self,
+        channel: &Par,
+        new_data: Vec<Datum<ListParWithRandom>>,
+    ) -> Result<(), rspace_plus_plus::rspace::errors::RSpaceError>;
+
+    /**
      * Get the hot changes after some executions for the runtime.
      * Currently this is only for debug info mostly.
      */
@@ -407,6 +425,22 @@ impl RhoRuntime for RhoRuntimeImpl {
     async fn set_deploy_data(&self, deploy_data: DeployData) -> () {
         let mut lock = self.deploy_data_ref.write().await;
         *lock = deploy_data;
+    }
+
+    async fn set_current_deploy_sig(&self, sig: prost::bytes::Bytes) -> () {
+        self.reducer.space.set_current_deploy_sig(sig.to_vec());
+    }
+
+    async fn clear_current_deploy_sig(&self) -> () {
+        self.reducer.space.clear_current_deploy_sig();
+    }
+
+    async fn replace_channel_data(
+        &self,
+        channel: &Par,
+        new_data: Vec<Datum<ListParWithRandom>>,
+    ) -> Result<(), rspace_plus_plus::rspace::errors::RSpaceError> {
+        self.reducer.space.replace_channel_data(channel, new_data).await
     }
 
     async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) -> () {
@@ -1169,13 +1203,20 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
-    // via a URI binding. Genesis-defined tags are unforgeable names; they must
-    // be created at runtime startup and threaded into both the merge engine's
-    // tag registry and the URN map so contracts can bind them via
-    // `bootstrapName(`rho:system:...`)`.
-    for (tag_par, merge_type) in mergeable_tags.iter() {
-        if let MergeType::BitmaskOr = merge_type {
+    // Expose mergeable-tag identities to system contracts via URI bindings.
+    // Genesis-defined tags are unforgeable names created at runtime startup
+    // and threaded into both the merge engine's tag registry and the URN map
+    // so contracts can bind them via `bootstrapName(`rho:system:...`)`.
+    //
+    // Dispatch by tag identity (not MergeType): single_value_channel and
+    // non_negative_number both map to IntegerAdd, so MergeType is ambiguous.
+    // NonNegativeNumber's tag is bound via the contract deploy itself
+    // (`new NonNegativeNumber, MergeableTag, ...` in NonNegativeNumber.rho),
+    // not via URI — so it's not in this loop.
+    let bitmask_par = crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name();
+    let single_value_par = crate::rust::interpreter::merging::mergeable_tags::single_value_channel_tag_name();
+    for (tag_par, _merge_type) in mergeable_tags.iter() {
+        if tag_par == &bitmask_par {
             tracing::info!(
                 target: "f1r3fly.merge.tag_check",
                 "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
@@ -1185,6 +1226,18 @@ where
             );
             urn_map.insert(
                 "rho:system:bitmaskMergeableTag".to_string(),
+                tag_par.clone(),
+            );
+        } else if tag_par == &single_value_par {
+            tracing::info!(
+                target: "f1r3fly.merge.tag_check",
+                "URI binding inserted: rho:system:singleValueChannel -> Par(unforgeables={}, exprs={}, bundles={})",
+                tag_par.unforgeables.len(),
+                tag_par.exprs.len(),
+                tag_par.bundles.len(),
+            );
+            urn_map.insert(
+                "rho:system:singleValueChannel".to_string(),
                 tag_par.clone(),
             );
         }

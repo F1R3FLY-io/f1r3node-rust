@@ -57,6 +57,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    current_deploy_sig: Arc<std::sync::RwLock<Option<Vec<u8>>>>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -68,6 +69,18 @@ where
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
         self.store.read().expect("store read lock").clone()
+    }
+
+    fn current_deploy_sig_short(&self) -> String {
+        match self
+            .current_deploy_sig
+            .read()
+            .expect("current_deploy_sig read lock")
+            .as_ref()
+        {
+            Some(sig) => hex::encode(&sig[..sig.len().min(8)]),
+            None => "none".to_string(),
+        }
     }
 
     pub fn get_history_repository(
@@ -161,6 +174,14 @@ where
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         self.check_replay_data().await?;
+
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        tracing::info!(
+            target: "f1r3.trace.rspace_checkpoint",
+            "[TRACE-REPLAY-RSPACE-CREATE-CHECKPOINT-ENTRY] thread={:?} hsid={:x}",
+            std::thread::current().id(),
+            hsid
+        );
 
         let changes = self.get_store().changes();
         let next_history = self.get_history_repository().checkpoint(changes);
@@ -432,6 +453,36 @@ where
             }
         }
     }
+
+    fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = Some(sig);
+    }
+
+    fn clear_current_deploy_sig(&self) {
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = None;
+    }
+
+    async fn replace_channel_data(
+        &self,
+        channel: &C,
+        new_data: Vec<Datum<A>>,
+    ) -> Result<(), RSpaceError> {
+        let store = self.get_store();
+        let existing_len = store.get_data(channel).len();
+        for idx in (0..existing_len as i32).rev() {
+            store.remove_datum(channel, idx)?;
+        }
+        for d in new_data {
+            store.put_datum(channel, d);
+        }
+        Ok(())
+    }
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -467,6 +518,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -494,6 +546,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -1089,6 +1142,17 @@ where
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        tracing::info!(
+            target: "f1r3.trace.hotstore_diag",
+            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} (replay_rspace.store_data invoked from deploy replay)",
+            std::thread::current().id(),
+            hsid,
+            self.current_deploy_sig_short(),
+            hex::encode(produce_ref.channel_hash.bytes()),
+            hex::encode(produce_ref.hash.bytes()),
+            persist
+        );
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,
@@ -1110,14 +1174,30 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, .. },
+                    datum: Datum { persist, source, .. },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
 
                 if !persist {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME] deploy_sig={} channel_hash={} produce_hash={} datum_index={} persistent={} (replay_rspace.store_persistent_data → remove_datum)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(source.channel_hash.bytes()),
+                        hex::encode(source.hash.bytes()),
+                        datum_index, persist
+                    );
                     self.get_store().remove_datum(&channel, datum_index).ok()
                 } else {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME-SKIP-PERSISTENT] deploy_sig={} channel_hash={} produce_hash={} datum_index={} (replay persistent datum NOT removed)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(source.channel_hash.bytes()),
+                        hex::encode(source.hash.bytes()),
+                        datum_index
+                    );
                     Some(())
                 }
             })
@@ -1253,19 +1333,27 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, .. },
+                    datum: Datum { persist, source, .. },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
 
                 let channels_clone = channels.clone();
-                if datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
+                if datum_index >= 0 && !persist {
+                    tracing::info!(
+                        target: "f1r3.trace.hotstore_diag",
+                        "[TRACE-HOTSTORE-CONSUME] deploy_sig={} channel_hash={} produce_hash={} datum_index={} persistent={} (replay_rspace L1286 → remove_datum)",
+                        self.current_deploy_sig_short(),
+                        hex::encode(source.channel_hash.bytes()),
+                        hex::encode(source.hash.bytes()),
+                        datum_index, persist
+                    );
+                    if self.get_store()
                         .remove_datum(&channel, datum_index)
                         .is_err()
-                {
-                    return None;
+                    {
+                        return None;
+                    }
                 }
                 self.get_store().remove_join(&channel, &channels_clone);
 

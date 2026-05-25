@@ -380,7 +380,43 @@ fn event_indexed_conflict_map_for_chains(
 ) -> HashMap<DeployChainIndex, HashableSet<DeployChainIndex>> {
     let chains_vec: Vec<DeployChainIndex> = chain_set.0.iter().cloned().collect();
     let event_logs: Vec<&EventLogIndex> = chains_vec.iter().map(|c| &c.event_log_index).collect();
-    merging_logic::compute_conflict_map_event_indexed(&chains_vec, &event_logs)
+    // Each "branch" is one chain in this test harness, so per-chain external-
+    // consume channels are identical to the per-branch view. Compute inline
+    // to mirror the production logic in dag_merger::compute_branch_derived.
+    let external_sets: Vec<std::collections::HashSet<Blake2b256Hash>> = chains_vec
+        .iter()
+        .map(|c| {
+            let eli = &c.event_log_index;
+            let own_produce_hashes: std::collections::HashSet<&Blake2b256Hash> = eli
+                .produces_linear
+                .0
+                .iter()
+                .chain(eli.produces_persistent.0.iter())
+                .map(|p| &p.hash)
+                .collect();
+            let linear_consume_channels: std::collections::HashSet<&Blake2b256Hash> = eli
+                .consumes_produced
+                .0
+                .iter()
+                .filter(|c| !c.persistent)
+                .flat_map(|c| c.channel_hashes.iter())
+                .collect();
+            let external_produce_channels: std::collections::HashSet<&Blake2b256Hash> = eli
+                .produces_consumed
+                .0
+                .iter()
+                .filter(|p| !own_produce_hashes.contains(&p.hash))
+                .map(|p| &p.channel_hash)
+                .collect();
+            linear_consume_channels
+                .intersection(&external_produce_channels)
+                .map(|h| (*h).clone())
+                .collect()
+        })
+        .collect();
+    let external_refs: Vec<&std::collections::HashSet<Blake2b256Hash>> =
+        external_sets.iter().collect();
+    merging_logic::compute_conflict_map_event_indexed(&chains_vec, &event_logs, &external_refs)
 }
 
 #[test]

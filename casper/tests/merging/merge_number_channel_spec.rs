@@ -178,6 +178,7 @@ async fn test_case(
                     rm.get_history_repo(),
                     &pre_state,
                     number_chan_diff,
+                    shared::rust::hashable_set::HashableSet::new(),
                 );
 
                 let sig_bs = make_sig_pb(deploy.sig.as_str());
@@ -381,9 +382,44 @@ async fn test_case(
             let event_log_refs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
                 combined_logs.iter().collect();
 
+            // Per-chain external-linear-consume channels, unioned per branch.
+            // Mirrors the production logic in dag_merger::compute_branch_derived.
+            let external_sets: Vec<std::collections::HashSet<rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash>> =
+                branches_refs
+                    .iter()
+                    .map(|b| {
+                        b.0.iter()
+                            .flat_map(|chain| {
+                                let eli = &chain.event_log_index;
+                                let own_produce_hashes: std::collections::HashSet<&rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> =
+                                    eli.produces_linear.0.iter()
+                                        .chain(eli.produces_persistent.0.iter())
+                                        .map(|p| &p.hash)
+                                        .collect();
+                                let linear_consume_channels: std::collections::HashSet<&rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> =
+                                    eli.consumes_produced.0.iter()
+                                        .filter(|c| !c.persistent)
+                                        .flat_map(|c| c.channel_hashes.iter())
+                                        .collect();
+                                let external_produce_channels: std::collections::HashSet<&rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash> =
+                                    eli.produces_consumed.0.iter()
+                                        .filter(|p| !own_produce_hashes.contains(&p.hash))
+                                        .map(|p| &p.channel_hash)
+                                        .collect();
+                                linear_consume_channels.intersection(&external_produce_channels)
+                                    .map(|h| (*h).clone())
+                                    .collect::<std::collections::HashSet<_>>()
+                            })
+                            .collect()
+                    })
+                    .collect();
+            let external_refs: Vec<&std::collections::HashSet<rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash>> =
+                external_sets.iter().collect();
+
             let mut result = merging_logic::compute_conflict_map_event_indexed(
                 &branches_owned,
                 &event_log_refs,
+                &external_refs,
             );
             for i in 0..branches_owned.len() {
                 for j in (i + 1)..branches_owned.len() {

@@ -297,10 +297,22 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         ch_hex, init.len(), changes.added.len(), changes.removed.len(), new_val.len()
     );
     if new_val.len() > 1 {
+        let blake = |bytes: &[u8]| -> String {
+            use blake2::digest::{Update, VariableOutput};
+            let mut h = blake2::Blake2bVar::new(8).unwrap();
+            h.update(bytes);
+            let mut out = [0u8; 8];
+            h.finalize_variable(&mut out).unwrap();
+            hex::encode(out)
+        };
+        let init_hashes: Vec<String> = init.iter().map(|b| blake(b)).collect();
+        let added_hashes: Vec<String> = changes.added.iter().map(|b| blake(b)).collect();
+        let removed_hashes: Vec<String> = changes.removed.iter().map(|b| blake(b)).collect();
+        let new_val_hashes: Vec<String> = new_val.iter().map(|b| blake(b)).collect();
         info!(
             target: "f1r3.trace.merger",
-            "[TRACE-MAKE-TRIE-ACTION-MULTI] channel={} new_val_len={} (this writes multi-Datum)",
-            ch_hex, new_val.len()
+            "[TRACE-MAKE-TRIE-ACTION-MULTI] channel={} new_val_len={} init_hashes={:?} added_hashes={:?} removed_hashes={:?} new_val_hashes={:?}",
+            ch_hex, new_val.len(), init_hashes, added_hashes, removed_hashes, new_val_hashes
         );
     }
 

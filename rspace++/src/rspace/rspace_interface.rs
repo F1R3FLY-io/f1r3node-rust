@@ -198,4 +198,24 @@ pub trait ISpace<
     async fn is_replay(&self) -> bool;
 
     async fn update_produce(&self, produce: Produce) -> ();
+
+    /// Set the deploy-context tag read by produce/consume trace emissions.
+    /// Cleared between deploys so produces outside any deploy execution log
+    /// as `deploy_sig=none`.
+    fn set_current_deploy_sig(&self, sig: Vec<u8>);
+
+    fn clear_current_deploy_sig(&self);
+
+    /// Atomically replace all data on `channel` with `new_data`. Used by
+    /// write-time healing in casper layer to fold multi-Datum on tagged
+    /// channels back to a single value before checkpoint. Removes all
+    /// existing datums (high index to low) then puts the new ones in
+    /// order. Caller is responsible for ensuring no concurrent ops on
+    /// the same channel (typically called between deploy execution and
+    /// checkpoint creation).
+    async fn replace_channel_data(
+        &self,
+        channel: &C,
+        new_data: Vec<Datum<A>>,
+    ) -> Result<(), RSpaceError>;
 }

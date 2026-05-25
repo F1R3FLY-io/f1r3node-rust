@@ -80,7 +80,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
 
         assert_eq!(processed_deploys.len(), 2);
 
-        let mergeable_channels = runtime_manager
+        let (mergeable_channels, identity_tagged_per_deploy) = runtime_manager
             .load_mergeable_channels(
                 &post_state_hash,
                 state_transition_creator.bytes.clone(),
@@ -93,16 +93,19 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             .to_vec()
             .into_iter()
             .zip(mergeable_channels)
+            .zip(identity_tagged_per_deploy)
+            .map(|((d, m), i)| (d, m, i))
             .collect::<Vec<_>>();
 
         let idxs = processed_deploys_with_mergeable
             .into_iter()
-            .map(|(d, merge_chs)| {
+            .map(|(d, merge_chs, identity_tagged)| {
                 block_index::create_event_log_index(
                     &d.deploy_log,
                     runtime_manager.get_history_repo(),
                     &Blake2b256Hash::from_bytes_prost(&base_state),
                     merge_chs,
+                    identity_tagged,
                 )
             })
             .collect::<Vec<_>>();

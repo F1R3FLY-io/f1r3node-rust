@@ -37,6 +37,18 @@ pub const BITMASK_OR_TAG_PK: &str =
     "4d76b8e3f29a51c8d05e7b4f9a23c6e1d8b5f0a7c4e91b6d3a8f5c2e9b6d4a1c";
 pub const BITMASK_OR_TAG_TIMESTAMP: i64 = 1762000000000;
 
+// Dedicated key for deriving the single-value-channel mergeable tag's
+// unforgeable name. General-purpose identity tag for contract-bound
+// single-value channels (PoS stateCh, any user contract using the
+// `@(*tag, *ch)` pattern via `rho:system:singleValueChannel` URI
+// binding). Mapped to MergeType::IntegerAdd as a tag-of-convenience —
+// channels using this tag typically don't expose a numeric end-value,
+// so `get_number_channel` skips them in the commutative subset; what
+// matters is the tag identity for Check #4 enforcement.
+pub const SINGLE_VALUE_CHANNEL_TAG_PK: &str =
+    "074d88f4c2cc84def103d1a89c0fa701d15ff4c3c2e32074c6b940db4784ead5";
+pub const SINGLE_VALUE_CHANNEL_TAG_TIMESTAMP: i64 = 1900000000000;
+
 pub fn pub_key_from_hex(priv_key_hex: &str) -> PublicKey {
     let private_key =
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("invalid private key hex"));
@@ -72,6 +84,10 @@ pub fn bitmask_or_mergeable_tag_name() -> Par {
     tag_name(BITMASK_OR_TAG_PK, BITMASK_OR_TAG_TIMESTAMP)
 }
 
+pub fn single_value_channel_tag_name() -> Par {
+    tag_name(SINGLE_VALUE_CHANNEL_TAG_PK, SINGLE_VALUE_CHANNEL_TAG_TIMESTAMP)
+}
+
 /// Standard mergeable-tag registry installed at runtime startup. Maps each
 /// genesis-defined tag `Par` to its merge strategy. Use this everywhere a
 /// mergeable-tag table is needed unless a test specifically wants a custom
@@ -80,5 +96,6 @@ pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
     let mut tags = HashMap::new();
     tags.insert(non_negative_mergeable_tag_name(), MergeType::IntegerAdd);
     tags.insert(bitmask_or_mergeable_tag_name(), MergeType::BitmaskOr);
+    tags.insert(single_value_channel_tag_name(), MergeType::IntegerAdd);
     tags
 }

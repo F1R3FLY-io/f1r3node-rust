@@ -10,6 +10,7 @@ use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
 use rspace_plus_plus::rspace::trace::event::Produce;
+use shared::rust::hashable_set::HashableSet;
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
@@ -27,6 +28,7 @@ pub fn create_event_log_index(
     history_repository: RhoHistoryRepository,
     pre_state_hash: &Blake2b256Hash,
     mergeable_chs: NumberChannelsDiff,
+    identity_tagged_channels: HashableSet<Blake2b256Hash>,
 ) -> EventLogIndex {
     let pre_state_reader = history_repository
         .get_history_reader(pre_state_hash)
@@ -52,6 +54,7 @@ pub fn create_event_log_index(
         produce_exists_in_pre_state,
         produce_touches_pre_state_join,
         mergeable_chs,
+        identity_tagged_channels,
     )
 }
 
@@ -64,6 +67,7 @@ pub fn new(
     post_state_hash: &Blake2b256Hash,
     history_repository: &RhoHistoryRepository,
     mergeable_chs: &Vec<NumberChannelsDiff>,
+    identity_tagged_per_deploy: &Vec<HashableSet<Blake2b256Hash>>,
 ) -> Result<BlockIndex, CasperError> {
     // Connect mergeable channels data with processed deploys by index
     let usr_count = usr_processed_deploys.len();
@@ -82,26 +86,46 @@ pub fn new(
     }
     let aligned_mergeable_chs = mergeable_chs.clone();
 
+    // identity_tagged_per_deploy is parallel to aligned_mergeable_chs
+    // (same length, same deploy ordering). Validate length matches.
+    if identity_tagged_per_deploy.len() != deploy_count {
+        let msg = format!(
+            "identity_tagged_per_deploy length mismatch for block {}: identity_tagged={}, deploys={}",
+            hex::encode(&block_hash[..std::cmp::min(10, block_hash.len())]),
+            identity_tagged_per_deploy.len(),
+            deploy_count
+        );
+        tracing::error!("{}", msg);
+        return Err(CasperError::RuntimeError(msg));
+    }
+    let aligned_identity_tagged = identity_tagged_per_deploy.clone();
+
     // Connect deploy with corresponding mergeable channels map
     let (usr_mergeable_chs, sys_mergeable_chs) = aligned_mergeable_chs.split_at(usr_count);
+    let (usr_identity_tagged, sys_identity_tagged) = aligned_identity_tagged.split_at(usr_count);
     let usr_deploys_with_mergeable: Vec<_> = usr_processed_deploys
         .iter()
         .zip(usr_mergeable_chs.iter())
+        .zip(usr_identity_tagged.iter())
+        .map(|((d, m), i)| (d, m, i))
         .collect();
     let sys_deploys_with_mergeable: Vec<_> = sys_processed_deploys
         .iter()
         .zip(sys_mergeable_chs.iter())
+        .zip(sys_identity_tagged.iter())
+        .map(|((d, m), i)| (d, m, i))
         .collect();
 
     // Create user deploy indices - filter out failed deploys
     let mut usr_deploy_indices = Vec::new();
-    for (deploy, merge_chs) in usr_deploys_with_mergeable {
+    for (deploy, merge_chs, identity_tagged) in usr_deploys_with_mergeable {
         if !deploy.is_failed {
             let event_log_index = create_event_log_index(
                 &deploy.deploy_log,
                 history_repository.clone(),
                 pre_state_hash,
                 merge_chs.clone(),
+                identity_tagged.clone(),
             );
 
             let deploy_index = DeployIndex {
@@ -116,7 +140,7 @@ pub fn new(
 
     // Create system deploy indices - collect successful system deploys
     let mut sys_deploy_indices = Vec::new();
-    for (sys_deploy, merge_chs) in sys_deploys_with_mergeable {
+    for (sys_deploy, merge_chs, identity_tagged) in sys_deploys_with_mergeable {
         match sys_deploy {
             ProcessedSystemDeploy::Succeeded {
                 system_deploy,
@@ -145,6 +169,7 @@ pub fn new(
                     history_repository.clone(),
                     pre_state_hash,
                     merge_chs.clone(),
+                    identity_tagged.clone(),
                 );
 
                 let deploy_index = DeployIndex {

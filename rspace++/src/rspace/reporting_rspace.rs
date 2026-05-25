@@ -340,6 +340,22 @@ where
     async fn update_produce(&self, produce: Produce) -> () {
         self.replay_rspace.update_produce(produce).await
     }
+
+    fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        self.replay_rspace.set_current_deploy_sig(sig);
+    }
+
+    fn clear_current_deploy_sig(&self) {
+        self.replay_rspace.clear_current_deploy_sig();
+    }
+
+    async fn replace_channel_data(
+        &self,
+        channel: &C,
+        new_data: Vec<Datum<A>>,
+    ) -> Result<(), RSpaceError> {
+        self.replay_rspace.replace_channel_data(channel, new_data).await
+    }
 }
 
 /// Logger used to collect reporting events from underlying replay space

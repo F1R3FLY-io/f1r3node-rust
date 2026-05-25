@@ -727,6 +727,17 @@ impl BlockDagKeyValueStorage {
             }
 
             let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            tracing::info!(
+                target: "f1r3.trace.dag_insert",
+                "[TRACE-DAG-INSERT] hash={} sender={} block_number={} seq_num={} invalid={} approved={} bonds_count={}",
+                hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                hex::encode(&block.sender[..8.min(block.sender.len())]),
+                block.body.state.block_number,
+                block.seq_num,
+                invalid,
+                approved,
+                block.body.state.bonds.len(),
+            );
             let mut block_metadata_guard = self.block_metadata_index.write().unwrap();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
@@ -751,22 +762,42 @@ impl BlockDagKeyValueStorage {
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
+            let prior_lm_for_sender = if !sender_is_empty {
+                self.latest_messages_index
+                    .get_one(&block.sender.clone().into())
+                    .ok()
+                    .flatten()
+                    .map(|h| h.0)
+            } else {
+                None
+            };
+
             let new_latest_from_sender = if !sender_is_empty {
                 // Add LM either if there is no existing message for the sender, or if sequence number advances
                 // - assumes block sender is not valid hash
-                if match self
-                    .latest_messages_index
-                    .get_one(&block.sender.clone().into())
-                {
-                    Ok(Some(latest_message_hash)) => {
+                let should_advance = match &prior_lm_for_sender {
+                    Some(latest_message_hash) => {
                         let block_metadata_index_guard = self.block_metadata_index.read().unwrap();
-                        match block_metadata_index_guard.get(&latest_message_hash.into()) {
+                        match block_metadata_index_guard.get(&latest_message_hash.clone().into()) {
                             Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
                             _ => true,
                         }
                     }
-                    _ => true,
-                } {
+                    None => true,
+                };
+                tracing::info!(
+                    target: "f1r3.trace.dag_insert",
+                    "[TRACE-DAG-LM-UPDATE] sender={} block_hash={} seq_num={} prior_lm={} advanced={}",
+                    hex::encode(&block.sender[..8.min(block.sender.len())]),
+                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                    block.seq_num,
+                    prior_lm_for_sender
+                        .as_ref()
+                        .map(|h| hex::encode(&h[..8.min(h.len())]))
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    should_advance,
+                );
+                if should_advance {
                     HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()
@@ -775,8 +806,21 @@ impl BlockDagKeyValueStorage {
                 HashMap::new()
             };
 
-            let mut new_latest_to_add = new_latest_messages()?;
-            new_latest_to_add.extend(new_latest_from_sender);
+            let new_latest_to_add = {
+                let mut combined = new_latest_messages()?;
+                combined.extend(new_latest_from_sender);
+                combined
+            };
+
+            for (validator, lm_hash) in &new_latest_to_add {
+                tracing::info!(
+                    target: "f1r3.trace.dag_insert",
+                    "[TRACE-DAG-LM-NEW] validator={} new_latest_hash={} via_block={}",
+                    hex::encode(&validator[..8.min(validator.len())]),
+                    hex::encode(&lm_hash[..8.min(lm_hash.len())]),
+                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                );
+            }
 
             self.latest_messages_index.put(
                 new_latest_to_add

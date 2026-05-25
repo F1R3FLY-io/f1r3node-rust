@@ -145,19 +145,25 @@ pub async fn prepare_user_deploys(
         HashSet::new()
     } else {
         use crate::rust::api::deploy_finalization_status::{
-            resolve_batch, DeployFinalizationState,
+            resolve_at_parents_batch, EffectsInParentsState,
         };
         let lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-        match resolve_batch(
+        let parent_hashes: Vec<BlockHash> = casper_snapshot
+            .parents
+            .iter()
+            .map(|p| p.block_hash.clone())
+            .collect();
+        match resolve_at_parents_batch(
             &casper_snapshot.dag,
             block_store,
+            &parent_hashes,
             lifespan,
             &exemption_candidates,
         ) {
             Ok(statuses) => statuses
                 .into_iter()
-                .filter_map(|(sig, st)| match st.state {
-                    DeployFinalizationState::Finalized => Some(sig),
+                .filter_map(|(sig, st)| match st {
+                    EffectsInParentsState::InCanonicalState => Some(sig),
                     _ => None,
                 })
                 .collect(),
@@ -165,7 +171,7 @@ pub async fn prepare_user_deploys(
             // rather than risk double-execution. They'll be retried next cycle.
             Err(err) => {
                 tracing::warn!(
-                    "prepare_user_deploys: resolve_batch failed: {} — declining \
+                    "prepare_user_deploys: resolve_at_parents_batch failed: {} — declining \
                      recovery exemption for all {} candidate(s) this cycle",
                     err,
                     exemption_candidates.len()

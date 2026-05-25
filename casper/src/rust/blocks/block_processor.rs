@@ -227,6 +227,22 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         // CasperSnapshot cannot be constructed
         snapshot_opt: Option<CasperSnapshot>,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let parents_hex: Vec<String> = block
+            .header
+            .parents_hash_list
+            .iter()
+            .map(|p| hex::encode(&p[..8.min(p.len())]))
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.block_processing",
+            "[TRACE-BLOCK-RECV] hash={} sender={} block_number={} seq={} parents=[{}]",
+            hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+            hex::encode(&block.sender[..8.min(block.sender.len())]),
+            block.body.state.block_number,
+            block.seq_num,
+            parents_hex.join(","),
+        );
+
         // Record block size
         let block_size = block.to_proto().encode_to_vec().len();
         metrics::histogram!(BLOCK_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
@@ -253,6 +269,29 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .await?;
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
+
+        match &status {
+            Either::Right(valid_block) => {
+                tracing::info!(
+                    target: "f1r3.trace.block_processing",
+                    "[TRACE-BLOCK-OUTCOME] hash={} sender={} block_number={} outcome=VALID variant={:?}",
+                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                    hex::encode(&block.sender[..8.min(block.sender.len())]),
+                    block.body.state.block_number,
+                    valid_block,
+                );
+            }
+            Either::Left(invalid_block) => {
+                tracing::info!(
+                    target: "f1r3.trace.block_processing",
+                    "[TRACE-BLOCK-OUTCOME] hash={} sender={} block_number={} outcome=INVALID reason={:?}",
+                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                    hex::encode(&block.sender[..8.min(block.sender.len())]),
+                    block.body.state.block_number,
+                    invalid_block,
+                );
+            }
+        }
 
         // Record validation outcome
         let _ = match &status {

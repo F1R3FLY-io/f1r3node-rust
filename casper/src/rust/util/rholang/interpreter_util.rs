@@ -347,55 +347,99 @@ async fn replay_block(
     let internal_deploys = proto_util::deploys(block);
     let internal_system_deploys = proto_util::system_deploys(block);
 
-    // Check for duplicate deploys in the block before replay
-    let mut all_deploy_sigs: Vec<Bytes> = internal_deploys
-        .iter()
-        .map(|pd| pd.deploy.sig.clone())
-        .collect();
-    all_deploy_sigs.extend(block.body.rejected_deploys.iter().map(|rd| rd.sig.clone()));
-
-    let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
-    for sig in &all_deploy_sigs {
-        *sig_counts.entry(sig.clone()).or_insert(0) += 1;
+    // Per-list duplicate analysis. Disambiguates:
+    //   (a) sig appears >1 in body.deploys         → block-creator dedup bug
+    //   (b) sig appears >1 in body.rejected_deploys → buffer dedup bug
+    //   (c) sig appears in BOTH lists              → replay-of-rejected bug
+    let mut deploys_sig_counts: HashMap<Bytes, usize> = HashMap::new();
+    for pd in &internal_deploys {
+        *deploys_sig_counts.entry(pd.deploy.sig.clone()).or_insert(0) += 1;
     }
-    let deploy_duplicates: HashMap<Bytes, usize> = sig_counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
+    let mut rejected_sig_counts: HashMap<Bytes, usize> = HashMap::new();
+    for rd in &block.body.rejected_deploys {
+        *rejected_sig_counts.entry(rd.sig.clone()).or_insert(0) += 1;
+    }
+
+    let dup_within_deploys: HashMap<Bytes, usize> = deploys_sig_counts
+        .iter()
+        .filter(|(_, c)| **c > 1)
+        .map(|(s, c)| (s.clone(), *c))
+        .collect();
+    let dup_within_rejected: HashMap<Bytes, usize> = rejected_sig_counts
+        .iter()
+        .filter(|(_, c)| **c > 1)
+        .map(|(s, c)| (s.clone(), *c))
+        .collect();
+    let dup_across: Vec<Bytes> = deploys_sig_counts
+        .keys()
+        .filter(|s| rejected_sig_counts.contains_key(*s))
+        .cloned()
         .collect();
 
-    if !deploy_duplicates.is_empty() {
-        let duplicates_str: String = deploy_duplicates
-            .iter()
-            .map(|(sig, count)| {
-                format!(
-                    "  {} (appears {} times)",
-                    PrettyPrinter::build_string_bytes(sig),
-                    count
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+    // Per-block summary emitted on every replay so multi-Datum flush
+    // events can be correlated with dup state for the originating block.
+    tracing::info!(
+        target: "f1r3.trace.hotstore_diag",
+        "[TRACE-REPLAY-DUP] block=#{} hash={} deploys={} rejected={} dup_in_deploys={} dup_in_rejected={} dup_in_both={}",
+        block.body.state.block_number,
+        PrettyPrinter::build_string_bytes(&block.block_hash),
+        internal_deploys.len(),
+        block.body.rejected_deploys.len(),
+        dup_within_deploys.len(),
+        dup_within_rejected.len(),
+        dup_across.len()
+    );
+
+    if !dup_within_deploys.is_empty()
+        || !dup_within_rejected.is_empty()
+        || !dup_across.is_empty()
+    {
+        let fmt_counts = |m: &HashMap<Bytes, usize>| -> String {
+            if m.is_empty() {
+                "  None".to_string()
+            } else {
+                m.iter()
+                    .map(|(sig, c)| {
+                        format!(
+                            "  {} (x{})",
+                            PrettyPrinter::build_string_bytes(sig),
+                            c
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        };
+        let fmt_sigs = |sigs: &[Bytes]| -> String {
+            if sigs.is_empty() {
+                "  None".to_string()
+            } else {
+                sigs.iter()
+                    .map(|sig| format!("  {}", PrettyPrinter::build_string_bytes(sig)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        };
 
         tracing::warn!(
             "\n=== Duplicate Deploys Detected in Block ===\n\
             Block #{} ({})\n\
-            Found {} duplicate deploy signatures:\n{}\n\
             Total deploys: {}\n\
             Total rejected: {}\n\
+            Dup WITHIN body.deploys ({}):\n{}\n\
+            Dup WITHIN body.rejected_deploys ({}):\n{}\n\
+            Sig in BOTH deploys and rejected ({}):\n{}\n\
             ============================================",
             block.body.state.block_number,
             PrettyPrinter::build_string_bytes(&block.block_hash),
-            deploy_duplicates.len(),
-            duplicates_str,
             internal_deploys.len(),
-            block.body.rejected_deploys.len()
-        );
-    } else {
-        tracing::debug!(
-            "Block #{}: replaying {} deploys, {} rejected",
-            block.body.state.block_number,
-            internal_deploys.len(),
-            block.body.rejected_deploys.len()
+            block.body.rejected_deploys.len(),
+            dup_within_deploys.len(),
+            fmt_counts(&dup_within_deploys),
+            dup_within_rejected.len(),
+            fmt_counts(&dup_within_rejected),
+            dup_across.len(),
+            fmt_sigs(&dup_across)
         );
     }
 
@@ -640,6 +684,37 @@ pub async fn compute_deploys_checkpoint(
     let parents_ms = parents_started.elapsed().as_millis();
     let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
 
+    // Filter out prepared deploys whose sigs were rejected by THIS round's
+    // parent-merge. `prepare_user_deploys`' recovery exemption can select a
+    // sig that the merge subsequently drops; executing such a sig produces
+    // a block where body.deploys ∩ body.rejected_deploys ≠ ∅ — replay then
+    // re-executes the sig on top of canonical pre-state that already has
+    // its effects via the accepting ancestor, multi-Datum'ing tagged
+    // channels. The merge's verdict is authoritative — the deploy stays in
+    // the recovery buffer and can land on a future block whose parents
+    // don't re-conflict.
+    let rejected_sigs: std::collections::HashSet<prost::bytes::Bytes> =
+        rejected_deploys.iter().cloned().collect();
+    let deploys: Vec<Signed<DeployData>> = if rejected_sigs.is_empty() {
+        deploys
+    } else {
+        let original_count = deploys.len();
+        let filtered: Vec<Signed<DeployData>> = deploys
+            .into_iter()
+            .filter(|d| !rejected_sigs.contains(&d.sig))
+            .collect();
+        let dropped = original_count - filtered.len();
+        if dropped > 0 {
+            tracing::info!(
+                "compute_deploys_checkpoint: filtered {} of {} prepared deploys whose \
+                 sigs are in this round's rejected_deploys",
+                dropped,
+                original_count
+            );
+        }
+        filtered
+    };
+
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
     let result = runtime_manager
@@ -846,7 +921,7 @@ pub fn compute_parents_post_state(
                 let sender = b.sender.clone();
                 let seq_num = b.seq_num;
 
-                let mergeable_chs =
+                let (mergeable_chs, identity_tagged_per_deploy) =
                     runtime_manager.load_mergeable_channels(post_state, sender, seq_num)?;
 
                 let block_index = crate::rust::merging::block_index::new(
@@ -858,6 +933,7 @@ pub fn compute_parents_post_state(
                     &Blake2b256Hash::from_bytes_prost(post_state),
                     &runtime_manager.history_repo,
                     &mergeable_chs,
+                    &identity_tagged_per_deploy,
                 )?;
 
                 // Cache the result
