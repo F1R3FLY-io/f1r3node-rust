@@ -19,7 +19,7 @@
 \*   - TotalRefundConservation: Σ refund + total_cost = Σ charged (FIFO)
 \* ===========================================================================
 
-EXTENDS Naturals, FiniteSets, Sequences, TLC
+EXTENDS Integers, FiniteSets, Sequences, TLC
 
 CONSTANTS
     NumCosigners,       \* number of cosigners per deploy
