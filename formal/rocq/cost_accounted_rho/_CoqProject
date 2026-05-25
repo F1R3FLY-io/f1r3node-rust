@@ -138,5 +138,10 @@ theories/Replication.v
 # FIFO drain conservation theorems).
 theories/MultiSignerRefinement.v
 
+# Level 4a6: Phase 2/3 linear-logic identities (standalone; depends only
+# on Stdlib). Mechanizes canonical multiplicative / additive / exponential
+# laws + Phase 2 Threshold permutation invariance.
+theories/LLIdentities.v
+
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v
