@@ -236,20 +236,16 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        // Uplift the on-disk Signed<DeployData> to Cosigned<DeployData>.
-        // For legacy single-sig deploys this is a one-element envelope; the
-        // multi-sig case will activate when §1.9 extends ProcessedDeploy
-        // to carry the cosigner list.
-        let phlo_limit = processed_deploy.deploy.data.phlo_limit;
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-            processed_deploy.deploy.clone(),
-            phlo_limit,
-        )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!(
-                "legacy uplift to Cosigned failed in replay process_deploy: {e}"
-            ))
-        })?;
+        // Reconstitute the Cosigned<DeployData> envelope from the on-disk
+        // ProcessedDeploy shape. For legacy single-sig deploys
+        // (`cosigners.is_empty() && primary_phlo_share == 0`), this uplifts
+        // via Cosigned::from_single_signer for byte-identical replay. For
+        // multi-sig deploys (per §1.9.5 ProcessedDeploy extension), the full
+        // canonical cosigner envelope is reconstructed with per-signer
+        // re-verification — enabling end-to-end multi-sig replay.
+        let cosigned = processed_deploy
+            .to_cosigned()
+            .map_err(CasperError::RuntimeError)?;
         let is_compound = cosigned.is_compound();
         let phlo_price = cosigned.data.phlo_price;
 

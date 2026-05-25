@@ -105,6 +105,30 @@ pub trait Casper {
         deploy: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>;
 
+    /// Multi-signature aware deploy submission. Default impl rejects
+    /// compound deploys (so legacy/test implementations that haven't
+    /// overridden it fail loudly rather than silently dropping cosigner
+    /// data); production `MultiParentCasperImpl` overrides with the
+    /// Cosigned-aware admission path. For single-signer Cosigned
+    /// envelopes (the legacy uplift case from `Cosigned::from_single_signer`),
+    /// the default delegates to `deploy` for byte-identical observable behavior.
+    fn deploy_cosigned(
+        &self,
+        deploy: crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        if deploy.is_compound() {
+            return Err(CasperError::RuntimeError(
+                "deploy_cosigned: implementation does not override the default \
+                 multi-sig path; multi-signature deploys are not supported by this \
+                 Casper implementation. The production MultiParentCasperImpl \
+                 overrides this method."
+                    .to_string(),
+            ));
+        }
+        // Single-signer cosigned: legacy delegate.
+        self.deploy(deploy.into_legacy_signed_unchecked())
+    }
+
     async fn estimator(
         &self,
         dag: &mut KeyValueDagRepresentation,
