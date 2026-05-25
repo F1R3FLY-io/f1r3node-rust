@@ -317,6 +317,79 @@ impl RuntimeManager {
         runtime
     }
 
+    /// Multi-signature-aware variant of [`Self::compute_state`]. Routes
+    /// `Vec<Cosigned<DeployData>>` through the per-cosigner runtime
+    /// fan-out at `RuntimeOps::compute_state_cosigned`. For legacy
+    /// single-signature deploys (1-element Cosigned envelopes), behavior
+    /// is byte-identical to `compute_state`.
+    pub async fn compute_state_cosigned(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let sender = block_data.sender.clone();
+        let seq_num = block_data.seq_num;
+
+        let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
+            .compute_state_cosigned(
+                start_hash,
+                terms,
+                system_deploys,
+                block_data,
+                invalid_blocks,
+            )
+            .await?;
+
+        let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
+            usr_deploy_res.into_iter().unzip();
+        let (sys_processed, sys_mergeable): (
+            Vec<ProcessedSystemDeploy>,
+            Vec<NumberChannelsEndVal>,
+        ) = sys_deploy_res.into_iter().unzip();
+
+        let mergeable_chs = usr_mergeable
+            .into_iter()
+            .chain(sys_mergeable.into_iter())
+            .collect();
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
+        let post_state_hash = Blake2b256Hash::from_bytes_prost(&state_hash);
+        self.save_mergeable_channels(
+            post_state_hash,
+            sender.bytes.clone(),
+            seq_num,
+            mergeable_chs,
+            &pre_state_hash,
+        )?;
+
+        // Cache replay result (mirror compute_state's caching logic).
+        let replay_cache_event_log_cap = Self::max_replay_cache_event_log_entries();
+        if let Some(ref cache) = self.replay_cache {
+            let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
+            if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
+                let replay_payload_hash =
+                    Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                let key = ReplayCacheKey::new(
+                    start_hash.clone(),
+                    sender.bytes.to_vec(),
+                    seq_num as i64,
+                    replay_payload_hash,
+                );
+                let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
+                cache.put(key, entry);
+            }
+        }
+        if let Some(ref cache) = self.state_hash_cache {
+            cache.put(start_hash.clone(), state_hash.clone());
+        }
+        Ok((state_hash, usr_processed, sys_processed))
+    }
+
     pub async fn compute_state(
         &self,
         start_hash: &StateHash,
