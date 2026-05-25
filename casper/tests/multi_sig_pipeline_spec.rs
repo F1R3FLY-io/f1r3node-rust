@@ -391,3 +391,179 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
     assert_eq!(pd_after.deploy.pk, pd_before.deploy.pk);
     assert_eq!(pd_after.deploy.sig, pd_before.deploy.sig);
 }
+
+// =====================================================================
+// Phase 4.11 — sig_algebra dispatch tests (extends the wire pipeline
+// with explicit `DeployDataProto.sig_algebra` routing through
+// `DeployData::from_proto_cosigned_with_sig_algebra`).
+// =====================================================================
+
+use models::casper::{sig_compound, SigAtom, SigCompound, SigPair, SigPlus, SigThreshold};
+
+fn make_signed_atom(data: &DeployData, phlo_share: i64) -> SigAtom {
+    let (sk, pk) = fresh_keypair();
+    SigAtom {
+        pk: pk.bytes.clone().into(),
+        sig: sign_canonical_hash(data, &sk),
+        sig_algorithm: Secp256k1::name(),
+        phlo_share,
+    }
+}
+
+fn make_compound_from_atom(atom: SigAtom) -> SigCompound {
+    SigCompound {
+        connective: Some(sig_compound::Connective::Atom(atom)),
+    }
+}
+
+#[test]
+fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
+    // Build a proto with BOTH `cosigners` AND `sig_algebra` populated.
+    // The Phase 3 dispatch in `from_proto_cosigned` MUST ignore the flat
+    // `cosigners[]` field and route through the algebra walk.
+    let data = baseline_deploy_data(200);
+    let atom_a = make_signed_atom(&data, 100);
+    let atom_b = make_signed_atom(&data, 100);
+    let algebra = SigCompound {
+        connective: Some(sig_compound::Connective::Tensor(Box::new(SigPair {
+            left: Some(Box::new(make_compound_from_atom(atom_a))),
+            right: Some(Box::new(make_compound_from_atom(atom_b))),
+        }))),
+    };
+
+    // Garbage value in the flat cosigners[] that would fail validation
+    // if the dispatch routed through the flat path:
+    let (sk_dummy, pk_dummy) = fresh_keypair();
+    let bogus_cosigner = CompoundSigner {
+        pk: pk_dummy.bytes.into(),
+        sig: sign_canonical_hash(&baseline_deploy_data(999), &sk_dummy), // wrong-deploy sig
+        sig_algorithm: Secp256k1::name(),
+        phlo_share: 999,
+    };
+
+    let (primary_sk, primary_pk) = fresh_keypair();
+    let proto = DeployDataProto {
+        deployer: primary_pk.bytes.clone().into(),
+        term: data.term.clone(),
+        timestamp: data.time_stamp,
+        sig: sign_canonical_hash(&data, &primary_sk),
+        sig_algorithm: Secp256k1::name(),
+        phlo_price: data.phlo_price,
+        phlo_limit: data.phlo_limit,
+        valid_after_block_number: data.valid_after_block_number,
+        shard_id: data.shard_id.clone(),
+        language: String::new(),
+        expiration_timestamp: 0,
+        cosigners: vec![bogus_cosigner],
+        primary_phlo_share: 999_999, // would fail Σ check
+        cosigner_threshold: 0,
+        sig_algebra: Some(algebra),
+    };
+
+    // The flat-cosigners path would fail (bogus sig + bogus share-sum),
+    // but the sig_algebra path validates the two real atoms and succeeds.
+    let cosigned = DeployData::from_proto_cosigned(proto)
+        .expect("sig_algebra dispatch must succeed despite bogus flat cosigners");
+    assert_eq!(cosigned.signers().len(), 2);
+}
+
+#[test]
+fn sig_algebra_tensor_3_atoms_processed_deploy_round_trip() {
+    let data = baseline_deploy_data(300);
+    let atom_a = make_signed_atom(&data, 100);
+    let atom_b = make_signed_atom(&data, 100);
+    let atom_c = make_signed_atom(&data, 100);
+    // Build And(a, And(b, c)) — right-associated tensor tree.
+    let algebra = SigCompound {
+        connective: Some(sig_compound::Connective::Tensor(Box::new(SigPair {
+            left: Some(Box::new(make_compound_from_atom(atom_a))),
+            right: Some(Box::new(SigCompound {
+                connective: Some(sig_compound::Connective::Tensor(Box::new(SigPair {
+                    left: Some(Box::new(make_compound_from_atom(atom_b))),
+                    right: Some(Box::new(make_compound_from_atom(atom_c))),
+                }))),
+            })),
+        }))),
+    };
+
+    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 300)
+        .expect("Tensor with 3 atoms must verify");
+    assert_eq!(cosigned.signers().len(), 3);
+    assert_eq!(cosigned.total_phlo_share(), 300);
+}
+
+#[test]
+fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
+    let data = baseline_deploy_data(200);
+    let atom_a = make_signed_atom(&data, 100);
+    let atom_b = make_signed_atom(&data, 100);
+    // Third atom presented but UNSIGNED (placeholder) — quorum 2/3
+    // tolerates one absent.
+    let (_, pk_c) = fresh_keypair();
+    let placeholder = SigAtom {
+        pk: pk_c.bytes.clone().into(),
+        sig: Bytes::new(),
+        sig_algorithm: Secp256k1::name(),
+        phlo_share: 0,
+    };
+    let algebra = SigCompound {
+        connective: Some(sig_compound::Connective::Threshold(SigThreshold {
+            threshold: 2,
+            members: vec![
+                make_compound_from_atom(atom_a),
+                make_compound_from_atom(atom_b),
+                make_compound_from_atom(placeholder),
+            ],
+        })),
+    };
+    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 200)
+        .expect("Threshold 2-of-3 with 2 valid sigs must verify");
+    assert_eq!(cosigned.signers().len(), 3);
+    assert_eq!(cosigned.cosigner_threshold(), 2);
+}
+
+#[test]
+fn sig_algebra_invalid_walk_plus_chosen_branch_out_of_range_rejected() {
+    let data = baseline_deploy_data(100);
+    let atom_a = make_signed_atom(&data, 100);
+    let atom_b = make_signed_atom(&data, 100);
+    let algebra = SigCompound {
+        connective: Some(sig_compound::Connective::Plus(Box::new(SigPlus {
+            left: Some(Box::new(make_compound_from_atom(atom_a))),
+            right: Some(Box::new(make_compound_from_atom(atom_b))),
+            chosen_branch: 99, // invalid: must be 0 or 1
+        }))),
+    };
+    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 100)
+        .expect_err("invalid chosen_branch must be rejected");
+    assert!(
+        err.contains("chosen_branch"),
+        "error must reference chosen_branch: {}",
+        err
+    );
+}
+
+#[test]
+fn sig_algebra_unknown_signature_algorithm_rejected() {
+    let data = baseline_deploy_data(100);
+    // Atom with a sig_algorithm string that doesn't resolve via
+    // SignaturesAlgFactory::apply.
+    let (sk, pk) = fresh_keypair();
+    let atom_bad = SigAtom {
+        pk: pk.bytes.into(),
+        sig: sign_canonical_hash(&data, &sk),
+        sig_algorithm: "nonexistent_alg_v9999".to_string(),
+        phlo_share: 100,
+    };
+    let algebra = SigCompound {
+        connective: Some(sig_compound::Connective::Atom(atom_bad)),
+    };
+    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 100)
+        .expect_err("unknown sig_algorithm must be rejected");
+    assert!(
+        err.contains("Unknown signature algorithm")
+            || err.contains("nonexistent_alg_v9999"),
+        "error must reference the unknown algorithm: {}",
+        err
+    );
+}
