@@ -66,6 +66,12 @@ loom = "=0.7.2"
 # casper/tests/slashing/tla_trace_replay.rs (Item 4 / Track 7).
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# Phase 4.17 — statistical benchmarking for multi-sig hot paths.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "multi_sig_fanout_bench"
+harness = false
 
 
 
