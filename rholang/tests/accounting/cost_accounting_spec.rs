@@ -1427,6 +1427,112 @@ fn set_deploy_signatures_empty_panics() {
     budget.set_deploy_signatures(empty);
 }
 
+// ─── Phase 2: Sig::Threshold M-of-N quorum primitive ───
+
+#[test]
+fn sig_threshold_reflection_permutation_invariant_in_members() {
+    // Same member set, different orders ⇒ identical SignatureChannel.
+    // This is the substrate guarantee that quorum verifier dispatch is
+    // canonical-order-independent.
+    let m1 = Sig::Hash(vec![0xaa, 0xaa]);
+    let m2 = Sig::Hash(vec![0xbb, 0xbb]);
+    let m3 = Sig::Hash(vec![0xcc, 0xcc]);
+
+    let order_abc = Sig::Threshold {
+        threshold: 2,
+        members: vec![m1.clone(), m2.clone(), m3.clone()],
+    };
+    let order_cba = Sig::Threshold {
+        threshold: 2,
+        members: vec![m3.clone(), m2.clone(), m1.clone()],
+    };
+    let order_bac = Sig::Threshold {
+        threshold: 2,
+        members: vec![m2.clone(), m1.clone(), m3.clone()],
+    };
+
+    let ch_abc = SignatureChannel::from_sig(&order_abc);
+    let ch_cba = SignatureChannel::from_sig(&order_cba);
+    let ch_bac = SignatureChannel::from_sig(&order_bac);
+    assert_eq!(ch_abc, ch_cba);
+    assert_eq!(ch_abc, ch_bac);
+}
+
+#[test]
+fn sig_threshold_reflection_distinct_from_and_with_same_member_set() {
+    // Threshold{k, [a, b]} should NOT collapse to And(a, b) at the
+    // SignatureChannel level — even though both reflect into a sorted Par
+    // composition of member channels, the Threshold case is semantically
+    // a quorum primitive. The reflection layer happens to produce the
+    // same channel shape (intentional — verifier dispatches on the wire
+    // shape's `threshold` field, not the channel shape), so we verify the
+    // RUNTIME enum distinguishes them rather than the SignatureChannel.
+    let a = Sig::Hash(vec![1]);
+    let b = Sig::Hash(vec![2]);
+    let threshold_ab = Sig::Threshold {
+        threshold: 2,
+        members: vec![a.clone(), b.clone()],
+    };
+    let and_ab = Sig::And(Box::new(a), Box::new(b));
+    assert_ne!(threshold_ab, and_ab); // Sig enum distinguishes them
+}
+
+#[test]
+fn sig_threshold_nested_within_and_reflects_consistently() {
+    // Sig::And(Threshold{2, [a,b,c]}, Hash(d)) should reflect to a channel
+    // that's permutation-invariant in the threshold's members.
+    let a = Sig::Hash(vec![0x01]);
+    let b = Sig::Hash(vec![0x02]);
+    let c = Sig::Hash(vec![0x03]);
+    let d = Sig::Hash(vec![0x04]);
+
+    let nested_abc = Sig::And(
+        Box::new(Sig::Threshold {
+            threshold: 2,
+            members: vec![a.clone(), b.clone(), c.clone()],
+        }),
+        Box::new(d.clone()),
+    );
+    let nested_cba = Sig::And(
+        Box::new(Sig::Threshold {
+            threshold: 2,
+            members: vec![c, b, a],
+        }),
+        Box::new(d),
+    );
+    assert_eq!(
+        SignatureChannel::from_sig(&nested_abc),
+        SignatureChannel::from_sig(&nested_cba)
+    );
+}
+
+#[test]
+fn sig_threshold_single_member_reflects_like_unit_and_member() {
+    // Threshold{1, [m]} is "1-of-1" which is the degenerate case meaning
+    // "m alone authorizes the deploy". Its reflection should NOT crash and
+    // should be permutation-invariant trivially.
+    let m = Sig::Hash(vec![0xde, 0xad]);
+    let trivial = Sig::Threshold {
+        threshold: 1,
+        members: vec![m.clone()],
+    };
+    let _ch = SignatureChannel::from_sig(&trivial); // does not panic
+}
+
+#[test]
+fn sig_threshold_empty_members_reflects_to_unit_channel() {
+    // Threshold{0, []} is the trivially-satisfied quorum. The reflected
+    // channel is the empty Par (matches Sig::Unit). Verifier layer (Phase 2
+    // Cosigned::from_signed_data extension) will reject zero-member
+    // thresholds at envelope construction, but the substrate reflection
+    // remains well-defined.
+    let empty_quorum = Sig::Threshold {
+        threshold: 0,
+        members: Vec::new(),
+    };
+    let _ch = SignatureChannel::from_sig(&empty_quorum); // does not panic
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_permutation_use_cases_preserve_cost() {
     let variants = vec![

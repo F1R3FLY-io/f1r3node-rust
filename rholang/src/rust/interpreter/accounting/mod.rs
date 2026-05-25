@@ -821,7 +821,22 @@ impl Drop for UnmeteredBudgetScope {
 pub enum Sig {
     Unit,
     Hash(Vec<u8>),
+    /// Compound conjunction — both signature channels must contribute fuel.
+    /// Corresponds to the cost-accounted-rho paper's `σ₁ & σ₂` operator
+    /// (`publications/cost-accounting/cost-accounted-rho.tex` line 288).
+    /// In linear-logic terms, this is the multiplicative tensor `⊗`.
     And(Box<Sig>, Box<Sig>),
+    /// Phase 2: M-of-N quorum threshold. The deploy is authorized when
+    /// at least `threshold` of the `members` signatures verify. Canonical
+    /// ordering on `members` is enforced at Cosigned envelope construction
+    /// (sort by hash bytes). `threshold` must satisfy `1 <= threshold <= members.len()`.
+    ///
+    /// Quorum is NOT cheaply derivable from `Plus`/`And` without `O(C(n,k))`
+    /// blow-up, so `Threshold` is a primitive even in LL-rich designs.
+    Threshold {
+        threshold: u32,
+        members: Vec<Sig>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -918,6 +933,24 @@ impl SignatureChannel {
                 let left_channel = Self::from_sig(left).par;
                 let right_channel = Self::from_sig(right).par;
                 let combined = concatenate_pars(left_channel, right_channel);
+                SignatureChannel {
+                    par: ParSortMatcher::sort_match(&combined).term,
+                }
+            }
+            Sig::Threshold { threshold: _, members } => {
+                // Quorum reflection: concatenate ALL member channels under
+                // ParSortMatcher::sort_match. The k-of-N quorum semantic is
+                // enforced by the verifier layer (`Cosigned::from_signed_data`
+                // for threshold envelopes — Phase 2 will extend that) which
+                // accepts the deploy when at least `threshold` of `members`
+                // signatures verify. The reflected channel is permutation-
+                // invariant in `members` thanks to ParSortMatcher::sort_match,
+                // matching the Sig::And case.
+                let mut combined = Par::default();
+                for member in members {
+                    let member_channel = Self::from_sig(member).par;
+                    combined = concatenate_pars(combined, member_channel);
+                }
                 SignatureChannel {
                     par: ParSortMatcher::sort_match(&combined).term,
                 }
