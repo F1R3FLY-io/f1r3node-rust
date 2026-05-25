@@ -872,6 +872,150 @@ pub enum Sig {
     Lolly(Box<Sig>, Box<Sig>),
 }
 
+impl Sig {
+    /// Serialize the runtime `Sig` algebra into the `SigCompound`
+    /// wire-format proto message (Phase 2+3 `CasperMessage.proto`).
+    /// `Sig::Hash` becomes a `SigAtom` (pk + sig + sigAlgorithm are
+    /// unavailable at this layer — they live on `Cosigner`); for the
+    /// substrate-only serialization, atomic signatures are encoded as
+    /// `pk = hash_bytes` placeholder. Downstream Cosigned-shape encoders
+    /// (`models/src/rust/casper/protocol/casper_message.rs`) populate the
+    /// full SigAtom from the matching Cosigner.
+    pub fn to_proto(&self) -> models::casper::SigCompound {
+        use models::casper::{
+            sig_compound, SigAtom, SigBang, SigCompound, SigLolly, SigPair,
+            SigPlus, SigThreshold,
+        };
+        let connective = match self {
+            Sig::Unit => sig_compound::Connective::Atom(SigAtom {
+                pk: Default::default(),
+                sig: Default::default(),
+                sig_algorithm: String::new(),
+                phlo_share: 0,
+            }),
+            Sig::Hash(bytes) => sig_compound::Connective::Atom(SigAtom {
+                pk: bytes.clone().into(),
+                sig: Default::default(),
+                sig_algorithm: String::new(),
+                phlo_share: 0,
+            }),
+            Sig::And(left, right) => sig_compound::Connective::Tensor(Box::new(SigPair {
+                left: Some(Box::new(left.to_proto())),
+                right: Some(Box::new(right.to_proto())),
+            })),
+            Sig::Threshold { threshold, members } => {
+                sig_compound::Connective::Threshold(SigThreshold {
+                    threshold: *threshold as i32,
+                    members: members.iter().map(|m| m.to_proto()).collect(),
+                })
+            }
+            Sig::Plus(left, right) => {
+                sig_compound::Connective::Plus(Box::new(SigPlus {
+                    left: Some(Box::new(left.to_proto())),
+                    right: Some(Box::new(right.to_proto())),
+                    chosen_branch: 0,
+                }))
+            }
+            Sig::With(left, right) => sig_compound::Connective::With(Box::new(SigPair {
+                left: Some(Box::new(left.to_proto())),
+                right: Some(Box::new(right.to_proto())),
+            })),
+            Sig::Bang(inner) => sig_compound::Connective::Bang(Box::new(SigBang {
+                inner: Some(Box::new(inner.to_proto())),
+                uses_bound: 0,
+                capability_handle: Default::default(),
+            })),
+            Sig::WhyNot(inner) => {
+                sig_compound::Connective::Whynot(Box::new(inner.to_proto()))
+            }
+            Sig::Lolly(from, to) => sig_compound::Connective::Lolly(Box::new(SigLolly {
+                from: Some(Box::new(from.to_proto())),
+                to: Some(Box::new(to.to_proto())),
+                capability_handle: Default::default(),
+            })),
+        };
+        SigCompound {
+            connective: Some(connective),
+        }
+    }
+
+    /// Deserialize a `SigCompound` wire-format proto into the runtime `Sig`
+    /// algebra. The reverse of `Sig::to_proto`.
+    pub fn from_proto(proto: &models::casper::SigCompound) -> Result<Sig, String> {
+        use models::casper::sig_compound;
+        let connective = proto
+            .connective
+            .as_ref()
+            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+        match connective {
+            sig_compound::Connective::Atom(atom) => {
+                if atom.pk.is_empty() {
+                    Ok(Sig::Unit)
+                } else {
+                    Ok(Sig::Hash(atom.pk.to_vec()))
+                }
+            }
+            sig_compound::Connective::Tensor(pair) => {
+                let left = Sig::from_proto(
+                    pair.left.as_ref().ok_or_else(|| "tensor.left missing".to_string())?,
+                )?;
+                let right = Sig::from_proto(
+                    pair.right.as_ref().ok_or_else(|| "tensor.right missing".to_string())?,
+                )?;
+                Ok(Sig::And(Box::new(left), Box::new(right)))
+            }
+            sig_compound::Connective::Plus(plus) => {
+                let left = Sig::from_proto(
+                    plus.left.as_ref().ok_or_else(|| "plus.left missing".to_string())?,
+                )?;
+                let right = Sig::from_proto(
+                    plus.right.as_ref().ok_or_else(|| "plus.right missing".to_string())?,
+                )?;
+                Ok(Sig::Plus(Box::new(left), Box::new(right)))
+            }
+            sig_compound::Connective::With(pair) => {
+                let left = Sig::from_proto(
+                    pair.left.as_ref().ok_or_else(|| "with.left missing".to_string())?,
+                )?;
+                let right = Sig::from_proto(
+                    pair.right.as_ref().ok_or_else(|| "with.right missing".to_string())?,
+                )?;
+                Ok(Sig::With(Box::new(left), Box::new(right)))
+            }
+            sig_compound::Connective::Bang(bang) => {
+                let inner = Sig::from_proto(
+                    bang.inner.as_ref().ok_or_else(|| "bang.inner missing".to_string())?,
+                )?;
+                Ok(Sig::Bang(Box::new(inner)))
+            }
+            sig_compound::Connective::Whynot(inner_proto) => {
+                let inner = Sig::from_proto(inner_proto)?;
+                Ok(Sig::WhyNot(Box::new(inner)))
+            }
+            sig_compound::Connective::Lolly(lolly) => {
+                let from = Sig::from_proto(
+                    lolly
+                        .from
+                        .as_ref()
+                        .ok_or_else(|| "lolly.from missing".to_string())?,
+                )?;
+                let to = Sig::from_proto(
+                    lolly.to.as_ref().ok_or_else(|| "lolly.to missing".to_string())?,
+                )?;
+                Ok(Sig::Lolly(Box::new(from), Box::new(to)))
+            }
+            sig_compound::Connective::Threshold(thresh) => {
+                let members: Result<Vec<Sig>, String> =
+                    thresh.members.iter().map(Sig::from_proto).collect();
+                Ok(Sig::Threshold {
+                    threshold: thresh.threshold as u32,
+                    members: members?,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
     Unit,

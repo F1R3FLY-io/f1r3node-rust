@@ -1641,6 +1641,75 @@ fn sig_ll_algebra_full_combinator_well_formed() {
     let _channel = SignatureChannel::from_sig(&expr); // does not panic
 }
 
+#[test]
+fn sig_proto_round_trip_every_connective() {
+    // Construct an Sig expression that exercises EVERY connective and
+    // round-trip through SigCompound proto. The reverse-decoded Sig must
+    // equal the original.
+    let original = Sig::And(
+        Box::new(Sig::Plus(
+            Box::new(Sig::Bang(Box::new(Sig::Hash(vec![0x01, 0x02])))),
+            Box::new(Sig::WhyNot(Box::new(Sig::Hash(vec![0x03, 0x04])))),
+        )),
+        Box::new(Sig::Threshold {
+            threshold: 2,
+            members: vec![
+                Sig::Hash(vec![0x05]),
+                Sig::Lolly(
+                    Box::new(Sig::Hash(vec![0x06])),
+                    Box::new(Sig::Hash(vec![0x07])),
+                ),
+                Sig::With(
+                    Box::new(Sig::Hash(vec![0x08])),
+                    Box::new(Sig::Unit),
+                ),
+            ],
+        }),
+    );
+
+    let proto = original.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("round-trip decode must succeed");
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn sig_proto_round_trip_unit() {
+    let proto = Sig::Unit.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("Unit round-trip");
+    assert_eq!(decoded, Sig::Unit);
+}
+
+#[test]
+fn sig_proto_round_trip_hash_atom() {
+    let original = Sig::Hash(vec![0xde, 0xad, 0xbe, 0xef]);
+    let proto = original.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("Hash round-trip");
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn sig_proto_round_trip_threshold_preserves_member_order() {
+    let original = Sig::Threshold {
+        threshold: 3,
+        members: vec![
+            Sig::Hash(vec![0xaa]),
+            Sig::Hash(vec![0xbb]),
+            Sig::Hash(vec![0xcc]),
+            Sig::Hash(vec![0xdd]),
+        ],
+    };
+    let proto = original.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("Threshold round-trip");
+    assert_eq!(decoded, original);
+    match decoded {
+        Sig::Threshold { threshold, members } => {
+            assert_eq!(threshold, 3);
+            assert_eq!(members.len(), 4);
+        }
+        _ => panic!("expected Threshold after round-trip"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_permutation_use_cases_preserve_cost() {
     let variants = vec![
