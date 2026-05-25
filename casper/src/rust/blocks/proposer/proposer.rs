@@ -514,6 +514,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -537,6 +538,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         ProductionBlockCreator::new(
             deploy_storage,
             rejected_deploy_buffer,
+            pending_cosigner_metadata,
             runtime_manager.clone(),
             block_store.clone(),
         ),
@@ -637,6 +639,12 @@ impl HeightChecker for ProductionHeightChecker {
 pub struct ProductionBlockCreator {
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` with the
+    /// owning `MultiParentCasperImpl.pending_cosigner_metadata`; populated
+    /// by `admit_deploy_cosigned` at submission and consulted by
+    /// `block_creator::create` at proposal time to reconstruct full
+    /// `Cosigned<DeployData>` envelopes for multi-sig deploys.
+    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -645,12 +653,14 @@ impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+        pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {
         Self {
             deploy_storage,
             rejected_deploy_buffer,
+            pending_cosigner_metadata,
             runtime_manager,
             block_store,
         }
@@ -671,6 +681,7 @@ impl BlockCreator for ProductionBlockCreator {
             dummy_deploy_opt,
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            self.pending_cosigner_metadata.clone(),
             &self.runtime_manager,
             &mut self.block_store,
             allow_empty_blocks,

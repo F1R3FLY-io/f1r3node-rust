@@ -115,6 +115,9 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -955,6 +958,9 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                std::sync::Arc::new(parking_lot::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),

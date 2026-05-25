@@ -612,6 +612,70 @@ pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
     tracing::warn!("Deploy ({}) errors: {}", deploy_info, error_messages);
 }
 
+/// Multi-signature-aware variant of [`compute_deploys_checkpoint`]. Accepts
+/// `Vec<Cosigned<DeployData>>` so multi-signature deploys execute through
+/// the per-cosigner pre-charge + FIFO refund fan-out at the runtime layer.
+/// For legacy single-signature deploys (1-element Cosigned envelopes —
+/// produced via `Cosigned::from_single_signer` when no sidecar metadata
+/// exists), behavior is byte-identical to `compute_deploys_checkpoint`.
+pub async fn compute_deploys_checkpoint_cosigned(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+) -> Result<
+    (
+        StateHash,
+        StateHash,
+        Vec<ProcessedDeploy>,
+        Vec<prost::bytes::Bytes>,
+        Vec<ProcessedSystemDeploy>,
+        Vec<Bond>,
+    ),
+    CasperError,
+> {
+    tracing::debug!(target: "f1r3fly.casper.compute-deploys-checkpoint-cosigned",
+        "compute-deploys-checkpoint-cosigned-started");
+    if parents.is_empty() {
+        return Err(CasperError::RuntimeError(
+            "Parents must not be empty".to_string(),
+        ));
+    }
+    let computed_parents_info = compute_parents_post_state(
+        block_store,
+        parents,
+        s,
+        runtime_manager,
+        None,
+        rejected_deploy_buffer,
+    )?;
+    let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
+
+    let result = runtime_manager
+        .compute_state_with_bonds_cosigned(
+            &pre_state_hash,
+            deploys,
+            system_deploys,
+            block_data,
+            Some(invalid_blocks),
+        )
+        .await?;
+    let (post_state_hash, processed_deploys, processed_system_deploys, bonds) = result;
+    Ok((
+        pre_state_hash,
+        post_state_hash,
+        processed_deploys,
+        rejected_deploys,
+        processed_system_deploys,
+        bonds,
+    ))
+}
+
 pub async fn compute_deploys_checkpoint(
     block_store: &mut KeyValueBlockStore,
     parents: Vec<BlockMessage>,

@@ -275,6 +275,7 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 &mut runtime_manager,
                 &mut block_store,
                 false,

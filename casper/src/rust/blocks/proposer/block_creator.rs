@@ -613,6 +613,7 @@ pub async fn create(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
@@ -931,12 +932,87 @@ pub async fn create(
         seq_num: next_seq_num,
     };
 
-    // Compute checkpoint data
+    // Compute checkpoint data — route through the multi-sig-aware path
+    // (compute_deploys_checkpoint_cosigned) so cosigner data survives from
+    // submission through execution. Each selected deploy is reconstructed
+    // into a Cosigned<DeployData> envelope: if the primary signature has
+    // a sidecar entry in pending_cosigner_metadata (populated at
+    // admit_deploy_cosigned), the canonical multi-sig envelope is rebuilt
+    // with per-signer re-verification; otherwise the legacy single-sig
+    // uplift via Cosigned::from_single_signer produces a one-element
+    // envelope and downstream behavior is byte-identical to the
+    // pre-multi-sig implementation.
     let checkpoint_started = std::time::Instant::now();
-    let checkpoint_data = match interpreter_util::compute_deploys_checkpoint(
+    let all_deploys_vec: Vec<Signed<DeployData>> = all_deploys.into_iter().collect();
+    let cosigner_sidecar_snapshot: std::collections::HashMap<
+        prost::bytes::Bytes,
+        crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+    > = pending_cosigner_metadata.lock().clone();
+    let cosigned_deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
+        all_deploys_vec
+            .into_iter()
+            .map(|signed| {
+                if let Some(meta) = cosigner_sidecar_snapshot.get(&signed.sig) {
+                    // Multi-sig deploy: rebuild the canonical Cosigned envelope
+                    // (Cosigned::from_signed_data performs per-signer signature
+                    // re-verification, canonical pk-ascending sort, no-duplicate
+                    // and share-sum invariants).
+                    use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
+                    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+                    let primary = Cosigner {
+                        pk: signed.pk.clone(),
+                        sig: signed.sig.clone(),
+                        sig_algorithm: signed.sig_algorithm.clone(),
+                        phlo_share: meta.primary_phlo_share,
+                    };
+                    let mut signers = Vec::with_capacity(1 + meta.cosigners.len());
+                    signers.push(primary);
+                    for cs in &meta.cosigners {
+                        let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm)
+                            .ok_or_else(|| {
+                                CasperError::RuntimeError(format!(
+                                    "Unknown cosigner sig_algorithm {} during \
+                                     proposer-side Cosigned reconstruction",
+                                    cs.sig_algorithm
+                                ))
+                            })?;
+                        signers.push(Cosigner {
+                            pk: crypto::rust::public_key::PublicKey::from_bytes(&cs.pk),
+                            sig: cs.sig.clone(),
+                            sig_algorithm: alg,
+                            phlo_share: cs.phlo_share,
+                        });
+                    }
+                    Cosigned::from_signed_data(
+                        signed.data.clone(),
+                        signers,
+                        signed.data.phlo_limit,
+                    )
+                    .map_err(|e| {
+                        CasperError::RuntimeError(format!(
+                            "Cosigned reconstruction failed on proposer side: {}",
+                            e
+                        ))
+                    })
+                } else {
+                    // Legacy single-sig: byte-identical one-element envelope.
+                    let phlo_limit = signed.data.phlo_limit;
+                    crypto::rust::signatures::signed::Cosigned::from_single_signer(
+                        signed, phlo_limit,
+                    )
+                    .map_err(|e| {
+                        CasperError::RuntimeError(format!(
+                            "legacy uplift to Cosigned failed in proposer: {}",
+                            e
+                        ))
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, CasperError>>()?;
+    let checkpoint_data = match interpreter_util::compute_deploys_checkpoint_cosigned(
         block_store,
         parents.clone(),
-        all_deploys.into_iter().collect(),
+        cosigned_deploys,
         system_deploys_converted,
         casper_snapshot,
         runtime_manager,

@@ -350,6 +350,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
+            // Multi-sig cosigner-metadata sidecar (§1.9.5). The casper
+            // instance owns the canonical sidecar; the proposer holds a
+            // shared Arc clone. In production, setup.rs constructs the
+            // casper-side sidecar first and threads it through both sides;
+            // this entry point creates the sidecar fresh for the proposer
+            // and the casper engine receives the same Arc.
+            std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),

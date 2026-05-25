@@ -164,13 +164,19 @@ impl TestNode {
             CasperError::RuntimeError("No validator identity available".to_string())
         })?;
 
-        // Create block using block_creator
+        // Create block using block_creator. Pending-cosigner-metadata
+        // sidecar is empty here because this is a test-helper entry path
+        // that doesn't admit multi-sig deploys through admit_deploy_cosigned.
+        let empty_cosigner_metadata = std::sync::Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
         block_creator::create(
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
+            empty_cosigner_metadata,
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -1068,6 +1074,13 @@ impl TestNode {
 
         let _ = test_network.add_peer(&current_peer_node);
 
+        // Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` between
+        // the MultiParentCasperImpl and the proposer's ProductionBlockCreator
+        // so admission-time writes are visible at proposal-time reads.
+        let pending_cosigner_metadata = Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+
         // Proposer
         let validator_id_opt = if is_read_only {
             None
@@ -1083,6 +1096,7 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
+                pending_cosigner_metadata.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1155,9 +1169,6 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
-        let pending_cosigner_metadata = Arc::new(parking_lot::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
         let casper_impl = MultiParentCasperImpl {
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
