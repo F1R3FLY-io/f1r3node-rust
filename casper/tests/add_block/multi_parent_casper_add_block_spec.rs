@@ -676,6 +676,8 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             system_deploy_error: None,
             cost_trace_digest: Default::default(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         })
         .collect();
 

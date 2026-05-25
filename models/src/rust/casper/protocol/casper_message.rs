@@ -573,6 +573,15 @@ pub struct ProcessedDeploy {
     pub system_deploy_error: Option<String>,
     pub cost_trace_digest: ByteString,
     pub cost_trace_event_count: u64,
+    /// Additional cosigners beyond the primary (`deploy.pk` / `deploy.sig`).
+    /// Empty for legacy single-signature deploys. Round-trips through
+    /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
+    pub cosigners: Vec<crate::casper::CompoundSigner>,
+    /// Primary signer's phlo share. Zero for legacy single-signature deploys
+    /// (in which case the primary covers the entire `phlo_limit`); explicit
+    /// value when `cosigners` is non-empty. Round-trips through
+    /// `DeployDataProto.primary_phlo_share` (proto field 15).
+    pub primary_phlo_share: i64,
 }
 
 impl ProcessedDeploy {
@@ -600,6 +609,99 @@ impl ProcessedDeploy {
             system_deploy_error: None,
             cost_trace_digest: ByteString::new(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
+        }
+    }
+
+    /// Construct an empty processed-deploy stub from a `Cosigned<DeployData>`
+    /// envelope, preserving the full cosigner list and primary phlo share.
+    /// Used by error-envelope construction paths in the multi-sig runtime
+    /// fan-out where a deploy fails BEFORE evaluation begins.
+    pub fn empty_from_cosigned(
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> Self {
+        let primary = cosigned.primary();
+        let deploy = Signed {
+            data: cosigned.data.clone(),
+            pk: primary.pk.clone(),
+            sig: primary.sig.clone(),
+            sig_algorithm: primary.sig_algorithm.clone(),
+        };
+        let is_compound = cosigned.is_compound();
+        let (cosigners, primary_phlo_share) = if is_compound {
+            (
+                cosigned
+                    .signers()
+                    .iter()
+                    .skip(1)
+                    .map(|c| crate::casper::CompoundSigner {
+                        pk: c.pk.bytes.clone().into(),
+                        sig: c.sig.clone(),
+                        sig_algorithm: c.sig_algorithm.name(),
+                        phlo_share: c.phlo_share,
+                    })
+                    .collect(),
+                primary.phlo_share,
+            )
+        } else {
+            (Vec::new(), 0_i64)
+        };
+        Self {
+            deploy,
+            cost: PCost { cost: 0 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+            cost_trace_digest: ByteString::new(),
+            cost_trace_event_count: 0,
+            cosigners,
+            primary_phlo_share,
+        }
+    }
+
+    /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
+    /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`
+    /// AND `primary_phlo_share == 0`), uplifts via
+    /// `Cosigned::from_single_signer` for byte-identical replay behavior.
+    /// For multi-sig deploys, rebuilds the full canonical envelope with
+    /// per-signer re-verification.
+    pub fn to_cosigned(
+        &self,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        if self.cosigners.is_empty() && self.primary_phlo_share == 0 {
+            // Legacy single-sig path: byte-identical to single-sig replay.
+            Cosigned::from_single_signer(self.deploy.clone(), self.deploy.data.phlo_limit)
+                .map_err(|e| format!("legacy uplift to Cosigned failed: {}", e))
+        } else {
+            // Multi-sig: rebuild signer list with full re-verification.
+            let primary = Cosigner {
+                pk: self.deploy.pk.clone(),
+                sig: self.deploy.sig.clone(),
+                sig_algorithm: self.deploy.sig_algorithm.clone(),
+                phlo_share: self.primary_phlo_share,
+            };
+            let mut signers = Vec::with_capacity(1 + self.cosigners.len());
+            signers.push(primary);
+            for cs in &self.cosigners {
+                let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
+                    format!(
+                        "Unknown cosigner signature algorithm: {} for cosigner pk={}",
+                        cs.sig_algorithm,
+                        hex::encode(&cs.pk)
+                    )
+                })?;
+                signers.push(Cosigner {
+                    pk: PublicKey::from_bytes(&cs.pk),
+                    sig: cs.sig.clone(),
+                    sig_algorithm: alg,
+                    phlo_share: cs.phlo_share,
+                });
+            }
+            Cosigned::from_signed_data(self.deploy.data.clone(), signers, self.deploy.data.phlo_limit)
+                .map_err(|e| format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e))
         }
     }
 
@@ -622,12 +724,18 @@ impl ProcessedDeploy {
     }
 
     pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let deploy_proto = proto
+            .deploy
+            .ok_or_else(|| "Missing deploy field".to_string())?;
+        // Capture cosigner metadata BEFORE moving `deploy_proto` into
+        // `DeployData::from_proto`. The inner Signed<DeployData> carries
+        // only the primary signer; the cosigners[] + primary_phlo_share
+        // populate the ProcessedDeploy fields directly so the multi-sig
+        // shape survives serialization.
+        let cosigners = deploy_proto.cosigners.clone();
+        let primary_phlo_share = deploy_proto.primary_phlo_share;
         Ok(Self {
-            deploy: DeployData::from_proto(
-                proto
-                    .deploy
-                    .ok_or_else(|| "Missing deploy field".to_string())?,
-            )?,
+            deploy: DeployData::from_proto(deploy_proto)?,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
             deploy_log: proto
                 .deploy_log
@@ -644,12 +752,20 @@ impl ProcessedDeploy {
             },
             cost_trace_digest: proto.cost_trace_digest,
             cost_trace_event_count: proto.cost_trace_event_count,
+            cosigners,
+            primary_phlo_share,
         })
     }
 
     pub fn to_proto(self) -> ProcessedDeployProto {
+        let mut deploy_proto = DeployData::to_proto(self.deploy);
+        // Re-attach the cosigner metadata that lives at the
+        // ProcessedDeploy level into the inner DeployDataProto so the
+        // wire shape carries it through block-storage round-trip.
+        deploy_proto.cosigners = self.cosigners;
+        deploy_proto.primary_phlo_share = self.primary_phlo_share;
         ProcessedDeployProto {
-            deploy: Some(DeployData::to_proto(self.deploy)),
+            deploy: Some(deploy_proto),
             cost: Some(self.cost),
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
@@ -969,23 +1085,18 @@ impl DeployData {
         }
     }
 
-    /// Legacy single-signature decode. Rejects multi-sig wire deploys
-    /// (`!proto.cosigners.is_empty()`) so callers don't silently drop
-    /// the cosigner list. Multi-sig-aware callers must use
-    /// [`Self::from_proto_cosigned`] instead. Byte-identical behavior to
-    /// the pre-multi-sig implementation for legacy single-sig wire
-    /// deploys (`cosigners.is_empty()`).
+    /// Primary-signer-only decode. Returns `Signed<DeployData>` constructed
+    /// from the primary signer's fields (`deployer`, `sig`, `sig_algorithm`)
+    /// regardless of whether the wire deploy carries cosigners. Callers that
+    /// need the full multi-signature envelope MUST use
+    /// [`Self::from_proto_cosigned`].
+    ///
+    /// `ProcessedDeploy::from_proto` calls this routine and SEPARATELY
+    /// captures `proto.cosigners` and `proto.primary_phlo_share` into the
+    /// `ProcessedDeploy.cosigners` and `ProcessedDeploy.primary_phlo_share`
+    /// fields, so the cosigner data is preserved across deserialization
+    /// even though the inner `Signed<DeployData>` only carries the primary.
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
-        if !proto.cosigners.is_empty() {
-            return Err(format!(
-                "DeployData::from_proto: wire deploy carries {} cosigners; \
-                 multi-sig deploys must be decoded via \
-                 DeployData::from_proto_cosigned to preserve the cosigner list. \
-                 Calling from_proto on a multi-sig wire deploy would silently \
-                 drop the cosigner data — refusing.",
-                proto.cosigners.len()
-            ));
-        }
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
 
@@ -1632,6 +1743,8 @@ mod tests {
             system_deploy_error: None,
             cost_trace_digest: ByteString::new(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         };
         assert_eq!(partial.try_refund_amount(), Ok(8));
 
@@ -1643,6 +1756,8 @@ mod tests {
             system_deploy_error: None,
             cost_trace_digest: ByteString::new(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         };
         assert_eq!(exhausted.try_refund_amount(), Ok(0));
 
@@ -1654,6 +1769,8 @@ mod tests {
             system_deploy_error: None,
             cost_trace_digest: ByteString::new(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         };
         assert!(negative_price.try_refund_amount().is_err());
 
@@ -1665,6 +1782,8 @@ mod tests {
             system_deploy_error: None,
             cost_trace_digest: ByteString::new(),
             cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         };
         assert!(oversized_cost.try_refund_amount().is_err());
     }
@@ -1701,6 +1820,8 @@ mod tests {
             system_deploy_error: None,
             cost_trace_digest: vec![9; 32].into(),
             cost_trace_event_count: 4,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
         };
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
@@ -1729,6 +1850,8 @@ mod tests {
                 system_deploy_error: None,
                 cost_trace_digest: ByteString::new(),
                 cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
             };
 
             let refund = processed.try_refund_amount().unwrap();

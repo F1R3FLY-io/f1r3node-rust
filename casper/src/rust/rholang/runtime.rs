@@ -679,12 +679,32 @@ impl RuntimeOps {
 
         let eval_succeeded = eval_result.errors.is_empty();
         let primary_sig = cosigned.primary().sig.clone();
-        // Reconstitute the legacy Signed<DeployData> shape for ProcessedDeploy
-        // storage. For single-sig (legacy uplift), this returns a byte-identical
-        // legacy envelope. For multi-sig, the additional cosigners are dropped
-        // from the storage shape — when §1.9 lands, ProcessedDeploy will be
-        // extended to carry the cosigner list; for now back-compat with the
-        // existing on-disk shape is preserved.
+        let is_compound = cosigned.is_compound();
+        // For multi-sig deploys (§1.9): extract cosigner data BEFORE the
+        // `into_legacy_signed_unchecked` consumes the envelope, so the
+        // ProcessedDeploy carries the full cosigner list and primary share
+        // through block storage and replay.
+        let (extracted_cosigners, extracted_primary_share) = if is_compound {
+            let signers_skip_primary: Vec<models::casper::CompoundSigner> = cosigned
+                .signers()
+                .iter()
+                .skip(1)
+                .map(|c| models::casper::CompoundSigner {
+                    pk: c.pk.bytes.clone().into(),
+                    sig: c.sig.clone(),
+                    sig_algorithm: c.sig_algorithm.name(),
+                    phlo_share: c.phlo_share,
+                })
+                .collect();
+            (signers_skip_primary, cosigned.primary().phlo_share)
+        } else {
+            (Vec::new(), 0_i64)
+        };
+        // Reconstitute the legacy Signed<DeployData> shape for the
+        // `ProcessedDeploy.deploy` field. For single-sig (legacy uplift),
+        // this returns a byte-identical legacy envelope. For multi-sig,
+        // the additional cosigners survive via the `cosigners` field
+        // alongside, NOT through the inner Signed shape.
         let legacy_signed = cosigned.into_legacy_signed_unchecked();
 
         let deploy_result = ProcessedDeploy {
@@ -698,6 +718,8 @@ impl RuntimeOps {
             system_deploy_error: None,
             cost_trace_digest: cost_trace.digest.into(),
             cost_trace_event_count: cost_trace.event_count,
+            cosigners: extracted_cosigners,
+            primary_phlo_share: extracted_primary_share,
         };
 
         if !eval_succeeded {

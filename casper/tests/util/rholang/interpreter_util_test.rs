@@ -112,6 +112,8 @@ impl TestContext {
                 system_deploy_error: None,
                 cost_trace_digest: Default::default(),
                 cost_trace_event_count: 0,
+            cosigners: Vec::new(),
+            primary_phlo_share: 0,
             })
             .collect()
     }
