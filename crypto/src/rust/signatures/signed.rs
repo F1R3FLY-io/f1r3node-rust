@@ -44,6 +44,10 @@ pub enum CosignedError {
     NegativePhloShare { index: usize, share: i64 },
     #[error("phlo share arithmetic overflow when summing signer contributions")]
     PhloShareOverflow,
+    #[error("quorum not met: required {threshold}, valid signers {valid_signers}")]
+    QuorumNotMet { threshold: u32, valid_signers: u32 },
+    #[error("invalid quorum threshold: threshold={threshold}, total_signers={total_signers}; threshold must satisfy 1 ≤ threshold ≤ total_signers")]
+    InvalidQuorumThreshold { threshold: u32, total_signers: u32 },
 }
 
 /// One signer in a multi-signature deploy envelope. Sorted ascending by
@@ -195,6 +199,108 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
                     pk_hex: hex::encode(&signer.pk.bytes),
                 });
             }
+        }
+
+        Ok(Cosigned {
+            data,
+            signers: canonical,
+        })
+    }
+
+    /// Construct an M-of-N threshold-signature envelope (Phase 2).
+    ///
+    /// Like [`from_signed_data`] but admits placeholder signers whose `sig`
+    /// is empty (those entries do not need to verify; they count toward
+    /// the canonical signer list but not toward the quorum tally).
+    /// At least `threshold` of the provided signers MUST have valid
+    /// signatures verifying against the canonical message hash.
+    ///
+    /// Invariants (in addition to the Cosigned base invariants):
+    /// - `1 ≤ threshold ≤ signers.len()` (returns `InvalidQuorumThreshold` otherwise).
+    /// - The number of signers with `sig.is_some_non_empty()` AND a valid
+    ///   signature is ≥ `threshold` (returns `QuorumNotMet` otherwise).
+    /// - Σ `phlo_share` over signers with non-empty sig equals `phlo_limit`.
+    ///   (Placeholder signers, by virtue of having empty sig, contribute
+    ///   nothing to fuel and MUST have `phlo_share == 0`.)
+    /// - Canonical pk-sort and no-duplicate invariants are unchanged.
+    pub fn from_signed_data_threshold(
+        data: A,
+        signers: Vec<Cosigner>,
+        phlo_limit: i64,
+        threshold: u32,
+    ) -> Result<Self, CosignedError> {
+        if signers.is_empty() {
+            return Err(CosignedError::EmptySignerList);
+        }
+        let total_signers = signers.len() as u32;
+        if threshold < 1 || threshold > total_signers {
+            return Err(CosignedError::InvalidQuorumThreshold {
+                threshold,
+                total_signers,
+            });
+        }
+
+        let mut canonical = signers;
+        canonical.sort_by(|a, b| a.pk.bytes.as_ref().cmp(b.pk.bytes.as_ref()));
+        for window in canonical.windows(2) {
+            if window[0].pk.bytes == window[1].pk.bytes {
+                return Err(CosignedError::DuplicateSigner {
+                    pk_hex: hex::encode(&window[0].pk.bytes),
+                });
+            }
+        }
+
+        // Validate non-negative shares; require placeholder signers
+        // (sig.is_empty()) to have zero share. Sum only over non-empty sigs.
+        let mut share_sum: i64 = 0;
+        for (i, signer) in canonical.iter().enumerate() {
+            if signer.phlo_share < 0 {
+                return Err(CosignedError::NegativePhloShare {
+                    index: i,
+                    share: signer.phlo_share,
+                });
+            }
+            let has_sig = !signer.sig.is_empty();
+            if !has_sig {
+                if signer.phlo_share != 0 {
+                    return Err(CosignedError::NegativePhloShare {
+                        index: i,
+                        share: signer.phlo_share,
+                    });
+                }
+                continue;
+            }
+            share_sum = share_sum
+                .checked_add(signer.phlo_share)
+                .ok_or(CosignedError::PhloShareOverflow)?;
+        }
+        if share_sum != phlo_limit {
+            return Err(CosignedError::PhloShareMismatch {
+                sum: share_sum,
+                expected: phlo_limit,
+            });
+        }
+
+        // Tally valid signatures among signers with non-empty sig.
+        let serialized_data = data.to_message().encode_to_vec();
+        let mut valid_signers: u32 = 0;
+        for signer in canonical.iter() {
+            if signer.sig.is_empty() {
+                continue;
+            }
+            let hash = Signed::<A>::signature_hash(
+                &signer.sig_algorithm.name(),
+                serialized_data.clone(),
+            );
+            if signer.sig_algorithm.verify(&hash, &signer.sig, &signer.pk.bytes) {
+                valid_signers = valid_signers.saturating_add(1);
+            }
+        }
+        if valid_signers < threshold {
+            return Err(CosignedError::QuorumNotMet {
+                threshold,
+                valid_signers,
+            });
         }
 
         Ok(Cosigned {
@@ -543,6 +649,123 @@ mod cosigned_tests {
                 assert_eq!(index, 0);
             }
             other => panic!("expected SignatureVerifyFailed, got {:?}", other),
+        }
+    }
+
+    fn fresh_signer_for(payload: &TestPayload, phlo_share: i64) -> Cosigner {
+        fresh_cosigner(payload, phlo_share)
+    }
+
+    fn empty_placeholder_signer() -> Cosigner {
+        let secp = Secp256k1;
+        let (_, pk) = secp.new_key_pair();
+        Cosigner {
+            pk,
+            sig: prost::bytes::Bytes::new(),
+            sig_algorithm: Box::new(secp),
+            phlo_share: 0,
+        }
+    }
+
+    #[test]
+    fn cosigned_threshold_accepts_quorum_satisfied_2_of_3() {
+        let payload = TestPayload {
+            term: "threshold_2_of_3".to_string(),
+            phlo_limit: 200,
+        };
+        let s1 = fresh_signer_for(&payload, 100);
+        let s2 = fresh_signer_for(&payload, 100);
+        let s3 = empty_placeholder_signer();
+        let cosigned = Cosigned::from_signed_data_threshold(
+            payload, vec![s1, s2, s3], 200, 2,
+        )
+        .expect("2-of-3 with 2 valid sigs must construct");
+        assert_eq!(cosigned.signers().len(), 3);
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_quorum_not_met() {
+        let payload = TestPayload {
+            term: "threshold_unmet".to_string(),
+            phlo_limit: 100,
+        };
+        let s1 = fresh_signer_for(&payload, 100);
+        let s2 = empty_placeholder_signer();
+        let s3 = empty_placeholder_signer();
+        let err = Cosigned::from_signed_data_threshold(
+            payload, vec![s1, s2, s3], 100, 2,
+        )
+        .expect_err("2-of-3 with 1 valid sig must reject");
+        match err {
+            CosignedError::QuorumNotMet { threshold, valid_signers } => {
+                assert_eq!(threshold, 2);
+                assert_eq!(valid_signers, 1);
+            }
+            other => panic!("expected QuorumNotMet, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_threshold_zero() {
+        let payload = TestPayload {
+            term: "threshold_zero".to_string(),
+            phlo_limit: 100,
+        };
+        let s1 = fresh_signer_for(&payload, 100);
+        let err = Cosigned::from_signed_data_threshold(
+            payload, vec![s1], 100, 0,
+        )
+        .expect_err("threshold=0 must reject");
+        match err {
+            CosignedError::InvalidQuorumThreshold { threshold, total_signers } => {
+                assert_eq!(threshold, 0);
+                assert_eq!(total_signers, 1);
+            }
+            other => panic!("expected InvalidQuorumThreshold, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_threshold_exceeds_total() {
+        let payload = TestPayload {
+            term: "threshold_too_high".to_string(),
+            phlo_limit: 100,
+        };
+        let s1 = fresh_signer_for(&payload, 100);
+        let err = Cosigned::from_signed_data_threshold(
+            payload, vec![s1], 100, 5,
+        )
+        .expect_err("threshold > total must reject");
+        match err {
+            CosignedError::InvalidQuorumThreshold { threshold, total_signers } => {
+                assert_eq!(threshold, 5);
+                assert_eq!(total_signers, 1);
+            }
+            other => panic!("expected InvalidQuorumThreshold, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cosigned_threshold_rejects_placeholder_with_nonzero_share() {
+        let payload = TestPayload {
+            term: "placeholder_with_share".to_string(),
+            phlo_limit: 200,
+        };
+        // Force the placeholder to have a non-zero phlo_share — must reject.
+        let mut placeholder = empty_placeholder_signer();
+        placeholder.phlo_share = 100;
+        let s2 = fresh_signer_for(&payload, 100);
+        let err = Cosigned::from_signed_data_threshold(
+            payload,
+            vec![placeholder, s2],
+            200,
+            1,
+        )
+        .expect_err("placeholder with non-zero share must reject");
+        // We re-use NegativePhloShare for the share-without-sig invariant.
+        match err {
+            CosignedError::NegativePhloShare { .. } => {}
+            other => panic!("expected NegativePhloShare, got {:?}", other),
         }
     }
 
