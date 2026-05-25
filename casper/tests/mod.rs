@@ -16,6 +16,7 @@ mod helper;
 mod merging;
 mod multi_node;
 mod multi_sig_pipeline_spec;
+mod multi_sig_runtime_fanout_spec;
 mod multi_sig_runtime_integration_spec;
 mod slashing;
 mod sync;
