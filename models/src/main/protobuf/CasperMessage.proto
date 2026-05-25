@@ -168,6 +168,14 @@ message DeployDataProto {
   //         are allowed and do not count toward quorum.
   // Constraint at decode: 0 ≤ cosigner_threshold ≤ cosigners.len() + 1.
   int32 cosigner_threshold   = 16;
+  // Phase 3: LL-rich signature algebra. When present, OVERRIDES
+  // `cosigners[]` and `cosigner_threshold` — the deploy is validated
+  // against the algebraic expression instead of the flat list. Atomic
+  // leaves (SigAtom) carry the per-signer (pk, sig, sig_algorithm,
+  // phlo_share) tuples, and the algebra describes their combination.
+  // See `rholang/src/rust/interpreter/accounting/mod.rs::Sig` for the
+  // operational semantics.
+  optional SigCompound sig_algebra = 17;
 }
 
 // One cosigner in a multi-signature deploy. Sorted ascending by `pk` bytes

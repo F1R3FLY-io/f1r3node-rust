@@ -48,6 +48,12 @@ pub enum CosignedError {
     QuorumNotMet { threshold: u32, valid_signers: u32 },
     #[error("invalid quorum threshold: threshold={threshold}, total_signers={total_signers}; threshold must satisfy 1 ≤ threshold ≤ total_signers")]
     InvalidQuorumThreshold { threshold: u32, total_signers: u32 },
+    #[error("LL algebra validation failed at connective {connective}: {message}")]
+    SigAlgebraValidationFailed { connective: &'static str, message: String },
+    #[error("Plus.chosen_branch must be 0 (left) or 1 (right), got {got}")]
+    PlusInvalidChosenBranch { got: i32 },
+    #[error("WhyNot atom verification failed: optional atom presented but signature invalid")]
+    WhyNotInvalidSignature,
 }
 
 /// One signer in a multi-signature deploy envelope. Sorted ascending by

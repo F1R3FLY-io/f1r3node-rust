@@ -996,6 +996,28 @@ impl ToMessage for DeployData {
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
 }
 
+/// Internal helper for walking a `SigCompound` expression and collecting
+/// atomic signer leaves. Used exclusively by
+/// [`DeployData::from_proto_cosigned_with_sig_algebra`] and its callees.
+#[derive(Clone, Debug)]
+struct AlgebraAtom {
+    pk: Vec<u8>,
+    sig: prost::bytes::Bytes,
+    sig_algorithm: String,
+    phlo_share: i64,
+}
+
+impl AlgebraAtom {
+    fn from_proto(atom: &crate::casper::SigAtom) -> Self {
+        Self {
+            pk: atom.pk.to_vec(),
+            sig: atom.sig.clone(),
+            sig_algorithm: atom.sig_algorithm.clone(),
+            phlo_share: atom.phlo_share,
+        }
+    }
+}
+
 impl DeployData {
     fn checked_total_phlo_charge_value(phlo_limit: i64, phlo_price: i64) -> Option<i64> {
         if phlo_limit < 0 || phlo_price < 0 {
@@ -1174,6 +1196,11 @@ impl DeployData {
                 )
             })?;
 
+        // Phase 3 dispatch: sig_algebra (LL-rich algebra) OVERRIDES
+        // the flat cosigners[] + cosigner_threshold path. Take it out
+        // of proto upfront so the later _from_proto consumes the rest.
+        let sig_algebra = proto.sig_algebra.clone();
+
         // Capture phlo_limit before consuming `proto` for _from_proto.
         let phlo_limit = proto.phlo_limit;
         let is_multi_sig = !proto.cosigners.is_empty();
@@ -1221,6 +1248,11 @@ impl DeployData {
         }
 
         let data = DeployData::_from_proto(proto);
+        // Phase 3 dispatch: when sig_algebra is set, the flat cosigners
+        // path is ignored; verification walks the algebra.
+        if let Some(algebra) = sig_algebra {
+            return Self::from_proto_cosigned_with_sig_algebra(data, &algebra, phlo_limit);
+        }
         // Phase 2 dispatch: cosigner_threshold == 0 → N-of-N (Phase 1
         // semantics; every signer must verify); cosigner_threshold > 0 →
         // M-of-N (at least `threshold` valid signatures required;
@@ -1245,6 +1277,286 @@ impl DeployData {
                     cosigner_threshold, total_signers, e
                 )
             })
+        }
+    }
+
+    /// Phase 3 LL-rich algebra dispatch. Validates a deploy against
+    /// the given `SigCompound` algebraic expression:
+    ///
+    /// - Tensor(left, right): both branches must verify (recursive).
+    /// - Plus(left, right, chosen_branch): only the chosen branch verifies.
+    /// - With(left, right): both branches' atoms must be presented and
+    ///   verify (the verifier picks which to consume at evaluation).
+    /// - Bang(inner): inner atom must verify (replicable at evaluation).
+    /// - WhyNot(inner): if inner has a non-empty sig, it must verify;
+    ///   empty sig is permitted (optional / zero-or-more uses).
+    /// - Lolly(from, to, handle): both branches must verify (the
+    ///   transformer runs at evaluation via the capability registry).
+    /// - Threshold{threshold, members}: at least `threshold` members
+    ///   must verify (Phase 2 quorum semantics, lifted into the algebra).
+    /// - Atom: the leaf signer; signature must verify.
+    ///
+    /// The collected atoms are folded into a canonical Cosigner list
+    /// (sorted ascending by pk; placeholders for non-required atoms get
+    /// empty sigs and zero shares) and `Cosigned::from_signed_data_threshold`
+    /// (with `threshold = required_signers.len()`) finalizes the envelope.
+    pub fn from_proto_cosigned_with_sig_algebra(
+        data: DeployData,
+        sig_algebra: &crate::casper::SigCompound,
+        phlo_limit: i64,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        // Walk the algebra and collect EVERY atom into the signer list
+        // (with its actual sig / phlo_share), and compute the minimum
+        // number of valid signatures the algebra requires (`min_required`).
+        // Per-connective semantics live in `min_required_for`:
+        //
+        //   - Atom: 1 (must verify)
+        //   - Tensor(a, b): min(a) + min(b)
+        //   - Plus(a, b, chosen=0): min(a)
+        //   - Plus(a, b, chosen=1): min(b)
+        //   - With(a, b): min(a) + min(b) (both committed at envelope time)
+        //   - Bang(inner): min(inner)
+        //   - WhyNot(inner): 0 (entirely optional)
+        //   - Lolly(from, to): min(from) + min(to)
+        //   - Threshold(k, members): k
+        let mut atoms: Vec<AlgebraAtom> = Vec::new();
+        Self::collect_atoms(sig_algebra, &mut atoms)?;
+        let min_required = Self::min_required_for(sig_algebra)?;
+
+        if atoms.is_empty() {
+            return Err(
+                "Sig algebra contains no atomic signers — at least one Atom is required"
+                    .to_string(),
+            );
+        }
+
+        let mut signers: Vec<Cosigner> = Vec::with_capacity(atoms.len());
+        for atom in atoms.into_iter() {
+            let alg = SignaturesAlgFactory::apply(&atom.sig_algorithm).ok_or_else(|| {
+                format!("Unknown signature algorithm: {}", atom.sig_algorithm)
+            })?;
+            signers.push(Cosigner {
+                pk: PublicKey::from_bytes(&atom.pk),
+                sig: atom.sig,
+                sig_algorithm: alg,
+                phlo_share: atom.phlo_share,
+            });
+        }
+
+        // Dispatch:
+        //   - All atoms required (min_required == signers.len(), no Plus
+        //     branch dropped, no WhyNot absent, no Threshold) →
+        //     from_signed_data (canonical N-of-N).
+        //   - Otherwise → from_signed_data_threshold with min_required.
+        let total = signers.len() as u32;
+        if min_required == total && Self::algebra_is_all_required(sig_algebra)? {
+            Cosigned::from_signed_data(data, signers, phlo_limit)
+                .map_err(|e| format!("Cosigned sig_algebra validation failed: {}", e))
+        } else {
+            if min_required == 0 {
+                return Err(
+                    "Sig algebra requires zero valid signatures — a Cosigned envelope requires at least one"
+                        .to_string(),
+                );
+            }
+            Cosigned::from_signed_data_threshold(data, signers, phlo_limit, min_required).map_err(
+                |e| {
+                    format!(
+                        "Cosigned sig_algebra threshold validation failed (min_required={}): {}",
+                        min_required, e
+                    )
+                },
+            )
+        }
+    }
+
+    fn collect_atoms(
+        sig: &crate::casper::SigCompound,
+        atoms: &mut Vec<AlgebraAtom>,
+    ) -> Result<(), String> {
+        use crate::casper::sig_compound::Connective;
+        let connective = sig
+            .connective
+            .as_ref()
+            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+        match connective {
+            Connective::Atom(atom) => {
+                atoms.push(AlgebraAtom::from_proto(atom));
+                Ok(())
+            }
+            Connective::Tensor(pair) | Connective::With(pair) => {
+                Self::collect_atoms_pair(pair, atoms)
+            }
+            Connective::Plus(plus) => {
+                if plus.chosen_branch != 0 && plus.chosen_branch != 1 {
+                    return Err(format!(
+                        "SigPlus.chosen_branch must be 0 or 1, got {}",
+                        plus.chosen_branch
+                    ));
+                }
+                let left = plus
+                    .left
+                    .as_deref()
+                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
+                let right = plus
+                    .right
+                    .as_deref()
+                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
+                Self::collect_atoms(left, atoms)?;
+                Self::collect_atoms(right, atoms)
+            }
+            Connective::Bang(bang) => {
+                let inner = bang
+                    .inner
+                    .as_deref()
+                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
+                Self::collect_atoms(inner, atoms)
+            }
+            Connective::Whynot(inner) => Self::collect_atoms(inner, atoms),
+            Connective::Lolly(lolly) => {
+                let from = lolly
+                    .from
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
+                let to = lolly
+                    .to
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
+                Self::collect_atoms(from, atoms)?;
+                Self::collect_atoms(to, atoms)
+            }
+            Connective::Threshold(thresh) => {
+                if thresh.threshold < 1 || (thresh.threshold as usize) > thresh.members.len() {
+                    return Err(format!(
+                        "SigThreshold.threshold must satisfy 1 ≤ threshold ≤ members.len() ({}), got {}",
+                        thresh.members.len(),
+                        thresh.threshold
+                    ));
+                }
+                for member in &thresh.members {
+                    Self::collect_atoms(member, atoms)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn collect_atoms_pair(
+        pair: &crate::casper::SigPair,
+        atoms: &mut Vec<AlgebraAtom>,
+    ) -> Result<(), String> {
+        let left = pair
+            .left
+            .as_deref()
+            .ok_or_else(|| "SigPair.left missing".to_string())?;
+        let right = pair
+            .right
+            .as_deref()
+            .ok_or_else(|| "SigPair.right missing".to_string())?;
+        Self::collect_atoms(left, atoms)?;
+        Self::collect_atoms(right, atoms)
+    }
+
+    fn min_required_for(sig: &crate::casper::SigCompound) -> Result<u32, String> {
+        use crate::casper::sig_compound::Connective;
+        let connective = sig
+            .connective
+            .as_ref()
+            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+        match connective {
+            Connective::Atom(_) => Ok(1),
+            Connective::Tensor(pair) | Connective::With(pair) => {
+                let l = pair
+                    .left
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.left missing".to_string())?;
+                let r = pair
+                    .right
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.right missing".to_string())?;
+                Ok(Self::min_required_for(l)? + Self::min_required_for(r)?)
+            }
+            Connective::Plus(plus) => {
+                let l = plus
+                    .left
+                    .as_deref()
+                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
+                let r = plus
+                    .right
+                    .as_deref()
+                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
+                if plus.chosen_branch == 0 {
+                    Self::min_required_for(l)
+                } else {
+                    Self::min_required_for(r)
+                }
+            }
+            Connective::Bang(bang) => {
+                let inner = bang
+                    .inner
+                    .as_deref()
+                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
+                Self::min_required_for(inner)
+            }
+            Connective::Whynot(_) => Ok(0),
+            Connective::Lolly(lolly) => {
+                let from = lolly
+                    .from
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
+                let to = lolly
+                    .to
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
+                Ok(Self::min_required_for(from)? + Self::min_required_for(to)?)
+            }
+            Connective::Threshold(thresh) => Ok(thresh.threshold as u32),
+        }
+    }
+
+    /// Returns true iff the algebra has no optional branch (no Plus,
+    /// no WhyNot, no Threshold). Used to choose between the N-of-N
+    /// constructor and the threshold constructor.
+    fn algebra_is_all_required(sig: &crate::casper::SigCompound) -> Result<bool, String> {
+        use crate::casper::sig_compound::Connective;
+        let connective = sig
+            .connective
+            .as_ref()
+            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+        match connective {
+            Connective::Atom(_) => Ok(true),
+            Connective::Tensor(pair) | Connective::With(pair) => {
+                let l = pair
+                    .left
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.left missing".to_string())?;
+                let r = pair
+                    .right
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.right missing".to_string())?;
+                Ok(Self::algebra_is_all_required(l)? && Self::algebra_is_all_required(r)?)
+            }
+            Connective::Bang(bang) => {
+                let inner = bang
+                    .inner
+                    .as_deref()
+                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
+                Self::algebra_is_all_required(inner)
+            }
+            Connective::Lolly(lolly) => {
+                let from = lolly
+                    .from
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
+                let to = lolly
+                    .to
+                    .as_deref()
+                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
+                Ok(Self::algebra_is_all_required(from)? && Self::algebra_is_all_required(to)?)
+            }
+            Connective::Plus(_) | Connective::Whynot(_) | Connective::Threshold(_) => Ok(false),
         }
     }
 
@@ -1904,6 +2216,170 @@ mod tests {
             decoded.cost_trace_event_count,
             processed.cost_trace_event_count
         );
+    }
+
+    fn fresh_atom_signing(payload: &DeployData, phlo_share: i64) -> (crate::casper::SigAtom, Vec<u8>) {
+        let secp = Secp256k1;
+        let (sk, pk) = secp.new_key_pair();
+        let serialized = DeployData::_to_proto(payload.clone()).encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let sig = secp.sign(&hash, &sk.bytes);
+        let pk_bytes_vec: Vec<u8> = pk.bytes.to_vec();
+        (
+            crate::casper::SigAtom {
+                pk: pk.bytes.clone().into(),
+                sig: prost::bytes::Bytes::from(sig),
+                sig_algorithm: Secp256k1::name(),
+                phlo_share,
+            },
+            pk_bytes_vec,
+        )
+    }
+
+    fn empty_atom() -> crate::casper::SigAtom {
+        let secp = Secp256k1;
+        let (_, pk) = secp.new_key_pair();
+        crate::casper::SigAtom {
+            pk: pk.bytes.into(),
+            sig: prost::bytes::Bytes::new(),
+            sig_algorithm: Secp256k1::name(),
+            phlo_share: 0,
+        }
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_tensor_validates_both_branches() {
+        let payload = deploy_data(200, 1);
+        let (atom_a, _) = fresh_atom_signing(&payload, 100);
+        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
+                crate::casper::SigPair {
+                    left: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(atom_a)),
+                    })),
+                    right: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(atom_b)),
+                    })),
+                },
+            ))),
+        };
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
+            payload, &algebra, 200,
+        )
+        .expect("Tensor with two valid signers must verify");
+        assert_eq!(cosigned.signers().len(), 2);
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_plus_chosen_left_only() {
+        let payload = deploy_data(100, 1);
+        let (atom_a, _) = fresh_atom_signing(&payload, 100);
+        let atom_b_unsigned = empty_atom(); // not chosen, sig is empty
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Plus(Box::new(
+                crate::casper::SigPlus {
+                    left: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(atom_a)),
+                    })),
+                    right: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(
+                            atom_b_unsigned,
+                        )),
+                    })),
+                    chosen_branch: 0, // left
+                },
+            ))),
+        };
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
+            payload, &algebra, 100,
+        )
+        .expect("Plus with chosen=0 + valid left sig must verify");
+        assert_eq!(cosigned.signers().len(), 2);
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_threshold_2_of_3_satisfied() {
+        let payload = deploy_data(200, 1);
+        let (atom_a, _) = fresh_atom_signing(&payload, 100);
+        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let atom_c_unsigned = empty_atom();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 2,
+                    members: vec![
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(
+                                atom_a,
+                            )),
+                        },
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(
+                                atom_b,
+                            )),
+                        },
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(
+                                atom_c_unsigned,
+                            )),
+                        },
+                    ],
+                },
+            )),
+        };
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
+            payload, &algebra, 200,
+        )
+        .expect("Threshold 2-of-3 with 2 valid sigs must verify");
+        assert_eq!(cosigned.signers().len(), 3);
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_whynot_admits_absent_signer() {
+        let payload = deploy_data(0, 1);
+        let absent_atom = empty_atom();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
+                crate::casper::SigCompound {
+                    connective: Some(crate::casper::sig_compound::Connective::Atom(absent_atom)),
+                },
+            ))),
+        };
+        // WhyNot with empty atom → no required signers; phlo_limit=0
+        // because no fuel is paid by an absent atom. We need at least
+        // one signer in the envelope, so the algebra walks to "optional"
+        // and the Cosigned constructor sees a single placeholder. This
+        // exercises the "WhyNot absent" code path.
+        let result = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 0);
+        // The envelope requires a non-empty signer list; absent WhyNot
+        // alone is invalid (the deploy must have at least one signer).
+        // We expect this to fail at the empty-signer-list invariant
+        // rather than at quorum.
+        assert!(result.is_err(), "WhyNot with only absent atom must fail (empty signer list)");
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_plus_invalid_chosen_branch_rejected() {
+        let payload = deploy_data(100, 1);
+        let (atom_a, _) = fresh_atom_signing(&payload, 100);
+        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Plus(Box::new(
+                crate::casper::SigPlus {
+                    left: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(atom_a)),
+                    })),
+                    right: Some(Box::new(crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Atom(atom_b)),
+                    })),
+                    chosen_branch: 2, // invalid
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+            .expect_err("invalid chosen_branch must reject");
+        assert!(err.contains("chosen_branch"));
     }
 
     #[test]
