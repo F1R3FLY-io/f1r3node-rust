@@ -837,6 +837,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_finalized_baseline_max_distance: conf
                 .casper
                 .synchrony_finalized_baseline_max_distance,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             max_user_deploys_per_block: conf.casper.max_user_deploys_per_block,
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),

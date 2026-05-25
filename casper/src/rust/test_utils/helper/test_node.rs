@@ -1155,6 +1155,9 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
+        let pending_cosigner_metadata = Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
         let casper_impl = MultiParentCasperImpl {
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
@@ -1163,6 +1166,7 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            pending_cosigner_metadata: pending_cosigner_metadata.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
@@ -1195,6 +1199,7 @@ impl TestNode {
                 block_store: casper_guard.block_store.clone(),
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
+                pending_cosigner_metadata: casper_guard.pending_cosigner_metadata.clone(),
                 rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),

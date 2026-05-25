@@ -1035,6 +1035,7 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),

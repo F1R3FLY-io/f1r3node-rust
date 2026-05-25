@@ -92,6 +92,58 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 }
 
+/// Multi-signature-aware admission. Validates the deploy via
+/// `normalizer_env_from_cosigned_deploy` (so `rho:system:cosigners`
+/// reflects the full cosigner list), enforces the configured
+/// `max_cosigners_per_deploy` cap at the ingress boundary, then stores
+/// the legacy `Signed<DeployData>` shape in the standard
+/// `KeyValueDeployStorage` AND mirrors the cosigner extras +
+/// primary_phlo_share into the `pending_cosigner_metadata` sidecar map
+/// (keyed by primary signature). The sidecar is consulted by the
+/// proposer-side `block_creator` to reconstruct the full Cosigned
+/// envelope when handing deploys off to the runtime fan-out.
+pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    use models::rust::normalizer_env::normalizer_env_from_cosigned_deploy;
+    let normalizer_env = normalizer_env_from_cosigned_deploy(&cosigned);
+    let parse_started_at = std::time::Instant::now();
+    match interpreter_util::mk_term(&cosigned.data.term, normalizer_env) {
+        Err(interpreter_error) => {
+            tracing::debug!(
+                target: "f1r3fly.deploy.latency",
+                parse_ms = parse_started_at.elapsed().as_millis(),
+                "Deploy parse failed (multi-sig path)"
+            );
+            Ok(Either::Left(DeployError::parsing_error(format!(
+                "Error in parsing term: \n{}",
+                interpreter_error
+            ))))
+        }
+        Ok(_parsed_term) => {
+            let max_cosigners = this.casper_shard_conf.max_cosigners_per_deploy as usize;
+            if cosigned.signers().len() > max_cosigners {
+                return Ok(Either::Left(DeployError::parsing_error(format!(
+                    "Cosigner cap exceeded at ingress: {} signers > limit {}",
+                    cosigned.signers().len(),
+                    max_cosigners
+                ))));
+            }
+            let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
+            let add_started_at = std::time::Instant::now();
+            let deploy_id = add_deploy_cosigned(this, cosigned)?;
+            tracing::debug!(
+                target: "f1r3fly.deploy.latency",
+                parse_ms = parse_elapsed_ms,
+                add_deploy_ms = add_started_at.elapsed().as_millis(),
+                "Deploy parse/add completed (multi-sig path)"
+            );
+            Ok(Either::Right(deploy_id))
+        }
+    }
+}
+
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
@@ -125,6 +177,16 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         let deploys_count = deploys.len();
         let block_hash = PrettyPrinter::build_string_bytes(&block.block_hash);
         let block_number = block.body.state.block_number;
+        // Drain the cosigner-metadata sidecar in lockstep with the legacy
+        // deploy_storage. Both keyed by primary signature; identical key set
+        // by construction (sidecar is only populated by `add_deploy_cosigned`,
+        // which always also writes to `deploy_storage`).
+        {
+            let mut sidecar = this.pending_cosigner_metadata.lock();
+            for deploy in &deploys {
+                sidecar.remove(&deploy.sig);
+            }
+        }
         // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex` — no
         // poison propagation, so `.lock()` returns the guard directly.
         this.deploy_storage.lock().remove(deploys)?;
@@ -158,6 +220,65 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     }
 
     Ok(updated_dag)
+}
+
+/// Multi-sig variant of `add_deploy`. Stores the legacy `Signed<DeployData>`
+/// in the standard pool and mirrors the cosigner metadata into the
+/// `pending_cosigner_metadata` sidecar so the proposer can reconstruct the
+/// canonical Cosigned envelope at deploy selection time.
+pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> Result<DeployId, CasperError> {
+    let is_compound = cosigned.is_compound();
+    // Extract cosigner metadata BEFORE consuming the envelope for storage.
+    let metadata = if is_compound {
+        let cosigners_proto: Vec<models::casper::CompoundSigner> = cosigned
+            .signers()
+            .iter()
+            .skip(1)
+            .map(|c| models::casper::CompoundSigner {
+                pk: c.pk.bytes.clone().into(),
+                sig: c.sig.clone(),
+                sig_algorithm: c.sig_algorithm.name(),
+                phlo_share: c.phlo_share,
+            })
+            .collect();
+        Some((cosigners_proto, cosigned.primary().phlo_share))
+    } else {
+        None
+    };
+    let legacy_signed = cosigned.into_legacy_signed_unchecked();
+    let primary_sig = legacy_signed.sig.clone();
+
+    // Store in the legacy pool (selection-by-primary-signer semantics).
+    this.deploy_storage.lock().add(vec![legacy_signed.clone()])?;
+
+    // Mirror cosigner extras into the sidecar map for proposer-side
+    // reconstruction. Only populated for compound deploys; single-signer
+    // deploys are uniquely identified by primary sig in the legacy pool.
+    if let Some((cosigners, primary_phlo_share)) = metadata {
+        this.pending_cosigner_metadata.lock().insert(
+            primary_sig.clone(),
+            super::types::PendingCosignerMetadata {
+                cosigners,
+                primary_phlo_share,
+            },
+        );
+    }
+
+    let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&legacy_signed);
+    tracing::info!(
+        "Received (multi-sig path; is_compound={}): {}",
+        is_compound,
+        deploy_info
+    );
+    if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
+        if let Some(signal) = this.heartbeat_signal_ref.get() {
+            signal.trigger_wake();
+        }
+    }
+    Ok(primary_sig.to_vec())
 }
 
 pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(

@@ -237,6 +237,9 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
+        pending_cosigner_metadata: Arc::new(parking_lot::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
@@ -366,6 +369,14 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    /// Per-deploy hard cap on number of cosigners in a multi-signature
+    /// deploy. Substituted into the PoS contract at genesis as
+    /// `$$maxCosignersPerDeploy$$` (per §1.7) and enforced at the
+    /// `admit_deploy_cosigned` ingress boundary (per §1.9.5) before the
+    /// deploy reaches the pool. Sourced from
+    /// `casper_conf::max_cosigners_per_deploy` (default 64). Configurable
+    /// per shard.
+    pub max_cosigners_per_deploy: u32,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -418,6 +429,8 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 32,
+            max_cosigners_per_deploy:
+                crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

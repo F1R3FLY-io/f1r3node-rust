@@ -45,6 +45,21 @@ use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+/// Cosigner metadata for an in-flight multi-signature deploy, held in the
+/// `pending_cosigner_metadata` sidecar map keyed by primary signature.
+///
+/// `cosigners` is the canonical-order list of cosigners EXCLUDING the
+/// primary (primary lives in the legacy `Signed<DeployData>` already stored
+/// in `deploy_storage`). `primary_phlo_share` is the primary's contribution
+/// to `phlo_limit`. Together they round-trip the wire `CompoundSigner` data
+/// (proto field 14) and `primary_phlo_share` (proto field 15) from
+/// `DeployDataProto`.
+#[derive(Clone, Debug)]
+pub struct PendingCosignerMetadata {
+    pub cosigners: Vec<models::casper::CompoundSigner>,
+    pub primary_phlo_share: i64,
+}
+
 // Phase 13 (TC-2): the previous `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES`
 // constant is now `CasperShardConf::active_validators_cache_max_entries`;
 // `snapshot::compute_snapshot` reads it from
@@ -75,6 +90,24 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
+    /// In-memory side-map of cosigner metadata for in-flight multi-signature
+    /// deploys, keyed by the primary signer's signature bytes (the same key
+    /// `KeyValueDeployStorage` uses for the legacy `Signed<DeployData>` pool).
+    /// Populated by `block_admission::admit_deploy_cosigned` when a compound
+    /// `Cosigned<DeployData>` deploy is submitted; consulted by
+    /// `block_creator` (proposer-side) to reconstruct the full Cosigned
+    /// envelope when handing deploys off to the runtime fan-out. Drained
+    /// alongside `deploy_storage.remove(...)` when blocks finalize, by
+    /// `admit_handle_valid_block`. Empty for single-signature deploys.
+    ///
+    /// The side-map design (per §1.9.5) deliberately preserves the legacy
+    /// `KeyValueDeployStorage` shape — selection-by-primary-signer is the
+    /// right semantics for the proposer, so cosigner data lives in this
+    /// memory-resident sidecar rather than forcing a full storage migration.
+    /// Node restarts lose in-flight cosigner metadata (clients resubmit
+    /// unfinalized deploys); this matches the §1.9.5 greenfield policy.
+    pub pending_cosigner_metadata:
+        Arc<PlMutex<std::collections::HashMap<Bytes, PendingCosignerMetadata>>>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
