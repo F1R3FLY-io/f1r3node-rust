@@ -35,6 +35,25 @@ Common TLC jar locations:
 | `MergeableChannelAccounting.tla` | Typed mergeable-channel diff/merge behavior and cost-boundary isolation | 2,656 distinct / 8,992 generated | BitmaskDiffMergeRoundTrip, IntegerAddDiffMergeRoundTrip, BitmaskMergeDoesNotDropBits, NonNumericPayloadHasNoNumericDiff, MergeableAccountingPreservesUserCost, SlashSystemEffectPreservesCostBoundary |
 | `MCMergeableChannelAccounting.tla` | Model instance for MergeableChannelAccounting | — | — |
 
+### Phase 1 / 2 / 3 multi-signature + LL-rich algebra specs
+
+| File | Purpose | Properties |
+|---|---|---|
+| `MultiSignerProtocol.tla` | Phase 1.7 PoS Map-in-MVar refinement: per-cosigner attribution, FIFO drain, atomic soft-checkpoint revert | MapDomainEqualsInFlightSigners, RefundFinalizes, PartialFailureNoConsumption, NoNegativeAmounts, ChargedAmountBounded, PhloShareConservation, FailureRevertsCharges; liveness: EventuallyDoneOrReverted, EventuallyAllRefundsComplete |
+| `MCMultiSigner.tla` | Phase 4.6 — scaled-up harness (5 cosigners, phlo 8) | (same as base) |
+| `ThresholdProtocol.tla` | Phase 2 M-of-N quorum semantics | QuorumThresholdConstraint, QuorumExactness, QuorumNoOverCount, AuthorizedSubsetPresented, PresentedSubsetMembers, RejectionImpliesShortQuorum; liveness: EventuallyTerminates |
+| `MCThreshold.tla` | Phase 4.6 — 3-of-5 quorum harness (vs base 2-of-4) | (same) |
+| `PlusProtocol.tla` | Phase 3 Sig::Plus additive disjunction (signer's chosen branch) | PlusBranchInRange, PlusBranchWitness, PlusNonChosenUntouched; properties: AdditiveChoiceDeterminism, PlusEventuallyAuthorizes |
+| `MCPlus.tla` | Phase 4.6 — PhloPerBranch=8 harness | (same) |
+| `WithProtocol.tla` | Phase 3 Sig::With additive conjunction (verifier's chosen branch) | AdditiveCoConservation, WithBothBranchesSigned, WithBranchAvailability, WithUnpickedUntouched; liveness: WithEventuallyPicked |
+| `MCWith.tla` | Phase 4.6 — PhloPerBranch=8 harness | (same) |
+| `BangProtocol.tla` | Phase 3 Sig::Bang exponential replication (bounded/unbounded) | BangReplicationSafety, BangUsageBound, BangBoundedNonNegative, BangPersistence, BangApprovedBoundedByLimit; liveness: BangBoundedEventuallyExhausts |
+| `MCBang.tla` | Phase 4.6 — Bound=5, MaxInvocations=10 harness | (same) |
+| `WhyNotProtocol.tla` | Phase 3 Sig::WhyNot exponential optionality | WhyNotOptional, WhyNotEmptyEquiv, WhyNotNoChargeWhenAbsent, WhyNotChargeBounded, WhyNotInvalidImpliesRejection; liveness: WhyNotEventuallyResolves |
+| `MCWhyNot.tla` | Phase 4.6 — PhloAvailable=6 harness | (same) |
+| `LollyProtocol.tla` | Phase 3 Sig::Lolly linear-implication capability | LollyResourceFlow, LollyNoCreationExNihilo, LollyTransformer, LollyCapabilityRegistered, LollyCapabilityNotRevoked; liveness: LollyEventuallyCompletes |
+| `MCLolly.tla` | Phase 4.6 — MaxInvocations=6 harness | (same) |
+
 ## Running
 
 ```bash
@@ -77,6 +96,40 @@ java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
 # Typed mergeable-channel diff/merge and cost-boundary isolation
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCMergeableChannelAccounting.tla -config MergeableChannelAccounting.cfg -workers auto -nowarning
+
+# Phase 1.7 PoS Map-in-MVar refinement
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MultiSignerProtocol.tla -config MultiSignerProtocol.cfg -workers auto -nowarning
+
+# Phase 2 M-of-N threshold
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC ThresholdProtocol.tla -config ThresholdProtocol.cfg -workers auto -nowarning
+
+# Phase 3 LL connectives (Plus, With, Bang, WhyNot, Lolly)
+for proto in PlusProtocol WithProtocol BangProtocol WhyNotProtocol LollyProtocol; do
+  java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+    tlc2.TLC "$proto.tla" -config "$proto.cfg" -workers auto -nowarning
+done
+
+# Phase 4.6 scaled-up MC harnesses
+for mc in MCMultiSigner MCThreshold MCPlus MCWith MCBang MCWhyNot MCLolly; do
+  java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+    tlc2.TLC "$mc.tla" -config "$mc.cfg" -workers auto -nowarning
+done
+```
+
+### Aggregate runner (local-only)
+
+The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh`
+runs ALL of the above (currently 22 specs) sequentially through TLC.
+Per the team's "formal verification is local-only, NOT in CI" policy
+this script does NOT live under `scripts/ci/`. Invoke directly from
+the repo root:
+
+```bash
+bash scripts/check-cost-accounted-rho-tla-invariants.sh
+# Or filter:
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
 ```
 
 All eight should report: `Model checking completed. No error has been found.`
