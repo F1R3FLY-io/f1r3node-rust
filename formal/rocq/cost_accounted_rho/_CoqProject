@@ -133,5 +133,10 @@ theories/WeakBarbedEquiv.v
 # the verification record.
 theories/Replication.v
 
+# Level 4a5: Phase 1.10 multi-signature refinement (depends on
+# RuntimeBudgetRefinement; Qed-closed Map-in-MVar PoS-refinement +
+# FIFO drain conservation theorems).
+theories/MultiSignerRefinement.v
+
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v
