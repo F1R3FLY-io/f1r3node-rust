@@ -969,7 +969,23 @@ impl DeployData {
         }
     }
 
+    /// Legacy single-signature decode. Rejects multi-sig wire deploys
+    /// (`!proto.cosigners.is_empty()`) so callers don't silently drop
+    /// the cosigner list. Multi-sig-aware callers must use
+    /// [`Self::from_proto_cosigned`] instead. Byte-identical behavior to
+    /// the pre-multi-sig implementation for legacy single-sig wire
+    /// deploys (`cosigners.is_empty()`).
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        if !proto.cosigners.is_empty() {
+            return Err(format!(
+                "DeployData::from_proto: wire deploy carries {} cosigners; \
+                 multi-sig deploys must be decoded via \
+                 DeployData::from_proto_cosigned to preserve the cosigner list. \
+                 Calling from_proto on a multi-sig wire deploy would silently \
+                 drop the cosigner data — refusing.",
+                proto.cosigners.len()
+            ));
+        }
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
 
@@ -981,6 +997,81 @@ impl DeployData {
             Some(signed) => Ok(signed),
             None => Err("Invalid signature".to_string()),
         }
+    }
+
+    /// Multi-signature aware decode. Returns a [`Cosigned<DeployData>`]
+    /// envelope covering both legacy single-sig wire deploys (`cosigners`
+    /// empty → one-element envelope with the primary signer's phlo_share
+    /// equal to `phlo_limit`) and multi-sig wire deploys (`cosigners`
+    /// non-empty → N-element envelope with explicit per-signer shares).
+    ///
+    /// Invariants enforced by `Cosigned::from_signed_data` at construction:
+    /// 1. All signers' signatures verify against the canonical message hash.
+    /// 2. Canonical pk-ascending sort; no duplicates.
+    /// 3. Σ phlo_share == phlo_limit.
+    ///
+    /// For multi-sig deploys: the primary signer (fields 1/4/5 of
+    /// `DeployDataProto`) contributes `primary_phlo_share` (field 15);
+    /// each cosigner in `cosigners[]` (field 14) contributes their own
+    /// `phlo_share`. The sum must equal `phlo_limit` (field 8) — enforced
+    /// by `Cosigned::from_signed_data`.
+    pub fn from_proto_cosigned(
+        proto: DeployDataProto,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        // Resolve the primary signer's algorithm.
+        let primary_alg = SignaturesAlgFactory::apply(&proto.sig_algorithm)
+            .ok_or_else(|| {
+                format!(
+                    "Unknown primary signature algorithm: {}",
+                    proto.sig_algorithm
+                )
+            })?;
+
+        // Capture phlo_limit before consuming `proto` for _from_proto.
+        let phlo_limit = proto.phlo_limit;
+        let is_multi_sig = !proto.cosigners.is_empty();
+        let primary_phlo_share = if is_multi_sig {
+            // Multi-sig: explicit share from wire field 15.
+            proto.primary_phlo_share
+        } else {
+            // Legacy single-sig: primary covers entire phlo_limit.
+            phlo_limit
+        };
+
+        // Build the canonical signer list. Primary first (will be sorted
+        // canonically by Cosigned::from_signed_data).
+        let mut signers = Vec::with_capacity(1 + proto.cosigners.len());
+        signers.push(Cosigner {
+            pk: PublicKey::from_bytes(&proto.deployer),
+            sig: proto.sig.clone(),
+            sig_algorithm: primary_alg,
+            phlo_share: primary_phlo_share,
+        });
+        for cs in &proto.cosigners {
+            let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
+                format!(
+                    "Unknown cosigner signature algorithm: {} for cosigner pk={}",
+                    cs.sig_algorithm,
+                    hex::encode(&cs.pk)
+                )
+            })?;
+            signers.push(Cosigner {
+                pk: PublicKey::from_bytes(&cs.pk),
+                sig: cs.sig.clone(),
+                sig_algorithm: alg,
+                phlo_share: cs.phlo_share,
+            });
+        }
+
+        let data = DeployData::_from_proto(proto);
+        Cosigned::from_signed_data(data, signers, phlo_limit).map_err(|e| {
+            format!(
+                "Cosigned envelope validation failed (is_multi_sig={}): {}",
+                is_multi_sig, e
+            )
+        })
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -1010,6 +1101,55 @@ impl DeployData {
             sig_algorithm: dd.sig_algorithm.name(),
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
+            ..Default::default()
+        }
+    }
+
+    /// Serialize a [`Cosigned<DeployData>`] back to [`DeployDataProto`] wire
+    /// format. For single-signer cosigned envelopes the output is
+    /// byte-identical to `to_proto(signed)` (cosigners empty,
+    /// primary_phlo_share = 0). For multi-signer envelopes the additional
+    /// cosigners populate the `cosigners[]` field and `primary_phlo_share`
+    /// carries the primary signer's contribution.
+    pub fn to_proto_cosigned(
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+    ) -> DeployDataProto {
+        let primary = cosigned.primary();
+        let is_compound = cosigned.is_compound();
+        let cosigners_proto: Vec<crate::casper::CompoundSigner> = if is_compound {
+            cosigned
+                .signers()
+                .iter()
+                .skip(1) // primary occupies fields 1/4/5/15; cosigners[] is the rest
+                .map(|c| crate::casper::CompoundSigner {
+                    pk: c.pk.bytes.clone().into(),
+                    sig: c.sig.clone(),
+                    sig_algorithm: c.sig_algorithm.name(),
+                    phlo_share: c.phlo_share,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // For multi-sig deploys, primary_phlo_share is the explicit share
+        // from the wire. For single-sig (legacy uplift), set to 0 so
+        // round-trip with `from_proto_cosigned` recovers the single-sig
+        // legacy semantics (where the primary's share = phlo_limit and
+        // `cosigners` is empty).
+        let primary_phlo_share = if is_compound { primary.phlo_share } else { 0 };
+        DeployDataProto {
+            term: cosigned.data.term.clone(),
+            timestamp: cosigned.data.time_stamp,
+            phlo_price: cosigned.data.phlo_price,
+            phlo_limit: cosigned.data.phlo_limit,
+            valid_after_block_number: cosigned.data.valid_after_block_number,
+            shard_id: cosigned.data.shard_id.clone(),
+            deployer: primary.pk.bytes.clone().into(),
+            sig: primary.sig.clone(),
+            sig_algorithm: primary.sig_algorithm.name(),
+            expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
+            cosigners: cosigners_proto,
+            primary_phlo_share,
             ..Default::default()
         }
     }
