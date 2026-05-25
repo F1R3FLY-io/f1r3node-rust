@@ -78,8 +78,9 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
         language: String::new(),
         expiration_timestamp: 0,
         cosigners,
-        primary_phlo_share: primary_share,
-cosigner_threshold: 0,
+        primary_phlo_share: primary_share, 
+        cosigner_threshold: 0,
+        sig_algebra: None,
     }
 }
 
@@ -100,8 +101,9 @@ fn build_single_sig_proto() -> DeployDataProto {
         language: String::new(),
         expiration_timestamp: 0,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
-cosigner_threshold: 0,
+        primary_phlo_share: 0, 
+        cosigner_threshold: 0,
+        sig_algebra: None,
     }
 }
 
@@ -227,10 +229,9 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         cost_trace_digest: Bytes::new(),
         cost_trace_event_count: 0,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
-cosigner_threshold: 0,
+        primary_phlo_share: 0, 
+        cosigner_threshold: 0,
     };
-
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
     assert_eq!(cosigned.signers().len(), 1);
     assert!(!cosigned.is_compound());
@@ -278,10 +279,9 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         cost_trace_digest: Bytes::new(),
         cost_trace_event_count: 0,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share,
-cosigner_threshold: 0,
+        primary_phlo_share: primary.phlo_share, 
+        cosigner_threshold: 0,
     };
-
     let reconstructed = pd.to_cosigned().expect("multi-sig reconstruction must succeed");
     assert_eq!(reconstructed.signers().len(), 3);
     assert!(reconstructed.is_compound());
@@ -338,10 +338,9 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         cost_trace_digest: Bytes::from(vec![0xaa; 32]),
         cost_trace_event_count: 42,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share,
-cosigner_threshold: 0,
+        primary_phlo_share: primary.phlo_share, 
+        cosigner_threshold: 0,
     };
-
     let pd_proto = pd_before.clone().to_proto();
     // Cosigners + primary_phlo_share should be in the inner DeployDataProto.
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
@@ -376,10 +375,9 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
         cost_trace_digest: Bytes::from(vec![0xff; 32]),
         cost_trace_event_count: 7,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
-cosigner_threshold: 0,
+        primary_phlo_share: 0, 
+        cosigner_threshold: 0,
     };
-
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
     // Legacy single-sig: cosigners empty + primary_phlo_share == 0.
