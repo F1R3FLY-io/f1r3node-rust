@@ -215,49 +215,98 @@ impl ReplayRuntimeOps {
         Ok(channels_data)
     }
 
+    /// Replay path mirror of [`RuntimeOps::play_deploy_with_cost_accounting_cosigned`].
+    ///
+    /// Reconstructs the [`Cosigned<DeployData>`] envelope from the on-disk
+    /// `ProcessedDeploy.deploy: Signed<DeployData>` shape via
+    /// `Cosigned::from_single_signer`. For legacy single-sig deploys (the
+    /// only on-disk shape today) the loop runs exactly once with the
+    /// primary signer, producing byte-identical replay traces to the
+    /// pre-multi-sig implementation. When §1.9 extends `ProcessedDeploy`
+    /// to carry the cosigner list, multi-sig replay activates automatically
+    /// — the canonical pk-ascending iteration order + per-signer-index
+    /// seed derivation match the play path exactly.
+    ///
+    /// Each per-cosigner pre-charge / refund replays through
+    /// `replay_system_deploy_internal` with the SAME `rand` derivation as
+    /// the play path. Canonical signer order ensures both paths iterate
+    /// cosigners in identical order on play and replay.
     async fn process_deploy_with_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        let total_phlo_charge = processed_deploy
-            .deploy
-            .data
-            .checked_total_phlo_charge()
-            .map_err(CasperError::RuntimeError)?;
-        let mut pre_charge_deploy = PreChargeDeploy {
-            charge_amount: total_phlo_charge,
-            pk: processed_deploy.deploy.pk.clone(),
-            rand: system_deploy_util::generate_pre_charge_deploy_random_seed(
-                &processed_deploy.deploy,
-            ),
-        };
+        // Uplift the on-disk Signed<DeployData> to Cosigned<DeployData>.
+        // For legacy single-sig deploys this is a one-element envelope; the
+        // multi-sig case will activate when §1.9 extends ProcessedDeploy
+        // to carry the cosigner list.
+        let phlo_limit = processed_deploy.deploy.data.phlo_limit;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            processed_deploy.deploy.clone(),
+            phlo_limit,
+        )
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "legacy uplift to Cosigned failed in replay process_deploy: {e}"
+            ))
+        })?;
+        let is_compound = cosigned.is_compound();
+        let phlo_price = cosigned.data.phlo_price;
 
+        // (B) Pre-charge replay fan-out — canonical pk-ascending order.
         tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-started");
         let precharge_start = Instant::now();
-        let precharge_result = self
-            .replay_system_deploy_internal(
-                &mut pre_charge_deploy,
-                &processed_deploy.system_deploy_error,
-            )
-            .await;
-
-        match precharge_result {
-            Ok((_, mut system_eval_result)) => {
-                let discard_start = Instant::now();
-                self.discard_event_log("precharge", false).await;
-                metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
-                    .record(discard_start.elapsed().as_secs_f64());
-                if system_eval_result.errors.is_empty() {
-                    mergeable_channels.extend(system_eval_result.mergeable.drain());
+        for (i, signer) in cosigned.signers().iter().enumerate() {
+            let charge = signer.phlo_share.saturating_mul(phlo_price);
+            let rand = if is_compound {
+                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(
+                    &cosigned, i,
+                )
+            } else {
+                // Legacy single-sig: byte-identical seed to existing on-chain deploys.
+                system_deploy_util::generate_pre_charge_deploy_random_seed(
+                    &processed_deploy.deploy,
+                )
+            };
+            let mut pre_charge_deploy = PreChargeDeploy {
+                charge_amount: charge,
+                pk: signer.pk.clone(),
+                rand,
+            };
+            let precharge_result = self
+                .replay_system_deploy_internal(
+                    &mut pre_charge_deploy,
+                    // Only the FIRST cosigner's pre-charge sees the
+                    // `system_deploy_error` (legacy single-sig had one
+                    // pre-charge with this contract). For multi-sig, later
+                    // cosigners replay against `None` because the play path
+                    // already short-circuited on any earlier failure via
+                    // `revert_to_soft_checkpoint` + InsufficientPhloByCosigner.
+                    if i == 0 {
+                        &processed_deploy.system_deploy_error
+                    } else {
+                        &None
+                    },
+                )
+                .await;
+            match precharge_result {
+                Ok((_, mut system_eval_result)) => {
+                    let discard_start = Instant::now();
+                    self.discard_event_log("precharge", false).await;
+                    metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
+                        .record(discard_start.elapsed().as_secs_f64());
+                    if system_eval_result.errors.is_empty() {
+                        mergeable_channels.extend(system_eval_result.mergeable.drain());
+                    }
+                    tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime",
+                        "precharge-done cosigner_index={}", i);
                 }
-                tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-done");
-            }
-            Err(err) => {
-                self.discard_event_log("precharge", true).await;
-                return Err(err);
-            }
-        };
+                Err(err) => {
+                    self.discard_event_log("precharge", true).await;
+                    return Err(err);
+                }
+            };
+        }
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(precharge_start.elapsed().as_secs_f64());
 
@@ -271,39 +320,62 @@ impl ReplayRuntimeOps {
                 .record(evaluate_start.elapsed().as_secs_f64());
             tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-eval-done");
 
+            // (D) Refund replay fan-out — FIFO drain matching play path.
             tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-started");
             let refund_start = Instant::now();
-            let refund_amount = processed_deploy
+            let total_refund = processed_deploy
                 .try_refund_amount()
                 .map_err(CasperError::RuntimeError)?;
-            let mut refund_deploy = RefundDeploy {
-                refund_amount,
-                pk: processed_deploy.deploy.pk.clone(),
-                rand: system_deploy_util::generate_refund_deploy_random_seed(
-                    &processed_deploy.deploy,
-                ),
-            };
-
-            let refund_result = self
-                .replay_system_deploy_internal(&mut refund_deploy, &None)
-                .await;
-
-            match refund_result {
-                Ok((_, mut system_eval_result)) => {
-                    let discard_start = Instant::now();
-                    self.discard_event_log("refund", false).await;
-                    metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "refund")
-                        .record(discard_start.elapsed().as_secs_f64());
-                    if system_eval_result.errors.is_empty() {
-                        mergeable_channels.extend(system_eval_result.mergeable.drain());
+            let total_charge = cosigned.total_phlo_share().saturating_mul(phlo_price);
+            let total_used = total_charge.saturating_sub(total_refund);
+            let mut remaining_used = total_used;
+            for (i, signer) in cosigned.signers().iter().enumerate() {
+                let signer_charged = signer.phlo_share.saturating_mul(phlo_price);
+                let signer_consumed = signer_charged.min(remaining_used);
+                remaining_used -= signer_consumed;
+                let refund_amount = signer_charged - signer_consumed;
+                let rand = if is_compound {
+                    system_deploy_util::generate_refund_deploy_random_seed_for_signer(
+                        &cosigned, i,
+                    )
+                } else {
+                    system_deploy_util::generate_refund_deploy_random_seed(
+                        &processed_deploy.deploy,
+                    )
+                };
+                let mut refund_deploy = RefundDeploy {
+                    refund_amount,
+                    pk: signer.pk.clone(),
+                    rand,
+                };
+                let refund_result = self
+                    .replay_system_deploy_internal(&mut refund_deploy, &None)
+                    .await;
+                match refund_result {
+                    Ok((_, mut system_eval_result)) => {
+                        let discard_start = Instant::now();
+                        self.discard_event_log("refund", false).await;
+                        metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "refund")
+                            .record(discard_start.elapsed().as_secs_f64());
+                        if system_eval_result.errors.is_empty() {
+                            mergeable_channels.extend(system_eval_result.mergeable.drain());
+                        }
+                        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime",
+                            "refund-done cosigner_index={}", i);
                     }
-                    tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-done");
-                }
-                Err(err) => {
-                    self.discard_event_log("refund", true).await;
-                    return Err(err);
+                    Err(err) => {
+                        self.discard_event_log("refund", true).await;
+                        return Err(err);
+                    }
                 }
             }
+            debug_assert_eq!(
+                remaining_used, 0,
+                "FIFO drain incomplete on replay: remaining_used={} after fan-out; \
+                 total_used={} > Σ(phlo_share × phlo_price)={} — multi-payer \
+                 accounting bug on replay path",
+                remaining_used, total_used, total_charge
+            );
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(refund_start.elapsed().as_secs_f64());
 
