@@ -1,0 +1,37 @@
+' Multi-Modal Corroboration — four independent models of the linear-logic
+' cost laws (Rocq proofs, Sage bounded-exhaustive search, TLA+ model
+' checking, Rust runtime + tests) that must agree. The dashed feedback
+' arrow records that the no-free-weakening obligation caught a real bug.
+'
+' Source of truth for Figure 4 in docs/theory/cost-accounting-linear-logic.md.
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/ll-corroboration-architecture.puml
+
+@startuml ll-corroboration-architecture
+!theme plain
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor<<Rocq>> #EEF2FF
+  BackgroundColor<<Sage>> #EEFAF1
+  BackgroundColor<<Tla>>  #FFFBEA
+  BackgroundColor<<Rust>> #FFE8E8
+  BorderColor #333333
+}
+
+component "Rocq proofs\nLinearLogicResources.v (25 thm)\nLLIdentities.v (51 thm)\nmachine-checked · unbounded" <<Rocq>> as ROCQ
+component "Sage search\nll_identity_search.sage\n16 identities + 11 resource\nobligations · bounded-exhaustive" <<Sage>> as SAGE
+component "TLA+ model checking\nPlus / With / Bang / WhyNot /\nLolly / Threshold Protocol.tla\nfinite-state reachability" <<Tla>> as TLA
+component "Rust runtime\naccounting/mod.rs · casper_message.rs\nsigned.rs + regression tests\nexecutable" <<Rust>> as RUST
+
+ROCQ <--> SAGE : identical cost laws
+ROCQ <--> TLA  : conservation + per-connective protocols
+ROCQ <--> RUST : min_required = sig_algebra_min_required
+SAGE <--> RUST : reflect() = SignatureChannel::from_sig
+RUST ..> ROCQ  : <b>bug caught</b> —\nno-free-weakening obligation\nrevealed the threshold-verifier defect
+
+note bottom of RUST
+  "Any counterexample found here is a bug in the Rocq proof,
+  the Rust substrate, or this reference implementation —
+  they must agree."  — ll_identity_search.sage header
+end note
+@enduml

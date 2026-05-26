@@ -1,0 +1,24 @@
+stateDiagram-v2
+  %% No double-spend — a single linear witness is spendable exactly once;
+  %% two spends succeed only when two witnesses were genuinely held.
+  %% Source of truth for Figure 6 in docs/theory/cost-accounting-linear-logic.md.
+  %% Render: mmdc -i no-double-spend-statechart.mmd -o no-double-spend-statechart.svg
+
+  [*] --> Has1 : single witness, delta is a
+  Has1 --> Exhausted1 : consume a yields Some empty
+  Exhausted1 --> Rejected1 : second consume a yields None
+  Rejected1 --> [*]
+
+  [*] --> Has2 : duplicate witness, delta is a then a
+  Has2 --> Has2b : consume a yields Some of one a
+  Has2b --> Empty2 : consume a yields Some empty
+  Empty2 --> [*]
+
+  note right of Rejected1
+    ll_no_double_spend_single_witness:
+    a lone witness is spendable exactly once.
+  end note
+  note right of Empty2
+    ll_double_spend_requires_duplicate_witness:
+    two spends succeed only with two witnesses.
+  end note

@@ -1,0 +1,50 @@
+' DILL Two-Zone Sequent — Γ ; Δ ⊢ A. Contrasts the unrestricted zone Γ
+' (reusable; admits weakening + contraction; copied to every premise) with
+' the linear zone Δ (single-use; no weakening, no contraction; partitioned
+' across premises), and shows three representative `dill` rules.
+'
+' Source of truth for Figure 2 in docs/theory/cost-accounting-linear-logic.md.
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/dill-two-zone-flow.puml
+
+@startuml dill-two-zone-flow
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<Unrestricted>> #EEF2FF
+  BackgroundColor<<Linear>>       #FFF7EE
+  BackgroundColor<<Rule>>         #F4F4F4
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+
+package "Γ — unrestricted zone" <<Unrestricted>> {
+  component "reusable hypotheses\nweakening ✓   contraction ✓\nCOPIED to every premise" <<component>> as GAMMA
+}
+
+package "Δ — linear zone" <<Linear>> {
+  component "single-use witnesses\nweakening ✗   contraction ✗\nPARTITIONED across premises" <<component>> as DELTA
+}
+
+package "Representative dill rules" <<Rule>> {
+  component "dill_tensor  (⊗-right)\nΓ;Δ₁ ⊢ A    Γ;Δ₂ ⊢ B\n──────────────────\nΓ ; Δ₁,Δ₂ ⊢ A ⊗ B" <<component>> as TENSOR
+  component "dill_lolly_intro  (⊸-right)\nΓ ; A,Δ ⊢ B\n──────────────────\nΓ ; Δ ⊢ A ⊸ B" <<component>> as LOLLY
+  component "dill_unrestricted  (!-right)\nf ∈ Γ\n──────────────────\nΓ ; · ⊢ ! f" <<component>> as BANG
+}
+
+GAMMA --> TENSOR : copied (shared)
+DELTA --> TENSOR : Δ₁ ⊎ Δ₂ (split)
+GAMMA --> LOLLY  : copied
+DELTA --> LOLLY  : A pushed onto Δ
+GAMMA --> BANG   : f drawn from Γ
+note bottom of BANG
+  ! - and ? - resources consume
+  NO linear witness: the linear
+  zone Δ is empty (dill_unit,
+  dill_unrestricted, dill_whynot_intro).
+end note
+@enduml

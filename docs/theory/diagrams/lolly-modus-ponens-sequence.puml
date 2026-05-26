@@ -1,0 +1,29 @@
+' Linear Modus Ponens — presenting the witness σ to a linear-implication
+' capability σ ⊸ τ consumes σ exactly once and yields τ. The channel-level
+' decomposition is the Rocq lemma lolly_modus_ponens_channel_decomposition;
+' the genuine reduction lives in RhoReduction.v / Bisimulation.v.
+'
+' Source of truth for Figure 5 in docs/theory/cost-accounting-linear-logic.md.
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/lolly-modus-ponens-sequence.puml
+
+@startuml lolly-modus-ponens-sequence
+!theme plain
+title Linear modus ponens:  σ ⊗ (σ ⊸ τ) ⊢ τ
+
+actor Deployer as D
+participant "Linear zone Δ\n(witness store)" as DELTA
+participant "Capability\nσ ⊸ τ" as CAP
+
+D -> DELTA : present witness σ
+note right of DELTA : Δ = [σ];  cost req(σ) accounted
+D -> CAP : invoke with σ
+CAP -> DELTA : consume σ  (consume_linear_atom)
+note right of DELTA : Δ = [ ] — σ spent exactly once
+CAP --> D : yield τ
+note over CAP
+  ll_lolly_resource_flow_conservative:
+  req(σ ⊸ τ) = req(σ) + req(τ)
+  — no resource created ex nihilo
+end note
+@enduml

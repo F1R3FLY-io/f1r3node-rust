@@ -118,6 +118,12 @@ The coverage matrix uses cost-accounting categories plus inclusive STRIDE
 labels. Category labels are review lenses; STRIDE labels describe the
 security failure mode.
 
+> **See also.** The linear-logic structure of the compound-signature
+> authorization algebra under `CA-CAP` — including the *no-free-weakening*
+> guarantee that a presented-but-invalid signature cannot be silently dropped
+> while its phlo share still funds the envelope total — is documented in
+> [*Cost Accounting under Linear Logic*](cost-accounting-linear-logic.md).
+
 | Category | Review lens |
 |---|---|
 | `CA-CAP` | Capability, auth, signature, and system-authority boundaries. |

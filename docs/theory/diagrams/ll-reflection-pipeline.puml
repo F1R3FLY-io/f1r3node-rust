@@ -1,0 +1,53 @@
+' Reflection & Cost Pipeline — how the runtime signature algebra reflects
+' into an intuitionistic-linear-logic formula, and how both projections
+' compute the SAME fuel cost. The commuting square is closed by the Rocq
+' theorem ll_sig_algebra_required_complete.
+'
+' Source of truth for Figure 1 in docs/theory/cost-accounting-linear-logic.md.
+' Render:
+'   plantuml -tsvg docs/theory/diagrams/ll-reflection-pipeline.puml
+
+@startuml ll-reflection-pipeline
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<Rust>>   #FFE8E8
+  BackgroundColor<<Syntax>> #EEF2FF
+  BackgroundColor<<LL>>     #EEFAF1
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+
+package "Wire / Rust runtime" <<Rust>> {
+  component "Sig\nUnit · Hash · And · Plus · With\nBang · WhyNot · Lolly · Threshold" <<component>> as SIG
+  component "min_required_for\n(casper_message.rs)" <<component>> as MRF
+}
+
+package "Rocq — CostAccountedSyntax.v" <<Syntax>> {
+  component "sig_algebra\nASUnit · ASHash · ASAnd · ASPlus · ASWith\nASBang · ASWhyNot · ASLolly · ASThreshold" <<component>> as SA
+  component "sig_algebra_min_required\n: sig_algebra → nat" <<component>> as SAMR
+}
+
+package "Rocq — LinearLogicResources.v" <<LL>> {
+  component "ll_formula\nLLUnit · LLAtom · LLTensor · LLPlus · LLWith\nLLBang · LLWhyNot · LLLolly · LLThreshold" <<component>> as LLF
+  component "ll_required_units\n: ll_formula → nat" <<component>> as LLRU
+}
+
+SIG --> SA   : models
+SA  --> LLF  : ll_of_sig_algebra\n(reflection)
+SA  --> SAMR : runtime cost
+LLF --> LLRU : object cost
+MRF ..> SAMR : mirrors clause-for-clause
+
+SAMR ..> LLRU : <b>ll_sig_algebra_required_complete</b>\nll_required_units (ll_of_sig_algebra s)\n= sig_algebra_min_required s
+
+note bottom of LLRU
+  Cost = count of atomic witnesses (signatures / fuel units):
+  Unit → 0, Hash → 1, And/With/Lolly → sum,
+  Plus → chosen branch, Bang → inner, WhyNot → 0, Threshold → k.
+end note
+@enduml
