@@ -438,15 +438,15 @@ The recursion bottoms out at `1` (cost 0) and atoms (cost 1); every composite fo
 
 ```
 authorization:  ((a ⊗ b) ⊗ c)  ⊗  (1 ⊕ d)        a,b,c,d atomic; signer chose RIGHT
-                       │                  │
-        ┌──────────────┴───────┐     ┌────┴─────┐
-   (a ⊗ b) ⊗ c               (1 ⊕ d)            (chosen branch = d)
-        │                        │
-   ┌────┴────┐              cost = c(d) = 1     ← ⊕ pays only the chosen branch
- a ⊗ b       c
-   │
- ┌─┴─┐
- a   b
+                               │
+              ┌────────────────┴────────┐
+      (a ⊗ b) ⊗ c                    (1 ⊕ d)     (chosen branch = d)
+              │                         │
+       ┌──────┴──────┐                  cost = c(d) = 1     ← ⊕ pays only the chosen branch
+     a ⊗ b           c
+       │
+    ┌──┴──┐
+    a     b
 
    ll_required_units = ((1 + 1) + 1) + 1  =  4
 ```
