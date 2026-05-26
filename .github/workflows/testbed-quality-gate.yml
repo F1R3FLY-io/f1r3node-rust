@@ -136,7 +136,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=smoke \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             STRICT="${{ inputs.strict }}" \
             OUTPUT_FORMAT=json \
@@ -236,7 +236,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=ft-upfront-p1 \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
@@ -327,7 +327,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=ft-upfront-p2 \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
@@ -415,7 +415,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=sync-constraint \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
@@ -504,7 +504,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=mntd \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             LOG_HOST_PATH=${{ env.LOG_HOST_PATH }}
@@ -594,7 +594,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=tps \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             MNTD_CAP=${{ inputs.mntd_cap }} \
@@ -683,7 +683,7 @@ jobs:
         run: |
           source .env
           make job-run ENV=.env SUITE=heartbeat ONLY_BEST=1 \
-            IMAGE="${{ inputs.image }}" \
+            NODE_IMAGE="${{ inputs.image }}" \
             PROFILE=ci \
             OUTPUT_FORMAT=json \
             DURATION=90m \
