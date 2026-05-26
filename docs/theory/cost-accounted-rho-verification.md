@@ -23,7 +23,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 23 modules and 18,550 lines of development, and
+in **Rocq 9.1.1** across 26 modules and 20,846 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC and
 selectively cross-checked by Apalache. The headline results include
 contextual forward reachability
@@ -43,7 +43,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 624 `Qed.`/`Defined.` proof terms are discharged without any
+All 685 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -126,7 +126,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 23 modules and 18,550 lines, with 624 `Qed.` or
+   development spans 26 modules and 20,846 lines, with 685 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -153,7 +153,7 @@ This article proves that claim. Concretely, we contribute:
    fuel-event multiset determinism (`fuel_events_consumed_perm`).
 
 4. Independent **TLA+** finite-state correctness models (Section 10),
-   verified by TLC across eight specifications and cross-checked through
+   verified by TLC across 22 specifications and cross-checked through
    Apalache for the typed threat/search-frontier models: the four core
    protocol/scheduling models up to 12,960 distinct states, plus
    runtime-budget replay, threat-model, search-frontier, and typed
@@ -278,9 +278,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 23 modules                                                 |
-| Total lines of Rocq                              | 18,550                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 624                                                        |
+| Rocq source files                                | 26 modules                                                 |
+| Total lines of Rocq                              | 20,846                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 685                                                        |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -303,7 +303,7 @@ on any axiom from Section 12.2.1.
 ### 1.7 Module Dependency Graph
 
 Arrows point from dependency to dependent (`A ──► B` means "module `B`
-imports module `A`"). The 23 modules organize into seven dependency
+imports module `A`"). The 26 modules organize into seven dependency
 tiers corresponding to the proof layers of §7.1.
 
 ```
@@ -3561,13 +3561,20 @@ references.
 | `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| **Total**                   | **18,550** | **624**  |                                                                                                                                                                                                                                                                                    |
+| **Total**                   | **20,846** | **685**  |                                                                                                                                                                                                                                                                                    |
 
 Theorem counts are `Qed.` + `Defined.` occurrences (the proofs that
 contribute kernel-checked terms). Earlier totals listed in this table
 used a looser metric that also counted intermediate `Lemma` bodies
 inside sections, which differs from the kernel-verified count by a few
 per large module.
+
+> **Linear-logic layer.** The compound-signature *authorization* algebra — the
+> `sig_algebra` extension to `CostAccountedSyntax.v`, the DILL two-zone fragment
+> in `LinearLogicResources.v`, and the channel-layer identities in `LLIdentities.v`
+> (the multiplicative unit `1`; tensor/with/plus/bang/why-not/lollipop; and the
+> no-double-spend / no-free-weakening guarantees) — is documented in its dedicated
+> companion, [*Cost Accounting under Linear Logic*](cost-accounting-linear-logic.md).
 
 ### 11.2 Paper-to-Code Traceability
 
@@ -4086,8 +4093,7 @@ the formal specification.
     [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
 
 [2] R. Milner, *Communicating and Mobile Systems: the π-Calculus*,
-    Cambridge University Press, 1999.
-    [doi:10.1017/CBO9780511811753](https://doi.org/10.1017/CBO9780511811753)
+    Cambridge University Press, 1999. ISBN 978-0-521-65869-0.
 
 [3] L. G. Meredith *et al.*, "Rholang Specification," F1R3FLY.io /
     RChain Cooperative, 2017–2026.
@@ -4098,7 +4104,7 @@ the formal specification.
 
 [5] D. Sangiorgi and D. Walker, *The π-Calculus: A Theory of Mobile
     Processes*, Cambridge University Press, 2001.
-    [doi:10.1017/CBO9780511755149](https://doi.org/10.1017/CBO9780511755149)
+    [doi:10.1017/9781316134924](https://doi.org/10.1017/9781316134924)
 
 [6] The Rocq Development Team, "The Rocq Prover Reference Manual,"
     Version 9.1.1, INRIA, 2025.
