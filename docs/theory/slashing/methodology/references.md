@@ -406,9 +406,9 @@ canonical venue.
   Understanding Bugs in C Compilers*. PLDI 2011.
   [doi:10.1145/1993498.1993532](https://doi.org/10.1145/1993498.1993532).
 
-- **[Yak18]** K. Yakdan, A. Maier, M. Smith. *Helping Johnny to
-  Analyze Malware*. IEEE S&P 2018.
-  [doi:10.1109/SP.2018.00041](https://doi.org/10.1109/SP.2018.00041).
+- **[Yak18]** K. Yakdan, S. Dechand, E. Gerhards-Padilla, M. Smith.
+  *Helping Johnny to Analyze Malware*. IEEE S&P 2016.
+  [doi:10.1109/SP.2016.18](https://doi.org/10.1109/SP.2016.18).
 
 - **[Per08]** S. Person, M. B. Dwyer, S. G. Elbaum, C. S. Pasareanu.
   *Differential Symbolic Execution*. FSE 2008.
@@ -437,16 +437,20 @@ canonical venue.
 
 - **[Pol10]** A. Pollet. *Reuse of proof obligations*. Studies in
   Computational Intelligence, 305:217–230, 2010.
-  [doi:10.1007/978-3-642-15390-7_14](https://doi.org/10.1007/978-3-642-15390-7_14).
+  (DOI unverified — the previously-listed `10.1007/978-3-642-15390-7_14`
+  resolves to an unrelated wireless-sensor-networks paper and has been
+  removed pending confirmation of the intended source; cite the venue
+  directly until verified.)
   (Background on assumption-counterexample witnesses.)
 
 ---
 
 ## 10 · Distributed-systems verification
 
-- **[HKR12]** Sergey *et al.* *Disel: distributed protocols in
-  Coq*. ICFP 2018. (For Disel.)
-  [doi:10.1145/3236779](https://doi.org/10.1145/3236779).
+- **[HKR12]** I. Sergey, J. R. Wilcox, Z. Tatlock. *Programming and
+  proving with distributed protocols* (Disel). Proc. ACM Program.
+  Lang. 2(POPL), 2018.
+  [doi:10.1145/3158116](https://doi.org/10.1145/3158116).
 
 - **[Wil15]** J. R. Wilcox, D. Woos, P. Panchekha *et al.*
   *Verdi: a framework for implementing and formally verifying
