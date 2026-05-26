@@ -49,13 +49,13 @@ The thesis that organizes this entire document is a single identification, made 
 
 This document covers five concrete artifacts, all on the `feature/cost-accounted-rho` branch:
 
-| Artifact | File(s) | Role |
-|----------|---------|------|
-| Runtime signature algebra | `formal/rocq/cost_accounted_rho/theories/CostAccountedSyntax.v` (the `sig_algebra` block) | The 9-connective ILLE algebra + the cost function |
-| DILL two-zone fragment | `formal/rocq/cost_accounted_rho/theories/LinearLogicResources.v` | The `dill` sequent calculus, resource measures, no-double-spend theorems |
-| Channel-layer identities | `formal/rocq/cost_accounted_rho/theories/LLIdentities.v` | Equational laws incl. the unit laws and Mac Lane coherence |
-| Bounded-exhaustive cross-check | `formal/sage/cost_accounting/ll_identity_search.sage` | An independent reference model searched over hundreds of thousands of cases |
-| Per-connective protocol models | `formal/tlaplus/cost_accounted_rho/{Plus,With,Bang,WhyNot,Lolly,Threshold}Protocol.tla` | Finite-state model-checking of each connective's runtime protocol |
+| Artifact                       | File(s)                                                                                   | Role                                                                        |
+|--------------------------------|-------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|
+| Runtime signature algebra      | `formal/rocq/cost_accounted_rho/theories/CostAccountedSyntax.v` (the `sig_algebra` block) | The 9-connective ILLE algebra + the cost function                           |
+| DILL two-zone fragment         | `formal/rocq/cost_accounted_rho/theories/LinearLogicResources.v`                          | The `dill` sequent calculus, resource measures, no-double-spend theorems    |
+| Channel-layer identities       | `formal/rocq/cost_accounted_rho/theories/LLIdentities.v`                                  | Equational laws incl. the unit laws and Mac Lane coherence                  |
+| Bounded-exhaustive cross-check | `formal/sage/cost_accounting/ll_identity_search.sage`                                     | An independent reference model searched over hundreds of thousands of cases |
+| Per-connective protocol models | `formal/tlaplus/cost_accounted_rho/{Plus,With,Bang,WhyNot,Lolly,Threshold}Protocol.tla`   | Finite-state model-checking of each connective's runtime protocol           |
 
 It does **not** cover the operational *reduction* of authorized deploys (that lives in `RhoReduction.v` / `Bisimulation.v`), nor the on-chain `rho:system:capabilities` registry that implements bounded reuse and the lollipop transformer at runtime. Those are dynamics; this document is the *static* resource accounting that the dynamics presuppose.
 
@@ -67,7 +67,7 @@ It does **not** cover the operational *reduction* of authorized deploys (that li
 
 ## 2. Glossary of Symbols and Terms
 
-*Every symbol, connective, and term used in this document appears in the tables below before its first use; later sections assume these definitions.* Throughout, σ, τ, ρ range over signature formulas and *a*, *b*, *c* over atomic signatures.
+*Every symbol, connective, and term used in this document appears in the tables below before its first use; later sections assume these definitions.* Throughout, `σ`, `τ`, `ρ` range over signature formulas and `a`, `b`, `c` over atomic signatures.
 
 ### 2.1 Linear-logic connectives and the unit
 
@@ -75,27 +75,27 @@ The fourth column — the **cost reading** — is this document's central contri
 
 | Symbol | Name | Informal reading | Cost (witnesses required) |
 |:------:|------|------------------|---------------------------|
-| `1` | multiplicative **unit** | the trivial requirement; "no authorization needed" | 0 |
-| `⊗` | **tensor** (multiplicative conjunction) | *both* σ and τ, using disjoint witnesses | cost(σ) + cost(τ) |
-| `⊸` | **lollipop** (linear implication) | consume a σ to obtain a τ | cost(σ) + cost(τ) |
-| `&` | **with** (additive conjunction) | the *verifier* may project either branch; both must be available | cost(σ) + cost(τ) |
-| `⊕` | **plus** (additive disjunction) | the *signer* commits to exactly one branch | cost(chosen branch) |
-| `!` | **of-course** / **bang** (exponential) | a *reusable* σ (unbounded uses) | cost(σ) |
-| `?` | **why-not** (exponential) | an *optional* σ (zero-or-more uses) | 0 |
+| `1` | multiplicative **unit** | the trivial requirement; "no authorization needed" | `0` |
+| `⊗` | **tensor** (multiplicative conjunction) | *both* `σ` and `τ`, using disjoint witnesses | `cost(σ) + cost(τ)` |
+| `⊸` | **lollipop** (linear implication) | consume a `σ` to obtain a `τ` | `cost(σ) + cost(τ)` |
+| `&` | **with** (additive conjunction) | the *verifier* may project either branch; both must be available | `cost(σ) + cost(τ)` |
+| `⊕` | **plus** (additive disjunction) | the *signer* commits to exactly one branch | `cost(chosen branch)` |
+| `!` | **of-course** / **bang** (exponential) | a *reusable* `σ` (unbounded uses) | `cost(σ)` |
+| `?` | **why-not** (exponential) | an *optional* `σ` (zero-or-more uses) | `0` |
 | `⊢` | **turnstile** (entailment) | "… derives / authorizes …" | — |
 | `≡` | channel **equivalence** | equality of the reflected witness multiset (see §2.5) | — |
 | `∎` | QED | end of a proof | — |
 
-The **threshold** (k-of-N quorum) connective, written informally `Threshold(k, [σ₁ … σₙ])`, is not a textbook linear-logic connective; it is a primitive of this development (see [§5.1](#51-the-sig_algebra-type)) with cost = k.
+The **threshold** (`k`-of-`N` quorum) connective, written informally `Threshold(k, [σ₁ … σₙ])`, is not a textbook linear-logic connective; it is a primitive of this development (see [§5.1](#51-the-sig_algebra-type)) with `cost = k`.
 
 ### 2.2 Sequent and context notation
 
 | Symbol | Name | Meaning |
 |:------:|------|---------|
-| Γ (Gamma) | **unrestricted** context / **zone** | a list of *reusable* hypotheses; admits weakening and contraction (defined in §2.6) |
-| Δ (Delta) | **linear** context / **zone** | a list of *single-use* hypotheses; admits neither weakening nor contraction |
-| `Γ ; Δ ⊢ A` | **DILL sequent** | "with reusable capabilities Γ and spendable witnesses Δ, the goal A is derivable" |
-| Δ₁, Δ₂ (also Δ₁ ⊎ Δ₂) | context **split** | multiset union; the linear zone partitioned across premises |
+| `Γ` (Gamma) | **unrestricted** context / **zone** | a list of *reusable* hypotheses; admits weakening and contraction (defined in §2.6) |
+| `Δ` (Delta) | **linear** context / **zone** | a list of *single-use* hypotheses; admits neither weakening nor contraction |
+| `Γ ; Δ ⊢ A` | **DILL sequent** | "with reusable capabilities `Γ` and spendable witnesses `Δ`, the goal `A` is derivable" |
+| `Δ₁, Δ₂` (also `Δ₁ ⊎ Δ₂`) | context **split** | multiset union; the linear zone partitioned across premises |
 | `·` | the **empty** context | no hypotheses (the linear analogue of the unit `1`) |
 
 ### 2.3 The runtime signature algebra: Rocq ↔ Rust ↔ cost
@@ -104,15 +104,15 @@ The Rocq inductive `sig_algebra` (`CostAccountedSyntax.v:229`), the runtime Rust
 
 | Rocq `sig_algebra` | Rust `Sig` | Wire `Connective` | LL connective | `sig_algebra_min_required` |
 |--------------------|-----------|-------------------|:-------------:|----------------------------|
-| `ASUnit` | `Sig::Unit` | `Atom` (empty) | `1` | 0 |
-| `ASHash a` | `Sig::Hash(b)` | `Atom` | atom | 1 |
-| `ASAnd s₁ s₂` | `Sig::And` | `Tensor` | `⊗` | min(s₁) + min(s₂) |
-| `ASWith s₁ s₂` | `Sig::With` | `With` | `&` | min(s₁) + min(s₂) |
-| `ASPlus c s₁ s₂` | `Sig::Plus` | `Plus` | `⊕` | min(chosen branch) |
-| `ASBang s` | `Sig::Bang` | `Bang` | `!` | min(s) |
-| `ASWhyNot s` | `Sig::WhyNot` | `Whynot` | `?` | 0 |
-| `ASLolly s₁ s₂` | `Sig::Lolly` | `Lolly` | `⊸` | min(s₁) + min(s₂) |
-| `ASThreshold k ms` | `Sig::Threshold{…}` | `Threshold` | k-of-N | k |
+| `ASUnit` | `Sig::Unit` | `Atom` (empty) | `1` | `0` |
+| `ASHash a` | `Sig::Hash(b)` | `Atom` | atom | `1` |
+| `ASAnd s₁ s₂` | `Sig::And` | `Tensor` | `⊗` | `min(s₁) + min(s₂)` |
+| `ASWith s₁ s₂` | `Sig::With` | `With` | `&` | `min(s₁) + min(s₂)` |
+| `ASPlus c s₁ s₂` | `Sig::Plus` | `Plus` | `⊕` | `min(chosen branch)` |
+| `ASBang s` | `Sig::Bang` | `Bang` | `!` | `min(s)` |
+| `ASWhyNot s` | `Sig::WhyNot` | `Whynot` | `?` | `0` |
+| `ASLolly s₁ s₂` | `Sig::Lolly` | `Lolly` | `⊸` | `min(s₁) + min(s₂)` |
+| `ASThreshold k ms` | `Sig::Threshold{…}` | `Threshold` | `k-of-N` | `k` |
 
 > **Naming note.** The Rust variant `Sig::And` is the linear-logic tensor `⊗`; the name `And` is retained for backward compatibility with the Phase-1 substrate, and the doc comment at `accounting/mod.rs:829` records that the `Tensor` rename is intentionally postponed to a separate coordinated PR. We write `⊗` throughout and treat `ASAnd` / `Sig::And` / `Tensor` as synonyms.
 
@@ -124,7 +124,7 @@ These live in `LinearLogicResources.v`. `ll_formula` (`line 7`) is the object-le
 |------------|------|---------|
 | `ll_required_units` | `ll_formula → ℕ` | the **cost**: minimum witnesses the formula obligates |
 | `ll_available_slots` | `ll_formula → ℕ` | the **capacity**: how many witness positions exist |
-| `ll_consumed_atoms` | `ll_formula → list ℕ` | the atoms *actually spent* (⊕ takes only the chosen branch; `?` spends nothing) |
+| `ll_consumed_atoms` | `ll_formula → list ℕ` | the atoms *actually spent* (`⊕` takes only the chosen branch; `?` spends nothing) |
 | `ll_atoms` | `ll_formula → list ℕ` | every atom appearing anywhere in the formula |
 | `ll_valid` | `ll_formula → bool` | well-formedness (threshold bounds `1 ≤ k ≤ n`) |
 
@@ -135,7 +135,7 @@ These live in `LinearLogicResources.v`. `ll_formula` (`line 7`) is the object-le
 | Definition | Meaning |
 |------------|---------|
 | `channel` = `list ℕ` | a multiset of atom ids (the reflected shape of a signature) |
-| `channel_equiv c₁ c₂` ≝ `Permutation c₁ c₂` | two channels are `≡` iff their multisets agree |
+| `channel_equiv c₁ c₂ ≝ Permutation c₁ c₂` | two channels are `≡` iff their multisets agree |
 | `tensor_channel`, `plus_channel`, `with_channel`, `lolly_channel` | all = list concatenation `++` at the channel layer |
 | `bang_channel`, `whynot_channel` | both = the identity on channels |
 | `threshold_channel` | concatenation of all member channels |
@@ -149,7 +149,7 @@ These live in `LinearLogicResources.v`. `ll_formula` (`line 7`) is the object-le
 | **Contraction** | duplicating a hypothesis: from `Γ, A, A ⊢ B` infer `Γ, A ⊢ B`. Linear logic *rejects* it — one witness may not be used twice. |
 | **Exchange** | reordering hypotheses. Linear logic *keeps* it (our channels are multisets, so order is irrelevant). |
 | **ILLE** | Intuitionistic Linear Logic with Exponentials — the single-conclusion linear logic with `!` and `?`. The fragment this development mechanizes. |
-| **DILL** | Dual Intuitionistic Linear Logic [[2](#ref-2)] — a two-zone presentation of ILLE with a reusable zone Γ and a linear zone Δ. |
+| **DILL** | Dual Intuitionistic Linear Logic [[2](#ref-2)] — a two-zone presentation of ILLE with a reusable zone `Γ` and a linear zone `Δ`. |
 | **Dereliction** | the rule `!σ ⊢ σ`: a reusable resource may be used once. |
 | **Signer's choice vs. verifier's choice** | `⊕` is decided by the party constructing the deploy (which branch they signed); `&` leaves the choice to the verifier (block proposer), so both branches must be available. |
 | **Quorum / threshold** | a k-of-N requirement: any k of the N listed signers suffice. |
@@ -172,7 +172,7 @@ For cost accounting this is precisely the right discipline. A cryptographic sign
 
 ### 3.2 Structural rules, and what linearity removes
 
-A *sequent* `Γ ⊢ B` reads "from the hypotheses Γ, conclusion B follows." The **structural rules** govern how the hypothesis list may be manipulated independently of the connectives:
+A *sequent* `Γ ⊢ B` reads "from the hypotheses `Γ`, conclusion `B` follows." The **structural rules** govern how the hypothesis list may be manipulated independently of the connectives:
 
 ```
               Γ ⊢ B                         Γ, A, A ⊢ B
@@ -190,26 +190,26 @@ Linear logic **removes both** (keeping only exchange). The cost-accounting readi
 | contraction | you cannot use one witness twice → **no double-spend** | `ll_linear_no_contraction` ([§8.2](#82-no-contraction-no-weakening)) |
 | weakening | you cannot discard a required witness for free → **no free weakening** | `ll_linear_no_weakening` ([§8.2](#82-no-contraction-no-weakening)) |
 
-### 3.3 The multiplicative connectives: ⊗ and ⊸
+### 3.3 The multiplicative connectives: `⊗` and `⊸`
 
-The **tensor** `σ ⊗ τ` means "I have both σ and τ, and the witnesses for σ are disjoint from those for τ." Because the witnesses are disjoint, the cost is *additive*: cost(σ ⊗ τ) = cost(σ) + cost(τ). In cost-accounting terms, `σ ⊗ τ` is the multi-signer requirement "every one of these signers must contribute." A list of N cosigners folds to a left-nested tensor `((σ₁ ⊗ σ₂) ⊗ …) ⊗ σₙ`, which is exactly what the runtime does at `accounting/mod.rs:605` (see [§9.4](#94-rust-runtime-grounding)).
+The **tensor** `σ ⊗ τ` means "I have both `σ` and `τ`, and the witnesses for `σ` are disjoint from those for `τ`." Because the witnesses are disjoint, the cost is *additive*: `cost(σ ⊗ τ) = cost(σ) + cost(τ)`. In cost-accounting terms, `σ ⊗ τ` is the multi-signer requirement "every one of these signers must contribute." A list of `N` cosigners folds to a left-nested tensor `((σ₁ ⊗ σ₂) ⊗ …) ⊗ σₙ`, which is exactly what the runtime does at `accounting/mod.rs:605` (see [§9.4](#94-rust-runtime-grounding)).
 
-The **lollipop** `σ ⊸ τ` (linear implication) means "consume a σ to produce a τ." It is the type of a *capability*: a delegation that, when fed an authorization σ, yields an authorization τ, spending σ in the process. Its cost is again additive, cost(σ ⊸ τ) = cost(σ) + cost(τ), because exercising the capability requires both the input witness and whatever the output obligates.
+The **lollipop** `σ ⊸ τ` (linear implication) means "consume a `σ` to produce a `τ`." It is the type of a *capability*: a delegation that, when fed an authorization `σ`, yields an authorization `τ`, spending `σ` in the process. Its cost is again additive, `cost(σ ⊸ τ) = cost(σ) + cost(τ)`, because exercising the capability requires both the input witness and whatever the output obligates.
 
-### 3.4 The additive connectives: & and ⊕
+### 3.4 The additive connectives: `&` and `⊕`
 
 Where the multiplicatives are about having *both* of two resources at once, the additives are about a *choice* between two — and they differ in *who* chooses.
 
-- **With**, `σ & τ`, is the **verifier's** choice. The party authorizing must be ready to satisfy *either* branch, because the verifier decides at validation time which branch's fuel flows. Both branches must therefore be available, so cost(σ & τ) = cost(σ) + cost(τ).
-- **Plus**, `σ ⊕ τ`, is the **signer's** choice. The party constructing the deploy commits, at signing time, to exactly one branch (recorded as a left/right witness). Only that branch's witnesses are required, so cost(σ ⊕ τ) = cost(chosen branch).
+- **With**, `σ & τ`, is the **verifier's** choice. The party authorizing must be ready to satisfy *either* branch, because the verifier decides at validation time which branch's fuel flows. Both branches must therefore be available, so `cost(σ & τ) = cost(σ) + cost(τ)`.
+- **Plus**, `σ ⊕ τ`, is the **signer's** choice. The party constructing the deploy commits, at signing time, to exactly one branch (recorded as a left/right witness). Only that branch's witnesses are required, so `cost(σ ⊕ τ) = cost(chosen branch)`.
 
 This signer-vs-verifier asymmetry is exactly the linear-logic distinction between internal (`⊕`) and external (`&`) choice, and the Rust enum encodes it verbatim (`accounting/mod.rs:845` for `Plus` "signer's choice", `:852` for `With` "verifier's choice").
 
 ### 3.5 The exponentials: ! and ?
 
-The exponentials are the controlled re-entry of the structural rules. `!σ` ("of-course σ", "bang σ") marks a resource that *may* be weakened and contracted — i.e., used any number of times, including zero. In cost-accounting terms `!σ` is a **reusable capability**: a standing authorization that funds many reductions from a single registration. Crucially, **registering it costs only what σ costs once**: cost(`!σ`) = cost(σ); the unbounded *reuse* is accounted at the capability registry, not here.
+The exponentials are the controlled re-entry of the structural rules. `!σ` ("of-course `σ`", "bang `σ`") marks a resource that *may* be weakened and contracted — i.e., used any number of times, including zero. In cost-accounting terms `!σ` is a **reusable capability**: a standing authorization that funds many reductions from a single registration. Crucially, **registering it costs only what `σ` costs once**: `cost(!σ) = cost(σ)`; the unbounded *reuse* is accounted at the capability registry, not here.
 
-`?σ` ("why-not σ") is the dual: an **optional** authorization, present zero-or-more times. A deploy whose authorization is `?σ` is accepted whether or not σ is actually supplied, so it obligates nothing: cost(`?σ`) = 0.
+`?σ` ("why-not `σ`") is the dual: an **optional** authorization, present zero-or-more times. A deploy whose authorization is `?σ` is accepted whether or not `σ` is actually supplied, so it obligates nothing: `cost(?σ) = 0`.
 
 ### 3.6 The multiplicative unit `1`
 
@@ -217,9 +217,9 @@ The tensor `⊗` is a monoid-like operation, and like every such operation it ha
 
 Three facts pin `1` down, and all three are mechanized:
 
-1. **It is the ⊗-identity.** `1 ⊗ σ ≡ σ` and `σ ⊗ 1 ≡ σ` (the *unit laws*), proved at the channel layer as `tensor_unit_left` and `tensor_unit_right` ([§7.2](#72-multiplicative-laws-incl-the-unit)). The Rust enum states the same: "*`1` — multiplicative unit. Identity for `And` / `Tensor`: σ ⊗ 1 ≡ σ*" (`accounting/mod.rs:822`).
-2. **It costs nothing.** `ll_required_units LLUnit = 0` and `sig_algebra_min_required ASUnit = 0`. Adding `1` to any bundle leaves the bundle's cost unchanged — definitionally, since cost(`1 ⊗ σ`) = 0 + cost(σ) = cost(σ).
-3. **It is derivable from the empty linear zone.** In the sequent calculus, `Γ ; · ⊢ 1` for any Γ (the rule `dill_unit`, [§4.3](#43-the-repos-dill-relation)): you can always "authorize nothing" without spending any witness.
+1. **It is the `⊗`-identity.** `1 ⊗ σ ≡ σ` and `σ ⊗ 1 ≡ σ` (the *unit laws*), proved at the channel layer as `tensor_unit_left` and `tensor_unit_right` ([§7.2](#72-multiplicative-laws-incl-the-unit)). The Rust enum states the same: "*`1` — multiplicative unit. Identity for `And` / `Tensor`: `σ ⊗ 1 ≡ σ`*" (`accounting/mod.rs:822`).
+2. **It costs nothing.** `ll_required_units LLUnit = 0` and `sig_algebra_min_required ASUnit = 0`. Adding `1` to any bundle leaves the bundle's cost unchanged — definitionally, since `cost(1 ⊗ σ) = 0 + cost(σ) = cost(σ)`.
+3. **It is derivable from the empty linear zone.** In the sequent calculus, `Γ ; · ⊢ 1` for any `Γ` (the rule `dill_unit`, [§4.3](#43-the-repos-dill-relation)): you can always "authorize nothing" without spending any witness.
 
 `1` is the backbone of the algebra: it is the base case of the recursive cost function, the unit object in the monoidal-coherence theorems ([§7.6](#76-monoidal-coherence-mac-lane)), and the cost-accounting motif of a *free authorization*.
 
@@ -248,21 +248,21 @@ Three facts pin `1` down, and all three are mechanized:
 
 Linear logic's exponential `!` does real work — it re-admits weakening and contraction — but a sequent calculus with `!` rules sprinkled through it is awkward to reason about. Benton's *mixed linear / non-linear* logic [[3](#ref-3)] and Barber's **Dual Intuitionistic Linear Logic (DILL)** [[2](#ref-2)] reorganize this by *splitting the context into two zones*:
 
-- an **unrestricted zone Γ** of hypotheses that behave intuitionistically (freely weakened and contracted — i.e., reusable), and
-- a **linear zone Δ** of hypotheses that must be used exactly once.
+- an **unrestricted zone `Γ`** of hypotheses that behave intuitionistically (freely weakened and contracted — i.e., reusable), and
+- a **linear zone `Δ`** of hypotheses that must be used exactly once.
 
-A DILL sequent is written `Γ ; Δ ⊢ A`. The modality `!` is precisely what mediates the two zones: a `!`-formula is one that may be moved from the disciplined linear zone into the free unrestricted zone. This two-zone presentation maps cleanly onto cost accounting: **Γ holds the reusable capabilities (the `!`-resources), Δ holds the spendable fuel witnesses, and the whole accounting question is how Δ is partitioned and consumed.**
+A DILL sequent is written `Γ ; Δ ⊢ A`. The modality `!` is precisely what mediates the two zones: a `!`-formula is one that may be moved from the disciplined linear zone into the free unrestricted zone. This two-zone presentation maps cleanly onto cost accounting: **`Γ` holds the reusable capabilities (the `!`-resources), `Δ` holds the spendable fuel witnesses, and the whole accounting question is how `Δ` is partitioned and consumed.**
 
 ### 4.2 Reading the judgment
 
 Read `Γ ; Δ ⊢ A` as:
 
-> "Given the reusable capabilities listed in Γ and the single-use witnesses listed in Δ, the authorization A is derivable — consuming exactly the witnesses in Δ and none of Γ."
+> "Given the reusable capabilities listed in `Γ` and the single-use witnesses listed in `Δ`, the authorization `A` is derivable — consuming exactly the witnesses in `Δ` and none of `Γ`."
 
 Two structural facts make this a *linear* discipline rather than an ordinary one, and both are visible in the rules below:
 
-- Γ is **copied** into every premise of a multi-premise rule (it is reusable, so sharing it costs nothing).
-- Δ is **partitioned** across premises (it is single-use, so each witness goes to exactly one premise — never duplicated, never dropped).
+- `Γ` is **copied** into every premise of a multi-premise rule (it is reusable, so sharing it costs nothing).
+- `Δ` is **partitioned** across premises (it is single-use, so each witness goes to exactly one premise — never duplicated, never dropped).
 
 The diagram below contrasts the two zones and shows three representative rules.
 
@@ -320,7 +320,7 @@ Read against [§2](#2-glossary-of-symbols-and-terms), these rules are simply the
 
 ### 4.4 A scope caveat, stated up front
 
-The `dill` relation is a faithful but **deliberately small fragment** of full DILL. It is single-conclusion and *introduction-flavored*: it has no explicit cut constructor (`dill_cut`), its `!`-rule (`dill_unrestricted`) fuses dereliction-from-Γ with `!`-introduction, and `dill_whynot_intro` is unconditional. We document exactly what is and is not included in [§10.1](#101-the-dill-fragment-caveat); cut is studied separately, and admissibly, at the channel layer ([§7.8](#78-cut-admissibly)). What the fragment *does* establish rigorously is the resource behaviour of every connective and the two substructural prohibitions — which is exactly what cost accounting needs.
+The `dill` relation is a faithful but **deliberately small fragment** of full DILL. It is single-conclusion and *introduction-flavored*: it has no explicit cut constructor (`dill_cut`), its `!`-rule (`dill_unrestricted`) fuses dereliction-from-`Γ` with `!`-introduction, and `dill_whynot_intro` is unconditional. We document exactly what is and is not included in [§10.1](#101-the-dill-fragment-caveat); cut is studied separately, and admissibly, at the channel layer ([§7.8](#78-cut-admissibly)). What the fragment *does* establish rigorously is the resource behaviour of every connective and the two substructural prohibitions — which is exactly what cost accounting needs.
 
 ---
 
@@ -424,15 +424,15 @@ Collecting [§3](#3-linear-logic-from-first-principles)–[§5](#5-the-runtime-s
 
 | Connective | Linear-logic meaning | Cost clause | Cost-accounting reading | Rust `Sig` |
 |:----------:|----------------------|-------------|-------------------------|------------|
-| `1` | multiplicative unit | 0 | free authorization; neutral element | `Unit` |
-| atom | atomic proposition | 1 | one concrete signer | `Hash` |
-| `⊗` | multiplicative ∧ | c(σ)+c(τ) | all cosigners must contribute | `And` |
-| `&` | additive ∧ | c(σ)+c(τ) | both available; verifier projects one | `With` |
-| `⊕` | additive ∨ | c(chosen) | signer commits to one branch | `Plus` |
-| `!` | of-course | c(σ) | reusable standing capability | `Bang` |
-| `?` | why-not | 0 | optional witness | `WhyNot` |
-| `⊸` | linear implication | c(σ)+c(τ) | capability: spend σ, obtain τ | `Lolly` |
-| Threshold k | (derived) | k | any k of N signers | `Threshold` |
+| `1` | multiplicative unit | `0` | free authorization; neutral element | `Unit` |
+| atom | atomic proposition | `1` | one concrete signer | `Hash` |
+| `⊗` | multiplicative `∧` | `c(σ)+c(τ)` | all cosigners must contribute | `And` |
+| `&` | additive `∧` | `c(σ)+c(τ)` | both available; verifier projects one | `With` |
+| `⊕` | additive `∨` | `c(chosen)` | signer commits to one branch | `Plus` |
+| `!` | of-course | `c(σ)` | reusable standing capability | `Bang` |
+| `?` | why-not | `0` | optional witness | `WhyNot` |
+| `⊸` | linear implication | `c(σ)+c(τ)` | capability: spend `σ`, obtain `τ` | `Lolly` |
+| Threshold `k` | (derived) | `k` | any `k` of `N` signers | `Threshold` |
 
 The recursion bottoms out at `1` (cost 0) and atoms (cost 1); every composite folds these by sum, by chosen-branch, or by quorum. The following inline derivation shows the cost of a small authorization computed structurally — note how `1` contributes 0 and drops out:
 
@@ -453,19 +453,19 @@ authorization:  ((a ⊗ b) ⊗ c)  ⊗  (1 ⊕ d)        a,b,c,d atomic; signer 
 
 ### 6.2 Linear zone = spendable fuel
 
-The single-use witnesses in Δ model fuel that is paid out exactly once. The two prohibitions of [§3.2](#32-structural-rules-and-what-linearity-removes) become the two core security properties, both proved in [§8](#8-substructural-guarantees-no-double-spend-no-free-weakening): no contraction → **no double-spend** (`ll_linear_no_contraction`), no weakening → **no fuel discarded or required-witness skipped** (`ll_linear_no_weakening`).
+The single-use witnesses in `Δ` model fuel that is paid out exactly once. The two prohibitions of [§3.2](#32-structural-rules-and-what-linearity-removes) become the two core security properties, both proved in [§8](#8-substructural-guarantees-no-double-spend-no-free-weakening): no contraction → **no double-spend** (`ll_linear_no_contraction`), no weakening → **no fuel discarded or required-witness skipped** (`ll_linear_no_weakening`).
 
 ### 6.3 `!`/unrestricted zone = reusable capabilities
 
-A `Sig::Bang` is a replicable authorization — one registration funds many invocations (`accounting/mod.rs:857`). In the DILL model this is exactly the unrestricted zone Γ: using a Γ-hypothesis leaves Γ unchanged (`reuse_unrestricted γ = γ`, `LinearLogicResources.v:130`), and using it twice still leaves Γ unchanged (`ll_unrestricted_can_be_reused`, [§8.4](#84-unrestricted-reuse-is-free-and-idempotent)). Registration cost is just c(σ) once; *bounded* reuse (a capability usable at most n times) is enforced by the `rho:system:capabilities` registry, outside this static model.
+A `Sig::Bang` is a replicable authorization — one registration funds many invocations (`accounting/mod.rs:857`). In the DILL model this is exactly the unrestricted zone `Γ`: using a `Γ`-hypothesis leaves `Γ` unchanged (`reuse_unrestricted γ = γ`, `LinearLogicResources.v:130`), and using it twice still leaves `Γ` unchanged (`ll_unrestricted_can_be_reused`, [§8.4](#84-unrestricted-reuse-is-free-and-idempotent)). Registration cost is just `c(σ)` once; *bounded* reuse (a capability usable at most n times) is enforced by the `rho:system:capabilities` registry, outside this static model.
 
 ### 6.4 Unit `1` = zero-cost neutral element
 
-By [§3.6](#36-the-multiplicative-unit-1), `1` costs 0, is the `⊗`-identity up to channel equivalence, and is derivable from the empty linear zone. It is the recurring "free authorization" of the algebra and the base case that makes the recursive cost function total.
+By [§3.6](#36-the-multiplicative-unit-1), `1` costs `0`, is the `⊗`-identity up to channel equivalence, and is derivable from the empty linear zone. It is the recurring "free authorization" of the algebra and the base case that makes the recursive cost function total.
 
 ### 6.5 Worked example: a 2-of-3 threshold deploy, end-to-end
 
-Consider a deploy authorized by *any two of three* cosigners with public keys yielding atoms *a₁*, *a₂*, *a₃*, each funding a `phlo_share` of 100 against a `phlo_limit` of 300.
+Consider a deploy authorized by *any two of three* cosigners with public keys yielding atoms `a₁`, `a₂`, `a₃`, each funding a `phlo_share` of 100 against a `phlo_limit` of 300.
 
 1. **Authorization term.** `s = ASThreshold 2 [ASHash a₁; ASHash a₂; ASHash a₃]`. It is well-formed: `1 ≤ 2 ≤ 3`, so `sig_algebra_valid s = true` ([§5.3](#53-companion-measures)).
 2. **Reflection.** `ll_of_sig_algebra s = LLThreshold 2 [LLAtom a₁; LLAtom a₂; LLAtom a₃]`.
@@ -501,7 +501,7 @@ These four make `(channels, ⊗, 1)` a commutative monoid up to channel equivale
 
 ### 7.5 Implication and currying
 
-`lolly_to_tensor_channel` (`:187`) records that at the channel layer `σ ⊸ τ` reflects like `σ ⊗ τ`. `lolly_curry_isomorphism` (`:291`) proves the closed-monoidal adjunction `(σ ⊗ τ) ⊸ ρ ≡ σ ⊸ (τ ⊸ ρ)`. The modus-ponens *channel decomposition* `σ ⊗ (σ ⊸ τ) ≡ σ ⊗ σ ⊗ τ` is `lolly_modus_ponens_channel_decomposition` (`:308`) — with the explicit caveat that the genuine reduction `σ ⊗ (σ ⊸ τ) ⊢ τ` (which *consumes* σ) lives in the reduction relation, not here. The capability reading is shown below.
+`lolly_to_tensor_channel` (`:187`) records that at the channel layer `σ ⊸ τ` reflects like `σ ⊗ τ`. `lolly_curry_isomorphism` (`:291`) proves the closed-monoidal adjunction `(σ ⊗ τ) ⊸ ρ ≡ σ ⊸ (τ ⊸ ρ)`. The modus-ponens *channel decomposition* `σ ⊗ (σ ⊸ τ) ≡ σ ⊗ σ ⊗ τ` is `lolly_modus_ponens_channel_decomposition` (`:308`) — with the explicit caveat that the genuine reduction `σ ⊗ (σ ⊸ τ) ⊢ τ` (which *consumes* `σ`) lives in the reduction relation, not here. The capability reading is shown below.
 
 ![Sequence diagram of linear modus ponens. The deployer presents a witness σ to the linear zone Δ, then invokes a capability σ ⊸ τ; the capability consumes σ from Δ via consume_linear_atom, leaving Δ empty, and yields τ. A note records the conservation law ll_lolly_resource_flow_conservative: the cost of σ ⊸ τ equals the cost of σ plus the cost of τ, so no resource is created from nothing.](diagrams/lolly-modus-ponens-sequence.svg)
 
@@ -564,7 +564,7 @@ The statechart below traces both cases side by side.
 
 ### 8.4 Unrestricted reuse is free and idempotent
 
-Dual to the linear zone, the unrestricted zone Γ is reusable. `ll_unrestricted_reuse_preserves_context` (`:387`) proves `reuse_unrestricted f γ = γ`, and `ll_unrestricted_can_be_reused` (`:396`) proves reuse is idempotent (using twice still returns γ). `ll_unrestricted_cut_preserves_linear_zone` (`:415`) records that drawing on Γ leaves Δ untouched. The contrast between [§8.3](#83-no-double-spend) (linear, depletes) and this subsection (unrestricted, persists) *is* the cost-accounting meaning of the two zones.
+Dual to the linear zone, the unrestricted zone `Γ` is reusable. `ll_unrestricted_reuse_preserves_context` (`:387`) proves `reuse_unrestricted f γ = γ`, and `ll_unrestricted_can_be_reused` (`:396`) proves reuse is idempotent (using twice still returns `γ`). `ll_unrestricted_cut_preserves_linear_zone` (`:415`) records that drawing on `Γ` leaves `Δ` untouched. The contrast between [§8.3](#83-no-double-spend) (linear, depletes) and this subsection (unrestricted, persists) *is* the cost-accounting meaning of the two zones.
 
 ### 8.5 Per-connective resource laws
 
@@ -575,9 +575,9 @@ A final group tabulates each connective's resource behaviour. Each is `Qed`-clos
 | `ll_plus_left_consumes_chosen_branch` | `⊕`(left) costs/consumes only the left branch | `:258` |
 | `ll_plus_right_consumes_chosen_branch` | `⊕`(right) costs/consumes only the right branch | `:264` |
 | `ll_with_requires_both_branches_available` | `&` costs the sum and concatenates consumed atoms | `:270` |
-| `ll_bang_reuse_no_extra_linear_cost` | `!σ` costs exactly what σ costs | `:278` |
-| `ll_whynot_consumes_no_linear_witness` | `?σ` costs 0 and consumes `[]` | `:285` |
-| `ll_lolly_resource_flow_conservative` | `σ ⊸ τ` costs c(σ)+c(τ); no resource ex nihilo | `:291` |
+| `ll_bang_reuse_no_extra_linear_cost` | `!σ` costs exactly what `σ` costs | `:278` |
+| `ll_whynot_consumes_no_linear_witness` | `?σ` costs `0` and consumes `[]` | `:285` |
+| `ll_lolly_resource_flow_conservative` | `σ ⊸ τ` costs `c(σ)+c(τ)`; no resource ex nihilo | `:291` |
 | `ll_threshold_quorum_sound` | valid `Threshold(k,…)` gives `1 ≤ k ≤ n ∧ cost = k` | `:299` |
 
 ---
@@ -651,14 +651,14 @@ The `dill` relation ([§4.3](#43-the-repos-dill-relation)) is a **single-conclus
 
 - there is **no `dill_cut` constructor** (cut is studied admissibly and only at the channel layer, `cut_admissible`, [§7.8](#78-cut-admissibly));
 - there are **no left rules** for `⊕`, `&`, `⊗`;
-- the `!`-rule `dill_unrestricted` **fuses** dereliction-from-Γ with `!`-introduction rather than providing the standard separate promotion/dereliction/contraction/weakening rules;
+- the `!`-rule `dill_unrestricted` **fuses** dereliction-from-`Γ` with `!`-introduction rather than providing the standard separate promotion/dereliction/contraction/weakening rules;
 - `dill_whynot_intro` is **unconditional** (`Γ ; · ⊢ ?f` for any `f`), modeling "optional" by outright discard rather than threading a `?`-context.
 
 What the fragment proves rigorously is the *resource behaviour* of each connective and the two substructural prohibitions ([§8](#8-substructural-guarantees-no-double-spend-no-free-weakening)) — sufficient for the cost-accounting claims of this document, but not a metatheory (e.g. cut-elimination, normalization) of full DILL.
 
 ### 10.2 The channel-layer distributivity caveat
 
-The canonical linear-logic distributivity `σ ⊗ (τ ⊕ ρ) ≡ (σ ⊗ τ) ⊕ (σ ⊗ ρ)` does **not** hold under the channel-as-multiset semantics, because the right-hand side duplicates σ. The counterexample (from the source comment at `LLIdentities.v:230`) is σ = [1], τ = [2], ρ = [3]: the left side reflects to [1,2,3] but the right side to [1,2,1,3]. Only the weaker *containment* `tensor_over_plus_subset_lhs_in_rhs` (`:244`) — every atom of the left appears in the right — is provable at this layer. Genuine distributivity is enforced at the verifier-dispatch layer, where presenting `σ ⊗ (τ ⊕ ρ)` consumes σ once and exactly one of {τ, ρ}.
+The canonical linear-logic distributivity `σ ⊗ (τ ⊕ ρ) ≡ (σ ⊗ τ) ⊕ (σ ⊗ ρ)` does **not** hold under the channel-as-multiset semantics, because the right-hand side duplicates `σ`. The counterexample (from the source comment at `LLIdentities.v:230`) is `σ = [1]`, `τ = [2]`, `ρ = [3]`: the left side reflects to `[1,2,3]` but the right side to `[1,2,1,3]`. Only the weaker *containment* `tensor_over_plus_subset_lhs_in_rhs` (`:244`) — every atom of the left appears in the right — is provable at this layer. Genuine distributivity is enforced at the verifier-dispatch layer, where presenting `σ ⊗ (τ ⊕ ρ)` consumes `σ` once and exactly one of `{τ, ρ}`.
 
 ### 10.3 The Plus cost semantics across models
 
@@ -672,7 +672,7 @@ These agree on the branch-specific obligation and are jointly sound: the committ
 
 ### 10.4 Operational reduction is elsewhere
 
-This document is *static* resource accounting. The operational reduction of authorized deploys (the genuine `σ ⊗ (σ ⊸ τ) ⊢ τ` that consumes σ; bisimulation; confluence) lives in `RhoReduction.v` / `Bisimulation.v` and is the subject of the [verification companion](cost-accounted-rho-verification.md). The runtime mechanisms for *bounded* `!`-reuse and the `⊸` transformer live in the on-chain `rho:system:capabilities` registry.
+This document is *static* resource accounting. The operational reduction of authorized deploys (the genuine `σ ⊗ (σ ⊸ τ) ⊢ τ` that consumes `σ`; bisimulation; confluence) lives in `RhoReduction.v` / `Bisimulation.v` and is the subject of the [verification companion](cost-accounted-rho-verification.md). The runtime mechanisms for *bounded* `!`-reuse and the `⊸` transformer live in the on-chain `rho:system:capabilities` registry.
 
 ### 10.5 Trust base
 
