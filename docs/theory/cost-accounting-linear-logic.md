@@ -394,7 +394,7 @@ The full pipeline — from the Rust wire `Sig`, through the Rocq runtime `sig_al
 Three measures on `ll_formula` distinguish notions that are easy to conflate (all from `LinearLogicResources.v`):
 
 - `ll_required_units` (`:45`) — the **cost**, mirroring `sig_algebra_min_required` clause-for-clause.
-- `ll_available_slots` (`:59`) — the **capacity**: how many witness positions exist. For a threshold it is the *number of members* (N), not the quorum (k) — capacity ≥ cost.
+- `ll_available_slots` (`:59`) — the **capacity**: how many witness positions exist. For a threshold it is the *number of members* (N), not the quorum (k) — `capacity ≥ cost`.
 - `ll_consumed_atoms` (`:72`) — the atoms **actually spent**: like `ll_atoms` but `⊕` takes only the chosen branch and `?` consumes nothing.
 
 The distinction matters for the threshold connective: a 2-of-3 quorum has capacity 3 (three members are available) but cost 2 (only two are required).
@@ -469,10 +469,10 @@ Consider a deploy authorized by *any two of three* cosigners with public keys yi
 
 1. **Authorization term.** `s = ASThreshold 2 [ASHash a₁; ASHash a₂; ASHash a₃]`. It is well-formed: `1 ≤ 2 ≤ 3`, so `sig_algebra_valid s = true` ([§5.3](#53-companion-measures)).
 2. **Reflection.** `ll_of_sig_algebra s = LLThreshold 2 [LLAtom a₁; LLAtom a₂; LLAtom a₃]`.
-3. **Cost.** `sig_algebra_min_required s = 2`, and by `ll_sig_algebra_required_complete` the reflected cost agrees: `ll_required_units (ll_of_sig_algebra s) = 2`. The capacity is 3 (`ll_available_slots`), so cost (2) < capacity (3) — the hallmark of a quorum. The result is packaged by `ll_threshold_quorum_sound` ([§8.5](#85-per-connective-resource-laws)): validity gives `1 ≤ 2 ∧ 2 ≤ 3 ∧ required = 2`.
+3. **Cost.** `sig_algebra_min_required s = 2`, and by `ll_sig_algebra_required_complete` the reflected cost agrees: `ll_required_units (ll_of_sig_algebra s) = 2`. The capacity is 3 (`ll_available_slots`), so `cost (2) < capacity (3)` — the hallmark of a quorum. The result is packaged by `ll_threshold_quorum_sound` ([§8.5](#85-per-connective-resource-laws)): validity gives `1 ≤ 2 ∧ 2 ≤ 3 ∧ required = 2`.
 4. **Runtime dispatch.** The wire `SigThreshold { threshold: 2, members: […] }` yields `min_required_for = 2` (`casper_message.rs:1524`), and since this is neither an all-required N-of-N nor a cost-0 optional, the dispatcher routes to `from_signed_data_threshold(data, signers, phlo_limit, 2)` (`casper_message.rs:1373`).
 5. **No-free-weakening in action.** Suppose signers 1 and 2 present valid signatures (already meeting the quorum) but signer 3 presents a *non-empty but invalid* signature. The verifier still rejects with `SignatureVerifyFailed`, because every non-empty signature is verified *before* the quorum count is checked (`signed.rs:293`). A presented witness cannot be silently dropped while its `phlo_share` still participates in the envelope total — this is the no-weakening rule enforced at runtime, and it is the exact defect [§9.5](#95-the-bug-the-corroboration-caught) describes.
-6. **Model-checking mirror.** The TLA⁺ `ThresholdProtocol` checks `QuorumThresholdConstraint` (k ∈ [1,n]), `QuorumExactness` (an accepting set has ≥ k members), and `QuorumNoOverCount` (≤ N) — the finite-state shadow of steps 1 and 3.
+6. **Model-checking mirror.** The TLA⁺ `ThresholdProtocol` checks `QuorumThresholdConstraint` (`k ∈ [1,n]`), `QuorumExactness` (an accepting set has `≥ k` members), and `QuorumNoOverCount` (`≤ N`) — the finite-state shadow of steps 1 and 3.
 
 ---
 
@@ -603,7 +603,7 @@ The recorded run (see the testing-completeness discoveries note dated 2026-05-25
 
 ### 9.3 TLA⁺ protocol tier
 
-Two layers of TLA⁺ models complement the Rocq proofs. At the *protocol* tier, `MultiSignerProtocol.tla` checks the multi-signer pre-charge/refund machine, including the conservation invariant `TotalRefundConservation` (Σ refunds + total cost = Σ charged) and `NoRefundCrossAttribution`. At the *connective* tier, six per-connective specs each check a characteristic property:
+Two layers of TLA⁺ models complement the Rocq proofs. At the *protocol* tier, `MultiSignerProtocol.tla` checks the multi-signer pre-charge/refund machine, including the conservation invariant `TotalRefundConservation` (`Σ refunds + total cost = Σ charged`) and `NoRefundCrossAttribution`. At the *connective* tier, six per-connective specs each check a characteristic property:
 
 | Spec                    | Characteristic invariant                      | Meaning                                                 |
 |-------------------------|-----------------------------------------------|---------------------------------------------------------|
@@ -612,7 +612,7 @@ Two layers of TLA⁺ models complement the Rocq proofs. At the *protocol* tier, 
 | `BangProtocol.tla`      | `BangPersistence`                             | a registered `!`-capability survives across invocations |
 | `WhyNotProtocol.tla`    | `WhyNotNoChargeWhenAbsent`                    | an absent optional witness consumes no fuel             |
 | `LollyProtocol.tla`     | `LollyNoCreationExNihilo`                     | `σ_to` never appears without `σ_from`                   |
-| `ThresholdProtocol.tla` | `QuorumExactness`/`QuorumThresholdConstraint` | an accepting set has ≥ k of N members, k ∈ [1,N]        |
+| `ThresholdProtocol.tla` | `QuorumExactness`/`QuorumThresholdConstraint` | an accepting set has `≥ k` of `N` members, `k ∈ [1,N]`        |
 
 Per repository policy these model-checks are run locally, not in CI.
 
