@@ -31,9 +31,9 @@ package "Δ — linear zone" <<Linear>> {
 }
 
 package "Representative dill rules" <<Rule>> {
-  component "dill_tensor  (⊗-right)\nΓ;Δ₁ ⊢ A    Γ;Δ₂ ⊢ B\n──────────────────\nΓ ; Δ₁,Δ₂ ⊢ A ⊗ B" <<component>> as TENSOR
-  component "dill_lolly_intro  (⊸-right)\nΓ ; A,Δ ⊢ B\n──────────────────\nΓ ; Δ ⊢ A ⊸ B" <<component>> as LOLLY
-  component "dill_unrestricted  (!-right)\nf ∈ Γ\n──────────────────\nΓ ; · ⊢ ! f" <<component>> as BANG
+  component "dill_tensor  (⊗-right)\nΓ;Δ₁ ⊢ A    Γ;Δ₂ ⊢ B\n────────────────────\nΓ ; Δ₁,Δ₂ ⊢ A ⊗ B" <<component>> as TENSOR
+  component "dill_lolly_intro  (⊸-right)\nΓ ; A,Δ ⊢ B\n─────────────\nΓ ; Δ ⊢ A ⊸ B" <<component>> as LOLLY
+  component "dill_unrestricted  (!-right)\nf ∈ Γ\n───────────\nΓ ; · ⊢ ! f" <<component>> as BANG
 }
 
 GAMMA --> TENSOR : copied (shared)
