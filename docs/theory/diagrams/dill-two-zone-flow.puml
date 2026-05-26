@@ -1,50 +1,69 @@
-' DILL Two-Zone Sequent — Γ ; Δ ⊢ A. Contrasts the unrestricted zone Γ
-' (reusable; admits weakening + contraction; copied to every premise) with
-' the linear zone Δ (single-use; no weakening, no contraction; partitioned
-' across premises), and shows three representative `dill` rules.
+' DILL Two-Zone Sequent Γ ; Δ ⊢ A — ALL TEN dill rules grouped by how each
+' treats the linear zone Δ. Γ (unrestricted, reusable) is copied to every
+' premise; Δ (linear, single-use) is consumed per the rule's group. Arrows run
+' from each zone to one representative rule of each group (its group-mates sit
+' alongside it).
 '
 ' Source of truth for Figure 2 in docs/theory/cost-accounting-linear-logic.md.
-' Render:
-'   plantuml -tsvg docs/theory/diagrams/dill-two-zone-flow.puml
+' Palette:  Γ-zone=indigo · Δ-zone=orange · rule groups=grey · rules=white
+'   arrows: Γ-copy=blue #1565C0 · Δ-flow=red #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/dill-two-zone-flow.puml
 
 @startuml dill-two-zone-flow
 !theme plain
-
 skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
 skinparam package {
-  BackgroundColor<<Unrestricted>> #EEF2FF
-  BackgroundColor<<Linear>>       #FFF7EE
-  BackgroundColor<<Rule>>         #F4F4F4
+  BackgroundColor<<gamma>> #C5CAE9
+  BackgroundColor<<delta>> #FFCC80
+  BackgroundColor<<grp>>   #ECEFF1
   BorderColor #444444
 }
 skinparam component {
-  BackgroundColor #FFFFFF
-  BorderColor     #333333
+  BackgroundColor<<gammac>> #E8EAF6
+  BackgroundColor<<deltac>> #FFE0B2
+  BackgroundColor<<rule>>   #FFFFFF
+  BorderColor #333333
 }
 
-package "Γ — unrestricted zone" <<Unrestricted>> {
-  component "reusable hypotheses\nweakening ✓   contraction ✓\nCOPIED to every premise" <<component>> as GAMMA
+package "Γ — unrestricted zone (reusable)" <<gamma>> {
+  component "Γ\nweakening ✓   contraction ✓\nCOPIED to every premise" <<gammac>> as GAMMA
+}
+package "Δ — linear zone (single-use)" <<delta>> {
+  component "Δ\nweakening ✗   contraction ✗\nPARTITIONED across premises" <<deltac>> as DELTA
 }
 
-package "Δ — linear zone" <<Linear>> {
-  component "single-use witnesses\nweakening ✗   contraction ✗\nPARTITIONED across premises" <<component>> as DELTA
+package "Δ = [A]  ·  axiom" <<grp>> {
+  component "dill_ax\nΓ;[A] ⊢ A" <<rule>> as AX
+}
+package "Δ = ·  ·  empty (no linear witness)" <<grp>> {
+  component "dill_unit\nΓ;· ⊢ 1" <<rule>> as UNIT
+  component "dill_unrestricted\nf∈Γ ⟹ Γ;· ⊢ !f" <<rule>> as UNR
+  component "dill_whynot_intro\nΓ;· ⊢ ?f" <<rule>> as WN
+}
+package "Δ split  ·  Δ₁ ⊎ Δ₂" <<grp>> {
+  component "dill_tensor\nΓ;Δ₁⊢A  Γ;Δ₂⊢B ⟹ A ⊗ B" <<rule>> as TEN
+  component "dill_lolly_elim\nΓ;Δ₁⊢A⊸B  Γ;Δ₂⊢A ⟹ B" <<rule>> as LE
+}
+package "Δ shared  ·  same Δ to all premises" <<grp>> {
+  component "dill_with\nΓ;Δ⊢A  Γ;Δ⊢B ⟹ A & B" <<rule>> as WITH
+  component "dill_plus_left\nΓ;Δ⊢A ⟹ A ⊕ B" <<rule>> as PL
+  component "dill_plus_right\nΓ;Δ⊢B ⟹ A ⊕ B" <<rule>> as PR
+}
+package "Δ extended  ·  push antecedent" <<grp>> {
+  component "dill_lolly_intro\nΓ;A,Δ⊢B ⟹ A ⊸ B" <<rule>> as LI
 }
 
-package "Representative dill rules" <<Rule>> {
-  component "dill_tensor  (⊗-right)\nΓ;Δ₁ ⊢ A    Γ;Δ₂ ⊢ B\n────────────────────\nΓ ; Δ₁,Δ₂ ⊢ A ⊗ B" <<component>> as TENSOR
-  component "dill_lolly_intro  (⊸-right)\nΓ ; A,Δ ⊢ B\n─────────────\nΓ ; Δ ⊢ A ⊸ B" <<component>> as LOLLY
-  component "dill_unrestricted  (!-right)\nf ∈ Γ\n───────────\nΓ ; · ⊢ ! f" <<component>> as BANG
-}
+GAMMA -[#1565C0]-> AX   : copied
+GAMMA -[#1565C0]-> UNIT : copied
+GAMMA -[#1565C0]-> TEN  : copied
+GAMMA -[#1565C0]-> WITH : copied
+GAMMA -[#1565C0]-> LI   : copied to every premise
 
-GAMMA --> TENSOR : copied (shared)
-DELTA --> TENSOR : Δ₁ ⊎ Δ₂ (split)
-GAMMA --> LOLLY  : copied
-DELTA --> LOLLY  : A pushed onto Δ
-GAMMA --> BANG   : f drawn from Γ
-note bottom of BANG
-  ! - and ? - resources consume
-  NO linear witness: the linear
-  zone Δ is empty (dill_unit,
-  dill_unrestricted, dill_whynot_intro).
-end note
+DELTA -[#C62828]-> AX   : Δ = [A]
+DELTA -[#C62828]-> UNIT : Δ = ·  (empty)
+DELTA -[#C62828]-> TEN  : Δ₁ ⊎ Δ₂  (split)
+DELTA -[#C62828]-> WITH : same Δ  (shared)
+DELTA -[#C62828]-> LI   : A , Δ  (extended)
 @enduml

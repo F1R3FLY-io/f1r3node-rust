@@ -1,29 +1,52 @@
-' Linear Modus Ponens — presenting the witness σ to a linear-implication
-' capability σ ⊸ τ consumes σ exactly once and yields τ. The channel-level
-' decomposition is the Rocq lemma lolly_modus_ponens_channel_decomposition;
-' the genuine reduction lives in RhoReduction.v / Bisimulation.v.
+' Linear Modus Ponens — end-to-end: a σ ⊸ τ transformer is registered in the
+' capability registry; the deployer presents witness σ into the linear zone; the
+' capability CONSUMES σ exactly once (no double-spend) and PRODUCES τ; the cost is
+' conserved (req(σ⊸τ) = req(σ)+req(τ)). Channel-level lemma:
+' lolly_modus_ponens_channel_decomposition; reduction lives in RhoReduction.v.
 '
 ' Source of truth for Figure 5 in docs/theory/cost-accounting-linear-logic.md.
-' Render:
-'   plantuml -tsvg docs/theory/diagrams/lolly-modus-ponens-sequence.puml
+' Palette:  Deployer=salmon #F8C3B8 · registry=indigo #C5CAE9 · Δ-zone=orange #FFCC80
+'           capability=amber #FFECB3
+'   arrows: present/produce=green #2E7D32 · consume/spend=red #C62828
+'   notes:  Δ-gains=green #C8E6C9 · Δ-spent=red #EF9A9A · conservation=amber #FFF8E1
+' Render:  plantuml -tsvg docs/theory/diagrams/lolly-modus-ponens-sequence.puml
 
 @startuml lolly-modus-ponens-sequence
 !theme plain
+skinparam sequence {
+  ArrowColor             #444444
+  LifeLineBorderColor    #666666
+  ParticipantBorderColor #333333
+  NoteBorderColor        #666666
+}
+skinparam defaultFontName "sans-serif"
 title Linear modus ponens:  σ ⊗ (σ ⊸ τ) ⊢ τ
+autonumber
 
-actor Deployer as D
-participant "Linear zone Δ\n(witness store)" as DELTA
-participant "Capability\nσ ⊸ τ" as CAP
+actor       "Deployer"                          as D     #F8C3B8
+participant "rho:system:capabilities\nregistry"  as REG   #C5CAE9
+participant "Linear zone Δ\n(witness store)"     as DELTA #FFCC80
+participant "Capability\nσ ⊸ τ"                  as CAP   #FFECB3
 
-D -> DELTA : present witness σ
-note right of DELTA : Δ = [σ];  cost req(σ) accounted
-D -> CAP : invoke with σ
-CAP -> DELTA : consume σ  (consume_linear_atom)
-note right of DELTA : Δ = [ ] — σ spent exactly once
-CAP --> D : yield τ
-note over CAP
-  ll_lolly_resource_flow_conservative:
-  req(σ ⊸ τ) = req(σ) + req(τ)
-  — no resource created ex nihilo
+D   ->  REG  : register transformer σ ⊸ τ
+REG ->  CAP  : install capability
+REG --> D    : capability handle
+
+D   -[#2E7D32]> DELTA : present witness σ
+note right of DELTA #C8E6C9 : Δ = [σ];  cost req(σ) accounted
+D   ->  CAP  : invoke σ ⊸ τ  with σ
+CAP -[#C62828]> DELTA : consume σ  (consume_linear_atom)
+note right of DELTA #EF9A9A
+  Δ = [ ] — σ spent exactly once;
+  a 2nd consume of σ would return None
+end note
+DELTA --> CAP : Some [ ]
+CAP -[#2E7D32]> DELTA : produce τ
+note right of DELTA #C8E6C9 : Δ = [τ]
+CAP -[#2E7D32]> D : yield τ
+
+note over D, CAP #FFF8E1
+  <b>ll_lolly_resource_flow_conservative</b>
+  req(σ ⊸ τ) = req(σ) + req(τ)   — no resource created ex nihilo
 end note
 @enduml

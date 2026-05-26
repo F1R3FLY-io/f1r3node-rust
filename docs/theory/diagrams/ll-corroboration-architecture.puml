@@ -1,37 +1,47 @@
-' Multi-Modal Corroboration — four independent models of the linear-logic
-' cost laws (Rocq proofs, Sage bounded-exhaustive search, TLA+ model
-' checking, Rust runtime + tests) that must agree. The dashed feedback
-' arrow records that the no-free-weakening obligation caught a real bug.
+' Multi-Modal Corroboration — four independent models all corroborate ONE shared
+' specification (the LL cost laws & identity catalog). Pairwise agreements are the
+' verified cross-checks; the dashed red feedback arrow records the real bug the
+' no-free-weakening obligation caught.
 '
 ' Source of truth for Figure 4 in docs/theory/cost-accounting-linear-logic.md.
-' Render:
-'   plantuml -tsvg docs/theory/diagrams/ll-corroboration-architecture.puml
+' Palette:  shared spec=amber · Rocq=blue · Sage=light-green · TLA+=amber-yellow · Rust=salmon
+'   arrows: models→spec=blue #1565C0 · agreement=green #2E7D32 · bug feedback=red #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/ll-corroboration-architecture.puml
 
 @startuml ll-corroboration-architecture
 !theme plain
 skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
 skinparam component {
-  BackgroundColor<<Rocq>> #EEF2FF
-  BackgroundColor<<Sage>> #EEFAF1
-  BackgroundColor<<Tla>>  #FFFBEA
-  BackgroundColor<<Rust>> #FFE8E8
+  BackgroundColor<<spec>> #FFECB3
+  BackgroundColor<<rocq>> #BBDEFB
+  BackgroundColor<<sage>> #DCEDC8
+  BackgroundColor<<tla>>  #FFE082
+  BackgroundColor<<rust>> #F8C3B8
   BorderColor #333333
 }
 
-component "Rocq proofs\nLinearLogicResources.v (25 thm)\nLLIdentities.v (51 thm)\nmachine-checked · unbounded" <<Rocq>> as ROCQ
-component "Sage search\nll_identity_search.sage\n16 identities + 11 resource\nobligations · bounded-exhaustive" <<Sage>> as SAGE
-component "TLA+ model checking\nPlus / With / Bang / WhyNot /\nLolly / Threshold Protocol.tla\nfinite-state reachability" <<Tla>> as TLA
-component "Rust runtime\naccounting/mod.rs · casper_message.rs\nsigned.rs + regression tests\nexecutable" <<Rust>> as RUST
+component "LL cost laws & identity catalog\n16 identities + 11 resource obligations\n(connective cost / consumed-atoms semantics)" <<spec>> as SPEC
+component "Rocq proofs\nLinearLogicResources.v (25 thm)\nLLIdentities.v (51 thm)\nmachine-checked · unbounded" <<rocq>> as ROCQ
+component "Sage search\nll_identity_search.sage\nbounded-exhaustive · 643,827 cases" <<sage>> as SAGE
+component "TLA+ model checking\nPlus / With / Bang / WhyNot /\nLolly / Threshold Protocol.tla\nfinite-state reachability" <<tla>> as TLA
+component "Rust runtime\naccounting/mod.rs · casper_message.rs\nsigned.rs + regression tests · executable" <<rust>> as RUST
 
-ROCQ <--> SAGE : identical cost laws
-ROCQ <--> TLA  : conservation + per-connective protocols
-ROCQ <--> RUST : min_required = sig_algebra_min_required
-SAGE <--> RUST : reflect() = SignatureChannel::from_sig
-RUST ..> ROCQ  : <b>bug caught</b> —\nno-free-weakening obligation\nrevealed the threshold-verifier defect
+ROCQ -[#1565C0]-> SPEC : proves
+SAGE -[#1565C0]-> SPEC : searches
+TLA  -[#1565C0]-> SPEC : model-checks
+RUST -[#1565C0]-> SPEC : executes
 
-note bottom of RUST
+ROCQ <-[#2E7D32]-> SAGE : identical cost laws
+ROCQ <-[#2E7D32]-> RUST : min_required = sig_algebra_min_required
+SAGE <-[#2E7D32]-> RUST : reflect() = SignatureChannel::from_sig
+ROCQ <-[#2E7D32]-> TLA  : conservation + per-connective protocols
+RUST .[#C62828].> ROCQ : <b>bug caught</b> — no-free-weakening obligation\nrevealed the threshold-verifier defect
+
+note bottom of SPEC
   "Any counterexample found here is a bug in the Rocq proof,
   the Rust substrate, or this reference implementation —
-  they must agree."  — ll_identity_search.sage header
+  they must agree."  — ll_identity_search.sage
 end note
 @enduml

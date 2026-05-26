@@ -1,53 +1,65 @@
-' Reflection & Cost Pipeline — how the runtime signature algebra reflects
-' into an intuitionistic-linear-logic formula, and how both projections
-' compute the SAME fuel cost. The commuting square is closed by the Rocq
-' theorem ll_sig_algebra_required_complete.
+' Reflection & Cost Pipeline — the runtime signature algebra reflects into an
+' intuitionistic-linear-logic formula, and BOTH projections (cost and
+' consumed-atoms) commute: the two paths to ℕ and to (list ℕ) agree, closed by
+' the Rocq bridge theorems. All three §5.6 bridges are shown.
 '
 ' Source of truth for Figure 1 in docs/theory/cost-accounting-linear-logic.md.
-' Render:
-'   plantuml -tsvg docs/theory/diagrams/ll-reflection-pipeline.puml
+' Palette:  Rust=salmon · Rocq-syntax=blue · Rocq-LL=mint · sinks(ℕ / list ℕ)=amber
+'   arrows: reflection/models=blue #1565C0 · cost=purple #6A1B9A
+'           consumed=green #2E7D32 · Rust-mirror=red-dashed #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/ll-reflection-pipeline.puml
 
 @startuml ll-reflection-pipeline
 !theme plain
-
 skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
 skinparam package {
-  BackgroundColor<<Rust>>   #FFE8E8
-  BackgroundColor<<Syntax>> #EEF2FF
-  BackgroundColor<<LL>>     #EEFAF1
+  BackgroundColor<<rust>> #F8C3B8
+  BackgroundColor<<syn>>  #BBDEFB
+  BackgroundColor<<ll>>   #C8E6C9
   BorderColor #444444
 }
 skinparam component {
-  BackgroundColor #FFFFFF
-  BorderColor     #333333
+  BackgroundColor<<rust>> #FAD7CE
+  BackgroundColor<<syn>>  #D7E3FC
+  BackgroundColor<<ll>>   #DCEDC8
+  BackgroundColor<<sink>> #FFECB3
+  BorderColor #333333
 }
 
-package "Wire / Rust runtime" <<Rust>> {
-  component "Sig\nUnit · Hash · And · Plus · With\nBang · WhyNot · Lolly · Threshold" <<component>> as SIG
-  component "min_required_for\n(casper_message.rs)" <<component>> as MRF
+package "Wire / Rust runtime" <<rust>> {
+  component "Sig\n(Unit · Hash · And · Plus · With\nBang · WhyNot · Lolly · Threshold)" <<rust>> as SIG
 }
-
-package "Rocq — CostAccountedSyntax.v" <<Syntax>> {
-  component "sig_algebra\nASUnit · ASHash · ASAnd · ASPlus · ASWith\nASBang · ASWhyNot · ASLolly · ASThreshold" <<component>> as SA
-  component "sig_algebra_min_required\n: sig_algebra → nat" <<component>> as SAMR
+package "Rocq · CostAccountedSyntax.v" <<syn>> {
+  component "sig_algebra\n(9 constructors)" <<syn>> as SA
 }
-
-package "Rocq — LinearLogicResources.v" <<LL>> {
-  component "ll_formula\nLLUnit · LLAtom · LLTensor · LLPlus · LLWith\nLLBang · LLWhyNot · LLLolly · LLThreshold" <<component>> as LLF
-  component "ll_required_units\n: ll_formula → nat" <<component>> as LLRU
+package "Rocq · LinearLogicResources.v" <<ll>> {
+  component "ll_formula\n(LLUnit … LLLolly)" <<ll>> as LLF
 }
+component "ℕ\nfuel cost" <<sink>> as COST
+component "list ℕ\nwitnesses spent" <<sink>> as SPENT
 
-SIG --> SA   : models
-SA  --> LLF  : ll_of_sig_algebra\n(reflection)
-SA  --> SAMR : runtime cost
-LLF --> LLRU : object cost
-MRF ..> SAMR : mirrors clause-for-clause
+SIG -[#1565C0]-> SA   : models (Rocq abstraction of)
+SIG .[#C62828].> COST : min_required_for (Rust)\nmirrors clause-for-clause
+SA  -[#1565C0]-> LLF  : <b>ll_of_sig_algebra</b>\nreflection
+SA  -[#6A1B9A]-> COST  : sig_algebra_min_required
+LLF -[#6A1B9A]-> COST  : ll_required_units
+SA  -[#2E7D32]-> SPENT : sig_algebra_presented_atoms
+LLF -[#2E7D32]-> SPENT : ll_consumed_atoms
 
-SAMR ..> LLRU : <b>ll_sig_algebra_required_complete</b>\nll_required_units (ll_of_sig_algebra s)\n= sig_algebra_min_required s
-
-note bottom of LLRU
-  Cost = count of atomic witnesses (signatures / fuel units):
-  Unit → 0, Hash → 1, And/With/Lolly → sum,
-  Plus → chosen branch, Bang → inner, WhyNot → 0, Threshold → k.
+note bottom of COST
+  <b>ll_sig_algebra_required_complete</b>
+  ll_required_units (ll_of_sig_algebra s)
+  = sig_algebra_min_required s
+end note
+note bottom of SPENT
+  <b>ll_sig_algebra_consumed_matches_presented</b>
+  ll_consumed_atoms (ll_of_sig_algebra s)
+  = sig_algebra_presented_atoms s
+end note
+note right of SA
+  <b>ll_sig_algebra_threshold_valid_bounds_bridge</b>
+  valid ASThreshold ⟹ 1 ≤ k ≤ |members|
 end note
 @enduml
