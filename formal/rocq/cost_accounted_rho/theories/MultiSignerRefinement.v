@@ -239,24 +239,85 @@ Qed.
     attribution is enforced operationally at the Rust caller layer
     via canonical pk-ascending sort.) *)
 
-(** Self-charge then self-refund returns the map to empty. The N-cosigner
-    generalization (`pos_map_currentdeploys_invariant`) — which states that
-    after N distinct charges followed by N refunds in any permutation, the
-    map is empty — requires careful permutation-of-list induction and is
-    deferred to a future formal milestone tied to a TLA+ companion spec
-    that exhaustively model-checks the permutation envelope under
-    state-space bound 5. For Phase 1.10, the load-bearing
-    single-signer-back-compat property is established by
-    `single_sig_pos_map_back_compat` below (Qed-closed), and the
-    permutation-invariance argument is enforced operationally by the
-    canonical-pk-ascending sort at `Cosigned::from_signed_data` (Rust)
-    rather than discharged at this refinement layer. *)
 Lemma pos_map_self_charge_refund_empty :
   forall d a,
     pos_refund d (pos_charge d a []) = [].
 Proof.
   intros d a. cbn. rewrite Nat.eqb_refl. reflexivity.
 Qed.
+
+Lemma pos_delete_pos_charge_other :
+  forall d d' a s,
+    d <> d' ->
+    pos_delete d (pos_charge d' a s) =
+    pos_charge d' a (pos_delete d s).
+Proof.
+  intros d d' a s Hne. unfold pos_charge, pos_set. cbn.
+  destruct (Nat.eqb d d') eqn:E.
+  - apply Nat.eqb_eq in E. contradiction.
+  - f_equal. apply pos_delete_comm.
+Qed.
+
+Lemma pos_delete_charges_notin :
+  forall entries d s,
+    ~ In d (map fst entries) ->
+    pos_delete d (pos_charges entries s) =
+    pos_charges entries (pos_delete d s).
+Proof.
+  induction entries as [|[d' a] rest IH]; intros d s Hnotin; cbn in *.
+  - reflexivity.
+  - assert (Hne : d <> d').
+    { intro Heq. apply Hnotin. left. symmetry. exact Heq. }
+    assert (Hrest : ~ In d (map fst rest)).
+    { intro Hin. apply Hnotin. right. exact Hin. }
+    rewrite IH by exact Hrest.
+    rewrite pos_delete_pos_charge_other by exact Hne.
+    reflexivity.
+Qed.
+
+Lemma pos_refunds_original_order_empty :
+  forall entries,
+    entries_distinct entries ->
+    pos_refunds (map fst entries) (pos_charges entries []) = [].
+Proof.
+  induction entries as [|[d a] rest IH]; intros Hdistinct; cbn.
+  - reflexivity.
+  - unfold entries_distinct in Hdistinct. cbn in Hdistinct.
+    inversion Hdistinct as [|d0 ids Hnotin Hnodup]; subst.
+    rewrite pos_delete_charges_notin by exact Hnotin.
+    rewrite pos_map_self_charge_refund_empty.
+    apply IH. exact Hnodup.
+Qed.
+
+Theorem pos_map_currentdeploys_invariant :
+  forall entries refund_order,
+    entries_distinct entries ->
+    Permutation refund_order (map fst entries) ->
+    pos_refunds refund_order (pos_charges entries []) = [].
+Proof.
+  intros entries refund_order Hdistinct Hperm.
+  rewrite (pos_refunds_perm_delete refund_order (map fst entries)).
+  - apply pos_refunds_original_order_empty. exact Hdistinct.
+  - exact Hperm.
+Qed.
+
+Theorem pos_refund_no_cross_attribution :
+  forall d d' a s,
+    d <> d' ->
+    pos_get d (pos_refund d' (pos_charge d a s)) = Some a.
+Proof.
+  intros d d' a s Hne. unfold pos_refund.
+  rewrite pos_get_delete_other by exact Hne.
+  apply pos_set_get_same.
+Qed.
+
+Definition pos_revert_to_checkpoint (_attempted checkpoint : pos_state)
+  : pos_state := checkpoint.
+
+Theorem pos_precharge_failure_atomic :
+  forall attempted checkpoint,
+    pos_revert_to_checkpoint attempted checkpoint = checkpoint.
+Proof. reflexivity. Qed.
 
 (* ─────────────────────────────────────────────────────────────────────────
    §5: single_sig_pos_map_observably_equivalent

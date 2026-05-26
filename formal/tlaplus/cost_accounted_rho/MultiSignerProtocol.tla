@@ -34,12 +34,15 @@ VARIABLES
     posMap,             \* PoS Map: deployerId -> charged_amount (or absent)
     chargedSet,         \* set of deployerIds whose pre-charge succeeded
     refundedSet,        \* set of deployerIds whose refund completed
+    refundLedger,       \* deployerId -> refunded amount
+    refundSource,       \* deployerId -> source deployerId used for refund
     remainingUsed,      \* total cost still to drain via FIFO refund
+    totalUsed,          \* total user cost selected before refund drain
     failedAt,           \* if a pre-charge failed, this is the failing index (else -1)
     softCheckpoint,     \* snapshot of (posMap, chargedSet) before fan-out starts
     phase               \* "init" | "charging" | "evaluating" | "refunding" | "done" | "reverted"
 
-vars == <<posMap, chargedSet, refundedSet, remainingUsed,
+vars == <<posMap, chargedSet, refundedSet, refundLedger, refundSource, remainingUsed, totalUsed,
           failedAt, softCheckpoint, phase>>
 
 \* ---------------------------------------------------------------------------
@@ -62,6 +65,13 @@ SumOfShares ==
                        PhloShare(p) + Sum(s \ {p})
     IN Sum(Cosigners)
 
+SumRefundLedger ==
+    LET RECURSIVE Sum(_)
+        Sum(s) == IF s = {} THEN 0
+                  ELSE LET p == CHOOSE x \in s : TRUE IN
+                       refundLedger[p] + Sum(s \ {p})
+    IN Sum(Cosigners)
+
 \* ---------------------------------------------------------------------------
 \* §2: Initial state — empty Map, no charges, no refunds.
 \* ---------------------------------------------------------------------------
@@ -70,7 +80,10 @@ Init ==
     /\ posMap = [d \in {} |-> 0]
     /\ chargedSet = {}
     /\ refundedSet = {}
+    /\ refundLedger = [d \in Cosigners |-> 0]
+    /\ refundSource = [d \in Cosigners |-> -1]
     /\ remainingUsed = 0
+    /\ totalUsed = 0
     /\ failedAt = -1
     /\ softCheckpoint = <<[d \in {} |-> 0], {}>>
     /\ phase = "init"
@@ -84,7 +97,8 @@ StartCharging ==
     /\ phase = "init"
     /\ softCheckpoint' = <<posMap, chargedSet>>
     /\ phase' = "charging"
-    /\ UNCHANGED <<posMap, chargedSet, refundedSet, remainingUsed, failedAt>>
+    /\ UNCHANGED <<posMap, chargedSet, refundedSet, refundLedger, refundSource,
+                   remainingUsed, totalUsed, failedAt>>
 
 \* ChargeCosigner(i): atomically state.set(i, PhloShare(i)).
 \* Succeeds if i is not already charged (no-dup invariant).
@@ -95,7 +109,8 @@ ChargeCosigner(i) ==
     /\ failedAt = -1
     /\ posMap' = posMap @@ (i :> PhloShare(i) * PhloPrice)
     /\ chargedSet' = chargedSet \cup {i}
-    /\ UNCHANGED <<refundedSet, remainingUsed, failedAt, softCheckpoint, phase>>
+    /\ UNCHANGED <<refundedSet, refundLedger, refundSource, remainingUsed,
+                   totalUsed, failedAt, softCheckpoint, phase>>
 
 \* ChargeCosignerFails(i): pre-charge fails for cosigner i.
 \* Triggers revert_to_soft_checkpoint, which restores (posMap, chargedSet).
@@ -109,7 +124,8 @@ ChargeCosignerFails(i) ==
     \* Soft-checkpoint revert: restore both Map and chargedSet atomically.
     /\ posMap' = softCheckpoint[1]
     /\ chargedSet' = softCheckpoint[2]
-    /\ UNCHANGED <<refundedSet, remainingUsed, softCheckpoint>>
+    /\ UNCHANGED <<refundedSet, refundLedger, refundSource, remainingUsed,
+                   totalUsed, softCheckpoint>>
 
 \* FinishCharging: all cosigners charged; transition to evaluating.
 FinishCharging ==
@@ -117,7 +133,8 @@ FinishCharging ==
     /\ chargedSet = Cosigners
     /\ failedAt = -1
     /\ phase' = "evaluating"
-    /\ UNCHANGED <<posMap, chargedSet, refundedSet, remainingUsed,
+    /\ UNCHANGED <<posMap, chargedSet, refundedSet, refundLedger, refundSource,
+                   remainingUsed, totalUsed,
                    failedAt, softCheckpoint>>
 
 \* EvaluateUserDeploy(totalCost): user deploy uses `totalCost` ≤ PhloLimit.
@@ -126,8 +143,10 @@ EvaluateUserDeploy ==
     /\ phase = "evaluating"
     /\ \E totalCost \in 0..PhloLimit:
          /\ remainingUsed' = totalCost * PhloPrice
+         /\ totalUsed' = totalCost * PhloPrice
          /\ phase' = "refunding"
-         /\ UNCHANGED <<posMap, chargedSet, refundedSet, failedAt, softCheckpoint>>
+         /\ UNCHANGED <<posMap, chargedSet, refundedSet, refundLedger, refundSource,
+                        failedAt, softCheckpoint>>
 
 \* RefundCosigner(i): FIFO drain in canonical pk-ascending order.
 \* Consumes i's portion of remainingUsed; refunds the rest to i's vault.
@@ -143,8 +162,10 @@ RefundCosigner(i) ==
        IN
         /\ posMap' = [d \in DOMAIN posMap \ {i} |-> posMap[d]]
         /\ refundedSet' = refundedSet \cup {i}
+        /\ refundLedger' = [refundLedger EXCEPT ![i] = charged - consumed]
+        /\ refundSource' = [refundSource EXCEPT ![i] = i]
         /\ remainingUsed' = remainingUsed - consumed
-    /\ UNCHANGED <<chargedSet, failedAt, softCheckpoint, phase>>
+    /\ UNCHANGED <<chargedSet, totalUsed, failedAt, softCheckpoint, phase>>
 
 \* FinishRefunding: all cosigners refunded.
 FinishRefunding ==
@@ -152,7 +173,8 @@ FinishRefunding ==
     /\ refundedSet = Cosigners
     /\ remainingUsed = 0
     /\ phase' = "done"
-    /\ UNCHANGED <<posMap, chargedSet, refundedSet, remainingUsed,
+    /\ UNCHANGED <<posMap, chargedSet, refundedSet, refundLedger, refundSource,
+                   remainingUsed, totalUsed,
                    failedAt, softCheckpoint>>
 
 Next ==
@@ -186,8 +208,10 @@ RefundFinalizes ==
 \* under N>1 cosigners; the §1.7 Map-in-MVar design restores it.
 NoRefundCrossAttribution ==
     \A i \in refundedSet :
-        \A j \in refundedSet :
-            i # j => TRUE   \* domain disjoint after refund — trivially by Map.delete
+        /\ refundSource[i] = i
+        /\ i \notin DOMAIN posMap
+        /\ refundLedger[i] >= 0
+        /\ refundLedger[i] <= PhloShare(i) * PhloPrice
 
 \* After a pre-charge failure, the Map is restored to pre-attempt state.
 \* This models the soft-checkpoint revert.
@@ -212,11 +236,9 @@ PhloShareConservation == SumOfShares = PhloLimit
 FailureRevertsCharges ==
     failedAt # -1 => phase = "reverted"
 
-\* Total refund conservation: when phase = "done", the SUM of refunds equals
-\* (Σ phlo_share) - totalCost, i.e., refunds drained all unused phlo.
-\* In this model, posMap is empty at "done" so the invariant is trivially
-\* satisfied at the Map level; the formal arithmetic check is in the Rocq
-\* lemma `fifo_drain_conservation`.
+TotalRefundConservation ==
+    phase = "done" =>
+        SumRefundLedger + totalUsed = PhloLimit * PhloPrice
 
 \* ---------------------------------------------------------------------------
 \* §5: Temporal properties (liveness)

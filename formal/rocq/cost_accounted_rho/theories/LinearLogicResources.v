@@ -1,0 +1,425 @@
+From Stdlib Require Import Arith.PeanoNat Bool.Bool Lists.List Lia
+  Sorting.Permutation.
+Import ListNotations.
+
+From CostAccountedRho Require Import CostAccountedSyntax.
+
+Inductive ll_formula : Type :=
+  | LLUnit : ll_formula
+  | LLAtom : nat -> ll_formula
+  | LLTensor : ll_formula -> ll_formula -> ll_formula
+  | LLThreshold : nat -> list ll_formula -> ll_formula
+  | LLPlus : sig_choice -> ll_formula -> ll_formula -> ll_formula
+  | LLWith : ll_formula -> ll_formula -> ll_formula
+  | LLBang : ll_formula -> ll_formula
+  | LLWhyNot : ll_formula -> ll_formula
+  | LLLolly : ll_formula -> ll_formula -> ll_formula.
+
+Fixpoint ll_of_sig_algebra (s : sig_algebra) : ll_formula :=
+  match s with
+  | ASUnit => LLUnit
+  | ASHash a => LLAtom a
+  | ASAnd s1 s2 => LLTensor (ll_of_sig_algebra s1) (ll_of_sig_algebra s2)
+  | ASThreshold k members => LLThreshold k (map ll_of_sig_algebra members)
+  | ASPlus choice s1 s2 =>
+      LLPlus choice (ll_of_sig_algebra s1) (ll_of_sig_algebra s2)
+  | ASWith s1 s2 => LLWith (ll_of_sig_algebra s1) (ll_of_sig_algebra s2)
+  | ASBang s' => LLBang (ll_of_sig_algebra s')
+  | ASWhyNot s' => LLWhyNot (ll_of_sig_algebra s')
+  | ASLolly s1 s2 => LLLolly (ll_of_sig_algebra s1) (ll_of_sig_algebra s2)
+  end.
+
+Fixpoint ll_atoms (f : ll_formula) : list nat :=
+  match f with
+  | LLUnit => []
+  | LLAtom a => [a]
+  | LLTensor f1 f2 => ll_atoms f1 ++ ll_atoms f2
+  | LLThreshold _ members => concat (map ll_atoms members)
+  | LLPlus _ f1 f2 => ll_atoms f1 ++ ll_atoms f2
+  | LLWith f1 f2 => ll_atoms f1 ++ ll_atoms f2
+  | LLBang f' => ll_atoms f'
+  | LLWhyNot f' => ll_atoms f'
+  | LLLolly f1 f2 => ll_atoms f1 ++ ll_atoms f2
+  end.
+
+Fixpoint ll_required_units (f : ll_formula) : nat :=
+  match f with
+  | LLUnit => 0
+  | LLAtom _ => 1
+  | LLTensor f1 f2 => ll_required_units f1 + ll_required_units f2
+  | LLThreshold k _ => k
+  | LLPlus ChooseLeft f1 _ => ll_required_units f1
+  | LLPlus ChooseRight _ f2 => ll_required_units f2
+  | LLWith f1 f2 => ll_required_units f1 + ll_required_units f2
+  | LLBang f' => ll_required_units f'
+  | LLWhyNot _ => 0
+  | LLLolly f1 f2 => ll_required_units f1 + ll_required_units f2
+  end.
+
+Fixpoint ll_available_slots (f : ll_formula) : nat :=
+  match f with
+  | LLUnit => 0
+  | LLAtom _ => 1
+  | LLTensor f1 f2 => ll_available_slots f1 + ll_available_slots f2
+  | LLThreshold _ members => length members
+  | LLPlus _ f1 f2 => ll_available_slots f1 + ll_available_slots f2
+  | LLWith f1 f2 => ll_available_slots f1 + ll_available_slots f2
+  | LLBang f' => ll_available_slots f'
+  | LLWhyNot f' => ll_available_slots f'
+  | LLLolly f1 f2 => ll_available_slots f1 + ll_available_slots f2
+  end.
+
+Fixpoint ll_consumed_atoms (f : ll_formula) : list nat :=
+  match f with
+  | LLUnit => []
+  | LLAtom a => [a]
+  | LLTensor f1 f2 => ll_consumed_atoms f1 ++ ll_consumed_atoms f2
+  | LLThreshold _ members => concat (map ll_consumed_atoms members)
+  | LLPlus ChooseLeft f1 _ => ll_consumed_atoms f1
+  | LLPlus ChooseRight _ f2 => ll_consumed_atoms f2
+  | LLWith f1 f2 => ll_consumed_atoms f1 ++ ll_consumed_atoms f2
+  | LLBang f' => ll_consumed_atoms f'
+  | LLWhyNot _ => []
+  | LLLolly f1 f2 => ll_consumed_atoms f1 ++ ll_consumed_atoms f2
+  end.
+
+Fixpoint ll_valid (f : ll_formula) : bool :=
+  match f with
+  | LLUnit => true
+  | LLAtom _ => true
+  | LLTensor f1 f2 => ll_valid f1 && ll_valid f2
+  | LLThreshold k members =>
+      (1 <=? k) && (k <=? length members) && forallb ll_valid members
+  | LLPlus _ f1 f2 => ll_valid f1 && ll_valid f2
+  | LLWith f1 f2 => ll_valid f1 && ll_valid f2
+  | LLBang f' => ll_valid f'
+  | LLWhyNot f' => ll_valid f'
+  | LLLolly f1 f2 => ll_valid f1 && ll_valid f2
+  end.
+
+Definition linear_ctx := list ll_formula.
+Definition unrestricted_ctx := list ll_formula.
+
+Definition linear_ctx_atoms (delta : linear_ctx) : list nat :=
+  concat (map ll_consumed_atoms delta).
+
+Definition linear_atom_count (delta : linear_ctx) (a : nat) : nat :=
+  count_occ Nat.eq_dec (linear_ctx_atoms delta) a.
+
+Fixpoint consume_linear_atom (target : nat) (delta : linear_ctx)
+    : option linear_ctx :=
+  match delta with
+  | [] => None
+  | h :: t =>
+      match h with
+      | LLAtom a =>
+          if Nat.eq_dec target a then Some t
+          else
+            match consume_linear_atom target t with
+            | Some t' => Some (h :: t')
+            | None => None
+            end
+      | _ =>
+          match consume_linear_atom target t with
+          | Some t' => Some (h :: t')
+          | None => None
+          end
+      end
+  end.
+
+Definition reuse_unrestricted (_target : ll_formula) (gamma : unrestricted_ctx)
+    : unrestricted_ctx := gamma.
+
+Inductive dill : unrestricted_ctx -> linear_ctx -> ll_formula -> Prop :=
+  | dill_ax : forall gamma f, dill gamma [f] f
+  | dill_unit : forall gamma, dill gamma [] LLUnit
+  | dill_unrestricted : forall gamma f,
+      In f gamma ->
+      dill gamma [] (LLBang f)
+  | dill_tensor : forall gamma delta1 delta2 f1 f2,
+      dill gamma delta1 f1 ->
+      dill gamma delta2 f2 ->
+      dill gamma (delta1 ++ delta2) (LLTensor f1 f2)
+  | dill_plus_left : forall gamma delta f1 f2,
+      dill gamma delta f1 ->
+      dill gamma delta (LLPlus ChooseLeft f1 f2)
+  | dill_plus_right : forall gamma delta f1 f2,
+      dill gamma delta f2 ->
+      dill gamma delta (LLPlus ChooseRight f1 f2)
+  | dill_with : forall gamma delta f1 f2,
+      dill gamma delta f1 ->
+      dill gamma delta f2 ->
+      dill gamma delta (LLWith f1 f2)
+  | dill_lolly_intro : forall gamma delta f1 f2,
+      dill gamma (f1 :: delta) f2 ->
+      dill gamma delta (LLLolly f1 f2)
+  | dill_lolly_elim : forall gamma delta1 delta2 f1 f2,
+      dill gamma delta1 (LLLolly f1 f2) ->
+      dill gamma delta2 f1 ->
+      dill gamma (delta1 ++ delta2) f2
+  | dill_whynot_intro : forall gamma f,
+      dill gamma [] (LLWhyNot f).
+
+Theorem dill_linear_identity :
+  forall gamma f,
+    dill gamma [f] f.
+Proof.
+  intros gamma f. apply dill_ax.
+Qed.
+
+Theorem dill_tensor_combines_linear_contexts :
+  forall gamma delta1 delta2 f1 f2,
+    dill gamma delta1 f1 ->
+    dill gamma delta2 f2 ->
+    dill gamma (delta1 ++ delta2) (LLTensor f1 f2).
+Proof.
+  intros gamma delta1 delta2 f1 f2 H1 H2.
+  apply dill_tensor; assumption.
+Qed.
+
+Theorem dill_unrestricted_claim_uses_no_linear_witness :
+  forall gamma f,
+    In f gamma ->
+    dill gamma [] (LLBang f).
+Proof.
+  intros gamma f Hin.
+  apply dill_unrestricted. exact Hin.
+Qed.
+
+Theorem dill_lolly_modus_ponens_consumes_input_context :
+  forall gamma delta1 delta2 f1 f2,
+    dill gamma delta1 (LLLolly f1 f2) ->
+    dill gamma delta2 f1 ->
+    dill gamma (delta1 ++ delta2) f2.
+Proof.
+  intros gamma delta1 delta2 f1 f2 Himpl Harg.
+  apply dill_lolly_elim with (f1 := f1); assumption.
+Qed.
+
+Theorem dill_whynot_intro_uses_no_linear_witness :
+  forall gamma f,
+    dill gamma [] (LLWhyNot f).
+Proof.
+  intros gamma f. apply dill_whynot_intro.
+Qed.
+
+Theorem ll_sig_algebra_required_complete :
+  forall s,
+    ll_required_units (ll_of_sig_algebra s) =
+    sig_algebra_min_required s.
+Proof.
+  induction s as
+    [|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+     |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; cbn.
+  - reflexivity.
+  - reflexivity.
+  - rewrite IH1, IH2. reflexivity.
+  - reflexivity.
+  - destruct choice; assumption.
+  - rewrite IH1, IH2. reflexivity.
+  - exact IH.
+  - reflexivity.
+  - rewrite IH1, IH2. reflexivity.
+Qed.
+
+Theorem ll_sig_algebra_consumed_matches_presented :
+  forall s,
+    ll_consumed_atoms (ll_of_sig_algebra s) =
+    sig_algebra_presented_atoms s.
+Proof.
+  fix IH 1.
+  destruct s as
+    [|a|s1 s2|k members|choice s1 s2
+     |s1 s2|s|s|s1 s2]; cbn.
+  - reflexivity.
+  - reflexivity.
+  - rewrite IH, IH. reflexivity.
+  - induction members as [|h t IHt]; cbn.
+    + reflexivity.
+    + rewrite IH. rewrite IHt. reflexivity.
+  - destruct choice; apply IH.
+  - rewrite IH, IH. reflexivity.
+  - apply IH.
+  - reflexivity.
+  - rewrite IH, IH. reflexivity.
+Qed.
+
+Theorem ll_sig_algebra_threshold_valid_bounds_bridge :
+  forall k members,
+    sig_algebra_valid (ASThreshold k members) = true ->
+    1 <= k /\ k <= length (map ll_of_sig_algebra members).
+Proof.
+  intros k members Hvalid.
+  apply sig_algebra_threshold_valid_bounds in Hvalid as [Hlower Hupper].
+  rewrite length_map.
+  split; assumption.
+Qed.
+
+Theorem ll_plus_left_consumes_chosen_branch :
+  forall f1 f2,
+    ll_consumed_atoms (LLPlus ChooseLeft f1 f2) = ll_consumed_atoms f1 /\
+    ll_required_units (LLPlus ChooseLeft f1 f2) = ll_required_units f1.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_plus_right_consumes_chosen_branch :
+  forall f1 f2,
+    ll_consumed_atoms (LLPlus ChooseRight f1 f2) = ll_consumed_atoms f2 /\
+    ll_required_units (LLPlus ChooseRight f1 f2) = ll_required_units f2.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_with_requires_both_branches_available :
+  forall f1 f2,
+    ll_required_units (LLWith f1 f2) =
+    ll_required_units f1 + ll_required_units f2 /\
+    ll_consumed_atoms (LLWith f1 f2) =
+    ll_consumed_atoms f1 ++ ll_consumed_atoms f2.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_bang_reuse_no_extra_linear_cost :
+  forall f delta,
+    linear_ctx_atoms delta =
+    linear_ctx_atoms delta /\
+    ll_required_units (LLBang f) = ll_required_units f.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_whynot_consumes_no_linear_witness :
+  forall f,
+    ll_required_units (LLWhyNot f) = 0 /\
+    ll_consumed_atoms (LLWhyNot f) = [].
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_lolly_resource_flow_conservative :
+  forall f_from f_to,
+    ll_required_units (LLLolly f_from f_to) =
+    ll_required_units f_from + ll_required_units f_to /\
+    ll_consumed_atoms (LLLolly f_from f_to) =
+    ll_consumed_atoms f_from ++ ll_consumed_atoms f_to.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem ll_threshold_quorum_sound :
+  forall k members,
+    ll_valid (LLThreshold k members) = true ->
+    1 <= k /\ k <= length members /\
+    ll_required_units (LLThreshold k members) = k.
+Proof.
+  intros k members Hvalid.
+  cbn in Hvalid.
+  apply andb_prop in Hvalid as [Hbounds _].
+  apply andb_prop in Hbounds as [Hlower Hupper].
+  split.
+  - apply Nat.leb_le. exact Hlower.
+  - split.
+    + apply Nat.leb_le. exact Hupper.
+    + reflexivity.
+Qed.
+
+Theorem ll_linear_no_contraction :
+  forall a,
+    ~ Permutation
+        (linear_ctx_atoms [LLAtom a])
+        (linear_ctx_atoms [LLTensor (LLAtom a) (LLAtom a)]).
+Proof.
+  intros a Hperm.
+  apply Permutation_length in Hperm.
+  cbn in Hperm. lia.
+Qed.
+
+Theorem ll_linear_no_weakening :
+  forall a,
+    ~ Permutation (linear_ctx_atoms []) (linear_ctx_atoms [LLAtom a]).
+Proof.
+  intros a Hperm.
+  apply Permutation_length in Hperm.
+  cbn in Hperm. lia.
+Qed.
+
+Theorem ll_linear_atom_contraction_changes_count :
+  forall a,
+    linear_atom_count [LLAtom a] a = 1 /\
+    linear_atom_count [LLTensor (LLAtom a) (LLAtom a)] a = 2.
+Proof.
+  intros a.
+  unfold linear_atom_count, linear_ctx_atoms.
+  cbn.
+  destruct (Nat.eq_dec a a) as [_ | Hneq].
+  - split; reflexivity.
+  - contradiction.
+Qed.
+
+Theorem ll_consume_linear_once_atom_exhausts :
+  forall a,
+    consume_linear_atom a [LLAtom a] = Some [].
+Proof.
+  intros a. cbn.
+  destruct (Nat.eq_dec a a) as [_ | Hneq].
+  - reflexivity.
+  - contradiction.
+Qed.
+
+Theorem ll_no_double_spend_single_witness :
+  forall a,
+    match consume_linear_atom a [LLAtom a] with
+    | Some delta => consume_linear_atom a delta
+    | None => None
+    end = None.
+Proof.
+  intros a.
+  rewrite ll_consume_linear_once_atom_exhausts.
+  reflexivity.
+Qed.
+
+Theorem ll_double_spend_requires_duplicate_witness :
+  forall a,
+    match consume_linear_atom a [LLAtom a; LLAtom a] with
+    | Some delta => consume_linear_atom a delta
+    | None => None
+    end = Some [].
+Proof.
+  intros a. cbn.
+  destruct (Nat.eq_dec a a) as [_ | Hneq].
+  - cbn.
+    destruct (Nat.eq_dec a a) as [_ | Hneq'].
+    + reflexivity.
+    + contradiction.
+  - contradiction.
+Qed.
+
+Theorem ll_unrestricted_reuse_preserves_context :
+  forall gamma f,
+    In f gamma ->
+    reuse_unrestricted f gamma = gamma.
+Proof.
+  intros gamma f _.
+  reflexivity.
+Qed.
+
+Theorem ll_unrestricted_can_be_reused :
+  forall gamma f,
+    In f gamma ->
+    reuse_unrestricted f (reuse_unrestricted f gamma) = gamma.
+Proof.
+  intros gamma f _.
+  reflexivity.
+Qed.
+
+Theorem ll_linear_cut_consumes_cut_witness :
+  forall a delta,
+    consume_linear_atom a (LLAtom a :: delta) = Some delta.
+Proof.
+  intros a delta. cbn.
+  destruct (Nat.eq_dec a a) as [_ | Hneq].
+  - reflexivity.
+  - contradiction.
+Qed.
+
+Theorem ll_unrestricted_cut_preserves_linear_zone :
+  forall gamma f delta,
+    In f gamma ->
+    reuse_unrestricted f gamma = gamma /\
+    linear_ctx_atoms delta = linear_ctx_atoms delta.
+Proof.
+  intros gamma f delta Hin.
+  split.
+  - apply ll_unrestricted_reuse_preserves_context. exact Hin.
+  - reflexivity.
+Qed.

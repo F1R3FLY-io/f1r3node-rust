@@ -216,6 +216,171 @@ Lemma system_token_count_par :
               = system_token_count S1 + system_token_count S2.
 Proof. intros. simpl. reflexivity. Qed.
 
+Inductive sig_choice : Type :=
+  | ChooseLeft
+  | ChooseRight.
+
+Definition sig_choice_eq_dec :
+  forall (c1 c2 : sig_choice), {c1 = c2} + {c1 <> c2}.
+Proof.
+  decide equality.
+Defined.
+
+Inductive sig_algebra : Type :=
+  | ASUnit : sig_algebra
+  | ASHash : nat -> sig_algebra
+  | ASAnd : sig_algebra -> sig_algebra -> sig_algebra
+  | ASThreshold : nat -> list sig_algebra -> sig_algebra
+  | ASPlus : sig_choice -> sig_algebra -> sig_algebra -> sig_algebra
+  | ASWith : sig_algebra -> sig_algebra -> sig_algebra
+  | ASBang : sig_algebra -> sig_algebra
+  | ASWhyNot : sig_algebra -> sig_algebra
+  | ASLolly : sig_algebra -> sig_algebra -> sig_algebra.
+
+Fixpoint sig_algebra_atoms (s : sig_algebra) : list nat :=
+  match s with
+  | ASUnit => []
+  | ASHash a => [a]
+  | ASAnd s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
+  | ASThreshold _ members => concat (map sig_algebra_atoms members)
+  | ASPlus _ s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
+  | ASWith s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
+  | ASBang s' => sig_algebra_atoms s'
+  | ASWhyNot s' => sig_algebra_atoms s'
+  | ASLolly s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
+  end.
+
+Fixpoint sig_algebra_min_required (s : sig_algebra) : nat :=
+  match s with
+  | ASUnit => 0
+  | ASHash _ => 1
+  | ASAnd s1 s2 => sig_algebra_min_required s1 + sig_algebra_min_required s2
+  | ASThreshold k _ => k
+  | ASPlus ChooseLeft s1 _ => sig_algebra_min_required s1
+  | ASPlus ChooseRight _ s2 => sig_algebra_min_required s2
+  | ASWith s1 s2 => sig_algebra_min_required s1 + sig_algebra_min_required s2
+  | ASBang s' => sig_algebra_min_required s'
+  | ASWhyNot _ => 0
+  | ASLolly s1 s2 => sig_algebra_min_required s1 + sig_algebra_min_required s2
+  end.
+
+Fixpoint sig_algebra_all_required (s : sig_algebra) : bool :=
+  match s with
+  | ASUnit => true
+  | ASHash _ => true
+  | ASAnd s1 s2 => sig_algebra_all_required s1 && sig_algebra_all_required s2
+  | ASThreshold _ _ => false
+  | ASPlus _ _ _ => false
+  | ASWith s1 s2 => sig_algebra_all_required s1 && sig_algebra_all_required s2
+  | ASBang s' => sig_algebra_all_required s'
+  | ASWhyNot _ => false
+  | ASLolly s1 s2 => sig_algebra_all_required s1 && sig_algebra_all_required s2
+  end.
+
+Fixpoint sig_algebra_valid (s : sig_algebra) : bool :=
+  match s with
+  | ASUnit => true
+  | ASHash _ => true
+  | ASAnd s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
+  | ASThreshold k members =>
+      (1 <=? k) && (k <=? length members) && forallb sig_algebra_valid members
+  | ASPlus _ s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
+  | ASWith s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
+  | ASBang s' => sig_algebra_valid s'
+  | ASWhyNot s' => sig_algebra_valid s'
+  | ASLolly s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
+  end.
+
+Fixpoint sig_algebra_presented_atoms (s : sig_algebra) : list nat :=
+  match s with
+  | ASUnit => []
+  | ASHash a => [a]
+  | ASAnd s1 s2 => sig_algebra_presented_atoms s1 ++ sig_algebra_presented_atoms s2
+  | ASThreshold _ members => concat (map sig_algebra_presented_atoms members)
+  | ASPlus ChooseLeft s1 _ => sig_algebra_presented_atoms s1
+  | ASPlus ChooseRight _ s2 => sig_algebra_presented_atoms s2
+  | ASWith s1 s2 => sig_algebra_presented_atoms s1 ++ sig_algebra_presented_atoms s2
+  | ASBang s' => sig_algebra_presented_atoms s'
+  | ASWhyNot _ => []
+  | ASLolly s1 s2 => sig_algebra_presented_atoms s1 ++ sig_algebra_presented_atoms s2
+  end.
+
+Lemma sig_algebra_plus_left_min_required :
+  forall s1 s2,
+    sig_algebra_min_required (ASPlus ChooseLeft s1 s2) =
+    sig_algebra_min_required s1.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_plus_right_min_required :
+  forall s1 s2,
+    sig_algebra_min_required (ASPlus ChooseRight s1 s2) =
+    sig_algebra_min_required s2.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_with_min_required :
+  forall s1 s2,
+    sig_algebra_min_required (ASWith s1 s2) =
+    sig_algebra_min_required s1 + sig_algebra_min_required s2.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_bang_min_required :
+  forall s,
+    sig_algebra_min_required (ASBang s) = sig_algebra_min_required s.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_whynot_min_required_zero :
+  forall s, sig_algebra_min_required (ASWhyNot s) = 0.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_lolly_min_required :
+  forall s_from s_to,
+    sig_algebra_min_required (ASLolly s_from s_to) =
+    sig_algebra_min_required s_from + sig_algebra_min_required s_to.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_threshold_min_required :
+  forall k members,
+    sig_algebra_min_required (ASThreshold k members) = k.
+Proof. reflexivity. Qed.
+
+Lemma sig_algebra_threshold_valid_bounds :
+  forall k members,
+    sig_algebra_valid (ASThreshold k members) = true ->
+    1 <= k /\ k <= length members.
+Proof.
+  intros k members Hvalid.
+  cbn in Hvalid.
+  apply andb_prop in Hvalid as [Hbounds _].
+  apply andb_prop in Hbounds as [Hlower Hupper].
+  split; apply Nat.leb_le; assumption.
+Qed.
+
+Lemma sig_algebra_all_required_min_required_atoms :
+  forall s,
+    sig_algebra_all_required s = true ->
+    sig_algebra_min_required s = length (sig_algebra_atoms s).
+Proof.
+  induction s as
+    [|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+     |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; intros Hall; cbn in *.
+  - reflexivity.
+  - reflexivity.
+  - apply andb_prop in Hall as [H1 H2].
+    rewrite IH1 by exact H1. rewrite IH2 by exact H2.
+    rewrite app_length. reflexivity.
+  - discriminate.
+  - discriminate.
+  - apply andb_prop in Hall as [H1 H2].
+    rewrite IH1 by exact H1. rewrite IH2 by exact H2.
+    rewrite app_length. reflexivity.
+  - apply IH. exact Hall.
+  - discriminate.
+  - apply andb_prop in Hall as [H1 H2].
+    rewrite IH1 by exact H1. rewrite IH2 by exact H2.
+    rewrite app_length. reflexivity.
+Qed.
+
+
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 7: Notation
    ═══════════════════════════════════════════════════════════════════════════

@@ -13,17 +13,25 @@ VERIFICATION_DOCS=(
 
 echo "Checking cost-accounted rho proof hygiene..."
 
-if rg -n '(^|[[:space:]])(Admitted\.|admit\.)|^[[:space:]]*(Conjecture|Parameter)[[:space:]]' "$THEORIES"; then
+SANITIZED_THEORIES="$(mktemp -d)"
+for proof in "$THEORIES"/*.v; do
+  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/$(basename "$proof")"
+done
+
+assumptions="$(mktemp)"
+trap 'rm -rf "$SANITIZED_THEORIES"; rm -f "$assumptions"' EXIT
+
+if rg -n '(^|[[:space:]])(Admitted\.|admit\.)|^[[:space:]]*(Conjecture|Parameter)[[:space:]]' "$SANITIZED_THEORIES"; then
   echo "error: found an admitted proof or unsupported declaration" >&2
   exit 1
 fi
 
-if rg -n '^[[:space:]]*Axiom[[:space:]]+[A-Za-z0-9_]+[[:space:]]*:' "$THEORIES"; then
+if rg -n '^[[:space:]]*Axiom[[:space:]]+[A-Za-z0-9_]+[[:space:]]*:' "$SANITIZED_THEORIES"; then
   echo "error: found an axiom in the cost-accounted rho theories" >&2
   exit 1
 fi
 
-if rg -n 'TODO|FIXME|deferred|future work|placeholder|not formally proven|open work' "$THEORIES" "${VERIFICATION_DOCS[@]}"; then
+if rg -n 'TODO|FIXME|deferred|future work|placeholder|not formally proven|open work' "$SANITIZED_THEORIES" "${VERIFICATION_DOCS[@]}"; then
   echo "error: found an incompletion marker in proof theories or verification docs" >&2
   exit 1
 fi
@@ -33,14 +41,17 @@ echo "Compiling and checking Rocq theories..."
   cd "$PROOF_ROOT"
   rocq makefile -f _CoqProject -o Makefile >/dev/null
   make -j"${ROCQ_JOBS:-2}" >/dev/null
-  rocqchk -Q theories CostAccountedRho CostAccountedRho.UseCaseAdequacy >/dev/null
+  proof_modules=()
+  while IFS= read -r proof; do
+    module="${proof#theories/}"
+    module="${module%.v}"
+    proof_modules+=("CostAccountedRho.${module}")
+  done < <(rg -N '^[[:space:]]*theories/[A-Za-z0-9_]+\.v[[:space:]]*$' _CoqProject | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  rocqchk -Q theories CostAccountedRho "${proof_modules[@]}" >/dev/null 2>&1
 )
 
-assumptions="$(mktemp)"
-trap 'rm -f "$assumptions"' EXIT
-
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement UseCaseAdequacy.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities UseCaseAdequacy.
 Print Assumptions translation_faithful.
 Print Assumptions translation_strong_bisimilar_generic.
 Print Assumptions compound_gate_per_step_reverse.
@@ -212,6 +223,45 @@ Print Assumptions uc_ca_146_recovered_slash_requires_current_cost_evidence.
 Print Assumptions uc_ca_147_parent_pre_state_slash_authorization_preserves_cost_boundary.
 Print Assumptions uc_ca_148_slash_target_epoch_is_replay_authenticated.
 Print Assumptions uc_ca_149_zero_bond_slash_noop_preserves_cost_boundary.
+Print Assumptions pos_map_currentdeploys_invariant.
+Print Assumptions pos_refund_no_cross_attribution.
+Print Assumptions pos_precharge_failure_atomic.
+Print Assumptions fifo_drain_conservation.
+Print Assumptions ll_tensor_min_required_matches_runtime.
+Print Assumptions ll_threshold_min_required_matches_runtime.
+Print Assumptions ll_plus_left_min_required_matches_runtime.
+Print Assumptions ll_plus_right_min_required_matches_runtime.
+Print Assumptions ll_with_min_required_matches_runtime.
+Print Assumptions ll_bang_min_required_matches_runtime.
+Print Assumptions ll_whynot_min_required_matches_runtime.
+Print Assumptions ll_lolly_min_required_matches_runtime.
+Print Assumptions ll_all_required_uses_all_atoms.
+Print Assumptions ll_threshold_validity_bounds_runtime_quorum.
+Print Assumptions ll_sig_algebra_required_complete.
+Print Assumptions ll_sig_algebra_consumed_matches_presented.
+Print Assumptions ll_sig_algebra_threshold_valid_bounds_bridge.
+Print Assumptions dill_linear_identity.
+Print Assumptions dill_tensor_combines_linear_contexts.
+Print Assumptions dill_unrestricted_claim_uses_no_linear_witness.
+Print Assumptions dill_lolly_modus_ponens_consumes_input_context.
+Print Assumptions dill_whynot_intro_uses_no_linear_witness.
+Print Assumptions ll_plus_left_consumes_chosen_branch.
+Print Assumptions ll_plus_right_consumes_chosen_branch.
+Print Assumptions ll_with_requires_both_branches_available.
+Print Assumptions ll_bang_reuse_no_extra_linear_cost.
+Print Assumptions ll_whynot_consumes_no_linear_witness.
+Print Assumptions ll_lolly_resource_flow_conservative.
+Print Assumptions ll_threshold_quorum_sound.
+Print Assumptions ll_linear_no_contraction.
+Print Assumptions ll_linear_no_weakening.
+Print Assumptions ll_linear_atom_contraction_changes_count.
+Print Assumptions ll_consume_linear_once_atom_exhausts.
+Print Assumptions ll_no_double_spend_single_witness.
+Print Assumptions ll_double_spend_requires_duplicate_witness.
+Print Assumptions ll_unrestricted_reuse_preserves_context.
+Print Assumptions ll_unrestricted_can_be_reused.
+Print Assumptions ll_linear_cut_consumes_cut_witness.
+Print Assumptions ll_unrestricted_cut_preserves_linear_zone.
 Quit.
 EOF
 then

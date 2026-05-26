@@ -1188,13 +1188,12 @@ impl DeployData {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
         // Resolve the primary signer's algorithm.
-        let primary_alg = SignaturesAlgFactory::apply(&proto.sig_algorithm)
-            .ok_or_else(|| {
-                format!(
-                    "Unknown primary signature algorithm: {}",
-                    proto.sig_algorithm
-                )
-            })?;
+        let primary_alg = SignaturesAlgFactory::apply(&proto.sig_algorithm).ok_or_else(|| {
+            format!(
+                "Unknown primary signature algorithm: {}",
+                proto.sig_algorithm
+            )
+        })?;
 
         // Phase 3 dispatch: sig_algebra (LL-rich algebra) OVERRIDES
         // the flat cosigners[] + cosigner_threshold path. Take it out
@@ -1334,9 +1333,8 @@ impl DeployData {
 
         let mut signers: Vec<Cosigner> = Vec::with_capacity(atoms.len());
         for atom in atoms.into_iter() {
-            let alg = SignaturesAlgFactory::apply(&atom.sig_algorithm).ok_or_else(|| {
-                format!("Unknown signature algorithm: {}", atom.sig_algorithm)
-            })?;
+            let alg = SignaturesAlgFactory::apply(&atom.sig_algorithm)
+                .ok_or_else(|| format!("Unknown signature algorithm: {}", atom.sig_algorithm))?;
             signers.push(Cosigner {
                 pk: PublicKey::from_bytes(&atom.pk),
                 sig: atom.sig,
@@ -1354,13 +1352,24 @@ impl DeployData {
         if min_required == total && Self::algebra_is_all_required(sig_algebra)? {
             Cosigned::from_signed_data(data, signers, phlo_limit)
                 .map_err(|e| format!("Cosigned sig_algebra validation failed: {}", e))
-        } else {
-            if min_required == 0 {
+        } else if min_required == 0 {
+            let presented: Vec<Cosigner> = signers
+                .into_iter()
+                .filter(|signer| !signer.sig.is_empty())
+                .collect();
+            if presented.is_empty() {
                 return Err(
-                    "Sig algebra requires zero valid signatures — a Cosigned envelope requires at least one"
+                    "Sig algebra requires zero valid signatures and presents no signer; a Cosigned envelope requires at least one"
                         .to_string(),
                 );
             }
+            Cosigned::from_signed_data(data, presented, phlo_limit).map_err(|e| {
+                format!(
+                    "Cosigned sig_algebra optional-present validation failed: {}",
+                    e
+                )
+            })
+        } else {
             Cosigned::from_signed_data_threshold(data, signers, phlo_limit, min_required).map_err(
                 |e| {
                     format!(
@@ -2218,7 +2227,10 @@ mod tests {
         );
     }
 
-    fn fresh_atom_signing(payload: &DeployData, phlo_share: i64) -> (crate::casper::SigAtom, Vec<u8>) {
+    fn fresh_atom_signing(
+        payload: &DeployData,
+        phlo_share: i64,
+    ) -> (crate::casper::SigAtom, Vec<u8>) {
         let secp = Secp256k1;
         let (sk, pk) = secp.new_key_pair();
         let serialized = DeployData::_to_proto(payload.clone()).encode_to_vec();
@@ -2264,10 +2276,8 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
-            payload, &algebra, 200,
-        )
-        .expect("Tensor with two valid signers must verify");
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 200)
+            .expect("Tensor with two valid signers must verify");
         assert_eq!(cosigned.signers().len(), 2);
     }
 
@@ -2291,10 +2301,8 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
-            payload, &algebra, 100,
-        )
-        .expect("Plus with chosen=0 + valid left sig must verify");
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+            .expect("Plus with chosen=0 + valid left sig must verify");
         assert_eq!(cosigned.signers().len(), 2);
     }
 
@@ -2310,14 +2318,10 @@ mod tests {
                     threshold: 2,
                     members: vec![
                         crate::casper::SigCompound {
-                            connective: Some(crate::casper::sig_compound::Connective::Atom(
-                                atom_a,
-                            )),
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(atom_a)),
                         },
                         crate::casper::SigCompound {
-                            connective: Some(crate::casper::sig_compound::Connective::Atom(
-                                atom_b,
-                            )),
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(atom_b)),
                         },
                         crate::casper::SigCompound {
                             connective: Some(crate::casper::sig_compound::Connective::Atom(
@@ -2328,10 +2332,8 @@ mod tests {
                 },
             )),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(
-            payload, &algebra, 200,
-        )
-        .expect("Threshold 2-of-3 with 2 valid sigs must verify");
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 200)
+            .expect("Threshold 2-of-3 with 2 valid sigs must verify");
         assert_eq!(cosigned.signers().len(), 3);
     }
 
@@ -2356,7 +2358,49 @@ mod tests {
         // alone is invalid (the deploy must have at least one signer).
         // We expect this to fail at the empty-signer-list invariant
         // rather than at quorum.
-        assert!(result.is_err(), "WhyNot with only absent atom must fail (empty signer list)");
+        assert!(
+            result.is_err(),
+            "WhyNot with only absent atom must fail (empty signer list)"
+        );
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_whynot_present_signer_verifies() {
+        let payload = deploy_data(100, 1);
+        let (atom, _) = fresh_atom_signing(&payload, 100);
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
+                crate::casper::SigCompound {
+                    connective: Some(crate::casper::sig_compound::Connective::Atom(atom)),
+                },
+            ))),
+        };
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+            .expect("present WhyNot signer must verify when it funds phlo");
+        assert_eq!(cosigned.signers().len(), 1);
+        assert_eq!(cosigned.total_phlo_share(), 100);
+    }
+
+    #[test]
+    fn from_proto_cosigned_sig_algebra_whynot_present_invalid_rejected() {
+        let payload = deploy_data(100, 1);
+        let other_payload = deploy_data(100, 99);
+        let (mut atom, _) = fresh_atom_signing(&other_payload, 100);
+        atom.phlo_share = 100;
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
+                crate::casper::SigCompound {
+                    connective: Some(crate::casper::sig_compound::Connective::Atom(atom)),
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+            .expect_err("present invalid WhyNot signer must reject");
+        assert!(
+            err.contains("failed signature verification"),
+            "error must identify signature verification failure: {}",
+            err
+        );
     }
 
     #[test]

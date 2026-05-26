@@ -39,7 +39,7 @@ Common TLC jar locations:
 
 | File | Purpose | Properties |
 |---|---|---|
-| `MultiSignerProtocol.tla` | Phase 1.7 PoS Map-in-MVar refinement: per-cosigner attribution, FIFO drain, atomic soft-checkpoint revert | MapDomainEqualsInFlightSigners, RefundFinalizes, PartialFailureNoConsumption, NoNegativeAmounts, ChargedAmountBounded, PhloShareConservation, FailureRevertsCharges; liveness: EventuallyDoneOrReverted, EventuallyAllRefundsComplete |
+| `MultiSignerProtocol.tla` | Phase 1.7 PoS Map-in-MVar refinement: per-cosigner attribution, FIFO drain, atomic soft-checkpoint revert | MapDomainEqualsInFlightSigners, RefundFinalizes, NoRefundCrossAttribution, PartialFailureNoConsumption, NoNegativeAmounts, ChargedAmountBounded, PhloShareConservation, FailureRevertsCharges, TotalRefundConservation; liveness: EventuallyDoneOrReverted, EventuallyAllRefundsComplete |
 | `MCMultiSigner.tla` | Phase 4.6 — scaled-up harness (5 cosigners, phlo 8) | (same as base) |
 | `ThresholdProtocol.tla` | Phase 2 M-of-N quorum semantics | QuorumThresholdConstraint, QuorumExactness, QuorumNoOverCount, AuthorizedSubsetPresented, PresentedSubsetMembers, RejectionImpliesShortQuorum; liveness: EventuallyTerminates |
 | `MCThreshold.tla` | Phase 4.6 — 3-of-5 quorum harness (vs base 2-of-4) | (same) |

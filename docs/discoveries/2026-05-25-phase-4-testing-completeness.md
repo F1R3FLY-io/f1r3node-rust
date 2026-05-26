@@ -13,18 +13,19 @@ has at least one mechanized witness.
 
 | Layer | File / Module | Count |
 |---|---|---|
-| Rust unit tests (cosigned envelope) | `crypto/src/rust/signatures/signed.rs` (`cosigned_tests` mod) | 13 |
+| Rust unit tests (cosigned envelope) | `crypto/src/rust/signatures/signed.rs` (`cosigned_tests` mod) | 14 |
 | Rust property tests (LL identities) | `rholang/tests/accounting/ll_algebra_spec.rs` | 29 |
 | Rust property tests (LL forbidden) | `rholang/tests/accounting/ll_rejection_spec.rs` | 10 |
 | Rust property tests (LL operational) | `rholang/tests/accounting/ll_operational_spec.rs` | 9 |
 | Rust wire-format pipeline | `casper/tests/multi_sig_pipeline_spec.rs` | 14 |
 | Rust runtime integration | `casper/tests/multi_sig_runtime_integration_spec.rs` | 9 |
 | Rust mixed-algorithm | `models/tests/mixed_algorithm_cosigned_test.rs` | 4 |
-| Rust models lib (algebra dispatch) | `models/src/rust/casper/protocol/casper_message.rs` (`tests` mod) | 5+ |
-| Rocq theorems (LLIdentities.v) | `formal/rocq/cost_accounted_rho/theories/LLIdentities.v` | 41 |
-| Rocq theorems (MultiSignerRefinement.v) | `formal/rocq/cost_accounted_rho/theories/MultiSignerRefinement.v` | 25 |
+| Rust models lib (algebra dispatch) | `models/src/rust/casper/protocol/casper_message.rs` (`tests` mod) | 7 |
+| Rocq theorems (LLIdentities.v) | `formal/rocq/cost_accounted_rho/theories/LLIdentities.v` | 51 |
+| Rocq theorems (LinearLogicResources.v) | `formal/rocq/cost_accounted_rho/theories/LinearLogicResources.v` | 25 |
+| Rocq theorems (MultiSignerRefinement.v) | `formal/rocq/cost_accounted_rho/theories/MultiSignerRefinement.v` | 31 |
 | TLA+ specifications | `formal/tlaplus/cost_accounted_rho/*.tla` | 22 |
-| Sage exhaustive search | `formal/sage/cost_accounting/ll_identity_search.sage` | 16 identities × 10k samples |
+| Sage bounded exhaustive search | `formal/sage/cost_accounting/ll_identity_search.sage` | 16 identities + 11 resource obligations / 643,827 default bounded cases |
 | Criterion benchmarks | `casper/benches/multi_sig_fanout_bench.rs` | 4 benchmark groups |
 
 ## LL identity coverage matrix
@@ -34,7 +35,7 @@ Status per identity:
 - `P` — Rust proptest
 - `E` — Rust example test
 - `T` — TLA+ invariant
-- `S` — Sage exhaustive search
+- `S` — Sage bounded exhaustive search
 - `—` — N/A
 
 ### Multiplicative laws (Tensor `⊗`)
@@ -117,8 +118,10 @@ Status per identity:
 
 | Anti-identity | R | P | E | S |
 |---|---|---|---|---|
-| `σ ⊬ σ ⊗ σ` (anti-contraction) | (proved as `!σ ⊢ !σ ⊗ !σ` admissible ONLY for Bang) | `anti_contraction_non_unit_sigma_self_tensor_distinct` | `anti_contraction_duplicating_signature_yields_distinct_deploy_id` | `anti_contraction (must fail)` |
-| `σ ⊬ 1` (anti-weakening) | (proved as `!σ ⊢ 1` admissible ONLY for Bang) | `anti_weakening_extra_atom_must_be_observable` | — | `anti_weakening (must fail)` |
+| `σ ⊬ σ ⊗ σ` (anti-contraction) | `ll_linear_no_contraction`, `ll_linear_atom_contraction_changes_count` | `anti_contraction_non_unit_sigma_self_tensor_distinct` | `anti_contraction_duplicating_signature_yields_distinct_deploy_id` | `anti_contraction (must fail)`, `resource_nonbang_contraction_increases_required_units` |
+| `σ ⊬ 1` (anti-weakening) | `ll_linear_no_weakening` | `anti_weakening_extra_atom_must_be_observable` | — | `anti_weakening (must fail)`, `resource_nonwhynot_weakening_increases_required_units` |
+| Single witness cannot be spent twice | `ll_no_double_spend_single_witness` | — | — | `resource_single_witness_no_double_spend` |
+| Duplicate witness permits two spends only when duplicated | `ll_double_spend_requires_duplicate_witness` | — | — | `resource_duplicate_witness_allows_two_spends` |
 | Plus ≢ Tensor at variant level | — | — | `anti_plus_tensor_at_enum_layer` | — |
 | With ≢ Tensor at variant level | — | — | `anti_with_tensor_at_enum_layer` | — |
 | Anti-distributivity | (in `tensor_over_plus_subset_lhs_in_rhs` direction-only) | — | `anti_distributivity_tensor_over_plus_witnessed_by_atom_duplication` | — |
@@ -129,8 +132,10 @@ Status per identity:
 |---|---|---|---|---|
 | Single-sig observable equivalence | `single_sig_pos_map_observably_equivalent_after_charge` (and `_refund`) | — | `t1, t2, t7` in runtime_integration_spec | `MultiSignerProtocol::MapDomainEqualsInFlightSigners` |
 | FIFO drain order | `fifo_drain_length`, `fifo_drain_conservation`, `fifo_drain_preserves_deployers`, `fifo_drain_zero_cost`, `fifo_drain_full_cost` | — | — | `MultiSignerProtocol::PhloShareConservation` |
+| N-cosigner map cleanup | `pos_map_currentdeploys_invariant` | — | — | `MultiSignerProtocol::RefundFinalizes` |
+| Refund attribution | `pos_refund_no_cross_attribution` | — | — | `MultiSignerProtocol::NoRefundCrossAttribution`, `TotalRefundConservation` |
 | Replay-payload determinism | `rb_payload_signatures_partition_well_formed`, `rb_full_replay_payload_signature_set_change_detected` | `sig_channel_reflection_is_pure` | `t8, t9` | — |
-| Atomic revert on pre-charge failure | (in `MultiSignerProtocol`) | — | — | `MultiSignerProtocol::PartialFailureNoConsumption`, `FailureRevertsCharges` |
+| Atomic revert on pre-charge failure | `pos_precharge_failure_atomic` | — | — | `MultiSignerProtocol::PartialFailureNoConsumption`, `FailureRevertsCharges` |
 | Cosigner-cap enforcement | (parameterized lemma) | — | (in `casper_conf.rs` config) | `MultiSignerProtocol::ChargedAmountBounded` |
 
 ## Phase 2 M-of-N coverage
@@ -139,15 +144,34 @@ Status per identity:
 |---|---|---|---|---|
 | Quorum exactness | — | — | `cosigned_threshold_accepts_quorum_satisfied_2_of_3` (lib), `t3` (runtime) | `ThresholdProtocol::QuorumExactness` |
 | Quorum no-overcount | — | — | — | `ThresholdProtocol::QuorumNoOverCount` |
-| Threshold range validation | — | — | `cosigned_threshold_rejects_threshold_zero`, `_exceeds_total` (lib), `t4` (runtime) | `ThresholdProtocol::QuorumThresholdConstraint` |
+| Threshold range validation | `ll_threshold_validity_bounds_runtime_quorum` | — | `cosigned_threshold_rejects_threshold_zero`, `_exceeds_total` (lib), `t4` (runtime) | `ThresholdProtocol::QuorumThresholdConstraint` |
+| Non-empty invalid threshold member rejection | — | — | `cosigned_threshold_rejects_non_empty_invalid_signature_even_when_quorum_met` | `ThresholdProtocol::QuorumNoOverCount` |
 | Permutation invariance | `threshold_permutation_invariant` | `threshold_members_permutation_invariant_property` | (existing) | (implicit) |
 
 ## Phase 3 LL-rich algebra coverage
 
 Per-connective: every connective has TLA+ protocol spec + MC harness +
-Rust property test + Rocq channel-tier theorem. See §6 of the design
-catalog in `formal/rocq/cost_accounted_rho/theories/LLIdentities.v`
-sections 9-19 for the comprehensive list.
+Rust property test + Rocq channel-tier theorem. Publication-level
+resource obligations are mechanized in
+`formal/rocq/cost_accounted_rho/theories/LinearLogicResources.v`:
+`ll_sig_algebra_required_complete`,
+`ll_sig_algebra_consumed_matches_presented`,
+`ll_plus_left_consumes_chosen_branch`,
+`ll_plus_right_consumes_chosen_branch`,
+`ll_with_requires_both_branches_available`,
+`ll_lolly_resource_flow_conservative`,
+`ll_bang_reuse_no_extra_linear_cost`, and
+`ll_whynot_consumes_no_linear_witness`.
+
+Runtime admission was audited against these obligations. One source
+bug was found and fixed: a non-empty invalid signer could be ignored
+once a threshold quorum was otherwise met, while its phlo share still
+participated in envelope accounting. `Cosigned::from_signed_data_threshold`
+now rejects every non-empty invalid signature before accepting the
+threshold envelope, and sig-algebra `WhyNot` now accepts a presented
+optional signer only when that signer verifies and funds the declared
+phlo limit. Absent-only `WhyNot` remains rejected at the deploy-envelope
+boundary because `Cosigned` requires at least one signer.
 
 ## Acceptance criteria status
 
@@ -158,9 +182,9 @@ Per Plan §4.18:
 - [x] `cargo test multi_sig_pipeline_spec` — 14 tests pass.
 - [x] `cargo test multi_sig_runtime_integration_spec` — 9 tests pass.
 - [x] `cargo test --test mixed_algorithm_cosigned_test` — 4 tests pass.
-- [x] Rocq under systemd-run resource limits — 41 theorems in LLIdentities.v + 25 in MultiSignerRefinement.v, all Qed-closed.
+- [x] `bash scripts/check-cost-accounted-rho-proofs.sh` — all cost-accounted Rocq modules compile, every module passes `rocqchk`, and headline theorems are closed under the global context.
 - [x] `bash scripts/check-cost-accounted-rho-tla-invariants.sh` — 22/22 specs pass.
-- [x] `python3 formal/sage/cost_accounting/ll_identity_search.sage` — 16 identities × 10,000 samples, zero counterexamples.
+- [x] `python3 formal/sage/cost_accounting/ll_identity_search.sage --mode exhaustive` — 16 identities plus 11 resource obligations, 643,827 default bounded cases, zero counterexamples.
 - [x] `bash scripts/check-cost-accounted-rho-coverage.sh` — script delivered; runs locally on demand.
 - [x] `cargo bench -p casper --bench multi_sig_fanout_bench` — 4 benchmark groups, baseline timings recorded.
 - [x] `formal/tlaplus/cost_accounted_rho/README.md` — updated to document all 22 specs with run instructions.
@@ -178,8 +202,9 @@ The §4.9 (capabilities registry RhoSpec) and §4.10 (multi_sig_runtime_fanout) 
   quorum contract that uses the same MVar + map_in_mvar machinery as
   `rho:system:capabilities`, providing a coverage proxy for the
   capability-registry contract paths.
-- The Rocq theorem `multi_payer_commit_atomic` covers the formal
-  side of atomicity, complementing what runtime tests would observe.
+- The Rocq theorem `pos_precharge_failure_atomic` and TLA+
+  `PartialFailureNoConsumption` invariant cover the formal side of
+  pre-charge atomicity, complementing what runtime tests observe.
 
 The remaining §4.9 / §4.10 / §4.12 work is tracked as live tasks
 but the FOUNDATIONAL invariants (envelope construction, signature

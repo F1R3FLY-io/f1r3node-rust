@@ -22,10 +22,10 @@ title No double-spend — consume_linear_atom (linear Δ) vs reuse_unrestricted 
 start
 :a resource is presented for use;
 if (which zone holds it?) then (linear Δ — single-use)
-  #FFE0B2:consume_linear_atom(a, Δ);
+  :consume_linear_atom(a, Δ); <<#FFE0B2>>
   if (is a present in Δ?) then (yes · a ∈ Δ)
-    #C8E6C9:remove the first matching a;
-    #C8E6C9:return Some Δ′\n— witness a spent exactly once;
+    :remove the first matching a; <<#C8E6C9>>
+    :return Some Δ′\n— witness a spent exactly once; <<#C8E6C9>>
     note right
       [a]    → one spend, then a is absent
       [a, a] → two spends, then absent
@@ -35,8 +35,8 @@ if (which zone holds it?) then (linear Δ — single-use)
       ll_linear_cut_consumes_cut_witness
     end note
   else (no · a ∉ Δ — already spent / never held)
-    #EF9A9A:return None;
-    #EF9A9A:spend REJECTED — no double-spend;
+    :return None; <<#EF9A9A>>
+    :spend REJECTED — no double-spend; <<#EF9A9A>>
     note right
       a second spend of an exhausted atom,
       or any absent atom, fails
@@ -44,8 +44,8 @@ if (which zone holds it?) then (linear Δ — single-use)
     end note
   endif
 else (unrestricted Γ — reusable)
-  #C5CAE9:use f   (f ∈ Γ);
-  #C5CAE9:reuse_unrestricted γ = γ\n— Γ unchanged, usable any number of times;
+  :use f   (f ∈ Γ); <<#C5CAE9>>
+  :reuse_unrestricted γ = γ\n— Γ unchanged, usable any number of times; <<#C5CAE9>>
   note right
     ! -marked resources persist; reuse is idempotent
     ll_unrestricted_can_be_reused

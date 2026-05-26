@@ -32,6 +32,8 @@ From Stdlib Require Import Arith.PeanoNat Lists.List Lia
   Sorting.Permutation.
 Import ListNotations.
 
+From CostAccountedRho Require Import CostAccountedSyntax.
+
 (* ─────────────────────────────────────────────────────────────────────────
    §1: Abstract channel model — multiset of atomic propositions.
    The reflection layer's ParSortMatcher::sort_match makes the resulting
@@ -521,4 +523,65 @@ Theorem bang_whynot_commute_at_channel : forall c,
 Proof.
   intros c. unfold bang_channel, whynot_channel, channel_equiv.
   apply Permutation_refl.
+Qed.
+
+Theorem ll_tensor_min_required_matches_runtime :
+  forall s1 s2,
+    sig_algebra_min_required (ASAnd s1 s2) =
+    sig_algebra_min_required s1 + sig_algebra_min_required s2.
+Proof. reflexivity. Qed.
+
+Theorem ll_threshold_min_required_matches_runtime :
+  forall k members,
+    sig_algebra_min_required (ASThreshold k members) = k.
+Proof. reflexivity. Qed.
+
+Theorem ll_plus_left_min_required_matches_runtime :
+  forall s1 s2,
+    sig_algebra_min_required (ASPlus ChooseLeft s1 s2) =
+    sig_algebra_min_required s1.
+Proof. reflexivity. Qed.
+
+Theorem ll_plus_right_min_required_matches_runtime :
+  forall s1 s2,
+    sig_algebra_min_required (ASPlus ChooseRight s1 s2) =
+    sig_algebra_min_required s2.
+Proof. reflexivity. Qed.
+
+Theorem ll_with_min_required_matches_runtime :
+  forall s1 s2,
+    sig_algebra_min_required (ASWith s1 s2) =
+    sig_algebra_min_required s1 + sig_algebra_min_required s2.
+Proof. reflexivity. Qed.
+
+Theorem ll_bang_min_required_matches_runtime :
+  forall s,
+    sig_algebra_min_required (ASBang s) = sig_algebra_min_required s.
+Proof. reflexivity. Qed.
+
+Theorem ll_whynot_min_required_matches_runtime :
+  forall s,
+    sig_algebra_min_required (ASWhyNot s) = 0.
+Proof. reflexivity. Qed.
+
+Theorem ll_lolly_min_required_matches_runtime :
+  forall s_from s_to,
+    sig_algebra_min_required (ASLolly s_from s_to) =
+    sig_algebra_min_required s_from + sig_algebra_min_required s_to.
+Proof. reflexivity. Qed.
+
+Theorem ll_all_required_uses_all_atoms :
+  forall s,
+    sig_algebra_all_required s = true ->
+    sig_algebra_min_required s = length (sig_algebra_atoms s).
+Proof.
+  apply sig_algebra_all_required_min_required_atoms.
+Qed.
+
+Theorem ll_threshold_validity_bounds_runtime_quorum :
+  forall k members,
+    sig_algebra_valid (ASThreshold k members) = true ->
+    1 <= k /\ k <= length members.
+Proof.
+  apply sig_algebra_threshold_valid_bounds.
 Qed.
