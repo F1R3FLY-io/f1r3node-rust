@@ -4,7 +4,7 @@
 **Date:** 2026-05-25
 **Authors:** Dylon Edwards, with formal-verification contributions from L. Gregory Meredith
 **Status:** Implementation-aligned formal design document
-**Scope:** The linear-logic additions to cost accounting — the runtime signature algebra `sig_algebra`, the Dual-Intuitionistic-Linear-Logic (DILL) two-zone fragment in `LinearLogicResources.v`, the channel-layer algebraic identities in `LLIdentities.v`, the multiplicative unit `1`, and their cross-checks in Sage, TLA⁺, and the Rust runtime.
+**Scope:** The linear-logic additions to cost accounting — the runtime signature algebra `sig_algebra`, the Dual-Intuitionistic-Linear-Logic (DILL) two-zone fragment in `LinearLogicResources.v`, the channel-layer algebraic identities in `LLIdentities.v`, the multiplicative unit `1`, and their cross-checks in Sage, TLA⁺ (Temporal Logic of Actions), and the Rust runtime.
 
 The authority chain is: repo-local Rocq / TLA⁺ / Sage formal models, then this design document, then the `f1r3node-rust` implementation. Where this document and any publication draft disagree, the repo-local models and this document are authoritative. This document is a *companion* to the flagship proof, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md): that document proves that phlogiston accounting is faithfully encodable in the pure rho calculus; **this** document explains the linear-logic structure of the *authorization* algebra that decides how much fuel a deploy costs, and is the dedicated home for the linear-logic / DILL / unit-`1` work that the other cost-accounting design docs do not cover.
 
@@ -43,7 +43,7 @@ A reader fluent in the π-calculus [[7](#ref-7)] or the reflective rho calculus 
 
 The thesis that organizes this entire document is a single identification, made precise in [§5.6](#56-the-runtime-bridge-theorems) and [§6](#6-the-cost-accounting-interpretation-resource--cost) and mechanically proved in Rocq:
 
-> A compound signature is a linear-logic formula. The **number of atomic witnesses that formula obligates** — its linear-logic *required-units* count — **is** the deploy's authorization cost. The single-use (linear) witnesses model spendable fuel that cannot be double-spent or conjured; the reusable (`!`-marked) witnesses model standing capabilities that are not consumed; and the **multiplicative unit `1`** is the zero-cost, zero-witness authorization that acts as the neutral element of the whole algebra.
+> A compound signature is a linear-logic formula. The **number of atomic witnesses that formula obligates** — its linear-logic *required-units* count — **is** the deploy's authorization cost. The single-use (linear) witnesses model spendable fuel that cannot be double-spent or conjured; the reusable (`!`-marked — the *of-course* connective, [§2.1](#21-linear-logic-connectives-and-the-unit)) witnesses model standing capabilities that are not consumed; and the **multiplicative unit `1`** is the zero-cost, zero-witness authorization that acts as the neutral element of the whole algebra.
 
 ### 1.4 What this document covers, and what it does not
 
@@ -59,7 +59,7 @@ This document covers five concrete artifacts, all on the `feature/cost-accounted
 
 It does **not** cover the operational *reduction* of authorized deploys (that lives in `RhoReduction.v` / `Bisimulation.v`), nor the on-chain `rho:system:capabilities` registry that implements bounded reuse and the lollipop transformer at runtime. Those are dynamics; this document is the *static* resource accounting that the dynamics presuppose.
 
-### 1.5 Document roadmap
+### 1.5 Document layout
 
 [§2](#2-glossary-of-symbols-and-terms) defines every symbol and term used below. [§3](#3-linear-logic-from-first-principles) teaches linear logic from first principles; [§4](#4-dual-intuitionistic-linear-logic-and-the-two-zone-sequent) introduces DILL and the `dill` relation. [§5](#5-the-runtime-signature-algebra-and-the-reflection-pipeline) presents the runtime `sig_algebra` and the reflection pipeline that turns it into a linear-logic formula and then a cost. [§6](#6-the-cost-accounting-interpretation-resource--cost) ties connectives to cost with a worked example. [§7](#7-channel-layer-algebraic-identities) and [§8](#8-substructural-guarantees-no-double-spend-no-free-weakening) present the two families of Rocq theorems (algebraic identities and substructural guarantees). [§9](#9-multi-modal-corroboration) shows how Sage, TLA⁺, and Rust corroborate the Rocq proofs — including a real bug the corroboration caught. [§10](#10-scope-limitations-and-honesty) states the limitations precisely.
 
@@ -67,7 +67,7 @@ It does **not** cover the operational *reduction* of authorized deploys (that li
 
 ## 2. Glossary of Symbols and Terms
 
-*Every symbol, connective, and term used in this document appears in the tables below before its first use; later sections assume these definitions.* Throughout, `σ`, `τ`, `ρ` range over signature formulas and `a`, `b`, `c` over atomic signatures.
+*Every symbol, connective, and term used in this document is defined at or before its first use, with the tables below as the central reference; later sections assume these definitions.* Throughout, `σ`, `τ`, `ρ` range over signature formulas and `a`, `b`, `c` over atomic signatures.
 
 ### 2.1 Linear-logic connectives and the unit
 
@@ -102,7 +102,7 @@ The **threshold** (`k`-of-`N` quorum) connective, written informally `Threshold(
 
 The Rocq inductive `sig_algebra` (`CostAccountedSyntax.v:229`), the runtime Rust enum `Sig` (`accounting/mod.rs:821`), and the wire-format `SigCompound` proto are three views of the same algebra. The cost column is the Rocq fixpoint `sig_algebra_min_required` (`CostAccountedSyntax.v:253`).
 
-| Rocq `sig_algebra` | Rust `Sig`          | Wire `Connective` | LL connective | `sig_algebra_min_required` |
+| Rocq `sig_algebra` | Rust `Sig`          | Wire `Connective` | Linear-logic connective | `sig_algebra_min_required` |
 |--------------------|---------------------|-------------------|:-------------:|----------------------------|
 | `ASUnit`           | `Sig::Unit`         | `Atom` (empty)    |      `1`      | `0`                        |
 | `ASHash a`         | `Sig::Hash(b)`      | `Atom`            |     atom      | `1`                        |
@@ -150,6 +150,7 @@ These live in `LinearLogicResources.v`. `ll_formula` (`line 7`) is the object-le
 | **Exchange**                              | reordering hypotheses. Linear logic *keeps* it (our channels are multisets, so order is irrelevant).                                                                        |
 | **ILLE**                                  | Intuitionistic Linear Logic with Exponentials — the single-conclusion linear logic with `!` and `?`. The fragment this development mechanizes.                              |
 | **DILL**                                  | Dual Intuitionistic Linear Logic [[2](#ref-2)] — a two-zone presentation of ILLE with a reusable zone `Γ` and a linear zone `Δ`.                                            |
+| **LL** | linear logic — the abbreviation used in table headers, diagram labels, and reference tables. |
 | **Dereliction**                           | the rule `!σ ⊢ σ`: a reusable resource may be used once.                                                                                                                    |
 | **Signer's choice vs. verifier's choice** | `⊕` is decided by the party constructing the deploy (which branch they signed); `&` leaves the choice to the verifier (block proposer), so both branches must be available. |
 | **Quorum / threshold**                    | a k-of-N requirement: any k of the N listed signers suffice.                                                                                                                |
@@ -465,7 +466,7 @@ By [§3.6](#36-the-multiplicative-unit-1), `1` costs `0`, is the `⊗`-identity 
 
 ### 6.5 Worked example: a 2-of-3 threshold deploy, end-to-end
 
-Consider a deploy authorized by *any two of three* cosigners with public keys yielding atoms `a₁`, `a₂`, `a₃`, each funding a `phlo_share` of 100 against a `phlo_limit` of 300.
+Consider a deploy authorized by *any two of three* cosigners with public keys yielding atoms `a₁`, `a₂`, `a₃`, each funding a `phlo_share` of 100 — each cosigner's portion of the deploy's total fuel budget — against a `phlo_limit` of 300, the budget to which the shares must sum.
 
 1. **Authorization term.** `s = ASThreshold 2 [ASHash a₁; ASHash a₂; ASHash a₃]`. It is well-formed: `1 ≤ 2 ≤ 3`, so `sig_algebra_valid s = true` ([§5.3](#53-companion-measures)).
 2. **Reflection.** `ll_of_sig_algebra s = LLThreshold 2 [LLAtom a₁; LLAtom a₂; LLAtom a₃]`.
@@ -506,7 +507,7 @@ The cost of [§5.2](#52-the-cost-function-sig_algebra_min_required) is a single 
 
 **Atom.** *Signatures.* Exactly one signature verified and one pre-charge slot; routed N-of-N (branch (a), [§6.6](#66-per-connective-use-cases-and-worked-examples)). *Fuel tokens.* One authorized signer funds the deploy's budget; the leaf at which the token-gated reduction bottoms out.
 
-**Tensor `⊗`.** *Signatures.* **All `N`** signatures are verified, and the multi-signer **pre-charge fan-out** debits each cosigner in the OUTER soft-checkpoint scope (`runtime.rs:604`), with shares summing to `phlo_limit`; the `N` cosigner hashes are folded left-associated by `set_deploy_signatures` (`accounting/mod.rs:605`). *Fuel tokens.* Additive — the parts' obligations sum — but the deploy runs on **one shared budget**, never partitioned per fork (the rejected per-fork partitioning is row TM-CA-147 of the [threat model](cost-accounting-threat-model.md); Option E keeps a single budget per deploy, "per paper §3 Rule 1").
+**Tensor `⊗`.** *Signatures.* **All `N`** signatures are verified, and the multi-signer **pre-charge fan-out** — debiting each cosigner's `phlo_share` up front, before the body runs — executes in the outer soft-checkpoint scope (`runtime.rs:604`), the runtime's transactional revert boundary (the inner and outer scopes are defined under *Settlement and rollback* below); the shares sum to `phlo_limit`. The `N` cosigner hashes are folded left-associated by `set_deploy_signatures` (`accounting/mod.rs:605`). *Fuel tokens.* Additive — the parts' obligations sum — but the deploy runs on **one shared budget**, never partitioned per fork (the rejected per-fork partitioning is row TM-CA-147 of the [threat model](cost-accounting-threat-model.md); Option E keeps a single budget per deploy, "per paper §3 Rule 1").
 
 **With `&`.** *Signatures.* **Both** branches are verified and funded up front (cost `c(σ)+c(τ)`); the verifier projects one at validation time. *Fuel tokens.* Both branches are funded, but only the projected branch's effects flow — the verifier-choice discipline means the deployer cannot under-commit either branch (contrast `⊕`).
 
