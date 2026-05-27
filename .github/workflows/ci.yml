@@ -278,6 +278,11 @@ jobs:
     name: Launch Ephemeral Runners
     needs: lint
     runs-on: ubuntu-latest
+    # Gates on environment-scoped secrets (OCI_* + RELEASE_PAT). Required
+    # reviewers on the `ephemeral-launch` environment unblock fork PRs whose
+    # default permissions cannot see repo-level secrets. Internal pushes from
+    # protected branches also pause for one approval click per run.
+    environment: ephemeral-launch
     permissions:
       actions: write  # needed for gh api ... actions/runners/registration-token
     timeout-minutes: 10
