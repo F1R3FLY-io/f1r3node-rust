@@ -139,7 +139,7 @@ security failure mode.
 
 | Category | Representative rows |
 |---|---|
-| `CA-CAP` | TM-CA-001, TM-CA-002, TM-CA-027, TM-CA-042, TM-CA-043 |
+| `CA-CAP` | TM-CA-001, TM-CA-002, TM-CA-027, TM-CA-042, TM-CA-043, TM-CA-148, TM-CA-149, TM-CA-150 |
 | `CA-BUDGET` | TM-CA-003, TM-CA-004, TM-CA-013, TM-CA-033, TM-CA-050, TM-CA-051, TM-CA-109 |
 | `CA-TRACE` | TM-CA-005, TM-CA-007, TM-CA-014, TM-CA-031, TM-CA-066, TM-CA-111 |
 | `CA-REPLAY` | TM-CA-006, TM-CA-009, TM-CA-010, TM-CA-011, TM-CA-045, TM-CA-080, TM-CA-119 |
@@ -300,6 +300,9 @@ security failure mode.
 | TM-CA-145 | `CA-BUDGET` | **D** | Lock-free attempt log grows without bound under sustained reservation pressure, exhausting node memory | Protected by `MAX_COST_TRACE_EVENTS = 1_048_576` cap enforced inside `reconcile`'s sort-and-walk and runtime-side `cost_trace_event_count` check | RuntimeBudget Option E | `rb_reconcile` truncates the canonical attempt list at `MAX_COST_TRACE_EVENTS`; the existing `trace_cap_boundary` fixture covers the cap surface. |
 | TM-CA-146 | `CA-TRACE` | **T** | Reconciliation cache leaks across deploys, causing the next deploy's `cost_trace_digest` to include the previous deploy's events | Protected by `reset_from_token` clearing both `attempt_log` and the `canonical_reconciliation` cache under the reset write-lock | RuntimeBudget Option E | `runtime_budget_reset_from_token_serializes_with_batch_commit` racing reset against batch commit; `reset_from_token` always clears both fields atomically. |
 | TM-CA-147 | `CA-REPLAY` | **T + R** | Per-fork ESWLS budget partitioning (a rejected design alternative) starves recursive Rholang contracts by geometric budget halving | Explicitly NOT used — Option E preserves a single shared budget per deploy, per paper §3 Rule 1 (single signature → single token) | The four existing `cost_accounting_spec` tests for recursive contracts (`bounded_generated_terms_have_deterministic_play_replay_cost`, `cost_should_be_deterministic`, `should_stop_..._with_a_more_sophisticated_contract`, `total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the_log`) pass under Option E. |
+| TM-CA-148 | `CA-CAP` | **E** | Non-system principal mints `!` (of-course) for unbounded/infinite reuse from a single registration | **Open — under design debate.** See `cost-accounting-linear-logic.md` §10.6 | `BangProtocol.tla` (bounded/unbounded reuse), `ll_bang_reuse_no_extra_linear_cost` | Bounded reuse capped by the `rho:system:capabilities` counter; system-reservation of unbounded `!` **not enforced** (`sig_algebra_valid` imposes no who-may-use rule) |
+| TM-CA-149 | `CA-CAP` | **T + E** | `A ⊸ 1`: a capability discharges a funded continuation to the cost-0 multiplicative unit (free discharge / weakening) | **Open — under design debate.** See `cost-accounting-linear-logic.md` §10.6 | `sig_algebra_valid` (`CostAccountedSyntax.v:291`) places no constraint on a lollipop's output operand | **None** — `A ⊸ 1` (and any cost-0 lollipop output) is currently well-formed and accepted |
+| TM-CA-150 | `CA-CAP` | **T** | Partial funding: an under-funded multi-step process halts between credit and debit (application-currency non-conservation) | **Partially mitigated; application-currency conservation open.** See `cost-accounting-linear-logic.md` §10.6 | `process_deploy_cosigned` atomic body-revert; `token_monotone_step` (`TokenConservation.v:56`) | Fuel conservation + atomic tuplespace revert on out-of-phlogiston (`runtime.rs:811`/`:866`); cross-process application-currency conservation **open/debated** |
 
 ## 6. Classification Policy
 

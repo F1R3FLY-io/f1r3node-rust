@@ -54,6 +54,18 @@ Common TLC jar locations:
 | `LollyProtocol.tla` | Phase 3 Sig::Lolly linear-implication capability | LollyResourceFlow, LollyNoCreationExNihilo, LollyTransformer, LollyCapabilityRegistered, LollyCapabilityNotRevoked; liveness: LollyEventuallyCompletes |
 | `MCLolly.tla` | Phase 4.6 — MaxInvocations=6 harness | (same) |
 
+### Connectives without a dedicated spec (subsumed)
+
+Three of the nine LL connectives have no standalone protocol spec — by design, not omission:
+
+| Connective | Where verified | How |
+|---|---|---|
+| **And / `⊗`** (tensor) | `MultiSignerProtocol.tla` + `CompoundProtocol.tla` / `FullProtocol.tla` | Cost-additivity *is* the per-cosigner pre-charge fan-out (`PhloShareConservation`, `TotalRefundConservation`); the structural `s₁ & s₂` decomposition is `SplitFires` + `TokenConservation`. |
+| **Unit (`1`)** | `CostAccountedRho.tla` / `CompoundProtocol.tla` / `FullProtocol.tla` | Degenerate zero-token case (`TokensPerProc = 0` ⇒ 0 cost). The algebraic unit laws (`1 ⊗ σ ≡ σ`) are checked in Sage / Rocq, not TLA⁺. |
+| **atom** | `CostAccountedRho.tla` | The atomic single-token signature is the base case ("atomic signatures"); one-atom ⇒ one-gate ⇒ one-COMM is the generic `FuelGateSafety`. |
+
+So all nine connectives are accounted for: six dedicated specs (Plus, With, Bang, WhyNot, Lolly, Threshold) plus these three subsumptions.
+
 ## Running
 
 ```bash
