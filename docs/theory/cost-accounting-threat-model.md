@@ -122,7 +122,7 @@ security failure mode.
 > authorization algebra under `CA-CAP` — including the *no-free-weakening*
 > guarantee that a presented-but-invalid signature cannot be silently dropped
 > while its phlo share still funds the envelope total — is documented in
-> [*Cost Accounting under Linear Logic*](cost-accounting-linear-logic.md).
+> [*The Linear Logic of Compound Signatures*](cost-accounting-linear-logic.md).
 
 | Category | Review lens |
 |---|---|

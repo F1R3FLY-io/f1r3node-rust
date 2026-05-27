@@ -3574,7 +3574,7 @@ per large module.
 > in `LinearLogicResources.v`, and the channel-layer identities in `LLIdentities.v`
 > (the multiplicative unit `1`; tensor/with/plus/bang/why-not/lollipop; and the
 > no-double-spend / no-free-weakening guarantees) — is documented in its dedicated
-> companion, [*Cost Accounting under Linear Logic*](cost-accounting-linear-logic.md).
+> companion, [*The Linear Logic of Compound Signatures*](cost-accounting-linear-logic.md).
 
 ### 11.2 Paper-to-Code Traceability
 

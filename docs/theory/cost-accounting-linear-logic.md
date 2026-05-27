@@ -1,4 +1,4 @@
-# Cost Accounting under Linear Logic: the DILL Substructural Layer and the Multiplicative Unit `1`
+# The Linear Logic of Compound Signatures: Authorization Cost as a Resource Count
 
 **Version:** 1.0
 **Date:** 2026-05-25
@@ -196,6 +196,8 @@ Linear logic **removes both** (keeping only exchange). The cost-accounting readi
 The **tensor** `σ ⊗ τ` means "I have both `σ` and `τ`, and the witnesses for `σ` are disjoint from those for `τ`." Because the witnesses are disjoint, the cost is *additive*: `cost(σ ⊗ τ) = cost(σ) + cost(τ)`. In cost-accounting terms, `σ ⊗ τ` is the multi-signer requirement "every one of these signers must contribute." A list of `N` cosigners folds to a left-nested tensor `((σ₁ ⊗ σ₂) ⊗ …) ⊗ σₙ`, which is exactly what the runtime does at `accounting/mod.rs:605` (see [§9.4](#94-rust-runtime-grounding)).
 
 The **lollipop** `σ ⊸ τ` (linear implication) means "consume a `σ` to produce a `τ`." It is the type of a *capability*: a delegation that, when fed an authorization `σ`, yields an authorization `τ`, spending `σ` in the process. Its cost is again additive, `cost(σ ⊸ τ) = cost(σ) + cost(τ)`, because exercising the capability requires both the input witness and whatever the output obligates.
+
+This multiplicative fragment is *intuitionistic*: it has the tensor `⊗` (and its unit `1`, [§3.6](#36-the-multiplicative-unit-1)) but deliberately **not** the multiplicative disjunction *par* (`⅋`, with unit `⊥`), nor an involutive linear negation. Classical linear logic would *define* `σ ⊸ τ` as `σ^⊥ ⅋ τ`; we keep `⊸` primitive and never introduce par, because par is the connective of concurrent *communication* whereas an authorization cost is a closed, single-conclusion *count* — there is nothing for two sub-authorizations to communicate. Concurrency does exist in the system, but one layer down, as the rho-calculus parallel composition `P | Q`; see [§10.7](#107-the-intuitionistic-multiplicative-choice-tensor-not-par).
 
 ### 3.4 The additive connectives: `&` and `⊕`
 
@@ -736,6 +738,14 @@ The linear fragment — `⊗`, `&`, `⊕`, `⊸`, atom, and threshold — is con
 - **Partial funding and application-currency conservation.** Fuel is conserved under reduction (`token_monotone_step`, `TokenConservation.v:56`) and an out-of-phlogiston body reverts atomically (`process_deploy_cosigned` rolls the whole body back to a soft checkpoint, `runtime.rs:811`/`:866`), so a deploy is "paid in full, effects discarded" ([§6.7](#67-how-each-connective-moves-the-two-ledgers-signatures-and-fuel-tokens)). But whether *application-level* conservation — a transfer's credit matched by its debit — holds across a multi-step process whose funding runs out, beyond fuel conservation and the atomic revert, is open and debated.
 
 These are recorded here for honesty, not resolved; the threat model tracks them as `CA-CAP` rows TM-CA-148–150.
+
+### 10.7 The intuitionistic multiplicative choice: tensor, not par
+
+The multiplicative fragment used here is **intuitionistic**: among the multiplicatives it has the tensor `⊗` and its unit `1`, but **not** par `⅋` (multiplicative disjunction) or par's unit `⊥`, and it has no involutive linear negation `(·)^⊥`. This is the defining choice of the layer, not an omission to be filled later, and it is *why* the `dill` sequent is single-conclusion (`Γ ; Δ ⊢ A`, [§4.2](#42-reading-the-judgment)): par requires either a multi-conclusion right-hand side or classical negation, and an intuitionistic single-conclusion calculus admits neither. Three consequences:
+
+- **Cost stays a total, structural count.** `ll_required_units` and `ll_consumed_atoms` ([§5.5](#55-object-level-measures-cost-vs-capacity-vs-consumed)) recurse over a finite formula tree with no fixpoint over interaction. Par is the connective of *communication* — with cut it composes two processes that talk to each other — so a par-bearing cost would have to account for that interaction, not merely count witnesses. The par-free fragment keeps cost a closed fold, exactly what the runtime-bridge theorems ([§5.6](#56-the-runtime-bridge-theorems)) verify.
+- **`⊸` and `?` are primitive, not classical-negation-derived.** Classical linear logic defines `σ ⊸ τ := σ^⊥ ⅋ τ` and `?A := (! A^⊥)^⊥`; here `⊸` ([§3.3](#33-the-multiplicative-connectives--and-)) and `?` are basic, and the par and negation they would be built from never appear.
+- **Concurrency lives in the operational layer, not the cost algebra.** The system does have parallelism — but as the rho-calculus parallel composition `P | Q` (`PPar`) and system composition `S₁ ∥ S₂` (`SPar`), whose interaction is the COMM reduction in `RhoReduction.v`. That operational layer ([§10.4](#104-operational-reduction-is-elsewhere)) is where par's concerns — multiplicative disjunction, communication — belong; the authorization cost algebra of this document is deliberately the static, par-free fragment beneath it.
 
 ---
 
