@@ -278,12 +278,6 @@ jobs:
     name: Launch Ephemeral Runners
     needs: lint
     runs-on: ubuntu-latest
-    # Conditional environment: gate only fork PRs. Fork PR workflows can't see
-    # repo-scoped secrets, so OCI_* + RELEASE_PAT live in the `ephemeral-launch`
-    # environment and the required-reviewer approval unlocks them. Internal
-    # pushes and internal-branch PRs resolve the expression to '' (no
-    # environment) and run unattended.
-    environment: ${{ github.event.pull_request.head.repo.fork && 'ephemeral-launch' || '' }}
     permissions:
       actions: write  # needed for gh api ... actions/runners/registration-token
     timeout-minutes: 10
