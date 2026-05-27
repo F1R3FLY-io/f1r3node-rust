@@ -32,7 +32,6 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -1062,15 +1061,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
         name: &Par,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        match self.capture_results_with_errors(start, deploy, name).await {
-            Ok(result) => Ok(result),
-            Err(err) => Err(CasperError::InterpreterError(
-                InterpreterError::BugFoundError(format!(
-                    "Unexpected error while capturing results from Rholang: {}",
-                    err
-                )),
-            )),
-        }
+        self.capture_results_with_errors(start, deploy, name).await
     }
 
     pub async fn capture_results_with_errors(

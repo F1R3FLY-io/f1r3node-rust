@@ -1,7 +1,8 @@
 use std::cmp::PartialEq;
 use std::hash::{Hash, Hasher};
-use k256::ecdsa::{VerifyingKey};
+
 use eyre::{eyre, Result};
+use k256::ecdsa::VerifyingKey;
 
 // See crypto/src/main/scala/coop/rchain/crypto/PublicKey.scala
 #[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
@@ -15,8 +16,7 @@ impl PublicKey {
     pub fn from_bytes(bs: &[u8]) -> Self { PublicKey::new(bs.to_vec().into()) }
 
     pub fn validate_secp256k1_hex(pubkey_hex: &str) -> Result<()> {
-        let bytes = hex::decode(pubkey_hex)
-            .map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let bytes = hex::decode(pubkey_hex).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
 
         if bytes.len() != 65 || bytes[0] != 0x04 {
             return Err(eyre!("Invalid validator public key"));

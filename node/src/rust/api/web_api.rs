@@ -892,7 +892,8 @@ impl WebApi for WebApiImpl {
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
-        }"#.to_string();
+        }"#
+        .to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
