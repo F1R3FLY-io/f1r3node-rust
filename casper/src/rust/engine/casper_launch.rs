@@ -233,8 +233,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 BlockMessage,
             )>,
         ) -> Result<(), CasperError> {
-            println!("sendBufferPendantsToCasper");
-
             let pendants = casper_buffer_storage.get_pendants();
 
             // Filter pendants to only those that exist in BlockStore
@@ -434,8 +432,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     }
 
     async fn connect_as_genesis_validator(&self) -> Result<(), CasperError> {
-        println!("connectAsGenesisValidator");
-
         // As a genesis validator, native-token-* values from local config are
         // what will be baked into the TokenMetadata contract at genesis (via
         // default_blessed_terms). On-chain state cannot disagree with local
@@ -534,8 +530,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     }
 
     async fn init_bootstrap(&self, disable_state_exporter: bool) -> Result<(), CasperError> {
-        println!("initBootstrap");
-
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
         );

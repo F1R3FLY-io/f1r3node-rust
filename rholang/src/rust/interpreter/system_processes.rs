@@ -1234,7 +1234,7 @@ impl SystemProcesses {
         // Log the abort reason for debugging
         if let Some(arg) = args.first() {
             let str = self.pretty_printer.build_string_from_message(arg);
-            eprintln!("Execution aborted with arguments: {}", str);
+            tracing::error!("Execution aborted with arguments: {}", str);
         }
 
         Err(InterpreterError::UserAbortError)
@@ -1356,23 +1356,23 @@ impl SystemProcesses {
 
                         match log_level.as_str() {
                             "trace" => {
-                                println!("trace: {}", msg);
+                                tracing::trace!("{}", msg);
                                 Ok(vec![])
                             }
                             "debug" => {
-                                println!("debug: {}", msg);
+                                tracing::debug!("{}", msg);
                                 Ok(vec![])
                             }
                             "info" => {
-                                println!("info: {}", msg);
+                                tracing::info!("{}", msg);
                                 Ok(vec![])
                             }
                             "warn" => {
-                                println!("warn: {}", msg);
+                                tracing::warn!("{}", msg);
                                 Ok(vec![])
                             }
                             "error" => {
-                                println!("error: {}", msg);
+                                tracing::error!("{}", msg);
                                 Ok(vec![])
                             }
                             _ => Err(illegal_argument_error("std_log")),

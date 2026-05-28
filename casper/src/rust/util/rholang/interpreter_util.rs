@@ -514,10 +514,6 @@ fn handle_errors(
                 initial_failed,
                 replay_failed,
             } => {
-                println!(
-                    "Found replay status mismatch; replay failure is {} and orig failure is {}",
-                    replay_failed, initial_failed
-                );
                 tracing::warn!(
                     "Found replay status mismatch; replay failure is {} and orig failure is {}",
                     replay_failed,
@@ -527,7 +523,6 @@ fn handle_errors(
             }
 
             ReplayFailure::UnusedCOMMEvent { msg } => {
-                println!("Found replay exception: {}", msg);
                 tracing::warn!("Found replay exception: {}", msg);
                 Ok(Either::Right(None))
             }
@@ -536,10 +531,6 @@ fn handle_errors(
                 initial_cost,
                 replay_cost,
             } => {
-                println!(
-                    "Found replay cost mismatch: initial deploy cost = {}, replay deploy cost = {}",
-                    initial_cost, replay_cost
-                );
                 tracing::warn!(
                     "Found replay cost mismatch: initial deploy cost = {}, replay deploy cost = {}",
                     initial_cost,
@@ -567,11 +558,6 @@ fn handle_errors(
             } else {
                 // State hash in block does not match computed hash -- invalid!
                 // return no state hash, do not update the state hash set
-                println!(
-                    "Tuplespace hash {} does not match computed hash {}.",
-                    PrettyPrinter::build_string_bytes(&ts_hash),
-                    PrettyPrinter::build_string_bytes(&computed_state_hash)
-                );
                 tracing::warn!(
                     "Tuplespace hash {} does not match computed hash {}.",
                     PrettyPrinter::build_string_bytes(&ts_hash),
@@ -590,8 +576,6 @@ pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
         .map(|e| e.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-
-    println!("Deploy ({}) errors: {}", deploy_info, error_messages);
 
     tracing::warn!("Deploy ({}) errors: {}", deploy_info, error_messages);
 }
