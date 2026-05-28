@@ -305,17 +305,33 @@ impl TestNode {
     where
         F: FnOnce(&ValidBlockProcessing) -> bool,
     {
-        // Create block
-        let result = self.create_block(deploy_datums).await?;
-
-        // Extract block
-        let block = match result {
-            BlockCreatorResult::Created(b, ..) => b,
-            other => {
-                return Err(CasperError::RuntimeError(format!(
-                    "Expected Created block, got: {:?}",
-                    other
-                )))
+        // Create block. Under suite-parallel timing the just-added deploys can
+        // momentarily be absent from the proposer's view (deploys are added
+        // synchronously, but block_creator filters against the newly-synced
+        // multi-parent post-state / self-chain dedup), so a propose can
+        // transiently return NoNewDeploys. Callers of this helper always supply
+        // deploys and expect a Created block, so retry a bounded number of times
+        // with a short backoff before treating a non-Created result as an error.
+        let mut attempts: u32 = 0;
+        let block = loop {
+            match self.create_block(deploy_datums).await? {
+                BlockCreatorResult::Created(b, ..) => break b,
+                other => {
+                    if attempts < 20 {
+                        attempts += 1;
+                        tracing::debug!(
+                            "create_block returned {:?}; retry {}/20 after backoff",
+                            other,
+                            attempts
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    return Err(CasperError::RuntimeError(format!(
+                        "Expected Created block after {} retries, got: {:?}",
+                        attempts, other
+                    )));
+                }
             }
         };
 
