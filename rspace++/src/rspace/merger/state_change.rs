@@ -354,7 +354,7 @@ impl StateChange {
                 let post = post_state_reader.get_joins(&history_pointer)?;
 
                 // find join which match channels
-                let join = pre
+                let join_opt = pre
                     .into_iter()
                     .chain(post)
                     .find(|join| {
@@ -368,14 +368,38 @@ impl StateChange {
                         consume_channels.sort();
                         join_channels.sort();
                         *consume_channels == join_channels
-                    })
-                    .expect(
-                        "Tuple space inconsistency found: channel of consume does not contain \
-                         join record corresponding to the consume channels.",
-                    );
+                    });
 
-                let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
-                joins_map.insert(consume_channels, raw_join);
+                // A consume can be "affected" by the event-log set algebra yet have ZERO net
+                // tuple-space effect (created-and-resolved within the block, or a peek /
+                // immediate match leaving no residue), in which case neither pre nor post
+                // state holds a join for it. Such a no-op consume carries no join change:
+                // the `cont_diff.retain(...)` below drops it from the continuation diff, and
+                // `state_change_merger` consults this join map ONLY for consumes that have a
+                // (non-no-op) continuation change. So skip it rather than `.expect()`-
+                // panicking — the panic was a craftable validator-crash on attacker-
+                // influenceable input, and it fired during eager per-branch indexing.
+                // A genuine surviving/destroyed consume always has its join written in
+                // lockstep with its continuation, so it cannot reach pre==post==empty; were
+                // one ever to, the downstream merger degrades to a deterministic
+                // `HistoryError::MergeError` rather than a silent wrong state.
+                match join_opt {
+                    Some(join) => {
+                        let raw_join =
+                            bincode::serialize(&join).expect("Unable to serialize join");
+                        joins_map.insert(consume_channels, raw_join);
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "rspace.merger",
+                            "state_change: affected consume has no join record in pre or post \
+                             state (net-zero-effect / no-op consume); skipping its join entry. \
+                             This is expected for created-and-resolved or peek consumes and is \
+                             NOT a tuple-space inconsistency. channels={:?}",
+                            consume_channels
+                        );
+                    }
+                }
                 Ok::<(), HistoryError>(())
             })?;
 
