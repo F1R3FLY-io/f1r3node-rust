@@ -7,7 +7,7 @@ use base64::Engine as _;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use p256::{PublicKey as P256PublicKey, SecretKey as P256SecretKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use x509_certificate::X509Certificate;
 
@@ -174,16 +174,10 @@ impl CertificateHelper {
     /// When false, uses a blocking secure random source (equivalent to /dev/random)
     /// See crypto/src/main/scala/coop/rchain/crypto/util/SecureRandomUtil.scala
     pub fn generate_key_pair(use_non_blocking_random: bool) -> (P256SecretKey, P256PublicKey) {
-        let secret_key = if use_non_blocking_random {
-            // Non-blocking random: equivalent to Scala's SecureRandomUtil.secureRandomNonBlocking
-            // Uses ThreadRng which is non-blocking and fast (similar to /dev/urandom)
-            use rand::thread_rng;
-            P256SecretKey::random(&mut thread_rng())
-        } else {
-            // Blocking random: equivalent to Scala's new SecureRandom()
-            // Uses OsRng which is cryptographically secure but may block (similar to /dev/random)
-            P256SecretKey::random(&mut OsRng)
-        };
+        // Both branches use OsRng; the `use_non_blocking_random` flag is retained for API
+        // compatibility but `rand_core::OsRng` is the only RNG type k256/p256 0.13 accept.
+        let _ = use_non_blocking_random;
+        let secret_key = P256SecretKey::random(&mut OsRng);
 
         let public_key = secret_key.public_key();
         (secret_key, public_key)
@@ -228,8 +222,8 @@ impl CertificateHelper {
         // Set serial number
         // Generate a 64-bit random serial number
         let mut serial_bytes = [0u8; 8];
-        use rand::RngCore;
-        rand::rngs::OsRng.fill_bytes(&mut serial_bytes);
+        use rand_core::RngCore;
+        OsRng.fill_bytes(&mut serial_bytes);
         params.serial_number = Some(serial_bytes.to_vec().into());
 
         // Note: rcgen automatically uses ECDSA-SHA256 for P-256 keys,
