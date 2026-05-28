@@ -973,7 +973,7 @@ extern "C" fn reset(
     match rt.block_on(async { runtime.reducer.space.reset(&root).await }) {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("ERROR: reset failed: {:?}", e);
+            tracing::error!("reset failed: {:?}", e);
             1 // generic reset error (e.g. unknown root)
         }
     }
@@ -1521,7 +1521,7 @@ extern "C" fn source_to_adt(params_ptr: *const u8, params_bytes_len: usize) -> *
     ) {
         Ok(par) => par,
         Err(error) => {
-            println!("source_to_adt rust side error {:?}", error);
+            tracing::error!("source_to_adt failed: {:?}", error);
             return std::ptr::null();
         }
     };

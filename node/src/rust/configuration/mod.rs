@@ -178,7 +178,7 @@ pub mod builder {
             node_conf
         } else {
             if node_conf.dev.deployer_private_key.is_some() {
-                println!("Node is not in dev mode, ignoring --deployer-private-key");
+                tracing::warn!("Node is not in dev mode, ignoring --deployer-private-key");
             }
             NodeConf {
                 dev: model::DevConf {
