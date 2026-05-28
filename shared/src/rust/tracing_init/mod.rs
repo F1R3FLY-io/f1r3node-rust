@@ -1,7 +1,7 @@
 //! Shared `tracing` subscriber initialisation for both the production
 //! binary (`init`) and test suites (`init_for_tests`).
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,6 @@ pub enum LogSink {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogFileConfig {
-    pub path: PathBuf,
     pub rotation: LogRotation,
     /// Number of rotated files to keep. 0 = unlimited.
     pub retention: usize,
@@ -61,7 +60,6 @@ pub struct LogFileConfig {
 impl Default for LogFileConfig {
     fn default() -> Self {
         Self {
-            path: PathBuf::from("logs/node.log"),
             rotation: LogRotation::default(),
             retention: 0,
         }
@@ -84,9 +82,10 @@ pub struct TracingGuards {
     _file: Option<WorkerGuard>,
 }
 
-/// Resolves the filter (RUST_LOG > cfg.filter) and installs the
-/// layered subscriber for the configured format and sink.
-pub fn init(cfg: &LoggingConfig) -> Result<TracingGuards> {
+/// Resolves the filter (RUST_LOG > cfg.filter) and installs the layered
+/// subscriber. `data_dir` is required when `cfg.sink` includes file output;
+/// logs are written to `<data_dir>/logs/node.log`.
+pub fn init(cfg: &LoggingConfig, data_dir: Option<&Path>) -> Result<TracingGuards> {
     let filter = resolve_filter(&cfg.filter);
     let mut guards = TracingGuards::default();
     let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = Vec::new();
@@ -98,7 +97,10 @@ pub fn init(cfg: &LoggingConfig) -> Result<TracingGuards> {
         layers.push(make_layer(cfg.format, std::io::stdout));
     }
     if to_file {
-        let (writer, guard) = make_file_writer(&cfg.file)?;
+        let dir = data_dir.ok_or_else(|| {
+            eyre!("logging.sink includes file output but no data directory is available")
+        })?;
+        let (writer, guard) = make_file_writer(dir, &cfg.file)?;
         guards._file = Some(guard);
         layers.push(make_layer(cfg.format, writer));
     }
@@ -154,24 +156,13 @@ where W: for<'a> MakeWriter<'a> + Send + Sync + 'static {
 }
 
 fn make_file_writer(
+    data_dir: &Path,
     cfg: &LogFileConfig,
 ) -> Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
-    let path = &cfg.path;
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| {
-            eyre!(
-                "logging.file.path must include a parent directory: {:?}",
-                path
-            )
-        })?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| eyre!("logging.file.path must include a file name: {:?}", path))?;
+    let log_dir = data_dir.join("logs");
 
-    std::fs::create_dir_all(dir)
-        .map_err(|e| eyre!("failed to create logging directory {:?}: {}", dir, e))?;
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| eyre!("failed to create log directory {:?}: {}", log_dir, e))?;
 
     let mut builder = tracing_appender::rolling::Builder::new()
         .rotation(match cfg.rotation {
@@ -179,12 +170,12 @@ fn make_file_writer(
             LogRotation::Hourly => tracing_appender::rolling::Rotation::HOURLY,
             LogRotation::Daily => tracing_appender::rolling::Rotation::DAILY,
         })
-        .filename_prefix(file_name.to_string_lossy().into_owned());
+        .filename_prefix("node.log");
     if cfg.retention > 0 {
         builder = builder.max_log_files(cfg.retention);
     }
     let appender = builder
-        .build(dir)
+        .build(&log_dir)
         .map_err(|e| eyre!("failed to build rolling file appender: {}", e))?;
     Ok(tracing_appender::non_blocking(appender))
 }
@@ -196,20 +187,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn make_file_writer_creates_parent_directory() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("nested").join("subdir").join("node.log");
+    fn make_file_writer_creates_logs_subdir_in_data_dir() {
+        let data_dir = tempdir().expect("tempdir");
         let cfg = LogFileConfig {
-            path: path.clone(),
             rotation: LogRotation::Never,
             retention: 0,
         };
 
-        let (_writer, _guard) = make_file_writer(&cfg).expect("make_file_writer");
+        let (_writer, _guard) = make_file_writer(data_dir.path(), &cfg).expect("make_file_writer");
 
         assert!(
-            path.parent().unwrap().is_dir(),
-            "parent directory should have been created"
+            data_dir.path().join("logs").is_dir(),
+            "logs/ subdirectory should have been created inside data_dir"
         );
     }
 }

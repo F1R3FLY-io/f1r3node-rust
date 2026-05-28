@@ -54,10 +54,8 @@ fn main() -> Result<()> {
         })?;
     } else {
         let mut logging_cfg = shared::rust::tracing_init::LoggingConfig::default();
-        if let Some(level) = &options.log_level {
-            logging_cfg.filter = level.clone();
-        }
-        let _log_guards = init_logging(&logging_cfg)?;
+        apply_log_cli_overrides(&options, &mut logging_cfg);
+        let _log_guards = init_logging(&logging_cfg, None)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
@@ -68,17 +66,20 @@ fn main() -> Result<()> {
 
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
-    let log_level_override = options.log_level.clone();
+    let log_overrides = (
+        options.log_level.clone(),
+        options.log_format.clone(),
+        options.log_sink.clone(),
+    );
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
 
-    if let Some(level) = log_level_override {
-        node_conf.logging.filter = level;
-    }
+    apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 
-    let _log_guards = init_logging(&node_conf.logging)?;
+    let data_dir = node_conf.storage.data_dir.clone();
+    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
 
     for w in deferred_warnings {
         warn!("{}", w);
@@ -255,8 +256,44 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
 
 pub fn init_logging(
     cfg: &shared::rust::tracing_init::LoggingConfig,
+    data_dir: Option<&std::path::Path>,
 ) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
-    shared::rust::tracing_init::init(cfg)
+    shared::rust::tracing_init::init(cfg, data_dir)
+}
+
+fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {
+    apply_log_cli_overrides_raw(
+        (
+            options.log_level.clone(),
+            options.log_format.clone(),
+            options.log_sink.clone(),
+        ),
+        cfg,
+    );
+}
+
+fn apply_log_cli_overrides_raw(
+    overrides: (Option<String>, Option<String>, Option<String>),
+    cfg: &mut shared::rust::tracing_init::LoggingConfig,
+) {
+    use shared::rust::tracing_init::{LogFormat, LogSink};
+    let (level, format, sink) = overrides;
+    if let Some(l) = level {
+        cfg.filter = l;
+    }
+    if let Some(f) = format {
+        cfg.format = match f.to_lowercase().as_str() {
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Json,
+        };
+    }
+    if let Some(s) = sink {
+        cfg.sink = match s.to_lowercase().as_str() {
+            "file" => LogSink::File,
+            "both" => LogSink::Both,
+            _ => LogSink::Stdout,
+        };
+    }
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)

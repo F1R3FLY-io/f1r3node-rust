@@ -66,6 +66,16 @@ pub struct Options {
     #[arg(long = "log-level")]
     pub log_level: Option<String>,
 
+    /// Override `logging.format` from config. "json" (default) or "pretty"
+    /// for human-readable terminal output.
+    #[arg(long = "log-format", value_name = "FORMAT")]
+    pub log_format: Option<String>,
+
+    /// Override `logging.sink` from config. "stdout" (default), "file"
+    /// (writes to <data-dir>/logs/node.log), or "both".
+    #[arg(long = "log-sink", value_name = "SINK")]
+    pub log_sink: Option<String>,
+
     #[command(subcommand)]
     pub subcommand: Option<OptionsSubCommand>,
 }
