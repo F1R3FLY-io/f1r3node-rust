@@ -16,11 +16,12 @@ use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::matcher::r#match::Matcher;
 use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use crate::rust::interpreter::rho_runtime;
-use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, create_rho_runtime};
+use crate::rust::interpreter::rho_runtime::{
+    create_replay_rho_runtime, create_rho_runtime, RhoRuntimeImpl,
+};
 use crate::rust::interpreter::system_processes::Definition;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
-use crate::rust::interpreter::rho_runtime::RhoRuntimeImpl;
 
 pub fn mk_temp_dir(prefix: &str) -> PathBuf {
     let temp_dir = Builder::new()
