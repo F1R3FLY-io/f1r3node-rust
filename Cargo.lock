@@ -5753,6 +5753,7 @@ dependencies = [
  "axum 0.8.9",
  "bincode",
  "bytes",
+ "eyre",
  "futures",
  "heed",
  "hex",
@@ -5772,6 +5773,8 @@ dependencies = [
  "tonic 0.14.6",
  "tower 0.5.3",
  "tracing",
+ "tracing-log 0.2.0",
+ "tracing-subscriber",
 ]
 
 [[package]]

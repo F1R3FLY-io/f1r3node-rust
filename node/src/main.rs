@@ -23,12 +23,9 @@ use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    init_json_logging()?;
+    init_logging()?;
 
     // Parse CLI arguments, handling help/version display gracefully
     let options = match Options::try_parse() {
@@ -241,23 +238,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_json_logging() -> eyre::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_current_span(false) // logs only for now
-                .with_span_list(false) // logs only for now
-                .flatten_event(true), // put event fields at top level
-        )
-        .try_init()?;
-    Ok(())
+pub fn init_logging() -> eyre::Result<()> {
+    shared::rust::tracing_init::init(&shared::rust::tracing_init::LoggingConfig::default())
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)

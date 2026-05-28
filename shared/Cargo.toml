@@ -24,6 +24,9 @@ http = { workspace = true }
 http-body-util = "0.1"
 bytes = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-log = { workspace = true }
+eyre = { workspace = true }
 lz4_flex = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
