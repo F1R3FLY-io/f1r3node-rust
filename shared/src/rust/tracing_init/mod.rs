@@ -79,9 +79,7 @@ pub fn init(cfg: &LoggingConfig) -> eyre::Result<()> {
     let filter = resolve_filter(&cfg.filter);
     match (cfg.format, cfg.sink) {
         (LogFormat::Json, LogSink::Stdout) => init_json_stdout(filter),
-        (LogFormat::Pretty, _) => {
-            bail!("logging.format = \"pretty\" is not implemented")
-        }
+        (LogFormat::Pretty, LogSink::Stdout) => init_pretty_stdout(filter),
         (_, LogSink::File) | (_, LogSink::Both) => {
             bail!("logging.sink = \"file\"/\"both\" is not implemented")
         }
@@ -107,6 +105,22 @@ fn init_json_stdout(filter: EnvFilter) -> eyre::Result<()> {
     tracing_subscriber::registry()
         .with(filter)
         .with(json_layer())
+        .try_init()?;
+    Ok(())
+}
+
+fn init_pretty_stdout(filter: EnvFilter) -> eyre::Result<()> {
+    use std::io::IsTerminal;
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_ansi(std::io::stdout().is_terminal())
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_line_number(false),
+        )
         .try_init()?;
     Ok(())
 }

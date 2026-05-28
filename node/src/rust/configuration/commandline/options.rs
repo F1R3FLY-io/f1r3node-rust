@@ -61,6 +61,11 @@ pub struct Options {
     #[arg(long = "profile")]
     pub profile: Option<String>,
 
+    /// Override `logging.filter` from config. Examples: "info",
+    /// "info,f1r3fly.casper=debug". `RUST_LOG`, if set, still wins.
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+
     #[command(subcommand)]
     pub subcommand: Option<OptionsSubCommand>,
 }

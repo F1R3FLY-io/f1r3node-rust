@@ -53,7 +53,11 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
-        init_logging(&shared::rust::tracing_init::LoggingConfig::default())?;
+        let mut logging_cfg = shared::rust::tracing_init::LoggingConfig::default();
+        if let Some(level) = &options.log_level {
+            logging_cfg.filter = level.clone();
+        }
+        init_logging(&logging_cfg)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
@@ -64,10 +68,15 @@ fn main() -> Result<()> {
 
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
+    let log_level_override = options.log_level.clone();
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
-    let (node_conf, profile, config_file, deferred_warnings) =
+    let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
+
+    if let Some(level) = log_level_override {
+        node_conf.logging.filter = level;
+    }
 
     init_logging(&node_conf.logging)?;
 
