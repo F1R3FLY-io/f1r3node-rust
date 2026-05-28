@@ -10,10 +10,10 @@ Main binary. Manages node lifecycle, configuration, gRPC/HTTP servers, CLI, and 
 
 ```
 main()
-  -> init_json_logging()
   -> Options::try_parse() (clap CLI)
   -> IF "run" subcommand:
        configuration::builder::build()  (HOCON + CLI merge)
+       init_logging(&cfg.logging, Some(&data_dir))
        check_host(), check_ports(), load_private_key_from_file()
        initialize_diagnostics()  (Prometheus, InfluxDB, Zipkin, Sigar)
        node_runtime::start()
@@ -58,15 +58,19 @@ main()
 - `storage` -- Data directory (default `~/.rnode`)
 - `casper` -- Validator key, parents, finalization, heartbeat, genesis block data (bonds, wallets, native token metadata)
 - `metrics` -- Prometheus, InfluxDB, Zipkin, Sigar toggles
+- `logging` -- Format, sink, file rotation/retention (see [Logging](#logging))
 - `dev` -- Dev mode, deployer private key
 - `openai` -- LLM integration settings
 
 ### CLI Flag Overrides
 
-The following boolean flags override HOCON configuration at startup. CLI flags always take precedence.
+The following flags override HOCON configuration at startup. CLI flags always take precedence.
 
 | Flag | HOCON Target | Description |
 |------|-------------|-------------|
+| `--log-level <EXPR>` | `logging.filter` | EnvFilter expression. `RUST_LOG` still wins if set. |
+| `--log-format <FORMAT>` | `logging.format` | `json` (default) or `pretty` for human-readable terminal output. |
+| `--log-sink <SINK>` | `logging.sink` | `stdout` (default), `file`, or `both`. File is written to `<data-dir>/logs/node.log`. |
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
@@ -369,6 +373,54 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 **Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 
 **Stale LFB leader-only recovery**: Deterministic leader selection allows one validator to propose when LFB is stale but regular recovery is throttled (`lag in [1, threshold)`).
+
+## Logging
+
+Structured logging uses the `tracing` crate. The subscriber is initialised from `NodeConf.logging` after config is built, so operators can control it from `rnode.conf`.
+
+### Configuration (`logging { }` in HOCON)
+
+| Key | Default | Values |
+|---|---|---|
+| `filter` | `"info"` | Any `EnvFilter` expression, e.g. `"info,f1r3fly.casper=debug"` |
+| `format` | `"json"` | `"json"` (structured, for aggregators) · `"pretty"` (human-readable, for terminals) |
+| `sink` | `"stdout"` | `"stdout"` · `"file"` · `"both"` |
+| `file.rotation` | `"daily"` | `"never"` · `"hourly"` · `"daily"` |
+| `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
+
+When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
+
+### Precedence (highest wins)
+
+1. `RUST_LOG` environment variable
+2. `--log-level` / `--log-format` / `--log-sink` CLI flags
+3. `logging.*` from `rnode.conf` or `defaults.conf`
+
+### Target taxonomy
+
+All explicit `target:` values in the codebase follow the convention `f1r3fly.<area>.<concern>` with underscores. Examples:
+
+```
+f1r3fly.casper                       # general consensus events
+f1r3fly.casper.compute_parents_post_state.timing
+f1r3fly.casper.mem_profile           # RSS memory samples (debug level)
+f1r3fly.rspace                       # tuple-space events
+f1r3fly.merge.dag_merger.state_changes
+f1r3fly.node.transaction
+```
+
+To enable mem profiling:
+```bash
+RUST_LOG="warn,f1r3fly.casper.mem_profile=debug" ./node run ...
+```
+
+### JSON output
+
+The JSON layer emits one object per event with `span` and `spans` fields for trace correlation with the OpenTelemetry/Zipkin integration. Example:
+
+```json
+{"timestamp":"2026-05-28T12:00:00Z","level":"INFO","target":"f1r3fly.casper","message":"compute-state-started","span":{"name":"run"},"spans":[]}
+```
 
 ## Diagnostics
 
