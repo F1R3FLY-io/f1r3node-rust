@@ -20,7 +20,7 @@ use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, create_rh
 use crate::rust::interpreter::system_processes::Definition;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
-use crate::RhoRuntimeImpl;
+use crate::rust::interpreter::rho_runtime::RhoRuntimeImpl;
 
 pub fn mk_temp_dir(prefix: &str) -> PathBuf {
     let temp_dir = Builder::new()
