@@ -50,20 +50,11 @@ pub enum LogSink {
     Both,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogFileConfig {
     pub rotation: LogRotation,
     /// Number of rotated files to keep. 0 = unlimited.
     pub retention: usize,
-}
-
-impl Default for LogFileConfig {
-    fn default() -> Self {
-        Self {
-            rotation: LogRotation::default(),
-            retention: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
