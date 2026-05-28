@@ -19,8 +19,9 @@
 
 #![no_main]
 
+use casper::rust::epoch::Epoch;
 use casper::rust::slashing_authorization::{
-    checked_base_seq, checked_next_seq, epoch_for_block_number,
+    checked_base_seq, checked_next_seq, epoch_for_block_number, DomainError,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -44,10 +45,12 @@ fuzz_target!(|input: Input| {
         .and_then(|seq| i32::try_from(seq).ok());
     assert_eq!(checked_next_seq(input.seq_u64), expected_next);
 
-    let expected_epoch = if input.block_number < 0 || input.epoch_length <= 0 {
-        None
+    let expected_epoch: Result<Epoch, DomainError> = if input.epoch_length <= 0 {
+        Err(DomainError::InvalidEpochLength(input.epoch_length))
+    } else if input.block_number < 0 {
+        Err(DomainError::NegativeBlockNumber(input.block_number))
     } else {
-        Some(input.block_number / i64::from(input.epoch_length))
+        Ok(Epoch::new(input.block_number / i64::from(input.epoch_length)))
     };
     assert_eq!(
         epoch_for_block_number(input.block_number, input.epoch_length),

@@ -104,7 +104,7 @@ fuzz_target!(|input: Input| {
             support::slash_deploy(
                 candidate.invalid_block_hash.clone(),
                 proposer.clone(),
-                candidate.target_activation_epoch,
+                candidate.target_activation_epoch.get(),
             )
         })
         .collect::<Vec<_>>();
@@ -122,12 +122,12 @@ fuzz_target!(|input: Input| {
                 support::slash_deploy(
                     candidate.invalid_block_hash.clone(),
                     proposer.clone(),
-                    candidate.target_activation_epoch,
+                    candidate.target_activation_epoch.get(),
                 ),
                 support::slash_deploy(
                     candidate.invalid_block_hash.clone(),
                     proposer,
-                    candidate.target_activation_epoch,
+                    candidate.target_activation_epoch.get(),
                 ),
             ],
         );

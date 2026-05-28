@@ -78,21 +78,16 @@ pub fn signed_deploy(seed: u8, phlo_limit: i64, phlo_price: i64) -> Signed<Deplo
     }
 }
 
-pub fn processed_deploy(
-    seed: u8,
-    cost: u64,
-    digest: Vec<u8>,
-    event_count: u64,
-    failed: bool,
-) -> ProcessedDeploy {
+pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
     ProcessedDeploy {
         deploy: signed_deploy(seed, 100, 1),
         cost: PCost { cost },
         deploy_log: Vec::new(),
         is_failed: failed,
         system_deploy_error: failed.then(|| "fuzz failure".to_string()),
-        cost_trace_digest: digest.into(),
-        cost_trace_event_count: event_count,
+        cosigners: Vec::new(),
+        primary_phlo_share: 0,
+        cosigner_threshold: 0,
     }
 }
 

@@ -1,8 +1,9 @@
 //! Fuzz replay-field roundtrips together with Casper settlement arithmetic.
 //!
 //! The oracle ties two production boundaries together: processed-deploy
-//! protobuf conversion must preserve cost evidence, and the deploy settlement
-//! helper must keep refunds total, bounded, and unable to replenish runtime fuel.
+//! protobuf conversion must preserve the scalar cost and failure flag, and the
+//! deploy settlement helper must keep refunds total, bounded, and unable to
+//! replenish runtime fuel.
 
 #![no_main]
 
@@ -16,8 +17,6 @@ mod cost_accounting_fuzz_support;
 struct Input {
     seed: u8,
     cost: u64,
-    digest: Vec<u8>,
-    event_count: u64,
     failed: bool,
     phlo_limit: i64,
     phlo_price: i64,
@@ -25,19 +24,11 @@ struct Input {
 }
 
 fuzz_target!(|input: Input| {
-    let digest = input.digest.iter().copied().take(64).collect::<Vec<_>>();
-    let processed = cost_accounting_fuzz_support::processed_deploy(
-        input.seed,
-        input.cost,
-        digest.clone(),
-        input.event_count,
-        input.failed,
-    );
+    let processed =
+        cost_accounting_fuzz_support::processed_deploy(input.seed, input.cost, input.failed);
     let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto())
         .expect("processed deploy protobuf roundtrip");
     assert_eq!(decoded.cost.cost, input.cost);
-    assert_eq!(decoded.cost_trace_digest.to_vec(), digest);
-    assert_eq!(decoded.cost_trace_event_count, input.event_count);
     assert_eq!(decoded.is_failed, input.failed);
 
     let deploy = DeployData {

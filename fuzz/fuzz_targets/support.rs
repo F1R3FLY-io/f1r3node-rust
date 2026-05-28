@@ -15,14 +15,16 @@
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use crypto::rust::public_key::PublicKey;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
@@ -209,7 +211,6 @@ pub fn snapshot(
         }
         dag.block_metadata_index
             .write()
-            .expect("metadata lock")
             .add(metadata)
             .expect("metadata insert");
     }
@@ -221,11 +222,12 @@ pub fn snapshot(
         lca: Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
+        rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num,
-        max_seq_nums: DashMap::new(),
+        max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf {
                 epoch_length,

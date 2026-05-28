@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use arbitrary::Arbitrary;
+use casper::rust::epoch::Epoch;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, epoch_for_block_number, validate_received_slash_deploys,
 };
@@ -113,7 +114,7 @@ fn expected_validation_ok(
     }
 
     let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    let Some(current_epoch) = epoch_for_block_number(block.body.state.block_number, epoch_length)
+    let Ok(current_epoch) = epoch_for_block_number(block.body.state.block_number, epoch_length)
     else {
         return false;
     };
@@ -123,7 +124,7 @@ fn expected_validation_ok(
         if issuer != block.sender {
             return false;
         }
-        if target_activation_epoch != current_epoch {
+        if target_activation_epoch != current_epoch.get() {
             return false;
         }
         let metadata = match snapshot.dag.lookup(&invalid_block_hash) {
@@ -134,7 +135,7 @@ fn expected_validation_ok(
             return false;
         }
         if epoch_for_block_number(metadata.block_number, epoch_length)
-            != Some(target_activation_epoch)
+            != Ok(Epoch::from(target_activation_epoch))
         {
             return false;
         }
@@ -193,16 +194,16 @@ fuzz_target!(|input: Input| {
     let current_candidate_epoch =
         epoch_for_block_number(bounded_height(input.max_block_num) + 1, epoch_length);
     match current_candidate_epoch {
-        None => assert!(candidate_result.is_err()),
-        Some(current_epoch) => {
+        Err(_) => assert!(candidate_result.is_err()),
+        Ok(current_epoch) => {
             let candidates = candidate_result.expect("candidate authorization domain");
-            let mut expected = BTreeMap::<Validator, (Bytes, i64)>::new();
+            let mut expected = BTreeMap::<Validator, (Bytes, Epoch)>::new();
             for metadata in snapshot.dag.invalid_blocks() {
                 if !metadata.invalid {
                     continue;
                 }
                 if epoch_for_block_number(metadata.block_number, epoch_length)
-                    != Some(current_epoch)
+                    != Ok(current_epoch)
                 {
                     continue;
                 }
