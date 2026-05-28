@@ -2,14 +2,14 @@
 //! binary (`init`) and test suites (`init_for_tests`).
 
 use eyre::bail;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 /// HOCON-deserializable logging configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
     /// `EnvFilter` expression. `RUST_LOG`, if set, fully overrides this.
     pub filter: String,
@@ -29,7 +29,7 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     #[default]
@@ -37,7 +37,7 @@ pub enum LogFormat {
     Pretty,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogSink {
     #[default]
@@ -46,7 +46,7 @@ pub enum LogSink {
     Both,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogFileConfig {
     pub path: PathBuf,
     pub rotation: LogRotation,
@@ -63,7 +63,7 @@ impl Default for LogFileConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogRotation {
     #[default]

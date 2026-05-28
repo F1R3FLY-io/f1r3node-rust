@@ -25,8 +25,6 @@ use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
 
 fn main() -> Result<()> {
-    init_logging()?;
-
     // Parse CLI arguments, handling help/version display gracefully
     let options = match Options::try_parse() {
         Ok(opts) => opts,
@@ -55,6 +53,7 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
+        init_logging(&shared::rust::tracing_init::LoggingConfig::default())?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
@@ -67,7 +66,14 @@ fn main() -> Result<()> {
 async fn start_node(options: Options) -> Result<()> {
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
-    let (node_conf, profile, config_file) = node::rust::configuration::builder::build(options)?;
+    let (node_conf, profile, config_file, deferred_warnings) =
+        node::rust::configuration::builder::build(options)?;
+
+    init_logging(&node_conf.logging)?;
+
+    for w in deferred_warnings {
+        warn!("{}", w);
+    }
 
     // Set system property for data directory (equivalent to Scala's System.setProperty)
     // SAFETY: This is called early in node startup before spawning threads that read env vars
@@ -238,8 +244,8 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_logging() -> eyre::Result<()> {
-    shared::rust::tracing_init::init(&shared::rust::tracing_init::LoggingConfig::default())
+pub fn init_logging(cfg: &shared::rust::tracing_init::LoggingConfig) -> eyre::Result<()> {
+    shared::rust::tracing_init::init(cfg)
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)

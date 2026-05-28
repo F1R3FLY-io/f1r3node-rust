@@ -158,6 +158,7 @@ mod tests {
                 tick_interval: Duration::from_secs(10),
                 influxdb_endpoint: InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: DevConf {
                 deployer_private_key: None,

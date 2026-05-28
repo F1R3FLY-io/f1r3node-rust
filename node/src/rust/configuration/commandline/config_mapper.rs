@@ -819,6 +819,7 @@ mod tests {
                 tick_interval: std::time::Duration::from_secs(10),
                 influxdb_endpoint: crate::rust::configuration::model::InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: crate::rust::configuration::model::DevConf {
                 deployer_private_key: None,

@@ -30,12 +30,13 @@ pub mod builder {
     /// If config file is provided as part of CLI options, it shall be parsed and merged
     /// with CLI options having higher priority.
     ///
-    /// # Arguments
-    /// * `options` - CLI options
-    ///
-    /// # Returns
-    /// * `Result<(NodeConf, Profile, Option<PathBuf>)>` - Configuration tuple
-    pub fn build(options: Options) -> eyre::Result<(NodeConf, Profile, Option<PathBuf>)> {
+    /// Returns the resolved configuration along with any non-fatal warning
+    /// messages produced during validation. The caller is responsible for
+    /// emitting the warnings via `tracing::warn!` after the tracing
+    /// subscriber has been installed.
+    pub fn build(
+        options: Options,
+    ) -> eyre::Result<(NodeConf, Profile, Option<PathBuf>, Vec<String>)> {
         let profile = options
             .profile
             .as_ref()
@@ -109,16 +110,20 @@ pub mod builder {
         // override config values with CLI options
         node_conf.override_config_values(options);
 
-        // Validate configuration
-        validate_config(&node_conf)?;
+        // Validate configuration, collecting non-fatal warnings to emit
+        // after the tracing subscriber is installed.
+        let mut warnings = validate_config(&node_conf)?;
 
-        let node_conf = check_dev_mode(node_conf);
+        let (node_conf, dev_warnings) = check_dev_mode(node_conf);
+        warnings.extend(dev_warnings);
 
-        Ok((node_conf, profile, config_file))
+        Ok((node_conf, profile, config_file, warnings))
     }
 
-    /// Validate configuration parameters
-    fn validate_config(node_conf: &NodeConf) -> eyre::Result<()> {
+    /// Validate configuration parameters. Returns non-fatal warning
+    /// messages; fatal errors are returned via `Err`.
+    fn validate_config(node_conf: &NodeConf) -> eyre::Result<Vec<String>> {
+        let mut warnings = Vec::new();
         let pos_multi_sig_quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
         let pos_multi_sig_public_keys_length = node_conf
             .casper
@@ -160,32 +165,35 @@ pub mod builder {
             .advanced
             .deploy_recovery_max_lag;
         if deploy_recovery_max_lag < pending_deploy_max_lag {
-            tracing::warn!(
+            warnings.push(format!(
                 "casper.heartbeat.advanced.deploy-recovery-max-lag ({}) is less than \
                 pending-deploy-max-lag ({}); the recovery knob has no effect under this \
                 configuration. Set deploy-recovery-max-lag >= pending-deploy-max-lag.",
-                deploy_recovery_max_lag,
-                pending_deploy_max_lag,
-            );
+                deploy_recovery_max_lag, pending_deploy_max_lag,
+            ));
         }
 
-        Ok(())
+        Ok(warnings)
     }
 
-    /// Check dev mode and adjust configuration accordingly
-    fn check_dev_mode(node_conf: NodeConf) -> NodeConf {
+    /// Check dev mode and adjust configuration accordingly. Returns the
+    /// (possibly modified) NodeConf along with any non-fatal warnings.
+    fn check_dev_mode(node_conf: NodeConf) -> (NodeConf, Vec<String>) {
         if node_conf.dev_mode {
-            node_conf
+            (node_conf, Vec::new())
         } else {
+            let mut warnings = Vec::new();
             if node_conf.dev.deployer_private_key.is_some() {
-                tracing::warn!("Node is not in dev mode, ignoring --deployer-private-key");
+                warnings
+                    .push("Node is not in dev mode, ignoring --deployer-private-key".to_string());
             }
-            NodeConf {
+            let updated = NodeConf {
                 dev: model::DevConf {
                     deployer_private_key: None,
                 },
                 ..node_conf
-            }
+            };
+            (updated, warnings)
         }
     }
 
@@ -351,5 +359,26 @@ mod heartbeat_conf_hocon_tests {
                 "error for {field} should mention non-negative requirement, got: {err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod embedded_defaults_tests {
+    use super::*;
+    use shared::rust::tracing_init::{LogFormat, LogRotation, LogSink};
+
+    #[test]
+    fn embedded_defaults_deserialize_into_node_conf() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        assert_eq!(cfg.logging.filter, "info");
+        assert!(matches!(cfg.logging.format, LogFormat::Json));
+        assert!(matches!(cfg.logging.sink, LogSink::Stdout));
+        assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
+        assert_eq!(cfg.logging.file.retention, 14);
     }
 }
