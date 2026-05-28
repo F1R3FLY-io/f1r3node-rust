@@ -132,8 +132,8 @@ where W: for<'a> MakeWriter<'a> + Send + Sync + 'static {
                 .with_target(true)
                 .with_file(true)
                 .with_line_number(true)
-                .with_current_span(false)
-                .with_span_list(false)
+                .with_current_span(true)
+                .with_span_list(true)
                 .flatten_event(true)
                 .with_writer(writer),
         ),
