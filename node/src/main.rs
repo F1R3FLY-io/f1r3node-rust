@@ -57,7 +57,7 @@ fn main() -> Result<()> {
         if let Some(level) = &options.log_level {
             logging_cfg.filter = level.clone();
         }
-        init_logging(&logging_cfg)?;
+        let _log_guards = init_logging(&logging_cfg)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
@@ -78,7 +78,7 @@ async fn start_node(options: Options) -> Result<()> {
         node_conf.logging.filter = level;
     }
 
-    init_logging(&node_conf.logging)?;
+    let _log_guards = init_logging(&node_conf.logging)?;
 
     for w in deferred_warnings {
         warn!("{}", w);
@@ -253,7 +253,9 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_logging(cfg: &shared::rust::tracing_init::LoggingConfig) -> eyre::Result<()> {
+pub fn init_logging(
+    cfg: &shared::rust::tracing_init::LoggingConfig,
+) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
     shared::rust::tracing_init::init(cfg)
 }
 
