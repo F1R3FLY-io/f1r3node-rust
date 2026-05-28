@@ -222,9 +222,7 @@ mod tests {
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
-    fn init_logger() {
-        shared::rust::tracing_init::init_for_tests();
-    }
+    fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
     fn test_peer() -> PeerNode {
         let id = NodeIdentifier {

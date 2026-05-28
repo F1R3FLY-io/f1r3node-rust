@@ -72,14 +72,12 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 })
             }
 
-            Some(ConnOrBody(connective_body)) => {
-                connective_body.ps.into_iter().find_map(|p| {
-                    let matches = self.free_map.clone();
-                    self.spatial_match(target.clone(), p)?;
-                    self.free_map = matches;
-                    Some(())
-                })
-            }
+            Some(ConnOrBody(connective_body)) => connective_body.ps.into_iter().find_map(|p| {
+                let matches = self.free_map.clone();
+                self.spatial_match(target.clone(), p)?;
+                self.free_map = matches;
+                Some(())
+            }),
 
             Some(ConnNotBody(p)) => {
                 // Check if there is a ConnOrBody inside the ConnNotBody

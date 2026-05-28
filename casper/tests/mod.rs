@@ -11,6 +11,4 @@ mod multi_node;
 mod sync;
 mod util;
 
-pub fn init_logger() {
-    shared::rust::tracing_init::init_for_tests();
-}
+pub fn init_logger() { shared::rust::tracing_init::init_for_tests(); }

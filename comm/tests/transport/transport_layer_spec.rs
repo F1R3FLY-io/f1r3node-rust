@@ -11,9 +11,7 @@ use crate::transport::transport_layer_runtime::{
     TransportLayerTestRuntime,
 };
 
-fn init_logger() {
-    shared::rust::tracing_init::init_for_tests();
-}
+fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
 /// Create big content for streaming tests
 pub fn create_big_content(max_message_size: i32) -> Bytes {

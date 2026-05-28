@@ -19,9 +19,7 @@ use proptest::proptest;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use tokio::runtime::Runtime;
 
-fn init_logger() {
-    shared::rust::tracing_init::init_for_tests();
-}
+fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
 fn genesis_block() -> BlockMessage {
     get_random_block(

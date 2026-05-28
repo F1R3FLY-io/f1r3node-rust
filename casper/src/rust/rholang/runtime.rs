@@ -413,7 +413,9 @@ impl RuntimeOps {
                             .await?;
 
                         let deploy_log = mem::take(&mut eval_collector_state.event_log);
-                        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                        if let Some(rss_kb) =
+                            crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
+                        {
                             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
                         }
 
@@ -748,7 +750,8 @@ impl RuntimeOps {
             Some((_, vec_list)) => match vec_list.as_slice() {
                 [ListParWithRandom { pars, .. }] if pars.len() == 1 => {
                     let extracted = system_deploy.extract_result(&pars[0]);
-                    if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
+                    {
                         tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_extract_result", rss_kb);
                     }
                     Ok(extracted)

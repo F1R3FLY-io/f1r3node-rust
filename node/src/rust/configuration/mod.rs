@@ -364,8 +364,9 @@ mod heartbeat_conf_hocon_tests {
 
 #[cfg(test)]
 mod embedded_defaults_tests {
-    use super::*;
     use shared::rust::tracing_init::{LogFormat, LogRotation, LogSink};
+
+    use super::*;
 
     #[test]
     fn embedded_defaults_deserialize_into_node_conf() {

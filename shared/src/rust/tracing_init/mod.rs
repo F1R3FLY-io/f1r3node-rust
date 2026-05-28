@@ -1,9 +1,10 @@
 //! Shared `tracing` subscriber initialisation for both the production
 //! binary (`init`) and test suites (`init_for_tests`).
 
+use std::path::PathBuf;
+
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -159,7 +160,12 @@ fn make_file_writer(
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| eyre!("logging.file.path must include a parent directory: {:?}", path))?;
+        .ok_or_else(|| {
+            eyre!(
+                "logging.file.path must include a parent directory: {:?}",
+                path
+            )
+        })?;
     let file_name = path
         .file_name()
         .ok_or_else(|| eyre!("logging.file.path must include a file name: {:?}", path))?;
@@ -185,8 +191,9 @@ fn make_file_writer(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn make_file_writer_creates_parent_directory() {
