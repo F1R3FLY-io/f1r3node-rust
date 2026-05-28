@@ -21,7 +21,7 @@ implementation.
 |---|---|
 | Runtime fuel | The per-deploy source-token budget used during Rholang evaluation. |
 | Settlement balance | Casper account arithmetic used before and after evaluation for precharge and refund. |
-| Cost trace | Consensus commitment to successful billable source-token events plus the optional out-of-phlo boundary event. |
+| Cost trace | The recorded sequence of successful billable source-token events plus the optional out-of-phlo boundary event. It is required to compute `total_cost` and is retained alongside the signature as diagnostic/audit evidence. **As of TM-CA-151 its per-operation digest/event-count is no longer a consensus commitment** — consensus cost integrity is carried by `total_cost` (clamped) + status + post-state hash; the digest is diagnostic only. (Rows authored before TM-CA-151 — e.g. the "Cost trace" usage in TM-CA-006/007 and the §7 digest/count failure modes — describe the pre-decision consensus role and are superseded by TM-CA-151 on the digest/count point.) |
 | Diagnostic log | Bounded observability data that is not consensus evidence. Clearing it cannot affect cost or replay. |
 | Cost-invalid evidence | Replay-visible evidence that a block's cost accounting fields are invalid and may feed slashing only through the current evidence epoch, current target activation epoch, and parent pre-state bond boundary. |
 | Legacy replay | Pre-activation compatibility mode. It may accept absent cost traces only under the explicit legacy mode. |
@@ -70,7 +70,7 @@ boundaries.
 | STRIDE bucket | Cost-accounting vector | Representative defense |
 |---|---|---|
 | **S** | Forged fuel channels, replayed deploy signatures, cross-deploy token reuse, spoofed source provenance | Domain-separated deploy signature channels, fuel-gate safety, source-anchor metadata. |
-| **T** | Mutated processed-deploy cost, digest, event count, replay payload, block hash, settlement, slashing, source, or model fields | Replay mismatch checks, replay payload hashing, block hash tests, settlement proofs, and production-oracle fixtures. |
+| **T** | Mutated processed-deploy cost, replay payload, block hash, settlement, slashing, source, or model fields (the per-op cost-trace digest/event count are diagnostics, not consensus fields — TM-CA-151) | Replay mismatch checks on the consensus quantities (`total_cost` + status + post-state hash), replay payload hashing, block hash tests, settlement proofs, and production-oracle fixtures. |
 | **R** | Proposer or model output denies cost-invalid evidence, replay mismatch, source-witness status, or promotion traceability | Replay-failure records, source-anchor digests, witness classification, and promotion-gate tests. |
 | **I** | Diagnostic data, API/source metadata, private-key debug surfaces, dependency advisory policy, or TLS key-path disclosure | Non-consensus diagnostic separation, audit classifications, TLS/source-graph fixtures, and dependency policy review. |
 | **D** | Oversized weights, descriptor growth, trace/cache pressure, unbounded search, scheduler pressure, or CI resource exhaustion | Reject-before-mutation admission, production event caps, cache bounds, and bounded search envelopes. |
@@ -142,7 +142,7 @@ security failure mode.
 | `CA-CAP` | TM-CA-001, TM-CA-002, TM-CA-027, TM-CA-042, TM-CA-043, TM-CA-148, TM-CA-149, TM-CA-150 |
 | `CA-BUDGET` | TM-CA-003, TM-CA-004, TM-CA-013, TM-CA-033, TM-CA-050, TM-CA-051, TM-CA-109 |
 | `CA-TRACE` | TM-CA-005, TM-CA-007, TM-CA-014, TM-CA-031, TM-CA-066, TM-CA-111 |
-| `CA-REPLAY` | TM-CA-006, TM-CA-009, TM-CA-010, TM-CA-011, TM-CA-045, TM-CA-080, TM-CA-119 |
+| `CA-REPLAY` | TM-CA-006, TM-CA-009, TM-CA-010, TM-CA-011, TM-CA-045, TM-CA-080, TM-CA-119, TM-CA-151 |
 | `CA-SETTLE` | TM-CA-016, TM-CA-017, TM-CA-018, TM-CA-028, TM-CA-053, TM-CA-095 |
 | `CA-SLASH` | TM-CA-021, TM-CA-022, TM-CA-054, TM-CA-078, TM-CA-090, TM-CA-138 |
 | `CA-RESOURCE` | TM-CA-024, TM-CA-025, TM-CA-038, TM-CA-040, TM-CA-069, TM-CA-074 |
@@ -296,13 +296,89 @@ security failure mode.
 | TM-CA-141 | `CA-SOURCE` | **I + R** | Accepted RustSec advisory policy is hidden from source-graph security review | Audit-classified by V14 source-graph oracle | Sage v14 source-graph frontier | `generated_frontier_v14_node_security_oracles_hold` keeps `dependency_advisory` and `RUSTSEC-2026-0098` as `needs_source_audit`. |
 | TM-CA-142 | `CA-SEARCH` | **R** | Source-graph search omits required runtime, replay-cache, slashing, TLS, crypto, API, or dependency surfaces | Protected by V14 adequacy gate | Sage v14 source-graph frontier | `generated_frontier_v14_coverage_adequacy_holds` fails if required source-graph surfaces or promotion metadata disappear. |
 | TM-CA-143 | `CA-RESOURCE` | **D + T** | Low-phlo deploy forces high physical fanout before cost is charged | Protected by permit frontier | RuntimeBudget canonical batch permit refinement | `batch_commit_charges_only_granted_execution_permits`, metering permit-grant tests, and low-phlo parallel replay fixtures. |
-| TM-CA-144 | `CA-TRACE` | **T + R** | `cost_trace_digest` depends on Tokio scheduling under concurrent reservations, producing different replay digests across honest validators and triggering `ReplayCostTraceMismatch` → `InvalidTransaction` → `UnauthorizedSlashDeploy` cascade | Protected by Option E post-hoc canonical reconciliation | RuntimeBudget Option E refinement | `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_occurrence_invariant_under_permutation`, `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial`, `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`, `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule`. |
+| TM-CA-144 | `CA-TRACE` | **T + R** | `cost_trace_digest` depends on Tokio scheduling under concurrent reservations, producing different replay digests across honest validators and triggering `ReplayCostTraceMismatch` → `InvalidTransaction` → `UnauthorizedSlashDeploy` cascade | Superseded by TM-CA-151 — the digest is **removed from consensus** (out of the replay comparison and the signed block-hash preimage), so its schedule-dependence can no longer cause a mismatch. The post-hoc canonical reconciliation is retained as the bounded-`K` machinery that computes the still-consensus `total_cost`, but the per-operation digest is no longer the protected quantity. (Earlier revisions of this row claimed the digest was *protected* by reconciliation; that protection is no longer load-bearing for consensus.) | Consensus cost integrity = `total_cost` (clamped) + status + post-state hash; see TM-CA-151 | `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_occurrence_invariant_under_permutation`, `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable` (now read as `total_cost`-determinism rather than digest-consensus checks); `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule`. |
 | TM-CA-145 | `CA-BUDGET` | **D** | Lock-free attempt log grows without bound under sustained reservation pressure, exhausting node memory | Protected by `MAX_COST_TRACE_EVENTS = 1_048_576` cap enforced inside `reconcile`'s sort-and-walk and runtime-side `cost_trace_event_count` check | RuntimeBudget Option E | `rb_reconcile` truncates the canonical attempt list at `MAX_COST_TRACE_EVENTS`; the existing `trace_cap_boundary` fixture covers the cap surface. |
 | TM-CA-146 | `CA-TRACE` | **T** | Reconciliation cache leaks across deploys, causing the next deploy's `cost_trace_digest` to include the previous deploy's events | Protected by `reset_from_token` clearing both `attempt_log` and the `canonical_reconciliation` cache under the reset write-lock | RuntimeBudget Option E | `runtime_budget_reset_from_token_serializes_with_batch_commit` racing reset against batch commit; `reset_from_token` always clears both fields atomically. |
 | TM-CA-147 | `CA-REPLAY` | **T + R** | Per-fork ESWLS budget partitioning (a rejected design alternative) starves recursive Rholang contracts by geometric budget halving | Explicitly NOT used — Option E preserves a single shared budget per deploy, per paper §3 Rule 1 (single signature → single token) | The four existing `cost_accounting_spec` tests for recursive contracts (`bounded_generated_terms_have_deterministic_play_replay_cost`, `cost_should_be_deterministic`, `should_stop_..._with_a_more_sophisticated_contract`, `total_cost_of_evaluation_should_be_equal_to_the_sum_of_all_costs_in_the_log`) pass under Option E. |
 | TM-CA-148 | `CA-CAP` | **E** | Non-system principal mints `!` (of-course) for unbounded/infinite reuse from a single registration | **Open — under design debate.** See `cost-accounting-linear-logic.md` §10.6 | `BangProtocol.tla` (bounded/unbounded reuse), `ll_bang_reuse_no_extra_linear_cost` | Bounded reuse capped by the `rho:system:capabilities` counter; system-reservation of unbounded `!` **not enforced** (`sig_algebra_valid` imposes no who-may-use rule) |
 | TM-CA-149 | `CA-CAP` | **T + E** | `A ⊸ 1`: a capability discharges a funded continuation to the cost-0 multiplicative unit (free discharge / weakening) | **Open — under design debate.** See `cost-accounting-linear-logic.md` §10.6 | `sig_algebra_valid` (`CostAccountedSyntax.v:291`) places no constraint on a lollipop's output operand | **None** — `A ⊸ 1` (and any cost-0 lollipop output) is currently well-formed and accepted |
 | TM-CA-150 | `CA-CAP` | **T** | Partial funding: an under-funded multi-step process halts between credit and debit (application-currency non-conservation) | **Partially mitigated; application-currency conservation open.** See `cost-accounting-linear-logic.md` §10.6 | `process_deploy_cosigned` atomic body-revert; `token_monotone_step` (`TokenConservation.v:56`) | Fuel conservation + atomic tuplespace revert on out-of-phlogiston (`runtime.rs:811`/`:866`); cross-process application-currency conservation **open/debated** |
+| TM-CA-151 | `CA-REPLAY` | **T + R** | The per-operation `cost_trace_digest` is schedule-dependent in the out-of-phlogiston (OOP) case: a fork can unwind at a schedule-dependent point, so the *committed* per-op event set (and hence the digest and event count) differs across honest validators, which — while the digest was a consensus quantity — risked a `ReplayCostTraceMismatch` cascade even though `total_cost` (clamped to `initial` on OOP) is identical | **Resolved by removing the digest from consensus entirely.** `cost_trace_digest`/`cost_trace_event_count` are dropped from both the replay comparison and the signed block-hash preimage; per-operation metering integrity is **not** a consensus requirement. Consensus cost integrity = `total_cost` (clamped) + status + post-state hash. The digest/event-count and `last_oop_event()` are retained as **diagnostics/telemetry only**. Rests on the two guarded invariants below. See the *per-connective faithfulness* and *rejected alternatives* notes after this matrix. | `ca_cost_deterministic`, `token_monotone_*` (the consensus quantity `total_cost` is the conserved-token total, schedule-independent: Σ > `initial` ⇒ clamp; Σ ≤ `initial` ⇒ complete deterministic multiset); bounded-`K` reconcile monoid (`rb_reconcile_consumed_*`) computes `total_cost`, not a consensus digest | Replay keeps only `total_cost` + status + post-state hash (no digest/count compare); play-vs-replay OOP test with concurrent continuations under differing fork orders recomputes an identical block hash; invariant guards (a) every term incl. single-term bodies forks a **fresh-counter** metering child (`reduce.rs` → `metering.rs` `next_local_index`), (b) RSpace candidate ordering carries **no RNG** (`rspace.rs` deterministic candidate hash); `loom_runtime_budget_reconciliation` non-OOP `total_cost`-determinism + OOP-truncation divergence variants. |
+
+**TM-CA-151 — guarded invariants.** Schedule-independence of the
+consensus quantity `total_cost` (not of the dropped digest) rests on two
+structural facts, each protected by a debug-assert/property guard so a
+future change cannot silently regress it:
+
+1. **Every term → fresh-counter child.** `eval_inner` forks *every* Par
+   term — including single-term bodies — into its own metering child via
+   `with_metering_child`, and each child receives a fresh
+   `next_local_index`; `eval_inner` never charges on the shared
+   `self.metering`. No two concurrent scopes share a counter, and
+   continuations re-root through `reducer.eval → eval_inner`, so they too
+   fork fresh-counter children.
+2. **Deterministic RSpace candidate selection.** RSpace orders match
+   candidates by a deterministic candidate hash (not by an RNG), so the
+   recorded source-token multiset for a non-OOP deploy is identical
+   across schedules and across play/replay.
+
+Together these make the billable multiset of a non-OOP deploy a function
+of the deploy and its initial budget alone; on OOP the multiset is
+schedule-dependent (which is *why* the per-op digest cannot be a
+consensus quantity), but `total_cost` is clamped to `initial` and remains
+identical. These are the same invariants the bounded-`K` reconciliation
+and the `total_cost`-determinism theorems depend on.
+
+**TM-CA-151 — faithfulness note (verified against
+`publications/cost-accounting/cost-accounted-rho.tex`).** Dropping the
+digest from consensus does **not** affect cost-accounting correctness or
+faithfulness to the paper. The paper formalizes cost as token-gated COMM
+(signatures → channels, tokens → messages, fuel-before-communication;
+§4), with faithfulness = operational bisimulation + capability security
+(§5–§6) and token conservation (Rules 1–5, §3.2). It contains **no
+per-operation cost-trace or digest concept.** The runtime correlate of
+the paper's cost is `total_cost` (= the conserved token total, clamped on
+OOP), which remains consensus-checked; the mechanized token-conservation
+and total-cost-determinism results (see
+[`cost-accounted-rho-verification.md`](cost-accounted-rho-verification.md),
+Rocq `ca_cost_deterministic`) do not reference the digest. The runtime's
+per-operation metering is a refinement *below* the paper's COMM-token
+granularity, so the digest committed to a level of detail the paper does
+not model; removing it from consensus brings the consensus surface back
+to the paper's cost granularity rather than away from it.
+
+**TM-CA-151 — rejected alternatives (considered and not adopted).** Three
+designs that would have kept a per-operation commitment in consensus were
+evaluated and rejected:
+
+- **Homomorphic multiset-hash digest.** A commutative (multiset)
+  hash would make the digest order-invariant for the *non-OOP* case, but
+  it does not remove the OOP hazard: the *committed set itself* differs
+  across schedules when a fork unwinds at a schedule-dependent point, so
+  an order-invariant hash of a schedule-dependent set is still
+  schedule-dependent. It also adds a new cryptographic primitive to the
+  consensus trust base for a quantity the paper does not model. Rejected:
+  it does not close the OOP case and enlarges the consensus surface.
+- **Scope-keyed identity.** Keying each event by its metering scope was
+  considered as a way to canonicalize the committed set independently of
+  fork-unwind order. It does not make the OOP committed *set* identical
+  across schedules (which events survive the unwind is still
+  schedule-dependent), and it pushes additional structure into the
+  consensus commitment. Rejected as unnecessary once the digest is not a
+  consensus quantity.
+- **Digest-encoding migration.** A staged migration of the on-wire digest
+  encoding (e.g. a versioned or canonicalized field) was considered to
+  preserve a consensus digest across the change. Because
+  `cost_trace_digest`/`cost_trace_event_count` are **unreleased** (absent
+  from `master` and tag `v0.4.15`; present only on this branch), there is
+  zero migration cost to simply removing them; a migration would add
+  gating machinery to retain a field that is not needed for consensus.
+  Rejected as gratuitous given the unreleased status.
+
+The `RuntimeBudget::cost_trace_digest()` /
+`cost_trace_event_count()` / `last_oop_event()` methods remain callable as
+diagnostics; they are simply no longer stored on `ProcessedDeploy`,
+compared in replay, or folded into the block hash.
 
 ## 6. Classification Policy
 

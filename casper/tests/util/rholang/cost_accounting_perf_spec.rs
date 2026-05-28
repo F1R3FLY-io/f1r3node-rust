@@ -525,7 +525,7 @@ async fn time_replay_one_deploy(
     // User-deploy evaluate — matches BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC.
     let evaluate_start = Instant::now();
     let (_, eval_successful) = replay_ops
-        .run_user_deploy(processed_deploy, &mut mergeable_channels, true)
+        .run_user_deploy(processed_deploy, &mut mergeable_channels)
         .await?;
     let evaluate = evaluate_start.elapsed();
 

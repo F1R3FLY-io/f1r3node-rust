@@ -3656,6 +3656,15 @@ It deliberately covers proof artifacts in this repository and records the
 obligations the staged `f1r3node-rust` implementation must satisfy. The
 external paper remains a read-only input for this phase.
 
+**Reading §11.3 after TM-CA-151.** Rows that mechanize a cost-trace
+digest / event-count / commitment describe a *digest-inclusive
+diagnostic-refinement* level (`rb_full_replay_payload` etc.). Per
+TM-CA-151 those quantities are diagnostic and were removed from
+production consensus; the production consensus surface is `total_cost`
+(clamped to `initial` on OOP) + status + post-state hash. The listed
+theorems remain valid at the refinement level and are not claims that
+the digest is consensus.
+
 | Claim / design obligation | Repo-local artifact | Status |
 |---------------------------|---------------------|--------|
 | Rules 1-5 are the source cost semantics | `ca_step` in `CostAccountedReduction.v` | Mechanized |
@@ -3676,16 +3685,16 @@ external paper remains a read-only input for this phase.
 | Evaluation cannot receive Casper refund fuel mid-run | `evaluation_cannot_receive_refund_fuel`, `evaluation_step_cannot_mint_fuel` | Mechanized by importing token monotonicity into `Settlement.v`; runtime must not mutate deploy balance or copy a process with a larger remaining budget during evaluation |
 | Cost-invalid block evidence does not change user deploy cost | `replay_cost_mismatch_sound_for_evidence`, `cost_invalid_block_evidence_does_not_change_user_cost`, `current_cost_evidence_epoch_sound`, `recovered_rejected_slash_requires_current_cost_evidence` | Mechanized in `SlashingComposition.v`; replay-cost mismatch and related current cost-invalid evidence may feed slashing authorization, but recording the evidence preserves the settlement boundary |
 | Typed mergeable channels preserve strategy-specific semantics | `bitmask_diff_merge_round_trip`, `mergeable_channel_bitmask_fold_permutation`, `integer_add_diff_merge_round_trip`, `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match`, `mergeable_channel_accounting_preserves_user_budget` | Mechanized in `MergeableChannelAccounting.v`; implemented by `MergeType::{IntegerAdd, BitmaskOr}`, `calculate_num_channel_diff`, `combine_mergeable_value`, `fold_multi_value`, and non-numeric fallback to the conflict path |
-| Replay-cache fingerprints include replay-relevant event traces | `rb_replay_payload_user_trace_change_detected`, `rb_replay_payload_system_trace_change_detected`, `rb_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_event_count_change_detected`, `rb_full_replay_payload_user_cost_trace_present_change_detected`, `rb_full_replay_payload_missing_cost_trace_change_detected`, `rb_replay_cache_key_payload_change_detected`, `rb_trace_entry_deploy_change_detected`, `rb_trace_entry_source_path_change_detected`, `rb_trace_entry_redex_change_detected`, `rb_trace_entry_local_index_change_detected`, `rb_trace_entry_billable_kind_change_detected`, `rb_trace_entry_primitive_descriptor_change_detected`, `rb_trace_entry_weight_change_detected` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by hashing canonicalized user deploy logs, system deploy logs, bounded cost-trace digests, cost-trace presence, and cost-trace event counts alongside cost, status, and system deploy data. The abstract trace entry now names the concrete Rust digest inputs: deploy id, source path, redex id, local index, billable kind, primitive descriptor when the kind is primitive, and weight. |
-| Post-activation replay requires cost-trace evidence | `rb_post_activation_cost_trace_commitment_valid`, `rb_empty_cost_trace_commitment_can_be_valid`, `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_046_zero_event_post_activation_trace_commitment` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by rejecting cost-accounted replay when the processed deploy has no cost-trace digest, while allowing a present zero-event digest and leaving legacy non-cost-accounted replay quarantined |
-| Block authentication includes cost-trace replay payload fields | `rb_block_auth_payload_replay_payload_change_detected`, `uc_ca_047_block_authenticates_cost_trace_payload` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; implemented by including processed-deploy cost-trace digest and event count in the block body hash/signature payload |
+| Replay-cache fingerprints include replay-relevant event traces | `rb_replay_payload_user_trace_change_detected`, `rb_replay_payload_system_trace_change_detected`, `rb_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_change_detected`, `rb_full_replay_payload_user_cost_trace_event_count_change_detected`, `rb_full_replay_payload_user_cost_trace_present_change_detected`, `rb_full_replay_payload_missing_cost_trace_change_detected`, `rb_replay_cache_key_payload_change_detected`, `rb_trace_entry_deploy_change_detected`, `rb_trace_entry_source_path_change_detected`, `rb_trace_entry_redex_change_detected`, `rb_trace_entry_local_index_change_detected`, `rb_trace_entry_billable_kind_change_detected`, `rb_trace_entry_primitive_descriptor_change_detected`, `rb_trace_entry_weight_change_detected` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by hashing canonicalized user deploy logs, system deploy logs, cost, status, and system deploy data. (Per TM-CA-151 the per-op cost-trace digest/presence/event-count are diagnostic and are NOT hashed into the consensus replay fingerprint; the listed `rb_full_replay_payload_*` lemmas describe a digest-inclusive diagnostic-refinement level.) The abstract trace entry names the concrete Rust digest inputs for that diagnostic level: deploy id, source path, redex id, local index, billable kind, primitive descriptor when the kind is primitive, and weight. |
+| Post-activation replay requires cost-trace evidence | `rb_post_activation_cost_trace_commitment_valid`, `rb_empty_cost_trace_commitment_can_be_valid`, `uc_ca_039_post_activation_cost_trace_required`, `uc_ca_046_zero_event_post_activation_trace_commitment` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v`; as a digest-inclusive diagnostic-refinement obligation. Per TM-CA-151 production replay does NOT reject on cost-trace digest presence (consensus = `total_cost` + status + post-state hash); the Rocq model retains "absent commitment ⇒ replay-invalid" and "present zero-event digest is valid" at the refinement level, with legacy non-cost-accounted replay quarantined |
+| Block-auth refinement detects cost-trace changes (diagnostic — TM-CA-151) | `rb_block_auth_payload_replay_payload_change_detected`, `uc_ca_047_block_authenticates_cost_trace_payload` | Mechanized in `RuntimeBudgetRefinement.v` / `UseCaseAdequacy.v` at the digest-inclusive diagnostic-refinement level; per TM-CA-151 the per-op cost-trace digest/count are NOT in the signed block-hash preimage — production block authentication covers `total_cost` + status + post-state hash + signature |
 | Slashing/refund/replay cross-products authenticate the composed production payload | `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel`, `uc_ca_058_refund_cannot_replenish_runtime_fuel`, `post_evaluation_settlement_no_mint`, `rb_replay_cache_key_payload_change_detected`, `rb_full_replay_payload_slash_target_epoch_change_detected` | Mechanized by composing slashing, settlement, and replay-authentication lemmas; implemented by composed Rust hardening tests that mutate user cost trace fields, event logs, slash evidence, target activation epoch, genesis mode, and settlement cost projection in one production-shaped scenario |
-| Failed and control-path execution preserve trace boundaries | `rb_oop_trace_survives_boundary`, `rb_oversized_weight_rejection_preserves_trace`, `rb_oversized_source_path_admission_rejection_preserves_trace`, `rb_oversized_primitive_descriptor_admission_rejection_preserves_trace`, `rb_nonbillable_frame_preserves_trace` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by retaining OOP trace evidence across failed-deploy rollback, rejecting oversized weights, source paths, and primitive descriptors before trace mutation, and keeping non-billable control frames out of the consensus cost trace |
+| Failed and control-path execution preserve trace boundaries | `rb_oop_trace_survives_boundary`, `rb_oversized_weight_rejection_preserves_trace`, `rb_oversized_source_path_admission_rejection_preserves_trace`, `rb_oversized_primitive_descriptor_admission_rejection_preserves_trace`, `rb_nonbillable_frame_preserves_trace` | Mechanized in `RuntimeBudgetRefinement.v`; implemented by retaining OOP trace evidence across failed-deploy rollback, rejecting oversized weights, source paths, and primitive descriptors before trace mutation, and keeping non-billable control frames out of the (diagnostic) cost trace |
 | Slash system deploys preserve user fuel and fee settlement | `slash_preserves_fee_settlement_inputs`, `slash_preserves_settled_amount`, `slash_system_effect_is_unmetered_for_user_budget`, `slash_after_evaluation_cannot_add_fuel`, `parent_pre_state_authorized_slash_preserves_cost_boundary`, `zero_bond_slash_noop_preserves_cost_boundary` | Mechanized in `SlashingComposition.v`; the slashing proof suite remains authoritative for core effect correctness, while this branch proves current-evidence authorization composition with token-cost settlement |
 | Fuel channels are not de Bruijn application variables | `ChannelSeparation.v` | Mechanized syntactically |
 | Runtime fuel channels are unforgeable and user-disjoint | `Sig`, `SignatureChannel`, `SignedProcess`, `RuntimeBudget` in `f1r3node-rust` | Implemented with `GPrivate` signature channels; tests cover deploy isolation and canonical compound signatures |
 | Parallel scheduling preserves final cost | Rocq confluence plus TLA+ `EvalScheduling` | Mechanized/model-checked; Rust implementation must keep deterministic result aggregation |
-| Parallel scheduling preserves trace commitments | `uc_ca_051_parallel_trace_and_cost_determinism`, `ca_cost_deterministic`, `rb_cost_trace_event_count_success_and_oop` | Mechanized cost/count basis; Rust tests check repeatable digest commitments under multi-threaded interpreter execution |
+| Parallel scheduling preserves trace commitments | `uc_ca_051_parallel_trace_and_cost_determinism`, `ca_cost_deterministic`, `rb_cost_trace_event_count_success_and_oop` | Mechanized cost/count basis; Rust tests check repeatable digest commitments (diagnostic stability) under multi-threaded interpreter execution |
 
 The implementation-facing use-case map is maintained in
 [*Cost-Accounted Rho Use-Case Coverage*](cost-accounting-use-cases.md).
@@ -4118,11 +4127,37 @@ The `RuntimeBudget` Rust implementation uses lock-free CAS attempts
 against a shared `consumed_tokens` counter. Multiple concurrent
 parallel-reduction tasks race for the CAS; whichever wins gets the
 weight. The runtime's grant/oop decision is for *liveness* — once
-the budget is exhausted, no further branches do paid work. But the
-*consensus-relevant* values (`deploy.cost`, `cost_trace_digest`,
-`last_oop_event`, `cost_trace_event_count`) come from a separate
-post-execution **canonical reconciliation**, NOT from the runtime
-CAS outcomes.
+the budget is exhausted, no further branches do paid work.
+
+**Consensus-surface scope (read first).** The single consensus cost
+quantity computed here is `total_cost` (clamped) — together with the
+deploy status and the post-state hash, those are the consensus cost
+integrity of a deploy. The per-operation `cost_trace_digest` and
+`cost_trace_event_count` are **not** consensus quantities: they are
+removed from the replay comparison and from the signed block-hash
+preimage, and are retained as **diagnostics/telemetry only** (see
+TM-CA-151 in [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md)).
+The post-hoc canonical reconciliation below is therefore the bounded-`K`
+machinery that computes the consensus `total_cost` and a *diagnostic*
+boundary; it is no longer presented as the protector of a consensus
+digest.
+
+**Where determinism actually comes from.** The schedule-independence of
+the consensus quantity `total_cost` is *not* manufactured by the
+reconciliation, and it is *not* a per-fork-private ledger. It is a
+consequence of two structural invariants of the existing runtime, each
+guarded by a debug-assert/property test: (a) `eval_inner` forks *every*
+Par term — including single-term bodies — into its own metering child
+with a **fresh** `next_local_index` (it never charges on the shared
+parent counter, and continuations re-root through `eval_inner`, so no two
+concurrent scopes share a counter); and (b) RSpace selects match
+candidates by a **deterministic** candidate hash (no RNG). Together these
+make the billable multiset of a non-OOP deploy a function of the deploy
+and its initial budget alone; reconciliation then folds that multiset
+into `total_cost`. On out-of-phlogiston the committed multiset is
+schedule-dependent — which is exactly why the per-operation digest cannot
+be a consensus quantity — but `total_cost` is clamped to `initial` and is
+identical across schedules.
 
 ### A.1 Paper alignment
 
@@ -4133,15 +4168,33 @@ The paper does NOT prescribe an ordering between sibling sub-processes
 that both consume from the shared `σ:T` — only that the final state
 is bisimilar across reductions.
 
-Option E picks **the canonical-rank order** as the consensus
-ordering: events sorted by `(deploy_id, source_path, redex_id,
-local_index, kind, weight)` (all program-structure-derived). Two
-runtime executions over the same deploy + initial budget produce
-identical canonical sequences regardless of Tokio scheduling.
+Option E picks **the canonical-rank order** for the diagnostic trace and
+for computing `total_cost`: events sorted by `(deploy_id, source_path,
+redex_id, local_index, kind, weight)` (all program-structure-derived).
+For a non-OOP deploy, two runtime executions over the same deploy +
+initial budget produce identical canonical sequences regardless of Tokio
+scheduling (by the two invariants above), and therefore identical
+`total_cost`. The canonical order also fixes a deterministic *diagnostic*
+OOP boundary; that boundary's identity is not a consensus quantity.
 
 This is a strict *refinement* of the paper: any property the paper
 proves about `(P)^σ | σ:T` reductions holds for the canonical order
-(as one specific schedule), and Option E adds schedule-invariance.
+(as one specific schedule), and Option E adds `total_cost`
+schedule-invariance.
+
+**Faithfulness to the paper.** The paper (`cost-accounted-rho.tex`)
+models cost as token-gated COMM with token conservation (Rules 1–5,
+§3.2) and faithfulness as operational bisimulation plus capability
+security (§5–§6); it has **no per-operation cost-trace or digest
+concept.** The runtime correlate of the paper's cost is `total_cost`
+(the conserved token total, clamped on OOP), which remains
+consensus-checked, and the consensus-critical theorems of this document
+(`token_monotone_*`, `ca_cost_deterministic`, `ca_step_deterministic`,
+`fuel_events_consumed_perm`) do not reference the digest at all. The
+runtime's per-operation metering is a refinement *below* the paper's
+COMM-token granularity, so committing the digest to consensus would have
+bound consensus to a level of detail the paper does not model; dropping
+it returns the consensus surface to the paper's cost granularity.
 
 ### A.2 Implementation contract
 
@@ -4153,12 +4206,21 @@ proves about `(P)^σ | σ:T` reductions holds for the canonical order
   races occur.
 - `canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>`
   — cached output of `reconcile()`; invalidated by `reset_from_token`.
-- `reconcile()` — snapshot-clones `attempt_log`, sorts canonically,
-  walks once to find canonical `(committed, oop, consumed_units)`,
-  caches the result. Pure function of `(initial, attempts)`.
-- `reset_serializer: Arc<RwLock<()>>` — reset takes write; per-batch
-  reservation entry points take read. Uncontested when no reset is
-  pending — effectively atomic.
+- `reconcile()` — a **bounded lowest-`K` commutative merge** with
+  `K = min(MAX_COST_TRACE_EVENTS, initial + 1)`. Because every billable
+  weight is ≥ 1, the canonical walk commits at most `initial` events plus
+  one OOP boundary, so it reads only the lowest-`K` events rather than
+  sorting the whole attempt list. It yields canonical
+  `(committed, oop, consumed_units)` and `total_cost`; it is a pure
+  function of `(initial, multiset of attempts)`, removing the global
+  O(N log N) sort over up to `MAX_COST_TRACE_EVENTS` elements and bounding
+  memory. `total_cost` and the diagnostic boundary are unchanged by the
+  switch from sort-truncate-walk to bounded-fold.
+- Reset is strictly between deploys (finalization is single-threaded), so
+  it is not serialized against in-flight batch reservations; the earlier
+  `reset_serializer` read/write lock is removed in favor of a
+  single-threaded-finalization debug-assert, and per-op
+  `deploy_id`/`initial`/`unmetered` are copied by value into scopes.
 
 ### A.3 Theorem chain
 
@@ -4169,20 +4231,51 @@ proves about `(P)^σ | σ:T` reductions holds for the canonical order
 | Rocq | `rb_reconcile_consumed_invariant_under_permutation` | Two permutations agree on canonical consumed. |
 | Rocq | `rb_reconcile_oop_iff_sum_overflows` | OOP fires iff cumulative weight exceeds budget. |
 | Rocq | `rb_reconcile_oop_occurrence_invariant_under_permutation` | Two permutations agree on whether OOP fires. |
-| TLA+ | `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial` | Finalized digest equals canonical-walk output. |
+| TLA+ | `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent` | `total_cost` (clamped) + OOP verdict are schedule-independent; the per-op digest is diagnostic, not a consensus quantity. |
 | TLA+ | `RuntimeBudgetReplay.ConsumedFollowsReconciliationContract` | Consumed at finalization matches reconciliation contract. |
 | Sage | `sage_concurrency_reconciliation_is_schedule_independent` | Sage scenario record cross-references all five layers. |
 | Loom | `loom_runtime_budget_reconciliation::reconcile_canonical_oop_is_higher_rank_event_under_any_schedule` | Two concurrent attempts produce same canonical OOP under every loom-explored schedule. |
 | Rust | `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable` | 16-thread concurrent reservation produces canonical-walk-derived `cost_trace_event_count` AND identical digest across two independent runs. |
 
+**How to read this table after TM-CA-151.** Now that the per-operation
+digest is a diagnostic rather than a consensus quantity, the
+digest-centric rows are read as **`total_cost`/verdict
+schedule-independence** properties (the consensus quantities that remain),
+not as proofs of a consensus digest:
+
+- `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent`
+  is the re-aimed `total_cost`/verdict schedule-independence invariant — that the
+  finalized **consensus** quantities (`total_cost`, OOP verdict) are a
+  pure function of the recorded multiset and `initial`. The
+  bounded-`K` `Merge` action it ranges over is unchanged; the
+  OOP-truncation action now demonstrates *why* the per-op digest was
+  removed from consensus (the committed set diverges across schedules)
+  rather than something the model must hold invariant.
+- The Loom and 16-thread Rust rows keep the non-OOP "identical across
+  schedules" property as a **`total_cost`-determinism** invariant, and
+  gain an OOP-truncation variant showing the recorded set legitimately
+  diverges across schedules (so it cannot be a consensus quantity). Any
+  "identical digest" assertion is retained only as a non-OOP diagnostic
+  stability check, not as a consensus check.
+
+The Rocq rows (`rb_reconcile_*`) already speak to canonical `consumed`
+(i.e. `total_cost`) and OOP occurrence, which are precisely the consensus
+quantities; they are unaffected by the decision beyond the bounded-`K`
+refinement of `reconcile()` noted in A.2.
+
 ### A.4 What this fix closes
 
-- **Direct**: `ReplayCostTraceMismatch` (the consensus-relevant
-  `cost_trace_digest` is now schedule-independent).
+- **Direct**: `ReplayCostTraceMismatch` — closed because the
+  per-operation `cost_trace_digest`/`cost_trace_event_count` are
+  **removed from the replay comparison and the block-hash preimage**
+  (TM-CA-151), so their OOP schedule-dependence can no longer cause a
+  mismatch. (The bounded-`K` reconciliation still guarantees `total_cost`
+  is schedule-independent for the non-OOP case and clamped to `initial`
+  on OOP — that is the consensus quantity that remains checked.)
 - **Cascade-closed**: the secondary `Missing mergeable entry`
   KvStoreError, `RootRepositoryDivergence` / `UnknownRootError`,
   and `UnauthorizedSlashDeploy` entries that previously stemmed
   from the digest mismatch (see `cost-accounting-threat-model.md`
-  TM-CA-144).
+  TM-CA-144, superseded by TM-CA-151).
 
 *E Pluribus Potentia*

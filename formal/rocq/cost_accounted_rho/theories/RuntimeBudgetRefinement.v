@@ -16,7 +16,7 @@
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Arith.PeanoNat Bool.Bool Lists.List Lia
-  Sorting.Permutation.
+  Sorting.Permutation Sorting.Sorted Sorting.Mergesort Structures.Orders.
 Import ListNotations.
 
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -2356,4 +2356,1469 @@ Proof.
         rewrite <- Hsum_eq in Heq. contradiction.
       - lia. }
     rewrite Hcount1_zero, Hcount2_zero. reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Bounded-K reconciliation: lowestK commutative monoid + walk-window bound,
+   and total_cost schedule-independence (Milestone 4 — Rocq, per the plan
+   one-of-the-primary-gentle-pearl.md).
+
+   Two results, ADDED on top of the existing Option-E reconcile lemmas
+   (rb_event_weight_sum_permutation_invariant,
+    rb_reconcile_consumed_eq_min_initial_or_sum, rb_reconcile_oop_iff_sum_overflows,
+    rb_reconcile_consumed_invariant_under_permutation):
+
+   1. BOUNDED-K EQUIVALENCE.  We model the canonical Ord on BillableTokenEvent
+      (accounting/mod.rs:88,148-169) as the lexicographic `rb_event_compare`
+      over (deploy_id, source_path, redex_id, local_index, kind, weight), prove
+      it is a decidable total order (reflexive / antisymmetric-to-record-equality
+      / transitive / total), instantiate the stdlib mergesort over it to get a
+      deterministic `rb_event_sort`, and define
+        lowestK k events := firstn k (rb_event_sort events).
+      We prove `lowK_merge k a b := lowestK k (a ++ b)` is a COMMUTATIVE MONOID
+      (lowK_merge_comm / _assoc / _id_l / _id_r, identity []) — associativity
+      being the bounded-K absorption law lowK_absorb.  Then
+      rb_reconcile_bounded_K_eq_sort_truncate shows the cost walk over the
+      lowest min(MAX_COST_TRACE_EVENTS, initial+1) events produces the SAME
+      committed event_log, last_oop, consumed, and OOP-count as the full
+      sorted-then-truncated walk (weights >= 1 ⇒ <= initial events committed
+      + 1 boundary).
+
+   2. total_cost SCHEDULE-INDEPENDENCE.  rb_total_cost_eq_min_initial_sum +
+      rb_total_cost_schedule_independent + rb_total_cost_clamped_characterization
+      package the consensus cost quantity that remains after the per-op digest
+      is dropped: rb_reconcile(events).consumed = min(initial, Σ weights),
+      invariant under any permutation of events (Σ>initial ⇒ consumed=initial
+      with OOP; Σ<=initial ⇒ consumed=Σ).
+
+   No Axiom / Admitted / admit; stdlib Sorting + Nat + Permutation only.
+
+   ── Failed strategies recorded so they are not re-attempted ───────────────
+   - Proving the bounded-K absorption via a too-weak insertion lemma
+     `firstn k (rb_insert d l) = firstn k l` under only `Forall (<= d) (firstn k l)`
+     is FALSE in general for k >= 2 with strict ties (inserting a duplicate of a
+     non-boundary head shifts the prefix).  The correct hypothesis is that EVERY
+     one of the first k is <= d (so any boundary tie forces an EQUAL record by
+     antisymmetry); under StronglySorted that collapses the tied prefix to a
+     constant (firstn_insert_ge).
+   - Proving "no dropped (large) element enters the lowest-k" via a position /
+     count_occ pigeonhole was abandoned as too fiddly.  The clean route is the
+     filter/threshold lemma StronglySorted_firstn_le_threshold: in a sorted list
+     the "<= d" elements form a prefix, and if there are >= k of them the first k
+     are all <= d (used by firstn_sort_dominated_by_pivot).
+   - `Nat.compare_trans` does NOT exist in this stdlib (9.1.0); a local
+     `natc_trans` is proven from compare_{lt,gt,eq}_iff.
+   - `Permutation_filter` / `firstn_In` / `Forall_firstn` are absent under those
+     names here; small local versions are proven.
+   - The lexicographic-comparison transitivity is folded via a generic `lexc_trans`
+     combinator (one application per field) rather than a 6-field manual case
+     explosion, using per-field congruence `proj_compare_cong_{l,r}`.
+   ═══════════════════════════════════════════════════════════════════════════ *)
+
+Fixpoint list_nat_compare (xs ys : list nat) : comparison :=
+  match xs, ys with
+  | [], [] => Eq
+  | [], _ :: _ => Lt
+  | _ :: _, [] => Gt
+  | x :: xs', y :: ys' =>
+      match Nat.compare x y with
+      | Eq => list_nat_compare xs' ys'
+      | c => c
+      end
+  end.
+
+Lemma list_nat_compare_eq_iff : forall xs ys,
+  list_nat_compare xs ys = Eq <-> xs = ys.
+Proof.
+  induction xs as [| x xs' IH]; intros [| y ys']; simpl; split; intro H;
+    try reflexivity; try discriminate.
+  - destruct (Nat.compare x y) eqn:Hc; try discriminate.
+    apply Nat.compare_eq_iff in Hc. subst y. f_equal. apply IH. exact H.
+  - injection H as Hx Hxs. subst y xs'.
+    rewrite Nat.compare_refl. apply IH. reflexivity.
+Qed.
+
+Lemma list_nat_compare_refl : forall xs, list_nat_compare xs xs = Eq.
+Proof. intro xs. apply list_nat_compare_eq_iff. reflexivity. Qed.
+
+Lemma list_nat_compare_antisym : forall xs ys,
+  list_nat_compare ys xs = CompOpp (list_nat_compare xs ys).
+Proof.
+  induction xs as [| x xs' IH]; intros [| y ys']; simpl; try reflexivity.
+  rewrite (Nat.compare_antisym x y).
+  destruct (Nat.compare x y) eqn:Hc; simpl; try reflexivity.
+  apply IH.
+Qed.
+
+Lemma list_nat_compare_trans : forall c xs ys zs,
+  list_nat_compare xs ys = c ->
+  list_nat_compare ys zs = c ->
+  list_nat_compare xs zs = c.
+Proof.
+  intros c xs. revert c.
+  induction xs as [| x xs' IH]; intros c ys zs H1 H2.
+  - (* xs = [] *)
+    destruct ys as [| y ys']; destruct zs as [| z zs']; simpl in *;
+      try congruence.
+  - (* xs = x :: xs' *)
+    destruct ys as [| y ys']; destruct zs as [| z zs']; simpl in *;
+      try congruence.
+    + (* general x::xs', y::ys', z::zs'.  The outer `simpl in *` has already
+         reduced the goal and H1,H2 to `match (x?=y) ...` / `match (y?=z) ...`;
+         destructing the comparisons makes the matches compute. *)
+      destruct (Nat.compare x y) eqn:Hxy;
+      destruct (Nat.compare y z) eqn:Hyz;
+        try (subst c; discriminate).
+      * apply Nat.compare_eq_iff in Hxy. apply Nat.compare_eq_iff in Hyz.
+        subst y z. rewrite Nat.compare_refl. eapply IH; eauto.
+      * apply Nat.compare_eq_iff in Hxy. subst y. rewrite Hyz. exact H2.
+      * apply Nat.compare_eq_iff in Hxy. subst y. rewrite Hyz. exact H2.
+      * apply Nat.compare_eq_iff in Hyz. subst z. rewrite Hxy. exact H1.
+      * apply Nat.compare_lt_iff in Hxy. apply Nat.compare_lt_iff in Hyz.
+        assert (x < z) as Hxz by lia. apply Nat.compare_lt_iff in Hxz.
+        rewrite Hxz. congruence.
+      * apply Nat.compare_eq_iff in Hyz. subst z. rewrite Hxy. exact H1.
+      * apply Nat.compare_gt_iff in Hxy. apply Nat.compare_gt_iff in Hyz.
+        assert (z < x) as Hzx by lia. apply Nat.compare_gt_iff in Hzx.
+        rewrite Hzx. congruence.
+Qed.
+
+Lemma list_nat_compare_total : forall xs ys,
+  list_nat_compare xs ys = Lt \/ list_nat_compare xs ys = Eq
+  \/ list_nat_compare xs ys = Gt.
+Proof. intros. destruct (list_nat_compare xs ys); auto. Qed.
+
+(* ── Comparison of rb_billable_kind ─────────────────────────────────────
+   Matches the Rust derived `Ord` on `BillableKind`
+   (SourceStep < Primitive(_) < Substitution; Primitive by descriptor). *)
+Definition rb_kind_compare (k1 k2 : rb_billable_kind) : comparison :=
+  match k1, k2 with
+  | RbSourceStep, RbSourceStep => Eq
+  | RbSourceStep, _ => Lt
+  | RbPrimitive _, RbSourceStep => Gt
+  | RbPrimitive d1, RbPrimitive d2 => Nat.compare d1 d2
+  | RbPrimitive _, RbSubstitution => Lt
+  | RbSubstitution, RbSubstitution => Eq
+  | RbSubstitution, _ => Gt
+  end.
+
+Lemma rb_kind_compare_eq_iff : forall k1 k2,
+  rb_kind_compare k1 k2 = Eq <-> k1 = k2.
+Proof.
+  intros [| d1 |] [| d2 |]; simpl; split; intro H;
+    try reflexivity; try discriminate.
+  - apply Nat.compare_eq_iff in H. subst. reflexivity.
+  - injection H as Hd. subst. apply Nat.compare_refl.
+Qed.
+
+Lemma rb_kind_compare_refl : forall k, rb_kind_compare k k = Eq.
+Proof. intro k. apply rb_kind_compare_eq_iff. reflexivity. Qed.
+
+Lemma rb_kind_compare_antisym : forall k1 k2,
+  rb_kind_compare k2 k1 = CompOpp (rb_kind_compare k1 k2).
+Proof.
+  intros [| d1 |] [| d2 |]; simpl; try reflexivity.
+  apply Nat.compare_antisym.
+Qed.
+
+Lemma rb_kind_compare_trans : forall c k1 k2 k3,
+  rb_kind_compare k1 k2 = c ->
+  rb_kind_compare k2 k3 = c ->
+  rb_kind_compare k1 k3 = c.
+Proof.
+  intros c k1 k2 k3 H1 H2.
+  destruct k1 as [| d1 |]; destruct k2 as [| d2 |]; destruct k3 as [| d3 |];
+    simpl in *; try congruence.
+  (* Only Primitive/Primitive/Primitive survives: delegate to Nat.compare.
+     After `try (subst c; discriminate)` only the three matching-comparison
+     cases (Eq,Eq), (Lt,Lt), (Gt,Gt) remain. *)
+  destruct (Nat.compare d1 d2) eqn:H12;
+  destruct (Nat.compare d2 d3) eqn:H23;
+    try (subst c; discriminate).
+  - apply Nat.compare_eq_iff in H12. apply Nat.compare_eq_iff in H23.
+    subst. rewrite Nat.compare_refl. assumption.
+  - apply Nat.compare_lt_iff in H12. apply Nat.compare_lt_iff in H23.
+    assert (d1 < d3) as Hd by lia. apply Nat.compare_lt_iff in Hd.
+    rewrite Hd. congruence.
+  - apply Nat.compare_gt_iff in H12. apply Nat.compare_gt_iff in H23.
+    assert (d3 < d1) as Hd by lia. apply Nat.compare_gt_iff in Hd.
+    rewrite Hd. congruence.
+Qed.
+
+(* ── Canonical lexicographic comparison on rb_event ────────────────────
+   Matches the derived Rust `Ord` on `BillableTokenEvent`:
+     (deploy_id, source_path, redex_id, local_index, kind, weight).
+   The field order is exactly the record/struct field order, which is the
+   tuple `cmp` derivation Rust uses. *)
+Definition lexc (c1 c2 : comparison) : comparison :=
+  match c1 with Eq => c2 | _ => c1 end.
+
+
+Definition rb_event_compare (e1 e2 : rb_event) : comparison :=
+  lexc (Nat.compare (rb_event_deploy_id e1) (rb_event_deploy_id e2))
+  (lexc (list_nat_compare (rb_event_source_path e1) (rb_event_source_path e2))
+  (lexc (Nat.compare (rb_event_redex_id e1) (rb_event_redex_id e2))
+  (lexc (Nat.compare (rb_event_local_index e1) (rb_event_local_index e2))
+  (lexc (rb_kind_compare (rb_event_kind e1) (rb_event_kind e2))
+        (Nat.compare (rb_event_weight e1) (rb_event_weight e2)))))).
+
+Definition rb_event_leb (e1 e2 : rb_event) : bool :=
+  match rb_event_compare e1 e2 with
+  | Gt => false
+  | _ => true
+  end.
+
+(* Antisymmetry-to-equality: compare = Eq iff the records are equal.
+   This holds because rb_event has EXACTLY the six compared fields. *)
+Lemma rb_event_compare_eq_iff : forall e1 e2,
+  rb_event_compare e1 e2 = Eq <-> e1 = e2.
+Proof.
+  intros e1 e2. unfold rb_event_compare. split.
+  - intro H.
+    destruct (Nat.compare (rb_event_deploy_id e1) (rb_event_deploy_id e2))
+      eqn:Hd; try discriminate.
+    destruct (list_nat_compare (rb_event_source_path e1) (rb_event_source_path e2))
+      eqn:Hsp; try discriminate.
+    destruct (Nat.compare (rb_event_redex_id e1) (rb_event_redex_id e2))
+      eqn:Hr; try discriminate.
+    destruct (Nat.compare (rb_event_local_index e1) (rb_event_local_index e2))
+      eqn:Hl; try discriminate.
+    destruct (rb_kind_compare (rb_event_kind e1) (rb_event_kind e2))
+      eqn:Hk; try discriminate.
+    apply Nat.compare_eq_iff in Hd.
+    apply list_nat_compare_eq_iff in Hsp.
+    apply Nat.compare_eq_iff in Hr.
+    apply Nat.compare_eq_iff in Hl.
+    apply rb_kind_compare_eq_iff in Hk.
+    apply Nat.compare_eq_iff in H.
+    destruct e1, e2; simpl in *; subst; reflexivity.
+  - intro H. subst e2.
+    rewrite Nat.compare_refl, list_nat_compare_refl, Nat.compare_refl,
+            Nat.compare_refl, rb_kind_compare_refl, Nat.compare_refl.
+    reflexivity.
+Qed.
+
+Lemma rb_event_compare_refl : forall e, rb_event_compare e e = Eq.
+Proof. intro e. apply rb_event_compare_eq_iff. reflexivity. Qed.
+
+Lemma rb_event_compare_antisym : forall e1 e2,
+  rb_event_compare e2 e1 = CompOpp (rb_event_compare e1 e2).
+Proof.
+  intros e1 e2. unfold rb_event_compare.
+  rewrite (Nat.compare_antisym (rb_event_deploy_id e1) (rb_event_deploy_id e2)).
+  destruct (Nat.compare (rb_event_deploy_id e1) (rb_event_deploy_id e2)) eqn:Hd;
+    simpl; try reflexivity.
+  rewrite (list_nat_compare_antisym (rb_event_source_path e1) (rb_event_source_path e2)).
+  destruct (list_nat_compare (rb_event_source_path e1) (rb_event_source_path e2)) eqn:Hsp;
+    simpl; try reflexivity.
+  rewrite (Nat.compare_antisym (rb_event_redex_id e1) (rb_event_redex_id e2)).
+  destruct (Nat.compare (rb_event_redex_id e1) (rb_event_redex_id e2)) eqn:Hr;
+    simpl; try reflexivity.
+  rewrite (Nat.compare_antisym (rb_event_local_index e1) (rb_event_local_index e2)).
+  destruct (Nat.compare (rb_event_local_index e1) (rb_event_local_index e2)) eqn:Hl;
+    simpl; try reflexivity.
+  rewrite (rb_kind_compare_antisym (rb_event_kind e1) (rb_event_kind e2)).
+  destruct (rb_kind_compare (rb_event_kind e1) (rb_event_kind e2)) eqn:Hk;
+    simpl; try reflexivity.
+  apply Nat.compare_antisym.
+Qed.
+
+(* ── Generic lexicographic-composition transitivity ─────────────────────
+   `lex c1 c2` returns `c2` when `c1 = Eq`, else `c1`. The composite
+   comparison `fun x y => lex (f x y) (g x y)` is transitive provided:
+     - f is transitive (f_trans),
+     - f is left/right-congruent under f-equality (f x y = Eq makes
+       f x _ and f y _ interchangeable; symmetric on the right), and
+     - g is transitive (g_trans).
+   We instantiate this once per field of rb_event. *)
+Lemma lexc_trans :
+  forall (T : Type) (f g : T -> T -> comparison),
+  (forall c x y z, f x y = c -> f y z = c -> f x z = c) ->
+  (forall x y z, f x y = Eq -> f x z = f y z) ->
+  (forall x y z, f y z = Eq -> f x z = f x y) ->
+  (forall c x y z, g x y = c -> g y z = c -> g x z = c) ->
+  forall c x y z,
+  lexc (f x y) (g x y) = c ->
+  lexc (f y z) (g y z) = c ->
+  lexc (f x z) (g x z) = c.
+Proof.
+  intros T f g f_trans f_cong_l f_cong_r g_trans c x y z H1 H2.
+  unfold lexc in *.
+  destruct (f x y) eqn:Hfxy; destruct (f y z) eqn:Hfyz.
+  - (* Eq, Eq: f x z = Eq; chain g. *)
+    rewrite (f_trans Eq x y z Hfxy Hfyz).
+    apply (g_trans c x y z H1 H2).
+  - (* Eq, Lt: f x z = f y z = Lt. *)
+    rewrite (f_cong_l x y z Hfxy). rewrite Hfyz. exact H2.
+  - (* Eq, Gt *)
+    rewrite (f_cong_l x y z Hfxy). rewrite Hfyz. exact H2.
+  - (* Lt, Eq: f x z = f x y = Lt. *)
+    rewrite (f_cong_r x y z Hfyz). rewrite Hfxy. exact H1.
+  - (* Lt, Lt: f x z = Lt by f_trans. *)
+    rewrite (f_trans Lt x y z Hfxy Hfyz). exact H1.
+  - (* Lt, Gt: H1 = Lt, H2 = Gt, c both -> contradiction. *)
+    subst c; discriminate.
+  - (* Gt, Eq: f x z = f x y = Gt. *)
+    rewrite (f_cong_r x y z Hfyz). rewrite Hfxy. exact H1.
+  - (* Gt, Lt: contradiction. *)
+    subst c; discriminate.
+  - (* Gt, Gt *)
+    rewrite (f_trans Gt x y z Hfxy Hfyz). exact H1.
+Qed.
+
+(* Congruence of a projection-based comparison under its own Eq:
+   if comparing the projections of x and y is Eq then the projections
+   are equal, so x and y are interchangeable on either side. *)
+Lemma proj_compare_cong_l :
+  forall (F : Type) (bc : F -> F -> comparison) (proj : rb_event -> F),
+  (forall a b, bc a b = Eq -> a = b) ->
+  forall x y z,
+  bc (proj x) (proj y) = Eq ->
+  bc (proj x) (proj z) = bc (proj y) (proj z).
+Proof.
+  intros F bc proj bc_eq x y z H. apply bc_eq in H. rewrite H. reflexivity.
+Qed.
+
+Lemma proj_compare_cong_r :
+  forall (F : Type) (bc : F -> F -> comparison) (proj : rb_event -> F),
+  (forall a b, bc a b = Eq -> a = b) ->
+  forall x y z,
+  bc (proj y) (proj z) = Eq ->
+  bc (proj x) (proj z) = bc (proj x) (proj y).
+Proof.
+  intros F bc proj bc_eq x y z H. apply bc_eq in H. rewrite H. reflexivity.
+Qed.
+
+(* Component eq-iff facts in the one-directional form lexc_trans wants. *)
+Lemma natc_eq : forall a b : nat, Nat.compare a b = Eq -> a = b.
+Proof. intros a b H. apply Nat.compare_eq_iff. exact H. Qed.
+Lemma natc_trans : forall (c : comparison) (a b d : nat),
+  Nat.compare a b = c -> Nat.compare b d = c -> Nat.compare a d = c.
+Proof.
+  intros c a b d H1 H2.
+  destruct (Nat.compare a b) eqn:Hab; destruct (Nat.compare b d) eqn:Hbd;
+    try (subst c; discriminate).
+  - apply Nat.compare_eq_iff in Hab. apply Nat.compare_eq_iff in Hbd.
+    subst. rewrite Nat.compare_refl. assumption.
+  - apply Nat.compare_lt_iff in Hab. apply Nat.compare_lt_iff in Hbd.
+    assert (a < d) as Hd by lia. apply Nat.compare_lt_iff in Hd.
+    rewrite Hd. congruence.
+  - apply Nat.compare_gt_iff in Hab. apply Nat.compare_gt_iff in Hbd.
+    assert (d < a) as Hd by lia. apply Nat.compare_gt_iff in Hd.
+    rewrite Hd. congruence.
+Qed.
+Lemma lnc_eq : forall a b : list nat, list_nat_compare a b = Eq -> a = b.
+Proof. intros a b H. apply list_nat_compare_eq_iff. exact H. Qed.
+Lemma kindc_eq : forall a b, rb_kind_compare a b = Eq -> a = b.
+Proof. intros a b H. apply rb_kind_compare_eq_iff. exact H. Qed.
+
+(* Transitivity of rb_event_compare: fold lexc_trans over the six fields,
+   innermost (weight) outward. *)
+Lemma rb_event_compare_trans : forall c e1 e2 e3,
+  rb_event_compare e1 e2 = c ->
+  rb_event_compare e2 e3 = c ->
+  rb_event_compare e1 e3 = c.
+Proof.
+  unfold rb_event_compare.
+  (* weight level (innermost g): plain Nat.compare transitivity. *)
+  assert (Gw : forall c x y z,
+            Nat.compare (rb_event_weight x) (rb_event_weight y) = c ->
+            Nat.compare (rb_event_weight y) (rb_event_weight z) = c ->
+            Nat.compare (rb_event_weight x) (rb_event_weight z) = c).
+  { intros c0 x y z H1 H2. eapply natc_trans; eauto. }
+  (* kind level *)
+  assert (Gk : forall c x y z,
+            lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind y))
+                 (Nat.compare (rb_event_weight x) (rb_event_weight y)) = c ->
+            lexc (rb_kind_compare (rb_event_kind y) (rb_event_kind z))
+                 (Nat.compare (rb_event_weight y) (rb_event_weight z)) = c ->
+            lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind z))
+                 (Nat.compare (rb_event_weight x) (rb_event_weight z)) = c).
+  { apply (lexc_trans rb_event
+             (fun a b => rb_kind_compare (rb_event_kind a) (rb_event_kind b))
+             (fun a b => Nat.compare (rb_event_weight a) (rb_event_weight b))).
+    - intros c0 x y z. apply rb_kind_compare_trans.
+    - intros x y z. apply (proj_compare_cong_l _ rb_kind_compare rb_event_kind kindc_eq).
+    - intros x y z. apply (proj_compare_cong_r _ rb_kind_compare rb_event_kind kindc_eq).
+    - exact Gw. }
+  (* local_index level *)
+  assert (Gl : forall c x y z,
+            lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index y))
+              (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind y))
+                 (Nat.compare (rb_event_weight x) (rb_event_weight y))) = c ->
+            lexc (Nat.compare (rb_event_local_index y) (rb_event_local_index z))
+              (lexc (rb_kind_compare (rb_event_kind y) (rb_event_kind z))
+                 (Nat.compare (rb_event_weight y) (rb_event_weight z))) = c ->
+            lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index z))
+              (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind z))
+                 (Nat.compare (rb_event_weight x) (rb_event_weight z))) = c).
+  { apply (lexc_trans rb_event
+             (fun a b => Nat.compare (rb_event_local_index a) (rb_event_local_index b))
+             (fun a b => lexc (rb_kind_compare (rb_event_kind a) (rb_event_kind b))
+                              (Nat.compare (rb_event_weight a) (rb_event_weight b)))).
+    - intros c0 x y z. apply natc_trans.
+    - intros x y z. apply (proj_compare_cong_l _ Nat.compare rb_event_local_index natc_eq).
+    - intros x y z. apply (proj_compare_cong_r _ Nat.compare rb_event_local_index natc_eq).
+    - exact Gk. }
+  (* redex_id level *)
+  assert (Gr : forall c x y z,
+            lexc (Nat.compare (rb_event_redex_id x) (rb_event_redex_id y))
+              (lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index y))
+                (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind y))
+                   (Nat.compare (rb_event_weight x) (rb_event_weight y)))) = c ->
+            lexc (Nat.compare (rb_event_redex_id y) (rb_event_redex_id z))
+              (lexc (Nat.compare (rb_event_local_index y) (rb_event_local_index z))
+                (lexc (rb_kind_compare (rb_event_kind y) (rb_event_kind z))
+                   (Nat.compare (rb_event_weight y) (rb_event_weight z)))) = c ->
+            lexc (Nat.compare (rb_event_redex_id x) (rb_event_redex_id z))
+              (lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index z))
+                (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind z))
+                   (Nat.compare (rb_event_weight x) (rb_event_weight z)))) = c).
+  { apply (lexc_trans rb_event
+             (fun a b => Nat.compare (rb_event_redex_id a) (rb_event_redex_id b))
+             (fun a b => lexc (Nat.compare (rb_event_local_index a) (rb_event_local_index b))
+                (lexc (rb_kind_compare (rb_event_kind a) (rb_event_kind b))
+                   (Nat.compare (rb_event_weight a) (rb_event_weight b))))).
+    - intros c0 x y z. apply natc_trans.
+    - intros x y z. apply (proj_compare_cong_l _ Nat.compare rb_event_redex_id natc_eq).
+    - intros x y z. apply (proj_compare_cong_r _ Nat.compare rb_event_redex_id natc_eq).
+    - exact Gl. }
+  (* source_path level *)
+  assert (Gsp : forall c x y z,
+            lexc (list_nat_compare (rb_event_source_path x) (rb_event_source_path y))
+              (lexc (Nat.compare (rb_event_redex_id x) (rb_event_redex_id y))
+                (lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index y))
+                  (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind y))
+                     (Nat.compare (rb_event_weight x) (rb_event_weight y))))) = c ->
+            lexc (list_nat_compare (rb_event_source_path y) (rb_event_source_path z))
+              (lexc (Nat.compare (rb_event_redex_id y) (rb_event_redex_id z))
+                (lexc (Nat.compare (rb_event_local_index y) (rb_event_local_index z))
+                  (lexc (rb_kind_compare (rb_event_kind y) (rb_event_kind z))
+                     (Nat.compare (rb_event_weight y) (rb_event_weight z))))) = c ->
+            lexc (list_nat_compare (rb_event_source_path x) (rb_event_source_path z))
+              (lexc (Nat.compare (rb_event_redex_id x) (rb_event_redex_id z))
+                (lexc (Nat.compare (rb_event_local_index x) (rb_event_local_index z))
+                  (lexc (rb_kind_compare (rb_event_kind x) (rb_event_kind z))
+                     (Nat.compare (rb_event_weight x) (rb_event_weight z))))) = c).
+  { apply (lexc_trans rb_event
+             (fun a b => list_nat_compare (rb_event_source_path a) (rb_event_source_path b))
+             (fun a b => lexc (Nat.compare (rb_event_redex_id a) (rb_event_redex_id b))
+                (lexc (Nat.compare (rb_event_local_index a) (rb_event_local_index b))
+                  (lexc (rb_kind_compare (rb_event_kind a) (rb_event_kind b))
+                     (Nat.compare (rb_event_weight a) (rb_event_weight b)))))).
+    - intros c0 x y z. apply list_nat_compare_trans.
+    - intros x y z. apply (proj_compare_cong_l _ list_nat_compare rb_event_source_path lnc_eq).
+    - intros x y z. apply (proj_compare_cong_r _ list_nat_compare rb_event_source_path lnc_eq).
+    - exact Gr. }
+  (* deploy_id level (outermost) *)
+  apply (lexc_trans rb_event
+           (fun a b => Nat.compare (rb_event_deploy_id a) (rb_event_deploy_id b))
+           (fun a b => lexc (list_nat_compare (rb_event_source_path a) (rb_event_source_path b))
+              (lexc (Nat.compare (rb_event_redex_id a) (rb_event_redex_id b))
+                (lexc (Nat.compare (rb_event_local_index a) (rb_event_local_index b))
+                  (lexc (rb_kind_compare (rb_event_kind a) (rb_event_kind b))
+                     (Nat.compare (rb_event_weight a) (rb_event_weight b))))))).
+  - intros c0 x y z. apply natc_trans.
+  - intros x y z. apply (proj_compare_cong_l _ Nat.compare rb_event_deploy_id natc_eq).
+  - intros x y z. apply (proj_compare_cong_r _ Nat.compare rb_event_deploy_id natc_eq).
+  - exact Gsp.
+Qed.
+
+(* ── rb_event_leb is a total, transitive, antisymmetric order ───────────── *)
+Lemma rb_event_leb_total : forall e1 e2,
+  rb_event_leb e1 e2 = true \/ rb_event_leb e2 e1 = true.
+Proof.
+  intros e1 e2. unfold rb_event_leb.
+  rewrite (rb_event_compare_antisym e1 e2).
+  destruct (rb_event_compare e1 e2); simpl; auto.
+Qed.
+
+Lemma rb_event_leb_trans : forall e1 e2 e3,
+  rb_event_leb e1 e2 = true ->
+  rb_event_leb e2 e3 = true ->
+  rb_event_leb e1 e3 = true.
+Proof.
+  intros e1 e2 e3 H1 H2. unfold rb_event_leb in *.
+  (* leb = true iff compare <> Gt iff compare in {Eq,Lt}. *)
+  destruct (rb_event_compare e1 e2) eqn:H12; try discriminate;
+  destruct (rb_event_compare e2 e3) eqn:H23; try discriminate.
+  - rewrite (rb_event_compare_trans Eq e1 e2 e3 H12 H23). reflexivity.
+  - apply rb_event_compare_eq_iff in H12. subst e2. rewrite H23. reflexivity.
+  - apply rb_event_compare_eq_iff in H23. subst e3. rewrite H12. reflexivity.
+  - rewrite (rb_event_compare_trans Lt e1 e2 e3 H12 H23). reflexivity.
+Qed.
+
+Lemma rb_event_leb_antisym : forall e1 e2,
+  rb_event_leb e1 e2 = true ->
+  rb_event_leb e2 e1 = true ->
+  e1 = e2.
+Proof.
+  intros e1 e2 H1 H2. unfold rb_event_leb in *.
+  rewrite (rb_event_compare_antisym e1 e2) in H2.
+  destruct (rb_event_compare e1 e2) eqn:H12; simpl in *; try discriminate.
+  apply rb_event_compare_eq_iff in H12. exact H12.
+Qed.
+
+(* ── Instantiate the stdlib mergesort over the canonical order ──────────── *)
+Module RbEventOrder <: TotalLeBool'.
+  Definition t := rb_event.
+  Definition leb := rb_event_leb.
+  Infix "<=?" := leb (at level 70, no associativity).
+  Theorem leb_total : forall a1 a2, (a1 <=? a2) = true \/ (a2 <=? a1) = true.
+  Proof. exact rb_event_leb_total. Qed.
+End RbEventOrder.
+
+Module Import RbEventSort := Sort RbEventOrder.
+
+Definition rb_event_sort : list rb_event -> list rb_event := RbEventSort.sort.
+
+(* Prop-valued order relation matching the sort's `is_true (leb ..)` view. *)
+Definition rb_event_le (e1 e2 : rb_event) : Prop := rb_event_leb e1 e2 = true.
+
+(* leb is transitive, so the sort output is StronglySorted. *)
+#[local] Instance rb_event_le_Transitive : Transitive rb_event_le.
+Proof. intros x y z. apply rb_event_leb_trans. Qed.
+
+Lemma rb_event_sort_permuted : forall l, Permutation l (rb_event_sort l).
+Proof. intro l. apply RbEventSort.Permuted_sort. Qed.
+
+Lemma rb_event_sort_strongly_sorted : forall l,
+  StronglySorted rb_event_le (rb_event_sort l).
+Proof.
+  intro l. unfold rb_event_le, rb_event_sort.
+  apply RbEventSort.StronglySorted_sort.
+  intros x y z Hxy Hyz. unfold is_true in *. eapply rb_event_leb_trans; eauto.
+Qed.
+
+(* ── Sort uniqueness: a StronglySorted list is the unique sorted
+   representative of its permutation class (antisymmetry of the order). ─── *)
+Lemma rb_strongly_sorted_perm_eq : forall l1 l2,
+  StronglySorted rb_event_le l1 ->
+  StronglySorted rb_event_le l2 ->
+  Permutation l1 l2 ->
+  l1 = l2.
+Proof.
+  induction l1 as [| a l1' IH]; intros l2 Hss1 Hss2 Hperm.
+  - apply Permutation_nil in Hperm. symmetry. exact Hperm.
+  - (* l2 is nonempty: a in l2. *)
+    destruct l2 as [| b l2'].
+    { apply Permutation_sym in Hperm. apply Permutation_nil in Hperm. discriminate. }
+    (* a and b are mutually <= : a is the min of l1, b the min of l2,
+       and each list is a permutation of the other. *)
+    pose proof (StronglySorted_inv Hss1) as [Hss1' Hfa].
+    pose proof (StronglySorted_inv Hss2) as [Hss2' Hfb].
+    assert (Hb_in : In b (a :: l1')).
+    { apply Permutation_in with (l := b :: l2').
+      - apply Permutation_sym. exact Hperm.
+      - left; reflexivity. }
+    assert (Ha_in : In a (b :: l2')).
+    { apply Permutation_in with (l := a :: l1').
+      - exact Hperm.
+      - left; reflexivity. }
+    assert (Hab : a = b).
+    { destruct Hb_in as [Hba | Hbin].
+      - exact Hba.
+      - destruct Ha_in as [Hab | Hain].
+        + symmetry. exact Hab.
+        + (* a <= b (Hfa on b in l1') and b <= a (Hfb on a in l2') *)
+          rewrite Forall_forall in Hfa, Hfb.
+          apply rb_event_leb_antisym.
+          * apply (Hfa b Hbin).
+          * apply (Hfb a Hain). }
+    subst b.
+    apply Permutation_cons_inv in Hperm.
+    f_equal. apply IH; assumption.
+Qed.
+
+Lemma rb_event_sort_perm_eq : forall l1 l2,
+  Permutation l1 l2 -> rb_event_sort l1 = rb_event_sort l2.
+Proof.
+  intros l1 l2 Hperm.
+  apply rb_strongly_sorted_perm_eq.
+  - apply rb_event_sort_strongly_sorted.
+  - apply rb_event_sort_strongly_sorted.
+  - (* sort l1 ~ l1 ~ l2 ~ sort l2 *)
+    apply Permutation_trans with (l' := l1).
+    { apply Permutation_sym. apply rb_event_sort_permuted. }
+    apply Permutation_trans with (l' := l2).
+    { exact Hperm. }
+    apply rb_event_sort_permuted.
+Qed.
+
+(* sort is idempotent (it is identity on already-sorted lists). *)
+Lemma rb_event_sort_idem : forall l,
+  rb_event_sort (rb_event_sort l) = rb_event_sort l.
+Proof.
+  intro l. apply rb_event_sort_perm_eq.
+  apply Permutation_sym. apply rb_event_sort_permuted.
+Qed.
+
+(* ── Insertion sort (used only to reason about the lowest-k absorption;
+   shown equal to the mergesort via uniqueness). ───────────────────────── *)
+Fixpoint rb_insert (x : rb_event) (l : list rb_event) : list rb_event :=
+  match l with
+  | [] => [x]
+  | h :: t => if rb_event_leb x h then x :: h :: t else h :: rb_insert x t
+  end.
+
+Fixpoint rb_isort (l : list rb_event) : list rb_event :=
+  match l with
+  | [] => []
+  | h :: t => rb_insert h (rb_isort t)
+  end.
+
+Lemma rb_insert_perm : forall x l, Permutation (x :: l) (rb_insert x l).
+Proof.
+  intros x l. induction l as [| h t IH]; simpl.
+  - apply Permutation_refl.
+  - destruct (rb_event_leb x h) eqn:Hle.
+    + apply Permutation_refl.
+    + (* x :: h :: t  ~  h :: insert x t *)
+      apply Permutation_trans with (l' := h :: x :: t).
+      * apply perm_swap.
+      * apply perm_skip. exact IH.
+Qed.
+
+Lemma rb_isort_perm : forall l, Permutation l (rb_isort l).
+Proof.
+  induction l as [| h t IH]; simpl.
+  - apply Permutation_refl.
+  - apply Permutation_trans with (l' := h :: rb_isort t).
+    + apply perm_skip. exact IH.
+    + apply rb_insert_perm.
+Qed.
+
+Lemma rb_insert_sorted : forall x l,
+  StronglySorted rb_event_le l ->
+  StronglySorted rb_event_le (rb_insert x l).
+Proof.
+  intros x l Hss. induction l as [| h t IH]; simpl.
+  - apply SSorted_cons; [apply SSorted_nil | apply Forall_nil].
+  - destruct (rb_event_leb x h) eqn:Hle.
+    + (* x <= h, prepend x *)
+      apply SSorted_cons.
+      * exact Hss.
+      * (* Forall (le x) (h::t): x <= h, and x <= every elt of t since h <= them *)
+        pose proof (StronglySorted_inv Hss) as [Hss_t Hfh].
+        constructor.
+        { unfold rb_event_le. exact Hle. }
+        { (* x <= every element of t : x <= h <= y *)
+          rewrite Forall_forall in Hfh. rewrite Forall_forall.
+          intros y Hy. unfold rb_event_le in *.
+          eapply rb_event_leb_trans; [exact Hle | apply (Hfh y Hy)]. }
+    + (* h < x, recurse *)
+      pose proof (StronglySorted_inv Hss) as [Hss_t Hfh].
+      specialize (IH Hss_t).
+      apply SSorted_cons.
+      * exact IH.
+      * (* Forall (le h) (insert x t): h <= elements of t (Hfh) and h <= x *)
+        assert (Hhx : rb_event_le h x).
+        { unfold rb_event_le.
+          destruct (rb_event_leb_total h x) as [Hhx | Hxh].
+          - exact Hhx.
+          - rewrite Hxh in Hle. discriminate. }
+        rewrite Forall_forall. rewrite Forall_forall in Hfh.
+        intros y Hy.
+        (* y in insert x t : y in (x::t) by permutation *)
+        pose proof (rb_insert_perm x t) as Hp.
+        assert (Hyin : In y (x :: t)).
+        { apply Permutation_in with (l := rb_insert x t).
+          - apply Permutation_sym. exact Hp.
+          - exact Hy. }
+        destruct Hyin as [Hyx | Hyt].
+        { subst y. exact Hhx. }
+        { apply (Hfh y Hyt). }
+Qed.
+
+Lemma rb_isort_sorted : forall l, StronglySorted rb_event_le (rb_isort l).
+Proof.
+  induction l as [| h t IH]; simpl.
+  - apply SSorted_nil.
+  - apply rb_insert_sorted. exact IH.
+Qed.
+
+(* Insertion sort and the canonical mergesort agree (both are the unique
+   sorted permutation). *)
+Lemma rb_isort_eq_sort : forall l, rb_isort l = rb_event_sort l.
+Proof.
+  intro l. apply rb_strongly_sorted_perm_eq.
+  - apply rb_isort_sorted.
+  - apply rb_event_sort_strongly_sorted.
+  - apply Permutation_trans with (l' := l).
+    + apply Permutation_sym. apply rb_isort_perm.
+    + apply rb_event_sort_permuted.
+Qed.
+
+(* Helper: in a strongly-sorted list, the first-k elements that are all <= d,
+   when the head h satisfies d = h (a boundary tie), are all equal to h. *)
+Lemma sorted_firstn_below_pivot_all_eq : forall l d k,
+  StronglySorted rb_event_le l ->
+  Forall (fun p => rb_event_le p d) (firstn k l) ->
+  Forall (fun p => rb_event_le d p) (firstn k l) ->
+  Forall (fun p => p = d) (firstn k l).
+Proof.
+  intros l d k Hss Hle Hge.
+  rewrite Forall_forall in *. intros x Hx.
+  apply rb_event_leb_antisym.
+  - apply Hle. exact Hx.
+  - apply Hge. exact Hx.
+Qed.
+
+(* A list all of whose elements equal a constant IS repeat of that constant. *)
+Lemma Forall_eq_repeat : forall (l : list rb_event) (c : rb_event),
+  Forall (fun p => p = c) l ->
+  l = repeat c (length l).
+Proof.
+  induction l as [| h t IH]; intros c Hall; simpl.
+  - reflexivity.
+  - inversion Hall as [| ? ? Hh Ht]; subst.
+    f_equal. apply IH. exact Ht.
+Qed.
+
+(* Small list helpers not present under these names in this stdlib. *)
+Lemma In_firstn : forall (A : Type) (x : A) n (l : list A),
+  In x (firstn n l) -> In x l.
+Proof.
+  intros A x n l. revert n.
+  induction l as [| h t IH]; intros n Hin.
+  - rewrite firstn_nil in Hin. contradiction.
+  - destruct n as [| n']; simpl in Hin.
+    + contradiction.
+    + destruct Hin as [Heq | Hin].
+      * left. exact Heq.
+      * right. apply (IH n' Hin).
+Qed.
+
+Lemma Forall_firstn : forall (A : Type) (P : A -> Prop) n (l : list A),
+  Forall P l -> Forall P (firstn n l).
+Proof.
+  intros A P n l. revert n.
+  induction l as [| h t IH]; intros n Hall.
+  - rewrite firstn_nil. apply Forall_nil.
+  - destruct n as [| n']; simpl.
+    + apply Forall_nil.
+    + inversion Hall as [| ? ? Hh Ht]; subst.
+      constructor; [exact Hh | apply (IH n' Ht)].
+Qed.
+
+Lemma Forall_firstn_mono : forall (A : Type) (P : A -> Prop) m n (l : list A),
+  m <= n -> Forall P (firstn n l) -> Forall P (firstn m l).
+Proof.
+  intros A P m n l Hmn Hall.
+  assert (Hfm : firstn m l = firstn m (firstn n l)).
+  { rewrite firstn_firstn. rewrite Nat.min_l by lia. reflexivity. }
+  rewrite Hfm. apply Forall_firstn. exact Hall.
+Qed.
+
+(* The linchpin insertion lemma: inserting an element d that is >= every one
+   of the first k elements of a strongly-sorted list (with k <= length) does
+   not change the first k elements (as a list). Boundary ties collapse to
+   equal records, which is why we need StronglySorted + antisymmetry. *)
+Lemma firstn_insert_ge : forall l d k,
+  k <= length l ->
+  StronglySorted rb_event_le l ->
+  Forall (fun p => rb_event_le p d) (firstn k l) ->
+  firstn k (rb_insert d l) = firstn k l.
+Proof.
+  induction l as [| h t IH]; intros d k Hk Hss Hpre.
+  - (* l = [] : k <= 0 so k = 0. *)
+    simpl in Hk. assert (k = 0) by lia. subst k. reflexivity.
+  - destruct k as [| k'].
+    + reflexivity.
+    + simpl in Hpre. inversion Hpre as [| ? ? Hhd Hrest]; subst.
+      simpl rb_insert.
+      destruct (rb_event_leb d h) eqn:Hdh.
+      * (* boundary tie: leb d h = true and le h d => d = h *)
+        assert (Hdh_eq : d = h).
+        { apply rb_event_leb_antisym; [exact Hdh | exact Hhd]. }
+        subst d.
+        pose proof (StronglySorted_inv Hss) as [Hss_t Hfh].
+        assert (Hle_h : rb_event_le h h).
+        { unfold rb_event_le, rb_event_leb. rewrite rb_event_compare_refl. reflexivity. }
+        (* every element of firstn (S k') (h::t) is = h *)
+        assert (Hge : Forall (fun p => rb_event_le h p) (firstn (S k') (h :: t))).
+        { simpl. constructor.
+          - exact Hle_h.
+          - rewrite Forall_forall in Hfh. rewrite Forall_forall.
+            intros x Hx. apply Hfh. apply (In_firstn _ _ _ _ Hx). }
+        assert (Hle : Forall (fun p => rb_event_le p h) (firstn (S k') (h :: t))).
+        { simpl. constructor; [exact Hhd | exact Hrest]. }
+        pose proof (sorted_firstn_below_pivot_all_eq (h::t) h (S k') Hss Hle Hge) as Hall.
+        (* Reduce exactly one firstn layer on each side:
+           goal becomes firstn k' (h::t) = firstn k' t. *)
+        cbn [firstn]. f_equal.
+        assert (Hk' : k' <= length t) by (simpl in Hk; lia).
+        assert (Hall1 : Forall (fun p => p = h) (firstn k' (h :: t))).
+        { apply (Forall_firstn_mono _ _ k' (S k')); [lia | exact Hall]. }
+        simpl in Hall. inversion Hall as [| ? ? _ Hall_t']; subst.
+        assert (Hall2 : Forall (fun p => p = h) (firstn k' t)) by exact Hall_t'.
+        rewrite (Forall_eq_repeat (firstn k' (h :: t)) h Hall1).
+        rewrite (Forall_eq_repeat (firstn k' t) h Hall2).
+        rewrite !length_firstn. simpl length.
+        rewrite (Nat.min_l k' (S (length t))) by lia.
+        rewrite (Nat.min_l k' (length t)) by lia.
+        reflexivity.
+      * (* leb d h = false: recurse into t. *)
+        simpl. f_equal.
+        pose proof (StronglySorted_inv Hss) as [Hss_t _].
+        apply IH.
+        -- simpl in Hk. lia.
+        -- exact Hss_t.
+        -- exact Hrest.
+Qed.
+
+(* ── Absorption support: the lowest-k of a multiset are all <= a pivot d
+   whenever the multiset contains k elements that are each <= d. ─────────── *)
+
+Lemma Permutation_filter : forall (f : rb_event -> bool) a b,
+  Permutation a b -> Permutation (filter f a) (filter f b).
+Proof.
+  intros f a b H. induction H; simpl.
+  - apply Permutation_refl.
+  - destruct (f x); [apply perm_skip; exact IHPermutation | exact IHPermutation].
+  - destruct (f x); destruct (f y); try apply perm_swap; try apply Permutation_refl.
+  - eapply Permutation_trans; eauto.
+Qed.
+
+(* A list every element of which fails "<= d" filters to nil. *)
+Lemma filter_le_nil_of_all_gt : forall t d,
+  Forall (fun y => rb_event_leb y d = false) t ->
+  filter (fun x => rb_event_leb x d) t = [].
+Proof.
+  induction t as [| y t' IH]; intros d Hall; simpl.
+  - reflexivity.
+  - inversion Hall as [| ? ? Hy Hrest]; subst.
+    rewrite Hy. apply IH. exact Hrest.
+Qed.
+
+(* If the head of a strongly-sorted list fails "<= d", so does every tail
+   element (sorted: tail >= head > d). *)
+Lemma sorted_head_gt_tail_gt : forall h t d,
+  StronglySorted rb_event_le (h :: t) ->
+  rb_event_leb h d = false ->
+  Forall (fun y => rb_event_leb y d = false) t.
+Proof.
+  intros h t d Hss Hhd.
+  pose proof (StronglySorted_inv Hss) as [_ Hfh].
+  rewrite Forall_forall in Hfh. rewrite Forall_forall.
+  intros y Hy.
+  destruct (rb_event_leb y d) eqn:Hyd; [| reflexivity].
+  exfalso.
+  assert (Hhy : rb_event_le h y) by (apply Hfh; exact Hy).
+  assert (rb_event_le h d).
+  { unfold rb_event_le in *. eapply rb_event_leb_trans; [exact Hhy | exact Hyd]. }
+  unfold rb_event_le in *. rewrite Hhd in H. discriminate.
+Qed.
+
+(* In a strongly-sorted list, the first k elements are all <= d, provided
+   the list has at least k elements that are <= d (i.e. the "<= d" prefix is
+   at least k long). *)
+Lemma StronglySorted_firstn_le_threshold : forall S d k,
+  StronglySorted rb_event_le S ->
+  k <= length (filter (fun x => rb_event_leb x d) S) ->
+  Forall (fun x => rb_event_le x d) (firstn k S).
+Proof.
+  induction S as [| h t IH]; intros d k Hss Hcount.
+  - simpl in *. assert (k = 0) by lia. subst k. apply Forall_nil.
+  - destruct k as [| k'].
+    + apply Forall_nil.
+    + simpl. pose proof (StronglySorted_inv Hss) as [Hss_t Hfh].
+      simpl in Hcount.
+      destruct (rb_event_leb h d) eqn:Hhd.
+      * (* h <= d : head passes. *)
+        simpl in Hcount.
+        constructor.
+        { unfold rb_event_le. exact Hhd. }
+        { apply IH; [exact Hss_t | lia]. }
+      * (* h > d : then all of t > d, so filter t = [], count = 0, absurd. *)
+        exfalso.
+        assert (Hempty : filter (fun x => rb_event_leb x d) t = []).
+        { apply filter_le_nil_of_all_gt.
+          apply (sorted_head_gt_tail_gt h t d Hss Hhd). }
+        rewrite Hempty in Hcount. simpl in Hcount. lia.
+Qed.
+
+(* Permutation rest (P ++ Q) with |P| = k and all of P <= d gives >= k
+   elements of rest that are <= d. *)
+Lemma filter_le_pivot_count : forall rest P Q d k,
+  Permutation rest (P ++ Q) ->
+  length P = k ->
+  Forall (fun p => rb_event_le p d) P ->
+  k <= length (filter (fun x => rb_event_leb x d) rest).
+Proof.
+  intros rest P Q d k Hperm Hlen Hall.
+  pose proof (Permutation_filter (fun x => rb_event_leb x d) _ _ Hperm) as Hpf.
+  pose proof (Permutation_length Hpf) as Hlenf.
+  rewrite Hlenf.
+  rewrite filter_app, length_app.
+  assert (HP : filter (fun x => rb_event_leb x d) P = P).
+  { clear -Hall. induction P as [| p P' IHP]; simpl.
+    - reflexivity.
+    - inversion Hall as [| ? ? Hp Hrest]; subst.
+      unfold rb_event_le in Hp. rewrite Hp. f_equal. apply IHP. exact Hrest. }
+  rewrite HP. rewrite Hlen. lia.
+Qed.
+
+(* Main domination lemma: the lowest-k of `rest` are all <= d. *)
+Lemma firstn_sort_dominated_by_pivot : forall rest P Q d k,
+  Permutation rest (P ++ Q) ->
+  length P = k ->
+  Forall (fun p => rb_event_le p d) P ->
+  Forall (fun x => rb_event_le x d) (firstn k (rb_event_sort rest)).
+Proof.
+  intros rest P Q d k Hperm Hlen Hall.
+  apply StronglySorted_firstn_le_threshold.
+  - apply rb_event_sort_strongly_sorted.
+  - (* count of <= d in sort rest = count in rest (permutation) >= k *)
+    pose proof (rb_event_sort_permuted rest) as Hsp.
+    pose proof (Permutation_filter (fun x => rb_event_leb x d) _ _ Hsp) as Hpf.
+    pose proof (Permutation_length Hpf) as Hlenf.
+    rewrite <- Hlenf.
+    eapply filter_le_pivot_count; eauto.
+Qed.
+
+(* Dropping a single dominated element (>= k elements that are <= it) from a
+   multiset does not change its lowest-k. *)
+Lemma lowk_drop_one_dominated : forall d rest P Q k,
+  Permutation rest (P ++ Q) ->
+  length P = k ->
+  Forall (fun p => rb_event_le p d) P ->
+  firstn k (rb_event_sort (d :: rest)) = firstn k (rb_event_sort rest).
+Proof.
+  intros d rest P Q k Hperm Hlen Hall.
+  (* sort (d :: rest) = insert d (sort rest) *)
+  assert (Hsort_cons : rb_event_sort (d :: rest)
+                       = rb_insert d (rb_event_sort rest)).
+  { rewrite <- (rb_isort_eq_sort (d :: rest)).
+    simpl rb_isort. rewrite rb_isort_eq_sort. reflexivity. }
+  rewrite Hsort_cons.
+  apply firstn_insert_ge.
+  - (* k <= length (sort rest) = length rest >= length P = k *)
+    pose proof (rb_event_sort_permuted rest) as Hsp.
+    rewrite <- (Permutation_length Hsp).
+    rewrite (Permutation_length Hperm). rewrite length_app, Hlen. lia.
+  - apply rb_event_sort_strongly_sorted.
+  - eapply firstn_sort_dominated_by_pivot; eauto.
+Qed.
+
+(* Dropping a whole list D of dominated elements (all >= the k pivots P,
+   with P a k-sub-multiset of base) preserves the lowest-k. *)
+Lemma lowk_drop_dominated : forall D base P R k,
+  Permutation base (P ++ R) ->
+  length P = k ->
+  Forall (fun d => Forall (fun p => rb_event_le p d) P) D ->
+  firstn k (rb_event_sort (base ++ D)) = firstn k (rb_event_sort base).
+Proof.
+  induction D as [| d D' IH]; intros base P R k Hperm Hlen HallD.
+  - rewrite app_nil_r. reflexivity.
+  - pose proof (Forall_inv HallD) as Hd.
+    pose proof (Forall_inv_tail HallD) as HD'.
+    (* base ++ (d :: D') ~ d :: (base ++ D') *)
+    assert (Hp1 : firstn k (rb_event_sort (base ++ d :: D'))
+                  = firstn k (rb_event_sort (d :: (base ++ D')))).
+    { f_equal. apply rb_event_sort_perm_eq.
+      (* base ++ d :: D' ~ d :: base ++ D' *)
+      apply Permutation_trans with (l' := (base ++ D') ++ [d]).
+      - (* base ++ (d :: D') ~ (base ++ D') ++ [d] *)
+        rewrite <- app_assoc. apply Permutation_app_head.
+        apply Permutation_sym.
+        change (d :: D') with ([d] ++ D').
+        apply Permutation_app_comm.
+      - (* (base ++ D') ++ [d] ~ d :: (base ++ D') *)
+        apply Permutation_trans with (l' := [d] ++ (base ++ D')).
+        + apply Permutation_app_comm.
+        + simpl. apply Permutation_refl. }
+    rewrite Hp1.
+    (* drop d (dominated by P, which is a k-sub-multiset of base ++ D') *)
+    assert (Hperm' : Permutation (base ++ D') (P ++ (R ++ D'))).
+    { rewrite app_assoc.
+      apply Permutation_app_tail. exact Hperm. }
+    rewrite (lowk_drop_one_dominated d (base ++ D') P (R ++ D') k Hperm' Hlen Hd).
+    (* now recurse on D' *)
+    apply (IH base P R k Hperm Hlen HD').
+Qed.
+
+(* In a strongly-sorted concatenation P ++ D, every element of P is <= every
+   element of D. *)
+Lemma StronglySorted_app_cross : forall P D,
+  StronglySorted rb_event_le (P ++ D) ->
+  Forall (fun d => Forall (fun p => rb_event_le p d) P) D.
+Proof.
+  induction P as [| h P' IH]; intros D Hss; simpl in *.
+  - (* P = [] : vacuous (Forall (fun _ => Forall _ []) D) *)
+    rewrite Forall_forall. intros d _. apply Forall_nil.
+  - (* P = h :: P' : head h <= all of D, and recurse for P'. *)
+    pose proof (StronglySorted_inv Hss) as [Hss' Hfh].
+    (* Hfh : Forall (rb_event_le h) (P' ++ D) ; restrict to D *)
+    assert (HhD : Forall (fun d => rb_event_le h d) D).
+    { rewrite Forall_forall in Hfh. rewrite Forall_forall.
+      intros d Hd. apply Hfh. apply in_or_app. right. exact Hd. }
+    specialize (IH D Hss').
+    (* combine: for each d in D, h <= d and (P' all <= d) *)
+    rewrite Forall_forall in IH, HhD. rewrite Forall_forall.
+    intros d Hd.
+    constructor.
+    + apply HhD. exact Hd.
+    + apply IH. exact Hd.
+Qed.
+
+(* ── MASTER bounded-K absorption lemma ───────────────────────────────────
+   Truncating l to its lowest k before unioning with `rest` does not change
+   the lowest k of the union. This is the algebraic heart of the bounded-K
+   reconciliation: the cost walk never needs more than the lowest k events. *)
+Lemma lowK_absorb : forall k l rest,
+  firstn k (rb_event_sort (firstn k (rb_event_sort l) ++ rest))
+  = firstn k (rb_event_sort (l ++ rest)).
+Proof.
+  intros k l rest.
+  destruct (Nat.le_gt_cases k (length l)) as [Hk | Hk].
+  - (* k <= length l : P := firstn k (sort l) has length k; D := skipn k. *)
+    set (s := rb_event_sort l).
+    set (P := firstn k s).
+    set (D := skipn k s).
+    assert (HlenP : length P = k).
+    { unfold P, s. rewrite length_firstn.
+      pose proof (rb_event_sort_permuted l) as Hsp.
+      rewrite <- (Permutation_length Hsp). lia. }
+    assert (Hsplit : P ++ D = s) by (unfold P, D; apply firstn_skipn).
+    assert (Hss : StronglySorted rb_event_le s)
+      by (unfold s; apply rb_event_sort_strongly_sorted).
+    assert (Hdom : Forall (fun d => Forall (fun p => rb_event_le p d) P) D).
+    { apply StronglySorted_app_cross. rewrite Hsplit. exact Hss. }
+    (* base := P ++ rest. *)
+    pose proof (lowk_drop_dominated D (P ++ rest) P rest k
+                  (Permutation_refl _) HlenP Hdom) as Hdrop.
+    (* Hdrop : firstn k (sort ((P++rest) ++ D)) = firstn k (sort (P++rest)) *)
+    (* LHS of goal = firstn k (sort (P ++ rest)). *)
+    fold s. fold P.
+    rewrite <- Hdrop.
+    (* now show firstn k (sort ((P++rest)++D)) = firstn k (sort (l++rest)) *)
+    f_equal. apply rb_event_sort_perm_eq.
+    (* (P++rest)++D ~ (P++D)++rest = s ++ rest ~ l ++ rest *)
+    apply Permutation_trans with (l' := (P ++ D) ++ rest).
+    + (* (P++rest)++D ~ (P++D)++rest *)
+      rewrite <- !app_assoc. apply Permutation_app_head.
+      apply Permutation_app_comm.
+    + rewrite Hsplit.
+      (* s ++ rest ~ l ++ rest *)
+      apply Permutation_app_tail.
+      unfold s. apply Permutation_sym. apply rb_event_sort_permuted.
+  - (* k > length l : firstn k (sort l) = sort l, so just permutation. *)
+    assert (Hall : firstn k (rb_event_sort l) = rb_event_sort l).
+    { apply firstn_all2.
+      pose proof (rb_event_sort_permuted l) as Hsp.
+      rewrite <- (Permutation_length Hsp). lia. }
+    rewrite Hall.
+    f_equal. apply rb_event_sort_perm_eq.
+    apply Permutation_app_tail.
+    apply Permutation_sym. apply rb_event_sort_permuted.
+Qed.
+
+(* ══════════════════════════════════════════════════════════════════════════
+   lowestK and the bounded-K commutative monoid
+   ══════════════════════════════════════════════════════════════════════════ *)
+
+(* The k lowest-rank events by the canonical Ord, multiplicity-preserving. *)
+Definition lowestK (k : nat) (events : list rb_event) : list rb_event :=
+  firstn k (rb_event_sort events).
+
+(* Monoid operation: union the multisets and re-truncate to k. *)
+Definition lowK_merge (k : nat) (a b : list rb_event) : list rb_event :=
+  lowestK k (a ++ b).
+
+(* Normalization onto the carrier of canonical k-bounded forms. *)
+Definition lowK_nf (k : nat) (l : list rb_event) : list rb_event := lowestK k l.
+
+(* lowestK is permutation-invariant in its argument (a pure multiset op). *)
+Lemma lowestK_perm : forall k a b,
+  Permutation a b -> lowestK k a = lowestK k b.
+Proof.
+  intros k a b H. unfold lowestK. f_equal. apply rb_event_sort_perm_eq. exact H.
+Qed.
+
+(* Idempotence of normalization: lowestK k (lowestK k l) = lowestK k l. *)
+Lemma lowestK_idem : forall k l, lowestK k (lowestK k l) = lowestK k l.
+Proof.
+  intros k l. unfold lowestK.
+  (* firstn k (sort (firstn k (sort l))) ; use absorption with rest = []. *)
+  pose proof (lowK_absorb k l []) as H.
+  rewrite app_nil_r in H. rewrite app_nil_r in H. exact H.
+Qed.
+
+(* Absorption restated at the lowestK level: pre-truncating the left operand
+   of a union does not change the lowest-k of the union. *)
+Lemma lowestK_absorb : forall k l rest,
+  lowestK k (lowestK k l ++ rest) = lowestK k (l ++ rest).
+Proof.
+  intros k l rest. unfold lowestK. apply lowK_absorb.
+Qed.
+
+(* Commutativity (literal equality via permutation-invariance + app comm). *)
+Theorem lowK_merge_comm : forall k a b,
+  lowK_merge k a b = lowK_merge k b a.
+Proof.
+  intros k a b. unfold lowK_merge. apply lowestK_perm. apply Permutation_app_comm.
+Qed.
+
+(* Left identity on canonical forms: [] is the unit. *)
+Theorem lowK_merge_id_l : forall k l,
+  lowK_merge k [] (lowK_nf k l) = lowK_nf k l.
+Proof.
+  intros k l. unfold lowK_merge, lowK_nf. simpl. apply lowestK_idem.
+Qed.
+
+Theorem lowK_merge_id_r : forall k l,
+  lowK_merge k (lowK_nf k l) [] = lowK_nf k l.
+Proof.
+  intros k l. rewrite lowK_merge_comm. apply lowK_merge_id_l.
+Qed.
+
+(* The empty list is itself normal (a fixpoint of normalization). *)
+Lemma lowK_nf_nil : forall k, lowK_nf k [] = [].
+Proof.
+  intro k. unfold lowK_nf, lowestK.
+  (* sort [] = [] *)
+  assert (rb_event_sort [] = []).
+  { apply Permutation_nil. apply Permutation_sym. apply rb_event_sort_permuted. }
+  rewrite H. rewrite firstn_nil. reflexivity.
+Qed.
+
+(* Associativity — the bounded-K law.  Folding two truncations and re-merging
+   equals merging the full union and truncating once: this is what lets the
+   runtime keep only a bounded lowest-K window per merge. *)
+Theorem lowK_merge_assoc : forall k a b c,
+  lowK_merge k (lowK_merge k a b) c = lowK_merge k a (lowK_merge k b c).
+Proof.
+  intros k a b c. unfold lowK_merge.
+  (* LHS = lowestK k (lowestK k (a++b) ++ c) = lowestK k ((a++b) ++ c). *)
+  rewrite (lowestK_absorb k (a ++ b) c).
+  (* RHS = lowestK k (a ++ lowestK k (b++c)).  Commute the union so the
+     truncated operand is on the LEFT, then absorb. *)
+  rewrite (lowestK_perm k (a ++ lowestK k (b ++ c))
+                          (lowestK k (b ++ c) ++ a))
+    by apply Permutation_app_comm.
+  rewrite (lowestK_absorb k (b ++ c) a).
+  (* Now: lowestK k ((a++b)++c) = lowestK k ((b++c)++a). *)
+  apply lowestK_perm.
+  rewrite <- !app_assoc.
+  apply Permutation_trans with (l' := (b ++ c) ++ a).
+  - apply Permutation_app_comm.
+  - rewrite <- app_assoc. apply Permutation_refl.
+Qed.
+
+(* ══════════════════════════════════════════════════════════════════════════
+   Bounded-K equivalence of the cost walk
+   ══════════════════════════════════════════════════════════════════════════
+
+   The Rust `reconcile` (accounting/mod.rs:455) sorts the attempt log by the
+   canonical Ord, truncates to MAX_COST_TRACE_EVENTS, then walks committing
+   events until the cumulative weight would exceed `initial` (the OOP
+   boundary). With every billable weight >= 1, the walk can commit at most
+   `initial` events before stopping, so it inspects at most `initial + 1`
+   events. Hence the walk reads only the lowest `min(MAX, initial+1)` events.
+
+   MAX_COST_TRACE_EVENTS = 1_048_576 in accounting/mod.rs:27. Its concrete
+   value is irrelevant to these proofs — only that the walk window is
+   min(MAX, initial+1). *)
+Definition MAX_COST_TRACE_EVENTS : nat := Nat.pow 2 20.  (* = 1_048_576 *)
+
+Definition rb_bounded_K (initial : nat) : nat :=
+  Nat.min MAX_COST_TRACE_EVENTS (initial + 1).
+
+(* Every weight >= 1 transfers across the canonical sort (it is a
+   permutation). *)
+Lemma rb_event_positive_sort : forall events,
+  Forall rb_event_positive events ->
+  Forall rb_event_positive (rb_event_sort events).
+Proof.
+  intros events H. rewrite Forall_forall in *.
+  intros x Hx. apply H.
+  apply Permutation_in with (l := rb_event_sort events).
+  - apply Permutation_sym. apply rb_event_sort_permuted.
+  - exact Hx.
+Qed.
+
+(* PREFIX-STABILITY: with all weights >= 1, walking the full list and walking
+   any prefix of length >= (initial - consumed + 1) produce the SAME result
+   (both final state and the results list). The walk simply never looks past
+   that many events: each committed event consumes >= 1, so after at most
+   (initial - consumed) commits the budget is exhausted and the next event
+   (the (initial - consumed + 1)-th inspected) is the OOP boundary — or the
+   list ends first. *)
+Lemma rb_reserve_many_prefix_stable : forall L b n,
+  Forall rb_event_positive L ->
+  rb_valid b ->
+  rb_unmetered b = false ->
+  rb_initial b - rb_consumed b + 1 <= n ->
+  rb_reserve_many b L = rb_reserve_many b (firstn n L).
+Proof.
+  induction L as [| e rest IH]; intros b n Hpos Hvalid Hunmet Hn.
+  - (* L = [] : firstn n [] = []. *)
+    rewrite firstn_nil. reflexivity.
+  - (* L = e :: rest.  n >= initial - consumed + 1 >= 1, so n = S n'. *)
+    destruct n as [| n'].
+    + (* n = 0 contradicts initial - consumed + 1 <= 0. *)
+      lia.
+    + simpl firstn. simpl rb_reserve_many.
+      inversion Hpos as [| ? ? Hpe Hprest]; subst.
+      destruct (rb_reserve b e) as [b1 r] eqn:Hreserve.
+      destruct r.
+      * (* RbReserveOk: e committed; consumed advances by weight e >= 1. *)
+        pose proof (rb_reserve_ok_advances_consumed b e b1 Hunmet Hreserve)
+          as [Hcons1 [Hinit1 Hunmet1]].
+        pose proof (rb_reserve_preserves_valid b e b1 RbReserveOk Hvalid Hreserve)
+          as Hvalid1.
+        (* The Ok branch means e fit: consumed b + weight e <= initial b. *)
+        assert (Hfit : ~ (rb_initial b < rb_consumed b + rb_event_weight e)).
+        { pose proof (rb_reserve_oop_iff_would_overflow b e b1 RbReserveOk
+                        Hunmet Hreserve) as [_ Hov_to_oop].
+          intro Hov. specialize (Hov_to_oop Hov). discriminate. }
+        (* recurse on rest with b1, n'; need initial(b1)-consumed(b1)+1 <= n' *)
+        assert (Hside : rb_initial b1 - rb_consumed b1 + 1 <= n').
+        { unfold rb_event_positive in Hpe. rewrite Hinit1, Hcons1. lia. }
+        rewrite (IH b1 n' Hprest Hvalid1 Hunmet1 Hside).
+        reflexivity.
+      * (* RbReserveOop: walk stops immediately; reserve only inspected e. *)
+        reflexivity.
+Qed.
+
+(* lowestK at the bounded-K window equals the bounded-K prefix of the full
+   sorted-then-truncated (to MAX) multiset that the Rust walk consumes. *)
+Lemma rb_bounded_K_le_max : forall initial,
+  rb_bounded_K initial <= MAX_COST_TRACE_EVENTS.
+Proof. intro initial. unfold rb_bounded_K. apply Nat.le_min_l. Qed.
+
+Lemma lowestK_bounded_K_is_prefix_of_truncated : forall initial events,
+  lowestK (rb_bounded_K initial) events
+  = firstn (rb_bounded_K initial)
+           (firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
+Proof.
+  intros initial events. unfold lowestK.
+  rewrite firstn_firstn.
+  rewrite (Nat.min_l (rb_bounded_K initial) MAX_COST_TRACE_EVENTS
+             (rb_bounded_K_le_max initial)).
+  reflexivity.
+Qed.
+
+(* The full sorted-then-truncated multiset the runtime walks. *)
+Definition rb_sort_truncate (events : list rb_event) : list rb_event :=
+  firstn MAX_COST_TRACE_EVENTS (rb_event_sort events).
+
+(* ── DELIVERABLE 1 (headline): the cost walk's full output — final state
+   (committed event_log, consumed, last_oop) AND the per-event results list —
+   over the bounded lowest-K fold equals the output over the full
+   sorted-then-truncated multiset.  Weights >= 1 and consumed starts at 0
+   (a fresh per-deploy budget), so the walk inspects <= initial + 1 events
+   and never looks past the lowest min(MAX, initial+1). *)
+Theorem rb_reconcile_bounded_K_eq_sort_truncate : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b ->
+  rb_unmetered b = false ->
+  rb_consumed b = 0 ->
+  rb_reserve_many b (lowestK (rb_bounded_K (rb_initial b)) events)
+  = rb_reserve_many b (rb_sort_truncate events).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  unfold rb_sort_truncate.
+  rewrite (lowestK_bounded_K_is_prefix_of_truncated (rb_initial b) events).
+  set (S := firstn MAX_COST_TRACE_EVENTS (rb_event_sort events)).
+  (* All weights in S are >= 1 (S is a sublist of the sorted positives). *)
+  assert (HposS : Forall rb_event_positive S).
+  { unfold S. apply Forall_firstn. apply rb_event_positive_sort. exact Hpos. }
+  (* Case on whether the bounded window reaches the prefix-stability bound. *)
+  destruct (Nat.le_gt_cases (rb_initial b + 1) MAX_COST_TRACE_EVENTS) as [Hle | Hgt].
+  - (* initial + 1 <= MAX: bounded_K = initial + 1 >= initial - consumed + 1. *)
+    assert (HbK : rb_bounded_K (rb_initial b) = rb_initial b + 1).
+    { unfold rb_bounded_K. rewrite Nat.min_r by lia. reflexivity. }
+    rewrite HbK.
+    symmetry.
+    apply rb_reserve_many_prefix_stable.
+    + exact HposS.
+    + exact Hvalid.
+    + exact Hunmet.
+    + rewrite Hcons0. lia.
+  - (* MAX < initial + 1: bounded_K = MAX, and length S <= MAX so the prefix
+       is all of S — both sides walk S. *)
+    assert (HbK : rb_bounded_K (rb_initial b) = MAX_COST_TRACE_EVENTS).
+    { unfold rb_bounded_K. rewrite Nat.min_l by lia. reflexivity. }
+    rewrite HbK.
+    assert (HlenS : length S <= MAX_COST_TRACE_EVENTS).
+    { unfold S. rewrite length_firstn. lia. }
+    assert (Hsafe : firstn MAX_COST_TRACE_EVENTS S = S)
+      by (apply firstn_all2; exact HlenS).
+    rewrite Hsafe.
+    reflexivity.
+Qed.
+
+(* Explicit corollaries: each observable the runtime reads off `reconcile`
+   (final state — hence committed event_log, consumed, last_oop — and the
+   OOP-count from the results list) is identical between the bounded-K fold
+   and the full sorted-then-truncated walk. *)
+Corollary rb_reconcile_bounded_K_state_eq : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b -> rb_unmetered b = false -> rb_consumed b = 0 ->
+  rb_reconcile b (lowestK (rb_bounded_K (rb_initial b)) events)
+  = rb_reconcile b (rb_sort_truncate events).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  unfold rb_reconcile.
+  rewrite (rb_reconcile_bounded_K_eq_sort_truncate b events
+             Hpos Hvalid Hunmet Hcons0).
+  reflexivity.
+Qed.
+
+Corollary rb_reconcile_bounded_K_consumed_eq : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b -> rb_unmetered b = false -> rb_consumed b = 0 ->
+  rb_consumed (rb_reconcile b (lowestK (rb_bounded_K (rb_initial b)) events))
+  = rb_consumed (rb_reconcile b (rb_sort_truncate events)).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  rewrite (rb_reconcile_bounded_K_state_eq b events Hpos Hvalid Hunmet Hcons0).
+  reflexivity.
+Qed.
+
+Corollary rb_reconcile_bounded_K_committed_eq : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b -> rb_unmetered b = false -> rb_consumed b = 0 ->
+  rb_event_log (rb_reconcile b (lowestK (rb_bounded_K (rb_initial b)) events))
+  = rb_event_log (rb_reconcile b (rb_sort_truncate events)).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  rewrite (rb_reconcile_bounded_K_state_eq b events Hpos Hvalid Hunmet Hcons0).
+  reflexivity.
+Qed.
+
+Corollary rb_reconcile_bounded_K_oop_eq : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b -> rb_unmetered b = false -> rb_consumed b = 0 ->
+  rb_last_oop (rb_reconcile b (lowestK (rb_bounded_K (rb_initial b)) events))
+  = rb_last_oop (rb_reconcile b (rb_sort_truncate events)).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  rewrite (rb_reconcile_bounded_K_state_eq b events Hpos Hvalid Hunmet Hcons0).
+  reflexivity.
+Qed.
+
+(* OOP occurrence (the results list's OOP count) is also identical. *)
+Corollary rb_reconcile_bounded_K_oop_count_eq : forall b events,
+  Forall rb_event_positive events ->
+  rb_valid b -> rb_unmetered b = false -> rb_consumed b = 0 ->
+  rb_oop_count (snd (rb_reserve_many b (lowestK (rb_bounded_K (rb_initial b)) events)))
+  = rb_oop_count (snd (rb_reserve_many b (rb_sort_truncate events))).
+Proof.
+  intros b events Hpos Hvalid Hunmet Hcons0.
+  rewrite (rb_reconcile_bounded_K_eq_sort_truncate b events
+             Hpos Hvalid Hunmet Hcons0).
+  reflexivity.
+Qed.
+
+(* ══════════════════════════════════════════════════════════════════════════
+   DELIVERABLE 2: total_cost schedule-independence
+   ══════════════════════════════════════════════════════════════════════════
+
+   After the per-operation cost-trace digest is dropped from consensus, the
+   only cost quantity that remains consensus-binding is `total_cost`, i.e.
+   `rb_reconcile(events).consumed` (clamped on OOP). These theorems show that
+   value is (a) a pure function of (initial, weight-multiset) — hence
+   invariant under any schedule/permutation of the recorded events — and
+   (b) exactly the clamped sum: min(initial, Σ weights), with OOP firing iff
+   Σ > initial.  They package the existing reconcile lemmas
+   (rb_reconcile_consumed_eq_min_initial_or_sum,
+    rb_reconcile_consumed_invariant_under_permutation,
+    rb_reconcile_oop_iff_sum_overflows) at the headline `total_cost` level. *)
+
+(* total_cost (consumed) from a fresh per-deploy budget = min(initial, sum). *)
+Theorem rb_total_cost_eq_min_initial_sum : forall initial events,
+  rb_consumed (rb_reconcile (rb_new initial) events)
+  = Nat.min initial (rb_event_weight_sum events).
+Proof.
+  intros initial events. unfold rb_reconcile.
+  destruct (rb_reserve_many (rb_new initial) events) as [b' results] eqn:Hmany.
+  simpl fst.
+  pose proof (rb_reconcile_consumed_eq_min_initial_or_sum
+                events (rb_new initial) b' results
+                (rb_new_valid initial) eq_refl Hmany) as Heq.
+  (* rb_new: initial = initial, consumed = 0 *)
+  simpl in Heq. try rewrite Nat.add_0_l in Heq. exact Heq.
+Qed.
+
+(* Schedule-independence: any permutation of the recorded events yields the
+   same total_cost. *)
+Theorem rb_total_cost_schedule_independent : forall initial events1 events2,
+  Permutation events1 events2 ->
+  rb_consumed (rb_reconcile (rb_new initial) events1)
+  = rb_consumed (rb_reconcile (rb_new initial) events2).
+Proof.
+  intros initial events1 events2 Hperm.
+  rewrite (rb_total_cost_eq_min_initial_sum initial events1).
+  rewrite (rb_total_cost_eq_min_initial_sum initial events2).
+  rewrite (rb_event_weight_sum_permutation_invariant events1 events2 Hperm).
+  reflexivity.
+Qed.
+
+(* The clamped characterization: when the recorded weight sum exceeds the
+   budget the walk OOPs and total_cost clamps to `initial`; otherwise it
+   completes and total_cost is exactly the sum. *)
+Theorem rb_total_cost_clamped_characterization : forall initial events b' results,
+  rb_reserve_many (rb_new initial) events = (b', results) ->
+  (initial < rb_event_weight_sum events ->
+     rb_consumed b' = initial /\ rb_oop_count results = 1)
+  /\ (rb_event_weight_sum events <= initial ->
+     rb_consumed b' = rb_event_weight_sum events /\ rb_oop_count results = 0).
+Proof.
+  intros initial events b' results Hmany.
+  pose proof (rb_reconcile_consumed_eq_min_initial_or_sum
+                events (rb_new initial) b' results
+                (rb_new_valid initial) eq_refl Hmany) as Hcons.
+  simpl in Hcons. try rewrite Nat.add_0_l in Hcons.
+  pose proof (rb_reconcile_oop_iff_sum_overflows
+                events (rb_new initial) b' results
+                (rb_new_valid initial) eq_refl Hmany) as Hoop.
+  simpl in Hoop. try rewrite Nat.add_0_l in Hoop.
+  pose proof (rb_reserve_many_oop_count_le_one events (rb_new initial) b' results Hmany)
+    as Hle1.
+  split.
+  - (* sum > initial: clamp + OOP *)
+    intros Hgt. split.
+    + rewrite Hcons. apply Nat.min_l. lia.
+    + apply Hoop. exact Hgt.
+  - (* sum <= initial: complete, no OOP *)
+    intros Hle. split.
+    + rewrite Hcons. apply Nat.min_r. exact Hle.
+    + (* OOP count must be 0: if it were 1, Hoop gives initial < sum, contra *)
+      destruct (Nat.eq_dec (rb_oop_count results) 1) as [H1 | Hne].
+      * apply Hoop in H1. lia.
+      * lia.
+Qed.
+
+(* Headline schedule-independent total_cost characterization from a fresh
+   budget, combining permutation-invariance with the clamped formula and
+   OOP verdict — the consensus cost quantity that survives dropping the
+   per-operation digest. *)
+Theorem rb_total_cost_schedule_independent_and_clamped :
+  forall initial events1 events2 b1 r1,
+  Permutation events1 events2 ->
+  rb_reserve_many (rb_new initial) events1 = (b1, r1) ->
+  (* total_cost is permutation-invariant ... *)
+  (forall b2 r2, rb_reserve_many (rb_new initial) events2 = (b2, r2) ->
+      rb_consumed b1 = rb_consumed b2)
+  (* ... and equals the clamped sum, with OOP iff the sum overflows. *)
+  /\ rb_consumed b1 = Nat.min initial (rb_event_weight_sum events1)
+  /\ (rb_oop_count r1 = 1 <-> initial < rb_event_weight_sum events1).
+Proof.
+  intros initial events1 events2 b1 r1 Hperm Hmany1.
+  split; [| split].
+  - intros b2 r2 Hmany2.
+    apply (rb_reconcile_consumed_invariant_under_permutation
+             events1 events2 (rb_new initial) b1 b2 r1 r2
+             (rb_new_valid initial) eq_refl Hperm Hmany1 Hmany2).
+  - pose proof (rb_reconcile_consumed_eq_min_initial_or_sum
+                  events1 (rb_new initial) b1 r1
+                  (rb_new_valid initial) eq_refl Hmany1) as Hcons.
+    simpl in Hcons. try rewrite Nat.add_0_l in Hcons. exact Hcons.
+  - pose proof (rb_reconcile_oop_iff_sum_overflows
+                  events1 (rb_new initial) b1 r1
+                  (rb_new_valid initial) eq_refl Hmany1) as Hoop.
+    simpl in Hoop. try rewrite Nat.add_0_l in Hoop. exact Hoop.
 Qed.

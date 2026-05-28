@@ -267,8 +267,13 @@ message ProcessedDeployProto {
     repeated EventProto deployLog = 3; //the new terms and comm. rule reductions from this deploy
     bool errored                  = 5; //true if deploy encountered a user error
     string systemDeployError      = 6;
-    bytes costTraceDigest         = 7; //canonical digest of cost-accounting source-token events
-    uint64 costTraceEventCount    = 8; //successful billable events plus optional OOP boundary
+    // Fields 7-8 (costTraceDigest, costTraceEventCount) were removed: the
+    // per-operation cost trace is diagnostic-only and is NOT a consensus
+    // quantity. Consensus cost integrity is the conserved total `cost`
+    // (field 2) plus `errored` status plus the post-state hash. The trace
+    // itself remains available at runtime via RuntimeBudget diagnostics.
+    reserved 7, 8;
+    reserved "costTraceDigest", "costTraceEventCount";
 }
 
 message SlashSystemDeployDataProto {

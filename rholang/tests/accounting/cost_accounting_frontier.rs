@@ -678,10 +678,7 @@ fn embedded_generated_fixtures() -> Vec<GeneratedFixture> {
                 "refund": 6,
                 "authority": "casper"
             }),
-            replay_mutations: vec![
-                "cost_trace_digest".to_string(),
-                "cost_trace_event_count".to_string(),
-            ],
+            replay_mutations: Vec::new(),
             coverage_features: vec![
                 "stateful".to_string(),
                 "production_path".to_string(),
@@ -1080,15 +1077,6 @@ fn generated_frontier_differential_fixtures_hold() {
                     .iter()
                     .any(|feature| feature == "attack_campaign"),
             "fixture {} campaign must be reflected in coverage features",
-            fixture.id
-        );
-        assert!(
-            fixture.replay_mutations.is_empty()
-                || fixture
-                    .replay_mutations
-                    .iter()
-                    .any(|field| field == "cost_trace_digest" || field == "cost_trace_event_count"),
-            "fixture {} replay mutation must touch authenticated cost trace fields",
             fixture.id
         );
         let has_source_seed = !fixture.source_seed.is_null()
@@ -1587,10 +1575,6 @@ fn assert_v12_legacy_oracle(fixture: &GeneratedFixture) {
     assert_eq!(fixture.source_surface_status, "absent");
     assert_eq!(fixture.source_line, 0);
     assert_eq!(fixture.expected_disposition, "source_absent");
-    assert!(fixture
-        .replay_mutations
-        .iter()
-        .any(|field| field == "cost_trace_present"));
 }
 
 fn run_v12_native_oracle(fixture: &GeneratedFixture) {
@@ -1656,20 +1640,6 @@ fn assert_v13_source_semantic_metadata(fixture: &GeneratedFixture) {
 
 fn assert_v13_runtime_metering_parallel_oracle(fixture: &GeneratedFixture) {
     match fixture.semantic_oracle.as_str() {
-        "runtime_to_replay_trace_commitment" => {
-            let digest = trace_digest_with_budget(&fixture.events, fixture.initial_budget)
-                .expect("v13 runtime-to-replay accepted trace");
-            assert_eq!(fixture.expected_event_count, fixture.events.len() as u64);
-            assert_ne!(format!("{digest:?}"), "");
-            assert!(fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field == "cost_trace_digest"));
-            assert!(fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field == "cost_trace_event_count"));
-        }
         "runtime_to_settlement_fuel_isolation" => {
             let budget = RuntimeBudget::new(Cost::create(
                 fixture.initial_budget,
@@ -1721,13 +1691,7 @@ fn assert_v13_runtime_metering_parallel_oracle(fixture: &GeneratedFixture) {
 fn assert_v13_casper_settlement_slashing_oracle(fixture: &GeneratedFixture) {
     match fixture.semantic_oracle.as_str() {
         "replay_to_slashing_authentication" => {
-            for field in [
-                "slash_fields",
-                "cost_trace_digest",
-                "cost_trace_event_count",
-                "block_hash",
-                "signature",
-            ] {
+            for field in ["slash_fields", "block_hash", "signature"] {
                 assert!(
                     fixture
                         .replay_mutations
@@ -1752,10 +1716,6 @@ fn assert_v13_casper_settlement_slashing_oracle(fixture: &GeneratedFixture) {
                 .source_facets
                 .iter()
                 .any(|facet| facet == "legacy_quarantine"));
-            assert!(fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field == "cost_trace_present"));
         }
         other => panic!(
             "fixture {} has unsupported V13 Casper/slashing oracle {}",
@@ -1767,9 +1727,7 @@ fn assert_v13_casper_settlement_slashing_oracle(fixture: &GeneratedFixture) {
 fn run_v13_source_semantic_oracle(fixture: &GeneratedFixture) {
     assert_v13_source_semantic_metadata(fixture);
     match fixture.semantic_oracle.as_str() {
-        "runtime_to_replay_trace_commitment"
-        | "runtime_to_settlement_fuel_isolation"
-        | "metering_to_parallel_digest_stability" => {
+        "runtime_to_settlement_fuel_isolation" | "metering_to_parallel_digest_stability" => {
             assert_v13_runtime_metering_parallel_oracle(fixture)
         }
         "replay_to_slashing_authentication" | "legacy_to_runtime_quarantine" => {
@@ -1848,54 +1806,6 @@ fn assert_v14_source_graph_metadata(fixture: &GeneratedFixture) {
         assert_eq!(fixture.cost_surface, "dependency_advisory");
         assert!(fixture.dependency_advisory_id.starts_with("RUSTSEC-"));
         assert_eq!(fixture.classification, "needs_source_audit");
-    }
-}
-
-fn assert_v14_runtime_or_replay_oracle(fixture: &GeneratedFixture) {
-    match fixture.security_surface.as_str() {
-        "api_to_runtime_replay" => {
-            let digest = trace_digest_with_budget(&fixture.events, fixture.initial_budget)
-                .expect("v14 api runtime trace");
-            assert_eq!(fixture.expected_event_count, fixture.events.len() as u64);
-            assert_ne!(format!("{digest:?}"), "");
-            for field in [
-                "api_ingress",
-                "cost_trace_digest",
-                "cost_trace_event_count",
-                "replay_payload_hash",
-            ] {
-                assert!(
-                    fixture
-                        .replay_mutations
-                        .iter()
-                        .any(|mutation| mutation == field),
-                    "fixture {} must carry mutation axis {}",
-                    fixture.id,
-                    field
-                );
-            }
-        }
-        "replay_cache_payload_binding" => {
-            let digest = trace_digest_with_budget(&fixture.events, fixture.initial_budget)
-                .expect("v14 replay cache trace");
-            assert_eq!(fixture.expected_event_count, fixture.events.len() as u64);
-            assert_ne!(format!("{digest:?}"), "");
-            for field in ["replay_cache", "payload_hash", "cost_trace_digest"] {
-                assert!(
-                    fixture
-                        .replay_mutations
-                        .iter()
-                        .any(|mutation| mutation == field),
-                    "fixture {} must carry replay/cache mutation axis {}",
-                    fixture.id,
-                    field
-                );
-            }
-        }
-        other => panic!(
-            "fixture {} has unsupported V14 runtime/replay surface {}",
-            fixture.id, other
-        ),
     }
 }
 
@@ -2060,9 +1970,6 @@ fn assert_v14_node_security_oracle(fixture: &GeneratedFixture) {
 fn run_v14_source_graph_oracle(fixture: &GeneratedFixture) {
     assert_v14_source_graph_metadata(fixture);
     match fixture.security_surface.as_str() {
-        "api_to_runtime_replay" | "replay_cache_payload_binding" => {
-            assert_v14_runtime_or_replay_oracle(fixture)
-        }
         "slashing_authorization" => assert_v14_slashing_oracle(fixture),
         "typed_mergeable_channel" => assert_v14_mergeable_channel_oracle(fixture),
         "transport_tls" | "crypto_key_material" | "dependency_advisory" => {
@@ -2096,10 +2003,6 @@ fn generated_frontier_property_fixtures_hold() {
 fn generated_frontier_negative_auth_fixtures_hold() {
     let fixtures = replay_matching_fixtures("negative auth", |fixture| {
         has_feature(fixture, "negative_auth")
-            || fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field.contains("cost_trace"))
     });
     assert!(fixtures
         .iter()
@@ -2174,10 +2077,6 @@ fn generated_frontier_state_root_fixtures_hold() {
 fn generated_frontier_auth_composition_fixtures_hold() {
     replay_matching_fixtures("auth composition", |fixture| {
         has_feature(fixture, "negative_auth")
-            || fixture
-                .replay_mutations
-                .iter()
-                .any(|field| field == "cost_trace_digest")
     });
 }
 
@@ -2290,7 +2189,9 @@ fn generated_frontier_runtime_trace_interleaving_properties_hold() {
 }
 
 #[test]
-fn generated_frontier_v9_coverage_adequacy_holds() { generated_frontier_coverage_adequacy_holds(); }
+fn generated_frontier_v9_coverage_adequacy_holds() {
+    generated_frontier_coverage_adequacy_holds();
+}
 
 #[test]
 fn generated_frontier_v10_fuzz_seed_fixtures_hold() {
@@ -2610,9 +2511,6 @@ fn generated_frontier_v13_source_semantic_oracles_hold() {
     let fixtures = replay_matching_fixtures("v13 source semantic", is_v13_source_semantic_oracle);
     assert!(fixtures
         .iter()
-        .any(|fixture| fixture.semantic_oracle == "runtime_to_replay_trace_commitment"));
-    assert!(fixtures
-        .iter()
         .any(|fixture| fixture.semantic_oracle == "replay_to_slashing_authentication"));
     for fixture in &fixtures {
         run_v13_source_semantic_oracle(fixture);
@@ -2624,13 +2522,10 @@ fn generated_frontier_v13_runtime_metering_parallel_oracles_hold() {
     let fixtures = replay_matching_fixtures("v13 runtime metering parallel", |fixture| {
         matches!(
             fixture.semantic_oracle.as_str(),
-            "runtime_to_replay_trace_commitment"
-                | "runtime_to_settlement_fuel_isolation"
-                | "metering_to_parallel_digest_stability"
+            "runtime_to_settlement_fuel_isolation" | "metering_to_parallel_digest_stability"
         )
     });
     for semantic_oracle in [
-        "runtime_to_replay_trace_commitment",
         "runtime_to_settlement_fuel_isolation",
         "metering_to_parallel_digest_stability",
     ] {
@@ -2683,7 +2578,6 @@ fn generated_frontier_v13_coverage_adequacy_holds() {
         "v13 source-semantic fixtures must be embedded"
     );
     for semantic_oracle in [
-        "runtime_to_replay_trace_commitment",
         "runtime_to_settlement_fuel_isolation",
         "metering_to_parallel_digest_stability",
         "replay_to_slashing_authentication",
@@ -2726,28 +2620,6 @@ fn generated_frontier_v13_coverage_adequacy_holds() {
             fixtures.iter().any(|fixture| has_feature(fixture, feature)),
             "v13 frontier corpus must cover {feature}"
         );
-    }
-}
-
-#[test]
-fn generated_frontier_v14_source_graph_oracles_hold() {
-    let fixtures = replay_matching_fixtures("v14 source graph security", |fixture| {
-        matches!(
-            fixture.security_surface.as_str(),
-            "api_to_runtime_replay" | "replay_cache_payload_binding"
-        )
-    });
-    for surface in ["api_to_runtime_replay", "replay_cache_payload_binding"] {
-        assert!(
-            fixtures
-                .iter()
-                .any(|fixture| fixture.security_surface == surface),
-            "v14 frontier corpus must cover security surface {surface}"
-        );
-    }
-    for fixture in &fixtures {
-        assert_v14_source_graph_metadata(fixture);
-        assert_v14_runtime_or_replay_oracle(fixture);
     }
 }
 
@@ -2822,8 +2694,6 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         "v14 source-graph fixtures must be embedded"
     );
     for surface in [
-        "api_to_runtime_replay",
-        "replay_cache_payload_binding",
         "slashing_authorization",
         "typed_mergeable_channel",
         "transport_tls",
@@ -2838,8 +2708,6 @@ fn generated_frontier_v14_coverage_adequacy_holds() {
         );
     }
     for cost_surface in [
-        "runtime_budget",
-        "replay_cache",
         "slashing",
         "mergeable_channels",
         "transport_tls",

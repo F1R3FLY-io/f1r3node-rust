@@ -33,19 +33,28 @@ pub struct MeteredMachine {
     pending: Arc<Mutex<VecDeque<MeteredFrame>>>,
     source_path: SourcePath,
     next_local_index: Arc<AtomicU64>,
+    /// Deploy id cached by value (`[u8;32]`, constant during a deploy — the
+    /// signature is installed before evaluation begins). Read once per fork in
+    /// [`MeteredMachine::child`] so the per-charge hot path never locks the
+    /// budget's `deploy_id` Mutex.
+    deploy_id: [u8; 32],
 }
 
 impl MeteredMachine {
     pub fn new(budget: RuntimeBudget) -> Self {
+        let deploy_id = budget.deploy_id();
         Self {
             budget,
             pending: Arc::new(Mutex::new(VecDeque::new())),
             source_path: SourcePath(Vec::new()),
             next_local_index: Arc::new(AtomicU64::new(0)),
+            deploy_id,
         }
     }
 
-    pub fn budget(&self) -> RuntimeBudget { self.budget.clone() }
+    pub fn budget(&self) -> RuntimeBudget {
+        self.budget.clone()
+    }
 
     pub fn child(&self, component: u32) -> Self {
         let mut source_path = self.source_path.0.clone();
@@ -55,6 +64,9 @@ impl MeteredMachine {
             pending: self.pending.clone(),
             source_path: SourcePath(source_path),
             next_local_index: Arc::new(AtomicU64::new(0)),
+            // Re-read the deploy id once per fork (constant during eval), so
+            // the per-charge path uses the cached value instead of a Mutex.
+            deploy_id: self.budget.deploy_id(),
         }
     }
 
@@ -87,12 +99,16 @@ impl MeteredMachine {
     }
 
     fn reserve_cost(&self, kind: BillableKind, amount: Cost) -> Result<(), InterpreterError> {
-        // The formal specification presents metering as a recursive reflection
-        // relation. Runtime evaluation uses an explicit frame queue instead:
-        // each live charge uses a local frame queue, the frame is drained in
-        // canonical key order, and the budget reservation is a single atomic CAS.
-        // Keeping live queues local preserves error ownership when independent
-        // evaluator branches race only on token reservation.
+        // Live (production) charging path. Each charge records exactly one
+        // attempt, lock-free, into the budget's `SegQueue` via
+        // `reserve_canonical_with_cost` (→ `attempt_one`), then consults the
+        // liveness gate. There is no shared Mutex on the hot path — concurrent
+        // forks never contend on a frame queue. The consensus `total_cost` is
+        // derived at finalization from the recorded attempt multiset by the
+        // canonical reconciliation, independent of which fork recorded when.
+        // (The `MeteredFrame`/`pending` queue below is retained only as test
+        // and gate-protocol infrastructure; the production charge path bypasses
+        // it entirely.)
         if amount.value <= 0 {
             return Err(InterpreterError::BugFoundError(format!(
                 "Billable metering cost must be positive for {}",
@@ -103,7 +119,7 @@ impl MeteredMachine {
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
         let source_path = self.event_source_path(local_index);
         let event = BillableTokenEvent {
-            deploy_id: self.budget.deploy_id(),
+            deploy_id: self.deploy_id,
             source_path,
             redex_id: RedexId(local_index),
             local_index,
@@ -111,7 +127,7 @@ impl MeteredMachine {
             weight: amount.value as u64,
         };
 
-        self.drain_frames(vec![MeteredFrame::BillableCost { event, amount }])
+        self.budget.reserve_canonical_with_cost(event, amount)
     }
 
     pub fn enqueue_billable(
@@ -122,7 +138,7 @@ impl MeteredMachine {
     ) -> ContinuationKey {
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
         let event = BillableTokenEvent {
-            deploy_id: self.budget.deploy_id(),
+            deploy_id: self.deploy_id,
             source_path: source_path.clone(),
             redex_id: RedexId(local_index),
             local_index,
@@ -180,17 +196,16 @@ impl MeteredMachine {
         }
 
         billable.sort_by(|(left, _), (right, _)| left.cmp(right));
+        // Record the batch lock-free; `commit_canonical_batch` routes each
+        // event through `attempt_one`, which pushes into the budget's SegQueue.
+        // (Frame-path callers are test/gate-protocol infrastructure; the live
+        // production charge path bypasses this via `reserve_canonical_with_cost`.)
         let commit = self.budget.commit_canonical_batch(CostReservationBatch {
             events: billable
                 .iter()
                 .map(|(event, _)| event.clone())
                 .collect::<Vec<_>>(),
         })?;
-        for (_, amount) in billable.iter().take(commit.permits.len()) {
-            if let Some(amount) = amount {
-                self.budget.append_cost_log(amount.clone());
-            }
-        }
         if commit.oop.is_some() {
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
@@ -241,7 +256,7 @@ mod tests {
         machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Substitution, 2);
         machine.drain_canonical().unwrap();
 
-        let event_log = budget.get_event_log();
+        let event_log = budget.get_canonical_event_log();
         assert_eq!(event_log.len(), 2);
         assert_eq!(event_log[0].source_path, SourcePath(vec![1]));
         assert_eq!(event_log[1].source_path, SourcePath(vec![2]));
@@ -249,19 +264,16 @@ mod tests {
     }
 
     #[test]
-    fn live_reserve_does_not_drain_shared_pending_batch_queue() {
+    fn live_reserve_records_lock_free_without_frame_queue() {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        machine.enqueue_billable(SourcePath(vec![0]), BillableKind::SourceStep, 2);
-
-        assert!(machine
-            .reserve_source_step(Cost::create(1, "live branch"))
-            .is_ok());
-        assert_eq!(
-            machine.drain_canonical(),
-            Err(InterpreterError::OutOfPhlogistonsError)
-        );
+        // A live charge that exceeds the budget is rejected by the liveness
+        // gate, and the canonical reconciliation clamps the consumed cost.
+        machine
+            .child(0)
+            .reserve_source_step(Cost::create(2, "over budget"))
+            .ok();
         assert_eq!(budget.total_cost().value, 1);
     }
 

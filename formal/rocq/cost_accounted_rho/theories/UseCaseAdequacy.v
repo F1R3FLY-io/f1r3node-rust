@@ -633,6 +633,24 @@ Proof.
   - exact rb_cost_trace_change_detected.
 Qed.
 
+(* ───────────────────────────────────────────────────────────────────────────
+   TM-CA-151 — DIAGNOSTIC-REFINEMENT LEVEL (NOT the production consensus surface).
+   The theorems uc_ca_033 (cost-trace clauses), uc_ca_037, uc_ca_039, uc_ca_040,
+   uc_ca_046, uc_ca_047, uc_ca_048, uc_ca_049, uc_ca_054 below are stated over the
+   *digest-inclusive* replay-payload model (rb_full_replay_payload / rb_cost_trace_*
+   / rb_block_auth_payload / rb_replay_cache_key, defined in RuntimeBudgetRefinement.v).
+   Per TM-CA-151 (docs/theory/cost-accounting-threat-model.md) the per-operation
+   cost_trace_digest / cost_trace_event_count / digest-presence are DIAGNOSTIC /
+   TELEMETRY ONLY and are removed from production consensus (the replay comparison
+   and the signed block-hash preimage). The production consensus surface is
+   total_cost (clamped to initial on OOP) + deploy status + post-state hash, modeled
+   here by the base rb_replay_payload (uc_ca_018..023, uc_ca_030) and by the
+   total_cost/verdict theorems (uc_ca_010, ca_cost_deterministic, the rb_reconcile_* family).
+   These digest-inclusive theorems remain TRUE statements about a strictly-finer
+   refinement level; they are retained as diagnostic-refinement adequacy, NOT as
+   claims that the per-operation digest is a consensus quantity.
+   ─────────────────────────────────────────────────────────────────────────── *)
+
 (* UC-CA-033: full replay payload equivalence is sensitive to every
    cost/authentication field that the implementation hashes. *)
 Theorem uc_ca_033_replay_payload_full_field_sensitivity :
@@ -946,6 +964,7 @@ Qed.
 
 (* UC-CA-037: rejecting trace mismatches as cost-invalid evidence is
    observational at the fee-settlement boundary. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_037_trace_mismatch_preserves_settlement_accounting :
   forall (trace1 trace2 : list rb_trace_entry) s,
     trace1 <> trace2 ->
@@ -970,6 +989,7 @@ Qed.
 
 (* UC-CA-039: after cost-accounting activation, a replay payload must carry
    an explicit cost-trace commitment and its event count. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_039_post_activation_cost_trace_required :
   forall trace count present,
     rb_cost_trace_commitment_valid trace count present ->
@@ -980,6 +1000,7 @@ Qed.
 
 (* UC-CA-040: full replay payload authentication includes cost-trace
    entries and counts, including the missing-trace case. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_040_full_replay_payload_authenticates_cost_trace_fields :
   (forall sigs costs traces1 traces2 trace_counts failed errors user_logs
           kinds system_errors slash_fields system_logs genesis,
@@ -1163,6 +1184,7 @@ Qed.
 (* UC-CA-046: a post-activation deploy with zero billable events still has
    authenticated cost-trace evidence: the commitment is present and the
    event count is zero. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_046_zero_event_post_activation_trace_commitment :
   rb_cost_trace_commitment_valid [] 0 true.
 Proof.
@@ -1171,6 +1193,7 @@ Qed.
 
 (* UC-CA-047: block authentication covers replay-relevant cost trace fields
    through the replay payload included in the signed/hashable block body. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_047_block_authenticates_cost_trace_payload :
   forall sender seq p1 p2,
     ~ rb_full_replay_payload_equiv p1 p2 ->
@@ -1191,6 +1214,7 @@ Qed.
 
 (* UC-CA-048: replay cache keys include the full replay payload, so replay
    optimization cannot reuse a cached result across cost-trace mutations. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_048_replay_cache_key_authenticates_cost_trace_payload :
   forall state sender seq p1 p2,
     ~ rb_full_replay_payload_equiv p1 p2 ->
@@ -1214,6 +1238,7 @@ Qed.
 (* UC-CA-049: legacy replay mode may accept absent trace commitments for
    quarantined pre-activation data, while cost-accounted replay reduces to
    the explicit commitment-validity obligation. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_049_legacy_replay_quarantines_absent_cost_trace :
   (forall trace count,
     rb_replay_mode_accepts_cost_trace RbLegacyReplay trace count false) /\
@@ -1297,6 +1322,7 @@ Qed.
 
 (* UC-CA-054: cost-accounted replay rejects absent cost-trace commitments.
    Legacy compatibility is handled only by the explicit legacy mode theorem. *)
+(* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_054_activation_replay_rejects_absent_commitment :
   forall trace count,
     ~ rb_replay_mode_accepts_cost_trace

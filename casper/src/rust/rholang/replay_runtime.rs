@@ -47,7 +47,9 @@ pub struct ReplayRuntimeOps {
 }
 
 impl ReplayRuntimeOps {
-    pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
+    pub fn new(runtime_ops: RuntimeOps) -> Self {
+        Self { runtime_ops }
+    }
 
     pub fn new_from_runtime(runtime: RhoRuntimeImpl) -> Self {
         Self {
@@ -255,14 +257,10 @@ impl ReplayRuntimeOps {
         for (i, signer) in cosigned.signers().iter().enumerate() {
             let charge = signer.phlo_share.saturating_mul(phlo_price);
             let rand = if is_compound {
-                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(
-                    &cosigned, i,
-                )
+                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(&cosigned, i)
             } else {
                 // Legacy single-sig: byte-identical seed to existing on-chain deploys.
-                system_deploy_util::generate_pre_charge_deploy_random_seed(
-                    &processed_deploy.deploy,
-                )
+                system_deploy_util::generate_pre_charge_deploy_random_seed(&processed_deploy.deploy)
             };
             let mut pre_charge_deploy = PreChargeDeploy {
                 charge_amount: charge,
@@ -310,7 +308,7 @@ impl ReplayRuntimeOps {
             // Run the user deploy in a transaction
             let evaluate_start = Instant::now();
             let (_, successful) = self
-                .run_user_deploy(processed_deploy, mergeable_channels, true)
+                .run_user_deploy(processed_deploy, mergeable_channels)
                 .await?;
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(evaluate_start.elapsed().as_secs_f64());
@@ -331,13 +329,9 @@ impl ReplayRuntimeOps {
                 remaining_used -= signer_consumed;
                 let refund_amount = signer_charged - signer_consumed;
                 let rand = if is_compound {
-                    system_deploy_util::generate_refund_deploy_random_seed_for_signer(
-                        &cosigned, i,
-                    )
+                    system_deploy_util::generate_refund_deploy_random_seed_for_signer(&cosigned, i)
                 } else {
-                    system_deploy_util::generate_refund_deploy_random_seed(
-                        &processed_deploy.deploy,
-                    )
+                    system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy)
                 };
                 let mut refund_deploy = RefundDeploy {
                     refund_amount,
@@ -390,7 +384,7 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        self.run_user_deploy(processed_deploy, mergeable_channels, false)
+        self.run_user_deploy(processed_deploy, mergeable_channels)
             .await
             .map(|(_, eval_successful)| eval_successful)
     }
@@ -399,7 +393,6 @@ impl ReplayRuntimeOps {
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
-        require_cost_trace: bool,
     ) -> Result<(EvaluateResult, bool), CasperError> {
         // Mirror RuntimeOps behavior: rollback failed user deploy via soft checkpoint
         // so pre-charge context remains available for refund replay.
@@ -409,7 +402,6 @@ impl ReplayRuntimeOps {
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = self.runtime_ops.evaluate(&processed_deploy.deploy).await?;
-        let replay_cost_trace = self.runtime_ops.runtime.cost.cost_trace_digest();
         let discard_start = Instant::now();
         self.discard_event_log("user-deploy", false).await;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "user-deploy")
@@ -446,34 +438,11 @@ impl ReplayRuntimeOps {
             ));
         }
 
-        let expected_digest = processed_deploy.cost_trace_digest.to_vec();
-        let has_recorded_cost_trace =
-            !expected_digest.is_empty() || processed_deploy.cost_trace_event_count != 0;
-        if require_cost_trace && expected_digest.is_empty() {
-            return Err(CasperError::ReplayFailure(
-                ReplayFailure::replay_cost_trace_mismatch(
-                    expected_digest,
-                    replay_cost_trace.digest,
-                    processed_deploy.cost_trace_event_count,
-                    replay_cost_trace.event_count,
-                ),
-            ));
-        }
-
-        if (require_cost_trace || has_recorded_cost_trace)
-            && (expected_digest != replay_cost_trace.digest
-                || processed_deploy.cost_trace_event_count != replay_cost_trace.event_count)
-        {
-            return Err(CasperError::ReplayFailure(
-                ReplayFailure::replay_cost_trace_mismatch(
-                    expected_digest,
-                    replay_cost_trace.digest,
-                    processed_deploy.cost_trace_event_count,
-                    replay_cost_trace.event_count,
-                ),
-            ));
-        }
-
+        // The per-operation cost-trace digest is intentionally NOT compared
+        // in replay: it is diagnostic-only, not a consensus quantity. Consensus
+        // cost integrity is the conserved total cost (compared above) plus the
+        // failed/OOP status (compared above) plus the post-state hash. See the
+        // cost-accounting threat model (TM-CA-151) and the design doc.
         Ok((user_eval_result, eval_successful))
     }
 

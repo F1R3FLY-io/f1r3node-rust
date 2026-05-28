@@ -77,12 +77,10 @@ impl ToyBudget {
             if next > self.initial {
                 return AttemptOutcome::Oop;
             }
-            match self.consumed.compare_exchange(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .consumed
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => return AttemptOutcome::Granted,
                 Err(actual) => current = actual,
             }
@@ -250,5 +248,57 @@ fn reconcile_commits_lex_smallest_prefix_under_any_schedule() {
                 consumed_units: 6,
             }
         );
+    });
+}
+
+/// OOP-truncation under truncated recording. In the OOP case a fork may unwind
+/// and stop recording its remaining attempts, so the recorded multiset — and
+/// therefore the per-operation committed set / digest — becomes schedule-
+/// dependent. This is precisely WHY the per-operation digest is NOT a consensus
+/// quantity (it was removed from consensus; see threat-model TM-CA-151). The
+/// quantity consensus DOES compare, `consumed` (= `total_cost`), still clamps
+/// to `initial` deterministically under every loom-explored schedule, because
+/// any run that OOPs has recorded cumulative weight exceeding `initial`.
+#[test]
+fn oop_truncation_keeps_consumed_clamped_under_every_schedule() {
+    loom::model(|| {
+        let budget = Arc::new(ToyBudget::new(5));
+        // Each fork attempts a first event; only if that was granted does it go
+        // on to attempt its second event — modeling a fork that unwinds (stops
+        // recording) once it hits OOP. The two first events (weight 3 each) are
+        // always recorded and already exceed the budget of 5, so every schedule
+        // reaches the OOP boundary.
+        let a = {
+            let budget = budget.clone();
+            thread::spawn(move || {
+                if matches!(
+                    budget.attempt(ToyEvent { rank: 1, weight: 3 }),
+                    AttemptOutcome::Granted
+                ) {
+                    let _ = budget.attempt(ToyEvent { rank: 3, weight: 3 });
+                }
+            })
+        };
+        let b = {
+            let budget = budget.clone();
+            thread::spawn(move || {
+                if matches!(
+                    budget.attempt(ToyEvent { rank: 2, weight: 3 }),
+                    AttemptOutcome::Granted
+                ) {
+                    let _ = budget.attempt(ToyEvent { rank: 4, weight: 3 });
+                }
+            })
+        };
+        a.join().unwrap();
+        b.join().unwrap();
+
+        // `consumed_units` (the consensus `total_cost`) clamps to `initial` on
+        // OOP regardless of which fork's later events were recorded. The
+        // committed set itself is intentionally NOT asserted here: it is
+        // schedule-dependent under truncation and is not a consensus quantity.
+        let rec = budget.reconcile();
+        assert_eq!(rec.consumed_units, 5);
+        assert!(rec.oop.is_some());
     });
 }

@@ -528,45 +528,35 @@ fn runtime_budget_reset_from_token_clears_success_trace_window() {
 }
 
 #[test]
-fn runtime_budget_reset_from_token_serializes_with_batch_commit() {
-    for _ in 0..128 {
-        let sig = Sig::Hash(vec![7, 8, 9]);
-        let budget = RuntimeBudget::new(Cost::create(64, "reset commit race"));
-        let barrier = Arc::new(Barrier::new(2));
+fn reset_from_token_clears_all_recorded_state_between_deploys() {
+    // The defensive `reset_serializer` RwLock was removed: per-deploy
+    // finalization and reset are single-threaded by contract (the parallel
+    // reducer has joined before the budget is reset/read), so reset no longer
+    // needs to guard against an in-flight concurrent commit. The
+    // production-relevant invariant is that reset FULLY clears the recorded
+    // attempt state (the lock-free SegQueue, the reconciliation accumulator,
+    // and the cached reconciliation), so a reused budget never inherits a
+    // prior deploy's cost — the cross-deploy isolation the runtime relies on.
+    let sig = Sig::Hash(vec![7, 8, 9]);
+    let budget = RuntimeBudget::new(Cost::create(64, "reset isolation"));
 
-        let reset_budget = budget.clone();
-        let reset_barrier = Arc::clone(&barrier);
-        let reset_sig = sig.clone();
-        let reset = thread::spawn(move || {
-            reset_barrier.wait();
-            reset_budget.reset_from_token(&Token::coalesced(reset_sig, 128));
-        });
+    // Deploy 1: record cost up to the budget.
+    let events = (0..32).map(|path| token_event(path, 2)).collect::<Vec<_>>();
+    budget
+        .commit_canonical_batch(CostReservationBatch { events })
+        .unwrap();
+    assert_eq!(budget.total_cost().value, 64);
+    assert_eq!(budget.cost_trace_event_count(), 32);
 
-        let commit_budget = budget.clone();
-        let commit_barrier = Arc::clone(&barrier);
-        let commit = thread::spawn(move || {
-            let events = (0..32).map(|path| token_event(path, 2)).collect::<Vec<_>>();
-            commit_barrier.wait();
-            commit_budget
-                .commit_canonical_batch(CostReservationBatch { events })
-                .unwrap();
-        });
+    // Reset for deploy 2.
+    budget.reset_from_token(&Token::coalesced(sig.clone(), 128));
 
-        reset.join().expect("reset thread panicked");
-        commit.join().expect("commit thread panicked");
-
-        assert_eq!(budget.signature(), sig);
-        let state = (
-            budget.total_cost().value,
-            budget.remaining().value,
-            budget.cost_trace_event_count(),
-        );
-        assert!(
-            state == (0, 128, 0) || state == (64, 64, 32),
-            "reset and batch commit must be serialized, got {:?}",
-            state
-        );
-    }
+    // Deploy 2 starts clean — zero residue from deploy 1.
+    assert_eq!(budget.signature(), sig);
+    assert_eq!(budget.total_cost().value, 0);
+    assert_eq!(budget.remaining().value, 128);
+    assert_eq!(budget.cost_trace_event_count(), 0);
+    assert!(budget.get_event_log().is_empty());
 }
 
 #[test]
@@ -603,7 +593,9 @@ fn cost_trace_digest_canonicalizes_success_order() {
         reverse.reserve_canonical(event.clone()).unwrap();
     }
 
-    assert_ne!(forward.get_event_log(), reverse.get_event_log());
+    // `get_event_log` now returns the canonical (sorted) committed set, so it
+    // is order-independent: identical regardless of reservation order.
+    assert_eq!(forward.get_event_log(), reverse.get_event_log());
     assert_eq!(forward.cost_trace_digest(), reverse.cost_trace_digest());
     assert_eq!(forward.cost_trace_event_count(), 3);
 }
@@ -828,7 +820,9 @@ fn runtime_budget_canonical_event_log_is_order_independent() {
         reverse.reserve_canonical(event.clone()).unwrap();
     }
 
-    assert_ne!(forward.get_event_log(), reverse.get_event_log());
+    // get_event_log is now the canonical committed set (order-independent), so
+    // it matches across reservation orders and equals get_canonical_event_log.
+    assert_eq!(forward.get_event_log(), reverse.get_event_log());
     assert_eq!(
         forward.get_canonical_event_log(),
         reverse.get_canonical_event_log()
@@ -945,11 +939,15 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
             .map(|handle| handle.join().expect("reservation worker"))
             .collect::<Vec<_>>();
 
-        // Runtime-side liveness invariants: the diagnostic event log
-        // tracks CAS-granted events, so successful weights and logged
-        // weights must agree regardless of schedule, and at least one
-        // thread must have been rejected (sum of weights 1+2+…+16 = 136
-        // exceeds budget 40).
+        // Runtime liveness vs canonical consensus: the lock-free CAS race
+        // decides only the *runtime* grant (`successful_weight`), which is
+        // schedule-dependent. `get_event_log` now reflects the CANONICAL
+        // committed set from `reconcile()` (the schedule-independent consensus
+        // answer), NOT the CAS-granted set — so its total is bounded by the
+        // budget and identical under every schedule. At least one thread must
+        // be rejected (1+2+…+16 = 136 exceeds the budget). The
+        // schedule-independence of the canonical outputs is asserted by the
+        // two-run comparison below.
         let successful_weight: u64 = outcomes
             .iter()
             .filter_map(|(event, result)| result.is_ok().then_some(event.weight))
@@ -964,7 +962,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
             .map(|event| event.weight)
             .sum();
         assert!(successful_weight <= initial_phlo as u64);
-        assert_eq!(logged_weight, successful_weight);
+        assert!(logged_weight <= initial_phlo as u64);
         assert!(errors > 0);
 
         budget
@@ -976,10 +974,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     // knowledge of the spawned events — so the assertion catches a
     // regression in the production walk rather than tautologically
     // matching it.
-    fn expected_canonical_trace_count(
-        events: &[BillableTokenEvent],
-        initial: i64,
-    ) -> u64 {
+    fn expected_canonical_trace_count(events: &[BillableTokenEvent], initial: i64) -> u64 {
         let mut sorted: Vec<BillableTokenEvent> = events.to_vec();
         sorted.sort();
         let mut consumed: i64 = 0;
@@ -1000,8 +995,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     let initial_phlo: i64 = 40;
     let spawned_events: Vec<BillableTokenEvent> =
         (0..16u64).map(|i| token_event(i, i + 1)).collect();
-    let expected_trace_count =
-        expected_canonical_trace_count(&spawned_events, initial_phlo);
+    let expected_trace_count = expected_canonical_trace_count(&spawned_events, initial_phlo);
     // For the (weights 1..=16, budget=40) workload: 1+2+3+4+5+6+7+8 = 36,
     // +9 = 45 > 40, so canonical commits = 8 and OOP fires on event 9
     // (local_index = 8). Pin the simulator so a future refactor cannot
@@ -1053,8 +1047,7 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
     // schedule-dependent); the canonical reconciliation MUST NOT. Bind
     // the comparison into a discard so the canonical assertions above
     // are the ones that fail loudly if a future refactor recouples them.
-    let _runtime_grants_may_differ =
-        budget_a.get_event_log() != budget_b.get_event_log();
+    let _runtime_grants_may_differ = budget_a.get_event_log() != budget_b.get_event_log();
 }
 
 #[test]
@@ -1244,11 +1237,14 @@ fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
         .map(|event| event.kind)
         .collect::<Vec<_>>();
 
-    assert_eq!(kinds, vec![
-        BillableKind::SourceStep,
-        BillableKind::Primitive("method call".to_string()),
-        BillableKind::Substitution
-    ]);
+    assert_eq!(
+        kinds,
+        vec![
+            BillableKind::SourceStep,
+            BillableKind::Primitive("method call".to_string()),
+            BillableKind::Substitution
+        ]
+    );
     assert_eq!(budget.total_cost().value, 6);
     assert_eq!(budget.cost_trace_event_count(), 3);
     assert!(!budget.cost_trace_digest().digest.is_empty());
@@ -1283,9 +1279,10 @@ async fn negative_initial_phlo_is_rejected_before_metered_trace() {
     let (result, cost_log) = evaluate_with_cost_log(-1, "@0!(0)".to_string()).await;
 
     assert_eq!(result.cost.value, 0);
-    assert!(matches!(result.errors.as_slice(), [
-        InterpreterError::IllegalArgumentError(_)
-    ]));
+    assert!(matches!(
+        result.errors.as_slice(),
+        [InterpreterError::IllegalArgumentError(_)]
+    ));
     assert!(cost_log.is_empty());
 }
 
@@ -1369,7 +1366,10 @@ fn set_deploy_signatures_single_signer_is_sig_hash() {
         Sig::Hash(_) => {
             // Single-signer fold collapses to a flat Sig::Hash.
         }
-        other => panic!("single-signer set_deploy_signatures must produce Sig::Hash, got {:?}", other),
+        other => panic!(
+            "single-signer set_deploy_signatures must produce Sig::Hash, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1607,9 +1607,9 @@ fn sig_lolly_reflection_distinct_from_tensor() {
     let lolly = Sig::Lolly(Box::new(a.clone()), Box::new(b.clone()));
     let and_ab = Sig::And(Box::new(a), Box::new(b));
     assert_ne!(lolly, and_ab); // enum distinguishes them
-    // Channel reflections happen to coincide (intentional substrate
-    // sharing; verifier dispatches on the Sig variant, not the channel
-    // shape).
+                               // Channel reflections happen to coincide (intentional substrate
+                               // sharing; verifier dispatches on the Sig variant, not the channel
+                               // shape).
 }
 
 #[test]
@@ -1659,10 +1659,7 @@ fn sig_proto_round_trip_every_connective() {
                     Box::new(Sig::Hash(vec![0x06])),
                     Box::new(Sig::Hash(vec![0x07])),
                 ),
-                Sig::With(
-                    Box::new(Sig::Hash(vec![0x08])),
-                    Box::new(Sig::Unit),
-                ),
+                Sig::With(Box::new(Sig::Hash(vec![0x08])), Box::new(Sig::Unit)),
             ],
         }),
     );

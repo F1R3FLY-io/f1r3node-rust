@@ -171,8 +171,6 @@ impl RuntimeManager {
         for pd in usr_processed {
             push_len_prefixed(&mut bytes, &pd.deploy.sig);
             bytes.extend_from_slice(&pd.cost.cost.to_le_bytes());
-            push_len_prefixed(&mut bytes, &pd.cost_trace_digest);
-            bytes.extend_from_slice(&pd.cost_trace_event_count.to_le_bytes());
             bytes.push(u8::from(pd.is_failed));
             push_event_log(&mut bytes, &pd.deploy_log);
             match &pd.system_deploy_error {
@@ -229,21 +227,33 @@ impl RuntimeManager {
         Blake2b256::hash(bytes)
     }
 
-    fn max_block_index_cache_entries() -> usize { Self::MAX_BLOCK_INDEX_CACHE_ENTRIES }
+    fn max_block_index_cache_entries() -> usize {
+        Self::MAX_BLOCK_INDEX_CACHE_ENTRIES
+    }
 
     fn max_parents_post_state_cache_entries() -> usize {
         Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES
     }
 
-    fn max_active_validators_cache_entries() -> usize { Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES }
+    fn max_active_validators_cache_entries() -> usize {
+        Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES
+    }
 
-    fn max_bonds_cache_entries() -> usize { Self::MAX_BONDS_CACHE_ENTRIES }
+    fn max_bonds_cache_entries() -> usize {
+        Self::MAX_BONDS_CACHE_ENTRIES
+    }
 
-    fn max_replay_cache_entries() -> usize { Self::MAX_REPLAY_CACHE_ENTRIES }
+    fn max_replay_cache_entries() -> usize {
+        Self::MAX_REPLAY_CACHE_ENTRIES
+    }
 
-    fn max_replay_cache_event_log_entries() -> usize { Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES }
+    fn max_replay_cache_event_log_entries() -> usize {
+        Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES
+    }
 
-    fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
+    fn max_state_hash_cache_entries() -> usize {
+        Self::MAX_STATE_HASH_CACHE_ENTRIES
+    }
 
     pub fn trim_allocator() {
         #[cfg(target_os = "linux")]
@@ -256,7 +266,9 @@ impl RuntimeManager {
     }
 
     fn touch_cache_key<K>(order: &Mutex<VecDeque<K>>, key: &K)
-    where K: Eq + Clone {
+    where
+        K: Eq + Clone,
+    {
         // LRU touch is O(n) due VecDeque::position/remove. This is intentional for now:
         // these caches are tightly bounded (64-256 entries by default), so linear touch
         // remains cheaper than introducing additional synchronized index maps.
@@ -269,7 +281,9 @@ impl RuntimeManager {
     }
 
     fn evict_fifo_entry<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>)
-    where K: Eq + Hash + Clone {
+    where
+        K: Eq + Hash + Clone,
+    {
         if let Ok(mut guard) = order.lock() {
             while let Some(evict_key) = guard.pop_front() {
                 if map.remove(&evict_key).is_some() {
@@ -981,7 +995,9 @@ impl RuntimeManager {
         Ok(computed)
     }
 
-    pub fn get_history_repo(&self) -> RhoHistoryRepository { self.history_repo.clone() }
+    pub fn get_history_repo(&self) -> RhoHistoryRepository {
+        self.history_repo.clone()
+    }
 
     /// Check whether a post-state root is recorded in the local rspace
     /// roots store. Used by joiner-side LFS forward-horizon sync to skip
@@ -1488,11 +1504,9 @@ mod tests {
             deploy_log,
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: Default::default(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
-cosigner_threshold: 0,
+            cosigner_threshold: 0,
         }
     }
 
@@ -1567,8 +1581,6 @@ cosigner_threshold: 0,
         #[serde(default)]
         expected_total_cost: i64,
         #[serde(default)]
-        expected_event_count: u64,
-        #[serde(default)]
         settlement: serde_json::Value,
         #[serde(default)]
         replay_mutations: Vec<String>,
@@ -1594,10 +1606,6 @@ cosigner_threshold: 0,
         security_surface: String,
         #[serde(default)]
         expected_disposition: String,
-        #[serde(default)]
-        expected_total_cost: i64,
-        #[serde(default)]
-        expected_event_count: u64,
         #[serde(default)]
         replay_mutations: Vec<String>,
         #[serde(default)]
@@ -1656,86 +1664,6 @@ cosigner_threshold: 0,
         assert_ne!(
             RuntimeManager::replay_payload_hash(&[left], &[], false),
             RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_cost_trace_digest_changes() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        left.cost_trace_digest = vec![1; 32].into();
-        left.cost_trace_event_count = 2;
-        right.cost_trace_digest = vec![2; 32].into();
-        right.cost_trace_event_count = 2;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_cost_trace_event_count_changes() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        left.cost_trace_digest = vec![1; 32].into();
-        left.cost_trace_event_count = 1;
-        right.cost_trace_digest = vec![1; 32].into();
-        right.cost_trace_event_count = 2;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_cost_trace_digest_is_missing() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        left.cost_trace_digest = Vec::<u8>::new().into();
-        left.cost_trace_event_count = 0;
-        right.cost_trace_digest = vec![1; 32].into();
-        right.cost_trace_event_count = 0;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn block_hash_changes_when_processed_deploy_cost_trace_digest_changes() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        left.cost_trace_digest = vec![1; 32].into();
-        left.cost_trace_event_count = 1;
-        right.cost_trace_digest = vec![2; 32].into();
-        right.cost_trace_event_count = 1;
-
-        assert_ne!(
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
-        );
-    }
-
-    #[test]
-    fn block_hash_changes_when_processed_deploy_cost_trace_event_count_changes() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        left.cost_trace_digest = vec![1; 32].into();
-        left.cost_trace_event_count = 1;
-        right.cost_trace_digest = vec![1; 32].into();
-        right.cost_trace_event_count = 2;
-
-        assert_ne!(
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
         );
     }
 
@@ -1912,24 +1840,15 @@ cosigner_threshold: 0,
         for fixture in fixtures {
             assert_eq!(fixture.oracle_kind, "casper_replay_payload_hash");
             let deploy = signed_deploy();
-            let mut left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-            let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
+            let left = processed_deploy(deploy, 3, vec![produce_event(1)]);
 
-            match fixture.mutation_axis.as_str() {
-                "cost_trace_digest" => {
-                    left.cost_trace_digest = vec![1; 32].into();
-                    left.cost_trace_event_count = 1;
-                    right.cost_trace_digest = vec![2; 32].into();
-                    right.cost_trace_event_count = 1;
-                }
-                "signature" => {
-                    right = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
-                }
+            let right = match fixture.mutation_axis.as_str() {
+                "signature" => processed_deploy(signed_deploy(), 3, vec![produce_event(1)]),
                 other => panic!(
                     "unexpected v12 casper mutation axis {other} in {}",
                     fixture.id
                 ),
-            }
+            };
 
             assert_ne!(
                 RuntimeManager::replay_payload_hash(&[left], &[], false),
@@ -1999,7 +1918,7 @@ cosigner_threshold: 0,
             .filter(|fixture| {
                 matches!(
                     fixture.semantic_oracle.as_str(),
-                    "runtime_to_replay_trace_commitment" | "replay_to_slashing_authentication"
+                    "replay_to_slashing_authentication"
                 )
             })
             .collect::<Vec<_>>();
@@ -2011,31 +1930,9 @@ cosigner_threshold: 0,
             assert!(fixture
                 .replay_mutations
                 .iter()
-                .any(|field| field == "cost_trace_digest" || field == "slash_fields"));
+                .any(|field| field == "slash_fields"));
 
             match fixture.semantic_oracle.as_str() {
-                "runtime_to_replay_trace_commitment" => {
-                    let deploy = signed_deploy();
-                    let mut left =
-                        processed_deploy(deploy.clone(), fixture.expected_total_cost as u64, vec![
-                            produce_event(1),
-                        ]);
-                    let mut right =
-                        processed_deploy(deploy, fixture.expected_total_cost as u64, vec![
-                            produce_event(1),
-                        ]);
-                    left.cost_trace_digest = vec![1; 32].into();
-                    left.cost_trace_event_count = fixture.expected_event_count;
-                    right.cost_trace_digest = vec![2; 32].into();
-                    right.cost_trace_event_count = fixture.expected_event_count;
-
-                    assert_ne!(
-                        RuntimeManager::replay_payload_hash(&[left], &[], false),
-                        RuntimeManager::replay_payload_hash(&[right], &[], false),
-                        "v13 fixture {} must authenticate runtime trace commitment in replay payload",
-                        fixture.id
-                    );
-                }
                 "replay_to_slashing_authentication" => {
                     for field in ["slash_fields", "block_hash", "signature"] {
                         assert!(
@@ -2112,10 +2009,6 @@ cosigner_threshold: 0,
                         .source_facets
                         .iter()
                         .any(|facet| facet == "legacy_quarantine"));
-                    assert!(fixture
-                        .replay_mutations
-                        .iter()
-                        .any(|field| field == "cost_trace_present"));
                 }
                 other => panic!(
                     "unexpected v13 settlement/legacy oracle {other} in {}",
@@ -2129,14 +2022,7 @@ cosigner_threshold: 0,
     fn cost_accounting_v14_replay_slashing_oracles_hold() {
         let fixtures = horizon_v14_fixtures()
             .into_iter()
-            .filter(|fixture| {
-                matches!(
-                    fixture.security_surface.as_str(),
-                    "api_to_runtime_replay"
-                        | "replay_cache_payload_binding"
-                        | "slashing_authorization"
-                )
-            })
+            .filter(|fixture| matches!(fixture.security_surface.as_str(), "slashing_authorization"))
             .collect::<Vec<_>>();
         assert!(!fixtures.is_empty());
 
@@ -2149,45 +2035,6 @@ cosigner_threshold: 0,
             assert!(!fixture.secret_material_touched);
 
             match fixture.security_surface.as_str() {
-                "api_to_runtime_replay" | "replay_cache_payload_binding" => {
-                    assert!(
-                        fixture
-                            .replay_mutations
-                            .iter()
-                            .any(|field| field == "cost_trace_digest"),
-                        "v14 fixture {} must authenticate cost trace digest",
-                        fixture.id
-                    );
-                    assert!(
-                        fixture
-                            .replay_mutations
-                            .iter()
-                            .any(|field| field == "cost_trace_event_count"),
-                        "v14 fixture {} must authenticate cost trace event count",
-                        fixture.id
-                    );
-
-                    let deploy = signed_deploy();
-                    let mut left =
-                        processed_deploy(deploy.clone(), fixture.expected_total_cost as u64, vec![
-                            produce_event(1),
-                        ]);
-                    let mut right =
-                        processed_deploy(deploy, fixture.expected_total_cost as u64, vec![
-                            produce_event(1),
-                        ]);
-                    left.cost_trace_digest = vec![1; 32].into();
-                    left.cost_trace_event_count = fixture.expected_event_count;
-                    right.cost_trace_digest = vec![2; 32].into();
-                    right.cost_trace_event_count = fixture.expected_event_count + 1;
-
-                    assert_ne!(
-                        RuntimeManager::replay_payload_hash(&[left], &[], false),
-                        RuntimeManager::replay_payload_hash(&[right], &[], false),
-                        "v14 fixture {} must bind runtime cost evidence to replay payload",
-                        fixture.id
-                    );
-                }
                 "slashing_authorization" => {
                     assert_eq!(fixture.expected_disposition, "replay_invalid");
                     for field in [

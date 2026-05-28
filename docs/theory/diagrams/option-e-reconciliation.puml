@@ -12,9 +12,10 @@
 '             snapshot-clones attempt_log, sorts by canonical rank,
 '             walks once to find canonical (committed, oop, consumed).
 '             Cached in canonical_reconciliation.
-'   Phase 3 — consensus reads (total_cost, cost_trace_digest,
-'             last_oop_event, cost_trace_event_count) all return values
-'             from the cached canonical reconciliation. Schedule-INDEPENDENT.
+'   Phase 3 — the CONSENSUS read is total_cost (= consumed_units). The
+'             cost_trace_digest, last_oop_event, and cost_trace_event_count
+'             are DIAGNOSTIC reads (TM-CA-151) that also derive from the
+'             cached canonical reconciliation. All are schedule-INDEPENDENT.
 '
 ' Color palette:
 '   Deployer / Caller    : salmon       (#F8C3B8)
@@ -47,7 +48,7 @@ participant "attempt_log\nMutex<Vec>" as Log #D4C4E8
 participant "consumed_tokens\nAtomicI64" as Counter #C8E6C9
 participant "reconcile()" as Reconcile #B2DFDB
 participant "canonical_\nreconciliation\nMutex<Option<...>>" as Cache #C8E6C9
-participant "ProcessedDeploy\n(consensus reader)" as Consensus #BBDEFB
+participant "ProcessedDeploy\n(consensus + diagnostic reader)" as Consensus #BBDEFB
 
 Caller -> T1: spawn
 Caller -> Tk: spawn
@@ -84,20 +85,22 @@ alt Cache miss
 end
 Cache -[#2E7D32]-> Consensus: canonical (committed, oop, consumed_units)
 
-note over Consensus: ── Phase 3: Schedule-INDEPENDENT consensus values ──
+note over Consensus: ── Phase 3: Schedule-INDEPENDENT — total_cost is CONSENSUS; digest/count/last_oop are DIAGNOSTIC (TM-CA-151) ──
 
-Consensus -> Consensus: deploy.cost = consumed_units\ncost_trace_digest = hash(committed ++ oop)\ncost_trace_event_count = |committed| + (oop is Some)\nlast_oop_event = oop
+Consensus -> Consensus: deploy.cost = consumed_units  (CONSENSUS)\ncost_trace_digest = hash(committed ++ oop)  (diagnostic)\ncost_trace_event_count = |committed| + (oop is Some)  (diagnostic)\nlast_oop_event = oop  (diagnostic, TM-CA-151)
 
 note over Caller, Consensus
   The canonical reconciliation is a **pure function** of
   (initial_budget, multiset of attempts). Any two play/replay
-  executions over the same deploy and budget produce identical
-  consensus values, regardless of which CAS race winners
-  occurred at runtime.
+  executions over the same deploy and budget produce an identical
+  consensus value (total_cost) — and identical diagnostic
+  digest/count/last_oop — regardless of which CAS race winners
+  occurred at runtime. Per TM-CA-151 only total_cost (+ status +
+  post-state hash) is consensus; the digest/count are diagnostic.
 
   See:
   - Rocq: rb_reconcile_consumed_invariant_under_permutation
-  - TLA+: RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial
+  - TLA+: RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent
   - Loom: loom_runtime_budget_reconciliation::*
   - Rust: cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable
 end note

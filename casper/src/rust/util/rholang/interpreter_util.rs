@@ -548,22 +548,6 @@ fn handle_errors(
                 Ok(Either::Right(None))
             }
 
-            ReplayFailure::ReplayCostTraceMismatch {
-                initial_digest,
-                replay_digest,
-                initial_event_count,
-                replay_event_count,
-            } => {
-                tracing::warn!(
-                    "Found replay cost trace mismatch: initial digest = {}, replay digest = {}, initial event count = {}, replay event count = {}",
-                    hex::encode(initial_digest),
-                    hex::encode(replay_digest),
-                    initial_event_count,
-                    replay_event_count
-                );
-                Ok(Either::Right(None))
-            }
-
             ReplayFailure::SystemDeployErrorMismatch {
                 play_error,
                 replay_error,

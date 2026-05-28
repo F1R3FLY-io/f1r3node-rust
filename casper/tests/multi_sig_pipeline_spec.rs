@@ -15,7 +15,7 @@
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed, ToMessage};
+use crypto::rust::signatures::signed::{Signed, ToMessage};
 use models::casper::{CompoundSigner, DeployDataProto};
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
@@ -78,7 +78,7 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
         language: String::new(),
         expiration_timestamp: 0,
         cosigners,
-        primary_phlo_share: primary_share, 
+        primary_phlo_share: primary_share,
         cosigner_threshold: 0,
         sig_algebra: None,
     }
@@ -101,7 +101,7 @@ fn build_single_sig_proto() -> DeployDataProto {
         language: String::new(),
         expiration_timestamp: 0,
         cosigners: Vec::new(),
-        primary_phlo_share: 0, 
+        primary_phlo_share: 0,
         cosigner_threshold: 0,
         sig_algebra: None,
     }
@@ -188,8 +188,8 @@ fn multi_sig_wire_rejects_share_sum_mismatch() {
     let mut bad = build_multi_sig_proto(3);
     // Inflate one cosigner's share so the sum no longer matches phlo_limit.
     bad.cosigners.last_mut().unwrap().phlo_share = 1_000_000;
-    let err = DeployData::from_proto_cosigned(bad)
-        .expect_err("share sum mismatch must be rejected");
+    let err =
+        DeployData::from_proto_cosigned(bad).expect_err("share sum mismatch must be rejected");
     assert!(
         err.contains("PhloShareMismatch") || err.contains("phlo_share"),
         "expected share-sum mismatch rejection, got: {}",
@@ -226,10 +226,8 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
-        cost_trace_digest: Bytes::new(),
-        cost_trace_event_count: 0,
         cosigners: Vec::new(),
-        primary_phlo_share: 0, 
+        primary_phlo_share: 0,
         cosigner_threshold: 0,
     };
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
@@ -276,16 +274,19 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
-        cost_trace_digest: Bytes::new(),
-        cost_trace_event_count: 0,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share, 
+        primary_phlo_share: primary.phlo_share,
         cosigner_threshold: 0,
     };
-    let reconstructed = pd.to_cosigned().expect("multi-sig reconstruction must succeed");
+    let reconstructed = pd
+        .to_cosigned()
+        .expect("multi-sig reconstruction must succeed");
     assert_eq!(reconstructed.signers().len(), 3);
     assert!(reconstructed.is_compound());
-    assert_eq!(reconstructed.total_phlo_share(), reconstructed.data.phlo_limit);
+    assert_eq!(
+        reconstructed.total_phlo_share(),
+        reconstructed.data.phlo_limit
+    );
     // Canonical sort preserved (primary at index 0 of the reconstructed
     // envelope may differ from `cosigned_decoded.primary()` after re-sort
     // because Cosigned::from_signed_data re-canonicalizes; both envelopes
@@ -335,10 +336,8 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
-        cost_trace_digest: Bytes::from(vec![0xaa; 32]),
-        cost_trace_event_count: 42,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share, 
+        primary_phlo_share: primary.phlo_share,
         cosigner_threshold: 0,
     };
     let pd_proto = pd_before.clone().to_proto();
@@ -350,13 +349,12 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
     assert_eq!(pd_after.cosigners.len(), pd_before.cosigners.len());
     assert_eq!(pd_after.primary_phlo_share, pd_before.primary_phlo_share);
-    assert_eq!(pd_after.cost_trace_event_count, 42);
-    assert_eq!(pd_after.cost_trace_digest, pd_before.cost_trace_digest);
 
     // Reconstruction from the round-tripped ProcessedDeploy still produces
     // a valid Cosigned envelope with per-signer signature re-verification.
-    let cosigned_reconstructed =
-        pd_after.to_cosigned().expect("post-round-trip reconstruction");
+    let cosigned_reconstructed = pd_after
+        .to_cosigned()
+        .expect("post-round-trip reconstruction");
     assert_eq!(cosigned_reconstructed.signers().len(), 4);
     assert!(cosigned_reconstructed.is_compound());
 }
@@ -364,18 +362,15 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
 #[test]
 fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
     let original_proto = build_single_sig_proto();
-    let signed =
-        DeployData::from_proto(original_proto.clone()).expect("legacy single-sig decode");
+    let signed = DeployData::from_proto(original_proto.clone()).expect("legacy single-sig decode");
     let pd_before = ProcessedDeploy {
         deploy: signed,
         cost: PCost { cost: 25 },
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
-        cost_trace_digest: Bytes::from(vec![0xff; 32]),
-        cost_trace_event_count: 7,
         cosigners: Vec::new(),
-        primary_phlo_share: 0, 
+        primary_phlo_share: 0,
         cosigner_threshold: 0,
     };
     let pd_proto = pd_before.clone().to_proto();
@@ -387,7 +382,6 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
     assert!(pd_after.cosigners.is_empty());
     assert_eq!(pd_after.primary_phlo_share, 0);
-    assert_eq!(pd_after.cost_trace_event_count, 7);
     assert_eq!(pd_after.deploy.pk, pd_before.deploy.pk);
     assert_eq!(pd_after.deploy.sig, pd_before.deploy.sig);
 }
@@ -561,8 +555,7 @@ fn sig_algebra_unknown_signature_algorithm_rejected() {
     let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 100)
         .expect_err("unknown sig_algorithm must be rejected");
     assert!(
-        err.contains("Unknown signature algorithm")
-            || err.contains("nonexistent_alg_v9999"),
+        err.contains("Unknown signature algorithm") || err.contains("nonexistent_alg_v9999"),
         "error must reference the unknown algorithm: {}",
         err
     );

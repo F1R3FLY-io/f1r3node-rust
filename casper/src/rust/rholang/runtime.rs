@@ -75,7 +75,9 @@ pub struct RuntimeOps {
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self {
+        Self { runtime }
+    }
 }
 
 #[allow(type_alias_bounds)]
@@ -132,8 +134,9 @@ impl RuntimeOps {
         self.runtime.set_block_data(block_data).await;
         self.runtime.set_invalid_blocks(invalid_blocks).await;
 
-        let (start_hash, processed_deploys) =
-            self.play_deploys_for_state_cosigned(start_hash, terms).await?;
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state_cosigned(start_hash, terms)
+            .await?;
 
         let mut current_hash = start_hash;
         let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
@@ -141,10 +144,16 @@ impl RuntimeOps {
             let result = match system_deploy_enum {
                 crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
                     mut slash_deploy,
-                ) => self.play_system_deploy(&current_hash, &mut slash_deploy).await?,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut slash_deploy)
+                        .await?
+                }
                 crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
                     mut close_deploy,
-                ) => self.play_system_deploy(&current_hash, &mut close_deploy).await?,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut close_deploy)
+                        .await?
+                }
             };
             match result {
                 SystemDeployResult::PlaySucceeded {
@@ -153,8 +162,7 @@ impl RuntimeOps {
                     mergeable_channels,
                     result: _,
                 } => {
-                    processed_system_deploys
-                        .push((processed_system_deploy, mergeable_channels));
+                    processed_system_deploys.push((processed_system_deploy, mergeable_channels));
                     current_hash = state_hash;
                 }
                 SystemDeployResult::PlayFailed {
@@ -399,7 +407,8 @@ impl RuntimeOps {
                 log_mem_step(&before);
             }
             res.push(
-                self.play_deploy_with_cost_accounting_cosigned(cosigned).await?,
+                self.play_deploy_with_cost_accounting_cosigned(cosigned)
+                    .await?,
             );
             if mem_profile_enabled {
                 let after = format!("after_deploy_{}", idx + 1);
@@ -522,13 +531,13 @@ impl RuntimeOps {
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
         let phlo_limit = deploy.data.phlo_limit;
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-            deploy, phlo_limit,
-        )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
-        })?;
-        self.play_deploy_with_cost_accounting_cosigned(cosigned).await
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy, phlo_limit)
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
+                })?;
+        self.play_deploy_with_cost_accounting_cosigned(cosigned)
+            .await
     }
 
     /// Multi-signature aware deploy execution with cost accounting.
@@ -610,9 +619,7 @@ impl RuntimeOps {
         for (i, signer) in cosigned.signers().iter().enumerate() {
             let charge = signer.phlo_share.saturating_mul(phlo_price);
             let rand = if is_compound {
-                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(
-                    &cosigned, i,
-                )
+                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(&cosigned, i)
             } else {
                 // Legacy single-sig: byte-identical seed to existing on-chain
                 // deploys (preserves replay determinism for legacy state).
@@ -641,7 +648,9 @@ impl RuntimeOps {
                 self.runtime.revert_to_soft_checkpoint(outer_fallback).await;
                 tracing::error!(
                     "Pre-charge failure for cosigner {} (pk={}): {}",
-                    i, hex::encode(&signer.pk.bytes), error.error_message
+                    i,
+                    hex::encode(&signer.pk.bytes),
+                    error.error_message
                 );
                 if !is_compound {
                     // Legacy single-sig path: preserve byte-identical
@@ -686,9 +695,7 @@ impl RuntimeOps {
         // rightmost cosigner's tokens consumed last (refunded most of any
         // unused phlo). Matches the operational reading of
         // left-associated Sig::And and Token::Gate.
-        let total_refund = pd
-            .try_refund_amount()
-            .map_err(CasperError::RuntimeError)?;
+        let total_refund = pd.try_refund_amount().map_err(CasperError::RuntimeError)?;
         let total_charge = cosigned.total_phlo_share().saturating_mul(phlo_price);
         let total_used = total_charge.saturating_sub(total_refund);
         let mut remaining_used = total_used;
@@ -698,9 +705,7 @@ impl RuntimeOps {
             remaining_used -= signer_consumed;
             let refund_amount = signer_charged - signer_consumed;
             let rand = if is_compound {
-                system_deploy_util::generate_refund_deploy_random_seed_for_signer(
-                    &cosigned, i,
-                )
+                system_deploy_util::generate_refund_deploy_random_seed_for_signer(&cosigned, i)
             } else {
                 let legacy = cosigned.as_legacy_signed_ref();
                 system_deploy_util::generate_refund_deploy_random_seed(&legacy)
@@ -778,14 +783,13 @@ impl RuntimeOps {
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
         let phlo_limit = deploy.data.phlo_limit;
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-            deploy, phlo_limit,
-        )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!(
-                "legacy uplift to Cosigned failed in process_deploy: {e}"
-            ))
-        })?;
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy, phlo_limit)
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "legacy uplift to Cosigned failed in process_deploy: {e}"
+                    ))
+                })?;
         self.process_deploy_cosigned(cosigned).await
     }
 
@@ -813,7 +817,6 @@ impl RuntimeOps {
         let eval_result = self.evaluate_cosigned(&cosigned).await?;
 
         let deploy_log = self.runtime.take_event_log().await;
-        let cost_trace = self.runtime.cost.cost_trace_digest();
 
         let eval_succeeded = eval_result.errors.is_empty();
         let primary_sig = cosigned.primary().sig.clone();
@@ -855,8 +858,6 @@ impl RuntimeOps {
                 .collect(),
             is_failed: !eval_succeeded,
             system_deploy_error: None,
-            cost_trace_digest: cost_trace.digest.into(),
-            cost_trace_event_count: cost_trace.event_count,
             cosigners: extracted_cosigners,
             primary_phlo_share: extracted_primary_share,
             cosigner_threshold: extracted_threshold,
@@ -877,15 +878,15 @@ impl RuntimeOps {
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
         let phlo_limit = deploy.data.phlo_limit;
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-            deploy, phlo_limit,
-        )
-        .map_err(|e| {
-            CasperError::RuntimeError(format!(
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy, phlo_limit)
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
                 "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
             ))
-        })?;
-        self.process_deploy_with_mergeable_data_cosigned(cosigned).await
+                })?;
+        self.process_deploy_with_mergeable_data_cosigned(cosigned)
+            .await
     }
 
     pub async fn process_deploy_with_mergeable_data_cosigned(
@@ -1459,8 +1460,7 @@ impl RuntimeOps {
         if cosigned.is_compound() {
             // Multi-sig: fold all signatures into Sig::And, derive
             // compound-domain deploy_id from canonical-order signer set.
-            let sigs: Vec<&[u8]> =
-                cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
+            let sigs: Vec<&[u8]> = cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
             self.runtime.cost.set_deploy_signatures(&sigs);
         } else {
             // Legacy single-sig path — byte-identical deploy_id to existing

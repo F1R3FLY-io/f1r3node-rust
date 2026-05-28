@@ -5077,6 +5077,7 @@ dependencies = [
  "chroma",
  "clap",
  "console",
+ "crossbeam-queue",
  "crypto",
  "dotenv",
  "futures",

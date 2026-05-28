@@ -400,11 +400,14 @@ async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
                 .await;
             let mut runtime_ops = RuntimeOps::new(runtime);
             let result = runtime_ops
-                .play_system_deploy(&state_hash, &mut RefundDeploy {
-                    refund_amount: 101,
-                    pk: construct_deploy::DEFAULT_PUB.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
-                })
+                .play_system_deploy(
+                    &state_hash,
+                    &mut RefundDeploy {
+                        refund_amount: 101,
+                        pk: construct_deploy::DEFAULT_PUB.clone(),
+                        rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    },
+                )
                 .await
                 .unwrap();
 
@@ -1004,7 +1007,9 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
+            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 {
+                p.iter().map(|d| d.cost.cost).sum()
+            }
 
             let deploy0 = construct_deploy::source_deploy(
                 r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
@@ -1160,7 +1165,7 @@ async fn compute_state_should_charge_deploys_separately() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn system_settlement_use_case_does_not_change_user_runtime_cost() {
     with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
+        |runtime_manager, genesis_context, genesis_block| async move {
             // Keep the user COMM on a deploy-local channel so this test isolates
             // fee-settlement system deploys from public-channel application effects.
             let source = "new x in { x!(0) | for(@0 <- x){ Nil } }";
@@ -1233,14 +1238,6 @@ async fn system_settlement_use_case_does_not_change_user_runtime_cost() {
             assert_eq!(with_settlement.len(), 1);
             assert_eq!(user_only[0].cost, with_settlement[0].cost);
             assert_eq!(user_only[0].is_failed, with_settlement[0].is_failed);
-            assert_eq!(
-                user_only[0].cost_trace_digest,
-                with_settlement[0].cost_trace_digest
-            );
-            assert_eq!(
-                user_only[0].cost_trace_event_count,
-                with_settlement[0].cost_trace_event_count
-            );
             // NOTE: We intentionally do not assert equality of
             // `deploy_log.len()` here. The PoS pre-charge + refund flow
             // engages persistent consumes (`<<-`/`<=`-style) whose
@@ -1249,14 +1246,9 @@ async fn system_settlement_use_case_does_not_change_user_runtime_cost() {
             // multi-thread scheduling, those persistent consumes can
             // legitimately match an extra or one-fewer time per run,
             // shifting `deploy_log.len()` by ±1 across otherwise-
-            // identical play passes. The cost-accounted-rho design
-            // canonicalises consensus determinism through
-            // `cost_trace_digest` (sorted, hash-stable) rather than
-            // through the temporal IO-event log, and the cost,
-            // is_failed, cost_trace_digest, and cost_trace_event_count
-            // assertions above already cover the "system settlement
-            // does not change user runtime cost" claim this test
-            // exists to enforce.
+            // identical play passes. The cost and is_failed assertions
+            // above already cover the "system settlement does not change
+            // user runtime cost" claim this test exists to enforce.
         },
     )
     .await
@@ -1344,7 +1336,12 @@ async fn compute_state_should_just_work() {
       }
       "#.to_string();
 
-      let deploy = construct_deploy::source_deploy_now_full(source, Some(i64::MAX - 2), None, None, None, None).unwrap();
+      // Budget must be affordable: the (multi-sig) pre-charge debits
+      // phlo_limit * phlo_price (price defaults to 1) from the signer's
+      // genesis vault (predefined balance 9_000_000) before evaluation, so an
+      // i64::MAX limit would fail pre-charge with "Insufficient funds". This
+      // budget is affordable and amply covers the parallel fan-out below.
+      let deploy = construct_deploy::source_deploy_now_full(source, Some(9_000_000), None, None, None, None).unwrap();
       let (play_state_hash1, processed_deploy) = compute_state(&mut runtime_manager, &genesis_context, deploy, &gen_post_state).await;
       let replay_compute_state_result = replay_compute_state(&mut runtime_manager, &genesis_context, processed_deploy, &gen_post_state).await.unwrap();
       assert!(play_state_hash1 == replay_compute_state_result);
@@ -1429,178 +1426,10 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
     .await?
 }
 
-#[derive(Clone, Copy)]
-enum CostTraceMutation {
-    Digest,
-    Count,
-    Missing,
-}
-
-async fn invalid_replay_cost_trace(
-    source: String,
-    phlo_limit: i64,
-    mutation: CostTraceMutation,
-) -> Result<StateHash, CasperError> {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let deploy = construct_deploy::source_deploy_now_full(
-                source,
-                Some(phlo_limit),
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            let time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            let gen_post_state = genesis_block.body.state.post_state_hash;
-            let block_data = BlockData {
-                time_stamp: time,
-                block_number: 0,
-                sender: genesis_context.validator_pks()[0].clone(),
-                seq_num: 0,
-            };
-
-            let invalid_blocks = HashMap::new();
-
-            let (_, processed_deploys, processed_system_deploys) = runtime_manager
-                .compute_state(
-                    &gen_post_state,
-                    vec![deploy],
-                    Vec::new(),
-                    block_data.clone(),
-                    Some(invalid_blocks.clone()),
-                )
-                .await
-                .unwrap();
-            let mut invalid_processed_deploy = processed_deploys.into_iter().next().unwrap();
-            assert!(!invalid_processed_deploy.cost_trace_digest.is_empty());
-            match mutation {
-                CostTraceMutation::Digest => {
-                    let mut invalid_digest = invalid_processed_deploy.cost_trace_digest.to_vec();
-                    invalid_digest[0] ^= 0x80;
-                    invalid_processed_deploy.cost_trace_digest = invalid_digest.into();
-                }
-                CostTraceMutation::Count => {
-                    invalid_processed_deploy.cost_trace_event_count += 1;
-                }
-                CostTraceMutation::Missing => {
-                    invalid_processed_deploy.cost_trace_digest = Vec::<u8>::new().into();
-                    invalid_processed_deploy.cost_trace_event_count = 0;
-                }
-            }
-
-            runtime_manager
-                .replay_compute_state(
-                    &gen_post_state,
-                    vec![invalid_processed_deploy],
-                    processed_system_deploys,
-                    &block_data,
-                    Some(invalid_blocks),
-                    false,
-                )
-                .await
-        },
-    )
-    .await?
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replaycomputestate_should_catch_cost_trace_digest_mismatch() {
-    let result = invalid_replay_cost_trace(
-        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
-        10000,
-        CostTraceMutation::Digest,
-    )
-    .await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
-            initial_digest,
-            replay_digest,
-            initial_event_count,
-            replay_event_count,
-        })) => {
-            assert_ne!(initial_digest, replay_digest);
-            assert_eq!(initial_event_count, replay_event_count);
-            assert!(initial_event_count > 0);
-        }
-        _ => panic!("Expected ReplayCostTraceMismatch error"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replaycomputestate_should_require_cost_trace_after_activation() {
-    let result = invalid_replay_cost_trace(
-        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
-        10000,
-        CostTraceMutation::Missing,
-    )
-    .await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
-            initial_digest,
-            replay_digest,
-            initial_event_count,
-            replay_event_count,
-        })) => {
-            assert!(initial_digest.is_empty());
-            assert!(!replay_digest.is_empty());
-            assert_eq!(initial_event_count, 0);
-            assert!(replay_event_count > 0);
-        }
-        _ => panic!("Expected ReplayCostTraceMismatch error for missing cost trace"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replaycomputestate_should_catch_cost_trace_event_count_mismatch() {
-    let result = invalid_replay_cost_trace(
-        "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
-        10000,
-        CostTraceMutation::Count,
-    )
-    .await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
-            initial_digest,
-            replay_digest,
-            initial_event_count,
-            replay_event_count,
-        })) => {
-            assert_eq!(initial_digest, replay_digest);
-            assert_ne!(initial_event_count, replay_event_count);
-        }
-        _ => panic!("Expected ReplayCostTraceMismatch error for cost trace count"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn oop_replay_cost_trace_survives_failed_deploy_rollback() {
-    let result = invalid_replay_cost_trace("@1!(1)".to_string(), 1, CostTraceMutation::Count).await;
-    match result {
-        Err(CasperError::ReplayFailure(ReplayFailure::ReplayCostTraceMismatch {
-            initial_digest,
-            replay_digest,
-            initial_event_count,
-            replay_event_count,
-        })) => {
-            assert_eq!(initial_digest, replay_digest);
-            assert!(replay_event_count > 0);
-            assert_eq!(initial_event_count, replay_event_count + 1);
-        }
-        _ => panic!("Expected ReplayCostTraceMismatch error for failed deploy cost trace"),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
     with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
+        |runtime_manager, genesis_context, genesis_block| async move {
             let success = construct_deploy::source_deploy_now_full(
                 "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
                 Some(10000),
@@ -1650,10 +1479,6 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                     .count(),
                 1
             );
-            for processed in &processed_deploys {
-                assert!(!processed.cost_trace_digest.is_empty());
-                assert!(processed.cost_trace_event_count > 0);
-            }
 
             let replay_state = runtime_manager
                 .replay_compute_state(

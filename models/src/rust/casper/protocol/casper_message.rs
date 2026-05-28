@@ -124,9 +124,13 @@ pub struct HasBlockRequest {
 }
 
 impl HasBlockRequest {
-    pub fn from_proto(proto: HasBlockRequestProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: HasBlockRequestProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> HasBlockRequestProto { HasBlockRequestProto { hash: self.hash } }
+    pub fn to_proto(self) -> HasBlockRequestProto {
+        HasBlockRequestProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,9 +139,13 @@ pub struct HasBlock {
 }
 
 impl HasBlock {
-    pub fn from_proto(proto: HasBlockProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: HasBlockProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> HasBlockProto { HasBlockProto { hash: self.hash } }
+    pub fn to_proto(self) -> HasBlockProto {
+        HasBlockProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,16 +154,22 @@ pub struct BlockRequest {
 }
 
 impl BlockRequest {
-    pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
+    pub fn from_proto(proto: BlockRequestProto) -> Self {
+        Self { hash: proto.hash }
+    }
 
-    pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+    pub fn to_proto(self) -> BlockRequestProto {
+        BlockRequestProto { hash: self.hash }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForkChoiceTipRequest;
 
 impl ForkChoiceTipRequest {
-    pub fn to_proto(self) -> ForkChoiceTipRequestProto { ForkChoiceTipRequestProto {} }
+    pub fn to_proto(self) -> ForkChoiceTipRequestProto {
+        ForkChoiceTipRequestProto {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,9 +442,13 @@ pub struct RejectedDeploy {
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self { sig: proto.sig }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto { sig: self.sig }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -571,8 +589,6 @@ pub struct ProcessedDeploy {
     pub deploy_log: Vec<Event>,
     pub is_failed: bool,
     pub system_deploy_error: Option<String>,
-    pub cost_trace_digest: ByteString,
-    pub cost_trace_event_count: u64,
     /// Additional cosigners beyond the primary (`deploy.pk` / `deploy.sig`).
     /// Empty for legacy single-signature deploys. Round-trips through
     /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
@@ -612,8 +628,6 @@ impl ProcessedDeploy {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,
@@ -659,8 +673,6 @@ impl ProcessedDeploy {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners,
             primary_phlo_share,
             // empty_from_cosigned has no view of the runtime threshold —
@@ -782,8 +794,6 @@ impl ProcessedDeploy {
                     Some(proto.system_deploy_error)
                 }
             },
-            cost_trace_digest: proto.cost_trace_digest,
-            cost_trace_event_count: proto.cost_trace_event_count,
             cosigners,
             primary_phlo_share,
             cosigner_threshold,
@@ -804,8 +814,6 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
-            cost_trace_digest: self.cost_trace_digest,
-            cost_trace_event_count: self.cost_trace_event_count,
         }
     }
 }
@@ -834,7 +842,9 @@ impl SystemDeployData {
         }
     }
 
-    pub fn create_close() -> Self { Self::CloseBlockSystemDeployData }
+    pub fn create_close() -> Self {
+        Self::CloseBlockSystemDeployData
+    }
 
     pub fn from_proto(proto: SystemDeployDataProto) -> Result<Self, String> {
         match proto
@@ -896,7 +906,9 @@ pub enum ProcessedSystemDeploy {
 }
 
 impl ProcessedSystemDeploy {
-    pub fn failed(self) -> bool { matches!(self, ProcessedSystemDeploy::Failed { .. }) }
+    pub fn failed(self) -> bool {
+        matches!(self, ProcessedSystemDeploy::Failed { .. })
+    }
 
     pub fn fold<A, F, G>(self, if_succeeded: F, if_failed: G) -> A
     where
@@ -993,7 +1005,9 @@ pub struct DeployData {
 
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
-    fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn to_message(&self) -> Self::Type {
+        DeployData::_to_proto(self.clone())
+    }
 }
 
 /// Internal helper for walking a `SigCompound` expression and collecting
@@ -1116,7 +1130,9 @@ impl DeployData {
             .unwrap_or(false)
     }
 
-    pub fn encode(a: DeployData) -> ByteVector { DeployData::_to_proto(a).encode_to_vec() }
+    pub fn encode(a: DeployData) -> ByteVector {
+        DeployData::_to_proto(a).encode_to_vec()
+    }
 
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
@@ -2130,8 +2146,6 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,
@@ -2144,8 +2158,6 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: true,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,
@@ -2158,8 +2170,6 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,
@@ -2172,8 +2182,6 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,
@@ -2201,30 +2209,6 @@ mod tests {
         assert!(deploy_data(i64::MAX, 2)
             .checked_total_phlo_charge()
             .is_err());
-    }
-
-    #[test]
-    fn processed_deploy_cost_trace_fields_roundtrip_through_proto() {
-        let processed = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(5, 2)),
-            cost: PCost { cost: 3 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cost_trace_digest: vec![9; 32].into(),
-            cost_trace_event_count: 4,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-        };
-
-        let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
-
-        assert_eq!(decoded.cost_trace_digest, processed.cost_trace_digest);
-        assert_eq!(
-            decoded.cost_trace_event_count,
-            processed.cost_trace_event_count
-        );
     }
 
     fn fresh_atom_signing(
@@ -2434,8 +2418,6 @@ mod tests {
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cost_trace_digest: ByteString::new(),
-            cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 100,
             cosigner_threshold: 2,
@@ -2461,8 +2443,6 @@ mod tests {
                 deploy_log: Vec::new(),
                 is_failed: false,
                 system_deploy_error: None,
-                cost_trace_digest: ByteString::new(),
-                cost_trace_event_count: 0,
             cosigners: Vec::new(),
             primary_phlo_share: 0,
             cosigner_threshold: 0,

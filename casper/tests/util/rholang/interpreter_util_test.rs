@@ -110,11 +110,9 @@ impl TestContext {
                 deploy_log: Vec::new(),
                 is_failed: false,
                 system_deploy_error: None,
-                cost_trace_digest: Default::default(),
-                cost_trace_event_count: 0,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-cosigner_threshold: 0,
+                cosigners: Vec::new(),
+                primary_phlo_share: 0,
+                cosigner_threshold: 0,
             })
             .collect()
     }
@@ -740,9 +738,12 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     acc_costs_sep.extend(cost3);
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
-            deploy1, deploy2, deploy3,
-        ])
+        .compute_deploy_costs(
+            &mut node.runtime_manager,
+            dag,
+            &mut node.block_store,
+            vec![deploy1, deploy2, deploy3],
+        )
         .await
         .unwrap();
 
@@ -816,9 +817,12 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
             .unwrap();
 
     let acc_cost_batch = ctx
-        .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
-            deploy1, deploy2, deploy_err,
-        ])
+        .compute_deploy_costs(
+            &mut node.runtime_manager,
+            dag,
+            &mut node.block_store,
+            vec![deploy1, deploy2, deploy_err],
+        )
         .await
         .unwrap();
 

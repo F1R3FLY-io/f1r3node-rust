@@ -6,6 +6,21 @@ import sys
 load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schema.sage"))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TM-CA-151 — DIAGNOSTIC-REFINEMENT LEVEL (not the production consensus surface).
+# This model authenticates a *digest-inclusive* replay payload: FIELDS includes
+# `digest`, `digest_present`, and `event_count`. Per TM-CA-151
+# (docs/theory/cost-accounting-threat-model.md) those per-operation cost-trace
+# quantities are DIAGNOSTIC/TELEMETRY ONLY and were removed from production
+# consensus (the replay comparison and the signed block-hash preimage). The
+# production consensus surface is total_cost (clamped to initial on OOP) +
+# status + post-state hash (modeled here by the non-digest fields: cost,
+# signature, failed, system_error, genesis, system_kind). The digest-inclusive
+# scenarios below remain valid statements about a strictly-finer refinement
+# level; they are NOT claims that the per-operation digest is consensus.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 FIELDS = [
     "cost",
     "digest_present",
@@ -63,7 +78,7 @@ def records():
             "replay_authentication",
             "confirmed_safe",
             "sage_cost_replay_payload_mutations_are_observable",
-            "Each replay-relevant field participates in the authenticated payload abstraction.",
+            "Each field participates in the authenticated payload abstraction at the digest-inclusive diagnostic-refinement level (TM-CA-151: the digest/digest_present/event_count fields are diagnostic, not part of the production consensus replay fingerprint).",
             canonical_scenario("replay_mutations", replay_fields=base, expected_classification="confirmed_safe"),
             {"base": base, "mutations": mutation_rows, "all_changed": all(row["changed"] for row in mutation_rows)},
             ["Rust: replay_payload_hash field-sensitivity tests", "TLA+: CostAccountingThreats"],
@@ -72,10 +87,10 @@ def records():
             "replay_authentication",
             "confirmed_safe",
             "sage_cost_missing_digest_rejected_after_activation",
-            "A post-activation payload with no cost-trace digest remains replay-invalid even when the event count is zero.",
+            "A post-activation payload with no cost-trace digest remains replay-invalid at the digest-inclusive diagnostic-refinement level even when the event count is zero (TM-CA-151: this is NOT a production consensus rejection; production replay does not reject on digest presence).",
             canonical_scenario("missing_digest", replay_fields=missing, projection={"activation": "cost_accounted"}, expected_classification="confirmed_safe"),
             {"payload": missing, "replay_valid": False},
-            ["Rocq: rb_cost_accounted_replay_rejects_absent_commitment", "Rust: replaycomputestate_should_require_cost_trace_after_activation"],
+            ["Rocq: rb_cost_accounted_replay_rejects_absent_commitment (diagnostic-refinement)", "Rust: consensus commitment test removed with TM-CA-151"],
         ),
     ]
 

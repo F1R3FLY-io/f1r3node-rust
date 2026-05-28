@@ -84,7 +84,7 @@ Terms are defined here in the order they are needed. Every symbol, acronym, and 
 | **Validator**                        | A node that proposes and validates blocks. All validators must agree on the cost of every deploy for consensus to hold.                                                                                         |
 | **`CostManager`**                    | Retired pre-migration role for a shared mutable phlogiston counter and cost log. The staged implementation replaces the user-deploy consensus role with `RuntimeBudget` and `MeteredMachine`. |
 | **`ChargingRSpace`**                 | Retired pre-migration role for a broad RSpace wrapper that pre-charged `produce`/`consume`, refunded on COMM match, and applied unified COMM cost. The current staged implementation does not contain a live `charging_rspace.rs` source file. |
-| **`RuntimeBudget`**                  | Current staged runtime-budget implementation in `rholang/src/rust/interpreter/accounting/mod.rs`. It records bounded billable source-token events, maintains consumed/remaining counters, and computes replay-authenticated cost trace digests. |
+| **`RuntimeBudget`**                  | Current staged runtime-budget implementation in `rholang/src/rust/interpreter/accounting/mod.rs`. It records bounded billable source-token events, maintains consumed/remaining counters, and computes the consensus `total_cost` (clamped) plus a diagnostic cost-trace digest/count (the digest is not a consensus quantity — see §8.1's consensus-surface update and TM-CA-151). |
 | **`MeteredMachine`**                 | Current staged metering adapter in `rholang/src/rust/interpreter/metering.rs`. It routes billable, nonbillable, and system frames into `RuntimeBudget` without reintroducing a broad RSpace charging wrapper. |
 | **`Cost`**                           | A Rust struct with an `i64` value and a `Cow<'static, str>` operation label. Represents a phlogiston amount.                                                                                                    |
 | **`storage_cost_produce`**           | Function computing phlogiston for a produce: `storage_cost(channel) + storage_cost(data.pars)`.                                                                                                                 |
@@ -1100,7 +1100,7 @@ current replacement surface is:
 
 | Rust surface | Current role |
 |--------------|--------------|
-| `rholang/src/rust/interpreter/accounting/mod.rs` | `RuntimeBudget`, `BillableTokenEvent`, deterministic source-event weights, bounded trace retention, and replay-authenticated digest/count state. |
+| `rholang/src/rust/interpreter/accounting/mod.rs` | `RuntimeBudget`, `BillableTokenEvent`, deterministic source-event weights, bounded trace retention, the consensus `total_cost`, and a diagnostic (non-consensus) digest/count (see the superseding note below and TM-CA-151). |
 | `rholang/src/rust/interpreter/metering.rs` | `MeteredMachine` bridge from interpreter frames to billable/nonbillable/system runtime-budget operations. |
 | `rholang/src/rust/interpreter/reduce.rs` | `FuturesUnordered` branch dispatch, stable error aggregation, and recursive metering of billable source events. |
 | `rholang/src/rust/interpreter/rho_runtime.rs` | Runtime construction with raw RSpace access and `RuntimeBudget`/unmetered budget selection by execution mode. |
@@ -1121,6 +1121,27 @@ replay remains accepted only through the explicit compatibility path. A
 zero-event deploy is not a special exemption: it carries a present digest
 commitment over an empty event set and an event count of zero, so the
 consensus distinction is "commitment present" rather than "trace non-empty."
+
+> **Superseded — consensus-surface update.** The preceding paragraph and
+> the `replay_runtime.rs` / `runtime_manager.rs` rows in the table above
+> describe the original design, in which the per-operation cost-trace
+> **digest** and **event count** were required consensus evidence compared
+> during replay and folded into the replay-payload hash. That is no longer
+> the design. The digest/event-count are **removed from consensus** (out
+> of the replay comparison, the replay-payload/cache key, and the signed
+> block-hash preimage) and retained as diagnostics; the `cost_trace_digest`
+> /`cost_trace_event_count` fields are not stored on `ProcessedDeploy`.
+> Consensus cost integrity is `total_cost` (clamped) + status + post-state
+> hash. Because these fields are **unreleased** (absent from `master` and
+> tag `v0.4.15`), this is a pre-merge consensus-surface decision with zero
+> migration cost. The "scalar cost alone does not authenticate the
+> sequence" concern is intentionally resolved differently: per-operation
+> metering integrity is *not* a consensus requirement (the OOP committed
+> set is schedule-dependent and so cannot be), while `total_cost`
+> determinism is guaranteed by the two guarded invariants (fresh-per-scope
+> metering counters; deterministic RSpace candidate selection). See §8.1's
+> consensus-surface update, §10, and TM-CA-151 in
+> [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md).
 
 The trace boundary is also part of the replacement surface. Failed deploy
 rollback reverts tuple-space effects but retains the OOP boundary evidence
@@ -1208,16 +1229,22 @@ Signatures and traces sit on the same boundary. The deploy signature
 authenticates the deploy data that includes `phlo_limit`, `phlo_price`,
 `term`, timestamp, shard, and expiry. The proposer block signature
 authenticates the block hash, which includes every `ProcessedDeploy`,
-its consumed-token `cost`, cost-trace digest, cost-trace event count,
-and the deploy event log used by replay. Replay-cache keys must include
-the same replay payload so optimization cannot reuse a cached result
-across digest, count, failure-status, user-log, system-log, slash-field,
-or genesis-mode changes.
-The evaluation trace is therefore useful for assurance and deterministic
-replay: it records the sequence of tuple-space effects and tie-breaker
-choices that led to the final state and cost. It does not authorize
-Casper to mutate balances during evaluation; it authenticates the
-post-evaluation settlement input.
+its consumed-token `cost` (`total_cost`), failure status, the post-state
+hash, and the deploy event log used by replay. The per-operation
+cost-trace **digest** and **event count** are **not** in the block-hash
+preimage and are **not** stored on `ProcessedDeploy` — they are
+diagnostics (see §8.1's consensus-surface update, §10, and TM-CA-151).
+Replay-cache keys must include the same consensus replay payload so
+optimization cannot reuse a cached result across `total_cost`,
+failure-status, user-log, system-log, slash-field, or genesis-mode
+changes; the digest/count are likewise dropped from the cache key for
+coherence with consensus. The evaluation trace is still recorded
+alongside the signature for assurance and deterministic replay: it
+records the sequence of tuple-space effects and tie-breaker choices that
+led to the final state and cost, and it is required to compute
+`total_cost`. It does not authorize Casper to mutate balances during
+evaluation; it authenticates the post-evaluation settlement input through
+the consensus quantities above.
 
 The settlement deploys themselves run as system deploys under an
 explicit unmetered/no-op budget. They must not preserve the old
@@ -1271,12 +1298,20 @@ commit:
 5. If the next canonical reservation would exceed the budget, every
    validator raises `OutOfPhlogistonsError` at the same descriptor.
 
-The canonical ordering is therefore a consensus boundary for insufficient
-fuel, not a sequential execution plan. RSpace matching, continuation
-execution, primitive work, and branch discovery remain concurrent. Event
-logs and replay payloads must use canonical descriptors or multiset
-commitments for fuel events; they must not depend on wall-clock task
-completion order.
+The canonical ordering gives the runtime a deterministic *clamp* on
+out-of-phlogiston: `total_cost` is clamped to `initial`, and the deploy
+status is `OutOfPhlogistonsError`, identically across validators. Those
+two — `total_cost` (clamped) and status, together with the post-state
+hash — are the consensus cost quantities. The *identity* of the specific
+boundary descriptor named by the canonical walk (point 5 above) is a
+**diagnostic**, not a consensus quantity: when a fork unwinds at a
+schedule-dependent point the committed per-op set differs across
+schedules, which is exactly why the per-operation digest/event-count are
+not validator-compared (see §8.1's consensus-surface update and TM-CA-151).
+RSpace matching, continuation execution, primitive work, and branch
+discovery remain concurrent. The diagnostic fuel-event digest still uses
+canonical descriptors / multiset commitments (never wall-clock completion
+order); it is simply not part of the consensus replay payload.
 
 The security boundary is physical work, not only surviving state. A branch
 may discover cheap descriptors, but expensive primitive work, substitution,
@@ -1467,6 +1502,27 @@ The architectural implications of internalizing cost accounting are discussed in
 
 ### 8.1 What Changes
 
+> **Consensus-surface update (supersedes the digest paragraphs below).**
+> The "Event hashing", "Cost validation", and "Replay transparency"
+> paragraphs in this subsection were written when the per-operation
+> cost-trace **digest** and **event count** were intended to be part of
+> the consensus replay payload and the signed block-hash preimage. That
+> is no longer the design: the per-operation digest/event-count are
+> **removed from consensus** (out of the replay comparison and the
+> block-hash preimage) and retained as diagnostics only. Consensus cost
+> integrity is carried by `total_cost` (clamped) + status + post-state
+> hash. The deterministic source-event canonicalization described below
+> is still how the diagnostic digest is *computed* and is still the basis
+> of `total_cost` determinism (the recorded multiset is a function of the
+> deploy via the two guarded invariants — fresh-per-scope metering
+> counters and deterministic RSpace candidate selection), but the digest
+> itself is not a validator-compared quantity. See §10 (Migration Note)
+> and TM-CA-151 in
+> [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md) for
+> the authoritative consensus-surface statement; read the paragraphs
+> below as the source-event canonicalization design, with their
+> consensus-payload claims superseded.
+
 **Cost computation.** The cost of a deploy changes from "sum of `storage_cost_*` charges and refunds minus event storage costs" to "sum of deterministic billable source-token event weights." The runtime observes those events as fired recursive metered gates and weighted primitive/source events, and must exclude pending registrations, continuation scheduling, and Split/Join mediator COMMs. The numerical value of the cost will differ between the two models for most deploys. This is a consensus-breaking change that requires coordinated network activation (Section 6, step 22).
 
 **Cost determinism guarantee.** F1R3Node's `ChargingRSpace` already makes cost order-independent empirically: `cost_should_be_deterministic` re-runs each contract 20 times, `cost_should_be_repeatable_when_generated` runs 10,000 randomly-generated contracts, and `peek_with_parallel_produce_should_have_deterministic_replay_cost` directly guards the peek-with-parallel-produce class (`rholang/tests/accounting/cost_accounting_spec.rs:323,344,474`). Under the internalized model, cost determinism is upgraded to a machine-checked theorem (`ca_cost_deterministic`), proven via strong normalization plus local confluence composed through Newman's lemma. This is a strictly stronger guarantee than empirical test coverage: it holds for every reachable state, not just the sampled ones.
@@ -1486,10 +1542,14 @@ digest     = blake2b256(sort(events))
 where `source_path` is a deterministic path through the normalized `SPar`
 tree, `redex_id` identifies the selected source redex, and
 `success_or_oop_tag` distinguishes successful reservations from the single
-out-of-phlogistons boundary event. The stored replay payload includes both
-the digest and the event count, so truncation or event insertion cannot
-silently collide with an empty or shorter trace. This preserves parallel
-scheduling freedom while keeping validator-visible replay data deterministic.
+out-of-phlogistons boundary event. (As noted in the consensus-surface
+update at the head of §8.1, the digest and event count are no longer
+stored in the consensus replay payload or the block-hash preimage; they
+are diagnostics. The canonicalization here is what makes the diagnostic
+digest reproducible and underwrites `total_cost` determinism, which *is*
+consensus-checked.) This canonicalization preserves parallel scheduling
+freedom while keeping the diagnostic trace and the consensus `total_cost`
+deterministic.
 
 The intra-deploy ordering is *paper-original*: the token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` ([4, §4.2]) places at most one token message on any signature channel at a time, and each fuel-gate firing dequotes the next token via `*t` to release the subsequent gate. Validators executing the same translated process therefore observe the same fuel-event sequence not because they *agree* on an order, but because the process structure admits exactly one. The Rocq theorems verify this property: `ca_step_deterministic` (`StepDeterminism.v:156`) shows that any single-token system has a unique successor at each step; `single_token_path_unique` (`StepDeterminism.v:249`) lifts this to whole reduction paths; and `fuel_events_consumed_perm` (`FuelEventDecomposition.v:198`) proves the broader multiset-equality property from which list-equality drops out in the single-token case. None of these theorems introduce the ordering — they verify the algorithm the paper specifies. The cross-deploy case, by contrast, is *not* a paper claim: block-level ordering of per-deploy digests is a F1R3Node deployment choice (canonical deploy-index order, enforced by validator code), and what the Rocq proof contributes there is `ca_cost_deterministic` for the parallel composition of all in-block deploys, which guarantees the *aggregate* token count is order-independent. The block-level ordered hash chain therefore relies on (a) the paper's intra-deploy ordering algorithm (verified in Rocq) plus (b) protocol-level inter-deploy ordering by deploy index; both are required, and the paper-vs-protocol distinction should be kept explicit in any audit.
 
@@ -1668,59 +1728,107 @@ Implementation paths, formal-verification artifacts, and regression tests are co
 **Audience:** downstream contract authors and node operators who
 previously relied on the legacy schedule-dependent cost-trace semantics.
 
-**Summary.** As of the cost-accounted-rho `feature/...` integration,
-`RuntimeBudget`'s `cost_trace_digest`, `cost_trace_event_count`,
-`last_oop_event`, and `total_cost` are derived from a post-hoc
-**canonical reconciliation** instead of from runtime CAS race
-outcomes. The runtime still races lock-free attempts at full
-parallelism; only the *consensus-relevant* values are canonicalized.
+**Summary.** As of the cost-accounted-rho `feature/...` integration, the
+consensus cost integrity of a deploy is carried by exactly three
+schedule-independent quantities: `total_cost` (clamped), the deploy
+status, and the post-state hash. The per-operation `cost_trace_digest`
+and `cost_trace_event_count` are **not** consensus quantities — they have
+been removed from both the replay comparison and the signed block-hash
+preimage and are retained as **diagnostics/telemetry only** (see TM-CA-151
+in the threat model). The runtime still races lock-free attempts at full
+parallelism; the consensus quantity `total_cost` is schedule-independent
+not because the runtime serializes, but because of the two structural
+facts below.
+
+**Where cost determinism actually comes from.** It is *not* a per-fork-
+private ledger, and it is *not* a property the post-hoc reconciliation
+manufactures. It is a consequence of two guarded invariants of the
+existing runtime:
+
+1. **Fresh-per-scope metering counters.** `eval_inner` forks *every* Par
+   term — including single-term bodies — into its own metering child via
+   `with_metering_child`, and each child gets a fresh `next_local_index`;
+   it never charges on the shared parent counter. No two concurrent scopes
+   share a counter, and continuations re-root through
+   `reducer.eval → eval_inner`, so they fork fresh-counter children too.
+2. **Deterministic RSpace candidate selection.** RSpace orders match
+   candidates by a deterministic candidate hash (no RNG), so the recorded
+   source-token multiset of a non-OOP deploy is identical across schedules
+   and across play/replay.
+
+Together these make the billable multiset — and hence `total_cost` — a
+function of the deploy and its initial budget alone for the non-OOP case.
+On out-of-phlogiston the committed multiset is schedule-dependent (which
+is precisely *why* the per-op digest is not a consensus quantity), but
+`total_cost` is clamped to `initial` and is identical across schedules.
 
 **Behavioral changes you may observe:**
 
-1. `cost_trace_digest` is now schedule-INDEPENDENT. Two play/replay
-   runs of the same deploy produce byte-identical digests. The prior
-   schedule-dependent digest was the root cause of the
+1. `cost_trace_digest` / `cost_trace_event_count` are **dropped from
+   consensus**. They no longer participate in replay comparison or the
+   block-hash preimage; they remain callable as diagnostics. Two
+   play/replay runs still recompute an identical block hash because the
+   digest is no longer in the preimage. This is what closes the
    `ReplayCostTraceMismatch` cascade that surfaced in
-   `test_cost_accounting.py::test_low_phlo_parallel_fanout_*`.
-2. `cost_trace_event_count()` may differ from
-   `get_event_log().len() + last_oop_event.is_some()`. The runtime
-   `event_log` still tracks CAS-granted events (schedule-dependent),
-   but the canonical event count comes from the canonical-walk
-   reconciliation.
-3. `total_cost()` always returns the canonical clamp value: either
-   `Σ canonical-committed weights` (no OOP) or `initial` (OOP).
-4. `last_oop_event()` returns the **canonical** OOP boundary — the
-   smallest-rank event whose cumulative weight would have exceeded
-   the budget under the canonical walk — NOT the runtime CAS loser
-   that happened to fire OOP first.
-5. `get_log()` is unchanged in semantics — still the runtime-appended
-   diagnostic log; cleared by `clear_log()` without affecting
-   consensus observables.
+   `test_cost_accounting.py::test_low_phlo_parallel_fanout_*` — the OOP
+   schedule-dependence of the digest can no longer cause a mismatch
+   because the digest is not compared.
+2. `total_cost()` is the consensus cost quantity. It always returns the
+   clamp value: either `Σ committed weights` (no OOP) or `initial` (OOP),
+   and is schedule-independent for the reasons above.
+3. `last_oop_event()` is **diagnostic**. It reports a canonical OOP
+   boundary for telemetry, but it is not a consensus quantity; consensus
+   does not depend on which event is named as the OOP boundary.
+4. `get_log()` is unchanged in semantics — still the runtime-appended
+   diagnostic log; cleared by `clear_log()` without affecting consensus
+   observables.
+
+**Reconciliation is now a bounded lowest-`K` merge.** The post-hoc
+reconciliation that computes `total_cost` and the diagnostic boundary no
+longer collects-all-then-sorts the full attempt list. It performs a
+bounded lowest-`K` commutative merge with `K = min(MAX_COST_TRACE_EVENTS,
+initial + 1)` (every billable weight is ≥ 1, so the canonical walk commits
+at most `initial` events plus one OOP boundary). The result is a pure
+function of the recorded multiset; it removes the global O(N log N) sort
+over up to a million elements and bounds memory, and it leaves
+`total_cost` and the diagnostic boundary unchanged.
 
 **What contract authors should NOT rely on:**
 
-- The IDENTITY of which events succeed at runtime when the deploy
-  OOPs. The runtime CAS race winners are schedule-dependent (and
-  are correctly bounded by `phlo_limit`); the canonical reconciliation
-  is the only consensus answer.
-- Per-fork private budgets (an alternative design that was considered
-  and rejected — see TM-CA-147 in the threat model). All parallel
+- The per-operation `cost_trace_digest` or `cost_trace_event_count` as a
+  consensus value. They are diagnostics; only `total_cost` (clamped) +
+  status + post-state hash are consensus-checked.
+- The IDENTITY of which events succeed at runtime when the deploy OOPs.
+  The committed set is schedule-dependent on OOP; `total_cost` is clamped
+  to `initial` and is the only consensus answer.
+- Per-fork private budgets (an alternative design that was considered and
+  rejected — see TM-CA-147 in the threat model). All parallel
   sub-processes within a deploy share ONE budget, per paper §3 Rule 1.
+  Cost determinism does **not** come from partitioning the budget per
+  fork; it comes from the fresh-per-scope counters and deterministic
+  RSpace selection described above.
 
 **Migration steps for downstream consumers:**
 
 - Reads of `RuntimeBudget` accounting fields are unchanged at the API
   surface. The semantic refinement happens transparently.
+- Consumers must read `total_cost` (plus status and the post-state hash)
+  as the consensus cost evidence, not the per-op digest/event-count.
 - Tests asserting "event_log == cost_trace_events" (or equivalent
-  schedule-dependent invariants) must be updated to assert against
-  the canonical reconciliation. See
+  schedule-dependent invariants) must be updated. The digest/count are no
+  longer consensus quantities, so the invariant to assert is
+  `total_cost`-determinism (and OOP-verdict determinism) across schedules.
+  See
   `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`
-  for the canonical-walk simulator pattern.
+  for the canonical-walk simulator pattern, now read as a
+  `total_cost`-determinism property rather than a digest-consensus check.
 
 **Reset/lifecycle considerations:**
 
-- `reset_from_token` now also clears the `attempt_log` and the
-  `canonical_reconciliation` cache. The reset is serialized against
-  in-flight batch reservations via `reset_serializer: RwLock<()>`.
-  Per-batch reservation entry points take a brief read lock —
-  uncontested when no reset is pending.
+- `reset_from_token` clears the recorded attempt state and any cached
+  reconciliation. Reset is strictly between deploys (finalization is
+  single-threaded), so it does not need to be serialized against in-flight
+  batch reservations; the earlier `reset_serializer` read/write lock is
+  removed in favor of a single-threaded-finalization debug-assert. Per-op
+  `deploy_id`/`initial`/`unmetered` are copied by value into scopes, so
+  reset no longer requires a per-event lock read.

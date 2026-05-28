@@ -26,8 +26,10 @@ Common TLC jar locations:
 | `MCEval.tla` | Model instance for EvalScheduling | — | — |
 | `FullProtocol.tla` | Generalized protocol: shared channels, arbitrary nesting (depth 0/1/2), Join mediators | 12,960 (7 procs, 12 channels) | TokenConservation, CostDeterminism, FuelGateSafety, GateOrdering, SplitOrdering, NoNegativeTokens |
 | `MCFull.tla` | Model instance for FullProtocol | — | — |
-| `RuntimeBudgetReplay.tla` | Bounded runtime-budget canonical permit grants, replay trace, invalid-event rejection, post-OOP rejection, deploy reset, finalization-read model, and canonical digest-entry abstraction over Rust event descriptors and occurrence multiplicity | 72 distinct / 203 generated (6 events, including zero-weight, over-source-path, and over-primitive-descriptor invalid events) | NoOverspend, OopCommitsBoundary, ReplayTraceSubset, OopNotLogged, PermitsMatchSuccessfulTrace, NoUnpaidPhysicalWork, CanonicalPermitOrder, FinalizedTraceSequence, FinalizationPreservesActiveBudget, LoggedEventsHavePositiveWeight, LoggedEventsAreValidated, TraceWithinRetentionBound, ResetClearsActiveTraceAfterFinalization, PostOopRejectionsPreserveSingleBoundary, CanonicalDigestEventCountMatches, CanonicalDigestDomainSeparatesOop, CanonicalDigestStableAfterFinalization |
-| `MCRuntimeBudgetReplay.tla` | Model instance for RuntimeBudgetReplay | — | — |
+| `RuntimeBudgetReplay.tla` | Bounded runtime-budget with WEAKENED schedule-order grants (`ScheduleReady`), OOP truncation (`OopTruncate`), bounded-K reconciliation (`Merge`), replay trace, invalid-event rejection, deploy reset, finalization-read model, and canonical digest-entry diagnostic abstraction. Re-aimed so the consensus quantities (`total_cost`/verdict, reconciled committed multiset) are asserted schedule-independent; the per-op digest is NOT (it is dropped from consensus). | OOP arm: 1,722 distinct / 5,209 generated; non-OOP arm: 908 distinct / 2,799 generated; cap arm: 908 distinct / 2,575 generated (6 events incl. zero-weight, over-source-path, over-primitive-descriptor invalid events) | NoOverspend, OopCommitsBoundary, ReplayTraceSubset, OopNotLogged, PermitsMatchSuccessfulTrace, NoUnpaidPhysicalWork, LiveTraceIsAdmissibleSchedule, FinalizedTraceSequence, FinalizationPreservesActiveBudget, LoggedEventsHavePositiveWeight, LoggedEventsAreValidated, TraceWithinRetentionBound, ResetClearsActiveTraceAfterFinalization, PostOopRejectionsPreserveSingleBoundary, CanonicalDigestEventCountMatches, CanonicalDigestDomainSeparatesOop, CanonicalDigestStableAfterFinalization, **ConsumedAndVerdictScheduleIndependent**, **TotalCostMatchesClampedSum**, **NonOopCommittedMultisetComplete**, **CapTruncatedCommittedIsLowestK**, **ReconciledCommittedWellFormed**, **MergeReadsBoundedKWindow**, ConsumedFollowsReconciliationContract, NoCrossWorkerStateMixing |
+| `MCRuntimeBudgetReplay.tla` | Model instance for RuntimeBudgetReplay — OOP arm (budget binds; deploy goes OOP) | — | — |
+| `MCRuntimeBudgetReplayNonOop.tla` | Model instance for RuntimeBudgetReplay — non-OOP arm (Σ valid weights ≤ budget; complete commit) | — | — |
+| `MCRuntimeBudgetReplayCap.tla` | Model instance for RuntimeBudgetReplay — bounded-K cap arm (MaxTraceEvents < valid-event count; cap binds before budget) | — | — |
 | `CostAccountingThreats.tla` | Replay tampering, activation downgrade, unauthorized settlement, evidence-recording, and slash-authorization threat model | 5,408 distinct / 401,025 generated | CostAccountedReplayAcceptsOnlyValidPayload, CostAccountedReplayRejectsMissingCommitment, SettlementNeverAddsRuntimeFuel, CostInvalidEvidenceHasViolation, RecoveredSlashRequiresCurrentEvidence, SlashAuthorizationUsesParentPreState, AmbientBondDoesNotAuthorizeWithoutParent, ParentPositiveAmbientZeroCanAuthorize, SlashNoopPreservesCostBoundary |
 | `MCCostAccountingThreats.tla` | Model instance for CostAccountingThreats | — | — |
 | `CostAccountingSearchFrontier.tla` | Witness classification and promotion discipline for generated cost-accounting findings | 34,167 distinct / 266,015 generated | NoSourceFixWithoutRustOrInvariantEvidence, ProjectionRiskHasRustGuard, FormalStrengtheningHasInvariantTarget, ConfirmedBugHasSourceTarget, SourceSemanticWitnessHasFacets, SourceGraphSlashingWitnessHasAuthorizationMetadata |
@@ -92,9 +94,15 @@ java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCFull.tla -config FullProtocol.cfg -workers auto -nowarning
 
-# Bounded runtime-budget reservation/replay trace and finalization-read model
+# Bounded runtime-budget with weakened schedule-order grants, OOP truncation,
+# and bounded-K reconciliation. Three instances exercise the OOP arm, the
+# non-OOP complete-commit arm, and the bounded-K cap arm.
 java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
   tlc2.TLC MCRuntimeBudgetReplay.tla -config RuntimeBudgetReplay.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCRuntimeBudgetReplayNonOop.tla -config MCRuntimeBudgetReplayNonOop.cfg -workers auto -nowarning
+java -XX:+UseParallelGC -cp "$TLA2TOOLS" \
+  tlc2.TLC MCRuntimeBudgetReplayCap.tla -config MCRuntimeBudgetReplayCap.cfg -workers auto -nowarning
 
 # Replay tampering, activation downgrade, unauthorized settlement, and
 # cost-invalid evidence threat model
@@ -133,7 +141,7 @@ done
 ### Aggregate runner (local-only)
 
 The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh`
-runs ALL of the above (currently 22 specs) sequentially through TLC.
+runs ALL of the above (currently 24 specs) sequentially through TLC.
 Per the team's "formal verification is local-only, NOT in CI" policy
 this script does NOT live under `scripts/ci/`. Invoke directly from
 the repo root:
@@ -142,9 +150,10 @@ the repo root:
 bash scripts/check-cost-accounted-rho-tla-invariants.sh
 # Or filter:
 bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
+bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter RuntimeBudget
 ```
 
-All eight should report: `Model checking completed. No error has been found.`
+All specs should report: `Model checking completed. No error has been found.`
 
 When Apalache is installed, the threat and search-frontier models can also
 be checked symbolically:
@@ -235,14 +244,67 @@ The `extCost` variable tracks what the externalized (buggy) cost model would pro
 - **PermitsMatchSuccessfulTrace** and **NoUnpaidPhysicalWork**: successful
   budget commits grant execution permits before modeled physical work
   executes, and OOP does not grant an execution permit for unfunded work.
-- **CanonicalPermitOrder**: permits follow the modeled canonical rank, so
-  the OOP boundary is not chosen by task completion order.
+- **LiveTraceIsAdmissibleSchedule** (replaces the old `CanonicalPermitOrder`):
+  under the cost-accounting refactor the live `successTrace` is recorded in
+  whatever order the lock-free CAS race produced — it is **not** rank-sorted.
+  The firing guard was deliberately weakened (`ScheduleReady` instead of
+  `CanonicalReady`) so TLC explores every interleaving of grants and the model
+  can witness the schedule-dependence of the live per-op trace under OOP. The
+  invariant therefore only asserts that every committed event was
+  intrinsically admissible (positive weight, bounded source path / primitive
+  descriptor); the canonical order is recovered post-hoc by the `Merge`
+  reconciliation, not enforced on the live trace.
 - **CanonicalDigestDomainSeparatesOop**: the OOP boundary is tagged
   separately from successful events, so boundary evidence cannot collapse
   into a successful reservation with the same event identity.
 - **CanonicalDigestStableAfterFinalization**: finalization reads the same
   canonical digest entries that the active runtime budget retained; deploy
   reset may clear active trace state only after the finalization read.
+
+#### Re-aimed consensus-quantity invariants (digest dropped from consensus)
+
+The refactor **drops the per-operation `cost_trace_digest` from consensus** —
+it is not a consensus quantity. The `ReconciledDigestIsPureFunctionOfEventsAnd
+Initial` invariant (which asserted the per-op digest was schedule-independent)
+is therefore **removed**: it is *false* once the firing guard is weakened and
+OOP truncation is modeled. The consensus cost quantity that remains is
+`total_cost` (= consumed tokens, clamped to `initial` on OOP) plus the
+failed/OOP status. The model now asserts schedule-independence of exactly
+those, via a bounded-K `Merge` action that reconciles a schedule-dependent
+live attempt log into a pure function of the constants:
+
+- **ConsumedAndVerdictScheduleIndependent** (headline): after `Merge`
+  (`frontier = 2`) the reconciled `consumed`/`total_cost` and OOP verdict equal
+  `RecConsumed`/`RecOop`, which read only the constants (Events, Weight, Rank,
+  InitialBudget) — never the live trace or firing order. Hence every schedule
+  reaches the same value. Threshold law (when the cap does not bite):
+  Σ(valid weights) > InitialBudget ⇒ OOP ∧ consumed = InitialBudget; otherwise
+  ¬OOP ∧ consumed = Σ.
+- **TotalCostMatchesClampedSum**: `total_cost` is the clamped sum
+  `min(InitialBudget, Σ valid weights)` in the common (non-cap-truncated) case,
+  and is always ≤ both bounds.
+- **NonOopCommittedMultisetComplete**: when not OOP and the cap does not bite,
+  the reconciled committed multiset is the complete intrinsically-valid event
+  set — complete and schedule-independent (every term's fresh-counter metering
+  child commits; RSpace selection is deterministic).
+- **CapTruncatedCommittedIsLowestK**: when the `MAX_COST_TRACE_EVENTS` backstop
+  bites, the committed set is the lowest-K canonical prefix (still a pure
+  function of the constants).
+- **MergeReadsBoundedKWindow** (Milestone 3): the reconciliation reads only the
+  lowest K = `min(MaxTraceEvents, InitialBudget+1)` canonical events; the
+  committed prefix never exceeds K (or InitialBudget) events.
+
+The **OopTruncate** action models a fork abandoning its remaining pending work
+at the schedule-dependent point where the budget is exhausted; it is the
+witness that two schedules can reach different *live* committed sets (hence
+different per-op digests) under OOP — which is precisely why the per-op digest
+is not a consensus quantity, while the reconciled `total_cost`/verdict above
+remain invariant.
+
+Three model instances exercise all three regimes:
+`MCRuntimeBudgetReplay` (OOP), `MCRuntimeBudgetReplayNonOop` (complete commit,
+no OOP), and `MCRuntimeBudgetReplayCap` (bounded-K cap binds before the
+budget).
 
 ### CostAccountingSearchFrontier (witness classification)
 
@@ -326,7 +388,9 @@ These TLA+ specifications complement the Rocq mechanization at `formal/rocq/cost
 | `CompoundProtocol.tla` | 4 (incl. recursive spawn) | 4 | 1 | up to 2 | 63 |
 | `FullProtocol.tla` | 7 | 12 | 2 (doubly-compound + Join) | up to 3 | 12,960 |
 | `EvalScheduling.tla` | 3 bodies | — | 0 | 1 | 16 |
-| `RuntimeBudgetReplay.tla` | 6 events | — | 0 | bounded budget 6 | 72 distinct / 203 generated |
+| `RuntimeBudgetReplay.tla` (OOP arm) | 6 events | — | 0 | bounded budget 6 | 1,722 distinct / 5,209 generated |
+| `MCRuntimeBudgetReplayNonOop.tla` (non-OOP arm) | 6 events | — | 0 | bounded budget 12, Σ valid = 9 | 908 distinct / 2,799 generated |
+| `MCRuntimeBudgetReplayCap.tla` (bounded-K cap arm) | 6 events | — | 0 | bounded budget 12, trace cap 2 | 908 distinct / 2,575 generated |
 | `CostAccountingThreats.tla` | 1 deploy boundary plus slash authorization view | — | 0 | bounded fuel 5, epochs 0..1, bonds 0..1 | 5,408 distinct / 401,025 generated |
 | `CostAccountingSearchFrontier.tla` | 11 witness families | — | 0 | — | 34,167 distinct / 266,015 generated |
 | `MergeableChannelAccounting.tla` | typed values over 2-bit bitmaps and bounded integers | — | 0 | bounded values 0..3 | 2,656 |

@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+
+use crossbeam_queue::SegQueue;
 
 use costs::Cost;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -41,28 +43,32 @@ pub struct RuntimeBudget {
     deploy_id: Arc<Mutex<[u8; 32]>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
     event_log: Arc<Mutex<VecDeque<BillableTokenEvent>>>,
-    // Append log of every reservation ATTEMPT (whether or not the
-    // runtime CAS race granted it). Snapshot-cloned (not drained) by
-    // `reconcile()` so mid-deploy reads do not lose later attempts.
-    // The Mutex is held only briefly per push (acquire, push, release —
-    // bounded by O(1) work); the per-event CAS on `consumed_tokens` is
-    // outside the lock. Cost-accounted-rho paper §3 Rule 1 (single
-    // shared signature/token within a deploy) — the canonical reduction
-    // order is structurally determined by the program, not by Tokio
+    // Lock-free append queue of every reservation ATTEMPT (whether or
+    // not the runtime CAS race granted it). `attempt_one` pushes here
+    // with no lock — `crossbeam_queue::SegQueue` is a wait-free MPMC
+    // queue, so concurrent reducer forks never contend a Mutex on the
+    // hot path. `reconcile()` drains it into `attempt_accumulator`
+    // (drain-append-recompute), so mid-deploy reads do not lose later
+    // attempts. Cost-accounted-rho paper §3 Rule 1 (single shared
+    // signature/token within a deploy) — the canonical reduction order
+    // is structurally determined by the program, not by Tokio
     // scheduling. See `formal/tlaplus/cost_accounted_rho/RuntimeBudgetReplay.tla`
     // and `formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v`.
-    attempt_log: Arc<Mutex<Vec<AttemptRecord>>>,
-    // Cached canonical reconciliation. Populated by the first call to
-    // `reconcile()` at deploy finalization; reset by `reset_from_token`
-    // when the budget is reused for a new deploy. Read by `total_cost`,
-    // `cost_trace_digest`, `cost_trace_event_count`, `last_oop_event`.
+    attempt_queue: Arc<SegQueue<AttemptRecord>>,
+    // Internal reconciliation accumulator. Drained-into from
+    // `attempt_queue` by `reconcile()` and re-walked to compute the
+    // canonical reconciliation. Touched ONLY inside `reconcile`/`reset`
+    // — NEVER per-event — so the hot path stays lock-free. The same
+    // Mutex also guards `canonical_reconciliation` repopulation and the
+    // diagnostic `event_log`/`log` mirrors during finalization.
+    attempt_accumulator: Arc<Mutex<Vec<AttemptRecord>>>,
+    // Cached canonical reconciliation. Populated by `reconcile()` when
+    // the attempt queue is drained at deploy finalization; reset by
+    // `reset_from_token` when the budget is reused for a new deploy.
+    // Read by `total_cost`, `cost_trace_digest`, `cost_trace_event_count`,
+    // `last_oop_event`. Recomputed whenever `reconcile()` observes newly
+    // drained attempts; the hot path never invalidates it per-event.
     canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>,
-    // Serializes `reset_from_token` against in-flight reservation
-    // attempts. Writer: reset (waits for all in-flight attempts to
-    // complete). Readers: per-event `attempt_one` calls (uncontested
-    // when no reset is pending — effectively atomic). Ensures the
-    // RuntimeBudget never observes a mid-reset state from an attempt.
-    reset_serializer: Arc<RwLock<()>>,
     max_log_entries: usize,
     unmetered: Arc<AtomicU64>,
 }
@@ -169,7 +175,9 @@ pub struct BillableTokenEvent {
 }
 
 impl RuntimeBudget {
-    fn resolve_max_log_entries() -> usize { 1024 }
+    fn resolve_max_log_entries() -> usize {
+        1024
+    }
 
     pub fn new(initial_value: Cost) -> Self {
         let max_log_entries = Self::resolve_max_log_entries();
@@ -188,9 +196,9 @@ impl RuntimeBudget {
             deploy_id: Arc::new(Mutex::new([0; 32])),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             event_log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
-            attempt_log: Arc::new(Mutex::new(Vec::new())),
+            attempt_queue: Arc::new(SegQueue::new()),
+            attempt_accumulator: Arc::new(Mutex::new(Vec::new())),
             canonical_reconciliation: Arc::new(Mutex::new(None)),
-            reset_serializer: Arc::new(RwLock::new(())),
             max_log_entries,
             unmetered: Arc::new(AtomicU64::new(0)),
         }
@@ -215,10 +223,10 @@ impl RuntimeBudget {
             return Ok(());
         }
         Self::validate_billable_event(&event)?;
-        let _reset_guard = self
-            .reset_serializer
-            .read()
-            .expect("reset serializer poisoned");
+        // SAFETY: per-deploy finalization is single-threaded by contract
+        // (reset happens strictly between deploys, never concurrently
+        // with in-flight attempts), so no reset-vs-attempt serializer is
+        // needed. Recording is lock-free via `attempt_one`.
         let outcome = self.attempt_one(event, Some(amount));
         match outcome {
             AttemptOutcome::Granted => Ok(()),
@@ -226,25 +234,33 @@ impl RuntimeBudget {
         }
     }
 
-    pub(crate) fn append_cost_log(&self, amount: Cost) {
-        if self.max_log_entries > 0 {
-            let mut log = self.log.lock().unwrap();
-            if log.len() >= self.max_log_entries {
-                let _ = log.pop_front();
-            }
-            log.push_back(amount);
-        }
-    }
-
-    fn append_event_log(&self, event: BillableTokenEvent) {
-        if self.max_log_entries > 0 {
-            let mut log = self.event_log.lock().unwrap();
-            if log.len() >= self.max_log_entries {
-                let _ = log.pop_front();
-            }
-            log.push_back(event);
-        }
-    }
+    // The per-event `append_cost_log` / `append_event_log` helpers were
+    // removed from the hot path in Milestone 2: the diagnostic `log` /
+    // `event_log` ring buffers are now repopulated from the canonical
+    // committed set at finalization (see `repopulate_diagnostic_logs`,
+    // called from `reconcile`), so nothing appends to them per-grant
+    // anymore. Their bounded ring-buffer push logic is inlined into
+    // `repopulate_diagnostic_logs`.
+    //
+    // pub(crate) fn append_cost_log(&self, amount: Cost) {
+    //     if self.max_log_entries > 0 {
+    //         let mut log = self.log.lock().unwrap();
+    //         if log.len() >= self.max_log_entries {
+    //             let _ = log.pop_front();
+    //         }
+    //         log.push_back(amount);
+    //     }
+    // }
+    //
+    // fn append_event_log(&self, event: BillableTokenEvent) {
+    //     if self.max_log_entries > 0 {
+    //         let mut log = self.event_log.lock().unwrap();
+    //         if log.len() >= self.max_log_entries {
+    //             let _ = log.pop_front();
+    //         }
+    //         log.push_back(event);
+    //     }
+    // }
 
     fn validate_billable_event(event: &BillableTokenEvent) -> Result<(), InterpreterError> {
         if event.weight == 0 || event.weight > i64::MAX as u64 {
@@ -269,10 +285,9 @@ impl RuntimeBudget {
             return Ok(());
         }
         Self::validate_billable_event(&event)?;
-        let _reset_guard = self
-            .reset_serializer
-            .read()
-            .expect("reset serializer poisoned");
+        // SAFETY: per-deploy finalization is single-threaded by contract
+        // (reset happens strictly between deploys), so no reset-vs-attempt
+        // serializer is needed. Recording is lock-free via `attempt_one`.
         let outcome = self.attempt_one(event, None);
         match outcome {
             AttemptOutcome::Granted => Ok(()),
@@ -282,7 +297,7 @@ impl RuntimeBudget {
 
     /// Record one reservation attempt and try to claim its weight from
     /// `consumed_tokens` via lock-free CAS. The attempt is ALWAYS pushed
-    /// to `attempt_log` (so the canonical reconciliation sees it even if
+    /// to `attempt_queue` (so the canonical reconciliation sees it even if
     /// the CAS race grants nothing). Returns whether the runtime should
     /// let the caller's branch proceed (`Granted`) or abort it (`Oop`).
     ///
@@ -291,17 +306,15 @@ impl RuntimeBudget {
     ///
     /// API contract: callers must NOT call `reconcile()` (or any reader
     /// that triggers it — `total_cost`, `cost_trace_digest`, etc.) before
-    /// all `attempt_one` calls for a given deploy have completed. Doing
-    /// so caches a partial reconciliation, and later attempts will be
-    /// silently absent from the final consensus output. Per-deploy
+    /// all `attempt_one` calls for a given deploy have completed. A
+    /// mid-deploy read drains the then-current queue and caches a partial
+    /// reconciliation; the cache is recomputed on the next read once more
+    /// attempts have been drained (drain-append-recompute). Per-deploy
     /// finalization is single-threaded by contract at the call sites in
     /// `runtime.rs::process_deploy` and `replay_runtime.rs::replay`.
-    /// Inner per-event reservation. Caller MUST hold a read-lock on
-    /// `reset_serializer` for the entire batch so reset cannot interleave
-    /// with attempts mid-batch.
     fn attempt_one(&self, event: BillableTokenEvent, amount: Option<Cost>) -> AttemptOutcome {
         // Unmetered fast path: system deploys + scoped unmetered scopes
-        // bypass billing entirely. Don't touch the attempt log so the
+        // bypass billing entirely. Don't touch the attempt queue so the
         // reconciliation stays empty (unmetered budgets are not subject
         // to consensus authentication of cost trace).
         if self.unmetered.load(Ordering::Acquire) != 0 {
@@ -309,27 +322,15 @@ impl RuntimeBudget {
         }
 
         // Record the attempt for the canonical reconciliation. Pushed
-        // before the CAS so the reconciliation sees every attempt even
-        // if the CAS race grants nothing. Invalidate the reconciliation
-        // cache so the next read recomputes including this attempt
-        // (otherwise mid-deploy readers would see a stale snapshot).
-        {
-            let mut log = self
-                .attempt_log
-                .lock()
-                .expect("attempt log poisoned");
-            log.push(AttemptRecord {
-                event: event.clone(),
-                amount: amount.clone(),
-            });
-        }
-        {
-            let mut cache = self
-                .canonical_reconciliation
-                .lock()
-                .expect("reconciliation cache lock");
-            *cache = None;
-        }
+        // lock-free before the CAS so the reconciliation sees every
+        // attempt even if the CAS race grants nothing. The reconciliation
+        // cache is NOT invalidated here — `reconcile()` recomputes
+        // whenever it drains newly-enqueued attempts, keeping the hot
+        // path free of the cache Mutex.
+        self.attempt_queue.push(AttemptRecord {
+            event: event.clone(),
+            amount,
+        });
 
         let initial = self.initial_tokens.load(Ordering::Acquire);
         let weight = event.weight as i64;
@@ -355,30 +356,25 @@ impl RuntimeBudget {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    // Runtime grant: mirror the event into the bounded
-                    // diagnostic event log (only successful CASes, matching
-                    // the prior contract that `get_event_log` reflects
-                    // runtime-granted events). And mirror the amount into
-                    // the diagnostic cost log. Both are diagnostic; the
-                    // consensus-relevant values come from `reconcile()`.
-                    self.append_event_log(event);
-                    if let Some(amount) = amount {
-                        self.append_cost_log(amount);
-                    }
-                    return AttemptOutcome::Granted;
-                }
+                // Runtime grant is liveness only; the diagnostic
+                // `event_log`/`log` mirrors and the consensus-relevant
+                // commit set are derived from `reconcile()` at
+                // finalization, NOT mirrored per-grant on the hot path.
+                Ok(_) => return AttemptOutcome::Granted,
                 Err(actual) => current = actual,
             }
         }
     }
 
-    /// Batch entry point retained for backward compatibility with callers
-    /// that issue multi-event reservations (notably
-    /// `MeteredMachine::drain_frames`). Each event is processed via the
-    /// same lock-free `attempt_one` path; permits/oop are aggregated.
-    /// The entire batch holds one read-lock on `reset_serializer` so
-    /// `reset_from_token` cannot interleave with mid-batch events.
+    /// Batch entry point retained for callers that issue multi-event
+    /// reservations as a single canonical-ordered unit. Each event is
+    /// processed via the same lock-free `attempt_one` path; permits/oop
+    /// are aggregated.
+    ///
+    /// SAFETY: per-deploy finalization is single-threaded by contract
+    /// (reset happens strictly between deploys, never concurrently with
+    /// in-flight batch commits), so no reset-vs-commit serializer is
+    /// needed.
     pub fn commit_canonical_batch(
         &self,
         batch: CostReservationBatch,
@@ -402,11 +398,6 @@ impl RuntimeBudget {
             Self::validate_billable_event(event)?;
         }
 
-        let _reset_guard = self
-            .reset_serializer
-            .read()
-            .expect("reset serializer poisoned");
-
         // Canonical intra-batch order: sort before walking so the
         // CostCommit returned is invariant under input permutation.
         // This is the existing per-batch contract (verified by
@@ -424,10 +415,7 @@ impl RuntimeBudget {
             match self.attempt_one(event.clone(), None) {
                 AttemptOutcome::Granted => {
                     consumed_weight = consumed_weight.saturating_add(weight);
-                    permits.push(ExecutionPermit {
-                        weight,
-                        event,
-                    });
+                    permits.push(ExecutionPermit { weight, event });
                 }
                 AttemptOutcome::Oop => {
                     oop = Some(event);
@@ -443,46 +431,84 @@ impl RuntimeBudget {
         })
     }
 
-    /// Drain the attempt log and compute the canonical reconciliation.
-    /// Pure function of (attempts ∪ cached, initial_tokens). Idempotent:
-    /// subsequent calls return the cached value without re-walking.
+    /// Drain the attempt queue into the reconciliation accumulator and
+    /// compute the canonical reconciliation. Pure function of (all
+    /// recorded attempts, initial_tokens). Idempotent: subsequent calls
+    /// with no newly-enqueued attempts return the cached value without
+    /// re-walking (drain-append-recompute).
     ///
     /// Called at deploy finalization (single-threaded by contract — the
     /// caller is `runtime.rs::process_deploy` / `replay_runtime.rs::replay`
     /// after `evaluate()` joins the parallel reducer). Calls before
-    /// finalization snapshot the in-flight attempts and cache them; if
-    /// further attempts arrive later, `attempt_one` invalidates the cache.
+    /// finalization drain the then-current queue and cache a partial
+    /// reconciliation; once more attempts have been enqueued, the next
+    /// call drains them, appends to the accumulator, and recomputes.
     fn reconcile(&self) -> CanonicalReconciliation {
+        // The cache Mutex serializes finalization and also guards the
+        // accumulator + diagnostic mirrors during recompute. The hot
+        // path (`attempt_one`) never touches it — it only pushes to the
+        // lock-free `attempt_queue`.
         let mut cache = self
             .canonical_reconciliation
             .lock()
             .expect("reconciliation cache lock");
-        if let Some(rec) = cache.as_ref() {
-            return rec.clone();
+
+        // Drain the lock-free attempt queue into the accumulator. This is
+        // the ONLY place (besides `reset`) that touches the accumulator,
+        // so the per-event path stays lock-free.
+        let mut drained_any = false;
+        {
+            let mut accumulator = self
+                .attempt_accumulator
+                .lock()
+                .expect("attempt accumulator poisoned");
+            while let Some(record) = self.attempt_queue.pop() {
+                accumulator.push(record);
+                drained_any = true;
+            }
+        }
+
+        // Idempotent fast path: nothing new drained and a prior result
+        // is cached → return it without re-walking.
+        if !drained_any {
+            if let Some(rec) = cache.as_ref() {
+                return rec.clone();
+            }
         }
 
         let initial = self.initial_tokens.load(Ordering::Acquire);
 
-        // Snapshot the attempt log (clone — don't drain). Mid-deploy
-        // callers see a partial reconciliation; later attempts invalidate
-        // the cache so the next call sees the augmented snapshot.
-        let mut attempts: Vec<AttemptRecord> = {
-            let log = self.attempt_log.lock().expect("attempt log poisoned");
-            log.clone()
-        };
+        // Bounded-K canonical window. Because every billable weight is
+        // >= 1, the canonical commit walk commits at most `initial`
+        // events before the first OOP boundary (1 more event). So only
+        // the lowest-K events by the canonical `Ord` can influence the
+        // committed set, the OOP boundary, or `consumed_units`; events
+        // beyond rank K are provably never read by the walk. Keeping
+        // only the lowest K bounds memory and replaces the prior global
+        // O(N log N) sort over up to MAX_COST_TRACE_EVENTS elements.
+        //
+        // `initial.max(0)` keeps K >= 1 even for a non-positive budget
+        // (the walk then OOPs on the first event and clamps consumed to
+        // `initial`, preserving the prior behavior).
+        let k_bound = (initial.max(0) as u64)
+            .saturating_add(1)
+            .min(MAX_COST_TRACE_EVENTS) as usize;
 
         // Canonical sort key is the derived Ord on BillableTokenEvent.
         // Multiplicity is preserved: a deploy that re-attempts the same
         // logical event (e.g. through a loop) MUST see the repeated
-        // attempt contribute to the digest, just as it did under the
-        // pre-Option-E commit_lock contract.
+        // attempt contribute, just as it did under the pre-Option-E
+        // commit_lock contract.
+        let mut attempts: Vec<AttemptRecord> = {
+            let accumulator = self
+                .attempt_accumulator
+                .lock()
+                .expect("attempt accumulator poisoned");
+            accumulator.clone()
+        };
         attempts.sort_by(|a, b| a.event.cmp(&b.event));
-
-        // Cap the canonical event window to prevent unbounded memory
-        // attribution per deploy. Excess attempts are treated as OOP
-        // candidates beyond the cap.
-        if attempts.len() as u64 > MAX_COST_TRACE_EVENTS {
-            attempts.truncate(MAX_COST_TRACE_EVENTS as usize);
+        if attempts.len() > k_bound {
+            attempts.truncate(k_bound);
         }
 
         // Simulate the canonical commit walk.
@@ -506,6 +532,14 @@ impl RuntimeBudget {
             committed.push(rec.event);
         }
 
+        // Repopulate the diagnostic `event_log` / `log` mirrors from the
+        // canonical committed set. This moves their population OFF the
+        // hot path (they were previously appended per-grant inside
+        // `attempt_one`) and onto finalization, so `get_event_log` /
+        // `get_log` now reflect the canonical committed set rather than a
+        // schedule-dependent record of CAS-race winners.
+        self.repopulate_diagnostic_logs(&committed, &cost_amounts);
+
         let rec = CanonicalReconciliation {
             committed,
             oop,
@@ -514,6 +548,32 @@ impl RuntimeBudget {
         };
         *cache = Some(rec.clone());
         rec
+    }
+
+    /// Repopulate the bounded diagnostic `event_log` / `log` ring buffers
+    /// from the canonical committed set. Called only from `reconcile()`
+    /// (under the cache lock) at finalization. The ring buffers retain at
+    /// most `max_log_entries` of the lowest-rank committed events/costs.
+    fn repopulate_diagnostic_logs(&self, committed: &[BillableTokenEvent], cost_amounts: &[Cost]) {
+        if self.max_log_entries == 0 {
+            return;
+        }
+        {
+            let mut event_log = self.event_log.lock().expect("event log");
+            event_log.clear();
+            let skip = committed.len().saturating_sub(self.max_log_entries);
+            for event in committed.iter().skip(skip) {
+                event_log.push_back(event.clone());
+            }
+        }
+        {
+            let mut log = self.log.lock().expect("cost log");
+            log.clear();
+            let skip = cost_amounts.len().saturating_sub(self.max_log_entries);
+            for amount in cost_amounts.iter().skip(skip) {
+                log.push_back(amount.clone());
+            }
+        }
     }
 
     pub fn get(&self) -> Cost {
@@ -537,16 +597,14 @@ impl RuntimeBudget {
     }
 
     pub fn reset_from_token(&self, token: &Token) {
-        // Block in-flight `attempt_one` calls for the duration of the
-        // reset. The read-lock acquisition in `attempt_one` is uncontested
-        // when no reset is pending, so this writer-lock only matters on
-        // the rare reset-vs-commit race (test
-        // `runtime_budget_reset_from_token_serializes_with_batch_commit`
-        // documents this invariant).
-        let _reset_guard = self
-            .reset_serializer
-            .write()
-            .expect("reset serializer poisoned");
+        // SAFETY: reset is strictly between deploys — per-deploy
+        // finalization is single-threaded by contract, so reset never
+        // races in-flight `attempt_one`/`commit_canonical_batch` calls.
+        // No reset-vs-attempt serializer is needed.
+        //
+        // The cache Mutex is the single guard shared with `reconcile`;
+        // holding it here orders this reset against any finalization
+        // recompute on the same budget.
         let mut cache = self
             .canonical_reconciliation
             .lock()
@@ -557,7 +615,13 @@ impl RuntimeBudget {
         *self.signature.lock().expect("signature lock") = token.signature();
         self.event_log.lock().expect("event log").clear();
         self.log.lock().expect("cost log").clear();
-        self.attempt_log.lock().expect("attempt log poisoned").clear();
+        // Drain and discard any residual lock-free attempts, then clear
+        // the reconciliation accumulator.
+        while self.attempt_queue.pop().is_some() {}
+        self.attempt_accumulator
+            .lock()
+            .expect("attempt accumulator poisoned")
+            .clear();
         *cache = None;
     }
 
@@ -633,9 +697,8 @@ impl RuntimeBudget {
         // deploy_id derives from the full ordered concatenation of per-sig
         // hashes under the COMPOUND domain. Canonical-order input means
         // permutation-equal multi-sig deploys produce identical deploy_ids.
-        let mut id_buf = Vec::with_capacity(
-            COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + 32 * sig_hashes.len(),
-        );
+        let mut id_buf =
+            Vec::with_capacity(COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + 32 * sig_hashes.len());
         id_buf.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
         for h in &sig_hashes {
             id_buf.extend_from_slice(h);
@@ -648,9 +711,13 @@ impl RuntimeBudget {
         *self.signature.lock().expect("signature lock") = folded_sig;
     }
 
-    pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
+    pub fn signature(&self) -> Sig {
+        self.signature.lock().expect("signature lock").clone()
+    }
 
-    pub fn deploy_id(&self) -> [u8; 32] { *self.deploy_id.lock().expect("deploy id lock") }
+    pub fn deploy_id(&self) -> [u8; 32] {
+        *self.deploy_id.lock().expect("deploy id lock")
+    }
 
     pub fn set_unmetered(&self, unmetered: bool) {
         // System deploys use unmetered mode only around post-evaluation
@@ -686,17 +753,34 @@ impl RuntimeBudget {
         )
     }
 
-    pub fn remaining(&self) -> Cost { self.get() }
+    pub fn remaining(&self) -> Cost {
+        self.get()
+    }
 
-    /// Diagnostic running cost log of runtime-granted charges. Returns
-    /// the bounded ring-buffer contents as appended during evaluation —
-    /// schedule-dependent by design (it tracks what the CAS race
-    /// actually granted, not the canonical reconciliation). For the
-    /// consensus-relevant aggregate cost see `total_cost()`. `clear_log`
-    /// empties it without affecting any consensus observable.
-    pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
+    /// Diagnostic running cost log. As of Milestone 2 this is the bounded
+    /// ring-buffer of per-committed-event `Cost` values from the canonical
+    /// reconciliation (NOT a schedule-dependent record of CAS-race
+    /// winners): `reconcile()` repopulates it at finalization. Triggering
+    /// `reconcile()` here ensures the mirror reflects all recorded
+    /// attempts. For the consensus-relevant aggregate cost see
+    /// `total_cost()`. `clear_log` empties it without affecting any
+    /// consensus observable; a later `reconcile()` recompute repopulates.
+    pub fn get_log(&self) -> Vec<Cost> {
+        // Ensure the diagnostic mirror reflects the canonical committed
+        // set (populated by `reconcile` at finalization).
+        let _ = self.reconcile();
+        self.log.lock().unwrap().iter().cloned().collect()
+    }
 
+    /// Diagnostic event log. As of Milestone 2 this returns the canonical
+    /// committed set (bounded to the diagnostic ring-buffer capacity),
+    /// repopulated by `reconcile()` at finalization rather than appended
+    /// per CAS-grant. It is therefore schedule-independent and equal to
+    /// `get_canonical_event_log` up to the ring-buffer bound.
     pub fn get_event_log(&self) -> Vec<BillableTokenEvent> {
+        // Ensure the diagnostic mirror reflects the canonical committed
+        // set (populated by `reconcile` at finalization).
+        let _ = self.reconcile();
         self.event_log.lock().unwrap().iter().cloned().collect()
     }
 
@@ -714,9 +798,13 @@ impl RuntimeBudget {
         self.reconcile().oop
     }
 
-    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+    pub fn clear_log(&self) {
+        self.log.lock().unwrap().clear();
+    }
 
-    pub fn clear_event_log(&self) { self.event_log.lock().unwrap().clear(); }
+    pub fn clear_event_log(&self) {
+        self.event_log.lock().unwrap().clear();
+    }
 
     /// Returns the finalized consensus-trace event count.
     ///
@@ -838,10 +926,7 @@ pub enum Sig {
     ///
     /// Quorum is NOT cheaply derivable from `Plus`/`And` without `O(C(n,k))`
     /// blow-up, so `Threshold` is a primitive even in LL-rich designs.
-    Threshold {
-        threshold: u32,
-        members: Vec<Sig>,
-    },
+    Threshold { threshold: u32, members: Vec<Sig> },
     /// Phase 3 LL-rich algebra — additive disjunction `⊕`.
     /// Signer's choice: at construction time, the signer commits to one
     /// branch (left = 0, right = 1) and only that branch's signature is
@@ -883,8 +968,7 @@ impl Sig {
     /// full SigAtom from the matching Cosigner.
     pub fn to_proto(&self) -> models::casper::SigCompound {
         use models::casper::{
-            sig_compound, SigAtom, SigBang, SigCompound, SigLolly, SigPair,
-            SigPlus, SigThreshold,
+            sig_compound, SigAtom, SigBang, SigCompound, SigLolly, SigPair, SigPlus, SigThreshold,
         };
         let connective = match self {
             Sig::Unit => sig_compound::Connective::Atom(SigAtom {
@@ -909,13 +993,11 @@ impl Sig {
                     members: members.iter().map(|m| m.to_proto()).collect(),
                 })
             }
-            Sig::Plus(left, right) => {
-                sig_compound::Connective::Plus(Box::new(SigPlus {
-                    left: Some(Box::new(left.to_proto())),
-                    right: Some(Box::new(right.to_proto())),
-                    chosen_branch: 0,
-                }))
-            }
+            Sig::Plus(left, right) => sig_compound::Connective::Plus(Box::new(SigPlus {
+                left: Some(Box::new(left.to_proto())),
+                right: Some(Box::new(right.to_proto())),
+                chosen_branch: 0,
+            })),
             Sig::With(left, right) => sig_compound::Connective::With(Box::new(SigPair {
                 left: Some(Box::new(left.to_proto())),
                 right: Some(Box::new(right.to_proto())),
@@ -925,9 +1007,7 @@ impl Sig {
                 uses_bound: 0,
                 capability_handle: Default::default(),
             })),
-            Sig::WhyNot(inner) => {
-                sig_compound::Connective::Whynot(Box::new(inner.to_proto()))
-            }
+            Sig::WhyNot(inner) => sig_compound::Connective::Whynot(Box::new(inner.to_proto())),
             Sig::Lolly(from, to) => sig_compound::Connective::Lolly(Box::new(SigLolly {
                 from: Some(Box::new(from.to_proto())),
                 to: Some(Box::new(to.to_proto())),
@@ -957,34 +1037,48 @@ impl Sig {
             }
             sig_compound::Connective::Tensor(pair) => {
                 let left = Sig::from_proto(
-                    pair.left.as_ref().ok_or_else(|| "tensor.left missing".to_string())?,
+                    pair.left
+                        .as_ref()
+                        .ok_or_else(|| "tensor.left missing".to_string())?,
                 )?;
                 let right = Sig::from_proto(
-                    pair.right.as_ref().ok_or_else(|| "tensor.right missing".to_string())?,
+                    pair.right
+                        .as_ref()
+                        .ok_or_else(|| "tensor.right missing".to_string())?,
                 )?;
                 Ok(Sig::And(Box::new(left), Box::new(right)))
             }
             sig_compound::Connective::Plus(plus) => {
                 let left = Sig::from_proto(
-                    plus.left.as_ref().ok_or_else(|| "plus.left missing".to_string())?,
+                    plus.left
+                        .as_ref()
+                        .ok_or_else(|| "plus.left missing".to_string())?,
                 )?;
                 let right = Sig::from_proto(
-                    plus.right.as_ref().ok_or_else(|| "plus.right missing".to_string())?,
+                    plus.right
+                        .as_ref()
+                        .ok_or_else(|| "plus.right missing".to_string())?,
                 )?;
                 Ok(Sig::Plus(Box::new(left), Box::new(right)))
             }
             sig_compound::Connective::With(pair) => {
                 let left = Sig::from_proto(
-                    pair.left.as_ref().ok_or_else(|| "with.left missing".to_string())?,
+                    pair.left
+                        .as_ref()
+                        .ok_or_else(|| "with.left missing".to_string())?,
                 )?;
                 let right = Sig::from_proto(
-                    pair.right.as_ref().ok_or_else(|| "with.right missing".to_string())?,
+                    pair.right
+                        .as_ref()
+                        .ok_or_else(|| "with.right missing".to_string())?,
                 )?;
                 Ok(Sig::With(Box::new(left), Box::new(right)))
             }
             sig_compound::Connective::Bang(bang) => {
                 let inner = Sig::from_proto(
-                    bang.inner.as_ref().ok_or_else(|| "bang.inner missing".to_string())?,
+                    bang.inner
+                        .as_ref()
+                        .ok_or_else(|| "bang.inner missing".to_string())?,
                 )?;
                 Ok(Sig::Bang(Box::new(inner)))
             }
@@ -1000,7 +1094,10 @@ impl Sig {
                         .ok_or_else(|| "lolly.from missing".to_string())?,
                 )?;
                 let to = Sig::from_proto(
-                    lolly.to.as_ref().ok_or_else(|| "lolly.to missing".to_string())?,
+                    lolly
+                        .to
+                        .as_ref()
+                        .ok_or_else(|| "lolly.to missing".to_string())?,
                 )?;
                 Ok(Sig::Lolly(Box::new(from), Box::new(to)))
             }
@@ -1024,7 +1121,9 @@ pub enum Token {
 }
 
 impl Token {
-    pub fn coalesced(sig: Sig, remaining: u64) -> Self { Token::Count { sig, remaining } }
+    pub fn coalesced(sig: Sig, remaining: u64) -> Self {
+        Token::Count { sig, remaining }
+    }
 
     pub fn gate(sig: Sig, rest: Token) -> Self {
         Token::Gate {
@@ -1048,7 +1147,9 @@ impl Token {
         }
     }
 
-    fn remaining_units_i64(&self) -> i64 { token_units_to_i64(self.remaining_units()) }
+    fn remaining_units_i64(&self) -> i64 {
+        token_units_to_i64(self.remaining_units())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1114,7 +1215,10 @@ impl SignatureChannel {
                     par: ParSortMatcher::sort_match(&combined).term,
                 }
             }
-            Sig::Threshold { threshold: _, members } => {
+            Sig::Threshold {
+                threshold: _,
+                members,
+            } => {
                 // Quorum reflection: concatenate ALL member channels under
                 // ParSortMatcher::sort_match. The k-of-N quorum semantic is
                 // enforced by the verifier layer (`Cosigned::from_signed_data`

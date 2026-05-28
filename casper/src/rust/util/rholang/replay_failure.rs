@@ -20,13 +20,6 @@ pub enum ReplayFailure {
         replay_cost: u64,
     },
 
-    ReplayCostTraceMismatch {
-        initial_digest: Vec<u8>,
-        replay_digest: Vec<u8>,
-        initial_event_count: u64,
-        replay_event_count: u64,
-    },
-
     SystemDeployErrorMismatch {
         play_error: String,
         replay_error: String,
@@ -34,7 +27,9 @@ pub enum ReplayFailure {
 }
 
 impl ReplayFailure {
-    pub fn internal_error(msg: String) -> Self { ReplayFailure::InternalError { msg } }
+    pub fn internal_error(msg: String) -> Self {
+        ReplayFailure::InternalError { msg }
+    }
 
     pub fn replay_status_mismatch(initial_failed: bool, replay_failed: bool) -> Self {
         ReplayFailure::ReplayStatusMismatch {
@@ -43,26 +38,14 @@ impl ReplayFailure {
         }
     }
 
-    pub fn unused_comm_event(msg: String) -> Self { ReplayFailure::UnusedCOMMEvent { msg } }
+    pub fn unused_comm_event(msg: String) -> Self {
+        ReplayFailure::UnusedCOMMEvent { msg }
+    }
 
     pub fn replay_cost_mismatch(initial_cost: u64, replay_cost: u64) -> Self {
         ReplayFailure::ReplayCostMismatch {
             initial_cost,
             replay_cost,
-        }
-    }
-
-    pub fn replay_cost_trace_mismatch(
-        initial_digest: Vec<u8>,
-        replay_digest: Vec<u8>,
-        initial_event_count: u64,
-        replay_event_count: u64,
-    ) -> Self {
-        ReplayFailure::ReplayCostTraceMismatch {
-            initial_digest,
-            replay_digest,
-            initial_event_count,
-            replay_event_count,
         }
     }
 
@@ -101,21 +84,6 @@ impl std::fmt::Display for ReplayFailure {
                     f,
                     "Replay cost mismatch: initial_cost={}, replay_cost={}",
                     initial_cost, replay_cost
-                )
-            }
-            ReplayFailure::ReplayCostTraceMismatch {
-                initial_digest,
-                replay_digest,
-                initial_event_count,
-                replay_event_count,
-            } => {
-                write!(
-                    f,
-                    "Replay cost trace mismatch: initial_digest={}, replay_digest={}, initial_event_count={}, replay_event_count={}",
-                    hex::encode(initial_digest),
-                    hex::encode(replay_digest),
-                    initial_event_count,
-                    replay_event_count
                 )
             }
             ReplayFailure::SystemDeployErrorMismatch {

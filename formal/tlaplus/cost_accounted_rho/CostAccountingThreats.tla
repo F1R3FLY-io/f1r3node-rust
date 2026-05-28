@@ -69,6 +69,22 @@ CountSet == 0..2
 EpochSet == 0..1
 BondSet == 0..1
 
+(* ─────────────────────────────────────────────────────────────────────────
+   TM-CA-151 — DIAGNOSTIC-REFINEMENT LEVEL (not the production consensus surface).
+   This model authenticates a digest-INCLUSIVE replay payload: ReplayPayloadValid
+   below requires committedDigest = actualDigest /\ committedCount = actualCount,
+   and TamperDigest / TamperCount / ReplayTamperCannotStayAccepted treat per-op
+   digest/count tampering as rejection-causing. Per TM-CA-151
+   (docs/theory/cost-accounting-threat-model.md) the per-operation cost-trace
+   digest / event-count / presence are DIAGNOSTIC ONLY and were removed from
+   production consensus; the production consensus surface is total_cost (clamped
+   on OOP) + status + post-state hash. The predicates/actions/invariants here
+   remain TRUE statements about the strictly-finer digest-inclusive refinement
+   level and are retained as diagnostic-refinement checks, NOT as claims that the
+   per-operation digest is a production consensus quantity. (Cf. the re-aimed
+   RuntimeBudgetReplay.tla ConsumedAndVerdictScheduleIndependent, which is the
+   consensus-surface invariant.)
+   ───────────────────────────────────────────────────────────────────────── *)
 ReplayPayloadValid ==
     /\ present
     /\ committedDigest = actualDigest
@@ -137,6 +153,7 @@ ValidateReplay ==
         ambientBond, executionBond, recoveredSlash, slashAccepted,
         slashNoop, costBoundary>>
 
+\* TM-CA-151: digest/count are diagnostic; this models the digest-inclusive refinement level, not a production consensus rejection.
 TamperDigest ==
     /\ actualDigest' = BadDigest
     /\ accepted' = FALSE
@@ -146,6 +163,7 @@ TamperDigest ==
         currentEpoch, parentBond, ambientBond, executionBond,
         recoveredSlash, slashAccepted, slashNoop, costBoundary>>
 
+\* TM-CA-151: digest/count are diagnostic; this models the digest-inclusive refinement level, not a production consensus rejection.
 TamperCount ==
     /\ actualCount' = IF actualCount = 1 THEN 2 ELSE 1
     /\ accepted' = FALSE

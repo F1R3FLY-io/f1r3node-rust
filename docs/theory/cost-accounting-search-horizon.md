@@ -369,7 +369,7 @@ The accompanying coverage anchors:
 
 - Rust: `cost_accounting_spec::concurrent_runtime_budget_reservations_are_linearizable`, `loom_runtime_budget_reconciliation::*`.
 - Rocq: `rb_reconcile_consumed_eq_min_initial_or_sum`, `rb_reconcile_consumed_invariant_under_permutation`, `rb_reconcile_oop_iff_sum_overflows`, `rb_reconcile_oop_occurrence_invariant_under_permutation`.
-- TLA+: `RuntimeBudgetReplay.ReconciledDigestIsPureFunctionOfEventsAndInitial`, `ConsumedFollowsReconciliationContract`, `NoCrossWorkerStateMixing`.
+- TLA+: `RuntimeBudgetReplay.ConsumedAndVerdictScheduleIndependent`, `TotalCostMatchesClampedSum`, `ConsumedFollowsReconciliationContract`, `NoCrossWorkerStateMixing`.
 
 The search horizon still has a checked adequacy gate on
 `concurrency_schedule` coverage; the Option-E record is admitted on
