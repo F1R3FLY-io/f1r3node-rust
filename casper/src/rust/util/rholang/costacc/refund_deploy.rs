@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_gbytearray_par, new_gint_par};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -33,6 +33,11 @@ pub struct RefundDeploy {
     pub refund_amount: i64,
     pub pk: PublicKey,
     pub rand: Blake2b512Random,
+    /// Per-deploy-group id scoping the PoS charge-tracking channel. MUST be
+    /// the SAME value used by this deploy's `PreChargeDeploy` so the refund
+    /// finds the cosigner's entry on `@(*posDeployStateTag, deployGroupId)`.
+    /// See `system_deploy_util::deploy_group_id`.
+    pub deploy_group_id: Vec<u8>,
 }
 
 impl SystemDeployTrait for RefundDeploy {
@@ -44,13 +49,14 @@ impl SystemDeployTrait for RefundDeploy {
           new rl(`rho:registry:lookup`),
           poSCh,
           initialDeployerId(`sys:casper:deployerId`),
+          deployGroupId(`sys:casper:deployGroupId`),
           refundAmount(`sys:casper:refundAmount`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-                @PoS!("refundDeploy", *initialDeployerId, *refundAmount, *sysAuthToken, *return)
+                @PoS!("refundDeploy", *initialDeployerId, *deployGroupId, *refundAmount, *sysAuthToken, *return)
             }
         }"#
     }
@@ -75,6 +81,14 @@ impl SystemDeployTrait for RefundDeploy {
         // cosigner's pk. This is what the PoS Map keys lookups on.
         let (d_key, d_value) = self.mk_deployer_id(&self.pk);
         env.insert(d_key, d_value);
+
+        // Bind `sys:casper:deployGroupId` (GByteArray ground term) so the
+        // contract operates on the SAME group-scoped channel the pre-charge
+        // used: `@(*posDeployStateTag, deployGroupId)`.
+        env.insert(
+            "sys:casper:deployGroupId".to_string(),
+            new_gbytearray_par(self.deploy_group_id.clone(), Vec::new(), false),
+        );
 
         env.insert(
             "sys:casper:refundAmount".to_string(),

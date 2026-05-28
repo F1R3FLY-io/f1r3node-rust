@@ -251,6 +251,11 @@ impl ReplayRuntimeOps {
         let is_compound = cosigned.is_compound();
         let phlo_price = cosigned.data.phlo_price;
 
+        // MIRROR of the play path: per-deploy-group id scoping the PoS
+        // charge-tracking channel. Derived from the SAME reconstructed
+        // Cosigned envelope, so play and replay use identical group channels.
+        let dgid = system_deploy_util::deploy_group_id(&cosigned);
+
         // (B) Pre-charge replay fan-out — canonical pk-ascending order.
         tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-started");
         let precharge_start = Instant::now();
@@ -266,6 +271,8 @@ impl ReplayRuntimeOps {
                 charge_amount: charge,
                 pk: signer.pk.clone(),
                 rand,
+                deploy_group_id: dgid.clone(),
+                is_first: i == 0,
             };
             let precharge_result = self
                 .replay_system_deploy_internal(
@@ -337,6 +344,7 @@ impl ReplayRuntimeOps {
                     refund_amount,
                     pk: signer.pk.clone(),
                     rand,
+                    deploy_group_id: dgid.clone(),
                 };
                 let refund_result = self
                     .replay_system_deploy_internal(&mut refund_deploy, &None)

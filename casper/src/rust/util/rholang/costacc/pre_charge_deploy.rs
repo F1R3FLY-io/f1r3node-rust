@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gint_par};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -17,6 +17,16 @@ pub struct PreChargeDeploy {
     pub charge_amount: i64,
     pub pk: PublicKey,
     pub rand: Blake2b512Random,
+    /// Per-deploy-group id scoping the PoS charge-tracking channel
+    /// (`deploy_group_id`). Identical across all cosigners of one deploy;
+    /// distinct across deploys. See `system_deploy_util::deploy_group_id`.
+    pub deploy_group_id: Vec<u8>,
+    /// True only for the FIRST cosigner's pre-charge in a deploy's
+    /// pk-ascending fan-out (`i == 0`). The PoS `chargeDeploy` contract
+    /// seeds the group-scoped state map with `{}` exactly once, on this
+    /// first charge. Safe because a deploy's charges run sequentially
+    /// (awaited Rust loop), so there is no race among them.
+    pub is_first: bool,
 }
 
 impl SystemDeployTrait for PreChargeDeploy {
@@ -28,13 +38,15 @@ impl SystemDeployTrait for PreChargeDeploy {
           new rl(`rho:registry:lookup`),
           poSCh,
           initialDeployerId(`sys:casper:deployerId`),
+          deployGroupId(`sys:casper:deployGroupId`),
+          isFirst(`sys:casper:isFirst`),
           chargeAmount(`sys:casper:chargeAmount`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-                @PoS!("chargeDeploy", *initialDeployerId, *chargeAmount, *sysAuthToken, *return)
+                @PoS!("chargeDeploy", *initialDeployerId, *deployGroupId, *isFirst, *chargeAmount, *sysAuthToken, *return)
             }
         }"#
     }
@@ -56,6 +68,22 @@ impl SystemDeployTrait for PreChargeDeploy {
 
         let (d_key, d_value) = self.mk_deployer_id(&self.pk);
         env.insert(d_key, d_value);
+
+        // Bind `sys:casper:deployGroupId` to the per-deploy-group bytes as a
+        // GByteArray ground term (mirrors how `mk_deployer_id` binds a
+        // ground term for `sys:casper:deployerId`). In-contract this becomes
+        // the 2nd component of the group-scoped channel `@(*tag, deployGroupId)`.
+        env.insert(
+            "sys:casper:deployGroupId".to_string(),
+            new_gbytearray_par(self.deploy_group_id.clone(), Vec::new(), false),
+        );
+
+        // Bind `sys:casper:isFirst`; the contract seeds the group map with
+        // `{}` only when this is true (first cosigner of the deploy).
+        env.insert(
+            "sys:casper:isFirst".to_string(),
+            new_gbool_par(self.is_first, Vec::new(), false),
+        );
 
         env.insert(
             "sys:casper:chargeAmount".to_string(),

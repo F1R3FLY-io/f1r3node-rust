@@ -1,12 +1,14 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/SystemDeployUtil.scala
 
 use byteorder::{LittleEndian, WriteBytesExt};
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::{Cosigned, Signed, ToMessage};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::validator::Validator;
+use prost::Message;
 
 use super::tools::Tools;
 
@@ -138,6 +140,76 @@ pub fn generate_refund_deploy_random_seed_for_signer(
     Tools::rng(&seed).split_byte(1)
 }
 
+/// Per-deploy-group identifier for the PoS charge-tracking state channel
+/// (M1 of the multi-parent-merge fix).
+///
+/// The PoS `chargeDeploy`/`refundDeploy` contracts track in-flight charges
+/// on a content-addressed channel `@(*posDeployStateTag, deployGroupId)`.
+/// In multi-parent merge, the content-addressed merge engine identifies a
+/// `Produce` by `hash(channel ++ datum ++ persist)`. A single
+/// genesis-scoped channel seeded once with `{}` makes every branch's first
+/// charge consume the SAME base produce, so independent deploys are flagged
+/// as conflicting/dependent. Scoping the channel by `deployGroupId` gives
+/// distinct deploys distinct channel hashes (hence distinct `Produce`
+/// identities) even when the tracked value is an identical `{}`.
+///
+/// Derivation:
+/// `blake2b256( concat(sorted(signer.pk.bytes)) ++ deploy_data_serialized )`
+/// where `deploy_data_serialized = cosigned.data().to_message().encode_to_vec()`
+/// (the SAME serialization used for signing — see
+/// `Signed::signature_hash` and `mixed_algorithm_cosigned_test::sign_with`).
+/// The pk byte-vectors are sorted lexicographically before concatenation.
+///
+/// Properties (all required for consensus correctness):
+/// - **Non-empty:** Blake2b256 always yields 32 bytes.
+/// - **Identical across a deploy's cosigners:** the input depends only on
+///   the cosigner pk SET and the deploy payload, both shared by every
+///   cosigner of a deploy. (Cosigner order does not matter because the
+///   pks are sorted here; the `Cosigned` constructor already canonicalizes
+///   signer order, so sorting is belt-and-braces.)
+/// - **Distinct across deploys:** distinct payloads (term/timestamp/…) or
+///   distinct signer sets change the hash preimage.
+/// - **Play == replay:** computed from `(signer pk set, payload)` only,
+///   both of which round-trip identically through `ProcessedDeploy`/
+///   `to_cosigned()`.
+///
+/// We deliberately do NOT use `cosigned.primary().sig`: on the
+/// threshold/placeholder construction path the primary may be a placeholder
+/// whose `sig` is EMPTY (`signed.rs` `from_signed_data_threshold`), which
+/// would collide distinct deploys. Public keys are always present (even for
+/// placeholder signers), so the pk set is a safe, replay-stable basis.
+pub fn deploy_group_id(cosigned: &Cosigned<DeployData>) -> Vec<u8> {
+    let mut pk_bytes: Vec<&[u8]> = cosigned
+        .signers()
+        .iter()
+        .map(|s| s.pk.bytes.as_ref())
+        .collect();
+    pk_bytes.sort_unstable();
+
+    let deploy_data_serialized = cosigned.data().to_message().encode_to_vec();
+
+    // Length-prefixed, count-delimited preimage so that distinct
+    // (signer-set, payload) inputs can NEVER share a preimage. Public keys
+    // vary in length across signature algorithms (ed25519 = 32 bytes,
+    // secp256k1 = 33/65), so a bare concatenation could be ambiguous at the
+    // pk/pk and pk/payload boundaries; the u32 length prefixes make the
+    // encoding injective, so the group id is provably unique per deploy — a
+    // consensus channel key must not collide across distinct deploys.
+    let total_pk_len: usize = pk_bytes.iter().map(|b| b.len()).sum();
+    let mut preimage = Vec::with_capacity(
+        4 + pk_bytes.len() * 4 + total_pk_len + 4 + deploy_data_serialized.len(),
+    );
+    preimage.extend_from_slice(&(pk_bytes.len() as u32).to_be_bytes());
+    for pk in &pk_bytes {
+        preimage.extend_from_slice(&(pk.len() as u32).to_be_bytes());
+        preimage.extend_from_slice(pk);
+    }
+    preimage.extend_from_slice(&(deploy_data_serialized.len() as u32).to_be_bytes());
+    preimage.extend_from_slice(&deploy_data_serialized);
+
+    Blake2b256::hash(preimage)
+}
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
@@ -261,5 +333,87 @@ mod tests {
         let pre = generate_pre_charge_deploy_random_seed_for_signer(&cosigned, 0);
         let refund = generate_refund_deploy_random_seed_for_signer(&cosigned, 0);
         assert_ne!(pre.to_bytes(), refund.to_bytes());
+    }
+
+    /// `deploy_group_id` must be non-empty (Blake2b256 → 32 bytes) and
+    /// deterministic for the same envelope. Deploy-group scoping of the PoS
+    /// charge channel depends on a stable, non-trivial id.
+    #[test]
+    fn deploy_group_id_non_empty_and_deterministic() {
+        let cosigned = build_test_cosigned(2);
+        let a = deploy_group_id(&cosigned);
+        let b = deploy_group_id(&cosigned);
+        assert_eq!(a.len(), 32, "blake2b256 digest is 32 bytes");
+        assert_eq!(a, b, "same envelope must yield same group id (replay determinism)");
+    }
+
+    /// Every cosigner of a SINGLE deploy must derive the SAME group id, so
+    /// all of a deploy's charges/refunds share one channel (dedup/cap/refund
+    /// rely on this). The id is a pure function of the envelope, so this is
+    /// trivially true — assert it explicitly as a regression guard against a
+    /// future per-signer derivation creeping in.
+    #[test]
+    fn deploy_group_id_identical_across_cosigners_of_one_deploy() {
+        let cosigned = build_test_cosigned(3);
+        // The runtime calls deploy_group_id(&cosigned) ONCE and reuses it for
+        // every signer; emulate by recomputing and comparing.
+        let id_for_signer_0 = deploy_group_id(&cosigned);
+        let id_for_signer_2 = deploy_group_id(&cosigned);
+        assert_eq!(id_for_signer_0, id_for_signer_2);
+    }
+
+    /// Two DISTINCT deploys (different payload → different signer keypairs +
+    /// different phlo_limit) must derive DISTINCT group ids; otherwise the
+    /// merge engine would still see colliding `Produce` identities.
+    #[test]
+    fn deploy_group_id_distinct_across_deploys() {
+        let cosigned_a = build_test_cosigned(2);
+        let cosigned_b = build_test_cosigned(2);
+        // build_test_cosigned generates fresh keypairs each call, so the
+        // signer sets differ; the ids must differ.
+        assert_ne!(deploy_group_id(&cosigned_a), deploy_group_id(&cosigned_b));
+    }
+
+    /// The id must be independent of the INPUT signer order (the constructor
+    /// canonicalizes, and we also sort here). Two envelopes with the same
+    /// signer set submitted in different order must share an id.
+    #[test]
+    fn deploy_group_id_invariant_under_signer_permutation() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigner, ToMessage};
+        use prost::bytes::Bytes;
+        use prost::Message;
+
+        let secp = Secp256k1;
+        let data = DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 42,
+            phlo_price: 1,
+            phlo_limit: 200,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        };
+        let serialized = data.to_message().encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let mut signers = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let (sk, pk) = secp.new_key_pair();
+            let sig = secp.sign(&hash, &sk.bytes);
+            signers.push(Cosigner {
+                pk,
+                sig: Bytes::from(sig),
+                sig_algorithm: Box::new(secp.clone()),
+                phlo_share: 100,
+            });
+        }
+        let forward = signers.clone();
+        let mut reversed = signers;
+        reversed.reverse();
+
+        let cosigned_a = Cosigned::from_signed_data(data.clone(), forward, 200).expect("valid");
+        let cosigned_b = Cosigned::from_signed_data(data, reversed, 200).expect("valid");
+        assert_eq!(deploy_group_id(&cosigned_a), deploy_group_id(&cosigned_b));
     }
 }

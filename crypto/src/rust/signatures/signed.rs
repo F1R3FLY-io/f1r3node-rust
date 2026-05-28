@@ -357,6 +357,11 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
     /// All signers, in canonical ascending `pk.bytes` order. Always non-empty.
     pub fn signers(&self) -> &[Cosigner] { &self.signers }
 
+    /// The deploy payload. Borrow accessor mirroring [`Self::signers`] so
+    /// callers (e.g. `deploy_group_id`) can serialize the canonical payload
+    /// without reaching into the public `data` field directly.
+    pub fn data(&self) -> &A { &self.data }
+
     /// The primary signer (`signers[0]`). Equivalent to the legacy
     /// single-signer `Signed<A>`'s sole signer.
     pub fn primary(&self) -> &Cosigner { &self.signers[0] }

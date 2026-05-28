@@ -296,11 +296,15 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    deploy_group_id: vec![1u8; 32],
+                    is_first: true,
                 },
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    deploy_group_id: vec![1u8; 32],
+                    is_first: true,
                 },
                 |_| true,
             )
@@ -332,11 +336,13 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     refund_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    deploy_group_id: vec![1u8; 32],
                 },
                 &mut RefundDeploy {
                     refund_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    deploy_group_id: vec![1u8; 32],
                 },
                 |_| true,
             )
@@ -378,11 +384,15 @@ async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
                     charge_amount: 100,
                     pk: user_pk,
                     rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    deploy_group_id: vec![2u8; 32],
+                    is_first: true,
                 },
                 &mut PreChargeDeploy {
                     charge_amount: 100,
                     pk: construct_deploy::DEFAULT_PUB.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    deploy_group_id: vec![2u8; 32],
+                    is_first: true,
                 },
                 |_| true,
             )
@@ -406,6 +416,7 @@ async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
                         refund_amount: 101,
                         pk: construct_deploy::DEFAULT_PUB.clone(),
                         rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                        deploy_group_id: vec![2u8; 32],
                     },
                 )
                 .await

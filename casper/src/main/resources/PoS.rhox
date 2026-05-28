@@ -384,40 +384,63 @@ in {
               // single-tuple channel design when N > 1 cosigners are charged
               // in parallel — see the cost-accounted rho-calculus §3.2 Rules
               // 2-5 for the operational semantics this realizes.
-              new currentDeploysStateCh in {
-                currentDeploysStateCh!({}) |
+              new posDeployStateTag in {
+                // `posDeployStateTag` is a fresh genesis-scoped name used only
+                // to build per-deploy-group state channels `@(*posDeployStateTag,
+                // deployGroupId)`. Each distinct deploy/branch gets a distinct
+                // `deployGroupId` (see system_deploy_util::deploy_group_id), so
+                // its charge-tracking Produce has a distinct content-addressed
+                // identity even when the tracked value is an identical `{}` —
+                // this is what stops the multi-parent merge engine from flagging
+                // independent deploys as conflicting/dependent. A deploy's N
+                // cosigners share one channel (dedup/cap/refund preserved).
+                //
+                // NOTE: no single global `{}` seed here. The map is seeded once
+                // per group, on the first cosigner's charge (`isFirst`), which is
+                // safe because a deploy's cosigner charges run SEQUENTIALLY (an
+                // awaited Rust loop in play_deploy_with_cost_accounting_cosigned),
+                // so there is no race among one deploy's charges.
+
                 // Private method which charges a deployer for a deploy.
                 // Deployer's funds are deposited into the block sender's vault.
                 // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"chargeDeploy", @deployerId, @amount, @sysAuthToken, return) = {
-                  new isValidTokenCh, processCh in {
+                contract PoS(@"chargeDeploy", @deployerId, @deployGroupId, @isFirst, @amount, @sysAuthToken, return) = {
+                  new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        runMVar!(*currentDeploysStateCh, *processCh, *return) |
-                        for (@state, resultCh <- processCh) {
+                        // Seed the group-scoped map with `{}` exactly once, on the
+                        // first cosigner. Inlined take/process/put on the
+                        // group-scoped channel (rather than runMVar) because the
+                        // channel is constructed dynamically from deployGroupId.
+                        if (isFirst) { @(*posDeployStateTag, deployGroupId)!({}) } |
+                        for (@state <- @(*posDeployStateTag, deployGroupId)) {
                           if (state.contains(deployerId)) {
                             // Defensive: never charge the same cosigner twice
                             // per deploy. Unreachable if the deploy-decode
                             // boundary's `Cosigned::from_signed_data`
                             // dedup invariant holds; surfaced as an explicit
                             // error for debuggability.
-                            resultCh!(state, (false, "Cosigner already charged for this deploy"))
+                            @(*posDeployStateTag, deployGroupId)!(state) |
+                            return!((false, "Cosigner already charged for this deploy"))
                           } else if (state.size() >= $$maxCosignersPerDeploy$$) {
                             // Defense-in-depth: bound per-deploy cosigner
                             // count (configurable per shard via
                             // `casper_conf.rs::max_cosigners_per_deploy`).
-                            resultCh!(state, (false, "Cosigner cap exceeded for this deploy"))
+                            @(*posDeployStateTag, deployGroupId)!(state) |
+                            return!((false, "Cosigner cap exceeded for this deploy"))
                           } else {
                             new depositCh in {
                               deposit!(deployerId, amount, posVaultAddr, *depositCh) |
                               for (@depositResult <- depositCh){
                                 match depositResult {
                                   (true, _) => {
-                                    resultCh!(state.set(deployerId, amount), depositResult)
+                                    @(*posDeployStateTag, deployGroupId)!(state.set(deployerId, amount)) |
+                                    return!(depositResult)
                                   }
                                   (_, errorMessage) => {
-                                    resultCh!(state, (false, "Deploy payment failed: " ++ errorMessage))
+                                    @(*posDeployStateTag, deployGroupId)!(state) |
+                                    return!((false, "Deploy payment failed: " ++ errorMessage))
                                   }
                                 }
                               }
@@ -435,24 +458,30 @@ in {
                 // Takes an explicit `@deployerId` argument so multi-signature
                 // refunds (one per cosigner) route to the correct vault.
                 // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"refundDeploy", @deployerId, @refundAmount, @sysAuthToken, return) = {
-                  new isValidTokenCh, processCh in {
+                contract PoS(@"refundDeploy", @deployerId, @deployGroupId, @refundAmount, @sysAuthToken, return) = {
+                  new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        runMVar!(*currentDeploysStateCh, *processCh, *return) |
-                        for (@state, resultCh <- processCh) {
+                        // Inlined take/process/put on the SAME group-scoped
+                        // channel the pre-charge used. The residual `{}` left
+                        // after the last delete does not collide with other
+                        // deploys (the channel is deploy-unique), so no teardown.
+                        for (@state <- @(*posDeployStateTag, deployGroupId)) {
                           match state.get(deployerId) {
                             Nil => {
                               // No in-flight charge recorded for this deployerId.
                               // Map remains unchanged.
-                              resultCh!(state, (false, "No in-flight charge for this deployer"))
+                              @(*posDeployStateTag, deployGroupId)!(state) |
+                              return!((false, "No in-flight charge for this deployer"))
                             }
                             initialPaymentAmount => {
                               if (refundAmount < 0) {
-                                resultCh!(state.delete(deployerId), (false, "Invalid refund amount"))
+                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
+                                return!((false, "Invalid refund amount"))
                               } else if (refundAmount > initialPaymentAmount) {
-                                resultCh!(state.delete(deployerId), (false, "Refund exceeds initial deploy payment"))
+                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
+                                return!((false, "Refund exceeds initial deploy payment"))
                               } else if (refundAmount > 0) {
                                 new vaultAddressCh, transferCh in {
                                   vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
@@ -462,10 +491,12 @@ in {
                                     for (@transferResult <- transferCh) {
                                       match transferResult {
                                         (true, _) => {
-                                          resultCh!(state.delete(deployerId), (true, Nil))
+                                          @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
+                                          return!((true, Nil))
                                         }
                                         (_, errorMessage) => {
-                                          resultCh!(state.delete(deployerId), (false, "(Bug found) Deploy refund failed: " ++ errorMessage))
+                                          @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
+                                          return!((false, "(Bug found) Deploy refund failed: " ++ errorMessage))
                                         }
                                       }
                                     }
@@ -475,7 +506,8 @@ in {
                                 // refundAmount == 0: no transfer needed; clean
                                 // up the Map entry so the cosigner cannot be
                                 // re-refunded.
-                                resultCh!(state.delete(deployerId), (true, Nil))
+                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
+                                return!((true, Nil))
                               }
                             }
                           }

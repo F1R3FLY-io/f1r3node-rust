@@ -606,6 +606,13 @@ impl RuntimeOps {
         let phlo_price = cosigned.data.phlo_price;
         let is_compound = cosigned.is_compound();
 
+        // Per-deploy-group id scoping the PoS charge-tracking channel. Computed
+        // ONCE per user deploy and reused by every cosigner's pre-charge and
+        // refund so they share one group-scoped channel. The replay path
+        // (replay_runtime.rs) derives the SAME value from the reconstructed
+        // Cosigned envelope. See system_deploy_util::deploy_group_id.
+        let dgid = system_deploy_util::deploy_group_id(&cosigned);
+
         // OUTER soft-checkpoint — covers per-cosigner pre-charge fan-out and
         // the user deploy. INNER scope at process_deploy_cosigned wraps the
         // user deploy only (existing behavior preserved). Pre-charge revert
@@ -640,6 +647,8 @@ impl RuntimeOps {
                     charge_amount: charge,
                     pk: signer.pk.clone(),
                     rand,
+                    deploy_group_id: dgid.clone(),
+                    is_first: i == 0,
                 })
                 .await?;
             eval_collector_state.add(event_log, mergeable_channels);
@@ -726,6 +735,7 @@ impl RuntimeOps {
                     refund_amount,
                     pk: signer.pk.clone(),
                     rand,
+                    deploy_group_id: dgid.clone(),
                 })
                 .await?;
             eval_collector_state.add(event_log, mergeable_channels);

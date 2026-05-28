@@ -165,6 +165,8 @@ async fn measure_precharge_and_refund_cost() {
                     charge_amount: 100_000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![i as u8, 0]),
+                    deploy_group_id: vec![i as u8, 0xDE],
+                    is_first: true,
                 };
                 let (state_after_charge, precharge_time) = play_system_deploy_timed(
                     &mut runtime_manager,
@@ -185,6 +187,7 @@ async fn measure_precharge_and_refund_cost() {
                     refund_amount: 50_000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&vec![i as u8, 1]),
+                    deploy_group_id: vec![i as u8, 0xDE],
                 };
                 let (state_after_refund, refund_time) = play_system_deploy_timed(
                     &mut runtime_manager,
@@ -508,10 +511,22 @@ async fn time_replay_one_deploy(
     // Precharge — matches process_deploy_with_cost_accounting precharge window
     // (BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC).
     let precharge_start = Instant::now();
+    // Group id derived from the single-signer envelope, matching what the
+    // real runtime computes via system_deploy_util::deploy_group_id.
+    let dgid = {
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+            processed_deploy.deploy.clone(),
+            processed_deploy.deploy.data.phlo_limit,
+        )
+        .expect("single-signer uplift for group id");
+        system_deploy_util::deploy_group_id(&cosigned)
+    };
     let mut precharge = PreChargeDeploy {
         charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
         pk: processed_deploy.deploy.pk.clone(),
         rand: system_deploy_util::generate_pre_charge_deploy_random_seed(&processed_deploy.deploy),
+        deploy_group_id: dgid.clone(),
+        is_first: true,
     };
     let (_, mut precharge_eval) = replay_ops
         .replay_system_deploy_internal(&mut precharge, &processed_deploy.system_deploy_error)
@@ -535,6 +550,7 @@ async fn time_replay_one_deploy(
         refund_amount: processed_deploy.refund_amount(),
         pk: processed_deploy.deploy.pk.clone(),
         rand: system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy),
+        deploy_group_id: dgid.clone(),
     };
     let (_, mut refund_eval) = replay_ops
         .replay_system_deploy_internal(&mut refund, &None)
