@@ -761,17 +761,17 @@ pub fn resolve_at_parents_batch(
 
     // Scan floor: deepest block height we consider. Anchored to the
     // shallowest parent height minus `deploy_lifespan`.
-    let parent_heights: Vec<i64> = parents
-        .iter()
-        .filter_map(|p| dag.block_number(p))
-        .collect();
+    let parent_heights: Vec<i64> = parents.iter().filter_map(|p| dag.block_number(p)).collect();
     if parent_heights.is_empty() {
         for sig in sigs {
             results.insert(sig.clone(), EffectsInParentsState::NotInState);
         }
         return Ok(results);
     }
-    let max_parent_height = *parent_heights.iter().max().expect("parent_heights nonempty");
+    let max_parent_height = *parent_heights
+        .iter()
+        .max()
+        .expect("parent_heights nonempty");
     let scan_floor = (max_parent_height - deploy_lifespan).max(0);
 
     // BFS from every parent backward over all-parent edges. The clean+
@@ -839,15 +839,39 @@ pub fn resolve_at_parents_batch(
         }
     }
 
-    // LFB anchor for the finalized-clean rule. A clean inclusion at or
-    // before LFB (in LFB's main-parent ancestry) is finalized — its
-    // effects are part of consensus history and cannot be invalidated
-    // by ANY rejection. Rejection of a finalized deploy is consensus-
-    // invalid (the misfire case).
+    // LFB anchor — diagnostic only. The exemption gate is
+    // parents-anchored per the doc (lines 700+), not LFB-anchored.
     let lfb_hash = dag.last_finalized_block();
-    let is_finalized_block = |block: &BlockHash| -> ApiErr<bool> {
+    let is_in_lfb_main_chain = |block: &BlockHash| -> ApiErr<bool> {
         Ok(block == &lfb_hash || dag.is_in_main_chain(block, &lfb_hash)?)
     };
+
+    // Parents-anchored canonical check. Returns whether a block is
+    // in any chosen parent's main-parent ancestry (within scan_floor).
+    // The exemption gate's correctness depends on this being the
+    // anchor (vs. LFB), because LFB lags arbitrarily far behind the
+    // canonical chain extended by parents.
+    let is_in_any_parent_main_chain = |block: &BlockHash| -> ApiErr<bool> {
+        for parent_hash in parents {
+            if block == parent_hash || dag.is_in_main_chain(block, parent_hash)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+
+    let lfb_block_number = dag.block_number(&lfb_hash).unwrap_or(-1);
+    tracing::info!(
+        target: "f1r3.trace.resolve_at_parents",
+        "[TRACE-RESOLVE-BATCH-CONTEXT] sigs={} parents={} scan_floor={} max_parent_height={} lfb_hash={} lfb_block_number={} visited_blocks={}",
+        sigs.len(),
+        parents.len(),
+        scan_floor,
+        max_parent_height,
+        hex::encode(&lfb_hash[..8.min(lfb_hash.len())]),
+        lfb_block_number,
+        visited.len(),
+    );
 
     // Per-sig post-processing.
     //
@@ -868,42 +892,117 @@ pub fn resolve_at_parents_batch(
         let cleans = clean_events.get(sig).cloned().unwrap_or_default();
         let rejects = rejected_events.get(sig).cloned().unwrap_or_default();
 
+        let cleans_str = cleans
+            .iter()
+            .map(|(h, b)| format!("({},{})", h, hex::encode(&b[..8.min(b.len())])))
+            .collect::<Vec<_>>()
+            .join(",");
+        let rejects_str = rejects
+            .iter()
+            .map(|(h, b)| format!("({},{})", h, hex::encode(&b[..8.min(b.len())])))
+            .collect::<Vec<_>>()
+            .join(",");
+
         if cleans.is_empty() {
+            tracing::info!(
+                target: "f1r3.trace.resolve_at_parents",
+                "[TRACE-RESOLVE-AT-PARENTS] sig={} cleans=0 rejects={} state=NotInState reason=no-clean-inclusion rejects_detail=[{}]",
+                hex::encode(sig),
+                rejects.len(),
+                rejects_str,
+            );
             results.insert(sig.clone(), EffectsInParentsState::NotInState);
             continue;
         }
 
-        // Any finalized clean → InCanonicalState (rejection cannot
-        // invalidate a finalized inclusion).
+        // ORIGINAL logic preserved. Diagnostic-only: also compute
+        // per-clean and per-reject parent-main vs LFB-main booleans
+        // for trace analysis. We want to know whether the bug-class
+        // rejections are in any chosen parent's main-parent chain
+        // (which would justify RejectedCanonically) or only in
+        // sibling branches (which would make the admit-back a bug).
         let mut has_finalized_clean = false;
+        let mut clean_check_log: Vec<(String, bool, bool)> = Vec::new();
         for (_h, clean_block) in &cleans {
-            if is_finalized_block(clean_block)? {
+            let in_lfb = is_in_lfb_main_chain(clean_block)?;
+            let in_parent_main = is_in_any_parent_main_chain(clean_block)?;
+            clean_check_log.push((
+                hex::encode(&clean_block[..8.min(clean_block.len())]),
+                in_parent_main,
+                in_lfb,
+            ));
+            if in_lfb {
                 has_finalized_clean = true;
-                break;
             }
         }
+        let clean_check_str = clean_check_log
+            .iter()
+            .map(|(b, pm, lm)| format!("({},parent_main={},lfb_main={})", b, pm, lm))
+            .collect::<Vec<_>>()
+            .join(",");
 
-        let state = if has_finalized_clean {
-            EffectsInParentsState::InCanonicalState
+        let mut reject_check_log: Vec<(String, bool, bool)> = Vec::new();
+        let mut has_canonical_rejection = false;
+        for (_h, reject_block) in &rejects {
+            let in_lfb = is_in_lfb_main_chain(reject_block)?;
+            let in_parent_main = is_in_any_parent_main_chain(reject_block)?;
+            reject_check_log.push((
+                hex::encode(&reject_block[..8.min(reject_block.len())]),
+                in_parent_main,
+                in_lfb,
+            ));
+            if in_parent_main {
+                has_canonical_rejection = true;
+            }
+        }
+        let reject_check_str = reject_check_log
+            .iter()
+            .map(|(b, pm, lm)| format!("({},parent_main={},lfb_main={})", b, pm, lm))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let (state, reason) = if has_finalized_clean {
+            (EffectsInParentsState::InCanonicalState, "finalized-clean")
         } else if !rejects.is_empty() {
-            // Unfinalized clean + rejection in parents' ancestry →
-            // legitimate recovery. Merge will resolve the conflict and
-            // sig's effects will be out of post-state.
-            EffectsInParentsState::RejectedCanonically
+            (
+                EffectsInParentsState::RejectedCanonically,
+                "unfinalized-clean+rejection",
+            )
         } else {
-            // Unfinalized clean + no rejection → sig's effects are in
-            // pre-state via the unfinalized canonical ancestor. The
-            // bug-B case the gate is designed to catch.
-            EffectsInParentsState::InCanonicalState
+            (
+                EffectsInParentsState::InCanonicalState,
+                "unfinalized-clean+no-rejection",
+            )
         };
-        tracing::debug!(
+
+        // Hypothetical: what would the refined rule decide? Trace only.
+        let hypothetical_state = if has_finalized_clean {
+            "InCanonicalState[step1-finalized]"
+        } else if has_canonical_rejection {
+            "RejectedCanonically[step2-canonical-reject]"
+        } else if clean_check_log.iter().any(|(_, pm, _)| *pm) {
+            "InCanonicalState[step3-canonical-clean-no-reject]"
+        } else if rejects.is_empty() && cleans.is_empty() {
+            "NotInState[no-events]"
+        } else {
+            "InCanonicalState[step4-fallback]"
+        };
+        tracing::info!(
             target: "f1r3.trace.resolve_at_parents",
-            "[TRACE-RESOLVE-AT-PARENTS] sig={} parents_count={} cleans={} rejects={} state={:?}",
+            "[TRACE-RESOLVE-AT-PARENTS] sig={} parents_count={} cleans={} rejects={} state={:?} reason={} hypothetical={} lfb_block_number={} cleans_detail=[{}] rejects_detail=[{}] clean_check=[{}] reject_check=[{}] has_canonical_rejection={}",
             hex::encode(sig),
             parents.len(),
             cleans.len(),
             rejects.len(),
-            state
+            state,
+            reason,
+            hypothetical_state,
+            lfb_block_number,
+            cleans_str,
+            rejects_str,
+            clean_check_str,
+            reject_check_str,
+            has_canonical_rejection,
         );
         results.insert(sig.clone(), state);
     }

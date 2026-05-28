@@ -20,15 +20,23 @@ impl<A> ChannelChange<A> {
     ///    Prevents duplication when sibling blocks execute identical deploys.
     /// 2. Cross-set cancellation: items in BOTH `added` and `removed` after
     ///    union are intermediates — produced by one chain in the merge
-    ///    aggregation and consumed by a later chain in the same chain
-    ///    sequence. Net effect on the channel is zero for those items, so
-    ///    they must drop from both sets. Without this, the multiset-diff
-    ///    `vec_diff(init, removed) ++ added` in `make_trie_action` can fail
-    ///    to remove an intermediate `D_X` from `init` (it isn't there) yet
-    ///    add `D_X` from `added`, leaving the channel with `D_X` plus the
-    ///    "real" terminal Datum — a multi-Datum write on a single-value
-    ///    channel.
+    ///    aggregation and consumed by a later chain in the same chain sequence.
+    ///    Net effect on the channel is zero for those items, so they must drop
+    ///    from both sets. Without this, the multiset-diff `vec_diff(init,
+    ///    removed) ++ added` in `make_trie_action` can fail to remove an
+    ///    intermediate `D_X` from `init` (it isn't there) yet add `D_X` from
+    ///    `added`, leaving the channel with `D_X` plus the "real" terminal
+    ///    Datum — a multi-Datum write on a single-value channel.
     pub fn combine(self, other: Self) -> Self
+    where A: PartialEq {
+        self.combine_traced(other, None)
+    }
+
+    /// Same as `combine`, but `channel_hint` (a pre-formatted channel id) is
+    /// included in the cross-cancel trace so we can see WHICH channel the
+    /// non-canonical cancellation fires on. Kept generic — the caller passes
+    /// a formatted string, not a typed channel.
+    pub fn combine_traced(self, other: Self, channel_hint: Option<&str>) -> Self
     where A: PartialEq {
         let added_only_in_other = Self::vec_diff(other.added, &self.added);
         let removed_only_in_other = Self::vec_diff(other.removed, &self.removed);
@@ -43,14 +51,32 @@ impl<A> ChannelChange<A> {
         // `removed` is an intermediate that should disappear from the net
         // effect. Cancellation is per-element multiset (pair one add with
         // one removal at a time).
+        //
+        // NOTE: this cross-cancel step does NOT exist in the canonical Scala
+        // `ChannelChange.combine` (which is pure max-union). The trace below
+        // records whether it actually fires in production merges — if it
+        // never fires it is inert; if it fires it is altering merge output
+        // relative to canonical and is a divergence to scrutinize.
         let mut i = 0;
+        let mut cancelled_pairs = 0usize;
         while i < added.len() {
             if let Some(rem_pos) = removed.iter().position(|x| x == &added[i]) {
                 removed.remove(rem_pos);
                 added.remove(i);
+                cancelled_pairs += 1;
             } else {
                 i += 1;
             }
+        }
+        if cancelled_pairs > 0 {
+            tracing::warn!(
+                target: "f1r3.trace.combine_cancel",
+                "[TRACE-COMBINE-CROSS-CANCEL] channel={} cancelled_pairs={} remaining_added={} remaining_removed={}",
+                channel_hint.unwrap_or("<none>"),
+                cancelled_pairs,
+                added.len(),
+                removed.len()
+            );
         }
 
         Self { added, removed }

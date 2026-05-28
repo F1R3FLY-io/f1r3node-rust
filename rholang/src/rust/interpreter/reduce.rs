@@ -760,9 +760,7 @@ impl DebruijnInterpreter {
         let body_hash_hex = match &continuation.tagged_cont {
             Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(par_with_random)) => {
                 match &par_with_random.body {
-                    Some(body) => {
-                        hex::encode(&stable_hash_provider::hash(body).bytes()[..8])
-                    }
+                    Some(body) => hex::encode(&stable_hash_provider::hash(body).bytes()[..8]),
                     None => "none".to_string(),
                 }
             }
@@ -832,17 +830,19 @@ impl DebruijnInterpreter {
                 .exprs
                 .iter()
                 .find_map(|y| match &y.expr_instance {
-                    Some(ExprInstance::ETupleBody(etuple)) if etuple.ps.len() >= 2 => {
-                        Some(hex::encode(
-                            stable_hash_provider::hash(&etuple.ps[1]).bytes(),
-                        ))
-                    }
+                    Some(ExprInstance::ETupleBody(etuple)) if etuple.ps.len() >= 2 => Some(
+                        hex::encode(stable_hash_provider::hash(&etuple.ps[1]).bytes()),
+                    ),
                     _ => None,
                 })
                 .unwrap_or_else(|| "none".to_string());
             let par_debug = {
                 let s = format!("{:?}", chan);
-                if s.len() > 500 { format!("{}...", &s[..500]) } else { s }
+                if s.len() > 500 {
+                    format!("{}...", &s[..500])
+                } else {
+                    s
+                }
             };
             tracing::info!(
                 target: "f1r3.trace.classify",
@@ -1267,17 +1267,18 @@ impl DebruijnInterpreter {
         // Same Rholang `new x, y in {...}` source → same body_hash regardless of
         // caller. Lets us correlate channel-creation events back to the specific
         // source position in PoS.rhox / RevVault.rho / etc.
-        let body_hash = stable_hash_provider::hash(
-            new.p.as_ref().expect("New::p must be present"),
-        );
+        let body_hash = stable_hash_provider::hash(new.p.as_ref().expect("New::p must be present"));
         let body_hex = hex::encode(&body_hash.bytes()[..8]);
         // Rand path: identifies the execution-path context at this `new`.
         // Stable for the same deploy + same control-flow path.
         let path_hex = hex::encode(&rand.path_view[..rand.path_position]);
         let rand_full_hex = hex::encode(&rand.to_bytes());
+        let hsid = self.space.hot_store_id();
         tracing::info!(
             target: "f1r3.trace.reducer",
-            "[TRACE-REDUCE-NEW-ENTRY] bind_count={} uri_count={} body_hash={} path={} rand_full={}",
+            "[TRACE-REDUCE-NEW-ENTRY] thread={:?} hsid={:x} bind_count={} uri_count={} body_hash={} path={} rand_full={}",
+            std::thread::current().id(),
+            hsid,
             new.bind_count,
             new.uri.len(),
             body_hex,

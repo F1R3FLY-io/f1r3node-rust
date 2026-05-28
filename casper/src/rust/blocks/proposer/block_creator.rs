@@ -77,6 +77,26 @@ pub async fn prepare_user_deploys(
         buffer_guard.read_all()?
     };
 
+    {
+        let storage_sigs: Vec<String> = unfinalized
+            .iter()
+            .map(|d| hex::encode(&d.sig[..std::cmp::min(16, d.sig.len())]))
+            .collect();
+        let recovered_sigs: Vec<String> = recovered
+            .iter()
+            .map(|d| hex::encode(&d.sig[..std::cmp::min(16, d.sig.len())]))
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.rejected_deploy_buffer",
+            "[REJECTED-BUFFER-PREPARE-SNAPSHOT] block_number={} storage_count={} buffer_count={} storage_sigs={:?} buffer_sigs={:?}",
+            block_number,
+            unfinalized.len(),
+            recovered.len(),
+            storage_sigs,
+            recovered_sigs
+        );
+    }
+
     let recovered_count = recovered.len();
     let unfinalized: HashSet<Signed<DeployData>> = unfinalized
         .into_iter()
@@ -141,6 +161,22 @@ pub async fn prepare_user_deploys(
         .map(|d| d.sig.clone())
         .collect();
 
+    let exemption_candidates_str = exemption_candidates
+        .iter()
+        .map(|s| hex::encode(&s[..8.min(s.len())]))
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::info!(
+        target: "f1r3.trace.deploys_in_scope",
+        "[FILTER-EXEMPTION-CANDIDATES] block_number={} valid_count={} in_scope_count={} rejected_in_scope_count={} exemption_candidates_count={} sigs=[{}]",
+        block_number,
+        valid.len(),
+        casper_snapshot.deploys_in_scope.len(),
+        casper_snapshot.rejected_in_scope.len(),
+        exemption_candidates.len(),
+        exemption_candidates_str,
+    );
+
     let stale_recoveries: HashSet<Bytes> = if exemption_candidates.is_empty() {
         HashSet::new()
     } else {
@@ -153,6 +189,20 @@ pub async fn prepare_user_deploys(
             .iter()
             .map(|p| p.block_hash.clone())
             .collect();
+        let parent_hashes_str = parent_hashes
+            .iter()
+            .map(|h| hex::encode(&h[..8.min(h.len())]))
+            .collect::<Vec<_>>()
+            .join(",");
+        tracing::info!(
+            target: "f1r3.trace.deploys_in_scope",
+            "[FILTER-RESOLVE-CALL] block_number={} parent_count={} parents=[{}] lifespan={} candidates_count={}",
+            block_number,
+            parent_hashes.len(),
+            parent_hashes_str,
+            lifespan,
+            exemption_candidates.len(),
+        );
         match resolve_at_parents_batch(
             &casper_snapshot.dag,
             block_store,
@@ -160,13 +210,28 @@ pub async fn prepare_user_deploys(
             lifespan,
             &exemption_candidates,
         ) {
-            Ok(statuses) => statuses
-                .into_iter()
-                .filter_map(|(sig, st)| match st {
-                    EffectsInParentsState::InCanonicalState => Some(sig),
-                    _ => None,
-                })
-                .collect(),
+            Ok(statuses) => {
+                let statuses_str = statuses
+                    .iter()
+                    .map(|(sig, st)| {
+                        format!("({},{:?})", hex::encode(&sig[..8.min(sig.len())]), st)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                tracing::info!(
+                    target: "f1r3.trace.deploys_in_scope",
+                    "[FILTER-RESOLVE-RESULT] block_number={} statuses=[{}]",
+                    block_number,
+                    statuses_str,
+                );
+                statuses
+                    .into_iter()
+                    .filter_map(|(sig, st)| match st {
+                        EffectsInParentsState::InCanonicalState => Some(sig),
+                        _ => None,
+                    })
+                    .collect()
+            }
             // Resolver failure: decline the exemption for all candidates
             // rather than risk double-execution. They'll be retried next cycle.
             Err(err) => {
@@ -180,6 +245,19 @@ pub async fn prepare_user_deploys(
             }
         }
     };
+
+    let stale_recoveries_str = stale_recoveries
+        .iter()
+        .map(|s| hex::encode(&s[..8.min(s.len())]))
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::info!(
+        target: "f1r3.trace.deploys_in_scope",
+        "[FILTER-STALE-RECOVERIES] block_number={} count={} sigs=[{}]",
+        block_number,
+        stale_recoveries.len(),
+        stale_recoveries_str,
+    );
 
     let already_in_scope: Vec<Signed<DeployData>> = valid
         .iter()
@@ -200,6 +278,48 @@ pub async fn prepare_user_deploys(
                     && !stale_recoveries.contains(sig))
         })
         .collect();
+
+    // Per-deploy decision trace: log every kept and dropped deploy with
+    // the boolean conditions that drove the decision. Lets us correlate
+    // FILTERED warnings with snapshot state and exemption pathway.
+    for d in &already_in_scope {
+        let sig = &d.sig;
+        let in_scope = casper_snapshot.deploys_in_scope.contains(sig);
+        let in_rejected = casper_snapshot.rejected_in_scope.contains(sig);
+        let in_stale = stale_recoveries.contains(sig);
+        tracing::info!(
+            target: "f1r3.trace.deploys_in_scope",
+            "[FILTER-DECISION-DROP] block_number={} sig={} in_scope={} in_rejected={} in_stale={} reason=already-in-scope-no-recovery",
+            block_number,
+            hex::encode(&sig[..8.min(sig.len())]),
+            in_scope,
+            in_rejected,
+            in_stale,
+        );
+    }
+    for d in &valid_unique {
+        let sig = &d.sig;
+        let in_scope = casper_snapshot.deploys_in_scope.contains(sig);
+        let in_rejected = casper_snapshot.rejected_in_scope.contains(sig);
+        let in_stale = stale_recoveries.contains(sig);
+        let reason = if !in_scope {
+            "not-in-scope"
+        } else if in_rejected && !in_stale {
+            "admit-back-rejected-not-stale"
+        } else {
+            "unexpected-kept"
+        };
+        tracing::info!(
+            target: "f1r3.trace.deploys_in_scope",
+            "[FILTER-DECISION-KEEP] block_number={} sig={} in_scope={} in_rejected={} in_stale={} reason={}",
+            block_number,
+            hex::encode(&sig[..8.min(sig.len())]),
+            in_scope,
+            in_rejected,
+            in_stale,
+            reason,
+        );
+    }
 
     let already_in_scope_count = already_in_scope.len();
 
@@ -489,16 +609,39 @@ fn extract_deploy_sig_from_refund_failure(msg: &str) -> Option<Vec<u8>> {
 
 fn quarantine_refund_failure_deploy(
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+    >,
     failure_msg: &str,
 ) -> Result<bool, CasperError> {
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
         return Ok(false);
     };
 
-    let mut guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
-    guard.remove_by_sig(&sig).map_err(CasperError::KvStoreError)
+    // Without this, a toxic deploy that hits the buffer via the
+    // dag-merger collateral path keeps coming back through
+    // prepare_user_deploys's buffer scan even after deploy_storage
+    // removal — the cycle that re-executes the deploy across many
+    // blocks, accumulating multi-Datum on identity-tagged channels.
+    let removed_storage = {
+        let mut guard = deploy_storage
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        guard
+            .remove_by_sig(&sig)
+            .map_err(CasperError::KvStoreError)?
+    };
+
+    let removed_buffer = {
+        let mut guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        guard
+            .remove_by_sig(&sig)
+            .map_err(CasperError::KvStoreError)?
+    };
+
+    Ok(removed_storage || removed_buffer)
 }
 
 pub async fn create(
@@ -762,7 +905,11 @@ pub async fn create(
         Err(CasperError::SystemRuntimeError(SystemDeployPlatformFailure::GasRefundFailure(
             msg,
         ))) => {
-            let removed = quarantine_refund_failure_deploy(deploy_storage.clone(), &msg)?;
+            let removed = quarantine_refund_failure_deploy(
+                deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
+                &msg,
+            )?;
             tracing::warn!(
                 "Gas refund failure during checkpoint; quarantined_toxic_deploy={} error={}",
                 removed,
@@ -1007,5 +1154,136 @@ mod tests {
              fires, prepare_slashing_deploys will emit redundant SlashDeploys every \
              block until the invalid latest message ages out of the DAG view."
         );
+    }
+
+    mod quarantine {
+        use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        use crypto::rust::private_key::PrivateKey;
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use models::rust::casper::protocol::casper_message::DeployData;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        use super::*;
+
+        async fn make_stores() -> (
+            Arc<Mutex<KeyValueDeployStorage>>,
+            Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+        ) {
+            let mut kvm = InMemoryStoreManager::new();
+            let ds = Arc::new(Mutex::new(
+                KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
+            ));
+            let buf = Arc::new(Mutex::new(
+                KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap(),
+            ));
+            (ds, buf)
+        }
+
+        fn make_signed_deploy(seed_byte: u8) -> Signed<DeployData> {
+            let sk = PrivateKey::from_bytes(&[seed_byte; 32]);
+            let data = DeployData {
+                term: format!("@\"q-{}\"!({})", seed_byte, seed_byte),
+                time_stamp: 0,
+                phlo_price: 1,
+                phlo_limit: 100_000_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+            };
+            Signed::create(data, Box::new(Secp256k1), sk).expect("sign")
+        }
+
+        fn refund_failure_msg(sig: &[u8]) -> String {
+            format!(
+                "(Bug found) Deploy refund failed: Insufficient funds, deploy_sig={}, \
+                 deployer_pk=04abcdef, refund_amount=99999875",
+                hex::encode(sig),
+            )
+        }
+
+        #[tokio::test]
+        async fn quarantine_removes_from_storage_only() {
+            let (ds, buf) = make_stores().await;
+            let deploy = make_signed_deploy(0x11);
+            ds.lock().unwrap().add(vec![deploy.clone()]).unwrap();
+
+            let msg = refund_failure_msg(&deploy.sig);
+            let removed = quarantine_refund_failure_deploy(ds.clone(), buf.clone(), &msg).unwrap();
+
+            assert!(removed, "deploy was in storage, should report removed");
+            assert!(
+                ds.lock().unwrap().read_all().unwrap().is_empty(),
+                "storage must be cleaned"
+            );
+            assert!(
+                buf.lock().unwrap().read_all().unwrap().is_empty(),
+                "buffer unchanged"
+            );
+        }
+
+        /// Regression test for the rejected_deploy_buffer leak: a deploy
+        /// landed in the buffer via dag-merger collateral, then failed
+        /// refund on the next proposal attempt. Pre-fix, quarantine only
+        /// touched deploy_storage, so the deploy kept resurfacing through
+        /// prepare_user_deploys's buffer scan and re-executing across many
+        /// blocks, accumulating multi-Datum on identity-tagged channels.
+        #[tokio::test]
+        async fn quarantine_removes_from_buffer_only() {
+            let (ds, buf) = make_stores().await;
+            let deploy = make_signed_deploy(0x22);
+            buf.lock().unwrap().add(vec![deploy.clone()]).unwrap();
+
+            let msg = refund_failure_msg(&deploy.sig);
+            let removed = quarantine_refund_failure_deploy(ds.clone(), buf.clone(), &msg).unwrap();
+
+            assert!(removed, "deploy was in buffer, should report removed");
+            assert!(
+                ds.lock().unwrap().read_all().unwrap().is_empty(),
+                "storage unchanged"
+            );
+            assert!(
+                buf.lock().unwrap().read_all().unwrap().is_empty(),
+                "buffer must be cleaned — pre-fix this was the leak"
+            );
+        }
+
+        #[tokio::test]
+        async fn quarantine_removes_from_both() {
+            let (ds, buf) = make_stores().await;
+            let deploy = make_signed_deploy(0x33);
+            ds.lock().unwrap().add(vec![deploy.clone()]).unwrap();
+            buf.lock().unwrap().add(vec![deploy.clone()]).unwrap();
+
+            let msg = refund_failure_msg(&deploy.sig);
+            let removed = quarantine_refund_failure_deploy(ds.clone(), buf.clone(), &msg).unwrap();
+
+            assert!(removed);
+            assert!(ds.lock().unwrap().read_all().unwrap().is_empty());
+            assert!(buf.lock().unwrap().read_all().unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn quarantine_no_op_when_absent() {
+            let (ds, buf) = make_stores().await;
+            let absent = make_signed_deploy(0x44);
+
+            let msg = refund_failure_msg(&absent.sig);
+            let removed = quarantine_refund_failure_deploy(ds.clone(), buf.clone(), &msg).unwrap();
+
+            assert!(!removed, "nothing to remove");
+        }
+
+        #[tokio::test]
+        async fn quarantine_returns_false_on_unparseable_msg() {
+            let (ds, buf) = make_stores().await;
+            let removed = quarantine_refund_failure_deploy(
+                ds.clone(),
+                buf.clone(),
+                "totally unrelated error message with no sig",
+            )
+            .unwrap();
+            assert!(!removed);
+        }
     }
 }

@@ -190,10 +190,7 @@ impl ReplayRuntimeOps {
         let result = self
             .replay_deploy_e_inner(with_cost_accounting, processed_deploy)
             .await;
-        self.runtime_ops
-            .runtime
-            .clear_current_deploy_sig()
-            .await;
+        self.runtime_ops.runtime.clear_current_deploy_sig().await;
         result
     }
 

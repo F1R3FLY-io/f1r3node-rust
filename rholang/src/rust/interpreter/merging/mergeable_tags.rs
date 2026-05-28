@@ -85,7 +85,10 @@ pub fn bitmask_or_mergeable_tag_name() -> Par {
 }
 
 pub fn single_value_channel_tag_name() -> Par {
-    tag_name(SINGLE_VALUE_CHANNEL_TAG_PK, SINGLE_VALUE_CHANNEL_TAG_TIMESTAMP)
+    tag_name(
+        SINGLE_VALUE_CHANNEL_TAG_PK,
+        SINGLE_VALUE_CHANNEL_TAG_TIMESTAMP,
+    )
 }
 
 /// Standard mergeable-tag registry installed at runtime startup. Maps each

@@ -468,6 +468,8 @@ where
             .expect("current_deploy_sig write lock") = None;
     }
 
+    fn hot_store_id(&self) -> usize { Arc::as_ptr(&self.get_store()) as usize }
+
     async fn replace_channel_data(
         &self,
         channel: &C,
@@ -693,7 +695,58 @@ where
                     patterns,
                     comms_list.clone(),
                 ) {
-                    None => Ok(self.store_waiting_continuation(channels, wk)),
+                    None => {
+                        // DIAG: replay recorded a COMM for this consume, but the
+                        // matching datums aren't present now, so the consume
+                        // installs a continuation that may never fire (the
+                        // slash's runMVar2 join stall at block #48). Log each
+                        // join channel + its current datum count to pin which
+                        // channel is short.
+                        for (i, ch) in channels.iter().enumerate() {
+                            let ch_hash = consume_ref
+                                .channel_hashes
+                                .get(i)
+                                .map(|h| hex::encode(h.bytes()))
+                                .unwrap_or_else(|| "?".to_string());
+                            let datum_count = self.get_store().get_data(ch).len();
+                            tracing::warn!(
+                                target: "f1r3.trace.replay_consume_stall",
+                                "[REPLAY-CONSUME-STALL] consume_hash={} join_arity={} idx={} channel={} datum_count={}",
+                                hex::encode(consume_ref.hash.bytes()),
+                                channels.len(),
+                                i,
+                                ch_hash,
+                                datum_count,
+                            );
+                        }
+                        // DIAG: for each recorded COMM this consume could complete,
+                        // dump per-produce times_repeated (recorded) vs current
+                        // produce_count, plus whether a matching datum is present.
+                        // This distinguishes WHY the COMM didn't form:
+                        //   datum_present=false                -> missing produce
+                        //   datum_present=true, tr != count    -> count mismatch
+                        //                                         (under/over-count)
+                        for (ci, comm) in comms_list.iter().enumerate() {
+                            for produce in comm.produces.iter() {
+                                let tr = comm
+                                    .times_repeated
+                                    .get(produce)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "absent".to_string());
+                                let pc = self.get_produce_count(produce);
+                                tracing::info!(
+                                    target: "f1r3.trace.replay_match",
+                                    "[REPLAY-CONSUME-STALL-DETAIL] consume_hash={} comm_idx={} produce_hash={} times_repeated={} produce_count={}",
+                                    hex::encode(consume_ref.hash.bytes()),
+                                    ci,
+                                    hex::encode(produce.hash.bytes()),
+                                    tr,
+                                    pc,
+                                );
+                            }
+                        }
+                        Ok(self.store_waiting_continuation(channels, wk))
+                    }
                     Some((_, data_candidates)) => {
                         let produce_counters_closure =
                             |produces: &[Produce]| self.produce_counters(produces);
@@ -720,6 +773,34 @@ where
                                 "COMM Event {:?} was not contained in the trace {:?}",
                                 comm_ref, comms_list
                             )
+                        );
+
+                        // DIAG: a consume-side COMM formed. Log channels +
+                        // consume hash + the matched produce hashes with their
+                        // current produce_count, so the COMM can be correlated to
+                        // the produce side and to its channel(s).
+                        let matched_produce_info: Vec<String> = data_candidates
+                            .iter()
+                            .map(|c| {
+                                format!(
+                                    "{}@{}",
+                                    hex::encode(c.datum.source.hash.bytes()),
+                                    self.get_produce_count(&c.datum.source)
+                                )
+                            })
+                            .collect();
+                        let chan_hashes: Vec<String> = consume_ref
+                            .channel_hashes
+                            .iter()
+                            .map(|h| hex::encode(h.bytes()))
+                            .collect();
+                        tracing::info!(
+                            target: "f1r3.trace.replay_match",
+                            "[REPLAY-CONSUME-COMM] consume_hash={} arity={} channels=[{}] matched_produces=[{}]",
+                            hex::encode(consume_ref.hash.bytes()),
+                            channels.len(),
+                            chan_hashes.join(","),
+                            matched_produce_info.join(","),
                         );
 
                         let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
@@ -827,9 +908,18 @@ where
                     .map(|tuple| tuple.0.clone())
                     .collect::<Vec<_>>()
             });
+        // DIAG: trace only produces that participate in a recorded COMM (skip
+        // the high-volume no-COMM lingers, and compute nothing for them). Closes
+        // the blind spot where produces that COMM immediately (no store_data)
+        // went untraced, while keeping the hot path light enough not to perturb
+        // scheduling / memory. produce_count is current (log_produce incremented it).
         match comms_option {
             None => Ok(self.store_data(channel, data, persist, produce_ref)),
             Some(comms) => {
+                let prod_count_now = self.get_produce_count(&produce_ref);
+                let prod_hash_full = hex::encode(produce_ref.hash.bytes());
+                let prod_chan_full = hex::encode(produce_ref.channel_hash.bytes());
+                let recorded_comms = comms.len();
                 match self.get_comm_or_produce_candidate(
                     channel.clone(),
                     data.clone(),
@@ -838,14 +928,36 @@ where
                     produce_ref.clone(),
                     grouped_channels,
                 ) {
-                    Some((comm, pc)) => Ok(self.handle_match(pc, comms).map(|consume_result| {
-                        let p = comm
-                            .produces
-                            .into_iter()
-                            .find(|p| p.hash == produce_ref.hash);
-                        (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
-                    })),
-                    None => Ok(self.store_data(channel, data, persist, produce_ref)),
+                    Some((comm, pc)) => {
+                        let consume_hash_str = hex::encode(comm.consume.hash.bytes());
+                        tracing::info!(
+                            target: "f1r3.trace.replay_match",
+                            "[REPLAY-PRODUCE] channel={} produce_hash={} produce_count={} recorded_comms={} outcome=COMM consume={}",
+                            prod_chan_full,
+                            prod_hash_full,
+                            prod_count_now,
+                            recorded_comms,
+                            consume_hash_str,
+                        );
+                        Ok(self.handle_match(pc, comms).map(|consume_result| {
+                            let p = comm
+                                .produces
+                                .into_iter()
+                                .find(|p| p.hash == produce_ref.hash);
+                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
+                        }))
+                    }
+                    None => {
+                        tracing::info!(
+                            target: "f1r3.trace.replay_match",
+                            "[REPLAY-PRODUCE] channel={} produce_hash={} produce_count={} recorded_comms={} outcome=LINGER-WAIT consume=-",
+                            prod_chan_full,
+                            prod_hash_full,
+                            prod_count_now,
+                            recorded_comms,
+                        );
+                        Ok(self.store_data(channel, data, persist, produce_ref))
+                    }
                 }
             }
         }
@@ -1143,16 +1255,37 @@ where
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
         let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        let pre_count = self.get_store().get_data(&channel).len();
         tracing::info!(
             target: "f1r3.trace.hotstore_diag",
-            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} (replay_rspace.store_data invoked from deploy replay)",
+            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} pre_count={} (replay_rspace.store_data invoked from deploy replay)",
             std::thread::current().id(),
             hsid,
             self.current_deploy_sig_short(),
             hex::encode(produce_ref.channel_hash.bytes()),
             hex::encode(produce_ref.hash.bytes()),
-            persist
+            persist,
+            pre_count
         );
+        if pre_count >= 1 {
+            let existing = self.get_store().get_data(&channel);
+            let existing_sources: Vec<String> = existing
+                .iter()
+                .map(|d| hex::encode(d.source.hash.bytes()))
+                .collect();
+            tracing::warn!(
+                target: "f1r3.trace.multidatum_forensics",
+                "[MULTIDATUM-TRANSITION] thread={:?} hsid={:x} deploy_sig={} channel_hash={} pre_count={} post_count={} new_produce_hash={} existing_produce_hashes={:?} (replay path)",
+                std::thread::current().id(),
+                hsid,
+                self.current_deploy_sig_short(),
+                hex::encode(produce_ref.channel_hash.bytes()),
+                pre_count,
+                pre_count + 1,
+                hex::encode(produce_ref.hash.bytes()),
+                existing_sources
+            );
+        }
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,

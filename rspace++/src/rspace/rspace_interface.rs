@@ -206,6 +206,12 @@ pub trait ISpace<
 
     fn clear_current_deploy_sig(&self);
 
+    /// Returns a usize identifier unique to the hot-store backing this rspace
+    /// instance. Used by trace events that need to correlate NEW-evaluation
+    /// sites with the produces/consumes that happen on the same hot store.
+    /// Implementation: `Arc::as_ptr(&self.get_store()) as usize`.
+    fn hot_store_id(&self) -> usize;
+
     /// Atomically replace all data on `channel` with `new_data`. Used by
     /// write-time healing in casper layer to fold multi-Datum on tagged
     /// channels back to a single value before checkpoint. Removes all

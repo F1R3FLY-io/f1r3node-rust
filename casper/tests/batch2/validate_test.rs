@@ -20,9 +20,8 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
-use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy,
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;

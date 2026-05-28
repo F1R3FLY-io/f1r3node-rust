@@ -440,7 +440,10 @@ impl RhoRuntime for RhoRuntimeImpl {
         channel: &Par,
         new_data: Vec<Datum<ListParWithRandom>>,
     ) -> Result<(), rspace_plus_plus::rspace::errors::RSpaceError> {
-        self.reducer.space.replace_channel_data(channel, new_data).await
+        self.reducer
+            .space
+            .replace_channel_data(channel, new_data)
+            .await
     }
 
     async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) -> () {
@@ -1213,8 +1216,10 @@ where
     // NonNegativeNumber's tag is bound via the contract deploy itself
     // (`new NonNegativeNumber, MergeableTag, ...` in NonNegativeNumber.rho),
     // not via URI — so it's not in this loop.
-    let bitmask_par = crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name();
-    let single_value_par = crate::rust::interpreter::merging::mergeable_tags::single_value_channel_tag_name();
+    let bitmask_par =
+        crate::rust::interpreter::merging::mergeable_tags::bitmask_or_mergeable_tag_name();
+    let single_value_par =
+        crate::rust::interpreter::merging::mergeable_tags::single_value_channel_tag_name();
     for (tag_par, _merge_type) in mergeable_tags.iter() {
         if tag_par == &bitmask_par {
             tracing::info!(
@@ -1236,10 +1241,7 @@ where
                 tag_par.exprs.len(),
                 tag_par.bundles.len(),
             );
-            urn_map.insert(
-                "rho:system:singleValueChannel".to_string(),
-                tag_par.clone(),
-            );
+            urn_map.insert("rho:system:singleValueChannel".to_string(), tag_par.clone());
         }
     }
 

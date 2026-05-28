@@ -469,6 +469,8 @@ where
             .expect("current_deploy_sig write lock") = None;
     }
 
+    fn hot_store_id(&self) -> usize { Arc::as_ptr(&self.get_store()) as usize }
+
     async fn replace_channel_data(
         &self,
         channel: &C,
@@ -967,16 +969,37 @@ where
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
         let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        let pre_count = self.get_store().get_data(&channel).len();
         tracing::info!(
             target: "f1r3.trace.hotstore_diag",
-            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} (rspace.store_data invoked from deploy execution)",
+            "[TRACE-HOTSTORE-PRODUCE] thread={:?} hsid={:x} deploy_sig={} channel_hash={} produce_hash={} persistent={} pre_count={} (rspace.store_data invoked from deploy execution)",
             std::thread::current().id(),
             hsid,
             self.current_deploy_sig_short(),
             hex::encode(produce_ref.channel_hash.bytes()),
             hex::encode(produce_ref.hash.bytes()),
-            persist
+            persist,
+            pre_count
         );
+        if pre_count >= 1 {
+            let existing = self.get_store().get_data(&channel);
+            let existing_sources: Vec<String> = existing
+                .iter()
+                .map(|d| hex::encode(d.source.hash.bytes()))
+                .collect();
+            tracing::warn!(
+                target: "f1r3.trace.multidatum_forensics",
+                "[MULTIDATUM-TRANSITION] thread={:?} hsid={:x} deploy_sig={} channel_hash={} pre_count={} post_count={} new_produce_hash={} existing_produce_hashes={:?}",
+                std::thread::current().id(),
+                hsid,
+                self.current_deploy_sig_short(),
+                hex::encode(produce_ref.channel_hash.bytes()),
+                pre_count,
+                pre_count + 1,
+                hex::encode(produce_ref.hash.bytes()),
+                existing_sources
+            );
+        }
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,

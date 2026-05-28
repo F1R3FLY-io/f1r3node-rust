@@ -76,6 +76,8 @@ new PoS,
     getUser,
     pickActiveValidators,
     runMVar,
+    runMVar2,
+    peekFullState,
     fst,
     deposit, distributeRewards,
     perActiveValidatorPosVaultsCh,
@@ -84,7 +86,8 @@ new PoS,
     PendingRewards, MergeIntMaps, treeHashMapCh,
     sysAuthTokenOps(`sys:authToken:ops`),
     multiSigSystemVaultCh, coopVaultCh,
-    uriOut, sumFromPair
+    uriOut, sumFromPair,
+    posStdout(`rho:io:stdout`)
 in {
   // Simultaneously retrieves SystemVault, ListOps, TreeHashMap, and MultiSigSystemVault contracts from the registry.
   registryLookup!(`rho:vault:system`, *systemVaultCh) |
@@ -168,12 +171,18 @@ in {
           pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
-            new stateCh, posStateTag(`rho:system:singleValueChannel`), pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
-                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState in {
+            new stateCh, bondsCh, posStateTag(`rho:system:singleValueChannel`), calTotalActiveBonds, accrueRewards in {
               // Initializes PoS state structure.
+              //
+              // `allBonds` lives on its own channel `bondsCh` so that an
+              // operation which only touches bonds (e.g. `bond`) does not
+              // rewrite the rest of the state, and an operation which does not
+              // touch bonds (e.g. a non-withdrawer epoch `closeBlock`) does not
+              // rewrite bonds. This keeps independent state fields from
+              // conflicting in the multi-parent merge. Both channels carry the
+              // same `posStateTag` so each is single-value enforced.
+              @(*posStateTag, *bondsCh)!($$initialBonds$$) |
               @(*posStateTag, *stateCh)!({
-                // Map[PublicKey, Int] - each validator stake
-                "allBonds"        : $$initialBonds$$,
                 // Set[PublicKey]     - the active validators
                 "activeValidators": initialActive,
                 // Map[PublicKey, (Int, Int)] - The validators who issued a withdraw request , finished validating jobs and not active.
@@ -181,31 +190,85 @@ in {
                 //                              pos would transfer back all the original bond and rewards back to validator vault.
                 //                              Value(Int, Int) represents (original bond + reward, quantinue length)
                 "withdrawers"     : {},
-                // Map[PublicKey, Int]
-                "committedRewards" : {},
                 // Map[PublicKey, Int] - the validators wishing to withdraw and the block number when their quarantine ends
                 "pendingWithdrawers": {},
                 "randomImages"    : {},
                 "randomNumbers"   : {},
               }) |
-              contract rewardsInfo(retCh) = {
-                new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
-                  @posVault!("balance", *posBalanceCh) |
-                  accumulateItemInState!(*totalBondCh, "allBonds", *accumulateSndNum) |
-                  calTotalActiveBonds!(*totalActiveBondCh) |
-                  accumulateItemInState!(*totalWithdrawCh, "withdrawers", *accumulateFstOfSndArg) |
-                  accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
-                  for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
-                       @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
-                    for (@state <<- @(*posStateTag, *stateCh)) {
-                      retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
+              // Reward state no longer lives in the monolithic state map. Each
+              // validator's accrued reward is its own IntegerAdd channel
+              // `(posStateTag, ("rwd", pk))` (credited amount) plus a numerator-
+              // remainder channel `(posStateTag, ("rwn", pk))` so per-block
+              // accrual reproduces the original per-epoch rounding exactly.
+              // Concurrent reward accrual across merged blocks now folds
+              // additively instead of conflicting on a single map register.
+              // `everBonded` is a grow-only set guarding one-time channel init;
+              // `blockPhlo` is the per-block net fee accumulator (charge - refund),
+              // reset every closeBlock.
+              @(*posStateTag, "blockPhlo")!(0) |
+              new genInitRewardCh, genInitReward in {
+                contract genInitReward(@(pk, _bond), @acc, rc) = {
+                  @(*posStateTag, ("rwd", pk))!(0) |
+                  @(*posStateTag, ("rwn", pk))!(0) |
+                  rc!(acc.add(pk))
+                } |
+                @ListOps!("fold", $$initialBonds$$.toList(), Set(), *genInitReward, *genInitRewardCh) |
+                for (@everBondedSet <- genInitRewardCh) {
+                  @(*posStateTag, "everBonded")!(everBondedSet)
+                }
+              } |
+              // Per-block stake-weighted reward accrual. Replaces the per-epoch
+              // surplus distribution. Credits this block's net phlo (charge -
+              // refund, held on the blockPhlo counter) to each active validator
+              // in proportion to stake, via per-validator IntegerAdd channels. A
+              // numerator remainder is carried across blocks so the per-epoch
+              // total exactly equals the original
+              // surplus * (bond/minBond) / (activeBonds/minBond).
+              contract accrueRewards(ackCh) = {
+                new fullStateCh, totalABCh in {
+                  // Take + reset the per-block fee accumulator. netPhlo is this
+                  // block's net collected phlo (deterministic for the block).
+                  for (@netPhlo <- @(*posStateTag, "blockPhlo")) {
+                    @(*posStateTag, "blockPhlo")!(0) |
+                    peekFullState!((*posStateTag, *bondsCh), (*posStateTag, *stateCh), *fullStateCh) |
+                    calTotalActiveBonds!(*totalABCh) |
+                    for (@state <- fullStateCh & @totalActiveBond <- totalABCh) {
+                      posStdout!(["[CONTRACT-POS-ACCRUE]", "netPhlo=", netPhlo, "totalActiveBond=", totalActiveBond, "activeValidators=", state.get("activeValidators").toList()]) |
+                      if (netPhlo <= 0 or totalActiveBond < $$minimumBond$$) {
+                        ackCh!(true)
+                      } else {
+                        new accrueOne, parDoneCh in {
+                          contract accrueOne(@(pk, bond), resCh) = {
+                            if (state.get("activeValidators").contains(pk)) {
+                              for (@r <- @(*posStateTag, ("rwd", pk)) & @n <- @(*posStateTag, ("rwn", pk))) {
+                                match (n + netPhlo * (bond / $$minimumBond$$), totalActiveBond / $$minimumBond$$) {
+                                  (newNum, abq) => {
+                                    match newNum / abq {
+                                      credited => {
+                                        @(*posStateTag, ("rwd", pk))!(r + credited) |
+                                        @(*posStateTag, ("rwn", pk))!(newNum - credited * abq) |
+                                        resCh!(true)
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            } else {
+                              resCh!(true)
+                            }
+                          } |
+                          @ListOps!("unorderedParMap", state.get("allBonds").toList(), *accrueOne, *parDoneCh) |
+                          for (@_ <- parDoneCh) { ackCh!(true) }
+                        }
+                      }
                     }
                   }
                 }
               } |
               contract calTotalActiveBonds(returnCh) = {
-                new computeSum in {
-                  for (@state <<- @(*posStateTag, *stateCh)){
+                new computeSum, fullStateCh in {
+                  peekFullState!((*posStateTag, *bondsCh), (*posStateTag, *stateCh), *fullStateCh) |
+                  for (@state <- fullStateCh){
                     @ListOps!("fold", state.get("allBonds").toList(), 0, *computeSum, *returnCh) |
                     contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
                       if (state.get("activeValidators").contains(pk)){
@@ -217,41 +280,15 @@ in {
                   }
                 }
               } |
-              contract accumulateSndNum(@(_, amount), @acc, resultCh) = {
-                resultCh!(acc + amount)
-              } |
-              contract accumulateFstOfSndArg(@(_, (amount, _)), @acc, resultCh) = {
-                resultCh!(acc + amount)
-              } |
-              contract accumulateItemInState(returnCh, @stateKey, accumulateAlgo) = {
-                for (@state <<- @(*posStateTag, *stateCh)){
-                  @ListOps!("fold", state.get(stateKey).toList(), 0, *accumulateAlgo, *returnCh)
-                }
-              }|
-              contract PoS(@"getCurrentEpochRewards", returnCh) = {
-                new rewardCh, computeReward in {
-                  rewardsInfo!(*rewardCh)|
-                  for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet) <- rewardCh){
-                    @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
-                    contract computeReward(@(pk, bonds), @acc,  outCh) = {
-                      //  someAmount / minimumBond to reduce the possibility on overflow long
-                      if (activeValidatorsSet.contains(pk)){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$) / (activeBonds / $$minimumBond$$)))
-                      } else {
-                        outCh!(acc.set(pk, 0))
-                      }
-                    }
-                  }
-                }
-              } |
+              // Returns Map[Validator, reward] — current accrued reward per
+              // validator, read directly from the per-validator reward channels.
               contract PoS(@"getRewards", returnCh) = {
-                new currentEpochRewardCh, accumulateReward in {
-                  for (@state <<- @(*posStateTag, *stateCh)) {
-                    PoS!("getCurrentEpochRewards", *currentEpochRewardCh)|
-                    for (@currentEpochReward <- currentEpochRewardCh) {
-                      @ListOps!("fold", currentEpochReward.toList(), state.get("committedRewards"), *accumulateReward, *returnCh) |
-                      contract accumulateReward(@(pk, reward), @acc, outCh) = {
-                        outCh!(acc.set(pk, acc.getOrElse(pk, 0) + reward))
+                new collectReward in {
+                  for (@everBonded <<- @(*posStateTag, "everBonded")) {
+                    @ListOps!("fold", everBonded.toList(), {}, *collectReward, *returnCh) |
+                    contract collectReward(@pk, @acc, outCh) = {
+                      for (@reward <<- @(*posStateTag, ("rwd", pk))) {
+                        outCh!(acc.set(pk, reward))
                       }
                     }
                   }
@@ -259,8 +296,8 @@ in {
               } |
               // Peeks at bonds map.
               contract PoS(@"getBonds", returnCh) = {
-                for (@state <<- @(*posStateTag, *stateCh)) {
-                  returnCh!(state.get("allBonds"))
+                for (@bonds <<- @(*posStateTag, *bondsCh)) {
+                  returnCh!(bonds)
                 }
               } |
               // Peeks at active validator list.
@@ -307,16 +344,23 @@ in {
                 new userCh, depositCh,
                     processCh
                 in {
-                  runMVar!((*posStateTag, *stateCh), *processCh, *returnCh) |
+                  posStdout!(["[CONTRACT-POS-BOND-ENTER]", "deployerId=", deployerId, "amount=", amount]) |
+                  // bond touches only allBonds, so it runs on the bonds channel
+                  // alone — it does not read or rewrite the rest of the state.
+                  runMVar!((*posStateTag, *bondsCh), *processCh, *returnCh) |
                   getUser!(deployerId, *userCh) |
-                  for (@state, resultCh <- processCh &
+                  for (@bonds, resultCh <- processCh &
                        @userPk          <- userCh) {
-                    if (state.get("allBonds").contains(userPk)) {
-                      resultCh!(state, (false, "Public key is already bonded."))
+                    posStdout!(["[CONTRACT-POS-BOND-STATE-PRE]", "userPk=", userPk, "amount=", amount, "alreadyBonded=", bonds.contains(userPk), "allBonds=", bonds.toList()]) |
+                    if (bonds.contains(userPk)) {
+                      posStdout!(["[CONTRACT-POS-BOND-REJECT]", "userPk=", userPk, "reason=already-bonded"]) |
+                      resultCh!(bonds, (false, "Public key is already bonded."))
                     } else if (amount < $$minimumBond$$) {
-                      resultCh!(state, (false, "Bond is less than minimum!"))
+                      posStdout!(["[CONTRACT-POS-BOND-REJECT]", "userPk=", userPk, "reason=below-minimum", "amount=", amount]) |
+                      resultCh!(bonds, (false, "Bond is less than minimum!"))
                     } else if (amount > $$maximumBond$$) {
-                      resultCh!(state, (false, "Bond is greater than maximum!"))
+                      posStdout!(["[CONTRACT-POS-BOND-REJECT]", "userPk=", userPk, "reason=above-maximum", "amount=", amount]) |
+                      resultCh!(bonds, (false, "Bond is greater than maximum!"))
                     } else {
                       // Transfers user's bond amount to the PoS vault.
                       deposit!(deployerId, amount, posVaultAddr, *depositCh) |
@@ -324,11 +368,26 @@ in {
                         match depositResult {
                           // If deposit is successful, the user becomes a bonded validator.
                           (true, _) => {
-                            resultCh!(state.set("allBonds", state.get("allBonds").set(userPk, amount)), depositResult)
+                            posStdout!(["[CONTRACT-POS-BOND-WRITE]", "userPk=", userPk, "amount=", amount, "allBondsBefore=", bonds.toList(), "allBondsAfter=", bonds.set(userPk, amount).toList()]) |
+                            resultCh!(bonds.set(userPk, amount), depositResult) |
+                            // One-time init of this validator's reward channels,
+                            // guarded by the grow-only everBonded set so a
+                            // validator who withdrew and re-bonds is not re-init'd
+                            // (its reward channels persist at net 0).
+                            for (@everBonded <- @(*posStateTag, "everBonded")) {
+                              if (everBonded.contains(userPk)) {
+                                @(*posStateTag, "everBonded")!(everBonded)
+                              } else {
+                                @(*posStateTag, "everBonded")!(everBonded.add(userPk)) |
+                                @(*posStateTag, ("rwd", userPk))!(0) |
+                                @(*posStateTag, ("rwn", userPk))!(0)
+                              }
+                            }
                           }
                           // If deposit is unsuccessful, the user is not bonded.
                           (false, errorMsg) => {
-                            resultCh!(state, (false, "Bond deposit failed: " ++ errorMsg))
+                            posStdout!(["[CONTRACT-POS-BOND-FAIL]", "userPk=", userPk, "amount=", amount, "errorMsg=", errorMsg]) |
+                            resultCh!(bonds, (false, "Bond deposit failed: " ++ errorMsg))
                           }
                         }
                       }
@@ -341,15 +400,19 @@ in {
                 new userCh, processCh, blockDataCh,
                     getBlockData(`rho:block:data`)
                 in {
-                  // Consumes state and updates withdrawers map.
-                  runMVar!((*posStateTag, *stateCh), *processCh, *returnCh) |
+                  posStdout!(["[CONTRACT-POS-WITHDRAW-ENTER]", "deployerId=", deployerId]) |
+                  // Reads allBonds (bond check) and writes pendingWithdrawers;
+                  // runMVar2 reconstructs the full state so the body is unchanged.
+                  runMVar2!((*posStateTag, *bondsCh), (*posStateTag, *stateCh), *processCh, *returnCh) |
                   getBlockData!(*blockDataCh) |
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh   <- processCh &
                        @userPk            <- userCh &
                        @blockNumber, _, _ <- blockDataCh) {
+                    posStdout!(["[CONTRACT-POS-WITHDRAW-STATE-PRE]", "userPk=", userPk, "blockNumber=", blockNumber, "isBonded=", state.get("allBonds").contains(userPk), "allBonds=", state.get("allBonds").toList(), "pendingWithdrawersBefore=", state.get("pendingWithdrawers").toList()]) |
                     if (state.get("allBonds").contains(userPk)) {
                       // The withdrawal goes into effect at the start of the next epoch.
+                      posStdout!(["[CONTRACT-POS-WITHDRAW-WRITE]", "userPk=", userPk, "blockNumber=", blockNumber, "quarantineUntil=", $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$)]) |
                       resultCh!(
                         state.set("pendingWithdrawers",
                                   state.get("pendingWithdrawers")
@@ -357,6 +420,7 @@ in {
                                          $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
                         (true, Nil))
                     } else {
+                      posStdout!(["[CONTRACT-POS-WITHDRAW-REJECT]", "userPk=", userPk, "reason=not-bonded"]) |
                       resultCh!(state, (false, "User is not bonded"))
                     }
                   }
@@ -368,24 +432,39 @@ in {
               new currentDeployerData in {
                 contract PoS(@"chargeDeploy", @deployerId, @amount, @sysAuthToken, return) = {
                   new isValidTokenCh in {
+                    posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-ENTER]", "deployerId=", deployerId, "amount=", amount]) |
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
+                      posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-AUTHCHECK]", "isValid=", isValid]) |
                       if (isValid) {
                         new depositCh in {
                           deposit!(deployerId, amount, posVaultAddr, *depositCh) |
                           for (@depositResult <- depositCh){
+                            posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-DEPOSITRESULT]", "deployerId=", deployerId, "amount=", amount, "result=", depositResult]) |
                             match depositResult {
                               (true, _) => {
                                 currentDeployerData!((deployerId, amount)) |
+                                // Add this charge to the per-block net-fee counter.
+                                for (@bp <- @(*posStateTag, "blockPhlo")) {
+                                  @(*posStateTag, "blockPhlo")!(bp + amount)
+                                } |
+                                new posBalCh in {
+                                  @posVault!("balance", *posBalCh) |
+                                  for (@posBal <- posBalCh) {
+                                    posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-POSTDEPOSIT]", "deployerId=", deployerId, "amount=", amount, "posVaultBalanceAfterDeposit=", posBal])
+                                  }
+                                } |
                                 return!(depositResult)
                               }
                               (_, errorMessage) => {
+                                posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-FAIL]", "deployerId=", deployerId, "amount=", amount, "errorMessage=", errorMessage]) |
                                 return!((false, "Deploy payment failed: " ++ errorMessage))
                               }
                             }
                           }
                         }
                       } else {
+                        posStdout!(["[CONTRACT-POS-CHARGEDEPLOY-FAIL]", "deployerId=", deployerId, "amount=", amount, "errorMessage=", "Invalid system auth token"]) |
                         return!((false, "Invalid system auth token"))
                       }
                     }
@@ -396,10 +475,12 @@ in {
                 // Return expects (Boolean, Either[Nil, String])
                 contract PoS(@"refundDeploy", @refundAmount, @sysAuthToken, return) = {
                   new isValidTokenCh in {
+                    posStdout!(["[CONTRACT-POS-REFUNDDEPLOY-ENTER]", "refundAmount=", refundAmount]) |
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
                         for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
+                          posStdout!(["[CONTRACT-POS-REFUNDDEPLOY-CURRENTDEPLOYER]", "deployerId=", deployerId, "initialPaymentAmount=", initialPaymentAmount, "refundAmount=", refundAmount]) |
                           if (refundAmount > 0) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
@@ -407,11 +488,22 @@ in {
                                 // Transfer (from sender to deployer) called in refundDeploy.
                                 @posVault!("transfer", deployerVaultAddress, refundAmount, posAuthKey, *transferCh) |
                                 for (@transferResult <- transferCh) {
+                                  posStdout!(["[CONTRACT-POS-REFUNDDEPLOY-TRANSFERRESULT]", "deployerId=", deployerId, "refundAmount=", refundAmount, "result=", transferResult]) |
                                   match transferResult {
                                     (true, _) => {
+                                      // Subtract this refund from the per-block net-fee counter.
+                                      for (@bp <- @(*posStateTag, "blockPhlo")) {
+                                        @(*posStateTag, "blockPhlo")!(bp - refundAmount)
+                                      } |
                                       return!((true, Nil))
                                     }
                                     (_, errorMessage) => {
+                                      new posBalCh in {
+                                        @posVault!("balance", *posBalCh) |
+                                        for (@posBal <- posBalCh) {
+                                          posStdout!(["[CONTRACT-POS-REFUNDDEPLOY-FAIL]", "deployerId=", deployerId, "refundAmount=", refundAmount, "posVaultBalance=", posBal, "errorMessage=", errorMessage])
+                                        }
+                                      } |
                                       return!((false, "(Bug found) Deploy refund failed: " ++ errorMessage))
                                     }
                                   }
@@ -423,6 +515,7 @@ in {
                           }
                         }
                       } else {
+                        posStdout!(["[CONTRACT-POS-REFUNDDEPLOY-FAIL]", "refundAmount=", refundAmount, "errorMessage=", "Invalid system auth token"]) |
                         return!((false, "Invalid system auth token"))
                       }
                     }
@@ -434,18 +527,21 @@ in {
                 // Slash expects (Boolean, Either[Nil, String]) on returnCh.
                 contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, returnCh) = {
                   new isValidTokenCh in {
+                    posStdout!(["[CONTRACT-POS-SLASH-ENTER]", "deployerId=", deployerId, "blockHash=", blockHash]) |
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
+                      posStdout!(["[CONTRACT-POS-SLASH-AUTH]", "isValid=", isValid]) |
                       if (isValid) {
                         new invalidBlocksCh, stateProcessCh, userCh,
                             getInvalidBlocks(`rho:casper:invalidBlocks`)
                         in {
                           getInvalidBlocks!(*invalidBlocksCh) |
                           getUser!(deployerId, *userCh) |
-                          runMVar!((*posStateTag, *stateCh), *stateProcessCh, *returnCh) |
+                          runMVar2!((*posStateTag, *bondsCh), (*posStateTag, *stateCh), *stateProcessCh, *returnCh) |
                           for (@invalidBlocks        <- invalidBlocksCh &
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
+                                posStdout!(["[CONTRACT-POS-SLASH-INVALIDBLOCKS]", "blockHash=", blockHash, "deployerPk=", userPk, "invalidBlocks=", invalidBlocks.toList(), "lookupHit=", invalidBlocks.contains(blockHash), "allBondsPre=", state.get("allBonds").toList()]) |
                                 new toBeSlashed, valBondCh, valRewardCh in {
                                   // Flow of logic:
                                   // 0. check if blockHash is the hash of an invalid block
@@ -454,6 +550,7 @@ in {
                                   // Retrieves either public key of sender of invalid block or the deployer public key.
                                   toBeSlashed!(invalidBlocks.getOrElse(blockHash, userPk)) |
                                   for (@validator <- toBeSlashed) {
+                                    posStdout!(["[CONTRACT-POS-SLASH-TARGET]", "validator=", validator, "currentBond=", state.get("allBonds").get(validator)]) |
                                     // Takes the stake of slashed validator
                                     valBondCh!(state.get("allBonds").get(validator)) |
                                     for (@valBond <- valBondCh) {
@@ -468,18 +565,24 @@ in {
                                         ) |
                                         // FIXME handle transfer failing case
                                         for (_ <- transferDoneCh) {
-                                          // Sets slashed validator's committed rewards and bond to 0 in state.
-                                          // Moves slashed validator to withdrawers map with no quarantine period.
-                                          stateUpdateCh!({
-                                            "allBonds"        : state.get("allBonds").set(validator, 0),
-                                            "activeValidators": state.get("activeValidators").delete(validator),
-                                            "committedRewards" : state.get("committedRewards").delete(validator),
-                                            "withdrawers"     : state.get("withdrawers"),
-                                            "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                            "randomImages"    : state.get("randomImages"),
-                                            "randomNumbers"   : state.get("randomNumbers")
-                                          },
-                                          (true, Nil))
+                                          posStdout!(["[CONTRACT-POS-SLASH-WRITE]", "validator=", validator, "bondBefore=", state.get("allBonds").get(validator), "allBondsBefore=", state.get("allBonds").toList(), "allBondsAfter=", state.get("allBonds").set(validator, 0).toList()]) |
+                                          // Sets slashed validator's bond to 0 and removes from active set.
+                                          // Forfeits the validator's accrued reward by resetting its
+                                          // reward channels to 0 (the slashed validator was bonded, so
+                                          // its channels exist).
+                                          for (@_rwd <- @(*posStateTag, ("rwd", validator)) & @_rwn <- @(*posStateTag, ("rwn", validator))) {
+                                            @(*posStateTag, ("rwd", validator))!(0) |
+                                            @(*posStateTag, ("rwn", validator))!(0) |
+                                            stateUpdateCh!({
+                                              "allBonds"        : state.get("allBonds").set(validator, 0),
+                                              "activeValidators": state.get("activeValidators").delete(validator),
+                                              "withdrawers"     : state.get("withdrawers"),
+                                              "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                              "randomImages"    : state.get("randomImages"),
+                                              "randomNumbers"   : state.get("randomNumbers")
+                                            },
+                                            (true, Nil))
+                                          }
                                         }
                                       }
                                     }
@@ -488,6 +591,7 @@ in {
                           }
                         }
                       } else {
+                        posStdout!(["[CONTRACT-POS-SLASH-AUTH-FAIL]", "deployerId=", deployerId, "blockHash=", blockHash]) |
                         returnCh!((false, "Invalid system auth token"))
                       }
                     }
@@ -498,44 +602,51 @@ in {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
+                      posStdout!(["[CONTRACT-POS-CLOSEBLOCK-AUTH]", "isValid=", isValid]) |
                       if (isValid) {
                         new blockDataCh, getBlockData(`rho:block:data`) in {
                           getBlockData!(*blockDataCh) |
                           for (@blockNumber, _, _ <- blockDataCh) {
+                            posStdout!(["[CONTRACT-POS-CLOSEBLOCK-ENTER]", "blockNumber=", blockNumber, "epochLength=", $$epochLength$$, "isEpochBoundary=", blockNumber % $$epochLength$$ == 0]) |
+                            // Accrue this block's collected fees to active validators
+                            // (every block), then wait for accrual to complete before
+                            // any epoch-boundary withdrawal/active-set maintenance.
+                            new accrualDoneCh in {
+                            accrueRewards!(*accrualDoneCh) |
+                            for (_ <- accrualDoneCh) {
                             if (blockNumber % $$epochLength$$ != 0) {
                               // Epoch change does not occur.
+                              posStdout!(["[CONTRACT-POS-CLOSEBLOCK-NOOP]", "blockNumber=", blockNumber]) |
                               ackCh!((true, Nil))
                             } else {
-                              // Epoch change occurs.
+                              // Epoch change occurs. Rewards are accrued per-block by
+                              // accrueRewards, so this branch only performs the
+                              // epoch-boundary withdrawal payout + active-set refresh.
                               new payWithdrawer, removeQuarantinedWithdrawers,
-                                  stateProcessCh, paymentDoneCh,
-                                  accDepositsDoneCh, commitRewardsCh,
-                                  newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh,
-                                  commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer
+                                  stateProcessCh,
+                                  newValidatorsCh, removeQuarantinedCh,
+                                  movePendingWithdrawCh, movePendingWithdrawer
                               in {
-                                PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
-                                for (@currentRewards <- currentEpochRewardCh) {
-                                  runMVar!((*posStateTag, *stateCh), *stateProcessCh, *ackCh) |
-                                  for (@state, stateUpdateCh <- stateProcessCh) {
-                                    // 1. Calculate all the validator current epoch rewards based on active validator bonding proportion
-                                    // 2. Accumulate `committedRewards` with the result of step 1
-                                    commitCurrentEpochRewards!(state, currentRewards, *updatedRewardsCh) |
-                                    for (@newCommittedState <- updatedRewardsCh) {
-                                      // 3. Update `withdrawers` according to `allBonds` and `pendingWithdrawers`
-                                      // when pendingWithdrawers is not empty, remove the validator in `allBonds`
-                                      movePendingWithdrawer!(newCommittedState, *movePendingWithdrawCh) |
-                                      for (@newMovedPendingState <- movePendingWithdrawCh){
-                                        // 4. When the block number reaches the quantinue of `withdrawers` ,
-                                        //  transfer the corresponding bonds+ rewards to the corresponding validator from posVault.
-                                        // 5. update `pendingWithdrawers` to empty Map {}.
-                                        removeQuarantinedWithdrawers!(blockNumber, newMovedPendingState, *removeQuarantinedCh) |
-                                        for (@newRemovedQuantinueState <- removeQuarantinedCh) {
-                                          // 6. Pick new `activeValidators`
-                                          pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
-                                          for (@newValidators <- newValidatorsCh) {
-                                            stateUpdateCh!(newRemovedQuantinueState.set("activeValidators", newValidators), (true, Nil))
-                                          }
-                                        }
+                                posStdout!(["[CONTRACT-POS-CLOSEBLOCK-EPOCH-BOUNDARY]", "blockNumber=", blockNumber]) |
+                                runMVar2!((*posStateTag, *bondsCh), (*posStateTag, *stateCh), *stateProcessCh, *ackCh) |
+                                for (@state, stateUpdateCh <- stateProcessCh) {
+                                  posStdout!(["[CONTRACT-POS-CLOSEBLOCK-STATE-IN]", "blockNumber=", blockNumber, "allBonds=", state.get("allBonds").toList(), "activeValidators=", state.get("activeValidators").toList(), "pendingWithdrawers=", state.get("pendingWithdrawers").toList(), "withdrawers=", state.get("withdrawers").toList()]) |
+                                  // Update `withdrawers` from `allBonds` + `pendingWithdrawers`;
+                                  // when pendingWithdrawers is not empty, remove the validator in `allBonds`.
+                                  movePendingWithdrawer!(state, *movePendingWithdrawCh) |
+                                  for (@newMovedPendingState <- movePendingWithdrawCh){
+                                    posStdout!(["[CONTRACT-POS-CLOSEBLOCK-POST-MOVEPENDING]", "blockNumber=", blockNumber, "allBonds=", newMovedPendingState.get("allBonds").toList(), "withdrawers=", newMovedPendingState.get("withdrawers").toList(), "pendingWithdrawers=", newMovedPendingState.get("pendingWithdrawers").toList()]) |
+                                    // When the block number reaches the quarantine of `withdrawers`,
+                                    // transfer the corresponding bond + accrued reward to the validator
+                                    // from posVault and clear `pendingWithdrawers`.
+                                    removeQuarantinedWithdrawers!(blockNumber, newMovedPendingState, *removeQuarantinedCh) |
+                                    for (@newRemovedQuantinueState <- removeQuarantinedCh) {
+                                      posStdout!(["[CONTRACT-POS-CLOSEBLOCK-POST-REMOVEQ]", "blockNumber=", blockNumber, "allBonds=", newRemovedQuantinueState.get("allBonds").toList(), "withdrawers=", newRemovedQuantinueState.get("withdrawers").toList()]) |
+                                      // Pick new `activeValidators`.
+                                      pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
+                                      for (@newValidators <- newValidatorsCh) {
+                                        posStdout!(["[CONTRACT-POS-CLOSEBLOCK-STATE-OUT]", "blockNumber=", blockNumber, "finalAllBonds=", newRemovedQuantinueState.get("allBonds").toList(), "finalActiveValidators=", newValidators.toList(), "finalWithdrawers=", newRemovedQuantinueState.get("withdrawers").toList(), "finalPendingWithdrawers=", newRemovedQuantinueState.get("pendingWithdrawers").toList()]) |
+                                        stateUpdateCh!(newRemovedQuantinueState.set("activeValidators", newValidators), (true, Nil))
                                       }
                                     }
                                   }
@@ -552,19 +663,12 @@ in {
                                     }
                                   }
                                 } |
-                                contract commitCurrentEpochRewards(@state, @currentRewards, returnCh) = {
-                                  new accumulate in {
-                                    @ListOps!("fold", currentRewards.toList(), state, *accumulate, *returnCh) |
-                                    contract accumulate(@(pk, reward), @updatedState, resultCh) = {
-                                      resultCh!(updatedState.set("committedRewards",
-                                                                  updatedState.get("committedRewards").set(pk, updatedState.get("committedRewards").getOrElse(pk, 0) + reward)))
-                                    }
-                                  }
-                                } |
                                 contract movePendingWithdrawer(@state, returnCh) = {
                                   new movePending in {
+                                    posStdout!(["[CONTRACT-POS-MOVEPENDING-ENTER]", "pendingWithdrawers=", state.get("pendingWithdrawers").toList(), "allBondsBefore=", state.get("allBonds").toList(), "withdrawersBefore=", state.get("withdrawers").toList()]) |
                                     @ListOps!("fold", state.get("pendingWithdrawers").toList(), state, *movePending, *returnCh) |
                                     contract movePending(@(pk, quantine), @updatedState, resultCh) = {
+                                      posStdout!(["[CONTRACT-POS-MOVEPENDING-ITER]", "pk=", pk, "quarantine=", quantine, "bondBeingMoved=", updatedState.get("allBonds").get(pk), "allBondsBeforeDelete=", updatedState.get("allBonds").toList(), "allBondsAfterDelete=", updatedState.get("allBonds").delete(pk).toList()]) |
                                       resultCh!(updatedState
                                                 .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quantine)))
                                                 .set("allBonds", updatedState.get("allBonds").delete(pk))
@@ -582,19 +686,29 @@ in {
                                       newBondsListCh, newWithdrawersListCh,
                                       computeRemove, payRet
                                   in {
+                                    posStdout!(["[CONTRACT-POS-REMOVEQ-ENTER]", "currentBlockNumber=", currentBlockNumber, "withdrawers=", state.get("withdrawers").toList(), "allBondsAtEntry=", state.get("allBonds").toList()]) |
                                     // Calculate rewards by taking PoS balance on PoS vault and subtract all active stake + newly bonded
                                     @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedValidatorsCh) |
                                     for (@quarantinedValidators <- quarantinedValidatorsCh) {
+                                      posStdout!(["[CONTRACT-POS-REMOVEQ-FILTERED]", "currentBlockNumber=", currentBlockNumber, "quarantinedValidators=", quarantinedValidators]) |
                                       @ListOps!("unorderedParMap", quarantinedValidators, *payWithdraw, *payRet) |
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
-                                        // FIXME fix transfer in failure case
-                                        payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *resultCh)
+                                        // Read accrued reward, pay bond + reward, then reset the
+                                        // reward channels to 0. The delta-based merge makes writing 0
+                                        // a correct commutative reset (pays out the accrued amount).
+                                        for (@rew <- @(*posStateTag, ("rwd", pk)) & @_rwn <- @(*posStateTag, ("rwn", pk))) {
+                                          @(*posStateTag, ("rwd", pk))!(0) |
+                                          @(*posStateTag, ("rwn", pk))!(0) |
+                                          posStdout!(["[CONTRACT-POS-REMOVEQ-PAYWITHDRAW]", "pk=", pk, "bonds=", bonds, "quarantine=", quantine, "rewards=", rew, "totalPayout=", bonds + rew]) |
+                                          // FIXME fix transfer in failure case
+                                          payWithdrawer!((pk, bonds + rew), *resultCh)
+                                        }
                                       } |
                                       for (@_ <- payRet) {
                                         @ListOps!("fold", quarantinedValidators, state, *computeRemove, *returnCh) |
                                         contract computeRemove(@(pk, (bonds, quantine)), @updatedState, resultCh) = {
+                                          posStdout!(["[CONTRACT-POS-REMOVEQ-ITER]", "pk=", pk, "bonds=", bonds, "withdrawersBeforeDelete=", updatedState.get("withdrawers").toList()]) |
                                           resultCh!(updatedState
-                                                    .set("committedRewards", updatedState.get("committedRewards").delete(pk))
                                                     .set("withdrawers", updatedState.get("withdrawers").delete(pk))
                                                     )
                                         }
@@ -602,11 +716,14 @@ in {
                                     } |
                                     // Check whether quarantine period is finished.
                                     contract isQuarantineFinished(@(pk, (bonds, blockNumber)), resultCh) = {
+                                      posStdout!(["[CONTRACT-POS-REMOVEQ-QFINISHED-CHECK]", "pk=", pk, "bonds=", bonds, "quarantineUntil=", blockNumber, "currentBlockNumber=", currentBlockNumber, "isFinished=", currentBlockNumber >= blockNumber]) |
                                       resultCh!(currentBlockNumber >= blockNumber)
                                     }
                                   }
                                 }
                               }
+                            }
+                            }
                             }
                           }
                         }
@@ -679,12 +796,45 @@ in {
       // Updates value stored on varCh and sends (Bool) acknowledgement on returnCh.
       contract runMVar(varCh, processCh, returnCh) = {
         new resultCh in {
+          posStdout!(["[CONTRACT-POS-RUNMVAR-WAIT]"]) |
           for (@v <- varCh) {
             processCh!(v, *resultCh) |
             for (@newV, @result <- resultCh) {
               varCh!(newV) |
               returnCh!(result)
             }
+          }
+        }
+      } |
+      // Two-channel MVar: takes the bonds channel and the rest-of-state
+      // channel, reconstructs a full state map (`stateRest` ++ {allBonds:
+      // bonds}) so the processor logic is unchanged, then splits the result
+      // back into the two channels. Used by operations that touch bonds AND
+      // other fields (slash, closeBlock) so each field still lives on its own
+      // channel and only the fields actually changed get rewritten.
+      contract runMVar2(bondsCh, stateRestCh, processCh, returnCh) = {
+        new resultCh in {
+          for (@bonds <- bondsCh & @stateRest <- stateRestCh) {
+            match stateRest.set("allBonds", bonds) {
+              fullState => {
+                processCh!(fullState, *resultCh) |
+                for (@newFull, @result <- resultCh) {
+                  bondsCh!(newFull.get("allBonds")) |
+                  stateRestCh!(newFull.delete("allBonds")) |
+                  returnCh!(result)
+                }
+              }
+            }
+          }
+        }
+      } |
+      // Read-only reconstruct: peeks bonds + rest-of-state and yields the full
+      // state map on returnCh, so read paths that need allBonds alongside other
+      // fields keep their original logic.
+      contract peekFullState(bondsCh, stateRestCh, returnCh) = {
+        for (@bonds <<- bondsCh) {
+          for (@stateRest <<- stateRestCh) {
+            returnCh!(stateRest.set("allBonds", bonds))
           }
         }
       } |
@@ -707,8 +857,10 @@ in {
         new availableValidatorsCh,
             isAvailable, pksCh
         in {
+          posStdout!(["[CONTRACT-POS-PICKACTIVE-ENTER]", "allBondsList=", allBonds, "numberOfActiveValidators=", $$numberOfActiveValidators$$]) |
           @ListOps!("map", allBonds, *fst, *pksCh) |
           for (@pks <- pksCh) {
+            posStdout!(["[CONTRACT-POS-PICKACTIVE-RESULT]", "allPks=", pks, "picked=", pks.take($$numberOfActiveValidators$$).toSet().toList()]) |
             // TODO: Randomly select 100 active validators once we have on-chain randomness
             returnCh!(pks.take($$numberOfActiveValidators$$).toSet())
           }

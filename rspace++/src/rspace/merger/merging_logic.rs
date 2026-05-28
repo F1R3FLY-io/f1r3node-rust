@@ -38,15 +38,16 @@ pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 ///
 /// - `commutative` carries the (channel, value, MergeType) entries whose
 ///   runtime end-value was extractable as a numeric `i64`. These are the
-///   channels eligible for commutative merge via `calculate_number_channel_merge`.
-///   Mirrors the existing `NumberChannelsEndVal` shape.
+///   channels eligible for commutative merge via
+///   `calculate_number_channel_merge`. Mirrors the existing
+///   `NumberChannelsEndVal` shape.
 ///
 /// - `identity_tagged` carries the channel hashes of every identity-tagged
-///   channel observed during deploy execution, INCLUDING those that have
-///   no extractable numeric end-value (the "contract seam" cases per
-///   `docs/casper/STATE_MERGING.md`). Superset of `commutative.keys()`.
-///   This subset enables Check #4 to enforce the Layer-2 single-value
-///   contract on tagged channels that lack a commutative-merge representation.
+///   channel observed during deploy execution, INCLUDING those that have no
+///   extractable numeric end-value (the "contract seam" cases per
+///   `docs/casper/STATE_MERGING.md`). Superset of `commutative.keys()`. This
+///   subset enables Check #4 to enforce the Layer-2 single-value contract on
+///   tagged channels that lack a commutative-merge representation.
 #[derive(Debug, Clone)]
 pub struct MergeableChsForDeploy {
     pub commutative: NumberChannelsEndVal,
@@ -596,10 +597,10 @@ where
     // `identity_tagged_pending_produces` sets (computed in
     // `compute_branch_derived`). For each shared channel:
     //   * if both branches have a commutative diff entry for the channel in
-    //     `number_channels_data`, the commutative-merge path handles it
-    //     (IntegerAdd / BitmaskOr fold), no conflict
-    //   * else compare emitted produce hashes on the channel — identical
-    //     writes are dedup'd by `ChannelChange::combine`, no conflict
+    //     `number_channels_data`, the commutative-merge path handles it (IntegerAdd
+    //     / BitmaskOr fold), no conflict
+    //   * else compare emitted produce hashes on the channel — identical writes are
+    //     dedup'd by `ChannelChange::combine`, no conflict
     //   * else emit conflict pair (i, j)
     //
     // Per CSV cell `4 ! × 4 !` "Could have matched same produce. Mergeable
@@ -856,8 +857,8 @@ where
     // Check #4 — identity-tagged channels with non-commutative pending writes.
     // Pairwise: for each branch pair (i, j), intersect their
     // `identity_tagged_pending_produces` sets. For each shared channel:
-    //   * skip if both branches have a commutative diff entry on the channel
-    //     in `number_channels_data` (commutative-merge bypass)
+    //   * skip if both branches have a commutative diff entry on the channel in
+    //     `number_channels_data` (commutative-merge bypass)
     //   * collect emitted produce hashes on the channel from each branch's
     //     produces_linear ∪ produces_persistent
     //   * skip if the two sets are identical (cross-cancel handles duplicates)
@@ -868,10 +869,8 @@ where
                 .intersection(identity_tagged_pending_produces[j])
                 .collect();
             for channel in shared {
-                let both_mergeable = event_logs[i]
-                    .number_channels_data
-                    .contains_key(channel)
-                    && event_logs[j].number_channels_data.contains_key(channel);
+                let both_mergeable = event_logs[i].number_channels_data.contains_key(channel) &&
+                    event_logs[j].number_channels_data.contains_key(channel);
                 if both_mergeable {
                     continue;
                 }

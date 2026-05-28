@@ -1453,3 +1453,283 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         "exactly one canonical rejection event in C",
     );
 }
+
+#[ignore = "documents an open block-validity determinism requirement (task #188): \
+resolve_at_parents anchors the canonical-rejection check on the node-local LFB \
+(has_finalized_clean), so the same block's recovery-exemption verdict flips as the \
+local LFB advances — forking block validity across nodes. A naive parents-anchored \
+fix breaks the finalized-double-execution guard (recovery_repeat_deploy_misfire_spec), \
+because distinguishing a canonical rejection from a non-canonical sibling rejection \
+requires a finalization reference. The proper fix needs a deterministic, per-block \
+finalization anchor (derived from the block's justifications), not the live LFB."]
+#[tokio::test]
+async fn resolve_at_parents_verdict_is_invariant_to_lfb_height() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::api::deploy_finalization_status::{
+        resolve_at_parents, EffectsInParentsState,
+    };
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Linear canonical chain: genesis -> clean(h1, dd) -> reject(h2, dd in
+    // rejected_deploys) -> parent(h3). The deploy `dd` has a clean inclusion
+    // AND a canonical rejection, both in `parent`'s main-parent ancestry — the
+    // legitimate-recovery case, which must resolve to RejectedCanonically.
+    //
+    // resolve_at_parents feeds repeat_deploy's recovery exemption, a
+    // block-validity input. Its verdict must therefore be a pure function of
+    // (parents, block content) and never of the node-local LFB — otherwise two
+    // nodes validating the same block disagree purely on finalization timing.
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, false, true)
+        .expect("dag genesis");
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        "@8!(8)".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("construct deploy");
+    let sig_under_test = deploy.sig.clone();
+
+    let bonds = genesis_block.body.state.bonds.clone();
+    let shard = genesis_block.shard_id.clone();
+
+    // clean: h=1, canonical, carries dd as a clean (non-failed) deploy.
+    let clean_block = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+        Some(Vec::new()),
+        Some(bonds.clone()),
+        Some(shard.clone()),
+        None,
+    );
+
+    // reject: h=2, canonical child of clean; a descendant merge rejected dd.
+    let mut reject_block = block_implicits::get_random_block(
+        Some(2),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![clean_block.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(bonds.clone()),
+        Some(shard.clone()),
+        None,
+    );
+    reject_block.body.rejected_deploys = vec![RejectedDeploy {
+        sig: sig_under_test.clone(),
+    }];
+
+    // parent: h=3, canonical child of reject. Block being validated resolves
+    // against this as its parent.
+    let parent_block = block_implicits::get_random_block(
+        Some(3),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![reject_block.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(bonds.clone()),
+        Some(shard.clone()),
+        None,
+    );
+
+    for b in [&clean_block, &reject_block, &parent_block] {
+        block_store.put_block_message(b).expect("store block");
+        dag_storage.insert(b, false, false).expect("dag insert");
+    }
+
+    let mut dag = dag_storage.get_representation();
+    let parents = vec![parent_block.block_hash.clone()];
+    let deploy_lifespan = 50i64;
+
+    // LFB still at genesis (h0): clean inclusion not yet in LFB main-chain.
+    dag.last_finalized_block_hash = genesis_hash.clone();
+    let verdict_low_lfb = resolve_at_parents(
+        &dag,
+        &block_store,
+        &parents,
+        deploy_lifespan,
+        &sig_under_test,
+    )
+    .expect("resolve_at_parents (low LFB)");
+
+    // Only the LFB advances to parent (h3) — parents and block content are
+    // byte-identical. The clean inclusion is now in the LFB main-chain.
+    dag.last_finalized_block_hash = parent_block.block_hash.clone();
+    let verdict_high_lfb = resolve_at_parents(
+        &dag,
+        &block_store,
+        &parents,
+        deploy_lifespan,
+        &sig_under_test,
+    )
+    .expect("resolve_at_parents (high LFB)");
+
+    assert_eq!(
+        verdict_low_lfb,
+        EffectsInParentsState::RejectedCanonically,
+        "clean inclusion + canonical rejection in parents' ancestry is the \
+         legitimate-recovery case -> RejectedCanonically (exempt)",
+    );
+    assert_eq!(
+        verdict_high_lfb, verdict_low_lfb,
+        "resolve_at_parents must be invariant to LFB height: parents and block \
+         content are identical, only the local LFB advanced. Got {:?} at high \
+         LFB vs {:?} at low LFB — a block-validity verdict that depends on the \
+         node-local LFB makes the same block VALID on one node and INVALID on \
+         another.",
+        verdict_high_lfb, verdict_low_lfb,
+    );
+}
+
+#[tokio::test]
+async fn base_committed_deploy_sigs_includes_clean_excludes_rejected_and_out_of_window() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::merging::dag_merger::base_committed_deploy_sigs;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Canonical chain genesis → far(h1, clean d_far) → a(h2, clean d_keep +
+    // clean d_rejected) → b(h3, rejected_deploys=[d_rejected]) → base(h4).
+    // base_committed_deploy_sigs walks base's ancestry collecting clean
+    // inclusions minus rejected ones, bounded by deploy_lifespan.
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, false, true)
+        .expect("dag genesis");
+
+    let bonds = genesis_block.body.state.bonds.clone();
+    let shard = genesis_block.shard_id.clone();
+    let mk = |term: &str| {
+        construct_deploy::source_deploy_now_full(term.to_string(), None, None, None, None, None)
+            .expect("construct deploy")
+    };
+    let d_keep = mk("@1!(1)");
+    let d_rejected = mk("@2!(2)");
+    let d_far = mk("@3!(3)");
+
+    let block =
+        |num: i64, parent: &models::rust::block_hash::BlockHash, deploys: Vec<ProcessedDeploy>| {
+            block_implicits::get_random_block(
+                Some(num),
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                Some(0),
+                Some(vec![parent.clone()]),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(bonds.clone()),
+                Some(shard.clone()),
+                None,
+            )
+        };
+
+    let far = block(1, &genesis_hash, vec![ProcessedDeploy::empty(
+        d_far.clone(),
+    )]);
+    let a = block(2, &far.block_hash, vec![
+        ProcessedDeploy::empty(d_keep.clone()),
+        ProcessedDeploy::empty(d_rejected.clone()),
+    ]);
+    let mut b = block(3, &a.block_hash, Vec::new());
+    b.body.rejected_deploys = vec![RejectedDeploy {
+        sig: d_rejected.sig.clone(),
+    }];
+    let base = block(4, &b.block_hash, Vec::new());
+
+    for blk in [&far, &a, &b, &base] {
+        block_store.put_block_message(blk).expect("store block");
+        dag_storage.insert(blk, false, false).expect("dag insert");
+    }
+    let dag = dag_storage.get_representation();
+
+    // Wide window (lifespan 50): whole ancestry scanned.
+    let wide = base_committed_deploy_sigs(&dag, &block_store, &base.block_hash, 50);
+    assert!(
+        wide.contains(&d_keep.sig),
+        "a clean, never-rejected inclusion in the base ancestry must be committed-in-base",
+    );
+    assert!(
+        !wide.contains(&d_rejected.sig),
+        "a deploy clean in one ancestor but rejected in another must be excluded \
+         (its effects may have been removed), so its recovery is not wrongly dropped",
+    );
+    assert!(
+        wide.contains(&d_far.sig),
+        "a clean inclusion within the lifespan window must be committed-in-base",
+    );
+
+    // Narrow window (lifespan 1): floor = base_height(4) - 1 = 3, so far(h1) and
+    // a(h2) are below the floor and never scanned — their deploys drop out.
+    let narrow = base_committed_deploy_sigs(&dag, &block_store, &base.block_hash, 1);
+    assert!(
+        !narrow.contains(&d_keep.sig) && !narrow.contains(&d_far.sig),
+        "deploys committed older than the lifespan window must be excluded; got {:?}",
+        narrow.len(),
+    );
+}

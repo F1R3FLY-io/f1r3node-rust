@@ -231,13 +231,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             .header
             .parents_hash_list
             .iter()
-            .map(|p| hex::encode(&p[..8.min(p.len())]))
+            .map(|p| hex::encode(&p))
             .collect();
         tracing::info!(
             target: "f1r3.trace.block_processing",
             "[TRACE-BLOCK-RECV] hash={} sender={} block_number={} seq={} parents=[{}]",
-            hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
-            hex::encode(&block.sender[..8.min(block.sender.len())]),
+            hex::encode(&block.block_hash),
+            hex::encode(&block.sender),
             block.body.state.block_number,
             block.seq_num,
             parents_hex.join(","),
@@ -275,8 +275,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 tracing::info!(
                     target: "f1r3.trace.block_processing",
                     "[TRACE-BLOCK-OUTCOME] hash={} sender={} block_number={} outcome=VALID variant={:?}",
-                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
-                    hex::encode(&block.sender[..8.min(block.sender.len())]),
+                    hex::encode(&block.block_hash),
+                    hex::encode(&block.sender),
                     block.body.state.block_number,
                     valid_block,
                 );
@@ -285,8 +285,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 tracing::info!(
                     target: "f1r3.trace.block_processing",
                     "[TRACE-BLOCK-OUTCOME] hash={} sender={} block_number={} outcome=INVALID reason={:?}",
-                    hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
-                    hex::encode(&block.sender[..8.min(block.sender.len())]),
+                    hex::encode(&block.block_hash),
+                    hex::encode(&block.sender),
                     block.body.state.block_number,
                     invalid_block,
                 );
@@ -316,7 +316,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                     BlockError::BlockException(ref err) => {
                         tracing::warn!(
                             "Block {} raised BlockException ({}); recording as InvalidTransaction to prevent dependent-block stall.",
-                            PrettyPrinter::build_string_bytes(&block.block_hash),
+                            PrettyPrinter::build_string_no_limit(&block.block_hash),
                             err
                         );
                         self.dependencies
@@ -898,7 +898,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         {
             tracing::warn!(
                 "Failed to send block hash {} to sender during invalid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_no_limit(&block.block_hash),
                 err
             );
         }
@@ -927,7 +927,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         {
             tracing::warn!(
                 "Failed to send block hash {} to sender during valid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_no_limit(&block.block_hash),
                 err
             );
         }

@@ -21,14 +21,13 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
     DeployMergeableData, NumberChannel, RholangMergingLogic,
 };
-use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rholang::rust::interpreter::rho_runtime::{
     self, RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl,
 };
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::{
-    MergeableChsForDeploy, NumberChannelsDiff, NumberChannelsEndVal,
+    MergeType, MergeableChsForDeploy, NumberChannelsDiff, NumberChannelsEndVal,
 };
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
@@ -1187,8 +1186,7 @@ impl RuntimeManager {
             .map(|mcfd| mcfd.commutative)
             .collect();
         let total_endvals: usize = commutative_per_deploy.iter().map(|m| m.len()).sum();
-        let total_identity_tagged: usize =
-            identity_tagged_per_deploy.iter().map(|v| v.len()).sum();
+        let total_identity_tagged: usize = identity_tagged_per_deploy.iter().map(|v| v.len()).sum();
         tracing::info!(
             target: "f1r3.trace.mergeable_store",
             "[TRACE-SAVE-MERGEABLE-CHANNELS-ENTRY] post_state={} pre_state={} creator={} seq={} deploys={} total_endval_channels={} total_identity_tagged_channels={}",

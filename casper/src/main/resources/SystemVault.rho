@@ -22,7 +22,8 @@ new
   _create,
   _systemVault,
   _transferTemplate,
-  _depositTemplate
+  _depositTemplate,
+  stdout(`rho:io:stdout`)
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -106,6 +107,7 @@ in {
                           retCh!((true, vault))
                         } else {
                           // If vault was not found in store, create it and put it in the store.
+                          stdout!(["[CONTRACT-VAULT-RECREATE]", "vaultAddress=", vaultAddress, "reason=treeHashMap-get-returned-Nil"]) |
                           _create!(vaultAddress, *createVault, *vaultCh) |
                           for (vaultRetCh <- createVault) {
                             // Creates System vault and returns on vaultRetCh, consumed within _create contract.
@@ -236,6 +238,16 @@ in {
                 parametersOkCh, parametersAndAuthOkCh,
                 split, eitherPurseCh, doDeposit
             in {
+              stdout!(["[CONTRACT-SYSTEMVAULT-TRANSFERTEMPLATE-ENTER]", "ownVaultAddress=", ownVaultAddress, "targetAddress=", targetAddress, "amount=", amount]) |
+              for (@authKeyValidProbe <<- authKeyValidCh) {
+                stdout!(["[CONTRACT-SYSTEMVAULT-TRANSFERTEMPLATE-AUTHCHECK]", "valid=", authKeyValidProbe])
+              } |
+              for (@parametersAndAuthOkProbe <<- parametersAndAuthOkCh) {
+                stdout!(["[CONTRACT-SYSTEMVAULT-TRANSFERTEMPLATE-PARAMSAUTH]", "result=", parametersAndAuthOkProbe])
+              } |
+              for (@eitherPurseProbe <<- eitherPurseCh) {
+                stdout!(["[CONTRACT-SYSTEMVAULT-TRANSFERTEMPLATE-SPLIT]", "eitherPurseResult=", eitherPurseProbe])
+              } |
               VaultAddress!("validate", targetAddress, *vaultAddressValid) |
               @Either!("fromNillableError <-", *vaultAddressValid, *vaultAddressValidEither) |
               @Either!("fromBoolean", amount > 0, "Amount must be positive value", *amountNonNegative) |
@@ -268,10 +280,15 @@ in {
           // Deposits the entire balance in the fromPurse to the toPurse.
           contract _depositTemplate(fromPurse, toPurse, retCh) = {
             new amountCh, depositSuccessCh in {
+              stdout!(["[CONTRACT-SYSTEMVAULT-DEPOSITTEMPLATE-ENTER]"]) |
               toPurse!("getBalance", *amountCh) |
               for (@amount <- amountCh) {
+                stdout!(["[CONTRACT-SYSTEMVAULT-DEPOSITTEMPLATE-GETBALANCE]", "amount=", amount]) |
                 // Calls purse deposit method in MakeMint contract; adds amount to toPurse and subtracts from fromPurse.
                 fromPurse!("deposit", amount, *toPurse, *depositSuccessCh) |
+                for (@depositSuccessProbe <<- depositSuccessCh) {
+                  stdout!(["[CONTRACT-SYSTEMVAULT-DEPOSITTEMPLATE-DEPOSITRESULT]", "amount=", amount, "success=", depositSuccessProbe])
+                } |
                 @Either!("fromBoolean <-", *depositSuccessCh, "BUG FOUND: purse deposit failed", *retCh)
               }
             }

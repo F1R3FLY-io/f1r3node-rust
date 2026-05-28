@@ -345,16 +345,18 @@ where
         self.replay_rspace.set_current_deploy_sig(sig);
     }
 
-    fn clear_current_deploy_sig(&self) {
-        self.replay_rspace.clear_current_deploy_sig();
-    }
+    fn clear_current_deploy_sig(&self) { self.replay_rspace.clear_current_deploy_sig(); }
+
+    fn hot_store_id(&self) -> usize { self.replay_rspace.hot_store_id() }
 
     async fn replace_channel_data(
         &self,
         channel: &C,
         new_data: Vec<Datum<A>>,
     ) -> Result<(), RSpaceError> {
-        self.replay_rspace.replace_channel_data(channel, new_data).await
+        self.replay_rspace
+            .replace_channel_data(channel, new_data)
+            .await
     }
 }
 

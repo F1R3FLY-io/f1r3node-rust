@@ -485,12 +485,12 @@ impl SystemProcesses {
     }
 
     fn print_std_out(&self, s: &str) -> Result<Vec<Par>, InterpreterError> {
-        println!("{}", s);
+        tracing::info!(target: "f1r3.contract.stdout", "{}", s);
         Ok(vec![])
     }
 
     fn print_std_err(&self, s: &str) -> Result<Vec<Par>, InterpreterError> {
-        eprintln!("{}", s);
+        tracing::warn!(target: "f1r3.contract.stderr", "{}", s);
         Ok(vec![])
     }
 

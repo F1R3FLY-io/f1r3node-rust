@@ -6,7 +6,6 @@ use std::hash::Hash;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use hex::ToHex;
 use indexmap::IndexSet;
-use tracing::{info, warn};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -19,6 +18,7 @@ use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
+use tracing::{info, warn};
 
 use crate::rust::interpreter::rho_type::RhoNumber;
 
@@ -109,24 +109,25 @@ impl RholangMergingLogic {
         // non-numeric pre-state is recovered via `read_number_with_recovery`
         // so a buggy contract on a tagged channel can't wedge the merge
         // layer (architectural principle: contracts must not halt the shard).
-        let init_num = match Self::read_number_with_recovery(get_base_data, channel_hash, merge_type)? {
-            Some(n) => {
-                info!(
-                    target: "f1r3.trace.fold",
-                    "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num={}",
-                    ch_hex, n
-                );
-                n
-            }
-            None => {
-                info!(
-                    target: "f1r3.trace.fold",
-                    "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num=0 (channel empty)",
-                    ch_hex
-                );
-                0
-            }
-        };
+        let init_num =
+            match Self::read_number_with_recovery(get_base_data, channel_hash, merge_type)? {
+                Some(n) => {
+                    info!(
+                        target: "f1r3.trace.fold",
+                        "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num={}",
+                        ch_hex, n
+                    );
+                    n
+                }
+                None => {
+                    info!(
+                        target: "f1r3.trace.fold",
+                        "[TRACE-MERGE-FOLD-PRESTATE] channel={} init_num=0 (channel empty)",
+                        ch_hex
+                    );
+                    0
+                }
+            };
         let new_val = match merge_type {
             MergeType::IntegerAdd => init_num.wrapping_add(diff),
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
@@ -388,8 +389,8 @@ impl RholangMergingLogic {
                     )
                     .increment(1);
                     Ok(Some(0))
-                },
-            }
+                }
+            },
         }
     }
 }

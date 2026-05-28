@@ -3,13 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use hex::ToHex;
 use models::rhoapi::ListParWithRandom;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
-use hex::ToHex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     combine_mergeable_value, MergeType, NumberChannelsDiff,
 };
@@ -89,6 +89,9 @@ pub struct ResolvedConflicts<R: Clone + Eq + std::hash::Hash> {
 /// `conflicts` is fallible: a `MergeType` mismatch (or any other invariant
 /// violation surfaced by event-log combination) is propagated as a hard error
 /// so the merge is rejected rather than silently absorbed.
+// ===== DIAG (resolve-conflicts determinism pinpoint) — remove after fix =====
+fn diag_hash(s: &str) -> String { hex::encode(Blake2b256Hash::new(s.as_bytes()).bytes()) }
+
 pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     actual_seq: Vec<R>,
     late_seq: Vec<R>,
@@ -109,6 +112,10 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
         HistoryError,
     >,
+    // DIAG: order-stable per-item fingerprint supplied by the caller (where R is
+    // concrete), so the stage fps below are deterministic across processes
+    // (raw Debug of DeployChainIndex is not — DashMap iteration order).
+    diag_item_fp: &impl Fn(&R) -> String,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     // Convert to Sets for set operations, but use Vec for ordered iteration
     let actual_set: HashSet<R> = actual_seq.iter().cloned().collect();
@@ -165,8 +172,10 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // (folds multi-Datum via the channel's merge semantic). A tagged channel
     // has a single MergeType across all deploys, so we just retain whichever
     // we see first.
-    let mut channel_merge_types: HashMap<Blake2b256Hash, rspace_plus_plus::rspace::merger::merging_logic::MergeType> =
-        HashMap::new();
+    let mut channel_merge_types: HashMap<
+        Blake2b256Hash,
+        rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+    > = HashMap::new();
     for branch in &branches {
         for item in branch {
             let item_channels = mergeable_channels(item);
@@ -177,8 +186,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
             }
         }
     }
-    let mut all_channel_keys: Vec<Blake2b256Hash> =
-        channel_merge_types.keys().cloned().collect();
+    let mut all_channel_keys: Vec<Blake2b256Hash> = channel_merge_types.keys().cloned().collect();
     // Sort channel keys for deterministic processing order
     all_channel_keys.sort();
 
@@ -274,6 +282,59 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         1  // rejectionOptionsWithOverflow.size - approximation
     );
 
+    // DIAG (resolve-conflicts pinpoint): per-stage fingerprints keyed by the
+    // raw-input fp (identical across nodes for the same merge). The first stage
+    // fp that diverges across nodes names the non-deterministic site.
+    {
+        // Order-stable representation of a branch (set of items): each item via
+        // the caller-supplied order-stable fp, then sorted.
+        let branch_repr = |b: &HashableSet<R>| -> String {
+            let mut v: Vec<String> = b.0.iter().map(|i| diag_item_fp(i)).collect();
+            v.sort();
+            v.join(",")
+        };
+        let mut iv: Vec<String> = actual_seq.iter().map(|i| diag_item_fp(i)).collect();
+        iv.sort();
+        let input_fp = diag_hash(&iv.join(","));
+        let merge_set_fp = diag_hash(&branch_repr(&merge_set));
+        let mut bv: Vec<String> = branches_set.0.iter().map(|b| branch_repr(b)).collect();
+        bv.sort();
+        let branches_fp = diag_hash(&bv.join("|"));
+        let mut cv: Vec<String> = conflict_map
+            .iter()
+            .map(|(k, vs)| {
+                let mut vv: Vec<String> = vs.0.iter().map(|b| branch_repr(b)).collect();
+                vv.sort();
+                format!("{}=>{}", branch_repr(k), vv.join(";"))
+            })
+            .collect();
+        cv.sort();
+        let conflict_fp = diag_hash(&cv.join("|"));
+        let mut rv: Vec<String> = rejection_options
+            .0
+            .iter()
+            .map(|opt| {
+                let mut o: Vec<String> = opt.0.iter().map(|b| branch_repr(b)).collect();
+                o.sort();
+                o.join(";")
+            })
+            .collect();
+        rv.sort();
+        let rejopts_fp = diag_hash(&rv.join("|"));
+        let mut ov: Vec<String> = optimal_rejection.0.iter().map(|b| branch_repr(b)).collect();
+        ov.sort();
+        let optrej_fp = diag_hash(&ov.join("|"));
+        let mut tv: Vec<String> = to_merge.iter().map(|b| branch_repr(b)).collect();
+        tv.sort();
+        let tomerge_fp = diag_hash(&tv.join("|"));
+        info!(
+            target: "f1r3.trace.merge_input_diag",
+            "[DIAG-RESOLVE] input_fp={} merge_set_fp={} branches_fp={} conflict_fp={} rejopts_fp={} optrej_fp={} tomerge_fp={} n_branches={} n_tomerge={}",
+            input_fp, merge_set_fp, branches_fp, conflict_fp, rejopts_fp, optrej_fp, tomerge_fp,
+            branches_set.0.len(), to_merge.len()
+        );
+    }
+
     Ok(ResolvedConflicts {
         to_merge,
         rejected,
@@ -307,10 +368,10 @@ pub fn compute_merged_state<R, C, P, A, K>(
 ) -> Result<Blake2b256Hash, HistoryError>
 where
     R: Clone + Eq + std::hash::Hash + PartialOrd + Ord,
-    C: Clone,
-    P: Clone,
-    A: Clone,
-    K: Clone,
+    C: Clone + std::fmt::Debug,
+    P: Clone + std::fmt::Debug,
+    A: Clone + std::fmt::Debug,
+    K: Clone + std::fmt::Debug,
 {
     // Sort toMerge for deterministic processing order
     let mut to_merge_sorted: Vec<&HashableSet<R>> = resolved.to_merge.iter().collect();
@@ -324,16 +385,44 @@ where
         to_merge_items.extend(branch_items);
     }
 
-    // Combine state changes from all items to be merged with timing
+    // Combine state changes from all items to be merged with timing.
+    // DIAG: capture each item's datums fingerprint in fold order, so the exact
+    // post-resolution merge set AND its order can be compared across nodes
+    // (catches a sorted-order tie + non-associative combine).
+    let mut diag_item_fps: Vec<String> = Vec::new();
     let (all_changes, combine_all_changes_time) =
         measure_result_time(|| -> Result<StateChange, HistoryError> {
             let mut combined = StateChange::empty();
             for item in &to_merge_items {
                 let item_changes = state_changes(item)?;
+                let mut ifp: Vec<String> = item_changes
+                    .datums_changes
+                    .iter()
+                    .map(|e| {
+                        let mut a: Vec<String> =
+                            e.value().added.iter().map(|x| hex::encode(x)).collect();
+                        let mut r: Vec<String> =
+                            e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                        a.sort();
+                        r.sort();
+                        format!(
+                            "{}|{}|{}",
+                            hex::encode(e.key().bytes()),
+                            a.join(","),
+                            r.join(",")
+                        )
+                    })
+                    .collect();
+                ifp.sort();
+                diag_item_fps.push(hex::encode(
+                    Blake2b256Hash::new(ifp.join("\n").as_bytes()).bytes(),
+                ));
                 combined = combined.combine(item_changes);
             }
             Ok(combined)
         })?;
+    let diag_to_merge_order_fp =
+        hex::encode(Blake2b256Hash::new(diag_item_fps.join("|").as_bytes()).bytes());
 
     metrics::histogram!(
         "dag.merge.combine-changes.time",
@@ -404,12 +493,98 @@ where
         all_mergeable_channels.len()
     );
 
+    // DIAG (trie-determinism probe): fingerprint the exact combined StateChange
+    // (datums + conts) and number-channels diff fed into the trie, BEFORE
+    // all_changes is moved into compute_trie_actions. Logged with the resulting
+    // root below; cross-node, identical fps + different root proves the trie
+    // action compute/apply is non-deterministic (vs an input divergence).
+    let (diag_datums_fp, diag_cont_fp) = {
+        let mut dfp: Vec<String> = all_changes
+            .datums_changes
+            .iter()
+            .map(|e| {
+                let mut a: Vec<String> = e.value().added.iter().map(|x| hex::encode(x)).collect();
+                let mut r: Vec<String> = e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                a.sort();
+                r.sort();
+                format!(
+                    "{}|{}|{}",
+                    hex::encode(e.key().bytes()),
+                    a.join(";"),
+                    r.join(";")
+                )
+            })
+            .collect();
+        dfp.sort();
+        let mut cfp: Vec<String> = all_changes
+            .cont_changes
+            .iter()
+            .map(|e| {
+                let k: String = e
+                    .key()
+                    .iter()
+                    .map(|h| hex::encode(h.bytes()))
+                    .collect::<Vec<_>>()
+                    .join("+");
+                let mut a: Vec<String> = e.value().added.iter().map(|x| hex::encode(x)).collect();
+                let mut r: Vec<String> = e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                a.sort();
+                r.sort();
+                format!("{}|{}|{}", k, a.join(";"), r.join(";"))
+            })
+            .collect();
+        cfp.sort();
+        (
+            hex::encode(Blake2b256Hash::new(dfp.join("\n").as_bytes()).bytes()),
+            hex::encode(Blake2b256Hash::new(cfp.join("\n").as_bytes()).bytes()),
+        )
+    };
+    let diag_numch_fp = {
+        let mut nfp: Vec<String> = all_mergeable_channels
+            .iter()
+            .map(|(k, v)| format!("{}={}/{:?}", hex::encode(k.bytes()), v.0, v.1))
+            .collect();
+        nfp.sort();
+        hex::encode(Blake2b256Hash::new(nfp.join("\n").as_bytes()).bytes())
+    };
+
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
 
+    // DIAG: fingerprint the trie actions both as produced (order fp) and as a
+    // sorted set (content fp), full key+value via Debug. Cross-node: content
+    // differs => compute_trie_actions diverged (incl. number-channel base reads);
+    // content same + order differs => action order diverges; content+order same +
+    // root differs => apply_trie_actions internal non-determinism.
+    let diag_ta_order_fp = {
+        let seq: Vec<String> = trie_actions.iter().map(|a| format!("{:?}", a)).collect();
+        hex::encode(Blake2b256Hash::new(seq.join("|").as_bytes()).bytes())
+    };
+    let diag_ta_content_fp = {
+        let mut s: Vec<String> = trie_actions.iter().map(|a| format!("{:?}", a)).collect();
+        s.sort();
+        hex::encode(Blake2b256Hash::new(s.join("|").as_bytes()).bytes())
+    };
+
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
+
+    info!(
+        target: "f1r3.trace.merge_input_diag",
+        "[DIAG-MERGE-STATE] result_root={} datums_fp={} cont_fp={} numch_fp={} to_merge_order_fp={} ta_content_fp={} ta_order_fp={} datums_ch={} cont_ch={} numch={} trie_actions={}",
+        hex::encode(new_state.bytes()),
+        diag_datums_fp,
+        diag_cont_fp,
+        diag_numch_fp,
+        diag_to_merge_order_fp,
+        diag_ta_content_fp,
+        diag_ta_order_fp,
+        combined_datums_count,
+        combined_conts_count,
+        all_mergeable_channels.len(),
+        trie_actions.len()
+    );
 
     // Prepare log message
     let log_str = format!(
@@ -448,11 +623,11 @@ where
 /// `compute_merged_state`. Callers that need to inspect or adjust the rejection
 /// set between the two steps should call them directly instead.
 pub fn merge<
-    R: Clone + Eq + std::hash::Hash + PartialOrd + Ord,
-    C: Clone,
-    P: Clone,
-    A: Clone,
-    K: Clone,
+    R: Clone + Eq + std::hash::Hash + PartialOrd + Ord + std::fmt::Debug,
+    C: Clone + std::fmt::Debug,
+    P: Clone + std::fmt::Debug,
+    A: Clone + std::fmt::Debug,
+    K: Clone + std::fmt::Debug,
 >(
     actual_seq: Vec<R>,
     late_seq: Vec<R>,
@@ -485,6 +660,8 @@ pub fn merge<
         &get_data,
         &compute_branches,
         &compute_conflict_map,
+        // wrapper's R is a simple type (test-only caller) — Debug is order-stable.
+        &|i: &R| format!("{:?}", i),
     )?;
     let new_state = compute_merged_state(
         &resolved,
@@ -541,22 +718,23 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first branch
-        // Use sorted branches and min element for deterministic tie-breaking
+        // Third criterion: lexicographic comparison over the full sorted branch
+        // sequence. Comparing only the first branch's min element leaves distinct
+        // options tied, and the stable sort then preserves the input HashSet's
+        // per-process iteration order, so different nodes select different
+        // rejections from identical options. Comparing every branch yields a total
+        // order, making the selection independent of input order.
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
         b_branches.sort_by(|x, y| compare_branches(x, y));
 
-        let a_first = a_branches.first().and_then(|branch| branch.0.iter().min());
-        let b_first = b_branches.first().and_then(|branch| branch.0.iter().min());
-
-        match (a_first, b_first) {
-            (Some(a_item), Some(b_item)) => a_item.cmp(b_item),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
+        a_branches
+            .iter()
+            .zip(b_branches.iter())
+            .map(|(x, y)| compare_branches(x, y))
+            .find(|ordering| *ordering != std::cmp::Ordering::Equal)
+            .unwrap_or_else(|| a_branches.len().cmp(&b_branches.len()))
     });
 
     options_vec
@@ -748,6 +926,36 @@ mod tests {
         });
 
         assert_eq!(chosen, option_a);
+    }
+
+    #[test]
+    fn optimal_rejection_is_order_independent() {
+        // Both options tie on every criterion the comparator inspects: cost sum
+        // (11), total branch size (3), and the first sorted branch's min element
+        // (1). They differ only in a later branch ({2,8} vs {3,7}). A non-total
+        // comparator returns Equal for the pair, so the stable sort preserves the
+        // input HashSet's iteration order and the selection follows whichever the
+        // per-instance RandomState seed placed first. Rebuilding the options each
+        // iteration reseeds the HashSet, exercising both orders.
+        let option_a = rejection_option(&[branch(&[1]), branch(&[2, 8])]);
+        let option_b = rejection_option(&[branch(&[1]), branch(&[3, 7])]);
+
+        let mut chosen = HashSet::new();
+        for _ in 0..1000 {
+            let options = HashableSet(HashSet::from([option_a.clone(), option_b.clone()]));
+            chosen.insert(get_optimal_rejection(options, |branch| {
+                branch.0.iter().map(|value| *value as u64).sum()
+            }));
+        }
+
+        assert_eq!(
+            chosen.len(),
+            1,
+            "get_optimal_rejection must select the same option regardless of input \
+             order; {} distinct selections across reseeded runs means the comparator \
+             is not a total order and falls back to HashSet iteration order",
+            chosen.len()
+        );
     }
 
     #[test]

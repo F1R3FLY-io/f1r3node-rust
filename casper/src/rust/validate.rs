@@ -518,6 +518,17 @@ impl Validate {
       );
 
       tracing::warn!("{}", Self::ignore(block, &message));
+      tracing::info!(
+        target: "f1r3.trace.repeat_deploy",
+        "[REPEAT-DEPLOY-REJECT] sig={} in_rejected_in_scope={} rejected_in_scope_len={} duplicated_block={} duplicated_block_num={} current_block={} current_block_num={}",
+        hex::encode(&duplicated_deploy.sig[..8.min(duplicated_deploy.sig.len())]),
+        s.rejected_in_scope.contains(&duplicated_deploy.sig),
+        s.rejected_in_scope.len(),
+        hex::encode(&duplicated_block.block_hash[..8.min(duplicated_block.block_hash.len())]),
+        duplicated_block_metadata.block_number,
+        hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+        block.body.state.block_number,
+      );
       BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
     });
 

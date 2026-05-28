@@ -79,7 +79,8 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
     // Check if we have casper
     if let Some(casper) = engine.with_casper() {
         // Get latest messages from block dag
-        let latest_messages = casper.block_dag().await?.latest_message_hashes();
+        let dag = casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -99,6 +100,29 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
 
         // If stuck, request fork choice tips
         let stuck = !has_recent_latest_message;
+
+        // Diagnostic probe: the timestamp-based `stuck` check above only catches
+        // an idle node. A node producing on a stale minority fork keeps recent
+        // latest messages (stuck=false) while its own tip climbs far above a
+        // frozen LFB. Logging the finalization gap (tip_height - lfb_height)
+        // surfaces that case — the gap balloons on a stranded validator but stays
+        // bounded on a healthy one. This is the signal the current check misses.
+        let lfb_height = dag.block_number(&dag.last_finalized_block()).unwrap_or(-1);
+        let tip_height = latest_messages
+            .values()
+            .filter_map(|h| dag.block_number(h))
+            .max()
+            .unwrap_or(-1);
+        tracing::info!(
+            target: "f1r3.trace.staleness",
+            "[TRACE-STALENESS-PROBE] stuck={} has_recent={} num_latest={} tip_height={} lfb_height={} finalization_gap={}",
+            stuck,
+            has_recent_latest_message,
+            latest_messages.len(),
+            tip_height,
+            lfb_height,
+            tip_height - lfb_height,
+        );
         if stuck {
             tracing::info!(
                 "Requesting tips update as newest latest message is more than {:?} old. Might be network is faulty.",

@@ -228,9 +228,9 @@ impl ChargingRSpace {
                 self.space.set_current_deploy_sig(sig);
             }
 
-            fn clear_current_deploy_sig(&self) {
-                self.space.clear_current_deploy_sig();
-            }
+            fn clear_current_deploy_sig(&self) { self.space.clear_current_deploy_sig(); }
+
+            fn hot_store_id(&self) -> usize { self.space.hot_store_id() }
 
             async fn replace_channel_data(
                 &self,

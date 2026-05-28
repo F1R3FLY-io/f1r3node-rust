@@ -24,7 +24,6 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use shared::rust::dag::dag_ops;
 use shared::rust::shared::f1r3fly_event::{DeployEvent, F1r3flyEvent};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -117,7 +116,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         let self_validator_hex = self
             .validator_id
             .as_ref()
-            .map(|v| hex::encode(&v.public_key.bytes[..8.min(v.public_key.bytes.len())]))
+            .map(|v| hex::encode(&v.public_key.bytes))
             .unwrap_or_else(|| "<none>".to_string());
 
         let fip = self.finalization_in_progress.load(Ordering::SeqCst);
@@ -154,8 +153,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 target: "f1r3.trace.parent_selection",
                 "[TRACE-PARENT-SEL-LATEST-MSG] self_validator={} validator={} hash={} block_number={}",
                 self_validator_hex,
-                hex::encode(&validator[..8.min(validator.len())]),
-                hex::encode(&hash[..8.min(hash.len())]),
+                hex::encode(&validator),
+                hex::encode(&hash),
                 block_number,
             );
         }
@@ -169,8 +168,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 target: "f1r3.trace.parent_selection",
                 "[TRACE-PARENT-SEL-INVALID-LM] self_validator={} validator={} hash={}",
                 self_validator_hex,
-                hex::encode(&validator[..8.min(validator.len())]),
-                hex::encode(&hash[..8.min(hash.len())]),
+                hex::encode(&validator),
+                hex::encode(&hash),
             );
         }
 
@@ -192,9 +191,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 target: "f1r3.trace.parent_selection",
                 "[TRACE-PARENT-SEL-CANDIDATE] self_validator={} hash={} block_number={} sender={} bonds_count={}",
                 self_validator_hex,
-                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                hex::encode(&b.block_hash),
                 b.body.state.block_number,
-                hex::encode(&b.sender[..8.min(b.sender.len())]),
+                hex::encode(&b.sender),
                 b.body.state.bonds.len(),
             );
         }
@@ -239,7 +238,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 "[TRACE-PARENT-SEL-SORTED] self_validator={} rank={} hash={} block_number={} bonds_count={}",
                 self_validator_hex,
                 rank,
-                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                hex::encode(&b.block_hash),
                 b.body.state.block_number,
                 b.body.state.bonds.len(),
             );
@@ -345,7 +344,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 "[TRACE-PARENT-SEL-FINAL] self_validator={} rank={} hash={} block_number={} bonds_count={}",
                 self_validator_hex,
                 rank,
-                hex::encode(&b.block_hash[..8.min(b.block_hash.len())]),
+                hex::encode(&b.block_hash),
                 b.body.state.block_number,
                 b.body.state.bonds.len(),
             );
@@ -440,46 +439,130 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
             // Phase 2: return cached or compute.
             if let Some(sets) = cached {
+                tracing::info!(
+                    target: "f1r3.trace.deploys_in_scope",
+                    "[DIS-CACHE-HIT] self_validator={} gen={} lfb={} deploys={} rejected={}",
+                    self_validator_hex,
+                    current_dag_generation,
+                    hex::encode(&snapshot_lfb_hash),
+                    sets.0.len(),
+                    sets.1.len(),
+                );
                 sets
             } else {
                 let current_block_number = max_block_num + 1;
                 let earliest_block_number =
                     current_block_number - on_chain_state.shard_conf.deploy_lifespan;
 
-                let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Vec<models::rust::block_metadata::BlockMetadata> {
-                    proto_util::get_parent_metadatas_above_block_number(block_metadata, earliest_block_number, &dag).unwrap_or_default()
-                };
+                // Comprehensive scope: enumerate ALL blocks in block_store within
+                // the deploy_lifespan window, not just chain-ancestors of the
+                // proposer's chosen parents. The chain-scoped BFS misses
+                // canonical inclusions when chosen parents fork around the
+                // block that included the deploy — e.g., a newly-bonded joiner
+                // proposes a multi-parent block whose chosen parents bypass a
+                // sibling branch that already canonically included a user
+                // deploy. The narrow scope made the proposer disagree with
+                // validators (who walk via their own complete DAG), producing
+                // InvalidRepeatDeploy and a downstream UnknownRootError /
+                // RootRepositoryDivergence cascade.
+                let height_groups = dag
+                    .topo_sort(earliest_block_number, Some(max_block_num))
+                    .map_err(|e| {
+                        CasperError::RuntimeError(format!(
+                            "topo_sort failed in deploys_in_scope: {:?}",
+                            e
+                        ))
+                    })?;
 
-                let traversal_result = dag_ops::bf_traverse(parent_metas, neighbor_fn);
+                let topo_total_hashes: usize = height_groups.iter().map(|g| g.len()).sum();
+                tracing::info!(
+                    target: "f1r3.trace.deploys_in_scope",
+                    "[DIS-COMPUTE-START] self_validator={} gen={} lfb={} earliest={} max_block_num={} height_groups={} total_hashes={}",
+                    self_validator_hex,
+                    current_dag_generation,
+                    hex::encode(&snapshot_lfb_hash),
+                    earliest_block_number,
+                    max_block_num,
+                    height_groups.len(),
+                    topo_total_hashes,
+                );
 
                 let all_deploys = Arc::new(dashmap::DashSet::new());
                 let all_rejected = Arc::new(dashmap::DashSet::new());
-                for block_metadata in traversal_result {
-                    let block_deploy_sigs = self
-                        .block_store
-                        .deploy_sigs(&block_metadata.block_hash)?
-                        .ok_or_else(|| {
+                for (height_idx, height_group) in height_groups.iter().enumerate() {
+                    let height = earliest_block_number + height_idx as i64;
+                    let block_hashes_str = height_group
+                        .iter()
+                        .map(|h| hex::encode(&h))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    tracing::info!(
+                        target: "f1r3.trace.deploys_in_scope",
+                        "[DIS-HEIGHT-GROUP] self_validator={} gen={} approx_height={} count={} hashes={}",
+                        self_validator_hex,
+                        current_dag_generation,
+                        height,
+                        height_group.len(),
+                        block_hashes_str,
+                    );
+                    for block_hash in height_group {
+                        let maybe_sigs = self.block_store.deploy_sigs(block_hash)?;
+                        let block_deploy_sigs = maybe_sigs.ok_or_else(|| {
                             CasperError::RuntimeError(format!(
-                                "Missing block {} during deploys_in_scope traversal",
-                                PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
+                                "Missing block {} during deploys_in_scope scan",
+                                PrettyPrinter::build_string_no_limit(block_hash)
                             ))
                         })?;
-                    for deploy_sig in block_deploy_sigs {
-                        all_deploys.insert(deploy_sig.into());
-                    }
+                        tracing::info!(
+                            target: "f1r3.trace.deploys_in_scope",
+                            "[DIS-BLOCK-SIGS] self_validator={} block={} sigs_count={}",
+                            self_validator_hex,
+                            hex::encode(&block_hash),
+                            block_deploy_sigs.len(),
+                        );
+                        for deploy_sig in block_deploy_sigs {
+                            all_deploys.insert(deploy_sig.into());
+                        }
 
-                    // Rejected deploys are rare (only merge blocks that dropped a
-                    // conflicting chain populate this); the fast path for most blocks
-                    // is an empty list returned after a single body decode.
-                    if let Some(rejected_sigs) = self
-                        .block_store
-                        .rejected_deploy_sigs(&block_metadata.block_hash)?
-                    {
-                        for rejected_sig in rejected_sigs {
-                            all_rejected.insert(rejected_sig.into());
+                        // Rejected deploys are rare (only merge blocks that
+                        // dropped a conflicting chain populate this); the fast
+                        // path for most blocks is an empty list returned after
+                        // a single body decode.
+                        if let Some(rejected_sigs) =
+                            self.block_store.rejected_deploy_sigs(block_hash)?
+                        {
+                            let rejected_count = rejected_sigs.len();
+                            if rejected_count > 0 {
+                                let rejected_sigs_str = rejected_sigs
+                                    .iter()
+                                    .map(|s| hex::encode(&s))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                tracing::info!(
+                                    target: "f1r3.trace.deploys_in_scope",
+                                    "[DIS-BLOCK-REJECTED-SIGS] self_validator={} block={} rejected_count={} rejected_sigs=[{}]",
+                                    self_validator_hex,
+                                    hex::encode(&block_hash),
+                                    rejected_count,
+                                    rejected_sigs_str,
+                                );
+                            }
+                            for rejected_sig in rejected_sigs {
+                                all_rejected.insert(rejected_sig.into());
+                            }
                         }
                     }
                 }
+
+                tracing::info!(
+                    target: "f1r3.trace.deploys_in_scope",
+                    "[DIS-COMPUTE-DONE] self_validator={} gen={} lfb={} deploys={} rejected={}",
+                    self_validator_hex,
+                    current_dag_generation,
+                    hex::encode(&snapshot_lfb_hash),
+                    all_deploys.len(),
+                    all_rejected.len(),
+                );
 
                 let mut cache_guard = self.deploys_in_scope_cache.lock().map_err(|_| {
                     CasperError::RuntimeError("deploys_in_scope_cache lock failed".to_string())
@@ -684,6 +767,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 return Ok(Either::Left(block_error));
             }
             if let Either::Right(None) = validate_block_checkpoint_result {
+                tracing::info!(
+                    target: "f1r3.trace.invalid_tx",
+                    "[INVALID-TX-POSTSTATE] block={} sender={} block_number={} declared_post_state={} declared_pre_state={}",
+                    hex::encode(&block.block_hash),
+                    hex::encode(&block.sender),
+                    block.body.state.block_number,
+                    hex::encode(&block.body.state.post_state_hash),
+                    hex::encode(&block.body.state.pre_state_hash),
+                );
                 return Ok(Either::Left(BlockError::Invalid(
                     InvalidBlock::InvalidTransaction,
                 )));
@@ -814,7 +906,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         ) {
                             tracing::warn!(
                                 "Skipping block index cache update for block {}: {}",
-                                PrettyPrinter::build_string_bytes(&block.block_hash),
+                                PrettyPrinter::build_string_no_limit(&block.block_hash),
                                 err
                             );
                         }
@@ -822,7 +914,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     Err(err) => {
                         tracing::warn!(
                             "Skipping mergeable/index cache update for block {}: {}",
-                            PrettyPrinter::build_string_bytes(&block.block_hash),
+                            PrettyPrinter::build_string_no_limit(&block.block_hash),
                             err
                         );
                     }
@@ -872,7 +964,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 "Self-created block pre_state_hash mismatch: expected={}, actual={}, block={}",
                 PrettyPrinter::build_string_no_limit(&pre_state_hash),
                 PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_no_limit(&block.block_hash),
             );
             tracing::error!("{}", msg);
             return Ok(Either::Left(BlockError::BlockException(
@@ -884,7 +976,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 "Self-created block post_state_hash mismatch: expected={}, actual={}, block={}",
                 PrettyPrinter::build_string_no_limit(&post_state_hash),
                 PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_no_limit(&block.block_hash),
             );
             tracing::error!("{}", msg);
             return Ok(Either::Left(BlockError::BlockException(
@@ -1036,7 +1128,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         ) {
                             tracing::warn!(
                                 "Skipping block index cache update for self-created block {}: {}",
-                                PrettyPrinter::build_string_bytes(&block.block_hash),
+                                PrettyPrinter::build_string_no_limit(&block.block_hash),
                                 err
                             );
                         }
@@ -1044,7 +1136,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                     Err(err) => {
                         tracing::warn!(
                             "Skipping mergeable/index cache update for self-created block {}: {}",
-                            PrettyPrinter::build_string_bytes(&block.block_hash),
+                            PrettyPrinter::build_string_no_limit(&block.block_hash),
                             err
                         );
                     }
@@ -1074,7 +1166,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .collect();
         if !deploys.is_empty() {
             let deploys_count = deploys.len();
-            let block_hash = PrettyPrinter::build_string_bytes(&block.block_hash);
+            let block_hash = PrettyPrinter::build_string_no_limit(&block.block_hash);
             let block_number = block.body.state.block_number;
             self.deploy_storage
                 .lock()
@@ -1111,7 +1203,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 if let Some(signal) = self.heartbeat_signal_ref.get() {
                     tracing::debug!(
                         "Triggering heartbeat wake for accepted peer block {}",
-                        PrettyPrinter::build_string_bytes(&block.block_hash)
+                        PrettyPrinter::build_string_no_limit(&block.block_hash)
                     );
                     signal.trigger_wake();
                 }
@@ -1136,7 +1228,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
              -> Result<KeyValueDagRepresentation, CasperError> {
                 tracing::warn!(
                     "Recording invalid block {} for {:?}.",
-                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_no_limit(&block.block_hash),
                     status
                 );
 
@@ -1188,7 +1280,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                  */
                 tracing::info!(
                     "Did not add block {} as that would add an equivocation to the BlockDAG",
-                    PrettyPrinter::build_string_bytes(&block.block_hash)
+                    PrettyPrinter::build_string_no_limit(&block.block_hash)
                 );
                 Ok(dag.clone())
             }
@@ -1209,7 +1301,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 self.casper_buffer_storage.remove(block_hash_serde)?;
                 tracing::warn!(
                     "Recording invalid block {} for {:?}.",
-                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_no_limit(&block.block_hash),
                     status
                 );
                 Ok(dag.clone())
@@ -1391,7 +1483,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         for dependency in pendants_unseen {
             tracing::debug!(
                 "Sending dependency {} to BlockRetriever",
-                PrettyPrinter::build_string_bytes(&dependency)
+                PrettyPrinter::build_string_no_limit(&dependency)
             );
 
             self.block_retriever
@@ -1646,8 +1738,8 @@ async fn compute_last_finalized_block(
                             if !enable_mergeable_channel_gc {
                                 tracing::debug!(
                                     "Mergeable channel GC disabled; retaining mergeable data for finalized block {} (sender={}, seq={})",
-                                    PrettyPrinter::build_string_bytes(&block.block_hash),
-                                    PrettyPrinter::build_string_bytes(&block.sender),
+                                    PrettyPrinter::build_string_no_limit(&block.block_hash),
+                                    PrettyPrinter::build_string_no_limit(&block.sender),
                                     block.seq_num
                                 );
                             }
@@ -1702,6 +1794,19 @@ async fn compute_last_finalized_block(
     // Return the finalized block
     let read_started = std::time::Instant::now();
     let block_message = block_store.get(&final_lfb_hash)?.unwrap();
+    // Exact per-node finalization timeline: when (and to what height) the
+    // finalizer advances the LFB. `new_lfb_found=false` means the finalizer ran
+    // but found no new finalized block (LFB unchanged) — useful for spotting a
+    // node whose finalizer is running but not making progress (minority fork).
+    tracing::info!(
+        target: "f1r3.trace.finalizer",
+        "[TRACE-LFB-ADVANCE] old_lfb_height={} new_lfb_height={} new_lfb_found={} new_lfb_hash={} finalizer_ms={}",
+        last_finalized_block_height,
+        block_message.body.state.block_number,
+        new_lfb_found,
+        hex::encode(&final_lfb_hash),
+        finalizer_ms,
+    );
     tracing::debug!(
         target: "f1r3fly.last_finalized_block.timing",
         "last_finalized_block timing: finalizer_ms={}, read_block_ms={}, total_ms={}, new_lfb_found={}",

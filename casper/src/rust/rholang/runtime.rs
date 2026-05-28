@@ -41,13 +41,13 @@ use rholang::rust::interpreter::system_processes::{
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::internal::Datum;
-use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     MergeType, MergeableChsForDeploy, NumberChannelsEndVal,
 };
+use rspace_plus_plus::rspace::trace::event::Produce;
 use shared::rust::hashable_set::HashableSet;
 
 use crate::rust::errors::CasperError;
@@ -129,9 +129,7 @@ impl RuntimeOps {
             // Extract numeric values for fold.
             let values: Vec<i64> = data
                 .iter()
-                .filter_map(|d| {
-                    RholangMergingLogic::try_get_number_with_rnd(&d.a).map(|(n, _)| n)
-                })
+                .filter_map(|d| RholangMergingLogic::try_get_number_with_rnd(&d.a).map(|(n, _)| n))
                 .collect();
             if values.is_empty() {
                 // No numeric values to fold (channel might hold non-numeric
@@ -162,7 +160,12 @@ impl RuntimeOps {
             self.runtime
                 .replace_channel_data(channel, vec![new_datum])
                 .await
-                .map_err(|e| CasperError::RuntimeError(format!("heal_tagged_channels: replace_channel_data failed: {}", e)))?;
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "heal_tagged_channels: replace_channel_data failed: {}",
+                        e
+                    ))
+                })?;
 
             healed_count += 1;
             let ch_hash = stable_hash_provider::hash(channel);
@@ -418,6 +421,42 @@ impl RuntimeOps {
             .await?;
         log_mem_step("after_reset");
 
+        // Diagnostic: census mergeable (tagged) channels in the merged pre-state
+        // immediately after reset, before any deploy executes. A channel that
+        // already holds a datum here got it from the merge of parents — so a
+        // deploy's later produce that tips it to multi-Datum is double-applying a
+        // parent-contributed effect rather than accumulating intra-block.
+        {
+            let merge_chs = self.runtime.merge_chs.read().await.clone();
+            let mut nonempty = 0usize;
+            let mut multi = 0usize;
+            for (channel, _mt) in merge_chs.iter() {
+                let n = self.runtime.get_data(channel).await.len();
+                if n >= 1 {
+                    nonempty += 1;
+                    if n >= 2 {
+                        multi += 1;
+                    }
+                    let ch_hash = stable_hash_provider::hash(channel);
+                    tracing::info!(
+                        target: "f1r3.trace.merge_base_census",
+                        "[MERGE-BASE-CENSUS] start_hash={} channel={} base_datum_count={}",
+                        hex::encode(&start_hash[..8.min(start_hash.len())]),
+                        hex::encode(&ch_hash.bytes()[..8.min(ch_hash.bytes().len())]),
+                        n,
+                    );
+                }
+            }
+            tracing::info!(
+                target: "f1r3.trace.merge_base_census",
+                "[MERGE-BASE-CENSUS-SUMMARY] start_hash={} tagged_channels={} nonempty={} multi_datum_in_base={}",
+                hex::encode(&start_hash[..8.min(start_hash.len())]),
+                merge_chs.len(),
+                nonempty,
+                multi,
+            );
+        }
+
         let mut res = Vec::with_capacity(terms.len());
         for (idx, deploy) in terms.into_iter().enumerate() {
             if mem_profile_enabled {
@@ -525,6 +564,19 @@ impl RuntimeOps {
         let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
         let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
 
+        let charge_amount = deploy.data.total_phlo_charge();
+        tracing::info!(
+            target: "f1r3.trace.deploy_lifecycle",
+            "[DEPLOY-LIFECYCLE-ENTER] deploy_sig={} deployer_pk={} phlo_limit={} phlo_price={} charge_amount={} valid_after_block={} term_len={}",
+            &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+            &deploy_pk_hex[..std::cmp::min(16, deploy_pk_hex.len())],
+            deploy.data.phlo_limit,
+            deploy.data.phlo_price,
+            charge_amount,
+            deploy.data.valid_after_block_number,
+            deploy.data.term.len()
+        );
+
         // Evaluates Pre-charge system deploy
         let pre_charge_result = {
             // Using tracing events for async - Span[F].traceI("precharge") from Scala
@@ -533,6 +585,12 @@ impl RuntimeOps {
                 "PreCharging {} for {}",
                 deploy_pk_hex.as_str(),
                 deploy.data.total_phlo_charge()
+            );
+            tracing::info!(
+                target: "f1r3.trace.deploy_lifecycle",
+                "[DEPLOY-LIFECYCLE-PRECHARGE-START] deploy_sig={} charge_amount={}",
+                &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                charge_amount
             );
             log_mem_step("before_precharge_internal");
             let (event_log, result, mergeable_channels) = self
@@ -551,11 +609,22 @@ impl RuntimeOps {
 
         match pre_charge_result {
             Either::Right(_) => {
+                tracing::info!(
+                    target: "f1r3.trace.deploy_lifecycle",
+                    "[DEPLOY-LIFECYCLE-PRECHARGE-OK] deploy_sig={} charge_amount={}",
+                    &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                    charge_amount
+                );
                 // Evaluates user deploy
                 let pd = {
                     // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
                     tracing::debug!(target: "f1r3fly.casper.user-deploy", "user-deploy-started");
                     tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
+                    tracing::info!(
+                        target: "f1r3.trace.deploy_lifecycle",
+                        "[DEPLOY-LIFECYCLE-USER-START] deploy_sig={}",
+                        &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())]
+                    );
                     // Evaluates user deploy and append event log to local state
                     {
                         let (mut pd, mc) = self.process_deploy(deploy).await?;
@@ -565,6 +634,14 @@ impl RuntimeOps {
                     }
                 };
                 log_mem_step("after_user_deploy");
+                tracing::info!(
+                    target: "f1r3.trace.deploy_lifecycle",
+                    "[DEPLOY-LIFECYCLE-USER-END] deploy_sig={} cost={} errored={} refund_amount={}",
+                    &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                    pd.cost.cost,
+                    pd.is_failed,
+                    pd.refund_amount()
+                );
 
                 // Evaluates Refund system deploy
                 let refund_result = {
@@ -573,6 +650,12 @@ impl RuntimeOps {
                     tracing::debug!(
                         "Refunding {} with {}",
                         deploy_pk_hex.as_str(),
+                        pd.refund_amount()
+                    );
+                    tracing::info!(
+                        target: "f1r3.trace.deploy_lifecycle",
+                        "[DEPLOY-LIFECYCLE-REFUND-START] deploy_sig={} refund_amount={}",
+                        &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
                         pd.refund_amount()
                     );
                     let (event_log, result, mergeable_channels) = self
@@ -588,6 +671,12 @@ impl RuntimeOps {
 
                 match refund_result {
                     Either::Right(_) => {
+                        tracing::info!(
+                            target: "f1r3.trace.deploy_lifecycle",
+                            "[DEPLOY-LIFECYCLE-REFUND-OK] deploy_sig={} refund_amount={}",
+                            &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                            pd.refund_amount()
+                        );
                         // Get mergeable channels data
                         let mergeable_channels_data = self
                             .get_mergeable_chs_for_deploy(&eval_collector_state.mergeable_channels)
@@ -613,6 +702,13 @@ impl RuntimeOps {
                             deploy_pk_hex.as_str(),
                             refund_amount
                         );
+                        tracing::info!(
+                            target: "f1r3.trace.deploy_lifecycle",
+                            "[DEPLOY-LIFECYCLE-REFUND-FAIL] deploy_sig={} refund_amount={} error={}",
+                            &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                            refund_amount,
+                            error.error_message
+                        );
                         metrics::counter!(
                             "casper_runtime_refund_failures_total",
                             "source" => CASPER_METRICS_SOURCE
@@ -627,6 +723,13 @@ impl RuntimeOps {
             }
 
             Either::Left(error) => {
+                tracing::info!(
+                    target: "f1r3.trace.deploy_lifecycle",
+                    "[DEPLOY-LIFECYCLE-PRECHARGE-FAIL] deploy_sig={} charge_amount={} error={}",
+                    &deploy_sig_hex[..std::cmp::min(16, deploy_sig_hex.len())],
+                    charge_amount,
+                    error.error_message
+                );
                 tracing::error!("Pre-charge failure '{}'", error.error_message);
 
                 // Handle evaluation errors from PreCharge
@@ -940,7 +1043,9 @@ impl RuntimeOps {
 
         match result {
             Either::Right(system_deploy_result) => {
-                let mcl = self.get_mergeable_chs_for_deploy(&mergeable_channels).await?;
+                let mcl = self
+                    .get_mergeable_chs_for_deploy(&mergeable_channels)
+                    .await?;
                 if let Some(SlashDeploy {
                     invalid_block_hash,
                     pk,
@@ -1113,9 +1218,48 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // DIAG: the system deploy produced no result on its return
+                // channel. Dump the still-waiting continuations — these are the
+                // PERMANENT stalls (consumes that never matched), distinct from
+                // benign consume-before-produce ordering waits. For each waiting
+                // join we log its channels + each channel's current datum count,
+                // so the channel with 0 datums is the missing produce.
+                let hot = self.runtime.get_hot_changes().await;
+                let mut data_counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for (chs, row) in &hot {
+                    // A single-channel entry holds that channel's datums; absence
+                    // from this map means 0 datums (the API contract here).
+                    if chs.len() == 1 && !row.data.is_empty() {
+                        let h = hex::encode(stable_hash_provider::hash(&chs[0]).bytes());
+                        data_counts.insert(h, row.data.len());
+                    }
+                }
+                for (chs, row) in &hot {
+                    if row.wks.is_empty() {
+                        continue;
+                    }
+                    let chan_info: Vec<String> = chs
+                        .iter()
+                        .map(|c| {
+                            let h = hex::encode(stable_hash_provider::hash(c).bytes());
+                            let dc = data_counts.get(&h).copied().unwrap_or(0);
+                            format!("{}:{}", &h[..12.min(h.len())], dc)
+                        })
+                        .collect();
+                    tracing::warn!(
+                        target: "f1r3.trace.sysdeploy_stall",
+                        "[SYSDEPLOY-CONSUME-FAIL-STALL] join_arity={} wks={} channels=[{}]",
+                        chs.len(),
+                        row.wks.len(),
+                        chan_info.join(",")
+                    );
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
         log_mem_step("after_match_result");
         metrics::counter!(EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1214,7 +1358,7 @@ impl RuntimeOps {
         metrics::histogram!(BONDS_CACHE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(__reset_start.elapsed().as_secs_f64());
 
-        let rand = Blake2b512Random::create_from_bytes(&[0u8; 128]);
+        let rand = Blake2b512Random::create_from_length(128);
         let mut return_rand = rand.clone();
         let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
@@ -1472,9 +1616,23 @@ impl RuntimeOps {
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, CasperError> {
         let consume_start = Instant::now();
         let return_channel = system_deploy.return_channel()?;
+        // DIAG: pin the failure flavor. pre_data_count = datums present on the
+        // system deploy's return channel before we consume the result.
+        //   matched=false & pre_data_count=0  → body never produced its result
+        //   matched=false & pre_data_count>=1 → produced but unmatchable (replay)
+        let rc_hash = hex::encode(stable_hash_provider::hash(&return_channel).bytes());
+        let pre_data_count = self.runtime.get_data(&return_channel).await.len();
         let result = self
             .consume_result(return_channel, system_deploy_consume_all_pattern())
             .await;
+        let matched = matches!(&result, Ok(Some(_)));
+        tracing::info!(
+            target: "f1r3.trace.sysdeploy",
+            "[SYSDEPLOY-RETURN-CONSUME] return_channel={} pre_data_count={} matched={}",
+            &rc_hash[..12.min(rc_hash.len())],
+            pre_data_count,
+            matched
+        );
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(consume_start.elapsed().as_secs_f64());
         result

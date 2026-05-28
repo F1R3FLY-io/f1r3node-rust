@@ -31,6 +31,13 @@ impl KeyValueRejectedDeployBuffer {
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+        for d in &deploys {
+            tracing::info!(
+                target: "f1r3.trace.rejected_deploy_buffer",
+                "[REJECTED-BUFFER-ADD] sig={}",
+                hex::encode(&d.sig[..std::cmp::min(16, d.sig.len())])
+            );
+        }
         self.store.put(
             deploys
                 .into_iter()
@@ -40,6 +47,13 @@ impl KeyValueRejectedDeployBuffer {
     }
 
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+        for d in &deploys {
+            tracing::info!(
+                target: "f1r3.trace.rejected_deploy_buffer",
+                "[REJECTED-BUFFER-REMOVE] sig={}",
+                hex::encode(&d.sig[..std::cmp::min(16, d.sig.len())])
+            );
+        }
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())
     }
@@ -53,8 +67,18 @@ impl KeyValueRejectedDeployBuffer {
             .next()
             .unwrap_or(false);
         if !exists {
+            tracing::info!(
+                target: "f1r3.trace.rejected_deploy_buffer",
+                "[REJECTED-BUFFER-REMOVE-BY-SIG] sig={} exists=false (no-op)",
+                hex::encode(&sig[..std::cmp::min(16, sig.len())])
+            );
             return Ok(false);
         }
+        tracing::info!(
+            target: "f1r3.trace.rejected_deploy_buffer",
+            "[REJECTED-BUFFER-REMOVE-BY-SIG] sig={} exists=true",
+            hex::encode(&sig[..std::cmp::min(16, sig.len())])
+        );
         self.store.delete(vec![key])?;
         Ok(true)
     }

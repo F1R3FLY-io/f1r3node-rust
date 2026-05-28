@@ -458,10 +458,11 @@ impl StateChange {
 
         // Combine datum changes via ChannelChange::combine (multiset union)
         for (key, value) in other.datums_changes {
+            let hint = hex::encode(key.bytes());
             match datums_changes.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
-                    *entry.get_mut() = current.combine(value);
+                    *entry.get_mut() = current.combine_traced(value, Some(&hint));
                 }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
                     entry.insert(value);
@@ -471,10 +472,17 @@ impl StateChange {
 
         // Combine continuation changes via ChannelChange::combine (multiset union)
         for (key, value) in other.cont_changes {
+            let hint = format!(
+                "kont[{}]",
+                key.iter()
+                    .map(|h| hex::encode(&h.bytes()[..4.min(h.bytes().len())]))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             match cont_changes.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
-                    *entry.get_mut() = current.combine(value);
+                    *entry.get_mut() = current.combine_traced(value, Some(&hint));
                 }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
                     entry.insert(value);
@@ -508,7 +516,8 @@ mod multiset_diff_contract_tests {
     /// assert that the merge rejects chains whose `removed` doesn't match
     /// `init`. See `stale_removed_bug_repro` below for that test.
 
-    /// Aligned chain: chain's `removed` matches `init` → cancel → single-Datum result.
+    /// Aligned chain: chain's `removed` matches `init` → cancel → single-Datum
+    /// result.
     #[test]
     fn aligned_chain_collapses_to_single_datum() {
         let init: Vec<Vec<u8>> = vec![vec![0xca, 0x1e, 0x8a, 0x33]];
@@ -553,4 +562,3 @@ mod multiset_diff_contract_tests {
         assert_eq!(new_val.len(), 1);
     }
 }
-

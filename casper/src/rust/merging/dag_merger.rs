@@ -5,12 +5,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use hex::ToHex;
+use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rholang::rust::interpreter::pretty_printer::PrettyPrinter as RholangPrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
@@ -54,12 +58,16 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
 ///        contains `b`.
 ///    - If ANY byte is unsatisfiable → chain is stale.
 ///
-/// Rejected user-deploy chains go to the rejected-deploy buffer (handled
-/// by `dag_merger::merge`'s existing collateral_lost_pairs flow). Rejected
-/// system-deploy chains are dropped (no recovery — atomic with block).
-pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone>(
+/// Rejected chains are dropped from `actual_seq` so their diffs are not
+/// applied. Their deploys are NOT propagated to the rejected-deploy buffer:
+/// each stale chain's source block is a valid in-scope DAG block whose
+/// `body.deploys` carries the user-deploy commitment forward; treating it
+/// as "rejected, needs recovery" causes multi-Datum (the chain rejection
+/// is about the diff being unsafe, not about the commitment).
+pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone + std::fmt::Debug>(
     chains: &[(C, &StateChange)],
     init_of: impl Fn(&Blake2b256Hash) -> Vec<Vec<u8>>,
+    is_mergeable: impl Fn(&C, &Blake2b256Hash) -> bool,
 ) -> HashSet<C> {
     use std::collections::HashMap;
 
@@ -69,7 +77,10 @@ pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone>(
         for entry in sc.datums_changes.iter() {
             let ch = entry.key().clone();
             let added = &entry.value().added;
-            global_added.entry(ch).or_default().extend(added.iter().cloned());
+            global_added
+                .entry(ch)
+                .or_default()
+                .extend(added.iter().cloned());
         }
     }
 
@@ -79,6 +90,20 @@ pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone>(
         let mut is_stale = false;
         for entry in sc.datums_changes.iter() {
             let channel = entry.key();
+            // Number/mergeable channels are merged by value-fold
+            // (`calculate_number_channel_merge`), never via
+            // `make_trie_action`'s multiset-diff. Their datum-level
+            // remove/add is just the materialization of a delta and is
+            // irrelevant to staleness — the fold reconciles by summing
+            // diffs. Flagging them stale is a false positive that drops the
+            // whole chain (and any bond/vault effect bundled in it). When
+            // `chain_id` survives conflict resolution, this channel is in
+            // `all_mergeable_channels` (fold path); if it's rejected, its
+            // diff never applies — so skipping its staleness here cannot
+            // produce a multi-Datum.
+            if is_mergeable(chain_id, channel) {
+                continue;
+            }
             let ch_change = entry.value();
             if ch_change.removed.is_empty() {
                 continue;
@@ -114,14 +139,22 @@ pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone>(
                         *c -= 1;
                     }
                     _ => {
-                        let byte_prefix = hex::encode(
-                            &r[..std::cmp::min(r.len(), 8)],
-                        );
+                        let removed_hash = Blake2b256Hash::new(r);
+                        let removed_hash_bytes = removed_hash.bytes();
+                        let in_init = init.iter().any(|d| d == r);
+                        let in_global_added = global_added
+                            .get(channel)
+                            .map(|v| v.iter().any(|d| d == r))
+                            .unwrap_or(false);
                         tracing::info!(
                             target: "f1r3.trace.stale_chain",
-                            "[TRACE-CHECK-5-STALE] channel={} stale_byte_prefix={} chain_removed_count={} init_count={} global_added_count={}",
+                            "[TRACE-CHECK-5-STALE] chain_idx={:?} channel={} removed_hash={} removed_len={} in_init={} in_global_added={} chain_removed_count={} init_count={} global_added_count={}",
+                            chain_id,
                             hex::encode(channel.bytes()),
-                            byte_prefix,
+                            hex::encode(&removed_hash_bytes),
+                            r.len(),
+                            in_init,
+                            in_global_added,
                             ch_change.removed.len(),
                             init.len(),
                             global_added.get(channel).map(|v| v.len()).unwrap_or(0)
@@ -138,55 +171,148 @@ pub fn detect_stale_chains_pure<C: Eq + std::hash::Hash + Clone>(
     stale
 }
 
-/// Compute `collateral_lost_pairs` for Check #5 stale-chain rejection.
+/// Deploy sigs whose effects are committed in `base`'s pre-state: clean
+/// (non-failed) inclusions in `base`'s ancestry that were NOT later rejected
+/// within that ancestry, bounded by `deploy_lifespan` blocks below `base`.
 ///
-/// When Check #5 drops a chain as stale, its user deploys would otherwise be
-/// lost — the rejected-deploy buffer captures them via this function so a
-/// later proposer can recover them via the exemption path.
+/// Used to detect recovery double-execution at the merge layer. The walk is
+/// anchored to the fixed merge base and reads content-addressed block bodies,
+/// so the result is identical across nodes — unlike the validator-side
+/// LFB-anchored recovery gate, which depends on local finalization progress.
 ///
-/// CRITICAL invariant: a deploy present in any KEPT (non-stale) chain MUST
-/// NOT appear in the result. Its effects are in canonical state via the
-/// kept chain, so marking it "collateral lost" would trigger the recovery
-/// exemption to re-execute it on top of state that already has its effects,
-/// producing duplicate produces on tagged channels (the multi-Datum bug
-/// blocking `test_bonding_validators` Liveness Phase).
-///
-/// System deploys are excluded — they are atomic with their containing
-/// block and have no recovery semantics.
-fn stale_chain_collateral_pure<F, G>(
-    stale_chain_indices: &HashSet<usize>,
-    chain_count: usize,
-    deploys_of: F,
-    source_of: G,
-) -> Vec<(Bytes, BlockHash)>
-where
-    F: Fn(usize) -> Vec<Bytes>,
-    G: Fn(usize) -> BlockHash,
-{
-    // Deploys present in any kept (non-stale) chain are still in canonical
-    // state via that chain. Marking them "collateral lost" would trigger the
-    // recovery exemption to re-execute them — see module docstring.
-    let kept_chain_deploys: HashSet<Bytes> = (0..chain_count)
-        .filter(|idx| !stale_chain_indices.contains(idx))
-        .flat_map(|idx| deploys_of(idx))
-        .collect();
-
-    let mut collateral = Vec::new();
-    for idx in 0..chain_count {
-        if !stale_chain_indices.contains(&idx) {
+/// `clean − rejected`: a deploy that is clean in one ancestor but rejected in
+/// another within the window is treated as NOT committed (its effects may have
+/// been removed), so a legitimate recovery of it is not wrongly dropped.
+pub fn base_committed_deploy_sigs(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    base: &BlockHash,
+    deploy_lifespan: i64,
+) -> HashSet<Bytes> {
+    let floor = dag
+        .block_number(base)
+        .map(|h| (h - deploy_lifespan).max(0))
+        .unwrap_or(0);
+    let mut clean: HashSet<Bytes> = HashSet::new();
+    let mut rejected: HashSet<Bytes> = HashSet::new();
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut frontier: Vec<BlockHash> = vec![base.clone()];
+    while let Some(h) = frontier.pop() {
+        if !visited.insert(h.clone()) {
             continue;
         }
-        for deploy_id in deploys_of(idx) {
-            if is_system_deploy_id(&deploy_id) {
+        match dag.block_number(&h) {
+            Some(height) if height < floor => continue,
+            None => continue,
+            _ => {}
+        }
+        let block = match block_store.get(&h) {
+            Ok(Some(b)) => b,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    "base_committed_deploy_sigs: block_store.get failed for {}: {} — continuing",
+                    hex::encode(&h),
+                    e
+                );
                 continue;
             }
-            if kept_chain_deploys.contains(&deploy_id) {
-                continue;
+        };
+        for pd in &block.body.deploys {
+            if !pd.is_failed {
+                clean.insert(pd.deploy.sig.clone());
             }
-            collateral.push((deploy_id, source_of(idx)));
+        }
+        for rd in &block.body.rejected_deploys {
+            rejected.insert(rd.sig.clone());
+        }
+        for parent in &block.header.parents_hash_list {
+            if !visited.contains(parent) {
+                frontier.push(parent.clone());
+            }
         }
     }
-    collateral
+    clean.retain(|sig| !rejected.contains(sig));
+    clean
+}
+
+/// Detect chains that re-execute a deploy already committed in the base
+/// pre-state ("recovery double-execution"). A chain whose deploy IDs include
+/// any sig for which `base_committed` returns true ran on top of a state that
+/// already holds that deploy's effects — re-applying its diff double-executes
+/// the deploy (a second NN/vault-init datum → multi-Datum). Such chains must
+/// be dropped from the merge, and their deploys must NOT be queued for
+/// recovery (the base commitment already carries them forward).
+///
+/// `base_committed(sig)` reports whether `sig`'s effects are already in the
+/// base, computed deterministically from the fixed merge base's ancestry —
+/// unlike the validator-side LFB anchor, this does not depend on the local
+/// node's finalization progress, so all nodes agree.
+fn detect_base_recovery_chains_pure(
+    chains: &[(usize, Vec<Bytes>)],
+    base_committed: impl Fn(&Bytes) -> bool,
+) -> HashSet<usize> {
+    let mut flagged = HashSet::new();
+    for (idx, deploy_ids) in chains {
+        if deploy_ids.iter().any(|sig| base_committed(sig)) {
+            flagged.insert(*idx);
+        }
+    }
+    flagged
+}
+
+#[cfg(test)]
+mod base_recovery_dedup_tests {
+    use std::collections::HashSet;
+
+    use prost::bytes::Bytes;
+
+    use super::detect_base_recovery_chains_pure;
+
+    fn sig(b: u8) -> Bytes { Bytes::from(vec![b; 8]) }
+
+    /// A chain whose deploy is already committed in the base re-executes it on
+    /// a state that already holds its effects → double-execution. It must be
+    /// flagged so the chain is dropped and the deploy is NOT queued for
+    /// recovery. FAILS until `detect_base_recovery_chains_pure` implements the
+    /// base check (proves the fix engages).
+    #[test]
+    fn chain_reexecuting_base_committed_deploy_is_detected() {
+        let committed = sig(0xaa);
+        let fresh = sig(0xbb);
+        let chains = vec![
+            (0usize, vec![committed.clone()]), // re-executes a base-committed deploy
+            (1usize, vec![fresh.clone()]),     // genuinely new
+        ];
+        let base: HashSet<Bytes> = HashSet::from([committed.clone()]);
+
+        let flagged = detect_base_recovery_chains_pure(&chains, |s| base.contains(s));
+
+        assert!(
+            flagged.contains(&0),
+            "chain re-executing a base-committed deploy must be flagged as a \
+             recovery double-execution; got {:?}",
+            flagged
+        );
+        assert!(
+            !flagged.contains(&1),
+            "chain with only fresh deploys must NOT be flagged; got {:?}",
+            flagged
+        );
+    }
+
+    /// Control: an empty base flags nothing (no false positives — genuinely
+    /// new deploys still merge and, if lost, recover normally).
+    #[test]
+    fn no_chains_flagged_when_base_is_empty() {
+        let chains = vec![(0usize, vec![sig(0xaa)]), (1usize, vec![sig(0xbb)])];
+        let flagged = detect_base_recovery_chains_pure(&chains, |_| false);
+        assert!(
+            flagged.is_empty(),
+            "empty base must flag nothing; got {:?}",
+            flagged
+        );
+    }
 }
 
 /// BFS walk of DAG descendants of `start_blocks`, restricted to `scope`.
@@ -454,6 +580,10 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    // Deploy sigs already committed (clean) in the base pre-state's ancestry.
+    // A chain re-executing one of these is a recovery double-execution: it is
+    // dropped from the merge and excluded from the rejected-deploy buffer.
+    base_committed_sigs: &HashSet<Bytes>,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -605,6 +735,18 @@ pub fn merge(
                     }
                     None => true,
                 };
+                tracing::info!(
+                    target: "f1r3.trace.merge_reject",
+                    "[MERGE-DEDUP-DROP] sig={} dropped_from_block={} dropped_block_num={} is_collateral={} fresher_block={} fresher_num={}",
+                    hex::encode(&deploy.deploy_id),
+                    hex::encode(&chain.source_block_hash),
+                    chain.source_block_number,
+                    is_collateral,
+                    best.map(|(_, h)| hex::encode(&h))
+                        .unwrap_or_else(|| "none".to_string()),
+                    best.map(|(n, _)| n.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                );
                 if is_collateral {
                     collateral_lost_pairs
                         .push((deploy.deploy_id.clone(), chain.source_block_hash.clone()));
@@ -620,6 +762,63 @@ pub fn merge(
                 post_dedup_count,
                 collateral_lost_pairs.len(),
             );
+        }
+    }
+
+    // Base-recovery dedup: drop any chain that re-executes a deploy already
+    // committed (clean) in the base pre-state's ancestry. Such a chain ran on a
+    // state that already holds the deploy's effects, so re-applying its diff
+    // double-executes it (a second NN/vault-init datum → multi-Datum). The base
+    // set is derived from the fixed merge base, so this decision is identical
+    // across all nodes — unlike the validator-side LFB-anchored gate. A
+    // base-committed deploy is NOT queued for recovery (the base commitment
+    // already carries it forward); only genuinely-new deploys in a dropped
+    // chain become recovery collateral.
+    if !base_committed_sigs.is_empty() && !actual_set_vec.is_empty() {
+        let chain_deploy_ids: Vec<(usize, Vec<Bytes>)> = actual_set_vec
+            .iter()
+            .enumerate()
+            .map(|(i, chain)| {
+                let ids = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .map(|d| d.deploy_id.clone())
+                    .collect();
+                (i, ids)
+            })
+            .collect();
+        let flagged = detect_base_recovery_chains_pure(&chain_deploy_ids, |sig| {
+            base_committed_sigs.contains(sig)
+        });
+        if !flagged.is_empty() {
+            for (i, chain) in actual_set_vec.iter().enumerate() {
+                if !flagged.contains(&i) {
+                    continue;
+                }
+                for deploy in chain.deploys_with_cost.0.iter() {
+                    // Skip system deploys and the base-committed deploys
+                    // themselves; only the chain's genuinely-new deploys recover.
+                    if is_system_deploy_id(&deploy.deploy_id)
+                        || base_committed_sigs.contains(&deploy.deploy_id)
+                    {
+                        continue;
+                    }
+                    collateral_lost_pairs
+                        .push((deploy.deploy_id.clone(), chain.source_block_hash.clone()));
+                }
+            }
+            tracing::info!(
+                target: "f1r3.trace.merge_reject",
+                "[MERGE-BASE-RECOVERY-DROP] dropped {} chain(s) re-executing base-committed deploys",
+                flagged.len()
+            );
+            let mut idx = 0usize;
+            actual_set_vec.retain(|_| {
+                let keep = !flagged.contains(&idx);
+                idx += 1;
+                keep
+            });
         }
     }
 
@@ -690,9 +889,11 @@ pub fn merge(
     //
     // Reject stale chains BEFORE resolve_conflicts:
     //   * Removes them from actual_seq (no further consideration)
-    //   * User deploys go to collateral_lost_pairs → rejected-deploy buffer
-    //     → next proposer re-includes (cost-optimal user-deploy recovery path)
-    //   * System deploys are silently dropped (atomic with block, no recovery)
+    //   * Deploys are NOT propagated to the rejected-deploy buffer: each
+    //     stale chain's source block is a valid in-scope DAG block whose
+    //     body.deploys carries the commitment forward. Treating these as
+    //     "rejected, needs recovery" would re-execute on a hot store
+    //     already holding the prior write → multi-Datum on tagged channels.
     //
     // Uses a transient cache for init lookups to avoid repeated history reads
     // across multiple chains touching the same channel.
@@ -715,7 +916,17 @@ pub fn merge(
             .enumerate()
             .map(|(idx, c)| (idx, &c.state_changes))
             .collect();
-        detect_stale_chains_pure(&chains_for_check, init_of)
+        // A channel is exempt from the staleness check for a given chain
+        // when that chain carries it as a number/mergeable channel — those
+        // are value-folded at merge time, not Datum-replaced, so a
+        // "stale removed" on them is a false positive (see detect_stale_chains_pure).
+        let is_mergeable = |idx: &usize, channel: &Blake2b256Hash| -> bool {
+            actual_seq[*idx]
+                .event_log_index
+                .number_channels_data
+                .contains_key(channel)
+        };
+        detect_stale_chains_pure(&chains_for_check, init_of, is_mergeable)
     };
     if !stale_chain_indices.is_empty() {
         tracing::info!(
@@ -724,22 +935,117 @@ pub fn merge(
             stale_chain_indices.len(),
             actual_seq.len()
         );
-        // Capture user-deploy IDs from stale chains for recovery buffer before dropping.
-        let new_collateral = stale_chain_collateral_pure(
-            &stale_chain_indices,
-            actual_seq.len(),
-            |idx| {
-                actual_seq[idx]
-                    .deploys_with_cost
-                    .0
+        for (idx, chain) in actual_seq.iter().enumerate() {
+            let role = if stale_chain_indices.contains(&idx) {
+                "STALE"
+            } else {
+                "KEPT"
+            };
+            let sigs: String = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(|d| hex::encode(&d.deploy_id))
+                .collect::<Vec<_>>()
+                .join(",");
+            tracing::info!(
+                target: "f1r3.trace.stale_chain",
+                "[TRACE-CHECK-5-CHAIN-SOURCE] role={} chain_idx={} source_block={} block_num={} deploys_count={} sigs=[{}]",
+                role,
+                idx,
+                hex::encode(&chain.source_block_hash),
+                chain.source_block_number,
+                chain.deploys_with_cost.0.len(),
+                sigs,
+            );
+            // Dump per-channel datums_changes for this chain so we can see
+            // the actual diff content (which Datum bytes the chain adds/
+            // removes per channel) and correlate with multi-Datum and
+            // bonds-degeneration investigations. Logs byte length + a
+            // Blake2b256 content hash of each Datum so different values
+            // are distinguishable (raw bytes can be megabytes).
+            for entry in chain.state_changes.datums_changes.iter() {
+                let channel_hex =
+                    hex::encode(&entry.key().bytes()[..8.min(entry.key().bytes().len())]);
+                let fingerprint = |d: &Vec<u8>| -> String {
+                    let h = Blake2b256Hash::new(d);
+                    let h_bytes = h.bytes();
+                    format!("len={}/h={}", d.len(), hex::encode(&h_bytes))
+                };
+                let added_fps: String = entry
+                    .value()
+                    .added
                     .iter()
-                    .map(|d| d.deploy_id.clone())
-                    .collect()
-            },
-            |idx| actual_seq[idx].source_block_hash.clone(),
-        );
-        collateral_lost_pairs.extend(new_collateral);
-        // Drop stale chains from the merge set.
+                    .map(fingerprint)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let removed_fps: String = entry
+                    .value()
+                    .removed
+                    .iter()
+                    .map(fingerprint)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                tracing::info!(
+                    target: "f1r3.trace.stale_chain",
+                    "[TRACE-CHAIN-DIFF] role={} chain_idx={} source_block={} channel={} added_count={} removed_count={} added=[{}] removed=[{}]",
+                    role,
+                    idx,
+                    hex::encode(&chain.source_block_hash),
+                    channel_hex,
+                    entry.value().added.len(),
+                    entry.value().removed.len(),
+                    added_fps,
+                    removed_fps,
+                );
+                // For register-modify channels (non-empty removed), decode the
+                // raw Datum bytes into Pars so we can read the actual value
+                // (additive accumulator vs map vs scalar) and decide the
+                // proper merge semantics. bincode(Datum<ListParWithRandom>).
+                if !entry.value().removed.is_empty() {
+                    let decode = |d: &Vec<u8>| -> String {
+                        match bincode::deserialize::<Datum<ListParWithRandom>>(d) {
+                            Ok(datum) => {
+                                let mut pp = RholangPrettyPrinter::new();
+                                let body = datum
+                                    .a
+                                    .pars
+                                    .iter()
+                                    .map(|p| pp.build_string_from_message(p))
+                                    .collect::<Vec<_>>()
+                                    .join(" | ");
+                                let truncated: String = body.chars().take(400).collect();
+                                format!("persist={} par={}", datum.persist, truncated)
+                            }
+                            Err(e) => format!("<decode-failed: {}>", e),
+                        }
+                    };
+                    for (i, a) in entry.value().added.iter().enumerate() {
+                        tracing::info!(
+                            target: "f1r3.trace.stale_chain",
+                            "[TRACE-CHAIN-DIFF-DECODED] chain_idx={} channel={} kind=added i={} {}",
+                            idx, channel_hex, i, decode(a),
+                        );
+                    }
+                    for (i, r) in entry.value().removed.iter().enumerate() {
+                        tracing::info!(
+                            target: "f1r3.trace.stale_chain",
+                            "[TRACE-CHAIN-DIFF-DECODED] chain_idx={} channel={} kind=removed i={} {}",
+                            idx, channel_hex, i, decode(r),
+                        );
+                    }
+                }
+            }
+        }
+        // Drop stale chains from the merge set. We do NOT propagate the
+        // dropped chains' user deploys as recovery collateral: each stale
+        // chain's `source_block` is a valid in-scope DAG block whose
+        // `body.deploys` records the deploy as committed. Treating those
+        // deploys as "rejected, needs recovery" would trigger the Bug B
+        // admit-back path and re-execute the deploy on a hot store that
+        // already holds its prior write — multi-Datum on tagged channels.
+        // The block's commitment carries the deploy forward without need
+        // of the rejected-deploy buffer.
         let mut idx_counter = 0usize;
         actual_seq.retain(|_| {
             let keep = !stale_chain_indices.contains(&idx_counter);
@@ -863,6 +1169,69 @@ pub fn merge(
 
     let get_data_fn = |hash| history_reader.get_data(&hash).map_err(|e| e.into());
 
+    // DIAG: order-stable per-chain fingerprint (sorts deploy_ids + datums_changes
+    // + cont_changes) so resolve_conflicts' stage fps are deterministic across
+    // node processes — unlike raw Debug, which hits DashMap iteration order.
+    let diag_chain_fp = |c: &DeployChainIndex| -> String {
+        let mut dids: Vec<String> = c
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| hex::encode(&d.deploy_id))
+            .collect();
+        dids.sort();
+        let mut dch: Vec<String> = c
+            .state_changes
+            .datums_changes
+            .iter()
+            .map(|e| {
+                let mut a: Vec<String> = e.value().added.iter().map(|x| hex::encode(x)).collect();
+                let mut r: Vec<String> = e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                a.sort();
+                r.sort();
+                format!(
+                    "{}|{}|{}",
+                    hex::encode(e.key().bytes()),
+                    a.join(";"),
+                    r.join(";")
+                )
+            })
+            .collect();
+        dch.sort();
+        let mut cch: Vec<String> = c
+            .state_changes
+            .cont_changes
+            .iter()
+            .map(|e| {
+                let k: String = e
+                    .key()
+                    .iter()
+                    .map(|h| hex::encode(h.bytes()))
+                    .collect::<Vec<_>>()
+                    .join("+");
+                let mut a: Vec<String> = e.value().added.iter().map(|x| hex::encode(x)).collect();
+                let mut r: Vec<String> = e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                a.sort();
+                r.sort();
+                format!("{}|{}|{}", k, a.join(";"), r.join(";"))
+            })
+            .collect();
+        cch.sort();
+        hex::encode(
+            Blake2b256Hash::new(
+                format!(
+                    "src={}#dids={}#D={}#C={}",
+                    hex::encode(&c.source_block_hash),
+                    dids.join(","),
+                    dch.join(" "),
+                    cch.join(" ")
+                )
+                .as_bytes(),
+            )
+            .bytes(),
+        )
+    };
+
     // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
     // Both branch-grouping and conflict-mapping are module-level pub functions
     // (see `compute_branches`, `compute_conflict_map` above) so the test suite
@@ -876,6 +1245,7 @@ pub fn merge(
         &get_data_fn,
         &compute_branches,
         &compute_conflict_map,
+        &diag_chain_fp,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
@@ -952,6 +1322,22 @@ pub fn merge(
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
+    // Bug-A principle extended to the conflict-rejection path: collect the
+    // deploy sigs that survive in KEPT (to_merge) chains. A rejected deploy
+    // whose sig also appears in a kept chain has its effects applied via that
+    // chain, so queuing it for recovery would double-execute it (re-running its
+    // vault/NN init produces a second datum -> multi-Datum -> the refund's
+    // `sub` reads a stale value -> "Insufficient funds"). Such sigs are excluded
+    // from the rejected-deploy buffer below; genuinely-lost deploys (sig not in
+    // any kept chain) are still buffered for legitimate recovery.
+    let kept_sigs: HashSet<Bytes> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| chain.deploys_with_cost.0.iter())
+        .map(|deploy| deploy.deploy_id.clone())
+        .collect();
+
     let rejected = resolved.rejected;
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
@@ -1000,6 +1386,19 @@ pub fn merge(
         }
     }
 
+    // Anti-double-execute: drop any rejected user deploy whose sig is applied
+    // via a kept chain (see kept_sigs above). This prevents recovery from
+    // re-executing a deploy whose effect is already in the merged result.
+    let __before_kept_dedup = rejected_user_deploys.len();
+    rejected_user_deploys
+        .retain(|(sig, _)| !kept_sigs.contains(sig) && !base_committed_sigs.contains(sig));
+    if rejected_user_deploys.len() < __before_kept_dedup {
+        tracing::info!(
+            "DagMerger: excluded {} rejected user deploys also present in kept chains (anti-double-execute)",
+            __before_kept_dedup - rejected_user_deploys.len(),
+        );
+    }
+
     // Deterministic ordering across validators.
     rejected_user_deploys.sort();
     rejected_slashes.sort();
@@ -1019,10 +1418,16 @@ pub fn merge(
     if !rejected_user_deploys.is_empty() {
         let rejected_str: Vec<_> = rejected_user_deploys
             .iter()
-            .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
+            .map(|(sig, src)| {
+                format!(
+                    "{}@{}",
+                    hex::encode(&sig[..std::cmp::min(8, sig.len())]),
+                    hex::encode(&src[..std::cmp::min(8, src.len())])
+                )
+            })
             .collect();
         tracing::info!(
-            "DagMerger rejected {} user deploys: {}",
+            "DagMerger rejected {} user deploys (sig@source_block): {}",
             rejected_user_deploys.len(),
             rejected_str.join(", ")
         );
@@ -1059,14 +1464,13 @@ mod check_5_stale_removed_tests {
     //! `detect_stale_chains_pure` is the pre-merge filter. These tests
     //! verify it correctly flags the bug pattern and DOESN'T over-reject
     //! aligned or cross-chain-dependent cases.
-    use super::detect_stale_chains_pure;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
     use rspace_plus_plus::rspace::merger::state_change::StateChange;
 
-    fn channel(byte: u8) -> Blake2b256Hash {
-        Blake2b256Hash::from_bytes(vec![byte; 32])
-    }
+    use super::detect_stale_chains_pure;
+
+    fn channel(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
 
     fn state_change_with_one_channel(
         ch: &Blake2b256Hash,
@@ -1097,11 +1501,7 @@ mod check_5_stale_removed_tests {
         let stale_removed: Vec<u8> = vec![0xe4, 0x0c, 0x3a, 0x38];
         let chain_added: Vec<u8> = vec![0x21, 0x73, 0x75, 0x1b];
 
-        let sc = state_change_with_one_channel(
-            &ch,
-            vec![chain_added],
-            vec![stale_removed],
-        );
+        let sc = state_change_with_one_channel(&ch, vec![chain_added], vec![stale_removed]);
         let chains: Vec<(usize, &StateChange)> = vec![(0, &sc)];
         let init_of = |c: &Blake2b256Hash| -> Vec<Vec<u8>> {
             if c == &ch {
@@ -1111,7 +1511,7 @@ mod check_5_stale_removed_tests {
             }
         };
 
-        let stale = detect_stale_chains_pure(&chains, init_of);
+        let stale = detect_stale_chains_pure(&chains, init_of, |_, _| false);
 
         assert!(
             stale.contains(&0),
@@ -1127,11 +1527,7 @@ mod check_5_stale_removed_tests {
         let ch = channel(0xa1);
         let value: Vec<u8> = vec![0xca, 0x1e];
 
-        let sc = state_change_with_one_channel(
-            &ch,
-            vec![vec![0x21, 0x73]],
-            vec![value.clone()],
-        );
+        let sc = state_change_with_one_channel(&ch, vec![vec![0x21, 0x73]], vec![value.clone()]);
         let chains: Vec<(usize, &StateChange)> = vec![(0, &sc)];
         let init_of = |c: &Blake2b256Hash| -> Vec<Vec<u8>> {
             if c == &ch {
@@ -1141,9 +1537,13 @@ mod check_5_stale_removed_tests {
             }
         };
 
-        let stale = detect_stale_chains_pure(&chains, init_of);
+        let stale = detect_stale_chains_pure(&chains, init_of, |_, _| false);
 
-        assert!(stale.is_empty(), "Aligned chain must not be flagged: {:?}", stale);
+        assert!(
+            stale.is_empty(),
+            "Aligned chain must not be flagged: {:?}",
+            stale
+        );
     }
 
     /// Control: chain B's removed matches chain A's added (cross-chain
@@ -1156,17 +1556,11 @@ mod check_5_stale_removed_tests {
         let final_val: Vec<u8> = vec![0x21, 0x73];
 
         // Chain A: removed init, added intermediate
-        let sc_a = state_change_with_one_channel(
-            &ch,
-            vec![intermediate.clone()],
-            vec![init_val.clone()],
-        );
+        let sc_a =
+            state_change_with_one_channel(&ch, vec![intermediate.clone()], vec![init_val.clone()]);
         // Chain B: removed intermediate (covered by A's added), added final
-        let sc_b = state_change_with_one_channel(
-            &ch,
-            vec![final_val.clone()],
-            vec![intermediate.clone()],
-        );
+        let sc_b =
+            state_change_with_one_channel(&ch, vec![final_val.clone()], vec![intermediate.clone()]);
         let chains: Vec<(usize, &StateChange)> = vec![(0, &sc_a), (1, &sc_b)];
         let init_of = |c: &Blake2b256Hash| -> Vec<Vec<u8>> {
             if c == &ch {
@@ -1176,7 +1570,7 @@ mod check_5_stale_removed_tests {
             }
         };
 
-        let stale = detect_stale_chains_pure(&chains, init_of);
+        let stale = detect_stale_chains_pure(&chains, init_of, |_, _| false);
 
         assert!(
             stale.is_empty(),
@@ -1193,128 +1587,8 @@ mod check_5_stale_removed_tests {
         let chains: Vec<(usize, &StateChange)> = vec![(0, &sc)];
         let init_of = |_: &Blake2b256Hash| Vec::new();
 
-        let stale = detect_stale_chains_pure(&chains, init_of);
+        let stale = detect_stale_chains_pure(&chains, init_of, |_, _| false);
 
         assert!(stale.is_empty());
-    }
-}
-
-#[cfg(test)]
-mod stale_chain_collateral_tests {
-    //! Regression tests for `stale_chain_collateral_pure`.
-    //!
-    //! Root cause of `test_bonding_validators` Liveness Phase failure
-    //! (`runtime_manager.rs:1271` "Expected at most one value for number
-    //! channel … found 2"):
-    //!
-    //! Check #5 stale-rejection captures EVERY user deploy in a dropped
-    //! chain into `collateral_lost_pairs` → fed to `body.rejected_deploys`
-    //! → triggers the recovery exemption in `prepare_user_deploys`. When a
-    //! deploy also lives in a kept chain (its effects are in canonical
-    //! pre-state via that chain), exemption re-execution stacks a second
-    //! produce on a tagged channel → multi-Datum.
-    //!
-    //! The pure function MUST omit deploys present in any kept chain.
-
-    use super::stale_chain_collateral_pure;
-    use models::rust::block_hash::BlockHash;
-    use prost::bytes::Bytes;
-    use std::collections::HashSet;
-
-    fn sig(b: u8) -> Bytes {
-        Bytes::from(vec![b; 8])
-    }
-
-    fn block(b: u8) -> BlockHash {
-        BlockHash::from(vec![b; 8])
-    }
-
-    /// Bug A regression. Same deploy in kept chain 0 AND stale chain 1.
-    /// `stale_chain_collateral_pure` must exclude the duplicate from the
-    /// collateral list — otherwise the recovery exemption re-executes it
-    /// on top of canonical pre-state that already has its effects.
-    #[test]
-    fn collateral_excludes_deploys_present_in_any_kept_chain() {
-        let deploy_x = sig(0xAA);
-        let deploy_y = sig(0xBB);
-        let src_kept = block(0x10);
-        let src_stale = block(0x20);
-
-        let chain_deploys = vec![vec![deploy_x.clone()], vec![deploy_x.clone(), deploy_y.clone()]];
-        let chain_source = vec![src_kept.clone(), src_stale.clone()];
-        let stale: HashSet<usize> = [1].iter().copied().collect();
-
-        let collateral = stale_chain_collateral_pure(
-            &stale,
-            chain_deploys.len(),
-            |idx| chain_deploys[idx].clone(),
-            |idx| chain_source[idx].clone(),
-        );
-
-        let collateral_sigs: Vec<&Bytes> = collateral.iter().map(|(s, _)| s).collect();
-
-        assert!(
-            !collateral_sigs.iter().any(|s| **s == deploy_x),
-            "deploy_x is present in kept chain 0 — its effects are in canonical \
-             state via that chain. Adding it to collateral_lost_pairs would \
-             trigger recovery exemption re-execution → double-execution → \
-             multi-Datum on tagged channels (the test_bonding_validators \
-             Liveness Phase blocker). Got collateral: {:?}",
-            collateral_sigs
-                .iter()
-                .map(|s| hex::encode(s.as_ref()))
-                .collect::<Vec<_>>()
-        );
-
-        assert!(
-            collateral.iter().any(|(s, src)| *s == deploy_y && *src == src_stale),
-            "deploy_y is unique to the stale chain — it MUST land in collateral \
-             so the recovery buffer can re-propose it (otherwise legitimate \
-             orphan recovery breaks)"
-        );
-    }
-
-    /// Control: when no deploys overlap between kept and stale chains, all
-    /// stale-chain user deploys land in collateral.
-    #[test]
-    fn collateral_includes_unique_stale_deploys() {
-        let deploy_x = sig(0xAA);
-        let deploy_y = sig(0xBB);
-        let src_kept = block(0x10);
-        let src_stale = block(0x20);
-
-        let chain_deploys = vec![vec![deploy_x.clone()], vec![deploy_y.clone()]];
-        let chain_source = vec![src_kept.clone(), src_stale.clone()];
-        let stale: HashSet<usize> = [1].iter().copied().collect();
-
-        let collateral = stale_chain_collateral_pure(
-            &stale,
-            chain_deploys.len(),
-            |idx| chain_deploys[idx].clone(),
-            |idx| chain_source[idx].clone(),
-        );
-
-        assert_eq!(collateral.len(), 1);
-        assert_eq!(collateral[0].0, deploy_y);
-        assert_eq!(collateral[0].1, src_stale);
-    }
-
-    /// Control: no stale chains → no collateral.
-    #[test]
-    fn no_stale_chains_yields_empty_collateral() {
-        let deploy_x = sig(0xAA);
-        let src = block(0x10);
-        let chain_deploys = vec![vec![deploy_x]];
-        let chain_source = vec![src];
-        let stale: HashSet<usize> = HashSet::new();
-
-        let collateral = stale_chain_collateral_pure(
-            &stale,
-            chain_deploys.len(),
-            |idx| chain_deploys[idx].clone(),
-            |idx| chain_source[idx].clone(),
-        );
-
-        assert!(collateral.is_empty());
     }
 }

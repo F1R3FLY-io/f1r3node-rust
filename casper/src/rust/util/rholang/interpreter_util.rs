@@ -183,8 +183,8 @@ pub async fn validate_block_checkpoint(
                 // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
                 tracing::warn!(
                     "Computed pre-state hash {} does not equal block's pre-state hash {}.",
-                    PrettyPrinter::build_string_bytes(&computed_pre_state_hash),
-                    PrettyPrinter::build_string_bytes(&incoming_pre_state_hash)
+                    PrettyPrinter::build_string_no_limit(&computed_pre_state_hash),
+                    PrettyPrinter::build_string_no_limit(&incoming_pre_state_hash)
                 );
 
                 Ok(Either::Right(None))
@@ -230,7 +230,7 @@ pub async fn validate_block_checkpoint(
 
                 // Helper to analyze a deploy signature
                 let analyze_deploy_sig = |sig: &Bytes| -> String {
-                    let sig_str = PrettyPrinter::build_string_bytes(sig);
+                    let sig_str = PrettyPrinter::build_string_no_limit(sig);
                     let is_duplicate = if duplicates.contains(sig) {
                         " [DUPLICATE]"
                     } else {
@@ -274,14 +274,14 @@ pub async fn validate_block_checkpoint(
                 } else {
                     duplicates
                         .iter()
-                        .map(|sig| format!("  {}", PrettyPrinter::build_string_bytes(sig)))
+                        .map(|sig| format!("  {}", PrettyPrinter::build_string_no_limit(sig)))
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
 
                 let parent_hashes: String = parents
                     .iter()
-                    .map(|p| PrettyPrinter::build_string_bytes(&p.block_hash))
+                    .map(|p| PrettyPrinter::build_string_no_limit(&p.block_hash))
                     .collect::<Vec<_>>()
                     .join(", ");
 
@@ -302,8 +302,8 @@ pub async fn validate_block_checkpoint(
                     All rejected in block: {}\n\
                     ========================================",
                     block.body.state.block_number,
-                    PrettyPrinter::build_string_bytes(&block.block_hash),
-                    PrettyPrinter::build_string_bytes(&block.sender),
+                    PrettyPrinter::build_string_no_limit(&block.block_hash),
+                    PrettyPrinter::build_string_no_limit(&block.sender),
                     parent_hashes,
                     rejected_deploy_ids.len(),
                     block_rejected_deploy_sigs.len(),
@@ -382,7 +382,7 @@ async fn replay_block(
         target: "f1r3.trace.hotstore_diag",
         "[TRACE-REPLAY-DUP] block=#{} hash={} deploys={} rejected={} dup_in_deploys={} dup_in_rejected={} dup_in_both={}",
         block.body.state.block_number,
-        PrettyPrinter::build_string_bytes(&block.block_hash),
+        PrettyPrinter::build_string_no_limit(&block.block_hash),
         internal_deploys.len(),
         block.body.rejected_deploys.len(),
         dup_within_deploys.len(),
@@ -390,21 +390,14 @@ async fn replay_block(
         dup_across.len()
     );
 
-    if !dup_within_deploys.is_empty()
-        || !dup_within_rejected.is_empty()
-        || !dup_across.is_empty()
-    {
+    if !dup_within_deploys.is_empty() || !dup_within_rejected.is_empty() || !dup_across.is_empty() {
         let fmt_counts = |m: &HashMap<Bytes, usize>| -> String {
             if m.is_empty() {
                 "  None".to_string()
             } else {
                 m.iter()
                     .map(|(sig, c)| {
-                        format!(
-                            "  {} (x{})",
-                            PrettyPrinter::build_string_bytes(sig),
-                            c
-                        )
+                        format!("  {} (x{})", PrettyPrinter::build_string_no_limit(sig), c)
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -415,7 +408,7 @@ async fn replay_block(
                 "  None".to_string()
             } else {
                 sigs.iter()
-                    .map(|sig| format!("  {}", PrettyPrinter::build_string_bytes(sig)))
+                    .map(|sig| format!("  {}", PrettyPrinter::build_string_no_limit(sig)))
                     .collect::<Vec<_>>()
                     .join("\n")
             }
@@ -431,7 +424,7 @@ async fn replay_block(
             Sig in BOTH deploys and rejected ({}):\n{}\n\
             ============================================",
             block.body.state.block_number,
-            PrettyPrinter::build_string_bytes(&block.block_hash),
+            PrettyPrinter::build_string_no_limit(&block.block_hash),
             internal_deploys.len(),
             block.body.rejected_deploys.len(),
             dup_within_deploys.len(),
@@ -613,13 +606,13 @@ fn handle_errors(
                 // return no state hash, do not update the state hash set
                 println!(
                     "Tuplespace hash {} does not match computed hash {}.",
-                    PrettyPrinter::build_string_bytes(&ts_hash),
-                    PrettyPrinter::build_string_bytes(&computed_state_hash)
+                    PrettyPrinter::build_string_no_limit(&ts_hash),
+                    PrettyPrinter::build_string_no_limit(&computed_state_hash)
                 );
                 tracing::warn!(
                     "Tuplespace hash {} does not match computed hash {}.",
-                    PrettyPrinter::build_string_bytes(&ts_hash),
-                    PrettyPrinter::build_string_bytes(&computed_state_hash)
+                    PrettyPrinter::build_string_no_limit(&ts_hash),
+                    PrettyPrinter::build_string_no_limit(&computed_state_hash)
                 );
                 Ok(Either::Right(None))
             }
@@ -821,7 +814,7 @@ pub fn compute_parents_post_state(
                     tracing::debug!(
                         target: "f1r3fly.compute_parents_post_state.fast_path",
                         "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
-                        PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                        PrettyPrinter::build_string_no_limit(&candidate.block_hash),
                         parents.len()
                     );
                     let state = proto_util::post_state_hash(candidate);
@@ -860,7 +853,7 @@ pub fn compute_parents_post_state(
                         tracing::debug!(
                             target: "f1r3fly.compute_parents_post_state.fast_path",
                             "compute_parents_post_state fast path: dag-descendant parent {} covers all {} parents",
-                            PrettyPrinter::build_string_bytes(&candidate.block_hash),
+                            PrettyPrinter::build_string_no_limit(&candidate.block_hash),
                             parents.len()
                         );
                         let state = proto_util::post_state_hash(candidate);
@@ -1174,7 +1167,7 @@ pub fn compute_parents_post_state(
                     "compute_parents_post_state fallback: visibleBlocks={}, lca_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
                     visible_blocks.len(),
                     lca_distance,
-                    PrettyPrinter::build_string_bytes(&fallback_parent.block_hash),
+                    PrettyPrinter::build_string_no_limit(&fallback_parent.block_hash),
                     fallback_parent.body.state.block_number
                 );
                 metrics::counter!(
@@ -1219,18 +1212,97 @@ pub fn compute_parents_post_state(
                     hex::encode(&p.body.state.post_state_hash)
                 );
             }
+            // DIAG (merge-input determinism probe): content-derived tag of the
+            // sorted parent set, so the same block's merge correlates across
+            // nodes; plus the full enumerated scope block set.
+            let diag_merge_tag = {
+                let mut ph: Vec<&BlockHash> = parents.iter().map(|p| &p.block_hash).collect();
+                ph.sort();
+                let mut buf: Vec<u8> = Vec::new();
+                for h in ph {
+                    buf.extend_from_slice(h);
+                }
+                hex::encode(Blake2b256Hash::new(&buf).bytes())
+            };
+            {
+                let mut diag_scope: Vec<String> =
+                    visible_blocks.iter().map(|h| hex::encode(h)).collect();
+                diag_scope.sort();
+                tracing::info!(
+                    target: "f1r3.trace.merge_input_diag",
+                    "[DIAG-MERGE-SCOPE] merge_tag={} lfb_state={} scope_count={} scope_blocks={}",
+                    diag_merge_tag,
+                    hex::encode(lfb_state.bytes()),
+                    diag_scope.len(),
+                    diag_scope.join(",")
+                );
+            }
+            // Deploy sigs whose effects are already committed in the base
+            // pre-state. A merge chain re-executing one of these would
+            // double-execute it on a state that already holds its effects
+            // (multi-Datum). Anchored to the fixed merge base, so the set is
+            // identical across nodes — unlike the validator-side LFB gate.
+            let base_committed_sigs = dag_merger::base_committed_deploy_sigs(
+                &s.dag,
+                block_store,
+                &lfb_for_descendants,
+                s.on_chain_state.shard_conf.deploy_lifespan,
+            );
+
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &lfb_for_descendants,
                 &lfb_state,
                 |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
                     let block_index = block_index_f(hash)?;
+                    // DIAG: full per-chain merge input (deploy ids + every
+                    // channel's added/removed datum values, untruncated) so
+                    // v-vs-v input identity can be compared byte-exactly.
+                    for chain in &block_index.deploy_chains {
+                        let mut deploy_ids: Vec<String> = chain
+                            .deploys_with_cost
+                            .0
+                            .iter()
+                            .map(|d| hex::encode(&d.deploy_id))
+                            .collect();
+                        deploy_ids.sort();
+                        let mut chans: Vec<String> = chain
+                            .state_changes
+                            .datums_changes
+                            .iter()
+                            .map(|e| {
+                                let mut added: Vec<String> =
+                                    e.value().added.iter().map(|x| hex::encode(x)).collect();
+                                let mut removed: Vec<String> =
+                                    e.value().removed.iter().map(|x| hex::encode(x)).collect();
+                                added.sort();
+                                removed.sort();
+                                format!(
+                                    "{}|A[{}]|R[{}]",
+                                    hex::encode(e.key().bytes()),
+                                    added.join(";"),
+                                    removed.join(";")
+                                )
+                            })
+                            .collect();
+                        chans.sort();
+                        tracing::info!(
+                            target: "f1r3.trace.merge_input_diag",
+                            "[DIAG-MERGE-CHAIN] merge_tag={} src_block={} src_block_num={} deploy_ids={} channels={}",
+                            diag_merge_tag,
+                            hex::encode(&chain.source_block_hash),
+                            chain.source_block_number,
+                            deploy_ids.join(","),
+                            chans.join(" ")
+                        );
+                    }
                     Ok(block_index.deploy_chains)
                 },
                 &runtime_manager.history_repo,
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks),
                 disable_late_block_filtering,
+                &base_committed_sigs,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
@@ -1301,13 +1373,13 @@ pub fn compute_parents_post_state(
                             Ok(None) => {
                                 tracing::warn!(
                                     "RejectedDeployBuffer populate: source block {} not in store",
-                                    PrettyPrinter::build_string_bytes(&src_block)
+                                    PrettyPrinter::build_string_no_limit(&src_block)
                                 );
                             }
                             Err(err) => {
                                 tracing::warn!(
                                     "RejectedDeployBuffer populate: failed to load {}: {}",
-                                    PrettyPrinter::build_string_bytes(&src_block),
+                                    PrettyPrinter::build_string_no_limit(&src_block),
                                     err
                                 );
                             }
@@ -1372,13 +1444,13 @@ pub fn compute_parents_post_state(
                             Ok(None) => {
                                 tracing::warn!(
                                     "RejectedSlash extract: source block {} not in store",
-                                    PrettyPrinter::build_string_bytes(&src_block)
+                                    PrettyPrinter::build_string_no_limit(&src_block)
                                 );
                             }
                             Err(err) => {
                                 tracing::warn!(
                                     "RejectedSlash extract: failed to load {}: {}",
-                                    PrettyPrinter::build_string_bytes(&src_block),
+                                    PrettyPrinter::build_string_no_limit(&src_block),
                                     err
                                 );
                             }
