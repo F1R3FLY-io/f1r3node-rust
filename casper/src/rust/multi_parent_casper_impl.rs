@@ -471,7 +471,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             // Parse failed - return parsing error
             Err(interpreter_error) => {
                 tracing::debug!(
-                    target: "f1r3fly.deploy.latency",
+                    target: "f1r3fly.casper.deploy.timing",
                     parse_ms = parse_started_at.elapsed().as_millis(),
                     "Deploy parse failed"
                 );
@@ -486,7 +486,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 let add_started_at = std::time::Instant::now();
                 let deploy_id = self.add_deploy(deploy)?;
                 tracing::debug!(
-                    target: "f1r3fly.deploy.latency",
+                    target: "f1r3fly.casper.deploy.timing",
                     parse_ms = parse_elapsed_ms,
                     add_deploy_ms = add_started_at.elapsed().as_millis(),
                     "Deploy parse/add completed"
@@ -1579,7 +1579,7 @@ async fn compute_last_finalized_block(
                         // Guard will reset finalization_in_progress flag on drop
                         tracing::debug!("Finalization completed");
                         tracing::debug!(
-                            target: "f1r3fly.finalizer.effect.timing",
+                            target: "f1r3fly.casper.finalizer.effect.timing",
                             "Finalization effect timing: finalized_blocks={}, process_finalized_ms={}",
                             finalized_set.len(),
                             process_finalized_started.elapsed().as_millis()
@@ -1590,7 +1590,7 @@ async fn compute_last_finalized_block(
                 })
                 .await?;
             tracing::debug!(
-                target: "f1r3fly.finalizer.effect.timing",
+                target: "f1r3fly.casper.finalizer.effect.timing",
                 "record_directly_finalized_total_ms={}",
                 effect_started.elapsed().as_millis()
             );
@@ -1621,7 +1621,7 @@ async fn compute_last_finalized_block(
     let read_started = std::time::Instant::now();
     let block_message = block_store.get(&final_lfb_hash)?.unwrap();
     tracing::debug!(
-        target: "f1r3fly.last_finalized_block.timing",
+        target: "f1r3fly.casper.lfb.timing",
         "last_finalized_block timing: finalizer_ms={}, read_block_ms={}, total_ms={}, new_lfb_found={}",
         finalizer_ms,
         read_started.elapsed().as_millis(),

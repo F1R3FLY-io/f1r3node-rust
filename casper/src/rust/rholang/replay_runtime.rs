@@ -59,7 +59,7 @@ impl ReplayRuntimeOps {
         let drained = self.runtime_ops.runtime.take_event_log().await;
         if error_path {
             tracing::warn!(
-                target: "f1r3fly.casper.replay-rho-runtime",
+                target: "f1r3fly.casper.replay_rho_runtime",
                 "Discarded {} replay events during {} error path",
                 drained.len(),
                 phase
@@ -151,9 +151,9 @@ impl ReplayRuntimeOps {
 
         // Time create-checkpoint phase - Span[F].traceI("create-checkpoint") from Scala
         let checkpoint_start = Instant::now();
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "create-checkpoint-started");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "create-checkpoint-started");
         let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "create-checkpoint-finished");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "create-checkpoint-finished");
         metrics::histogram!(BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_start.elapsed().as_secs_f64());
 
@@ -228,7 +228,7 @@ impl ReplayRuntimeOps {
             ),
         };
 
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-started");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
         let precharge_start = Instant::now();
         let precharge_result = self
             .replay_system_deploy_internal(
@@ -246,7 +246,7 @@ impl ReplayRuntimeOps {
                 if system_eval_result.errors.is_empty() {
                     mergeable_channels.extend(system_eval_result.mergeable.drain());
                 }
-                tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-done");
+                tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-done");
             }
             Err(err) => {
                 self.discard_event_log("precharge", true).await;
@@ -264,9 +264,9 @@ impl ReplayRuntimeOps {
                 .await?;
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(evaluate_start.elapsed().as_secs_f64());
-            tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-eval-done");
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-eval-done");
 
-            tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-started");
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-started");
             let refund_start = Instant::now();
             let mut refund_deploy = RefundDeploy {
                 refund_amount: processed_deploy.refund_amount(),
@@ -288,7 +288,7 @@ impl ReplayRuntimeOps {
                     if system_eval_result.errors.is_empty() {
                         mergeable_channels.extend(system_eval_result.mergeable.drain());
                     }
-                    tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-done");
+                    tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "refund-done");
                 }
                 Err(err) => {
                     self.discard_event_log("refund", true).await;
@@ -304,7 +304,7 @@ impl ReplayRuntimeOps {
             true
         };
 
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-done");
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "deploy-done");
         Ok(eval_successful)
     }
 

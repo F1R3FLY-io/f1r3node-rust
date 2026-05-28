@@ -302,7 +302,7 @@ where
                 channels.iter().map(|ch| Self::channel_hash(ch)).collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-            tracing::trace!(target: "rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
+            tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
             metrics::counter!("rspace.consume.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
                 .increment(lock_start.elapsed().as_nanos() as u64);
 
@@ -335,7 +335,7 @@ where
         let lock_start = Instant::now();
         let _lock_guard = self.produce_lock(&channel).await;
         let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
+        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
         metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(lock_start.elapsed().as_nanos() as u64);
 

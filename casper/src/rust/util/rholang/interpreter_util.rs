@@ -319,16 +319,16 @@ pub async fn validate_block_checkpoint(
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
             } else {
-                tracing::debug!(target: "f1r3fly.casper.replay-block", "before-process-pre-state-hash");
+                tracing::debug!(target: "f1r3fly.casper.replay_block", "before-process-pre-state-hash");
                 // Using tracing events for async - Span[F] equivalent from Scala
-                tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-started");
+                tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-started");
                 let replay_start = std::time::Instant::now();
                 let replay_result =
                     replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
                         .await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(replay_start.elapsed().as_secs_f64());
-                tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-finished");
+                tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-finished");
 
                 handle_errors(proto_util::post_state_hash(block), replay_result)
             }
@@ -603,7 +603,7 @@ pub async fn compute_deploys_checkpoint(
 > {
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
-    tracing::debug!(target: "f1r3fly.casper.compute-deploys-checkpoint", "compute-deploys-checkpoint-started");
+    tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", "compute-deploys-checkpoint-started");
     // Ensure parents are not empty
     if parents.is_empty() {
         return Err(CasperError::RuntimeError(
@@ -639,7 +639,7 @@ pub async fn compute_deploys_checkpoint(
 
     let (post_state_hash, processed_deploys, processed_system_deploys, bonds) = result;
     tracing::debug!(
-        target: "f1r3fly.compute_deploys_checkpoint.timing",
+        target: "f1r3fly.casper.compute_deploys_checkpoint.timing",
         "compute_deploys_checkpoint timing: parents_post_state_ms={}, compute_state_ms={}, total_ms={}, processed_deploys={}, processed_system_deploys={}, rejected_deploys={}",
         parents_ms,
         compute_state_ms,
@@ -685,13 +685,13 @@ pub fn compute_parents_post_state(
     const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
 
     // Span guard must live until end of scope to maintain tracing context
-    let _span = tracing::debug_span!(target: "f1r3fly.casper.compute-parents-post-state", "compute-parents-post-state").entered();
+    let _span = tracing::debug_span!(target: "f1r3fly.casper.compute_parents_post_state", "compute-parents-post-state").entered();
     match parents.len() {
         // For genesis, use empty trie's root hash
         0 => {
             let state = RuntimeManager::empty_state_hash_fixed();
             tracing::debug!(
-                target: "f1r3fly.compute_parents_post_state.timing",
+                target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=genesis, parents=0, total_ms={}",
                 total_started.elapsed().as_millis()
             );
@@ -703,7 +703,7 @@ pub fn compute_parents_post_state(
             let parent = &parents[0];
             let state = proto_util::post_state_hash(parent);
             tracing::debug!(
-                target: "f1r3fly.compute_parents_post_state.timing",
+                target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
                 total_started.elapsed().as_millis()
             );
@@ -728,14 +728,14 @@ pub fn compute_parents_post_state(
                     });
                 if covers_all {
                     tracing::debug!(
-                        target: "f1r3fly.compute_parents_post_state.fast_path",
+                        target: "f1r3fly.casper.compute_parents_post_state.fast_path",
                         "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
                         PrettyPrinter::build_string_bytes(&candidate.block_hash),
                         parents.len()
                     );
                     let state = proto_util::post_state_hash(candidate);
                     tracing::debug!(
-                        target: "f1r3fly.compute_parents_post_state.timing",
+                        target: "f1r3fly.casper.compute_parents_post_state.timing",
                         "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
                         parents.len(),
                         cache_lookup_started.elapsed().as_millis(),
@@ -767,14 +767,14 @@ pub fn compute_parents_post_state(
 
                     if covers_all {
                         tracing::debug!(
-                            target: "f1r3fly.compute_parents_post_state.fast_path",
+                            target: "f1r3fly.casper.compute_parents_post_state.fast_path",
                             "compute_parents_post_state fast path: dag-descendant parent {} covers all {} parents",
                             PrettyPrinter::build_string_bytes(&candidate.block_hash),
                             parents.len()
                         );
                         let state = proto_util::post_state_hash(candidate);
                         tracing::debug!(
-                            target: "f1r3fly.compute_parents_post_state.timing",
+                            target: "f1r3fly.casper.compute_parents_post_state.timing",
                             "compute_parents_post_state timing: path=dag_descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
                             parents.len(),
                             cache_lookup_started.elapsed().as_millis(),
@@ -799,14 +799,14 @@ pub fn compute_parents_post_state(
                 runtime_manager.get_cached_parents_post_state(&cache_key)
             {
                 tracing::debug!(
-                    target: "f1r3fly.compute_parents_post_state.cache",
+                    target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
                     cache_key.sorted_parent_hashes.len(),
                     cached_rejected.len(),
                     cached_slashes.len()
                 );
                 tracing::debug!(
-                    target: "f1r3fly.compute_parents_post_state.timing",
+                    target: "f1r3fly.casper.compute_parents_post_state.timing",
                     "compute_parents_post_state timing: path=cache_hit, parents={}, cache_lookup_ms={}, total_ms={}",
                     cache_key.sorted_parent_hashes.len(),
                     cache_lookup_started.elapsed().as_millis(),
@@ -961,7 +961,7 @@ pub fn compute_parents_post_state(
 
                 if full_fallback_capped {
                     tracing::warn!(
-                        target: "f1r3fly.compute_parents_post_state.fallback",
+                        target: "f1r3fly.casper.compute_parents_post_state.fallback",
                         "Skipping full LCA fallback due to capped ancestor scan (cap={} per parent); falling back to snapshot LFB",
                         MAX_FULL_ANCESTOR_SCAN_NODES
                     );
@@ -1021,7 +1021,7 @@ pub fn compute_parents_post_state(
             });
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
-                    target: "f1r3fly.compute_parents_post_state",
+                    target: "f1r3fly.casper.compute_parents_post_state",
                     "LCA-scoped merge: reduced visible_blocks from {} to {} (LCA at block #{})",
                     pre_filter_count,
                     visible_blocks.len(),
@@ -1078,7 +1078,7 @@ pub fn compute_parents_post_state(
                     })
                     .expect("parents is non-empty in multi-parent branch");
                 tracing::warn!(
-                    target: "f1r3fly.compute_parents_post_state.fallback",
+                    target: "f1r3fly.casper.compute_parents_post_state.fallback",
                     "compute_parents_post_state fallback: visibleBlocks={}, lca_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
                     visible_blocks.len(),
                     lca_distance,
@@ -1096,7 +1096,7 @@ pub fn compute_parents_post_state(
                     (fallback_state.clone(), Vec::new(), Vec::new()),
                 );
                 tracing::debug!(
-                    target: "f1r3fly.compute_parents_post_state.timing",
+                    target: "f1r3fly.casper.compute_parents_post_state.timing",
                     "compute_parents_post_state timing: path=fallback_latest_parent, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, visible_blocks={}, lca_distance={}, total_ms={}",
                     parents.len(),
                     cache_lookup_ms,
@@ -1281,7 +1281,7 @@ pub fn compute_parents_post_state(
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             if used_snapshot_lfb_fallback {
                 tracing::warn!(
-                    target: "f1r3fly.compute_parents_post_state.cache",
+                    target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "Skipping parents_post_state cache store because merge used snapshot LFB fallback"
                 );
             } else {
@@ -1295,7 +1295,7 @@ pub fn compute_parents_post_state(
                 );
             }
             tracing::debug!(
-                target: "f1r3fly.compute_parents_post_state.timing",
+                target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,

@@ -308,7 +308,7 @@ impl RuntimeOps {
         };
 
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
-        tracing::info!(target: "f1r3fly.casper.play-deploys", "play-deploys-started");
+        tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
         log_mem_step("start");
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
@@ -348,7 +348,7 @@ impl RuntimeOps {
         terms: Vec<Signed<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
-        tracing::info!(target: "f1r3fly.casper.play-deploys-genesis", "play-deploys-genesis-started");
+        tracing::info!(target: "f1r3fly.casper.play_deploys_genesis", "play-deploys-genesis-started");
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
@@ -400,7 +400,7 @@ impl RuntimeOps {
         };
 
         // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
-        tracing::debug!(target: "f1r3fly.casper.play-deploy", "play-deploy-started");
+        tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
         log_mem_step("start");
         let mut eval_collector_state = EvalCollector::new();
 
@@ -439,7 +439,7 @@ impl RuntimeOps {
                 // Evaluates user deploy
                 let pd = {
                     // Using tracing events for async - Span[F].traceI("user-deploy") from Scala
-                    tracing::debug!(target: "f1r3fly.casper.user-deploy", "user-deploy-started");
+                    tracing::debug!(target: "f1r3fly.casper.user_deploy", "user-deploy-started");
                     tracing::debug!("Processing user deploy {}", deploy_pk_hex.as_str());
                     // Evaluates user deploy and append event log to local state
                     {
@@ -644,7 +644,7 @@ impl RuntimeOps {
                 };
 
                 tracing::warn!(
-                    target: "f1r3fly.mergeable_channel.sanitize",
+                    target: "f1r3fly.merge.mergeable_channel.sanitize",
                     "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
                     ch_values.len(),
                     merge_type,
@@ -1152,7 +1152,7 @@ impl RuntimeOps {
         log_mem_step("start");
 
         // Using tracing events for async - Span[F].traceI("evaluate-system-source") from Scala
-        tracing::debug!(target: "f1r3fly.casper.evaluate-system-source", "evaluate-system-source-started");
+        tracing::debug!(target: "f1r3fly.casper.evaluate_system_source", "evaluate-system-source-started");
         let eval_start = Instant::now();
         let wrapper_pre_start = eval_start;
         log_mem_step("before_build_env");
