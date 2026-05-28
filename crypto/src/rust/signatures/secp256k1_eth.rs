@@ -68,10 +68,10 @@ fn decode_signature_der_to_rs(signature_der: &[u8]) -> Option<Vec<u8>> {
             let r = reader.next().read_biguint()?;
             let s = reader.next().read_biguint()?;
 
-            let mut r_bytes = r.to_bytes_be();
-            let mut s_bytes = s.to_bytes_be();
+            let r_bytes = r.to_bytes_be();
+            let s_bytes = s.to_bytes_be();
 
-            // Ensure R and S are exactly 32 bytes long
+            // Ensure R and S fit in 32 bytes each.
             if r_bytes.len() > 32 || s_bytes.len() > 32 {
                 eprintln!(
                     "Decoded R or S length exceeds 32 bytes: R = {}, S = {}",
@@ -81,13 +81,16 @@ fn decode_signature_der_to_rs(signature_der: &[u8]) -> Option<Vec<u8>> {
                 return Err(yasna::ASN1Error::new(yasna::ASN1ErrorKind::Invalid));
             }
 
-            r_bytes.resize(32, 0);
-            s_bytes.resize(32, 0);
-
-            // Concatenate R and S into a single 64-byte vector
-            let mut signature_rs = Vec::with_capacity(64);
-            signature_rs.extend_from_slice(&r_bytes);
-            signature_rs.extend_from_slice(&s_bytes);
+            // Left-pad R and S to exactly 32 bytes each (fixed-width big-endian
+            // R||S). `BigUint::to_bytes_be` returns the MINIMAL big-endian
+            // encoding and drops leading zero bytes, so a value whose high byte
+            // is zero (~1/256 per value) yields fewer than 32 bytes and must be
+            // zero-extended on the FRONT. The previous `resize(32, 0)` appended
+            // zeros to the BACK, which corrupts such values and makes the
+            // round-tripped signature fail verification ~1/128 of the time.
+            let mut signature_rs = vec![0u8; 64];
+            signature_rs[32 - r_bytes.len()..32].copy_from_slice(&r_bytes);
+            signature_rs[64 - s_bytes.len()..64].copy_from_slice(&s_bytes);
 
             Ok(signature_rs)
         })
@@ -150,6 +153,30 @@ mod tests {
         assert_eq!(
             signature_rs, decoded_rs,
             "RS signatures do not match after encode/decode"
+        );
+    }
+
+    /// Regression: R or S whose high byte is zero must be LEFT-padded back to
+    /// 32 bytes (fixed-width big-endian R||S). `BigUint::to_bytes_be` drops
+    /// leading zero bytes, so a back-pad (`resize(32, 0)`) relocated the value
+    /// and corrupted it, which made ~1/128 of `Secp256k1Eth` signatures fail
+    /// verification (a value's high byte is zero ~1/256 of the time, for each
+    /// of R and S). This vector deterministically exercises that path: R has
+    /// one leading zero byte, S has two.
+    #[test]
+    fn decode_left_pads_r_and_s_with_leading_zero_bytes() {
+        let mut rs = vec![0u8; 64];
+        // R = 0x00 AB 00..00 CD  -> minimal big-endian is 31 bytes.
+        rs[1] = 0xAB;
+        rs[31] = 0xCD;
+        // S = 0x00 00 EF 00..00 12 -> minimal big-endian is 30 bytes.
+        rs[34] = 0xEF;
+        rs[63] = 0x12;
+        let der = encode_signature_rs_to_der(&rs).expect("encode RS->DER");
+        let decoded = decode_signature_der_to_rs(&der).expect("decode DER->RS");
+        assert_eq!(
+            decoded, rs,
+            "decode must LEFT-pad R and S to 32 bytes; a back-pad corrupts values with leading zero bytes"
         );
     }
 }
