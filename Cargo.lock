@@ -1059,7 +1059,6 @@ dependencies = [
  "models",
  "p256",
  "paste",
- "proptest",
  "prost 0.14.3",
  "rand 0.9.4",
  "regex",
@@ -1298,7 +1297,7 @@ dependencies = [
  "pkcs8",
  "proptest",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rand_core 0.6.4",
  "rcgen",
  "serde",
@@ -4942,7 +4941,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
- "cc",
  "chroma",
  "clap",
  "console",
@@ -4963,10 +4961,10 @@ dependencies = [
  "openai-api-rs",
  "pretty_assertions",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rayon",
  "regex",
- "reqwest 0.11.27",
+ "reqwest 0.12.28",
  "rholang-parser",
  "rspace_plus_plus",
  "rust-bert",
@@ -5114,7 +5112,7 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rayon",
  "rholang-parser",
  "rstest",
@@ -5128,24 +5126,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "validated",
-]
-
-[[package]]
-name = "rspace_plus_plus_rhotypes"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "chrono",
- "dashmap",
- "models",
- "prost 0.14.3",
- "rand 0.9.4",
- "rholang",
- "rspace_plus_plus",
- "serde",
- "serde_json",
- "shared",
- "tokio",
 ]
 
 [[package]]
@@ -5781,7 +5761,6 @@ dependencies = [
  "indexmap 2.14.0",
  "lz4_flex",
  "metrics 0.23.1",
- "proptest",
  "prost 0.14.3",
  "rand 0.9.4",
  "serde",

@@ -1,5 +1,5 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;

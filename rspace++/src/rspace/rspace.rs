@@ -16,7 +16,6 @@ pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, event};
@@ -1149,7 +1148,7 @@ where
     }
 
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut indexed_vec = t
             .into_iter()
             .enumerate()

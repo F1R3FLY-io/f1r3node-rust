@@ -88,7 +88,7 @@ impl Blake2b512Random {
 
     pub fn create_from_length(length: i32) -> Blake2b512Random {
         let mut bytes = vec![0u8; length as usize];
-        rand::thread_rng().fill(&mut bytes[..]);
+        rand::rng().fill(&mut bytes[..]);
         Self::create(&bytes, 0, length as usize)
     }
 

@@ -9,7 +9,7 @@ use k256::elliptic_curve::SecretKey;
 use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;
