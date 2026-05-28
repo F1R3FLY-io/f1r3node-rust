@@ -835,12 +835,9 @@ impl RuntimeOps {
         let wrapper_pre_start = Instant::now();
         log_mem_step("start");
 
-        // println!("\nEvaluating system deploy, {:?}", S::source());
         let wrapper_pre = wrapper_pre_start.elapsed();
         let eval_result = self.evaluate_system_source(system_deploy).await?;
         log_mem_step("after_evaluate_system_source");
-
-        // println!("\nEval result: {:?}", eval_result);
 
         let wrapper_mid_start = Instant::now();
         if !eval_result.errors.is_empty() {

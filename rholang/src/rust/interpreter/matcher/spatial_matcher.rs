@@ -64,29 +64,15 @@ impl SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - connectiveMatcher
 impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Connective) -> Option<()> {
-        // println!("\nHit Par, Connective");
-        // println!("\ntarget in Par, Connective: {:?}\n", target);
-        // println!("\npattern in Par, Connective: {:?}\n", pattern);
-
         match pattern.connective_instance {
             Some(ConnAndBody(connective_body)) => {
-                // println!("\nhit ConnAndBody");
-                // println!("\ntarget in ConnAndBody: {:?}", target);
-                // println!("\nps in ConnAndBody: {:?}", connective_body.ps);
-
                 connective_body.ps.into_iter().try_fold((), |_, p| {
-                    // println!("\ncalling spatial match in ConnAndBody");
                     let match_result = self.spatial_match(target.clone(), p);
-                    if match_result.is_some() {
-                        // println!("\nfinished calling spatialMatch in ConnAndBody");
-                    }
                     match_result.map(|_| ())
                 })
             }
 
             Some(ConnOrBody(connective_body)) => {
-                // println!("\nhit ConnOrBody");
-
                 connective_body.ps.into_iter().find_map(|p| {
                     let matches = self.free_map.clone();
                     self.spatial_match(target.clone(), p)?;
@@ -153,14 +139,8 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
             Some(ConnByteArray(_)) => match single_expr(&target) {
                 Some(Expr {
                     expr_instance: Some(GByteArray(_)),
-                }) => {
-                    // println!("ConnByteArray returning some");
-                    Some(())
-                }
-                _ => {
-                    // println!("ConnByteArray returning none");
-                    None
-                }
+                }) => Some(()),
+                _ => None,
             },
 
             None => None,
@@ -171,17 +151,10 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
-        // println!("\nhit Par, Par");
-        // println!("\ntarget in Par, Par: {:?}", target);
-        // println!("\npattern in Par, Par: {:?}", pattern);
-
         if !pattern.connective_used {
             // guard(pattern == target)
-            // println!("\nHit guard in Par, Par");
             guard(match_pars(&target, &pattern))
         } else {
-            // println!("\npassed guard in Par, Par");
-
             let var_level: Option<i32> = pattern.exprs.iter().find_map(|expr| match expr {
                 Expr {
                     expr_instance:
@@ -194,8 +167,6 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 } => Some(*level),
                 _ => None,
             });
-
-            // println!("var_level: {:?}", var_level);
 
             let wildcard: bool = pattern
                 .exprs
@@ -214,27 +185,20 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 })
                 .is_some();
 
-            // println!("wildcard: {:?}", wildcard);
-
             let filtered_pattern = no_frees(&pattern);
-            // println!("filtered_pattern: {:?}", filtered_pattern);
             let pc = ParCount::new(&filtered_pattern);
-            // println!("pc: {:?}", pc);
             let min_rem = pc.clone();
             let max_rem = if wildcard || !var_level.is_none() {
                 pc._max()
             } else {
                 pc.clone()
             };
-            // println!("\nmin_rem: {:?}", min_rem);
-            // println!("\nmax_rem: {:?}", max_rem);
 
             let individual_bounds: Vec<(ParCount, ParCount)> = filtered_pattern
                 .connectives
                 .iter()
                 .map(|con| pc.min_max_con(con.clone()))
                 .collect();
-            // println!("\nindividual_bounds: {:?}", individual_bounds);
 
             let mut remainder_bounds: Vec<(ParCount, ParCount)> = vec![(min_rem, max_rem)];
             for bounds in individual_bounds.iter().rev() {
@@ -243,8 +207,6 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             }
             remainder_bounds.pop();
             remainder_bounds.reverse();
-
-            // println!("\nremainder_bounds: {:?}", remainder_bounds);
 
             let connectives_with_bounds: Vec<(
                 &Connective,
@@ -260,25 +222,15 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 })
                 .collect();
 
-            // println!("\nconnectives_with_bounds length: {:?}", connectives_with_bounds.len());
-
             fn match_connective_with_bounds(
                 s: &mut SpatialMatcherContext,
                 target: Par,
                 labeled_connective: (Connective, (ParCount, ParCount), (ParCount, ParCount)),
             ) -> Option<Par> {
-                // println!("\nhit match_connective_with_bounds");
                 let (con, bounds, remainders) = labeled_connective;
 
                 for sp in sub_pars(&target, &bounds.0, &bounds.1, &remainders.0, &remainders.1) {
-                    // println!("\ntarget in match_connective_with_bounds: {:?}", target);
-                    // println!("\nsp_0 in match_connective_with_bounds: {:?}", sp.clone().0);
-                    // println!("\nsp_1 in match_connective_with_bounds: {:?}", sp.clone().1);
-                    // println!("\ncalling spatialMatch in match_connective_with_bounds");
-
                     if s.spatial_match(sp.0, con.clone()).is_some() {
-                        // println!("\nfinished calling spatialMatch in match_connective_with_bounds");
-                        // println!("\nreturning sp.1: {:?}", sp.1);
                         return Some(sp.1);
                     }
                 }
@@ -295,7 +247,6 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     )
                 },
             )?;
-            // println!("\nRemainder: {:?}", remainder);
 
             self.list_match_single_(
                 remainder.sends,
@@ -366,9 +317,6 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 // Apparently this code is never reached according to Scala code comment
 impl SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Bundle, pattern: Bundle) -> Option<()> {
-        // println!("\nHit Bundle, Bundle");
-        // println!("Target: {:?}\n", target);
-        // println!("Pattern: {:?}", pattern);
         guard(pattern == target)
     }
 }
@@ -376,19 +324,9 @@ impl SpatialMatcher<Bundle, Bundle> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - sendSpatialMatcherInstance
 impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Send, pattern: Send) -> Option<()> {
-        // println!("\nHit Send, Send");
-        // println!("\ntarget in send, send: {:?}", target);
-        // println!("\npattern in send, send: {:?}", pattern);
-
         let result = guard(target.persistent == pattern.persistent)
-            .and_then(|_| {
-                // println!("\ncalling spatial_match in Send, Send");
-                self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap())
-            })
-            .and_then(|_| {
-                // println!("\npassed calling spatial_match in Send, Send");
-                self.fold_match(target.data, pattern.data, None)
-            });
+            .and_then(|_| self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap()))
+            .and_then(|_| self.fold_match(target.data, pattern.data, None));
 
         result.map(|_| ())
     }
@@ -397,7 +335,6 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveSpatialMatcherInstance
 impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Receive, pattern: Receive) -> Option<()> {
-        // println!("\nHit Receive, Receive");
         guard(target.persistent == pattern.persistent)
             .and_then(|_| self.list_match_single(target.binds, pattern.binds))
             .and_then(|_| self.spatial_match(target.body.unwrap(), pattern.body.unwrap()))
@@ -407,7 +344,6 @@ impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - newSpatialMatcherInstance
 impl SpatialMatcher<New, New> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: New, pattern: New) -> Option<()> {
-        // println!("\nHit New, New");
         guard(target.bind_count == pattern.bind_count)
             .and_then(|_| self.spatial_match(target.p.unwrap(), pattern.p.unwrap()))
     }
@@ -416,10 +352,6 @@ impl SpatialMatcher<New, New> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - exprSpatialMatcherInstance
 impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Expr, pattern: Expr) -> Option<()> {
-        // println!("\nHit Expr, Expr");
-        // println!("\nExpr, Expr target: {:?}", target);
-        // println!("\nExpr, Expr pattern: {:?}", pattern);
-
         match (target.expr_instance, pattern.expr_instance) {
             (
                 Some(EListBody(EList {
@@ -435,22 +367,16 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     remainder: rem,
                 })),
             ) => {
-                // println!("\n calling fold_match in ElistBody");
                 let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
-                // println!("\nmatched_rem: {:?}", matched_rem);
-
-                // println!("\ncurrent free_map: {:#?}", self.free_map);
 
                 match &rem {
                     Some(Var {
                         var_instance: Some(FreeVar(level)),
                     }) => {
-                        // println!("\nmodifying free_map in EListBody");s
                         self.free_map.insert(
                             *level,
                             new_elist_par(matched_rem, Vec::new(), false, None, Vec::new(), false),
                         );
-                        // println!("\nfree_map after insert: {:#?}", self.free_map);
                         Some(())
                     }
 
@@ -510,7 +436,6 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     p.with_exprs(vec![new_eset_expr(r, Vec::new(), false, None)])
                 };
 
-                // println!("\ncalling list_match_single_ in ESetBody");
                 self.list_match_single_(
                     tlist.sorted_pars,
                     plist.sorted_pars,
@@ -569,7 +494,6 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     )])
                 };
 
-                // println!("\ncalling list_match_single_ in EMapBody");
                 self.list_match_single_(
                     tlist.sorted_list,
                     plist.sorted_list,
@@ -634,8 +558,6 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchSpatialMatcherInstance
 impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Match, pattern: Match) -> Option<()> {
-        // println!("\nHit Match, Match");
-
         let result = self
             .spatial_match(target.target.unwrap(), pattern.target.unwrap())
             .and_then(|_| self.fold_match(target.cases, pattern.cases, None));
@@ -648,8 +570,6 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
 // Apparently this code is never reached according to Scala code comment
 impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: GUnforgeable, pattern: GUnforgeable) -> Option<()> {
-        // println!("\nHit GUnforgeable, GUnforgeable");
-
         match (target.unf_instance, pattern.unf_instance) {
             (Some(GPrivateBody(t)), Some(GPrivateBody(p))) => guard(t == p),
             (Some(GDeployerIdBody(t)), Some(GDeployerIdBody(p))) => guard(t == p),
@@ -661,7 +581,6 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveBindSpatialMatcherInstance
 impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
-        // println!("\nHit ReceiveBind, ReceiveBind");
         guard(target.patterns == pattern.patterns)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
@@ -670,7 +589,6 @@ impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchCaseSpatialMatcherInstance
 impl SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: MatchCase, pattern: MatchCase) -> Option<()> {
-        // println!("\nHit MatchCase, MatchCase");
         guard(target.pattern == pattern.pattern)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }

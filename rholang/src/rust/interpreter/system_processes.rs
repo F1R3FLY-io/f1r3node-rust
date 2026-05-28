@@ -1251,7 +1251,6 @@ impl SystemProcesses {
         &self,
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // println!("\nhit handle_message");
         let mut printer = PrettyPrinter::new();
 
         fn clue_msg(clue: String, attempt: i64) -> String {
