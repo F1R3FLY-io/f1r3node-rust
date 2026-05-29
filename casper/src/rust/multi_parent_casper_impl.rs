@@ -530,6 +530,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
     fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
 
+    #[tracing::instrument(level = "info", skip(self, block, snapshot), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn validate(
         &self,
         block: &BlockMessage,
@@ -983,6 +984,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         Ok(val_result)
     }
 
+    #[tracing::instrument(level = "info", skip(self, block), fields(block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash)))]
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
@@ -1237,6 +1239,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 async fn run_queued_finalizer(
     block_dag_storage: BlockDagKeyValueStorage,
     block_store: KeyValueBlockStore,

@@ -145,10 +145,10 @@ pub async fn validate_block_checkpoint(
     runtime_manager: &RuntimeManager,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
 ) -> Result<BlockProcessing<Option<StateHash>>, CasperError> {
-    tracing::debug!(target: "f1r3fly.casper", "before-unsafe-get-parents");
+    tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
     let parents = proto_util::get_parents(block_store, block);
-    tracing::debug!(target: "f1r3fly.casper", "before-compute-parents-post-state");
+    tracing::trace!(target: "f1r3fly.casper.block_validation", parent_count = parents.len(), "before-compute-parents-post-state");
     let parents_post_state_start = std::time::Instant::now();
     let computed_parents_info = compute_parents_post_state(
         block_store,

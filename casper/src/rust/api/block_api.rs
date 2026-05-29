@@ -458,6 +458,7 @@ impl BlockAPI {
         }
     }
 
+    #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
     pub async fn create_block(
         engine_cell: &EngineCell,
         trigger_propose_f: &Arc<ProposeFunction>,

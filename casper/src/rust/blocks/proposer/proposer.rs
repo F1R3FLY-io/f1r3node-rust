@@ -655,6 +655,10 @@ impl ProductionBlockCreator {
 }
 
 impl BlockCreator for ProductionBlockCreator {
+    #[tracing::instrument(
+        level = "info",
+        skip(self, casper_snapshot, validator_identity, dummy_deploy_opt)
+    )]
     async fn create_block(
         &mut self,
         casper_snapshot: &CasperSnapshot,

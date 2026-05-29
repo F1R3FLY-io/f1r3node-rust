@@ -242,6 +242,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
     >;
 
     /// Deploy a contract
+    #[tracing::instrument(level = "info", skip(self, request))]
     async fn do_deploy(
         &self,
         request: tonic::Request<DeployDataProto>,

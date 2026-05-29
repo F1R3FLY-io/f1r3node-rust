@@ -431,6 +431,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn connect_as_genesis_validator(&self) -> Result<(), CasperError> {
         // As a genesis validator, native-token-* values from local config are
         // what will be baked into the TokenMetadata contract at genesis (via
@@ -529,6 +530,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn init_bootstrap(&self, disable_state_exporter: bool) -> Result<(), CasperError> {
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
