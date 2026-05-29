@@ -1,8 +1,9 @@
 # Slashing — Formal Verification
 #
-# Establishes observational bisimilarity at the process level between
-# the Rust slashing logic in this repository and the Scala original,
-# with explicit, proven bug-fix deltas where the Scala source is faulty.
+# Establishes correctness of the Rust slashing logic in this repository:
+# detection soundness/completeness, the slash effect (bond zeroing, stake
+# transfer, fork-choice exclusion), two-level closure, and the documented
+# bug-fix deltas, composed in main_slashing_algorithm_correct.
 #
 # Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
 #         multi_parent_casper_impl,blocks/proposer/block_creator,
@@ -41,18 +42,11 @@
 #                                  embedding of PoSState; withdrawer/reward
 #                                  maps; safety + total-funds preservation
 #                                  + parallel-fold order-independence)
-#   Bisimulation           → all of the above (the headline relation)
-#   MainTheorem            → Bisimulation, all BugFix*
+#   MainTheorem            → all of the above (composition)
 #
 # The development models the on-chain Rholang `slash` contract at
-# `casper/src/main/resources/PoS.rhox:432-495`. Bisimilarity is maintained
-# except at the documented bug-fix deltas, including the authorization/no-op
-# behavior for unknown slash evidence.
-#
-# Bisimilarity is defined modulo:
-#   - α-equivalence on Rholang names
-#   - iteration order on BTreeSet (Rust) vs Set (Scala) — value-level only,
-#     not byte-level on-disk
+# `casper/src/main/resources/PoS.rhox:432-495`, including the
+# authorization/no-op behavior for unknown slash evidence.
 
 -Q theories Slashing
 
@@ -81,5 +75,4 @@ theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
 theories/BugFixAtomicBufferDagTransition.v
-theories/Bisimulation.v
 theories/MainTheorem.v

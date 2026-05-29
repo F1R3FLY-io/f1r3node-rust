@@ -95,8 +95,9 @@ Definition wm_contains (wm : WithdrawerMap) (v : Validator) : bool :=
    §2 — Extended PoS state
    ═══════════════════════════════════════════════════════════════════════════
 
-   PoSStateW additively embeds the base PoSState. The bisimilarity proof in
-   Bisimulation.v projects PoSStateW.psw_pos to recover the base state.
+   PoSStateW additively embeds the base PoSState: the psw_pos field projects
+   the extended withdrawal state back to the base slash state, so base-state
+   lemmas (e.g. slash zeroing a bond) apply unchanged after projection.
    Vault conservation is stated over the extended state because withdrawal
    payouts move funds from the PoS vault to the validator's own vault. *)
 

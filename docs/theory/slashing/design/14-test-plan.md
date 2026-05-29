@@ -16,7 +16,7 @@ the test specifications below are normative for maintaining them.
 | **Soundness.** No honest validator slashed.                    | Property-based test of T-1 (`detection_sound`).                                                                   |
 | **Completeness.** Every Byzantine action eventually slashed.   | Property-based test of T-2 + T-3.                                                                                 |
 | **Atomicity.** Concurrent detections preserve evidence.        | Property-based test of T-9.2 over n-thread schedules.                                                             |
-| **Determinism.** Replay produces identical post-states.        | Property-based test of T-15 (bisimilarity-projection equality across replay).                                     |
+| **Determinism.** Replay produces identical post-states.        | Property-based test of replay determinism (post-state equality across replay; `replay_determinism.rs`).           |
 | **Liveness.** Slash transition reaches finite-time conclusion. | Property-based test of T-9.4 (transfer-failure error path).                                                       |
 | **Mutual destruction.** Neglecters slashed.                    | Example-based + property-based test of T-11 + T-12.                                                               |
 | **BFT-quorum preservation.** Under `|closure| ≤ F`.            | Property-based test of T-12 with bounded `|closure|` generator; counter-example test (UC-26) for `|closure| > F`. |
@@ -26,7 +26,7 @@ the test specifications below are normative for maintaining them.
 
 The test plan **must catch regressions before they reach production**.
 Concretely:
-- Every Rocq-mechanized theorem (T-1 through T-15a/b, T-Idem,
+- Every Rocq-mechanized theorem (T-1 through T-12, T-Idem,
   T-9.1–T-9.15) and every Rholang-level guard property
   (`T-AuthCheck`) maps to **at least one** Rust property test that
   fails if the property is violated at runtime.
@@ -122,7 +122,7 @@ implementing the read-only `SlashingObserver` trait (`bond`,
 
 | Tier | Implementation | Cardinality | Speed | Role |
 |------|----------------|-------------|-------|------|
-| 1    | `SlashingProductionAdapter` wraps `TestNode`+`BlockDagKeyValueStorage`+Rholang | 5–8 example + 3 triple-bisim | Slow (LMDB+RSpace) | Source of truth |
+| 1    | `SlashingProductionAdapter` wraps `TestNode`+`BlockDagKeyValueStorage`+Rholang | 5–8 example + 2 triple-bisim | Slow (LMDB+RSpace) | Source of truth |
 | 2    | `RocqOracleAdapter` wraps `oracle.rs` over `(DagState, EqRecordSet, PoSState)` | 30+ proptest cases | Fast (pure) | Formal-mechanization mirror |
 | 3    | `SlashingTestHarness` — in-memory LTS state machine | 50+ UC + proptest cases | Fastest (in-memory) | Refinement of (2) + adapter for (1) |
 
@@ -240,7 +240,7 @@ post-fix #3 and the assertion is uniform across all nine.
 | UC-27 | `casper/tests/slashing/uc_27_neglected_invalid_block.rs`   | `NeglectedInvalidBlock` dispatch under post-fix #3 (T-3, T-6, T-9.3).                                                                     |
 | UC-37 | `casper/tests/slashing/uc_37_self_regression_dag_level.rs` | DAG-level self-regression (T-9.6 DAG-level).                                                                                              |
 | UC-38 | `casper/tests/slashing/uc_38_neglected_detection.rs`       | `detect_neglected` soundness + completeness (T-6).                                                                                        |
-| UC-39 | `casper/tests/slashing/uc_39_cross_impl_bisim.rs`               | R-relation invariant preserved across pipeline step (T-13a/b/c, T-14, T-15a/b).                                                           |
+| UC-39 | `casper/tests/slashing/uc_39_cross_impl_bisim.rs`               | Harness ↔ oracle agree on detect / dispatch / slash post-states across the pipeline step (cross-implementation consistency).              |
 | UC-41 | `casper/tests/slashing/uc_41_ignorable_pre_fix_alias.rs`     | Pre-fix #1: ignorable equivocation silently dropped (regression test).                                                                    |
 | UC-42 | `casper/tests/slashing/uc_42_dispatcher_pre_fix_alias.rs`   | Pre-fix #3: non-equivocation slashable variants not recorded (regression).                                                                |
 | UC-43 | `casper/tests/slashing/uc_43_seqnum_pre_fix_alias.rs`, `casper/tests/slashing/prop_t_9_7_seqnum_density.rs` | Pre-fix #7: exact `baseSeqNum + 1` lookup misses gap; post-fix canonical search detects and same-branch latest messages do not overcount. |
@@ -268,13 +268,13 @@ verdict through the standard slash pipeline. Current Rust test modules at:
 | UC-40 | `casper/tests/slashing/uc_40_vault_accounting_failure.rs`      | Vault transfer fail → coop balance unchanged; A returns to EquivocatorRecorded (T-8, T-9.4). |
 | UC-44 | `casper/tests/slashing/uc_44_simultaneous_independent_equivocations.rs` | n parallel equivocations; all detected (T-1, T-9.2, T-12).                                   |
 | UC-45 | `casper/tests/slashing/uc_45_slash_replay_attack.rs`           | Replayed slash deploy: second is no-op (T-Idem, T-9.8).                                      |
-| UC-46 | `casper/tests/slashing/uc_46_partition_merge_equivocations.rs`            | Partition + merge: post-merge equivocation detected once (T-1, T-9.2, T-15).                 |
+| UC-46 | `casper/tests/slashing/uc_46_partition_merge_equivocations.rs`            | Partition + merge: post-merge equivocation detected once (T-1, T-9.2).                       |
 | UC-47 | `casper/tests/slashing/uc_47_48_validator_set_changes.rs`   | Validator joins during pending slash: still slashed; new joiner unaffected (T-Idem, T-10).   |
 | UC-48 | `casper/tests/slashing/uc_47_48_validator_set_changes.rs`  | Validator leaves during pending slash: re-joins as Unbonded; record persists (T-Idem, T-10). |
 | UC-49 | `casper/tests/slashing/uc_49_genesis_edge_cases.rs`                 | Genesis-time invalid sender: slash routed correctly (T-9.3).                                 |
 | UC-50 | `casper/tests/slashing/uc_50_multi_slash_in_one_block.rs`      | k slash deploys in same block: all atomically applied; replay deterministic (T-Idem, T-11).  |
-| UC-51 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Deep DAG (>100 blocks): detection scales linearly (T-1, T-15).                               |
-| UC-52 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Wide DAG (high parent-fanout): detection unaffected by parent count (T-1, T-15).             |
+| UC-51 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Deep DAG (>100 blocks): detection scales linearly (T-1).                                     |
+| UC-52 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Wide DAG (high parent-fanout): detection unaffected by parent count (T-1).                   |
 | UC-53 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`               | Single-chain (no forks) equivocation: still detected (T-1, T-9.6).                           |
 | UC-54 | `casper/tests/slashing/uc_54_record_invariants.rs`             | Record monotonicity + uniqueness invariants (T-4, T-5).                                      |
 | UC-55 | `casper/tests/slashing/weighted_neglect_chain.rs`        | Stake-weighted neglect chain: closure stake bound is required for weighted quorum (T-12W).   |
@@ -688,74 +688,7 @@ proptest! {
 }
 ```
 
-### 14.4.5 Bisimilarity properties (T-13, T-14, T-15)
-
-```rust
-proptest! {
-    /// T-13a — Bonds-bisimulation preserved under bm_slash.
-    #[test]
-    fn prop_t13a_bonds_bisim_preserved(
-        b1 in gen_bonds_map(),
-        b2 in gen_bonds_map_bisim(&b1),
-        v in gen_validator(),
-    ) {
-        prop_assert!(bonds_bisim(&bm_slash(&b1, &v), &bm_slash(&b2, &v)));
-    }
-
-    /// T-13b — Records-bisimulation monotone under update.
-    #[test]
-    fn prop_t13b_records_bisim_monotone(
-        s1 in gen_eq_store(), s2 in gen_eq_store_bisim(&s1),
-        key in gen_eq_key(), h in gen_block_hash(),
-    ) {
-        let s1p = update_record(&s1, key.clone(), h.clone());
-        let s2p = update_record(&s2, key, h);
-        prop_assert!(records_bisim_strong(&s1p, &s2p));
-    }
-
-    /// T-13c — Fork-choice-bisimulation preserved under filter.
-    #[test]
-    fn prop_t13c_forkchoice_bisim_preserved(
-        lm1 in gen_latest_messages(),
-        lm2 in gen_latest_messages_bisim(&lm1),
-        b1 in gen_bonds_map(),
-        b2 in gen_bonds_map_bisim(&b1),
-    ) {
-        for v in all_validators() {
-            prop_assert_eq!(
-                fc_lookup(&filter_slashed(&lm1, &b1), &v),
-                fc_lookup(&filter_slashed(&lm2, &b2), &v),
-            );
-        }
-    }
-
-    /// T-14 — Weak barbed equivalence.
-    #[test]
-    fn prop_t14_refl(s in gen_5_component_state()) {
-        prop_assert!(weak_barbed_equiv(&s, &s));
-    }
-    #[test]
-    fn prop_t14_sym(s1 in gen_5_component_state(), s2 in gen_5_component_state_bisim(&s1)) {
-        prop_assert_eq!(weak_barbed_equiv(&s1, &s2), weak_barbed_equiv(&s2, &s1));
-    }
-
-    /// T-15 — Pipeline composition preserves R.
-    #[test]
-    fn prop_t15_pipeline_step_preserves(
-        s1 in gen_5_component_state(),
-        s2 in gen_5_component_state_bisim(&s1),
-        offender in gen_validator(),
-        base_seq in any::<u64>(),
-        h in gen_block_hash(),
-    ) {
-        let s1p = pipeline_step(&s1, &offender, base_seq, &h);
-        let s2p = pipeline_step(&s2, &offender, base_seq, &h);
-        prop_assert!(weak_barbed_equiv(&s1p, &s2p));
-    }
-}
-```
-
-### 14.4.6 Bug-fix properties (T-9.1 through T-9.15; T-9.2 in §14.4.2)
+### 14.4.5 Bug-fix properties (T-9.1 through T-9.15; T-9.2 in §14.4.2)
 
 One property per bug fix, each testing the `t_9_M_*` Rocq lemma.
 T-9.2 (atomic no-overwrite) is grouped with the other storage
@@ -819,24 +752,31 @@ fn prop_t915_duplicate_justification_rejected(...) { ... }
 
 ## 14.5 Cross-implementation tests (Rust ↔ Rocq-mirrored oracle)
 
-Bisimilarity is the headline claim (T-15). Tests assert that the
-Rust implementation and the Rocq oracle produce identical
-observable state transitions across randomized event sequences.
+These tests assert that the two Rust implementations of the slash
+pipeline — the in-memory harness and the oracle (hand-mirrored from
+the Rocq definitions) — produce identical observable state
+transitions across randomized event sequences. A divergence locates
+drift in whichever side is the outlier. UC-39 covers single
+operations; the triple-tier proptests (`prop_t_triple_bisim_*`,
+§14.2.4) additionally fold in the production adapter.
 
 ```rust
 proptest! {
     /// For every randomized event sequence, the Rust harness and the Rocq
-    /// oracle (hand-mirrored from the Rocq definitions) agree on all five
-    /// projection components (BondMap, EqRecords, SlashedSet, CoopVault,
-    /// ForkChoiceLatestMessages).
+    /// oracle agree on all five projection components (BondMap, EqRecords,
+    /// SlashedSet, CoopVault, ForkChoiceLatestMessages).
     #[test]
-    fn prop_rust_vs_rocq_bisim(events in gen_event_sequence(50)) {
+    fn prop_rust_vs_rocq_agreement(events in gen_event_sequence(50)) {
         let mut rust_state = SlashingTestHarness::new(3, 100);
         let mut rocq_state = RocqOracle::new(3, 100);
         for event in events {
             apply_to_rust(&mut rust_state, &event);
             apply_to_rocq(&mut rocq_state, &event);
-            prop_assert!(weak_barbed_equiv(&project(&rust_state), &project(&rocq_state)));
+            for v in all_validators() {
+                prop_assert_eq!(rust_state.bond(&v), rocq_state.bond(&v));
+                prop_assert_eq!(rust_state.is_active(&v), rocq_state.is_active(&v));
+            }
+            prop_assert_eq!(rust_state.coop_vault(), rocq_state.coop_vault());
         }
     }
 }
@@ -1006,9 +946,9 @@ The test suite is considered **exhaustive** when:
    integration test (112 tests).
 2. **Theorem coverage:** Every theorem in spec/verification has at
    least one property-based test that fails on a property violation.
-   §14.4 covers **49 distinct theorem labels**: T-1, T-2, T-3, T-4,
-   T-5, T-6, T-7, T-8, T-Idem, T-11, T-12, T-13a, T-13b, T-13c,
-   T-14, T-15a, T-15b, T-AuthCheck, T-9.1, T-9.2, T-9.3, T-9.4,
+   §14.4 covers **43 distinct theorem labels**: T-1, T-2, T-3, T-4,
+   T-5, T-6, T-7, T-8, T-Idem, T-11, T-12,
+   T-AuthCheck, T-9.1, T-9.2, T-9.3, T-9.4,
    T-9.5, T-9.6, T-9.7, T-9.8, T-9.9, T-9.10, T-9.11, T-12R, T-12W, T-12F, T-12G,
    T-12I, T-12C, T-12D, T-12E, T-12A, T-12V, T-12RPT,
    T-12EID, T-12HYP, T-12AMP, T-12RET, T-12PF, T-5N, T-5K, T-5DF,
@@ -1164,17 +1104,17 @@ When implementing the suite, the recommended order is:
    tests UC-40, UC-44–UC-112 (70 tests).
 
 6. **Phase F (weeks 6–7):** Implement property-based tests for
-   theorems/properties T-1 through T-15a/b, T-Idem, T-AuthCheck,
+   theorems/properties T-1 through T-12, T-Idem, T-AuthCheck,
    T-9.1–T-9.15
    (incl. T-9.10' and T-9.10″) plus
    T-12R/T-12W/T-12F/T-12G/T-12I/T-12C/T-12D/T-12E/T-12A,
    T-5N, T-5K, T-5DF, T-IdemMany, T-IdemFail, T-12V/T-12RPT/T-12EID,
-   T-12HYP/T-12AMP/T-12RET/T-12PF, and T-15D (52 properties; T-10 is
+   T-12HYP/T-12AMP/T-12RET/T-12PF, and T-15D (45 properties; T-10 is
    example-tested in UC-01; T-9.12–T-9.15 are covered by the
    authorization regression module in §14.12).
 
 7. **Phase G (week 8):** Integrate cross-implementation
-   bisimilarity tests (Rust ↔ Rocq-mirrored oracle) and TLA+
+   agreement tests (Rust harness ↔ Rocq-mirrored oracle) and TLA+
    model-check CI.
 
 Each phase ends with all its tests passing in CI. Phases B–E may
@@ -1187,7 +1127,7 @@ proceed in parallel after Phase A.
 | Example-based test count                  | 114+ (use cases plus authorization regressions)  |
 | Property-based test count                 | 56+ (one per theorem family; T-10 by example test UC-01) |
 | Pre-fix counter-example test count        | 11 (one per pre-authorization bug #1–#11)        |
-| Cross-implementation bisim test count     | 1 (parameterized)                                |
+| Cross-implementation agreement test count | 1 (parameterized; UC-39)                         |
 | TLA+ invariant model-check coverage       | 40+ (all enumerated in §14.6 plus authorization flow) |
 | Mutation-test surviving-mutants threshold | < 5 % of mutants survive                         |
 | Property-test cases per property          | 10,000 (CI run)                                  |

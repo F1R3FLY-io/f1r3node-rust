@@ -264,8 +264,9 @@ where the same offender has been slashed.
 The post-fix `¬has_slash` clause is the *Rust widening* of bug #9
 (§09): a block that *self-corrects* by attaching its own
 `SlashDeploy` for the neglected justification's validator is
-admitted. Scala rejects it; Rust admits it. This is the only
-deliberate divergence in the bisimilarity claim.
+admitted. Scala rejects it; Rust admits it. This is the one
+deliberate, documented behavioral difference from the Scala
+original (proven correct as T-9.9).
 
 ## 4.7 What the pipeline gives you
 

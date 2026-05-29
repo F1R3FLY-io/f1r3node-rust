@@ -48,6 +48,12 @@ pub trait SlashingObserver {
 
     /// Witness set of the record at `(validator, base_seq)`. Empty
     /// when no record exists.
+    ///
+    /// Part of the complete tier observation surface (every tier
+    /// implements it, and the inherent `SlashingTestHarness::record_witnesses`
+    /// is used by many record-shape tests). The trait-qualified form
+    /// currently has no caller, so it is allowed to be dead.
+    #[allow(dead_code)]
     fn record_witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash>;
 
     /// Validators counted in the GHOST estimator (active set minus

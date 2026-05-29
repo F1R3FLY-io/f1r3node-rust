@@ -1,12 +1,11 @@
-// T-13b generalized — Triple bisimilarity on the records component.
+// Three-tier agreement on the records component.
 //
 // Reference: docs/theory/slashing/design/14-test-plan.md §14.5,
 // design/14a-tier-architecture.md §3.
 //
 // Property: each equivocation event produces a record at every
-// tier. This is a narrower variant of prop_t_triple_bisim_dispatch
-// (per-validator presence vs full-state agreement); fails fast on
-// tracker-shape drift.
+// tier (production, oracle, harness). This pins per-validator record
+// presence across the tiers and fails fast on tracker-shape drift.
 
 use proptest::prelude::*;
 

@@ -12,15 +12,18 @@
 > name for traceability.
 >
 > The development is **closed under the global context**: every
-> theorem from `main_bisimilarity_theorem` downward depends only on
-> Rocq's standard library and the slashing theories — zero `Admitted`,
-> zero custom `Axiom`. This is verified via `Print Assumptions` (§14)
-> against the mechanization in `formal/rocq/slashing/`.
+> theorem from `main_slashing_algorithm_correct` downward depends only
+> on Rocq's standard library and the slashing theories — zero
+> `Admitted`, zero custom `Axiom`. This is verified via
+> `Print Assumptions` (§14) against the mechanization in
+> `formal/rocq/slashing/`.
 >
 > **Contributions.** This article proves three principal results:
-> (i) the Rust slashing pipeline is observationally equivalent (weak
-> barbed bisimilarity) to its Scala antecedent, modulo a closed set of
-> sixteen documented bug fixes (Theorems T-13a/b/c, T-14, T-15a/b);
+> (i) the Rust slashing pipeline is *correct* — `main_slashing_algorithm_correct`
+> establishes that every detected admissible/ignorable equivocation
+> yields bond zeroing, witness recording, fork-choice exclusion, and
+> stake transfer to the Coop vault, under a closed set of sixteen
+> documented bug fixes (Theorems T-9.1–T-9.15);
 > (ii) two-level slash closure terminates in at most `|V|−1` rounds
 > and preserves a Byzantine-fault-tolerant quorum under explicit fault
 > hypotheses (Theorems T-11, T-12 and the T-12 letter-suffix family);
@@ -28,6 +31,13 @@
 > theorems (T-9.10..T-9.16, T-Auth, T-LivenessGap) close the
 > previously open evidence-domain attack surface flagged by the
 > Sage/Hypothesis traceability passes.
+>
+> **Removed (2026-05-29).** An earlier version of this article also
+> proved the Rust slashing pipeline observationally bisimilar to the
+> Scala original (T-13a/b/c, T-14, T-15a/b). That result — a
+> bug-finding differential device whose purpose is complete — is
+> obsolete under the cost-accounted-rho migration and has been removed;
+> see the §8 removal note and DR-6.
 
 ---
 
@@ -40,7 +50,7 @@
 5. [EquivocationRecord — algebraic structure](#5--equivocationrecord--algebraic-structure)
 6. [The PoS slash effect](#6--the-pos-slash-effect)
 7. [Two-level slashing closure](#7--two-level-slashing-closure)
-8. [Bisimilarity Rust ≈ Scala (modulo bug fixes)](#8--bisimilarity-rust--scala-modulo-bug-fixes)
+8. [Differential divergence calculus](#8--differential-divergence-calculus)
 9. [Bug-fix proofs](#9--bug-fix-proofs)
 10. [TLA+ correctness model](#10--tla-correctness-model)
 11. [Sage-driven exploratory verification](#11--sage-driven-exploratory-verification)
@@ -76,7 +86,7 @@ The contribution split:
 |-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_b`, `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `validate_received_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
 | **(b)** Verifications of paper algorithms | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                                                                                                                                                                     |
-| **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-13a/b/c, T-14, T-15a/b, T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
+| **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
 | **(d)** Citable-axiom-gated               | None — all theorems are closed under the global context                                                                                                                                                                                                 |
 
 ### 1.3 Scale and module DAG
@@ -113,10 +123,6 @@ in `_CoqProject` (see also `slashing-specification.md` §1.7):
                      ▼
         ┌────────────────────────┐
         │   ForkChoice           │
-        └────────────┬───────────┘
-                     ▼
-        ┌────────────────────────┐
-        │   Bisimulation         │
         └────────────┬───────────┘
                      ▼
         ┌────────────────────────┐
@@ -163,24 +169,22 @@ analog, T-12-RET temporal retention) — each carrying its own
 mechanized proof and at least one Sage-derived counter-example
 showing the hypothesis is necessary.
 
-**Cross-implementation bisimilarity** (the Rust port is observationally
-equivalent to the Scala antecedent). §8 develops the five projection
-bisims (`bonds_bisim`, `records_bisim_strong`, `slashed_bisim`,
-`vault_bisim`, `forkchoice_bisim`), proves their reflexivity,
-symmetry, transitivity, and preservation under the slash transition
-(T-13a/b/c, T-14), and composes them into the weak barbed
-equivalence over the full pipeline (T-15a/b). §8.8 develops the
-divergence calculus — the formal classification of *which*
-Rust↔Scala disagreements are admissible (Theorems 8.8–8.11) — so
-the bisimilarity claim is *modulo* a closed set of permitted
-deltas, not a blanket equivalence.
+**Differential divergence calculus.** §8 develops the divergence
+calculus — the formal classification of *which* differential-search
+disagreements are admissible (Properties 8.8–8.12) — distinguishing
+permitted bug-fix deltas from protocol-hypothesis boundaries and
+forbidden, must-triage disagreements. (An earlier version of §8 also
+proved a Rust ↔ Scala observational-bisimilarity result, T-13a/b/c,
+T-14, T-15a/b; that bug-finding device is obsolete under the
+cost-accounted-rho migration and was removed — see the §8 removal note
+and DR-6.)
 
-**Bug-fix proofs** (the deltas closing the bisimilarity). §9
-discharges the sixteen documented bug-fix theorems in cadence: T-9.1
-through T-9.16 plus T-Auth and T-LivenessGap. Each subsection
-follows the canonical structure of "pre-fix counter-example → new
-invariant → post-fix theorem → ∎ → worked example", citing the
-relevant `BugFix*.v` Rocq module and `MC_*.cfg` TLA+ invariant.
+**Bug-fix proofs.** §9 discharges the sixteen documented bug-fix
+theorems in cadence: T-9.1 through T-9.16 plus T-Auth and
+T-LivenessGap. Each subsection follows the canonical structure of
+"pre-fix counter-example → new invariant → post-fix theorem → ∎ →
+worked example", citing the relevant `BugFix*.v` Rocq module and
+`MC_*.cfg` TLA+ invariant.
 
 **Complementary formal evidence.** §10 establishes the
 Rocq ↔ TLA+ correspondence at every shared invariant and reports
@@ -202,8 +206,8 @@ literatures. §17 concludes by restating the three principal
 results and lists the four future-work directions. §18 collects
 the references.
 
-A reader interested only in the bisimilarity headline may read §1,
-§2, §3, §8, §17 in that order. A reader checking a specific bug
+A reader interested only in the correctness headline may read §1,
+§2, §3, §6, §17 in that order. A reader checking a specific bug
 fix may go directly to §9.k for that bug. A reviewer evaluating the
 soundness of the development should read §14 (trust base) before
 any proof section.
@@ -246,9 +250,6 @@ references added.
 | `EqRec`        | `EqRec` (record)                         | Equivocation evidence                                 |
 | `D, I, E, B`   | `DAGState` (record)                      | DAG snapshot                                          |
 | `slash(ps, v)` | `slash : PoSState → V → PoSState × bool` | PoS slash transition                                  |
-| `~_b`          | `bonds_bisim`                            | Bond-map bisimulation                                 |
-| `~_r`          | `records_bisim`                          | Records bisimulation (modulo iter order)              |
-| `~_s`          | `slashed_bisim`                          | Slashed-set bisimulation (mutual containment)         |
 
 ### 2.2 Notation
 
@@ -256,12 +257,7 @@ references added.
 |-----------------------------------|-----------------------------------------------------|----------------------------|
 | `→`                               | LTS transition (single step)                        |                            |
 | `→*`                              | LTS transition (multi-step)                         |                            |
-| `~`                               | Strong bisimilarity                                 |                            |
-| `≈`                               | Weak bisimilarity                                   |                            |
 | `≡_α`                             | α-equivalence (modulo bound-name renaming)          | [MR05a]                    |
-| `↓ℓ`                              | Barb (state can immediately perform observable `ℓ`) |                            |
-| `⇓ℓ`                              | Weak barb (perform `ℓ` after some `τ`-steps)        |                            |
-| `≈ₓ`                              | Weak barbed equivalence mod barbs `x`               |                            |
 | `⊥`                               | Boolean false / terminal absorbing state            |                            |
 | `⊤`                               | Boolean true                                        |                            |
 | `⟹`                               | Logical implication                                 |                            |
@@ -927,15 +923,14 @@ abort-on-first-failure batch slash execution is order-dependent, unlike
 successful `bm_slash_many`. `er_key_injective` and
 `canonical_key_pair_injective` prove the canonical record-key encoding;
 `naive_record_key_projection_collision` records a non-injective
-projection witness. `classify_divergence_reason` in `Bisimulation.v`
-classifies evidence-view, epoch-carryover, and projection divergences as
-candidate boundaries requiring review. The stateful semantic-campaign
-frontier is mirrored by `semantic_campaign_boundary_reasons_require_review`;
-the adversarial scheduler frontier is mirrored by
-`adversarial_scheduler_boundary_reasons_require_review`; and the
-expanded partition/gossip, objective-guided, Rust-replay,
-precondition-fuzzing, and deep-threat classifications are mirrored by
-`frontier_expansion_reasons_require_review`.
+projection witness. `classify` in the Rust mirror
+`casper/tests/slashing/divergence_class.rs` (§8.8) classifies
+evidence-view, epoch-carryover, and projection divergences as
+candidate boundaries requiring review. The stateful semantic-campaign,
+adversarial-scheduler, and expanded partition/gossip, objective-guided,
+Rust-replay, precondition-fuzzing, and deep-threat classifications are
+all checked by the same `classify` / `divergence_allowed` /
+`frontier_classification_ok` functions.
 
 **Metamorphic properties.** `duplicate_edge_graph_equiv_hypothesis_minimized`
 and `duplicate_edge_slash_iter_equiv_hypothesis_minimized` specialize
@@ -1253,152 +1248,38 @@ counter-example, but no hypothesis is redundant.
 
 ---
 
-## 8 · Bisimilarity Rust ~~ Scala (modulo bug fixes)
+## 8 · Differential divergence calculus
 
-### 8.1 The relation R
-
-**Definition 8.1.** *(Per-component bisimulations.)*
-
-```
-  bonds_bisim(b₁, b₂)    ⇔  ∀v. bm_lookup(b₁, v) = bm_lookup(b₂, v)
-  records_bisim(s₁, s₂)  ⇔  ∀k. hashes(s₁, k) ⊆ hashes(s₂, k)
-                                ∧ hashes(s₂, k) ⊆ hashes(s₁, k)
-  slashed_bisim(s₁, s₂)  ⇔  s₁ ⊆ s₂ ∧ s₂ ⊆ s₁
-  vault_bisim(n₁, n₂)    ⇔  n₁ = n₂
-```
-
-These are reflexive, symmetric (and the bonds and vault ones are also
-transitive). Proofs in `Bisimulation.v` §2.
-
-### 8.2 Theorem 8.1 (T-13a, Strong bisimilarity baseline — bonds projection)
-
-**Statement.** *(`t_13_bm_slash_preserves_bonds_bisim`,
-`Bisimulation.v:116`.)* For every `b₁, b₂` and offender `v`,
-
-```
-  bonds_bisim(b₁, b₂) ⟹ bonds_bisim(bm_slash(b₁, v), bm_slash(b₂, v))
-```
-
-**Proof.** Pointwise. For lookup at `v` itself, both sides return 0 by
-`bm_slash_lookup`. For lookup at `v' ≠ v`, both sides return
-`bm_lookup(bᵢ, v')` by `bm_slash_other`, which agree by hypothesis. ∎
-
-### 8.3 Theorem 8.2 (T-15b, Composed bisimulation closure)
-
-**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:475`.)*
-For every component triple `(b₁, b₂, v₁, v₂, sl₁, sl₂, offender)` with
-component-wise R-equivalence as the hypothesis,
-
-```
-  bonds_bisim(b₁, b₂)
-∧ slashed_bisim(sl₁, sl₂)
-∧ vault_bisim(v₁, v₂) ⟹
-    bonds_bisim   (bm_slash(b₁, off), bm_slash(b₂, off))
-  ∧ slashed_bisim (off :: sl₁, off :: sl₂)
-  ∧ vault_bisim   (v₁ + bm_lookup(b₁, off), v₂ + bm_lookup(b₂, off))
-```
-
-**Proof.** Three sub-claims:
-
-1. Bonds: T-13 directly.
-2. Slashed: prepending the same offender preserves mutual containment
-   (`t_15_slashed_append_consistent`, `Bisimulation.v:174`).
-3. Vault: `v₁ = v₂` and `bm_lookup(b₁, off) = bm_lookup(b₂, off)` (by
-   bonds bisimulation), so `v₁ + bm_lookup(b₁, off) = v₂ +
-   bm_lookup(b₂, off)`. ∎
-
-### 8.4 Theorem 8.3 (T-13b, Records-bisim monotonicity, Audit Gap 1 closure)
-
-**Statement.** *(`records_bisim_monotone_update`, `Bisimulation.v:314` (§8).)*
-
-```
-  records_bisim_strong(s₁, s₂) ⟹
-    ∀ k h k', incl(hashes_at_key(s₁, k'),
-                   hashes_at_key(update_record(s₂, k, h), k'))
-```
-
-Where `records_bisim_strong` strengthens `records_bisim` with key
-alignment: `∀ k, has_key(s₁, k) = has_key(s₂, k)`. The companion
-theorem `records_bisim_strong_keys_preserved` shows key alignment is
-preserved across the same update on both sides.
-
-**Proof.** By Theorem 4.3 (`t_4_record_monotone_update`, T-4 alias),
-the update preserves hash-set inclusion at key `k'`: for all `k'`,
-`incl(hashes_at_key(s₂, k'), hashes_at_key(update_record(s₂, k, h), k'))`.
-By the bisim hypothesis `records_bisim_strong(s₁, s₂)`, the hash sets at
-`k'` agree before the update:
-`hashes_at_key(s₁, k') = hashes_at_key(s₂, k')`. Composing the two
-inclusions by transitivity of `⊆` over hash sets gives the conclusion
-`incl(hashes_at_key(s₁, k'), hashes_at_key(update_record(s₂, k, h), k'))`. ∎
-
-### 8.5 Theorem 8.4 (T-13c, Forkchoice-bisim preserves filter, Audit Gap 2 closure)
-
-**Statement.** *(`forkchoice_bisim_preserves_filter`, `Bisimulation.v` §9.)*
-
-```
-  forkchoice_bisim(lm₁, lm₂) ∧ bonds_bisim(b₁, b₂) ⟹
-    ∀ v, fc_lookup(filter_slashed(lm₁, b₁), v) =
-         fc_lookup(filter_slashed(lm₂, b₂), v)
-```
-
-**Proof.** Via the helper `fc_lookup_filter_slashed` which characterizes
-the filter result as the per-bond conditional. ∎
-
-This adds the fifth `R`-component (`forkChoiceLatestMessages`) to the
-bisimilarity claim, closing Audit Gap 2.
-
-### 8.6 Theorem 8.5 (T-14, Weak barbed equivalence, Audit Gap 3 closure)
-
-**Statement.** *(`weak_barbed_equiv` and `weak_barbed_equiv_refl`,
-`Bisimulation.v` §10.)* The full observational equivalence over the five
-components is
-
-```
-  weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)
-    := bonds_bisim(b₁,b₂)
-     ∧ records_bisim_strong(rs₁,rs₂)
-     ∧ slashed_bisim(sl₁,sl₂)
-     ∧ vault_bisim(v₁,v₂)
-     ∧ forkchoice_bisim(lm₁,lm₂)
-```
-
-Companion theorems `weak_barbed_equiv_refl`, `weak_barbed_equiv_sym`,
-and `weak_barbed_equiv_trans` establish reflexivity, symmetry, and
-transitivity.
-
-**Proof.** Conjunction of per-component equivalence
-properties. ∎
-
-### 8.7 Theorem 8.6 (T-15a, Pipeline composition, Audit Gap 8 closure)
-
-**Statement.** *(`t_15_pipeline_step_preserves_R`, `MainTheorem.v` §8.)*
-Define a pipeline step as the composition
-
-```
-  pipeline_step(b, rs, sl, v, lm, offender, baseSeq, h)
-    := (bm_slash(b, offender),
-        update_record(rs, (offender, baseSeq), h),
-        offender :: sl,
-        v + bm_lookup(b, offender),
-        filter_slashed(lm, bm_slash(b, offender)))
-```
-
-Then under the strong bisimulation `R`, applying `pipeline_step`
-consistently on both sides preserves all five components.
-
-**Proof.** Composition of T-13, the full
-`records_bisim_strong_preserved_update` theorem, the
-slashed-append-consistent lemma, the vault-increment consistency lemma,
-and the forkchoice-bisim filter preservation. ∎
+> **Removed (2026-05-29): Rust ~~ Scala bisimilarity (former §8.1–§8.7,
+> §8.9; theorems T-13a/b/c, T-14, T-15a/b).** The migration to the
+> cost-accounted-rho architecture makes the Rust and Scala slashing
+> implementations no longer structurally comparable, so the
+> Rust ↔ Scala observational-bisimilarity result — whose purpose was
+> to find bugs by differential comparison against the Scala original,
+> a purpose now complete — is obsolete and has been removed together
+> with its Rocq mechanization (`Bisimulation.v`) and Rust property
+> tests (`prop_t_13*`, `prop_t_14`, `prop_t_15`). Git preserves the
+> full history. The headline mechanized result is now
+> `main_slashing_algorithm_correct` (§6 of `MainTheorem.v`): every
+> detected admissible/ignorable equivocation yields bond zeroing,
+> witness recording, fork-choice exclusion, and stake transfer to the
+> Coop vault, under all documented bug fixes. See decision record
+> DR-6 in `design/15-decision-records.md`.
+>
+> The **divergence calculus** below (former §8.8) is retained: it is a
+> differential-search classification tool, independent of the removed
+> bisimilarity proof, and survives in the Rust mirror
+> `casper/tests/slashing/divergence_class.rs` (its former Rocq
+> formalization lived in the now-deleted `Bisimulation.v`).
 
 ### 8.8 Divergence calculus
 
-The bisimilarity claims T-13a/b/c, T-14, T-15a/b establish that the
-Rust and Scala implementations agree at every observable component
-*on the unperturbed pipeline*. The slashing protocol has, however,
-shipped sixteen bug fixes (§9); some of those fixes (e.g. T-9.9, the
-self-correcting widening) intentionally make the Rust accept blocks
-Scala rejects. The article must therefore distinguish:
+The protocol has shipped sixteen bug fixes (§9); some of those fixes
+(e.g. T-9.9, the self-correcting widening) intentionally make the Rust
+implementation accept blocks the Scala original rejected. To classify
+the disagreements surfaced by the differential search corpus
+(`formal/sage/slashing/`, Hypothesis, fuzzing), the methodology
+distinguishes:
 
 - *Permitted* divergences — Rust ↔ Scala disagrees because a Rust
   bug fix corrects Scala behavior, and the fix is mechanized.
@@ -1409,16 +1290,18 @@ Scala rejects. The article must therefore distinguish:
 - *Forbidden* divergences — unclassified disagreement that must
   be triaged before acceptance.
 
-`Bisimulation.v:520–660` formalizes this taxonomy. Eighteen
+The Rust mirror `casper/tests/slashing/divergence_class.rs`
+formalizes this taxonomy (its former Rocq encoding lived in the
+now-removed `Bisimulation.v`; see the §8 removal note). Eighteen
 divergence *reasons* are enumerated; a classification function
 maps each reason to one of four *classes*; and an admissibility
-predicate distinguishes the classes the article *permits* from the
+predicate distinguishes the classes the methodology *permits* from the
 classes that require human review.
 
 #### 8.8.1 Definition 8.8 (Divergence class)
 
 **Definition 8.8** *(`DivergenceClass`).*
-*(`Bisimulation.v:520`.)* The inductive type with four
+*(`divergence_class.rs`.)* The enum with four
 constructors:
 ```
   DivergenceClass ::=
@@ -1430,8 +1313,8 @@ constructors:
 
 #### 8.8.2 Definition 8.9 (Classification of divergence reasons)
 
-**Definition 8.9** *(`classify_divergence_reason`).*
-*(`Bisimulation.v:547`.)* A total function from one of eighteen
+**Definition 8.9** *(`classify`).*
+*(`divergence_class.rs`.)* A total function from one of eighteen
 divergence reasons to its class. The reasons partition into:
 
 - **PermittedBugFix:** `DRTrackerAtomicity` (T-9.2),
@@ -1455,18 +1338,18 @@ in the audit corpus on `analysis/slashing` (under
 #### 8.8.3 Definition 8.10 (Admissibility)
 
 **Definition 8.10** *(`divergence_allowed`).*
-*(`Bisimulation.v:570`.)*
+*(`divergence_class.rs`.)*
 ```
   divergence_allowed(c)  ≜  (c = Bisimilar)  ∨  (c = PermittedBugFix) .
 ```
-The article *permits* `Bisimilar` and `PermittedBugFix`
+The methodology *permits* `Bisimilar` and `PermittedBugFix`
 disagreements; `CandidateBoundaryDivergence` requires explicit
 hypothesis review; `UnexpectedDivergence` is forbidden.
 
-#### 8.8.4 Theorem 8.8 (Bisimilar is admissible)
+#### 8.8.4 Property 8.8 (Bisimilar is admissible)
 
-**Statement.** *(`bisimilar_divergence_allowed`,
-`Bisimulation.v:573`.)*
+**Statement.** *(`divergence_allowed(Bisimilar)`,
+`divergence_class.rs`.)*
 ```
   divergence_allowed(Bisimilar) .
 ```
@@ -1474,10 +1357,10 @@ hypothesis review; `UnexpectedDivergence` is forbidden.
 **Proof.** By definition of `divergence_allowed`: the left disjunct
 holds by reflexivity. ∎
 
-#### 8.8.5 Theorem 8.9 (Permitted bug-fix is admissible)
+#### 8.8.5 Property 8.9 (Permitted bug-fix is admissible)
 
-**Statement.** *(`permitted_bug_fix_divergence_allowed`,
-`Bisimulation.v:579`.)*
+**Statement.** *(`divergence_allowed(PermittedBugFix)`,
+`divergence_class.rs`.)*
 ```
   divergence_allowed(PermittedBugFix) .
 ```
@@ -1485,10 +1368,10 @@ holds by reflexivity. ∎
 **Proof.** By definition of `divergence_allowed`: the right
 disjunct holds by reflexivity. ∎
 
-#### 8.8.6 Theorem 8.10 (Candidate-boundary divergence requires review)
+#### 8.8.6 Property 8.10 (Candidate-boundary divergence requires review)
 
-**Statement.** *(`candidate_boundary_divergence_requires_review`,
-`Bisimulation.v:585`.)*
+**Statement.** *(`!divergence_allowed(CandidateBoundaryDivergence)`,
+`divergence_class.rs`.)*
 ```
   ¬ divergence_allowed(CandidateBoundaryDivergence) .
 ```
@@ -1498,7 +1381,7 @@ disjunct holds by reflexivity. ∎
 definition of `divergence_allowed`, either
 `CandidateBoundaryDivergence = Bisimilar` or
 `CandidateBoundaryDivergence = PermittedBugFix`. Both equalities
-discriminate (constructor injectivity for the inductive type
+discriminate (constructor distinctness for the enum
 `DivergenceClass`), contradiction. ∎
 
 **Interpretation.** Candidate-boundary divergences are not
@@ -1509,63 +1392,50 @@ production deployment must either (a) prove the hypothesis holds
 in its operational environment, or (b) accept the boundary as a
 known scope limit.
 
-#### 8.8.7 Theorem 8.11 (Unexpected divergence is forbidden)
+#### 8.8.7 Property 8.11 (Unexpected divergence is forbidden)
 
-**Statement.** *(`unexpected_divergence_forbidden`,
-`Bisimulation.v:591`.)*
+**Statement.** *(`!divergence_allowed(UnexpectedDivergence)`,
+`divergence_class.rs`.)*
 ```
   ¬ divergence_allowed(UnexpectedDivergence) .
 ```
 
-**Proof.** As in Theorem 8.10. Both disjuncts of
+**Proof.** As in Property 8.10. Both disjuncts of
 `divergence_allowed(UnexpectedDivergence)` discriminate. ∎
 
-**Interpretation.** Any observed Rust ↔ Scala disagreement
-labeled `DRUnexpected` is a triage event: the cause must be
+**Interpretation.** Any observed disagreement labeled
+`DRUnexpected` is a triage event: the cause must be
 identified and reclassified into one of the seventeen named
 reasons before the disagreement is accepted.
 
-#### 8.8.8 Theorem 8.12 (Frontier expansion classes are boundaries)
+#### 8.8.8 Property 8.12 (Frontier expansion classes are boundaries)
 
-**Statement.** *(`semantic_campaign_boundary_reasons_require_review`,
-`Bisimulation.v:639`; `adversarial_scheduler_boundary_reasons_require_review`,
-`Bisimulation.v:656`; `frontier_expansion_reasons_require_review`,
-`Bisimulation.v:669`.)* Every divergence reason produced by the
-semantic-campaign, adversarial-scheduler, and broader
-frontier-expansion families classifies as
-`CandidateBoundaryDivergence` (and therefore requires review by
-Theorem 8.10).
+**Statement.** *(the semantic-campaign, adversarial-scheduler, and
+broader frontier-expansion reason families, `divergence_class.rs`.)*
+Every divergence reason produced by the semantic-campaign,
+adversarial-scheduler, and broader frontier-expansion families
+classifies as `CandidateBoundaryDivergence` (and therefore requires
+review by Property 8.10).
 
-**Proof.** Each of the three theorems is a finite case-analysis on
-its reason variants. For `semantic_campaign_*`, the variants are
+**Proof.** Each family is a finite case-analysis on its reason
+variants. For the semantic-campaign family, the variants are
 `DREvidenceViewBoundary`, `DREpochCarryoverBoundary`,
 `DRPartitionGossipBoundary`, `DRObjectiveGuidedBoundary`; each
-maps to `CandidateBoundaryDivergence` by
-`classify_divergence_reason`. Apply Theorem 8.10 to conclude.
-Similarly for the other two theorems. ∎
+maps to `CandidateBoundaryDivergence` by `classify`. Apply
+Property 8.10 to conclude. Similarly for the other two families. ∎
 
 **Counter-example.** Sage findings row 91 — semantic-campaign (preserved on `analysis/slashing` under `formal/sage/slashing/FINDINGS.md`)
 boundary, four-validator partition).
 
-#### 8.8.9 Corollary 8.13 (Bisimilarity is *modulo* a closed class)
+### 8.9 Why this classification is the right notion
 
-The composition of T-15a/b with Theorems 8.8–8.12 yields the
-*ultimate* bisimilarity statement of this article: the Rust
-implementation is weakly barbed bisimilar to the Scala
-antecedent, *modulo* the union of (a) the sixteen
-PermittedBugFix deltas mechanized in §9, and (b) the sixteen
-CandidateBoundaryDivergence classes whose hypotheses are
-documented in §11 and the design suite §02.7.1. Every other
-observed disagreement is a triage event.
-
-### 8.9 Why this is the right notion
-
-Bisimilarity at the component level matches the audit objective: two
-node operators on Rust and Scala — given the same input event sequence
-— observe the same bonds, the same records (modulo iter order), the
-same slashed set, the same Coop-vault balance, and the same fork-choice
-latest messages. Per the discussion in §13 of `slashing-specification.md`,
-byte-level encoding differences are intentionally outside scope.
+The divergence calculus matches the audit objective: a differential
+search over Rust against a reference implementation surfaces
+disagreements, and each disagreement must be triaged into one of the
+four classes before acceptance. `PermittedBugFix` and `Bisimilar`
+disagreements are accepted; `CandidateBoundaryDivergence` reasons each
+carry a documented protocol-hypothesis caveat (§11, design §02.7.1);
+`UnexpectedDivergence` is forbidden until reclassified.
 
 ---
 
@@ -2270,8 +2140,9 @@ construction.
 
 The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
-`block_creator.rs:309`) is the operational realisation of this fold
-and is verified to match by the bisimulation result of §8. ∎
+`block_creator.rs:309`) is the operational realisation of this fold;
+the harness ↔ oracle cross-implementation agreement test (UC-39,
+§15) exercises it against the mechanized definition. ∎
 
 Deterministic slash-seed construction is tracked separately:
 `deploy_seed_uses_invalid_block_hash` proves every emitted
@@ -2345,7 +2216,7 @@ Live_* == (* temporal properties *)
 | `TwoLevelSlashing`     | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | T-12W                                          |
 | `TwoLevelSlashing`     | `Inv_FilteredClosureInCurrentValidators`                                             | T-12F                                          |
 | `TwoLevelSlashing`     | `Inv_NeglectEdgesVisibleUnreported`                                                  | T-12F                                          |
-| `TwoLevelSlashing`     | `Inv_NoUnexpectedDifferentialDivergence`                                             | T-15 class                                     |
+| `TwoLevelSlashing`     | `Inv_NoUnexpectedDifferentialDivergence`                                             | T-15D (divergence calculus, §8.8)              |
 | `TwoLevelSlashing`     | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary`                    | arithmetic boundary                            |
 | `TwoLevelSlashing`     | `Inv_ActiveQuorumsIntersect`                                                         | quorum intersection                            |
 | `TwoLevelSlashing`     | `Inv_ActiveStakeQuorumsIntersect`                                                    | weighted quorum intersection                   |
@@ -2460,7 +2331,7 @@ confirming the fix.
 | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | `weighted_slash_iter_quorum_preservation`                                 | yes            |
 | `Inv_FilteredClosureInCurrentValidators`                                             | `restricted_closure_only_from_current_direct_offenders`                   | yes            |
 | `Inv_NeglectEdgesVisibleUnreported`                                                  | `visible_unreported_graph_in`                                             | yes            |
-| `Inv_NoUnexpectedDifferentialDivergence`                                             | `divergence_allowed` classification in `Bisimulation.v`                   | yes            |
+| `Inv_NoUnexpectedDifferentialDivergence`                                             | `divergence_allowed` classification in `divergence_class.rs` (§8.8)       | Rust mirror    |
 | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary`                    | `unsigned_overflow_boundary_exact` / `signed_overflow_boundary_exact`     | yes            |
 | `Inv_ActiveQuorumsIntersect`                                                         | `quorum_intersection_by_size`                                             | yes            |
 | `Inv_ActiveStakeQuorumsIntersect`                                                    | `weighted_quorum_intersection_from_disjoint_bound`                        | yes            |
@@ -2552,9 +2423,9 @@ universes, (ii) *Hypothesis-style property-based search* with
 shrinking, (iii) *MIP-backed objective-guided search* for damage
 optimisation, and (iv) *frontier-expansion search* that grows the
 parameter space adaptively. Every witness that Sage emits is
-labelled with a `DivergenceReason` from `Bisimulation.v:526`
-(see §8.8); the labelling is the bridge from a Sage finding to its
-treatment in the Rocq mechanization.
+labelled with a `DivergenceReason` from the divergence calculus
+(`divergence_class.rs`; see §8.8); the labelling is the bridge from a
+Sage finding to its classification treatment.
 
 The *witness-not-authority* policy is foundational: a Sage finding
 becomes a Rust source change only after the witness is reproduced
@@ -2610,8 +2481,8 @@ matrix and §2.2 attack tree).
 `objective_frontier_model.sage`,
 `scenario_schema.sage`, plus the `hypothesis_search/` and
 `scenario_search/` subdirectories. These probe the boundaries
-of the proof hypotheses and feed the `frontier_expansion_*`
-divergence-classification theorems in `Bisimulation.v:669`.
+of the proof hypotheses and feed the frontier-expansion
+divergence-classification checks in `divergence_class.rs` (§8.8).
 
 ### 11.3 Promoted findings — overview
 
@@ -2682,8 +2553,7 @@ none of the individual closure or projection models can isolate.
 The campaigns produce no `unexpected` divergences in their
 configured bounds; every observed disagreement classifies as
 `candidate_boundary` and is recorded with a corresponding
-divergence-reason constructor in `Bisimulation.v` (preserved on
-`analysis/slashing`). The campaign infrastructure is
+divergence-reason constructor in `divergence_class.rs` (§8.8). The campaign infrastructure is
 `objective_frontier_model.sage` (objective selection),
 `scenario_schema.sage` (witness shape),
 `scenario_search/corpus_generator.sage` (corpus emission), and
@@ -2897,8 +2767,7 @@ formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
 ├── BugFixSlashAuthorization.v        (T-9.12, T-9.13, T-Auth)
 ├── BugFixSeqArithmetic.v             (T-9.14)
 ├── BugFixDuplicateJustifications.v   (T-9.15)
-├── Bisimulation.v                    (T-13 components + divergence calculus §8.8)
-└── MainTheorem.v                     (composition; main_bisimilarity_theorem)
+└── MainTheorem.v                     (composition; main_slashing_algorithm_correct)
 
 formal/tlaplus/slashing/               (19 TLA+ specs + 13 MC configs; cf. §10.3)
 ├── EquivocationDetector.tla, EquivocationDetectorEager.tla
@@ -2933,9 +2802,8 @@ formal/sage/slashing/                  (32 Sage models; cf. §11.2)
 | §4 Detection semantics          | `EquivocationDetector.v`                                  |
 | §5 PoS slash transition         | `PoSContract.v`                                           |
 | §6 Validator lifecycle          | composition of `PoSContract.v` and `EquivocationRecord.v` |
-| §7 Pipeline                     | `MainTheorem.v` (main_bisimilarity_theorem)               |
+| §7 Pipeline                     | `MainTheorem.v` (main_slashing_algorithm_correct)         |
 | §8 Two-level slashing           | `TwoLevelSlashing.v`                                      |
-| §9 Bisimilarity                 | `Bisimulation.v`                                          |
 | §10.1 Bug fix #1                | `BugFixIgnorable.v`                                       |
 | §10.2 Bug fix #2                | `BugFixAtomicTracker.v` + TLA+ counter-example            |
 | §10.3 Bug fix #3                | `BugFixDispatcher.v`                                      |
@@ -2969,15 +2837,9 @@ Running
 ```
 echo 'From Slashing Require Import MainTheorem.
 From Slashing Require Import TwoLevelSlashing.
-From Slashing Require Import Bisimulation.
-Print Assumptions main_bisimilarity_theorem.
-Print Assumptions main_bisimilarity_strong.
-Print Assumptions main_T14_weak_barbed_equiv_refl.
-Print Assumptions main_T14_weak_barbed_equiv_trans.
+Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T12_bft_quorum.
 Print Assumptions main_T9_2_n_threads.
-Print Assumptions main_T15_pipeline_step.
-Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T6_detect_neglected_sound.
 Print Assumptions main_T9_6_dag.
 Print Assumptions slash_iter_reachability_characterization.
@@ -2988,9 +2850,7 @@ Print Assumptions slash_iter_graph_equiv.
 Print Assumptions slash_iter_validator_renaming_equiv.
 Print Assumptions no_reachability_no_level2_slash.
 Print Assumptions unsigned_overflow_boundary_exact.
-Print Assumptions signed_overflow_boundary_exact.
-Print Assumptions candidate_boundary_divergence_requires_review.
-Print Assumptions unexpected_divergence_forbidden.' \
+Print Assumptions signed_overflow_boundary_exact.' \
   | coqtop -Q theories Slashing
 ```
 
@@ -3015,10 +2875,9 @@ sixteen-bug-fix completion in §9.10..§9.16) covers:
   reachability characterization, weighted quorum, current-validator
   filtering, evidence visibility, graph edge cases, arithmetic boundaries,
   and the fifteen-corollary T-12 letter-suffix family of §7.10)
-- **Bisimilarity** (T-13 strong baseline, T-13 records monotonicity,
-  T-13 forkchoice filter, T-14 weak barbed equivalence reflexivity,
-  symmetry, and transitivity, T-15 pipeline composition, divergence
-  calculus of §8.8)
+- **Headline correctness** (`main_slashing_algorithm_correct`:
+  detection ⇒ slash effect + witness record + fork-choice exclusion +
+  stake transfer, composing the layers above and the bug fixes below)
 - **Bug fixes** (T-9.1 through T-9.15 — including the strengthened
   T-9.2 n-thread schedule, T-9.6 DAG-level, T-9.10 triple, T-9.11
   detector totality/distinct-child lemmas, T-9.12 stale-evidence,
@@ -3031,7 +2890,7 @@ All return "Closed under the global context".
 
 | Item                                          | Why                                                                                                                                                             |
 |-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Byte-level on-disk equality                   | Bisimilarity is value-level; iteration order is a non-observable.                                                                                               |
+| Byte-level on-disk equality                   | Reasoning is value-level; iteration order (BTreeSet vs Set) is a non-observable.                                                                                |
 | Rholang interpreter semantics                 | The `slash` Rholang contract is shared between Rust and Scala; we treat the Rholang execution as an abstract function `slash : PoSState → V → PoSState × bool`. |
 | Network-level message-passing                 | Out of scope; the LTS is on local state.                                                                                                                        |
 | Cryptographic signatures                      | Validators are abstract `nat`s; the PoS auth-token check is modeled as a Boolean oracle around slash-deploy execution.                                          |
@@ -3139,21 +2998,22 @@ T-12-AMP, T-12-PF). The PBFT line of work [CL99] treats the bound
 operationally; we treat it as a *hypothesis space* whose boundary is
 mapped by the corollaries.
 
-### 16.4 Bisimulation and the choice of equivalence
+### 16.4 The divergence calculus and the choice of classification
 
-The bisimulation tradition originates in Milner's CCS [Mil89], extends
-through the π-calculus [Mil99], [SW01], and develops the *up-to*
-proof method that we use implicitly in §8 [San98]. Our weak barbed
-equivalence (Theorem 8.5 = T-14) is the standard weak bisimulation
-over a five-component state projection
-`(bonds, records, slashed, vault, fork-choice)`.
+An earlier version of this article carried a weak-barbed-bisimulation
+result relating the Rust port to the Scala original, drawing on the
+bisimulation tradition of Milner's CCS [Mil89], the π-calculus
+[Mil99], [SW01], and the *up-to* proof method [San98]. That result
+was a bug-finding differential device; under the cost-accounted-rho
+migration the two implementations are no longer comparable, so it has
+been removed (see the §8 removal note and DR-6).
 
-The contribution over the standard treatment is the *divergence
-calculus* of §8.8: a formal classification of which Rust ↔ Scala
+What remains and is the lasting contribution is the *divergence
+calculus* of §8.8: a formal classification of which differential-search
 disagreements are admissible. The divergence-allowed predicate
-(Definition 8.10) makes "bisimilarity modulo bug fixes" a precise
-mathematical notion, not an informal qualifier. We are not aware of
-prior formal treatments of bisimilarity-modulo-fixes in the
+(Definition 8.10) makes "permitted modulo documented deltas" a precise
+notion, not an informal qualifier. We are not aware of prior formal
+treatments of differential-divergence classification in the
 consensus-protocol literature.
 
 ### 16.5 TLA+ and model-checking-driven verification
@@ -3247,18 +3107,22 @@ This article has presented mechanized proofs for the slashing protocol
 of the F1r3fly CBC-Casper consensus implementation. We established
 three principal results.
 
-**Bisimilarity Rust ≈ Scala.** The Rust slashing pipeline is weakly
-barbed bisimilar to the Scala antecedent over the five-component
-observable state `(bonds, records, slashed, vault, fork-choice)`,
-modulo a closed set of sixteen documented bug-fix deltas. The
-bisimilarity is mechanized in Rocq as `main_bisimilarity_theorem`
-(Theorem 8.2 = T-15b) and composed via `t_15_pipeline_step_preserves_R`
-(Theorem 8.6 = T-15a). The divergence calculus of §8.8 makes "modulo
-a closed set" precise: the sixteen permitted deltas are exactly the
-elements of `PermittedBugFix` under the classification function
-`classify_divergence_reason`, and every other class either classifies
-as `CandidateBoundaryDivergence` (requires hypothesis review) or
-`UnexpectedDivergence` (forbidden).
+**Slashing-pipeline correctness.** The Rust slashing pipeline is
+correct: `main_slashing_algorithm_correct` (§6 of `MainTheorem.v`)
+establishes that for every detected admissible/ignorable equivocation,
+the slash effect zeros the offender's bond, the witnessing hash is
+retained in the record store, the offender is excluded from fork
+choice, and the forfeited stake is credited to the Coop vault — all
+under the closed set of sixteen documented bug fixes (T-9.1–T-9.15).
+The differential divergence calculus of §8.8 classifies which
+differential-search disagreements are admissible: `PermittedBugFix`
+and `Bisimilar` are accepted, `CandidateBoundaryDivergence` requires
+hypothesis review, and `UnexpectedDivergence` is forbidden.
+
+(An earlier version of this article also proved the Rust pipeline
+weakly barbed bisimilar to the Scala original. That bug-finding
+differential result is obsolete under the cost-accounted-rho migration
+and has been removed; see the §8 removal note and DR-6.)
 
 **Two-level slash closure preserves BFT quorum.** The slash closure
 operator terminates in at most `|V| − 1` iterations (Theorem 7.2 =
@@ -3326,11 +3190,11 @@ The article has aimed at *journal-article quality* rather than
 *proof-artifact thoroughness*: every theorem statement is followed
 by a prose proof, every headline theorem cites a worked example,
 every bug-fix proof exhibits the pre-fix counter-example that
-motivated it, and the divergence calculus of §8.8 makes the "modulo"
-qualifier of T-15 a first-class formal object. The Rocq mechanization
-under `formal/rocq/slashing/theories/` remains the authoritative source
-of truth; this article is the English shadow that makes the
-development *readable* without sacrificing *precision*.
+motivated it, and the divergence calculus of §8.8 makes the
+"permitted modulo documented deltas" qualifier a first-class object.
+The Rocq mechanization under `formal/rocq/slashing/theories/` remains
+the authoritative source of truth; this article is the English shadow
+that makes the development *readable* without sacrificing *precision*.
 
 ---
 

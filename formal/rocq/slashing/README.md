@@ -1,7 +1,10 @@
 # Slashing — Mechanized Rocq Proofs
 
 This directory contains the kernel-checked formal verification of the slashing
-logic. The companion mathematical exposition lives in
+logic. The headline result is `main_slashing_algorithm_correct`: every detected
+admissible/ignorable equivocation leads to bond zeroing, witness recording,
+fork-choice exclusion, and stake transfer to the Coop vault, under all
+documented bug fixes. The companion mathematical exposition lives in
 `docs/theory/slashing/slashing-verification.md`; this README is a quick
 operator's guide.
 
@@ -18,8 +21,8 @@ systemd-run --user --scope \
             make -j1
 ```
 
-The `-j1` flag is mandatory: several modules (notably `Bisimulation.v`,
-`TwoLevelSlashing.v`) are memory-intensive (peak ~12 GB each).
+The `-j1` flag is mandatory: some modules (notably `TwoLevelSlashing.v`)
+are memory-intensive (peak ~12 GB).
 
 ## Verifying the trust base
 
@@ -27,7 +30,7 @@ After a successful build:
 
 ```sh
 coqtop -batch -load-vernac-source theories/MainTheorem.v \
-       -e 'Print Assumptions main_bisimilarity_theorem.'
+       -e 'Print Assumptions main_slashing_algorithm_correct.'
 ```
 
 The output must be `Closed under the global context`. Any custom axiom,
@@ -64,8 +67,7 @@ that promotion.
                               └──────────────────────────┘
 
 (See _CoqProject for the full graph including SlashDeploy, BlockCreator,
- ForkChoice, TwoLevelSlashing, ValidatorLifetime, BugFix*, Bisimulation,
- MainTheorem.)
+ ForkChoice, TwoLevelSlashing, ValidatorLifetime, BugFix*, MainTheorem.)
 ```
 
 ## Mapping to the verification document
@@ -84,11 +86,11 @@ cost-accounting precedent:
   `EquivocationDetector.detect`, `prepare_slashing_deploys`).
 - **(b) Verifications of paper algorithms** — `EquivocationDetector` soundness
   and completeness (T-1, T-2), `slash` zeros bond (T-7).
-- **(c) Proof-original extensions** — bisimilarity Rust ~~ Scala (T-13–T-15);
-  proven bug-fix deltas (T-9.1–T-9.15, including T-9.10' / T-9.10″ for the
-  withdrawal flow), plus current-epoch slash authorization, checked sequence
-  arithmetic, duplicate-justification rejection, rejected-slash recovery
-  dedup, slash-seed input injectivity, and auth-token no-op wrappers.
+- **(c) Proof-original extensions** — proven bug-fix deltas (T-9.1–T-9.15,
+  including T-9.10' / T-9.10″ for the withdrawal flow), plus current-epoch
+  slash authorization, checked sequence arithmetic, duplicate-justification
+  rejection, rejected-slash recovery dedup, slash-seed input injectivity, and
+  auth-token no-op wrappers.
 - **(d) Citable-axiom-gated** — none in the consensus-critical path; all
   classical lemmas appear in the trust base only.
 

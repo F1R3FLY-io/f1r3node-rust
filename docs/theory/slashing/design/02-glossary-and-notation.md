@@ -35,25 +35,22 @@ a term you do not recognize while reading later sections, return here.
 | **RSpace** | F1R3FLY's tuple-space storage  | The persistence layer that holds DAG state, bond map, equivocation records, and coop vault (§05.5). |
 | **ADR**  | Architecture Decision Record     | The DR-N entries in `15-decision-records.md`.                      |
 | **OOM**  | Out of Memory                    | TLC heap-exhaustion outcome during liveness-graph construction; flagged in `slashing-verification.md §10`. |
-| **PKI**  | Public-Key Infrastructure        | Authenticated identity layer; out of scope for the bisimilarity claim (T-15 holds modulo this assumption). |
+| **PKI**  | Public-Key Infrastructure        | Authenticated identity layer; an out-of-scope assumption the slashing layer relies on (validator identities are assumed authenticated). |
 | **DR-N** | Decision Record #N               | See `15-decision-records.md`.                                       |
 
-## 2.2 Process-algebraic notation (informal)
+## 2.2 Transition-system and logical notation (informal)
 
-These come from [Mil89], [Mil99], [SW01], [San98], used in the
-bisimilarity discussion (§10).
+These symbols appear in the labeled-transition-system (LTS) traces,
+pipeline diagrams, and theorem statements throughout this document.
+The LTS / α-equivalence conventions follow [Mil89], [Mil99], [SW01],
+[MR05a].
 
 | Symbol | Name                                     | Meaning                                                                                                                                                                      |
 |--------|------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `→`    | LTS transition                           | `s →ℓ t` means the state machine moves from `s` to `t` under label `ℓ`. (Inline / prose form.)                                                                               |
 | `⟶`    | LTS step (trace)                         | Long arrow used in code-fenced pipeline traces (e.g. `sign(v, s, b) ⟶ DAG += b`); equivalent to `→` but visually distinct in monospaced output. Matches spec §11 convention. |
 | `→*`   | Multi-step                               | Reflexive-transitive closure of `→`.                                                                                                                                         |
-| `~`    | Strong bisimilarity                      | Mutual simulation under matching labels.                                                                                                                                     |
-| `≈`    | Weak bisimilarity                        | Mutual simulation modulo internal `τ` (silent) steps.                                                                                                                        |
 | `≡_α`  | α-equivalence                            | Up to renaming of bound names (rho-calculus, [MR05a]).                                                                                                                       |
-| `↓ℓ`   | Barb                                     | State can immediately perform observable action `ℓ`.                                                                                                                         |
-| `⇓ℓ`   | Weak barb                                | State can perform `ℓ` after some `τ`-steps.                                                                                                                                  |
-| `≈ₓ`   | Barbed equivalence                       | Bisimilarity up to barbs in set `x`.                                                                                                                                         |
 | `⊤`    | Boolean true                             | Used in detection-decision predicates.                                                                                                                                       |
 | `⊥`    | Boolean false / terminal absorbing state | Used in `(_, false)` returns and `Removed → ⊥` (§07).                                                                                                                        |
 | `⟹`    | Logical implication                      | Used in formal LTS rules and theorem statements.                                                                                                                             |
@@ -64,8 +61,8 @@ bisimilarity discussion (§10).
 | `⊆`    | Subset (incl. equal)                     | Standard.                                                                                                                                                                    |
 | `≡`    | Equivalence (mutual containment)         | Used for sets / lists where iteration order is not observable.                                                                                                               |
 | `=`    | Strict equality                          | Used for natural numbers, function values, and pointwise-equal maps.                                                                                                         |
-| `incl A B` | List/set containment (Rocq)         | `incl A B := ∀ x, In x A → In x B` — i.e. every element of `A` is also in `B`. Used in `Bisimulation.v`, `MainTheorem.v`, and `TwoLevelSlashing.v`; cited from §05.4.3 and §08 (T-11 statement). |
-| `⊑`    | Order / refinement                       | Optional notation for ordering; used informally in §07 and §10.                                                                                                              |
+| `incl A B` | List/set containment (Rocq)         | `incl A B := ∀ x, In x A → In x B` — i.e. every element of `A` is also in `B`. Used in `MainTheorem.v` and `TwoLevelSlashing.v`; cited from §05.4.3 and §08 (T-11 statement). |
+| `⊑`    | Order / refinement                       | Optional notation for ordering; used informally in §07.                                                                                                                      |
 
 ## 2.3 Slashing protocol terms
 
@@ -87,7 +84,7 @@ bisimilarity discussion (§10).
 | `ilm`             | Invalid latest messages | The legacy DAG-side index `dag.invalid_latest_messages`; retained for historical bug-fix examples. Current slash-candidate generation uses authorized invalid-block evidence (§04, §06). |
 | `Equivocation`    | Term of art         | A validator signing two distinct blocks at the same sequence number; formalized as Definition 4.1 in spec; cf. taxonomy §2.6.                                                   |
 | `horizon`         | Search depth        | The depth — measured in evidence layers or sequence-number distance — up to which an adversarial campaign is materially exploitable. The `HorizonCampaignDivergenceClass`/`HorizonV2DivergenceClass` Sage models and the search-horizon program documentation live under `formal/sage/slashing/` and `docs/theory/slashing/`. |
-| `frontier`        | Unresolved-divergence set | The present set of local divergences in a search corpus that have not yet been classified (bisimilar, permitted_bug_fix, candidate_boundary, projection_risk, assumption_counterexample). See `Bisimulation.v:627-685` `*_boundary_requires_review` family. |
+| `frontier`        | Unresolved-divergence set | The present set of local divergences in a search corpus that have not yet been classified (bisimilar, permitted_bug_fix, candidate_boundary, projection_risk, assumption_counterexample). The divergence-classification calculus lives in the Rust mirror `casper/tests/slashing/divergence_class.rs` (`classify` / `divergence_allowed` / `frontier_classification_ok`). |
 | `campaign`        | Composite attack sequence | A composed series of adversarial actions across multiple objectives and time windows; see `slashing-threat-model.md §3` and `slashing-search-horizon.md`. |
 | `carryover policy` | Epoch-boundary evidence rule | The rule governing whether evidence accumulated in epoch `e` remains authorizable in epoch `e+1`. T-12RET formalises the temporal-retention boundary; spec §15 (Authorized Slash Evidence) is normative. |
 | `retention window` | Validity interval  | The time / sequence interval during which evidence must remain replayable. Slash authorization is rejected for evidence older than the window. T-12 temporal-retention. |
@@ -172,7 +169,6 @@ slashable variants** referenced in §09 and bug-fix #3.
 | Class                   | Form                   | Examples                                                                                      |
 |-------------------------|------------------------|-----------------------------------------------------------------------------------------------|
 | Headline theorems       | `T-N`                  | T-1 (detection soundness), T-3, T-7, T-8, T-10, T-11.                                         |
-| Headline split labels   | `T-Na`, `T-Nb`, `T-Nc` | T-13a / T-13b / T-13c (bonds, records, fork-choice).  T-15a / T-15b (pipeline, composition).  |
 | Named headline theorems | Mnemonic               | **T-Idem** (slash idempotence; alias T-9), **T-AuthCheck** (auth-token guard modeled by Rocq/TLA+ auth oracle). |
 | Bug-fix theorems        | `T-9.M`                | T-9.1 through T-9.15.                                                                         |
 | Letter-suffix theorems  | `T-N<suffix>`          | T-12C, T-12I, T-12F, T-12G, T-12A, T-12V, T-12RPT, T-12EID, T-12HYP, T-12AMP, T-12PF, T-12W, T-12R, T-12D, T-12RET, T-5DF, T-15D. See the mnemonic table below. |
@@ -207,7 +203,7 @@ it.
 | **D**      | **D**AG-level analog                                 | `t_9_6_dag` / DAG-level T-12 variants                |
 | **RET**    | **RET**ention boundary (temporal)                     | `Inv_TemporalRetentionBoundary` family               |
 | **5DF**    | **D**elimiter-**F**ree record-key injectivity (T-**5** sub-suffix) | `Inv_CanonicalRecordKeyInjective`                    |
-| **15D**    | T-**15** **D**eltas (mod clause)                      | (modulo clause; see §10 of spec)                     |
+| **15D**    | Differential-**D**ivergence classification           | Differential-search divergence calculus; Rust mirror `divergence_class.rs` (`classify` / `divergence_allowed`) |
 
 **Conventional readings** worth remembering:
 
