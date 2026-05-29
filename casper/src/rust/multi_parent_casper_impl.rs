@@ -793,7 +793,12 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
                 PrettyPrinter::build_string_bytes(&block.block_hash),
             );
-            tracing::error!("{}", msg);
+            tracing::error!(
+                block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                expected = %PrettyPrinter::build_string_no_limit(&pre_state_hash),
+                actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
+                "self-created block pre_state_hash mismatch"
+            );
             return Ok(Either::Left(BlockError::BlockException(
                 CasperError::RuntimeError(msg),
             )));
@@ -805,7 +810,12 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
                 PrettyPrinter::build_string_bytes(&block.block_hash),
             );
-            tracing::error!("{}", msg);
+            tracing::error!(
+                block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                expected = %PrettyPrinter::build_string_no_limit(&post_state_hash),
+                actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+                "self-created block post_state_hash mismatch"
+            );
             return Ok(Either::Left(BlockError::BlockException(
                 CasperError::RuntimeError(msg),
             )));

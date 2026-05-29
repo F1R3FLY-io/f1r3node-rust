@@ -934,7 +934,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
             tracing::info!("LFS Block Requester stream created successfully");
         }
         Err(e) => {
-            tracing::error!("Failed to create LFS Block Requester stream: {:?}", e);
+            tracing::error!(error = ?e, "LFS Block Requester stream creation failed");
             // Cleanup is handled automatically by Drop implementations for channels
         }
     }
@@ -983,7 +983,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
         );
         for initial_message in initial_response_messages {
             if let Err(_) = initial_messages_tx.send(initial_message.clone()).await {
-                tracing::error!("Failed to enqueue initial message - channel closed");
+                tracing::error!("LFS initial message enqueue failed: channel closed");
                 return Err(CasperError::StreamError(
                     "Failed to setup initial messages".to_string(),
                 ));

@@ -904,7 +904,7 @@ impl RuntimeManager {
                     creator.encode_hex::<String>(),
                     seq_num
                 );
-                tracing::error!("{}", msg);
+                tracing::error!(state_hash = %state_hash.bytes().encode_hex::<String>(), creator = %creator.encode_hex::<String>(), seq_num, "mergeable entry missing for block");
                 Err(CasperError::KvStoreError(KvStoreError::KeyNotFound(msg)))
             }
         }

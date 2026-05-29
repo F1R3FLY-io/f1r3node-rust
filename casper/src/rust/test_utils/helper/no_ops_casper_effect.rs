@@ -259,7 +259,7 @@ impl NoOpsCasperEffect {
                     hex::encode(&block.block_hash)
                 );
             }
-            Err(e) => tracing::error!("Failed to store block in KeyValueBlockStore: {:?}", e),
+            Err(e) => tracing::error!(error = ?e, "block store put failed"),
         }
     }
 
@@ -282,7 +282,7 @@ impl NoOpsCasperEffect {
                         hex::encode(&block_hash)
                     );
                 }
-                Err(e) => tracing::error!("Failed to add block metadata to DAG storage: {:?}", e),
+                Err(e) => tracing::error!(error = ?e, "block metadata DAG storage insert failed"),
             }
             drop(metadata_guard);
 
@@ -299,7 +299,7 @@ impl NoOpsCasperEffect {
                 .collect();
             let deploy_index_guard = self.block_dag_storage.deploy_index.write().unwrap();
             if let Err(e) = deploy_index_guard.put(deploy_entries) {
-                tracing::error!("Failed to add deploy mappings to DAG storage: {:?}", e);
+                tracing::error!(error = ?e, "deploy index put failed");
             }
             drop(deploy_index_guard);
 
@@ -344,10 +344,7 @@ impl NoOpsCasperEffect {
                 }
             }
         } else {
-            tracing::error!(
-                "Cannot add block {} to DAG - block not found in store",
-                hex::encode(&block_hash)
-            );
+            tracing::error!(block_hash = %hex::encode(&block_hash), "block not found in store; cannot add to DAG");
         }
     }
 

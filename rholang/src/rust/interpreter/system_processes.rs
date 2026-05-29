@@ -992,7 +992,7 @@ impl SystemProcesses {
         let response = match ollama_service.chat(Some(&model), messages).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama chat error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama chat request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1048,7 +1048,7 @@ impl SystemProcesses {
         let response = match ollama_service.generate(Some(&model), &prompt).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama generate error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama generate request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1092,7 +1092,7 @@ impl SystemProcesses {
         let models = match ollama_service.list_models().await {
             Ok(models) => models,
             Err(e) => {
-                tracing::error!("Ollama models error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama models list request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1234,7 +1234,7 @@ impl SystemProcesses {
         // Log the abort reason for debugging
         if let Some(arg) = args.first() {
             let str = self.pretty_printer.build_string_from_message(arg);
-            tracing::error!("Execution aborted with arguments: {}", str);
+            tracing::error!(abort_args = %str, "Rholang contract execution aborted");
         }
 
         Err(InterpreterError::UserAbortError)

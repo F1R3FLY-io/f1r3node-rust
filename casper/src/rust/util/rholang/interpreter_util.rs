@@ -199,122 +199,26 @@ pub async fn validate_block_checkpoint(
                     .cloned()
                     .collect();
 
-                // Get all deploy signatures in the block for duplicate detection
-                let all_block_deploys: Vec<_> = block
-                    .body
-                    .deploys
-                    .iter()
-                    .map(|pd| pd.deploy.sig.clone())
-                    .collect();
-                let mut all_deploy_sigs: Vec<_> = all_block_deploys.clone();
-                all_deploy_sigs.extend(block.body.rejected_deploys.iter().map(|rd| rd.sig.clone()));
-
-                // Find duplicates
+                // Find duplicates across all deploy sigs in the block
                 let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
-                for sig in &all_deploy_sigs {
-                    *sig_counts.entry(sig.clone()).or_insert(0) += 1;
+                for pd in &block.body.deploys {
+                    *sig_counts.entry(pd.deploy.sig.clone()).or_insert(0) += 1;
                 }
-                let duplicates: Vec<_> = sig_counts
-                    .into_iter()
-                    .filter(|(_, count)| *count > 1)
-                    .map(|(sig, _)| sig)
-                    .collect();
-
-                // Build deploy data map for correlation
-                let deploy_data_map: HashMap<Bytes, &Signed<DeployData>> = block
-                    .body
-                    .deploys
-                    .iter()
-                    .map(|pd| (pd.deploy.sig.clone(), &pd.deploy))
-                    .collect();
-
-                // Helper to analyze a deploy signature
-                let analyze_deploy_sig = |sig: &Bytes| -> String {
-                    let sig_str = PrettyPrinter::build_string_bytes(sig);
-                    let is_duplicate = if duplicates.contains(sig) {
-                        " [DUPLICATE]"
-                    } else {
-                        ""
-                    };
-                    let deploy_info = match deploy_data_map.get(sig) {
-                        Some(deploy) => {
-                            let term_preview: String = deploy.data.term.chars().take(50).collect();
-                            format!(
-                                " (term={}..., timestamp={}, phloLimit={})",
-                                term_preview, deploy.data.time_stamp, deploy.data.phlo_limit
-                            )
-                        }
-                        None => " (deploy data not found in block)".to_string(),
-                    };
-                    format!("{}{}{}", sig_str, is_duplicate, deploy_info)
-                };
-
-                let extra_analysis: String = if extra_in_computed.is_empty() {
-                    "  None".to_string()
-                } else {
-                    extra_in_computed
-                        .iter()
-                        .map(|sig| format!("  {}", analyze_deploy_sig(sig)))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-
-                let missing_analysis: String = if missing_in_computed.is_empty() {
-                    "  None".to_string()
-                } else {
-                    missing_in_computed
-                        .iter()
-                        .map(|sig| format!("  {}", analyze_deploy_sig(sig)))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-
-                let duplicates_str: String = if duplicates.is_empty() {
-                    "  None".to_string()
-                } else {
-                    duplicates
-                        .iter()
-                        .map(|sig| format!("  {}", PrettyPrinter::build_string_bytes(sig)))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-
-                let parent_hashes: String = parents
-                    .iter()
-                    .map(|p| PrettyPrinter::build_string_bytes(&p.block_hash))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                for rd in &block.body.rejected_deploys {
+                    *sig_counts.entry(rd.sig.clone()).or_insert(0) += 1;
+                }
+                let duplicate_count = sig_counts.values().filter(|&&c| c > 1).count();
 
                 tracing::error!(
-                    "\n=== InvalidRejectedDeploy Analysis ===\n\
-                    Block #{} ({})\n\
-                    Sender: {}\n\
-                    Parents: {}\n\n\
-                    Rejected deploy mismatch:\n\
-                    \x20 Validator computed: {} rejected deploys\n\
-                    \x20 Block contains:     {} rejected deploys\n\n\
-                    Extra in computed (validator wants to reject, but block creator didn't):\n\
-                    \x20 Count: {}\n{}\n\n\
-                    Missing in computed (block creator rejected, but validator doesn't think should be):\n\
-                    \x20 Count: {}\n{}\n\n\
-                    Duplicates found in block: {}\n{}\n\n\
-                    All deploys in block: {}\n\
-                    All rejected in block: {}\n\
-                    ========================================",
-                    block.body.state.block_number,
-                    PrettyPrinter::build_string_bytes(&block.block_hash),
-                    PrettyPrinter::build_string_bytes(&block.sender),
-                    parent_hashes,
-                    rejected_deploy_ids.len(),
-                    block_rejected_deploy_sigs.len(),
-                    extra_in_computed.len(),
-                    extra_analysis,
-                    missing_in_computed.len(),
-                    missing_analysis,
-                    duplicates.len(),
-                    duplicates_str,
-                    all_block_deploys.len(),
-                    block_rejected_deploy_sigs.len()
+                    block_num = block.body.state.block_number,
+                    block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                    validator_rejected = rejected_deploy_ids.len(),
+                    block_rejected = block_rejected_deploy_sigs.len(),
+                    extra_count = extra_in_computed.len(),
+                    missing_count = missing_in_computed.len(),
+                    duplicate_count,
+                    "rejected deploy mismatch: validator and block creator disagree on rejected deploys"
                 );
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
@@ -449,21 +353,21 @@ async fn replay_block(
                 } else if attempts >= MAX_RETRIES {
                     // Give up after max retries
                     tracing::error!(
-                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: giving up after {} retries",
-                        PrettyPrinter::build_string_no_limit(&block.block_hash),
-                        PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
-                        PrettyPrinter::build_string_no_limit(&computed_state_hash),
-                        attempts
+                        block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        expected = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+                        computed = %PrettyPrinter::build_string_no_limit(&computed_state_hash),
+                        attempts,
+                        "replay tuple space mismatch: giving up after max retries"
                     );
                     return Ok(Either::Right(computed_state_hash));
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
-                        "Replay block {} with {} got tuple space mismatch error with error hash {}, retries details: will retry, attempt {}",
-                        PrettyPrinter::build_string_no_limit(&block.block_hash),
-                        PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
-                        PrettyPrinter::build_string_no_limit(&computed_state_hash),
-                        attempts + 1
+                        block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        expected = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+                        computed = %PrettyPrinter::build_string_no_limit(&computed_state_hash),
+                        attempt = attempts + 1,
+                        "replay tuple space mismatch: retrying"
                     );
                     attempts += 1;
                 }
@@ -472,10 +376,10 @@ async fn replay_block(
                 if attempts >= MAX_RETRIES {
                     // Give up after max retries
                     tracing::error!(
-                        "Replay block {} got error {:?}, retries details: giving up after {} retries",
-                        PrettyPrinter::build_string_no_limit(&block.block_hash),
-                        replay_error,
-                        attempts
+                        block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        error = ?replay_error,
+                        attempts,
+                        "replay failed: giving up after max retries"
                     );
                     // Convert CasperError to ReplayFailure::InternalError
                     return Ok(Either::Left(ReplayFailure::internal_error(
@@ -484,10 +388,10 @@ async fn replay_block(
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
-                        "Replay block {} got error {:?}, retries details: will retry, attempt {}",
-                        PrettyPrinter::build_string_no_limit(&block.block_hash),
-                        replay_error,
-                        attempts + 1
+                        block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+                        error = ?replay_error,
+                        attempt = attempts + 1,
+                        "replay failed: retrying"
                     );
                     attempts += 1;
                 }

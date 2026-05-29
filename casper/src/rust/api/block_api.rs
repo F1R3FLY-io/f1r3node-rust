@@ -360,10 +360,7 @@ impl BlockAPI {
                                     tokio::time::sleep(retry_delay).await;
                                     continue;
                                 }
-                                tracing::error!(
-                                    "Failed to trigger propose from deploy path: {}",
-                                    err
-                                );
+                                tracing::error!(error = %err, "deploy-triggered propose failed");
                             }
                         }
                         break;

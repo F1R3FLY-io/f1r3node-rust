@@ -647,7 +647,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 )
                 .await
                 {
-                    tracing::error!("waitingForApprovedBlockLoop failed: {:?}", e);
+                    tracing::error!(error = ?e, "waiting for approved block loop failed");
                 }
             }
         });

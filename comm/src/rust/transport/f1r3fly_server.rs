@@ -185,7 +185,7 @@ impl F1r3flyServer {
                         });
                     }
                     Some(Err(e)) => {
-                        tracing::error!("TCP listener error: {}", e);
+                        tracing::error!(error = %e, "TCP listener accept failed");
                         let _ = tx.send(Err(F1r3flyServerError::Io(e))).await;
                     }
                     None => {

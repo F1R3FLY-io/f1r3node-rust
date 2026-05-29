@@ -450,7 +450,7 @@ impl RuntimeOps {
             }
 
             Either::Left(error) => {
-                tracing::error!("Pre-charge failure '{}'", error.error_message);
+                tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
 
                 // Handle evaluation errors from PreCharge
                 // - assigning 0 cost - replay should reach the same state
@@ -876,7 +876,7 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!("Error in play_exploratory_par: {:?}", err);
+                tracing::error!(error = ?err, "play_exploratory_par failed");
                 Ok(Vec::new())
             }
         };

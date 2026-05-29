@@ -173,7 +173,7 @@ fn validate_api_key_or_fail_sync(api_key: &str, timeout_sec: u64) {
             );
         }
         Ok(Ok(Err(e))) => {
-            tracing::error!("OpenAI API key validation failed: {}", e);
+            tracing::error!(error = %e, "OpenAI API key validation failed");
             panic!(
                 "OpenAI API key validation failed. Check 'openai.api-key' or \
                  'OPENAI_API_KEY' or 'OPENAI_SCALA_CLIENT_API_KEY'. Error: {}",
@@ -181,10 +181,7 @@ fn validate_api_key_or_fail_sync(api_key: &str, timeout_sec: u64) {
             );
         }
         Ok(Err(_)) => {
-            tracing::error!(
-                "OpenAI API key validation timed out after {} seconds",
-                timeout_sec
-            );
+            tracing::error!(timeout_sec, "OpenAI API key validation timed out");
             panic!(
                 "OpenAI API key validation timed out after {} seconds. \
                  Check network connectivity or increase validation-timeout-sec.",

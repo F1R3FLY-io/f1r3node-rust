@@ -4,6 +4,4 @@
 // to avoid conflicts with the global tracing subscriber initialization.
 // For now, this is disabled until proper integration can be implemented.
 
-pub fn create_zipkin_reporter() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
-}
+pub fn create_zipkin_reporter() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
