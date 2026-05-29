@@ -13,8 +13,8 @@
 (* which proves these properties for the general (unbounded) case.          *)
 (* This TLA+ model exhaustively checks finite instances via TLC.            *)
 (*                                                                          *)
-(* Reference: L. G. Meredith, "Translating Cost-Accounted Rho Calculus     *)
-(* Back to the Pure Rho Calculus," F1R3FLY.io, April 2026.                 *)
+(* Reference: L. G. Meredith, "Cost-Accounted Rho Calculus: A Spectral     *)
+(* Decomposition of Phlogiston," F1R3FLY.io, May 2026.                     *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets

@@ -4,8 +4,8 @@
 Is Faithfully Encodable within Pure Rho Calculus**
 
 *Companion to: L. Gregory Meredith,
-"Translating Cost-Accounted Rho Calculus Back to the Pure Rho Calculus:
-Toward Rearchitecting Phlogiston Accounting in Rholang," April 2026 [4].*
+"Cost-Accounted Rho Calculus: A Spectral Decomposition of Phlogiston,"
+May 2026 [4].*
 
 ---
 
@@ -173,7 +173,7 @@ This article proves that claim. Concretely, we contribute:
    copy, because that is stronger than the standard replication law and
    is not required by the cost-accounting correctness chain.
 
-The paper [4, §6.3, §6.4 phase 4] anticipates a Lean 4 mechanization of
+The paper [4, §6.4 Implementation Path] anticipates a Lean 4 mechanization of
 the translation; the present development fulfils that role in Rocq and
 extends it with the consensus-critical theorems of item (3) and the
 replication-encoding support of item (5).
@@ -248,10 +248,10 @@ The results above fall into four pedigree classes:
 (a) **Direct mechanizations of paper claims.** Contextual forward reachability,
 strong bisimulation, per-step reverse simulation, and fuel-gate
 safety mechanize the per-rule simulation arguments and the
-capability-security observations sketched in [4, §5–§6.3].
+capability-security observations sketched in [4, §4 and §5].
 
 (b) **Formal verifications of properties of the paper's algorithm.**
-The token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` (paper §4.2) is
+The token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` (paper [4, Appendix A]) is
 *itself* the algorithm that guarantees sequential firing: at most one
 token message sits on any signature channel at a time, and each
 fuel-gate firing dequotes the next token into existence. Step
@@ -459,7 +459,7 @@ The three axioms:
 | Symbol | Rocq Name | Domain → Codomain   | Purpose                                   |
 |--------|-----------|---------------------|-------------------------------------------|
 | `N⟦·⟧` | `N_tr`    | `sig → name`        | Signatures become channel names           |
-| `T⟦·⟧` | `T_tr`    | `token → proc`      | Tokens become messages (outputs)          |
+| `K⟦·⟧` | `T_tr`    | `token → proc`      | Token-stack translation: tokens become messages (outputs). The repo's `T_tr` realizes the paper's `K⟦·⟧`; the paper reserves `T⟦·⟧` for the signed-term translation. |
 | `P⟦·⟧` | `P_tr`    | `proc × sig → proc` | Signed processes become fuel-gated inputs |
 | `S⟦·⟧` | `S_tr`    | `system → proc`     | Compositional system translation          |
 
@@ -781,21 +781,23 @@ The **system token count** `‖S‖` is the sum of all token sizes in *S*:
     ‖T‖       = token_size(T)
     ‖S₁ ∥ S₂‖ = ‖S₁‖ + ‖S₂‖
 
-### 4.2 Cost-Accounted Rewrite Rules (paper Section 3.2)
+### 4.2 Cost-Accounted Rewrite Rules (paper Section 3.6)
 
-All five rules are variations on one theme: a COMM is gated by
-consumption of a token whose signature matches the communicating
-processes [4, Remark 3.2]. They differ in whether the redex is signed as
-a whole or split across signatures, and whether the token is combined or
-split:
+The rule numbers below follow the May-2026 spec §3.6 numbering; the April
+draft labeled the two split-process rules (Rules 4/5) in the opposite
+order — the rule set is identical. All five rules are variations on one
+theme: a COMM is gated by consumption of a token whose signature matches
+the communicating processes [4, §3.6]. They differ in whether the redex
+is signed as a whole or split across signatures, and whether the token is
+combined or split:
 
 | Rule  | Redex shape                      | Token shape             | Fuel consumed |
 |-------|----------------------------------|-------------------------|---------------|
 | **1** | Whole redex, single sig s        | s:T                     | 1             |
 | **2** | Whole redex, compound s₁ & s₂    | s₁:T₁ and s₂:T₂ (split) | 2             |
 | **3** | Whole redex, compound s₁ & s₂    | (s₁ & s₂):T (combined)  | 1             |
-| **4** | Split processes (P^{s₁}, Q^{s₂}) | (s₁ & s₂):T (combined)  | 1             |
-| **5** | Split processes (P^{s₁}, Q^{s₂}) | s₁:T₁ and s₂:T₂ (split) | 2             |
+| **5** | Split processes (P^{s₁}, Q^{s₂}) | (s₁ & s₂):T (combined)  | 1             |
+| **4** | Split processes (P^{s₁}, Q^{s₂}) | s₁:T₁ and s₂:T₂ (split) | 2             |
 
 The formal definitions (`theories/CostAccountedReduction.v:83`):
 
@@ -813,12 +815,12 @@ The formal definitions (`theories/CostAccountedReduction.v:83`):
     (for(y ← x) P ∣ x!(Q))^{s₁ & s₂} ∣ (s₁ & s₂):T
         ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T
 
-**Rule 4** *(split processes, combined token)*:
+**Rule 5** *(split processes, combined token)*:
 
     (for(y ← x) P)^{s₁} ∣ (x!(Q))^{s₂} ∣ (s₁ & s₂):T
         ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T
 
-**Rule 5** *(split processes, split tokens)*:
+**Rule 4** *(split processes, split tokens)*:
 
     (for(y ← x) P)^{s₁} ∣ (x!(Q))^{s₂} ∣ s₁:T₁ ∣ s₂:T₂
         ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T₁ ∣ T₂
@@ -998,8 +1000,8 @@ When the granularity of the token (combined vs. split) does not match the
 granularity expected by the signed process, **mediator processes** bridge
 the gap.
 
-**Split** (Definition 4.1 in [4]) — converts a combined token into
-separate tokens:
+**Split** ([4, Appendix A], Split/Join infrastructure) — converts a
+combined token into separate tokens:
 
         Split(s₁, s₂)  =  for(t ← N⟦s₁ & s₂⟧)( N⟦s₁⟧!(0) ∣ N⟦s₂⟧!(*t) )
 
@@ -1007,7 +1009,7 @@ Upon receiving a compound token, Split emits:
 1. An empty signal (`0`) on channel `N⟦s₁⟧`.
 2. The received payload (`*t`) on channel `N⟦s₂⟧`.
 
-**Join** (Definition 4.2 in [4]) — the inverse:
+**Join** ([4, Appendix A], Split/Join infrastructure) — the inverse:
 
         Join(s₁, s₂)  =  for(t₁ ← N⟦s₁⟧) for(t₂ ← N⟦s₂⟧)
                              ( N⟦s₁ & s₂⟧!( *t₁ ∣ *t₂ ) )
@@ -1074,6 +1076,13 @@ each of the five COMM rules to a per-rule simulation lemma:
 | 3    | `rule3_simulation`         | `Split(s₁, s₂)`                         |
 | 4    | `rule4_simulation_generic` | `0` or `Split` (depending on sig shape) |
 | 5    | `rule5_simulation_generic` | `0` or `Split` (depending on sig shape) |
+
+The Rule column above follows the Rocq constructor numbering
+(`rule4_simulation_generic` proves the combined-token case;
+`rule5_simulation_generic` proves the split-tokens case). The May-2026
+spec §3.6 labels these in the opposite order (its Rule 5 is the
+combined-token case, its Rule 4 the split-tokens case); the Rocq lemma
+names are retained unchanged, and the rule set is identical.
 
 The PAR contextual closure cases lift the per-rule reachability via
 `rho_reachable_par_l` and `rho_reachable_par_r`.
@@ -2112,7 +2121,7 @@ and `x!(Q)` share channel `x`. By the PAR rule:
 
 ---
 
-> **Lemma 9.5.4** *(Rule 4 Simulation — Split Processes, Combined Token).*
+> **Lemma 9.5.4** *(May Rule 5 Simulation — Split Processes, Combined Token; April Rule 4).*
 > *For all names `x`, processes `P`, `Q`, atomic signatures `s₁`, `s₂`,
 > and token `T`, with `Ctx = Split(s₁, s₂)`:*
 >
@@ -2224,7 +2233,7 @@ via Lemma 9.4). Step 8: inner COMM on `x`. Total: 8 `⇝`-steps.  ∎
 
 ---
 
-> **Lemma 9.5.5** *(Rule 5 Simulation — Split Processes, Split Tokens).*
+> **Lemma 9.5.5** *(May Rule 4 Simulation — Split Processes, Split Tokens; April Rule 5).*
 > *For all names `x`, processes `P`, `Q`, atomic signatures `s₁`, `s₂`,
 > and tokens `T₁`, `T₂`:*
 >
@@ -3585,18 +3594,18 @@ per large module.
 | 2.4 COMM rule      | `for(y←x)P ∣ x!(Q) ⇝ P{@Q/y}` | `rs_comm`                              | `RhoReduction.v:72`              |
 | 2.4 PAR rule       | `P⇝P'` / `P∣Q⇝P'∣Q`           | `rs_par_l`, `rs_par_r`                 | `RhoReduction.v:78`              |
 | 2.4 STRUCT rule    | `P≡P'  P'⇝Q'  Q'≡Q` / `P⇝Q`   | `rs_struct`                            | `RhoReduction.v:90`              |
-| 3.1 Signatures     | `s`                           | `sig`                                  | `CostAccountedSyntax.v:76`       |
-| 3.1 Tokens         | `T`                           | `token`                                | `CostAccountedSyntax.v:96`       |
+| Def 3.3 Signatures | `s`                           | `sig`                                  | `CostAccountedSyntax.v:76`       |
+| Def 3.2 Tokens     | `T`                           | `token`                                | `CostAccountedSyntax.v:96`       |
 | 3.1 Systems        | `S`                           | `system`                               | `CostAccountedSyntax.v:118`      |
-| 3.2 Five rules     | Rules 1–5                     | `ca_step`                              | `CostAccountedReduction.v:83`    |
-| 4.1 `N⟦·⟧`         | Signatures to names           | `N_tr`                                 | `Translation.v:122`              |
-| 4.2 `T⟦·⟧`         | Tokens to processes           | `T_tr`                                 | `Translation.v:143`              |
-| 4.3 `P⟦·⟧`         | Signed processes              | `P_tr`                                 | `Translation.v:191`              |
-| 4.4 `S⟦·⟧`         | System translation            | `S_tr`                                 | `Translation.v:220`              |
-| Def 4.1 Split      | Splitter mediator             | `Split`                                | `Translation.v:263`              |
-| Def 4.2 Join       | Joiner mediator               | `Join`                                 | `Translation.v:272`              |
-| 5 Verification     | Contextual forward reachability | `translation_faithful` / `translation_contextual_reachability` | `TranslationFaithfulness.v:2308` |
-| 6.3 Bisimulation   | Behavioral equivalence        | `bisim`                                | `Bisimulation.v:433`             |
+| 3.6 Five rules     | Rules 1–5                     | `ca_step`                              | `CostAccountedReduction.v:83`    |
+| App. A `N⟦·⟧`      | Signatures to names           | `N_tr`                                 | `Translation.v:122`              |
+| App. A `K⟦·⟧`      | Token-stack translation (repo `T_tr` = paper `K⟦·⟧`) | `T_tr`            | `Translation.v:143`              |
+| App. A `P⟦·⟧`      | Signed processes              | `P_tr`                                 | `Translation.v:191`              |
+| App. A `S⟦·⟧`      | System translation            | `S_tr`                                 | `Translation.v:220`              |
+| App. A Split       | Splitter mediator (Split/Join infrastructure) | `Split`                | `Translation.v:263`              |
+| App. A Join        | Joiner mediator (Split/Join infrastructure)   | `Join`                 | `Translation.v:272`              |
+| §4–§5 Verification | Contextual forward reachability | `translation_faithful` / `translation_contextual_reachability` | `TranslationFaithfulness.v:2308` |
+| §4–§5 Bisimulation | Behavioral equivalence        | `bisim`                                | `Bisimulation.v:433`             |
 | —                  | Generic bisim                 | `translation_strong_bisimilar_generic` | `Bisimulation.v:1246`            |
 | —                  | Generic per-step reverse      | `gate_per_step_reverse_generic`        | `TranslationFaithfulness.v:3888` |
 | —                  | Phase-based gate reflection   | `backward_reflection_phased_gate`      | `TranslationFaithfulness.v:4022` |
@@ -3677,7 +3686,7 @@ the digest is consensus.
 | Arbitrary whole-system steps reflect to `ca_step` for the recursive metered implementation target | `well_reflected_backward_reflection` | Mechanized |
 | Arbitrary whole-system steps reflect to `ca_step` for the legacy compositional `S_tr` image | Not the selected implementation invariant | Remains unclaimed because `P_tr` can spend an outer gate for an inert body |
 | Fuel cannot be synthesized in source reductions | `translation_fuel_bound_soundness`, `no_phantom_fuel` | Mechanized for `ca_reachable` |
-| Split/Join do not add source cost | Rules 3/4 consume one source token; Rules 2/5 consume two | Mechanized in source calculus; runtime must bill source-token events, not raw translated COMM count |
+| Split/Join do not add source cost | Rules 3/5 consume one source token; Rules 2/4 consume two | Mechanized in source calculus; runtime must bill source-token events, not raw translated COMM count |
 | Bounded-memory `TokenBudget` coalesces the nested token stack | `RuntimeBudgetRefinement.v`: `rb_total_remaining_conservation`, `rb_successful_weight_refines_unit_count`, `rb_reserve_oop_commits_limit`, `rb_reset_from_token_conservation` | Implemented as `RuntimeBudget` reset from `SignedProcess::metered(..., Token::Count ...)`; tested against finite unit-token expansion, OOP boundary commitment, reset semantics, and canonical event logs |
 | Weighted primitive/parser/substitution work is billed consistently | `rb_admitted_success_has_admissible_event`, `rb_zero_weight_admission_rejection_preserves_trace` | Implemented as deterministic positive bounded `BillableTokenEvent` reservations; zero-weight or malformed billable events are rejected before trace or fuel mutation |
 | Canonical OOP boundary is schedule-independent | `fuel_events_consumed_perm`, `ca_cost_deterministic` | Mechanized multiset/cost basis; Rust records insufficient-fuel boundaries by canonical source-event descriptor |
@@ -3886,8 +3895,9 @@ replication appendix is scoped to the operational unfold and axiom-free
 body-to-wrapper weak-barb propagation theorem described in Section 6.6;
 it does not claim full abstraction for arbitrary replicated wrappers.
 
-**Persistent infrastructure.** The paper [4, Remark 4.3] notes that Split
-and Join should be replicated (persistent) in practice, observing that
+**Persistent infrastructure.** The paper [4, Appendix A] (persistence
+remark) notes that Split and Join should be replicated (persistent) in
+practice, observing that
 the standard rho-calculus encoding of replication via self-reference
 through reflection [1] applies directly. This formalization adopts a
 **two-lens design**, mechanizing both views:
@@ -3917,7 +3927,7 @@ through reflection [1] applies directly. This formalization adopts a
    One `rs_comm` step of the encoding produces a fresh copy of `P` in
    parallel with the regenerated encoding — exactly the behavior of
    `rs_replicate` step-for-step. The trace relies on the semantic-
-   substitution rule of [4, §2.4] (mechanized in R.1 as
+   substitution rule of [4, §3.4] (mechanized in R.1 as
    `subst_proc_deref_nvar_eq_quote`): under the substitution
    `{⌜D(x) ∣ P⌝ / y}` the sub-terms `*y` collapse to `D(x) ∣ P`,
    regenerating the sender--receiver pair.
@@ -4107,9 +4117,8 @@ the formal specification.
 [3] L. G. Meredith *et al.*, "Rholang Specification," F1R3FLY.io /
     RChain Cooperative, 2017–2026.
 
-[4] L. G. Meredith, "Translating Cost-Accounted Rho Calculus Back to the
-    Pure Rho Calculus: Toward Rearchitecting Phlogiston Accounting in
-    Rholang," F1R3FLY.io, April 2026.
+[4] L. G. Meredith, "Cost-Accounted Rho Calculus: A Spectral Decomposition
+    of Phlogiston," F1R3FLY.io, May 2026.
 
 [5] D. Sangiorgi and D. Walker, *The π-Calculus: A Theory of Mobile
     Processes*, Cambridge University Press, 2001.
@@ -4184,8 +4193,8 @@ schedule-invariance.
 
 **Faithfulness to the paper.** The paper (`cost-accounted-rho.tex`)
 models cost as token-gated COMM with token conservation (Rules 1–5,
-§3.2) and faithfulness as operational bisimulation plus capability
-security (§5–§6); it has **no per-operation cost-trace or digest
+§3.6) and faithfulness as operational bisimulation plus capability
+security (§4 and §5); it has **no per-operation cost-trace or digest
 concept.** The runtime correlate of the paper's cost is `total_cost`
 (the conserved token total, clamped on OOP), which remains
 consensus-checked, and the consensus-critical theorems of this document

@@ -780,4 +780,4 @@ Source files: `formal/rocq/cost_accounted_rho/theories/{CostAccountedSyntax,Line
 
 <a id="ref-7"></a>[7] R. Milner, *Communicating and Mobile Systems: the π-Calculus*, Cambridge University Press, 1999. ISBN 978-0-521-65869-0.
 
-<a id="ref-8"></a>[8] L. G. Meredith, "Translating Cost-Accounted Rho Calculus Back to the Pure Rho Calculus: Toward Rearchitecting Phlogiston Accounting in Rholang," F1R3FLY.io, April 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/`; see the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).
+<a id="ref-8"></a>[8] L. G. Meredith, "Cost-Accounted Rho Calculus: A Spectral Decomposition of Phlogiston," F1R3FLY.io, May 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/`; see the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).

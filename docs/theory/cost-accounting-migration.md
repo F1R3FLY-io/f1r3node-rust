@@ -36,7 +36,7 @@ It does not modify the external paper.
 
 At the design baseline, before the staged cost-accounted rho implementation in this repository, the F1R3Node Rholang interpreter used an **externalized** cost-accounting model: a `CostManager` tracked remaining phlogiston, and a `ChargingRSpace` wrapper intercepted every `produce` / `consume` to pre-charge storage cost, refund on COMM match, and apply a unified COMM cost. Those names refer to the retired pre-migration architecture described by the design and proposal history, not to live current source paths in this branch. The strategy was order-independent by construction — confirmed empirically by `cost_should_be_deterministic` (which re-runs each contract 20 times and asserts identical cost) at `rholang/tests/accounting/cost_accounting_spec.rs:323`, by `cost_should_be_repeatable_when_generated` (10,000 randomly-generated contracts) at line 344, and by `peek_with_parallel_produce_should_have_deterministic_replay_cost` (line 474), which specifically guards the peek-with-parallel-produce class that is sensitive to scheduling.
 
-This document specifies the upgrade from that externalized model to an **internalized** model derived from the cost-accounted rho calculus [4]. The internalized model offers three concrete advantages over the legacy `ChargingRSpace` baseline: (a) cost determinism is established by a **mechanized formal proof** (`ca_cost_deterministic` in `formal/rocq/cost_accounted_rho/Confluence.v`) rather than by empirical test coverage; (b) the retired per-COMM **pre-charge / refund / unified-charge logic** is no longer required, simplifying the eval-loop hot path; (c) **composable metering primitives** (paper §6.2: rate-limited markets, joint-account spending, prepayment, forwarding) become first-class language constructs.
+This document specifies the upgrade from that externalized model to an **internalized** model derived from the cost-accounted rho calculus [4]. The internalized model offers three concrete advantages over the legacy `ChargingRSpace` baseline: (a) cost determinism is established by a **mechanized formal proof** (`ca_cost_deterministic` in `formal/rocq/cost_accounted_rho/Confluence.v`) rather than by empirical test coverage; (b) the retired per-COMM **pre-charge / refund / unified-charge logic** is no longer required, simplifying the eval-loop hot path; (c) **composable metering primitives** (paper §2.4 and §6: rate-limited markets, joint-account spending, prepayment, forwarding) become first-class language constructs.
 
 The principled construction: **internalize cost accounting into the rho calculus itself** using the cost-accounted rho calculus [4], with a recursive metering kernel as the implementation target. The compositional translation — defined by four mutually recursive functions `N⟦·⟧`, `T⟦·⟧`, `P⟦·⟧`, `S⟦·⟧` — remains the paper trace and supplies the signature-channel, token, Split/Join, and local gate proofs. The implementation target is the machine-checked relation `well_reflected`: every enabled source step is represented by a continuation-keyed `recursive_metered_gate`, and the gate lands in a recursively metered image of the source successor. The theorem `well_reflected_backward_reflection` proves that every pure-rho step from that target reflects to an actual `ca_step`. Across multiple deploys in a block, confluence of the cost-accounted calculus (proven as `ca_cost_deterministic` in `Confluence.v`) ensures that cross-deploy interleaving does not affect the total cost. Together, recursive metering and formal confluence make cost a deterministic function of the deploy that is **machine-checked**, not merely sampled. The billable unit is source-token consumption under Rules 1-5, not every pure-rho COMM introduced by the translation.
 
@@ -239,7 +239,7 @@ The baseline externalized strategy is correct, but three structural weaknesses m
 
 **(b) `handle_result` is intricate per-COMM bookkeeping.** The retired pre-charge / refund / unified-charge dance required careful accounting that interacted non-trivially with other RSpace features. Concrete instances of this historical complexity include: (i) identity-based filtering to issue refunds only for the produce instance actually removed by the COMM, distinguishing it from persistent siblings; (ii) persist-vs-linear differential treatment so persistent produces/consumes were not refunded when they triggered a COMM but remained in the tuple space; (iii) peek-disposition logic for peeking consumes that remove the matched continuation but leave the matched produce in place. Each of these can be made correct, but each adds a maintenance surface that a future contributor must reason about when modifying the cost layer or the RSpace API. The internalized model collapses all of this to a single invariant: each source-token consumption event is billed exactly once. There is no per-application-COMM refund logic, no persist-vs-linear differentiation in the cost layer, no peek-disposition special case — none of the bookkeeping mechanisms exist because the cost is paid at billable source-token gates, not at every produce/consume.
 
-**(c) No composable metering primitives.** The externalized model meters total deploy phlogiston monolithically: every deploy carries a single `CostManager` instance with a single `i64` balance, and the only way to spend phlogiston is to call `cost.charge(amount)` from inside the interpreter or RSpace wrapper. This is sufficient for deploys with a single principal, but it cannot natively express paper §6.2's composable metering patterns: (i) **rate-limited markets** where a contract publishes a budget on a public channel and consumers can spend against it without compromising the principal's overall limit; (ii) **joint-account spending** where two principals' fuel pools are pooled into a single compound signature for the duration of a multi-step protocol; (iii) **prepayment / receiver-pays** where a sender includes fuel with a message so the receiver doesn't pay to handle it; (iv) **delegation / forwarding** where principal A authorizes principal B to spend up to N tokens on A's behalf. Implementing any of these under the externalized model requires a bespoke runtime layer that mediates between the user's intent and `CostManager`. Under the internalized model, signatures and tokens are first-class language constructs — each pattern is just a particular composition of signed processes, Split mediators, and Join mediators, with no runtime support beyond the translation pass itself.
+**(c) No composable metering primitives.** The externalized model meters total deploy phlogiston monolithically: every deploy carries a single `CostManager` instance with a single `i64` balance, and the only way to spend phlogiston is to call `cost.charge(amount)` from inside the interpreter or RSpace wrapper. This is sufficient for deploys with a single principal, but it cannot natively express the paper's §2.4 and §6 composable metering patterns: (i) **rate-limited markets** where a contract publishes a budget on a public channel and consumers can spend against it without compromising the principal's overall limit; (ii) **joint-account spending** where two principals' fuel pools are pooled into a single compound signature for the duration of a multi-step protocol; (iii) **prepayment / receiver-pays** where a sender includes fuel with a message so the receiver doesn't pay to handle it; (iv) **delegation / forwarding** where principal A authorizes principal B to spend up to N tokens on A's behalf. Implementing any of these under the externalized model requires a bespoke runtime layer that mediates between the user's intent and `CostManager`. Under the internalized model, signatures and tokens are first-class language constructs — each pattern is just a particular composition of signed processes, Split mediators, and Join mediators, with no runtime support beyond the translation pass itself.
 
 ### 3.3 UML Sequence Diagram: F1R3Node's Current Deploy Execution Flow
 
@@ -337,7 +337,7 @@ The third clause is what makes the translation **compositional** (`S_tr_composit
 
 **Mediator Processes: Split and Join**
 
-Compound signatures require mediation between the compound channel `N⟦s₁ & s₂⟧` and the pair of atomic channels `(N⟦s₁⟧, N⟦s₂⟧)`. The paper defines two mediator processes for this purpose (Definition 4.1 and Definition 4.2 in [4]):
+Compound signatures require mediation between the compound channel `N⟦s₁ & s₂⟧` and the pair of atomic channels `(N⟦s₁⟧, N⟦s₂⟧)`. The paper defines two mediator processes for this purpose ([4, Appendix A] (Split/Join infrastructure)):
 
 ```
 Split(s₁, s₂) = for(t ← N⟦s₁ & s₂⟧)
@@ -347,13 +347,15 @@ Join(s₁, s₂)  = for(t₁ ← N⟦s₁⟧) for(t₂ ← N⟦s₂⟧)
                     ( N⟦s₁ & s₂⟧!(*t₁ ∣ *t₂) )
 ```
 
-`Split` (Definition 4.1 in [4]) takes a compound token and produces two atomic tokens. `Join` (Definition 4.2 in [4]) takes two atomic tokens and produces a compound token. These are **persistent infrastructure processes** deployed once and reused across all deploys.
+`Split` ([4, Appendix A], Split/Join infrastructure) takes a compound token and produces two atomic tokens. `Join` ([4, Appendix A], Split/Join infrastructure) takes two atomic tokens and produces a compound token. These are **persistent infrastructure processes** deployed once and reused across all deploys.
 
 ### 4.2 Why Cost Is Deterministic (Intuition)
 
 Cost, in the internalized model, is **source-token consumption**. The
 source calculus assigns a fixed token decrement to each of Rules 1-5:
-Rules 1, 3, and 4 consume one source token; Rules 2 and 5 consume two.
+Rules 1, 3, and 5 consume one source token; Rules 2 and 4 consume two.
+(May-2026 spec §3.6 numbering; the April draft labeled these Rules 4/5 in
+the opposite order — the rule set is identical.)
 The total cost of a deploy is the number of billable source-token
 consumption events across the deploy's lifetime, not the number of
 pure-rho COMM steps introduced by Split/Join routing. Three observations
@@ -1347,7 +1349,7 @@ following are true:
 
 The migration from the externalized cost model to the internalized model is a forward-only replacement. The baseline externalized cost model is correct (Section 3.1) but suboptimal along three structural dimensions (Section 3.2): no machine-checked formal proof of cost determinism, intricate per-COMM refund bookkeeping in `handle_result`, and no first-class composable metering primitives. The internalized model upgrades each of these. Because the two cost models report numerically different totals, there is no dual-mode comparison and no in-place rollback path — activation is coordinated at a consensus boundary (step 22). The steps below are ordered topologically: each step depends only on steps above it.
 
-**Mapping to paper §6.4 phases.** The steps below realize the four-phase implementation path sketched in [4, §6.4]:
+**Mapping to paper §6.4 phases.** The steps below realize the four-phase implementation path sketched in [4, §6.4 Implementation Path]:
 
 | Paper phase                                           | Migration steps                                                          |
 |-------------------------------------------------------|--------------------------------------------------------------------------|
@@ -1551,7 +1553,7 @@ consensus-checked.) This canonicalization preserves parallel scheduling
 freedom while keeping the diagnostic trace and the consensus `total_cost`
 deterministic.
 
-The intra-deploy ordering is *paper-original*: the token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` ([4, §4.2]) places at most one token message on any signature channel at a time, and each fuel-gate firing dequotes the next token via `*t` to release the subsequent gate. Validators executing the same translated process therefore observe the same fuel-event sequence not because they *agree* on an order, but because the process structure admits exactly one. The Rocq theorems verify this property: `ca_step_deterministic` (`StepDeterminism.v:156`) shows that any single-token system has a unique successor at each step; `single_token_path_unique` (`StepDeterminism.v:249`) lifts this to whole reduction paths; and `fuel_events_consumed_perm` (`FuelEventDecomposition.v:198`) proves the broader multiset-equality property from which list-equality drops out in the single-token case. None of these theorems introduce the ordering — they verify the algorithm the paper specifies. The cross-deploy case, by contrast, is *not* a paper claim: block-level ordering of per-deploy digests is a F1R3Node deployment choice (canonical deploy-index order, enforced by validator code), and what the Rocq proof contributes there is `ca_cost_deterministic` for the parallel composition of all in-block deploys, which guarantees the *aggregate* token count is order-independent. The block-level ordered hash chain therefore relies on (a) the paper's intra-deploy ordering algorithm (verified in Rocq) plus (b) protocol-level inter-deploy ordering by deploy index; both are required, and the paper-vs-protocol distinction should be kept explicit in any audit.
+The intra-deploy ordering is *paper-original*: the token-chain encoding `T⟦σ:T'⟧ = N⟦σ⟧!(T⟦T'⟧)` ([4, Appendix A]) places at most one token message on any signature channel at a time, and each fuel-gate firing dequotes the next token via `*t` to release the subsequent gate. Validators executing the same translated process therefore observe the same fuel-event sequence not because they *agree* on an order, but because the process structure admits exactly one. The Rocq theorems verify this property: `ca_step_deterministic` (`StepDeterminism.v:156`) shows that any single-token system has a unique successor at each step; `single_token_path_unique` (`StepDeterminism.v:249`) lifts this to whole reduction paths; and `fuel_events_consumed_perm` (`FuelEventDecomposition.v:198`) proves the broader multiset-equality property from which list-equality drops out in the single-token case. None of these theorems introduce the ordering — they verify the algorithm the paper specifies. The cross-deploy case, by contrast, is *not* a paper claim: block-level ordering of per-deploy digests is a F1R3Node deployment choice (canonical deploy-index order, enforced by validator code), and what the Rocq proof contributes there is `ca_cost_deterministic` for the parallel composition of all in-block deploys, which guarantees the *aggregate* token count is order-independent. The block-level ordered hash chain therefore relies on (a) the paper's intra-deploy ordering algorithm (verified in Rocq) plus (b) protocol-level inter-deploy ordering by deploy index; both are required, and the paper-vs-protocol distinction should be kept explicit in any audit.
 
 Across deploys in a block, the deploy-level digests are combined in canonical block order (deploy index order) using the same incremental hash chain, yielding a block-level fuel-event digest. Application-level events continue to use the existing ordered event log (they are replayed in sequence via rig-and-reset and do not require any special hashing treatment).
 
@@ -1615,7 +1617,7 @@ the recursively metered invariant.
 
 ### 8.4 Composable Metering Patterns
 
-Paper [4, §6.2] enumerates four composable-metering strategies enabled by the internalized cost model. The F1R3Node implementation supports them as follows:
+Paper [4, §2.4 and §6] enumerates four composable-metering strategies enabled by the internalized cost model. The F1R3Node implementation supports them as follows:
 
 | Paper pattern         | Mechanism                                                                                                              | Implementation status                                                                              |
 |-----------------------|------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
@@ -1661,19 +1663,19 @@ For reference, the five rules of the cost-accounted calculus (from `CostAccounte
     ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T
 ```
 
-**Rule 4** — Compound signature, split processes, combined token:
+**Rule 5** — Compound signature, split processes, combined token:
 ```
 (for(y ← x) P)^{s₁} ∣ (x!(Q))^{s₂} ∣ (s₁ & s₂):T
     ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T
 ```
 
-**Rule 5** — Compound signature, split processes, split tokens:
+**Rule 4** — Compound signature, split processes, split tokens:
 ```
 (for(y ← x) P)^{s₁} ∣ (x!(Q))^{s₂} ∣ s₁:T₁ ∣ s₂:T₂
     ⤳   (P{@Q/y})^{s₁ & s₂} ∣ T₁ ∣ T₂
 ```
 
-In all rules, `P{@Q/y}` denotes the substitution of the quoted name `@Q` for the bound variable `y` (de Bruijn index 0) in process `P`. The signature on the left-hand side authorizes the computation; the token(s) provide the fuel. After the step, the token(s) advance by one gate (stripping the outermost `TGate` constructor), reducing the system's total fuel by 1 (Rules 1, 3, 4) or 2 (Rules 2, 5).
+In all rules, `P{@Q/y}` denotes the substitution of the quoted name `@Q` for the bound variable `y` (de Bruijn index 0) in process `P`. The signature on the left-hand side authorizes the computation; the token(s) provide the fuel. After the step, the token(s) advance by one gate (stripping the outermost `TGate` constructor), reducing the system's total fuel by 1 (Rules 1, 3, 5) or 2 (Rules 2, 4).
 
 **Appendix C: File Locations**
 
@@ -1711,7 +1713,7 @@ Implementation paths, formal-verification artifacts, and regression tests are co
 
 [3] L. G. Meredith *et al.*, "Rholang Specification," F1R3FLY.io, 2017-2026. The F1R3Node implementation currently lives in this repository (the standalone Rust port that replaces the prior Scala/Rust hybrid): [https://github.com/F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust). Historical upstream: [https://github.com/F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node).
 
-[4] L. G. Meredith, "Translating Cost-Accounted Rho Calculus Back to the Pure Rho Calculus," F1R3FLY.io, April 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/` (23 modules, 18,550 lines, 624 `Qed`/`Defined` proof terms, zero admissions, zero axioms). TLA+ finite-state model at `formal/tlaplus/cost_accounted_rho/` (verified by TLC with zero errors, with typed threat/search-frontier models also accepted by Apalache). See the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).
+[4] L. G. Meredith, "Cost-Accounted Rho Calculus: A Spectral Decomposition of Phlogiston," F1R3FLY.io, May 2026. Mechanized in Rocq at `formal/rocq/cost_accounted_rho/` (23 modules, 18,550 lines, 624 `Qed`/`Defined` proof terms, zero admissions, zero axioms). TLA+ finite-state model at `formal/tlaplus/cost_accounted_rho/` (verified by TLC with zero errors, with typed threat/search-frontier models also accepted by Apalache). See the verification companion, [*Formal Verification of Cost-Accounted Rho Calculus*](cost-accounted-rho-verification.md).
 
 [5] L. Lamport, *Specifying Systems: The TLA+ Language and Tools for Hardware and Software Engineers*. Addison-Wesley, 2002. ISBN: 0-321-14306-X.
 
@@ -1803,7 +1805,7 @@ over up to a million elements and bounds memory, and it leaves
   to `initial` and is the only consensus answer.
 - Per-fork private budgets (an alternative design that was considered and
   rejected — see TM-CA-147 in the threat model). All parallel
-  sub-processes within a deploy share ONE budget, per paper §3 Rule 1.
+  sub-processes within a deploy share ONE budget, per paper §3.6 Rule 1.
   Cost determinism does **not** come from partitioning the budget per
   fork; it comes from the fresh-per-scope counters and deterministic
   RSpace selection described above.
