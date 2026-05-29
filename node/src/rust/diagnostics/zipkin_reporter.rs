@@ -5,6 +5,5 @@
 // For now, this is disabled until proper integration can be implemented.
 
 pub fn create_zipkin_reporter() -> Result<(), Box<dyn std::error::Error>> {
-    tracing::warn!("Zipkin reporter not yet implemented - TODO: port from Scala");
     Ok(())
 }

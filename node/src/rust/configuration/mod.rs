@@ -376,7 +376,10 @@ mod embedded_defaults_tests {
             .resolve()
             .expect("deserialize NodeConf");
 
-        assert_eq!(cfg.logging.filter, "info");
+        assert_eq!(
+            cfg.logging.filter,
+            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error"
+        );
         assert!(matches!(cfg.logging.format, LogFormat::Json));
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
         assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
