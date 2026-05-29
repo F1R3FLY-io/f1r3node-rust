@@ -414,7 +414,7 @@ impl GrpcTransportClient {
                     peer.to_address(),
                     timeout.as_millis()
                 ));
-                tracing::error!("Request timeout: {}", timeout_error);
+                tracing::warn!("Request timeout: {}", timeout_error);
                 Err(timeout_error)
             }
         }

@@ -1009,10 +1009,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         }
                         Err(e) => {
                             consecutive_errors += 1;
-                            tracing::error!("Failed to process request (attempt {}): {:?}", consecutive_errors, e);
+                            tracing::warn!(attempt = consecutive_errors, error = ?e, "LFS request processing failed");
 
                             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                tracing::error!("Maximum consecutive errors reached ({}), terminating stream", MAX_CONSECUTIVE_ERRORS);
+                                tracing::error!(max = MAX_CONSECUTIVE_ERRORS, "LFS stream terminating: maximum consecutive errors reached");
                                 break;
                             }
 
@@ -1026,7 +1026,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         match processor.st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for request processing: {:?}", e);
+                                tracing::debug!(error = ?e, "failed to acquire state lock for request processing");
                                 // Try to continue with other arms instead of breaking immediately
                                 continue;
                             }
@@ -1071,15 +1071,15 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                             idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                         }
                         Err(e) => {
-                            tracing::error!("Failed to enqueue resend request - channel error or full: {:?}", e);
-                            tracing::warn!("Request queue channel appears closed or full, checking if stream should terminate");
+                            tracing::debug!(error = ?e, "failed to enqueue resend request — channel full or closed");
+                            tracing::warn!("request queue channel appears closed or full, checking if stream should terminate");
 
                             // Check if we should terminate gracefully
                             let should_terminate = {
                                 match processor.st.lock() {
                                     Ok(state) => state.is_finished(),
                                     Err(_) => {
-                                        tracing::error!("Cannot acquire state lock to check termination condition");
+                                        tracing::debug!("cannot acquire state lock to check termination condition; assuming terminate");
                                         true // Assume termination if we can't check state
                                     }
                                 }
@@ -1114,7 +1114,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         match processor.st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for mergeable response: {:?}", e);
+                                tracing::debug!(error = ?e, "failed to acquire state lock for mergeable response");
                                 continue;
                             }
                         }
@@ -1139,7 +1139,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     let permit = match response_semaphore.clone().acquire_owned().await {
                         Ok(permit) => permit,
                         Err(e) => {
-                            tracing::error!("Failed to acquire semaphore permit for initial response processing: {:?}", e);
+                            tracing::debug!(error = ?e, "failed to acquire semaphore permit for initial response processing");
                             // Continue with other arms instead of breaking
                             continue;
                         }
@@ -1158,10 +1158,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         }
                         Err(e) => {
                             consecutive_errors += 1;
-                            tracing::error!("Failed to process initial block message (attempt {}): {:?}", consecutive_errors, e);
+                            tracing::warn!(attempt = consecutive_errors, error = ?e, "LFS initial block message processing failed");
 
                             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                tracing::error!("Maximum consecutive errors reached while processing initial messages, terminating stream");
+                                tracing::error!(max = MAX_CONSECUTIVE_ERRORS, "LFS stream terminating: maximum consecutive errors processing initial messages");
                                 break;
                             }
                             continue;
@@ -1173,7 +1173,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         match processor.st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for initial response processing: {:?}", e);
+                                tracing::debug!(error = ?e, "failed to acquire state lock for initial response processing");
                                 continue;
                             }
                         }
@@ -1209,7 +1209,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     let permit = match response_semaphore.clone().acquire_owned().await {
                         Ok(permit) => permit,
                         Err(e) => {
-                            tracing::error!("Failed to acquire semaphore permit for response processing: {:?}", e);
+                            tracing::debug!(error = ?e, "failed to acquire semaphore permit for response processing");
                             continue;
                         }
                     };
@@ -1223,10 +1223,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         }
                         Err(e) => {
                             consecutive_errors += 1;
-                            tracing::error!("Failed to process block message (attempt {}): {:?}", consecutive_errors, e);
+                            tracing::warn!(attempt = consecutive_errors, error = ?e, "LFS block message processing failed");
 
                             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                tracing::error!("Maximum consecutive errors reached while processing block messages, terminating stream");
+                                tracing::error!(max = MAX_CONSECUTIVE_ERRORS, "LFS stream terminating: maximum consecutive errors processing block messages");
                                 break;
                             }
                             continue;
@@ -1238,7 +1238,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         match processor.st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for response processing: {:?}", e);
+                                tracing::debug!(error = ?e, "failed to acquire state lock for response processing");
                                 continue;
                             }
                         }
@@ -1263,7 +1263,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     let permit = match response_semaphore.clone().acquire_owned().await {
                         Ok(permit) => permit,
                         Err(e) => {
-                            tracing::error!("Failed to acquire semaphore permit for hash response processing: {:?}", e);
+                            tracing::debug!(error = ?e, "failed to acquire semaphore permit for hash response processing");
                             continue;
                         }
                     };
@@ -1281,10 +1281,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         }
                         Err(e) => {
                             consecutive_errors += 1;
-                            tracing::error!("Failed to process existing block (attempt {}): {:?}", consecutive_errors, e);
+                            tracing::warn!(attempt = consecutive_errors, error = ?e, "LFS existing block processing failed");
 
                             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                tracing::error!("Maximum consecutive errors reached while processing existing blocks, terminating stream");
+                                tracing::error!(max = MAX_CONSECUTIVE_ERRORS, "LFS stream terminating: maximum consecutive errors processing existing blocks");
                                 break;
                             }
                             continue;
@@ -1296,7 +1296,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         match processor.st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for hash response processing: {:?}", e);
+                                tracing::debug!(error = ?e, "failed to acquire state lock for hash response processing");
                                 continue;
                             }
                         }
@@ -1342,7 +1342,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     Some(state.clone())
                 }
                 Err(e) => {
-                    tracing::error!("Failed to acquire final state lock: {:?}", e);
+                    tracing::error!(error = ?e, "LFS stream failed to acquire final state lock");
                     None
                 }
             }

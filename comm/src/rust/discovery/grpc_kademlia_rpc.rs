@@ -72,7 +72,7 @@ impl GrpcKademliaRPC {
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(_) => {
-                tracing::error!("Failed to connect to peer for ping");
+                tracing::debug!("Failed to connect to peer for ping");
                 return Ok(false); // Return false for connection failures
             }
         };
@@ -105,11 +105,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Ping failed: {:?}", status);
+                tracing::debug!("Ping failed: {:?}", status);
                 Ok(false)
             }
             Err(_) => {
-                tracing::error!("Ping timed out");
+                tracing::debug!("Ping timed out");
                 Ok(false)
             }
         }
@@ -126,7 +126,7 @@ impl GrpcKademliaRPC {
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Failed to connect to peer for lookup: {}", e);
+                tracing::debug!("Failed to connect to peer for lookup: {}", e);
                 return Ok(Vec::new()); // Return empty list for connection failures
             }
         };
@@ -167,11 +167,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Lookup failed: {:?}", status);
+                tracing::debug!("Lookup failed: {:?}", status);
                 Ok(Vec::new())
             }
             Err(_) => {
-                tracing::error!("Lookup timed out");
+                tracing::debug!("Lookup timed out");
                 Ok(Vec::new())
             }
         }
