@@ -7,6 +7,8 @@
 // numberOfActiveValidators - max number of active validator in a shard
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
+// initialPhlogiston - phlogiston minted into a validator's draw wallet @W_v when it first bonds (Cost-Accounted Rho, spec Appendix B; DR-13)
+// epochPhlogiston - phlogiston minted into each active validator's draw wallet @W_v at every epoch boundary (Cost-Accounted Rho, spec Appendix B/§4.7; DR-13)
 /*
 
 Life cycle in POS
@@ -83,18 +85,22 @@ new PoS,
     posId(`rho:system:deployerId`),
     PendingRewards, MergeIntMaps, treeHashMapCh,
     sysAuthTokenOps(`sys:authToken:ops`),
-    multiSigSystemVaultCh, coopVaultCh,
+    multiSigSystemVaultCh, coopVaultCh, makeMintCh,
     uriOut, sumFromPair
 in {
-  // Simultaneously retrieves SystemVault, ListOps, TreeHashMap, and MultiSigSystemVault contracts from the registry.
+  // Simultaneously retrieves SystemVault, ListOps, TreeHashMap, MultiSigSystemVault,
+  // and MakeMint contracts from the registry. MakeMint funds the per-validator
+  // phlogiston draw wallet @W_v in `mintPhlogiston` (Cost-Accounted Rho, DR-13).
   registryLookup!(`rho:vault:system`, *systemVaultCh) |
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   registryLookup!(`rho:lang:treeHashMap`, *treeHashMapCh) |
   registryLookup!(`rho:vault:multiSig`, *multiSigSystemVaultCh) |
+  registryLookup!(`rho:system:makeMint`, *makeMintCh) |
   for (@(_, SystemVault)         <- systemVaultCh &
        @(_, ListOps)          <- listOpsCh &
        TreeHashMap            <- treeHashMapCh &
-       @(_, MultiSigSystemVault) <- multiSigSystemVaultCh) {
+       @(_, MultiSigSystemVault) <- multiSigSystemVaultCh &
+       @(_, MakeMint)         <- makeMintCh) {
     new posDeployerVaultAddressCh, posDeployerAuthKeyCh, posDeployerVaultCh, posVaultCh,
         initialActiveCh, pendingRewardsMapCh, createUnfVault, moveInitialBondCh, posAuthKeyCh
     in {
@@ -169,7 +175,25 @@ in {
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
-                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState in {
+                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, walletTag in {
+              // `walletTag` is a fresh genesis-scoped unforgeable name (a sibling
+              // of `posDeployStateTag` in kind: a content-addressing tag), used
+              // ONLY to build the per-validator phlogiston DRAW wallet channel
+              // @W_v := @(*walletTag, validatorPk) (Cost-Accounted Rho, spec
+              // Appendix B eq:38; DR-13). It is allocated here in the PoS-state
+              // scope (rather than the narrower `posDeployStateTag` block) so it is
+              // in scope for every site that references @W_v: the bond-time VB
+              // install (`bond`), `mintPhlogiston`, and the genesis bonded-set VB
+              // install — all of which live across sibling contract blocks. See the
+              // full unforgeability/injectivity/merge-safety rationale at the
+              // `mintPhlogiston`/VB definitions below.
+              //
+              // DR-13 (CRITICAL): @W_v (the validator's DRAW channel) is DISTINCT
+              // from the SUPPLY POOL Σ⟦v⟧ = from_sig(Ground(pk)) that the WD-D2
+              // acceptance gate reads. Rholang cannot name Σ⟦v⟧ (no bytes→GPrivate
+              // surface primitive — the unforgeability mechanism), so the Σ⟦v⟧
+              // balance write is a Rust `produce_balance` co-located in the same
+              // sysAuthToken-bearing system deploy; it is NOT written in Rholang.
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -335,6 +359,18 @@ in {
                         match depositResult {
                           // If deposit is successful, the user becomes a bonded validator.
                           (true, _) => {
+                            // Install the spec's persistent validator bootstrap VB
+                            // (Cost-Accounted Rho, spec Appendix B eq:39; DR-3) for
+                            // the newly-bonded validator's draw wallet @W_v, mirror
+                            // of the genesis bonded-set install. VH = nil, so
+                            // VB = for(phlo<-@W_v){ *phlo }. The wallet starts EMPTY
+                            // (no phlogiston minted at bond — bond is a USER deploy
+                            // with no sysAuthToken; minting happens on the
+                            // authorized epoch/bond mint path), so VB blocks until
+                            // the validator is first funded — the DR-3 halt. The
+                            // validator handler VH is composed IN PARALLEL by a
+                            // later workstream WITHOUT modifying VB.
+                            for (phlo <= @(*walletTag, userPk)) { *phlo } |
                             resultCh!(state.set("allBonds", state.get("allBonds").set(userPk, amount)), depositResult)
                           }
                           // If deposit is unsuccessful, the user is not bonded.
@@ -400,6 +436,91 @@ in {
                 // safe because a deploy's cosigner charges run SEQUENTIALLY (an
                 // awaited Rust loop in play_deploy_with_cost_accounting_cosigned),
                 // so there is no race among one deploy's charges.
+                //
+                // @W_v := @(*walletTag, validatorPk) (the per-validator phlogiston
+                // DRAW wallet; `walletTag` is allocated in the PoS-state scope
+                // above) is — by the SAME content-addressing rationale these
+                // charge-tracking channels rely on — unforgeable (private tag),
+                // deterministic, INJECTIVE in validatorPk (distinct pubkeys ⇒
+                // distinct channels, formalized in
+                // formal/rocq/cost_accounted_rho/theories/WalletNaming.v as
+                // `wallet_name_injective`), replay-stable, and merge-safe (distinct
+                // validators' mints get distinct Produce identities). DR-13: @W_v
+                // is DISTINCT from the supply pool Σ⟦v⟧ = from_sig(Ground(pk)); the
+                // Σ⟦v⟧ balance datum (TOKEN_TAG, n) is a Rust `produce_balance`
+                // concern, NOT built here (Rholang cannot name Σ⟦v⟧). @W_v holds a
+                // MakeMint purse — the draw representation.
+
+                // Private method which mints `amount` phlogiston into the validator's
+                // draw wallet @W_v := @(*walletTag, validatorPk) (Cost-Accounted Rho,
+                // spec Appendix B; DR-13). Authority root: a valid `sysAuthToken`
+                // (GSysAuthToken), constructible ONLY by Rust system deploys via
+                // `mk_sys_auth_token` (system_deploy.rs) — reachable from the
+                // epoch/bond mint path that always holds the validator pubkey.
+                // On a VALID token: deposit a fresh MakeMint purse of `amount` onto
+                // @W_v and `return!(true)`. On an INVALID/absent token: deposit
+                // NOTHING and `return!((false, "unauthorized mint"))`.
+                // Return expects Boolean | (Boolean, String).
+                contract PoS(@"mintPhlogiston", @validatorPk, @amount, @sysAuthToken, return) = {
+                  new isValidTokenCh in {
+                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+                    for (@isValid <- isValidTokenCh) {
+                      if (isValid) {
+                        // Authorized: mint a purse of `amount` and deposit it onto
+                        // the validator's draw wallet. The bootstrap VB
+                        // (for(phlo<-@W_v){...}) consumes this purse to release
+                        // execution fuel into the ambient composition.
+                        new mintCh in {
+                          @MakeMint!(*mintCh) |
+                          for (mint <- mintCh) {
+                            new purseCh in {
+                              mint!("makePurse", amount, *purseCh) |
+                              for (purse <- purseCh) {
+                                @(*walletTag, validatorPk)!(*purse) |
+                                return!(true)
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        // Unauthorized: no deposit, explicit rejection. A forged or
+                        // absent token cannot be a GSysAuthToken
+                        // (system_processes.rs `sys_auth_token_ops`), so this branch
+                        // is the sole outcome for any non-system caller.
+                        return!((false, "unauthorized mint"))
+                      }
+                    }
+                  }
+                } |
+                // Bootstrap for the genesis bonded set: install the spec's
+                // persistent validator bootstrap VB for every initially-bonded
+                // validator. Per spec Appendix B eq:39 and DR-3,
+                //
+                //     VB ≜ for(phlo <- @W_v){ VH | *phlo }
+                //
+                // draws a phlogiston purse from the draw wallet @W_v and releases
+                // it (`*phlo` = drop(phlo)) into the ambient parallel composition,
+                // where the validator handler VH consumes it. An empty @W_v leaves
+                // this for-comprehension with no message ⇒ it BLOCKS ⇒ the
+                // validator is effectively offline (the DR-3 halt mechanism, spec
+                // Appendix B "Slashing": removing the wallet's contents immediately
+                // halts the validator). This is FULLY FUNCTIONAL, not a stub: the
+                // validator handler VH is lifted into Rholang and composed IN
+                // PARALLEL (Rholang `|`) by a later workstream WITHOUT modifying VB;
+                // here VH = nil, so VB = for(phlo<-@W_v){ *phlo }. The `!` makes it
+                // persistent (a production validator re-draws after each deploy,
+                // spec Appendix B "Persistent validator": !VB).
+                new genesisWalletPksCh, installVB, installVBDoneCh in {
+                  @ListOps!("map", $$initialBonds$$.toList(), *fst, *genesisWalletPksCh) |
+                  for (@genesisWalletPks <- genesisWalletPksCh) {
+                    @ListOps!("foreach", genesisWalletPks, *installVB, *installVBDoneCh) |
+                    contract installVB(@validatorPk, ackCh) = {
+                      // VH = nil; VB = for(phlo<-@W_v){ nil | *phlo } = for(phlo<-@W_v){ *phlo }.
+                      for (phlo <= @(*walletTag, validatorPk)) { *phlo } |
+                      ackCh!(Nil)
+                    }
+                  }
+                } |
 
                 // Private method which charges a deployer for a deploy.
                 // Deployer's funds are deposited into the block sender's vault.

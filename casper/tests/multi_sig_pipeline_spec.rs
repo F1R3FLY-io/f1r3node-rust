@@ -401,6 +401,7 @@ fn make_signed_atom(data: &DeployData, phlo_share: i64) -> SigAtom {
         sig: sign_canonical_hash(data, &sk),
         sig_algorithm: Secp256k1::name(),
         phlo_share,
+        atom_kind: models::casper::AtomKind::Ground as i32,
     }
 }
 
@@ -499,6 +500,7 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
         sig: Bytes::new(),
         sig_algorithm: Secp256k1::name(),
         phlo_share: 0,
+        atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let algebra = SigCompound {
         connective: Some(sig_compound::Connective::Threshold(SigThreshold {
@@ -548,6 +550,7 @@ fn sig_algebra_unknown_signature_algorithm_rejected() {
         sig: sign_canonical_hash(&data, &sk),
         sig_algorithm: "nonexistent_alg_v9999".to_string(),
         phlo_share: 100,
+        atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let algebra = SigCompound {
         connective: Some(sig_compound::Connective::Atom(atom_bad)),

@@ -51,7 +51,7 @@ echo "Compiling and checking Rocq theories..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection UseCaseAdequacy SystemStructEquiv SyntacticSugar.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming.
 Print Assumptions mint_inject_not_ca_step.
 Print Assumptions user_ca_step_does_not_mint.
 Print Assumptions admin_trans_mint_adds_exactly.
@@ -272,6 +272,11 @@ Print Assumptions sse_par_unit.
 Print Assumptions token_decomp.
 Print Assumptions uniform_sugar_translation_equiv.
 Print Assumptions lollipop_sugar_translation_equiv.
+Print Assumptions wallet_name_injective.
+Print Assumptions domain_name_injective.
+Print Assumptions wallet_quarantine_domain_disjoint.
+Print Assumptions wallet_funding_slot_domain_disjoint.
+Print Assumptions quarantine_funding_slot_domain_disjoint.
 Quit.
 EOF
 then

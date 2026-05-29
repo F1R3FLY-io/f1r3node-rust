@@ -56,6 +56,10 @@ mod tests {
                 pos_multi_sig_quorum: 0,
                 max_cosigners_per_deploy:
                     casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                initial_phlogiston:
+                    casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                epoch_phlogiston:
+                    casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,

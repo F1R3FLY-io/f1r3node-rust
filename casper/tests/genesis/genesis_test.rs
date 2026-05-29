@@ -237,6 +237,8 @@ async fn from_input_files(
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
             max_cosigners_per_deploy:
                 casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults,
         supply: i64::MAX,

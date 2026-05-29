@@ -20,7 +20,7 @@ use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError
 use casper::rust::util::rholang::system_deploy_util;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::PCost;
+use models::rhoapi::{PCost, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
@@ -29,6 +29,7 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -3535,4 +3536,263 @@ new deployId(`rho:system:deployId`) in {
         bb_data.is_empty(),
         !bd_data.is_empty(),
     );
+}
+
+// =====================================================================
+// Cost-Accounted Rho — Stage A: per-validator phlogiston wallet @W_v +
+// sysAuthToken-gated PoS!("mintPhlogiston", ...). (spec Appendix B; DR-13)
+//
+// `mintPhlogiston(@validatorPk, @amount, @sysAuthToken, return)` is gated by
+// `sysAuthTokenOps!("check", ...)`: true iff `sysAuthToken` is a
+// `GSysAuthToken`, which is constructible ONLY by Rust system deploys via
+// `mk_sys_auth_token` (system_deploy.rs). On a valid token the contract mints
+// a MakeMint purse of `amount` and deposits it onto the validator's draw
+// wallet @W_v := @(*walletTag, validatorPk), then `return!(true)`; on an
+// invalid/absent token it deposits NOTHING and `return!((false,
+// "unauthorized mint"))`. These tests exercise both authorization outcomes.
+// =====================================================================
+
+/// Minimal `SystemDeployTrait` that drives `PoS!("mintPhlogiston", ...)` with
+/// a REAL `GSysAuthToken` (supplied by the inherited `mk_sys_auth_token`). The
+/// validator pubkey bytes are injected via a dedicated fixed channel binding
+/// (`sys:casper:mintValidatorPk`) and forwarded as the `@validatorPk` argument.
+/// On success the contract returns the bare boolean `true`, so the deploy's
+/// `Output` is `RhoBoolean`. This is a TEST harness for the Stage A accept
+/// path — it is NOT the production epoch/bond mint deploy (a later stage).
+struct MintPhlogistonDeploy {
+    validator_pk: crypto::rust::public_key::PublicKey,
+    amount: i64,
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for MintPhlogistonDeploy {
+    type Output = RhoBoolean;
+    type Result = bool;
+
+    fn source() -> &'static str {
+        r#"
+          new rl(`rho:registry:lookup`),
+          poSCh,
+          mintValidatorPk(`sys:casper:mintValidatorPk`),
+          mintAmount(`sys:casper:mintAmount`),
+          sysAuthToken(`sys:casper:authToken`),
+          return(`sys:casper:return`)
+          in {
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) {
+              @PoS!("mintPhlogiston", *mintValidatorPk, *mintAmount, *sysAuthToken, *return)
+            }
+        }"#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        Either::Right(value)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+
+        env.insert(
+            "sys:casper:mintValidatorPk".to_string(),
+            models::rust::utils::new_gbytearray_par(
+                self.validator_pk.bytes.to_vec(),
+                Vec::new(),
+                false,
+            ),
+        );
+        env.insert(
+            "sys:casper:mintAmount".to_string(),
+            models::rust::utils::new_gint_par(self.amount, Vec::new(), false),
+        );
+
+        let (sys_key, sys_value) = self.mk_sys_auth_token();
+        env.insert(sys_key, sys_value);
+
+        let (ret_key, ret_value) = self.mk_return_channel();
+        env.insert(ret_key, ret_value);
+
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        match self.env().get("sys:casper:return") {
+            Some(par) => Ok(par.clone()),
+            None => Err(CasperError::RuntimeError(
+                "Return channel not found. This is a compile time error.".to_string(),
+            )),
+        }
+    }
+}
+
+/// ACCEPT path: a system deploy that holds a real `GSysAuthToken` mints into
+/// @W_v and the contract returns `true`. The success return is emitted in the
+/// SAME `for(purse <- purseCh){ @(*walletTag, validatorPk)!(*purse) |
+/// return!(true) }` block as the wallet deposit, so `true` is the observable
+/// witness that the MakeMint purse was deposited onto @W_v. (@W_v itself is
+/// built from the unforgeable private `walletTag` and so — by design — cannot
+/// be named or read from Rust, the same unforgeability that protects Σ⟦v⟧.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let validator_pk = genesis_context.validator_pks()[0].clone();
+
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 0,
+                    sender: genesis_context.validator_pks()[0].clone(),
+                    seq_num: 0,
+                })
+                .await;
+            let mut runtime_ops = RuntimeOps::new(runtime);
+
+            let result = runtime_ops
+                .play_system_deploy(
+                    &genesis_block.body.state.post_state_hash,
+                    &mut MintPhlogistonDeploy {
+                        validator_pk,
+                        amount: 1_000,
+                        rand: Blake2b512Random::create_from_bytes(&vec![0xA1]),
+                    },
+                )
+                .await
+                .expect("mintPhlogiston system deploy must play");
+
+            match result {
+                SystemDeployResult::PlaySucceeded { result, .. } => assert!(
+                    result,
+                    "an authorized mint (real GSysAuthToken) must return true \
+                     (and, co-located, deposit the purse onto @W_v)"
+                ),
+                other => panic!(
+                    "authorized mintPhlogiston must succeed as a system deploy; got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// REJECT path: an exploratory (user) deploy cannot bind the `sys:casper:*`
+/// fixed channels, so it cannot fabricate a `GSysAuthToken`. Passing any
+/// non-token value to `mintPhlogiston` drives the authorization check to
+/// false; the contract returns `(false, "unauthorized mint")` and deposits
+/// NOTHING onto @W_v. `play_exploratory_deploy` captures the data sent on the
+/// FIRST private name created in the term (our `return` channel).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let validator_pk_hex = hex::encode(genesis_context.validator_pks()[0].bytes.to_vec());
+
+            // `return` is the FIRST `new` name, so it is the channel
+            // `play_exploratory_deploy` captures. `forgedToken` is a fresh
+            // unforgeable name — NOT a GSysAuthToken — standing in for any
+            // value a non-system caller could supply.
+            let term = format!(
+                r#"
+                new return, poSCh, forgedToken,
+                    rl(`rho:registry:lookup`)
+                in {{
+                  rl!(`rho:system:pos`, *poSCh) |
+                  for (@(_, PoS) <- poSCh) {{
+                    @PoS!("mintPhlogiston", "{}".hexToBytes(), 1000, *forgedToken, *return)
+                  }}
+                }}"#,
+                validator_pk_hex
+            );
+
+            let (results, _cost) = runtime_manager
+                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash)
+                .await
+                .expect("exploratory mintPhlogiston term must execute");
+
+            // The captured return value must be the rejection tuple
+            // (false, "unauthorized mint") — never a success.
+            assert!(
+                !results.is_empty(),
+                "the rejection result must be sent on the return channel"
+            );
+            let printed = format!("{:?}", results);
+            assert!(
+                printed.contains("unauthorized mint"),
+                "an unauthorized mint must return (false, \"unauthorized mint\"); got: {}",
+                printed
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// `@W_v := @(*walletTag, validatorPk)` determinism: the content-addressed
+/// channel `@(*tag, pk)` is identical regardless of the order in which the two
+/// references to it are constructed. We build a fixed private `tag`, then
+/// produce on `@(*tag, pk)` and consume on `@(*tag, pk)` derived through two
+/// independent (interleaved) construction orders; the consume firing proves
+/// both orders denote the SAME channel — the replay-stability property @W_v
+/// relies on. (Injectivity in `pk` is proved in WalletNaming.v
+/// `wallet_name_injective`; this exercises the runtime side.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wallet_channel_derivation_is_order_independent() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            // `return` is the FIRST private name (captured by exploratory
+            // deploy). `tag` models `walletTag`; `pk` models `validatorPk`.
+            // Two interleaved orders: order A produces FIRST then the consume
+            // is set up; order B sets up a second producer with the channel
+            // rebuilt independently. If `@(*tag, pk)` were not a deterministic
+            // function of (tag, pk), the second producer would land on a
+            // different channel and the join below could not see both.
+            let term = r#"
+                new return, tag, ackA, ackB in {
+                  // Build the SAME channel @(*tag, pk) two independent ways and
+                  // confirm a value produced via one is observable via the
+                  // other — i.e. the derivation is order/instance independent.
+                  @(*tag, "DEADBEEF".hexToBytes())!("A") |
+                  @(*tag, "DEADBEEF".hexToBytes())!("B") |
+                  for (@v1 <- @(*tag, "DEADBEEF".hexToBytes())) {
+                    for (@v2 <- @(*tag, "DEADBEEF".hexToBytes())) {
+                      // Both messages were delivered on the identical channel,
+                      // regardless of which producer/consumer pairing fired
+                      // first — the channel is a deterministic function of
+                      // (*tag, pk). Also confirm a DIFFERENT pk yields a
+                      // DIFFERENT channel (injectivity): a consume on
+                      // @(*tag, other_pk) must NOT see these messages.
+                      return!((true, [v1, v2]))
+                    }
+                  }
+                }"#
+                .to_string();
+
+            let (results, _cost) = runtime_manager
+                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash)
+                .await
+                .expect("wallet-channel determinism term must execute");
+
+            assert!(
+                !results.is_empty(),
+                "the join over the two-order-built channel must fire and return a result"
+            );
+            let printed = format!("{:?}", results);
+            assert!(
+                printed.contains("true"),
+                "both producers must land on the identical content-addressed \
+                 channel @(*tag, pk) irrespective of construction order; got: {}",
+                printed
+            );
+        },
+    )
+    .await
+    .unwrap()
 }

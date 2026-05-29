@@ -169,3 +169,11 @@ theories/SyntacticSugar.v
 
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v
+
+# Level 0d: Per-validator wallet @W_v naming (Cost-Accounted Rho Stage A;
+# DR-13). Depends only on RhoSyntax. Proves wallet-name injectivity in the
+# validator public key (distinct validators ⇒ distinct draw wallets) and
+# pairwise disjointness of the wallet / quarantine / funding-slot seed
+# DOMAINS. Axiom- and hypothesis-free (concrete injective bit-encoder), so
+# its headline theorems are Closed under the global context.
+theories/WalletNaming.v

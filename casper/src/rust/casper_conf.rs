@@ -165,6 +165,25 @@ pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
 
 fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
 
+/// Default phlogiston minted into a validator's draw wallet `@W_v` when it
+/// first bonds (Cost-Accounted Rho, spec Appendix B; DR-13). An empty `@W_v`
+/// leaves the bootstrap `VB ≜ for(phlo<-@W_v){ VH | *phlo }` blocked, so the
+/// initial grant is what lets a freshly-bonded validator come online. Sized
+/// to comfortably cover the desugared signed-layer count of typical
+/// validator handlers across an epoch; configurable per shard via
+/// `genesis.initial_phlogiston`. Must be `>= 0`.
+pub const DEFAULT_INITIAL_PHLOGISTON: i64 = 1_000_000;
+
+fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
+
+/// Default phlogiston minted into each active validator's draw wallet `@W_v`
+/// at every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
+/// DR-13). The renewable per-epoch validator fuel; configurable per shard via
+/// `genesis.epoch_phlogiston`. Must be `>= 0`.
+pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
+
+fn default_epoch_phlogiston() -> i64 { DEFAULT_EPOCH_PHLOGISTON }
+
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoundRobinDispatcher {
@@ -220,6 +239,22 @@ pub struct GenesisBlockData {
     /// rarely exceed 10–15). Must be `>= 1`.
     #[serde(rename = "max-cosigners-per-deploy", default = "default_max_cosigners_per_deploy")]
     pub max_cosigners_per_deploy: u32,
+
+    /// Phlogiston minted into a validator's draw wallet `@W_v` when it first
+    /// bonds (Cost-Accounted Rho, spec Appendix B; DR-13). Substituted into
+    /// the PoS contract at genesis as `$$initialPhlogiston$$`. An empty `@W_v`
+    /// leaves the per-validator bootstrap `VB` blocked (the DR-3 halt), so
+    /// this grant is what brings a freshly-bonded validator online. Default
+    /// `1_000_000`.
+    #[serde(rename = "initial-phlogiston", default = "default_initial_phlogiston")]
+    pub initial_phlogiston: i64,
+
+    /// Phlogiston minted into each active validator's draw wallet `@W_v` at
+    /// every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
+    /// DR-13). Substituted into the PoS contract at genesis as
+    /// `$$epochPhlogiston$$`. Default `1_000_000`.
+    #[serde(rename = "epoch-phlogiston", default = "default_epoch_phlogiston")]
+    pub epoch_phlogiston: i64,
 
     /// Full display name of the native token. Substituted into the
     /// TokenMetadata Rholang contract at genesis and registered at
@@ -524,6 +559,8 @@ mod native_token_validation_tests {
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
             max_cosigners_per_deploy: DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: DEFAULT_EPOCH_PHLOGISTON,
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,

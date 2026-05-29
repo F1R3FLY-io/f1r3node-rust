@@ -262,6 +262,8 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
             ),
             ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
             ("maxCosignersPerDeploy", &pos.max_cosigners_per_deploy.to_string()),
+            ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
+            ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
         ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
