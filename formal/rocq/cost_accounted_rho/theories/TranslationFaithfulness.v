@@ -112,17 +112,36 @@ Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
    [hash_process_closed]. It captures the intuition that a hash is an
    opaque atomic identifier. Without it, the per-step reverse
    simulation theorem [compound_gate_per_step_reverse] cannot
-   distinguish [N (SHash bs)] from [N (SAnd ...)] at the channel level. *)
+   distinguish [N (SGround bs)] / [N (SQuote bs)] from [N (SAnd ...)] at the
+   channel level. *)
 Hypothesis hash_process_head_count_one :
   forall bs, head_count (hash_process bs) = 1.
 
+(* The ground-axis canonical process (Def 3.3 axis [g]; spec [Σ⟦g⟧=@H_g]),
+   imported as a section variable so the translation functions are uniformly
+   parameterised by both reflection axes. *)
+Variable ground_process : list bool -> proc.
+
+(* Ground injectivity, closedness, single-head, and cross-axis disjointness
+   — the ground-axis mirror of the [hash_process_*] hypotheses, plus the one
+   new audited obligation [ground_hash_disjoint]. They surface in
+   [Print Assumptions] of any client lemma that uses them, exactly like the
+   [hash_process_*] family. *)
+Hypothesis ground_process_injective :
+  forall b1 b2, ground_process b1 = ground_process b2 -> b1 = b2.
+Hypothesis ground_process_closed : forall bs, closed_proc (ground_process bs).
+Hypothesis ground_process_head_count_one :
+  forall bs, head_count (ground_process bs) = 1.
+Hypothesis ground_hash_disjoint :
+  forall b1 b2, ground_process b1 <> hash_process b2.
+
 (* Convenience local notations. We bind shorter names to the
-   translation functions applied to our section's hash_process so that
-   the goals below stay readable. *)
-Notation N := (N_tr hash_process).
-Notation T := (T_tr hash_process).
-Notation Pf := (P_tr hash_process).
-Notation Sy := (S_tr hash_process).
+   translation functions applied to our section's hash_process and
+   ground_process so that the goals below stay readable. *)
+Notation N := (N_tr hash_process ground_process).
+Notation T := (T_tr hash_process ground_process).
+Notation Pf := (P_tr hash_process ground_process).
+Notation Sy := (S_tr hash_process ground_process).
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 1: Rule 1 — Fuel Gate Fires
@@ -176,12 +195,29 @@ Proof.
   apply rs_comm.
 Qed.
 
-(* The hash case is identical in shape to the unit case. *)
-Theorem rule1_fuel_gate_fires_hash :
+(* The ground case is identical in shape to the unit case. *)
+Theorem rule1_fuel_gate_fires_ground :
   forall (x : name) (P Q : proc) (bs : list bool) (t : token),
     rho_step
-      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SHash bs))
-                (SToken (TGate (SHash bs) t))))
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SGround bs))
+                (SToken (TGate (SGround bs) t))))
+      (subst_proc
+         (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
+               (PDeref (NVar 0)))
+         0
+         (Quote (T t))).
+Proof.
+  intros x P Q bs t.
+  simpl.
+  apply rs_comm.
+Qed.
+
+(* The cryptographic-quote case is identical in shape to the unit case. *)
+Theorem rule1_fuel_gate_fires_quote :
+  forall (x : name) (P Q : proc) (bs : list bool) (t : token),
+    rho_step
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SQuote bs))
+                (SToken (TGate (SQuote bs) t))))
       (subst_proc
          (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
                (PDeref (NVar 0)))
@@ -228,11 +264,11 @@ Proof.
   apply rule1_fuel_gate_fires_unit.
 Qed.
 
-Theorem rule1_translation_step_one_hash :
+Theorem rule1_translation_step_one_ground :
   forall (x : name) (P Q : proc) (bs : list bool) (t : token),
     rho_reachable
-      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SHash bs))
-                (SToken (TGate (SHash bs) t))))
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SGround bs))
+                (SToken (TGate (SGround bs) t))))
       (subst_proc
          (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
                (PDeref (NVar 0)))
@@ -241,7 +277,23 @@ Theorem rule1_translation_step_one_hash :
 Proof.
   intros x P Q bs t.
   apply rho_reachable_one.
-  apply rule1_fuel_gate_fires_hash.
+  apply rule1_fuel_gate_fires_ground.
+Qed.
+
+Theorem rule1_translation_step_one_quote :
+  forall (x : name) (P Q : proc) (bs : list bool) (t : token),
+    rho_reachable
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SQuote bs))
+                (SToken (TGate (SQuote bs) t))))
+      (subst_proc
+         (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
+               (PDeref (NVar 0)))
+         0
+         (Quote (T t))).
+Proof.
+  intros x P Q bs t.
+  apply rho_reachable_one.
+  apply rule1_fuel_gate_fires_quote.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -415,11 +467,40 @@ Proof.
 Qed.
 
 (* The hash case is identical in shape. *)
-Lemma rule1_hash_after_gate :
+Lemma rule1_ground_after_gate :
   forall (x : name) (P Q : proc) (bs : list bool) (t : token),
     rho_step
-      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SHash bs))
-                (SToken (TGate (SHash bs) t))))
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SGround bs))
+                (SToken (TGate (SGround bs) t))))
+      (rule1_atomic_after_gate x P Q t).
+Proof.
+  intros x P Q bs t.
+  unfold rule1_atomic_after_gate.
+  simpl.
+  apply (rs_struct
+           _
+           (PPar (PInput (Quote (ground_process bs))
+                         (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
+                               (PDeref (NVar 0))))
+                 (POutput (Quote (ground_process bs)) (T t)))
+           (subst_proc
+              (PPar (lift_proc 1 0 (PPar (PInput x P) (POutput x Q)))
+                    (PDeref (NVar 0)))
+              0
+              (Quote (T t)))).
+  - apply se_refl.
+  - apply rs_comm.
+  - rewrite subst_proc_par.
+    rewrite subst_lift_zero.
+    rewrite subst_proc_deref_nvar_eq_quote.
+    apply se_refl.
+Qed.
+
+Lemma rule1_quote_after_gate :
+  forall (x : name) (P Q : proc) (bs : list bool) (t : token),
+    rho_step
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SQuote bs))
+                (SToken (TGate (SQuote bs) t))))
       (rule1_atomic_after_gate x P Q t).
 Proof.
   intros x P Q bs t.
@@ -476,37 +557,55 @@ Proof.
     + apply rr_refl.
 Qed.
 
-Theorem rule1_simulation_hash :
+Theorem rule1_simulation_ground :
   forall (x : name) (P Q : proc) (bs : list bool) (t : token),
     rho_reachable
-      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SHash bs))
-                (SToken (TGate (SHash bs) t))))
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SGround bs))
+                (SToken (TGate (SGround bs) t))))
       (PPar (subst_proc P 0 (Quote Q)) (T t)).
 Proof.
   intros x P Q bs t.
   eapply rr_step.
-  - apply rule1_hash_after_gate.
+  - apply rule1_ground_after_gate.
   - eapply rr_step.
     + apply rule1_atomic_inner_comm.
     + apply rr_refl.
 Qed.
 
-(* Combined atomic faithfulness for Rule 1: covers both SUnit and
-   SHash signatures. Under semantic subst, the witness target is the
+Theorem rule1_simulation_quote :
+  forall (x : name) (P Q : proc) (bs : list bool) (t : token),
+    rho_reachable
+      (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) (SQuote bs))
+                (SToken (TGate (SQuote bs) t))))
+      (PPar (subst_proc P 0 (Quote Q)) (T t)).
+Proof.
+  intros x P Q bs t.
+  eapply rr_step.
+  - apply rule1_quote_after_gate.
+  - eapply rr_step.
+    + apply rule1_atomic_inner_comm.
+    + apply rr_refl.
+Qed.
+
+(* Combined atomic faithfulness for Rule 1: covers SUnit, SGround, and
+   SQuote signatures. Under semantic subst, the witness target is the
    substituted body in parallel with the released token payload [T t]
-   directly — no [PDeref (Quote _)] residue survives. *)
+   directly — no [PDeref (Quote _)] residue survives. The disjunction is
+   stated inline (the [is_atomic] abbreviation is introduced later in this
+   file, after the Rule 5 section). *)
 Theorem rule1_simulation_atomic :
   forall (x : name) (P Q : proc) (s : sig) (t : token),
-    (s = SUnit \/ exists bs, s = SHash bs) ->
+    (s = SUnit \/ (exists bs, s = SGround bs) \/ (exists bs, s = SQuote bs)) ->
     rho_reachable
       (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q)) s)
                 (SToken (TGate s t))))
       (PPar (subst_proc P 0 (Quote Q)) (T t)).
 Proof.
   intros x P Q s t Hs.
-  destruct Hs as [Heq | [bs Heq]]; subst.
+  destruct Hs as [Heq | [[bs Heq] | [bs Heq]]]; subst.
   - apply rule1_simulation_unit.
-  - apply rule1_simulation_hash.
+  - apply rule1_simulation_ground.
+  - apply rule1_simulation_quote.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -692,20 +791,52 @@ Proof.
     apply se_sym, se_par_assoc.
 Qed.
 
-(* The SHash variant: s1 = SHash bs1, s2 = SHash bs2. The proof is
+(* The atomic-atom variant (SGround/SQuote): s1, s2 atomic. The proof is
    IDENTICAL to the unit-unit case modulo the signature constructor —
    we exploit this by using a generic atomic predicate. *)
 
-(* An atomic signature is one of SUnit or SHash bs. *)
+(* An atomic signature is one of SUnit, SGround bs, or SQuote bs (Def 3.3's
+   two atom axes). All three have the SAME canonical atomic gate shape, so
+   downstream proofs branch on [is_atomic] rather than re-destructing [sig];
+   this localises the constructor-addition ripple to [is_atomic] and the
+   [atomic_destruct] helper below. *)
 Definition is_atomic (s : sig) : Prop :=
-  s = SUnit \/ exists bs, s = SHash bs.
+  s = SUnit \/ (exists bs, s = SGround bs) \/ (exists bs, s = SQuote bs).
+
+(* Convenience smart constructors for the three atomic shapes. *)
+Lemma is_atomic_unit : is_atomic SUnit.
+Proof. left. reflexivity. Qed.
+
+Lemma is_atomic_ground : forall bs, is_atomic (SGround bs).
+Proof. intro bs. right. left. exists bs. reflexivity. Qed.
+
+Lemma is_atomic_quote : forall bs, is_atomic (SQuote bs).
+Proof. intro bs. right. right. exists bs. reflexivity. Qed.
+
+(* A uniform eliminator for [is_atomic]: any goal that holds for the three
+   atomic shapes holds for every atomic signature. Downstream proofs use
+   this instead of a three-way [destruct] on the [is_atomic] witness. *)
+Lemma atomic_destruct :
+  forall (Pr : sig -> Prop) (s : sig),
+    is_atomic s ->
+    Pr SUnit ->
+    (forall bs, Pr (SGround bs)) ->
+    (forall bs, Pr (SQuote bs)) ->
+    Pr s.
+Proof.
+  intros Pr s Hat Hu Hg Hq.
+  destruct Hat as [Heq | [[bs Heq] | [bs Heq]]]; subst.
+  - exact Hu.
+  - apply Hg.
+  - apply Hq.
+Qed.
 
 (* For atomic s, P_tr P s has the canonical atomic gate shape. *)
 Lemma p_tr_atomic_shape : forall P s,
   is_atomic s ->
   Pf P s = PInput (N s) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
 Proof.
-  intros P s [Heq | [bs Heq]]; subst; reflexivity.
+  intros P s [Heq | [[bs Heq] | [bs Heq]]]; subst; reflexivity.
 Qed.
 
 (* Generic Rule 5 simulation for any atomic s1, s2. The proof is identical
@@ -846,7 +977,7 @@ Theorem rule4_simulation_unit_unit :
         (PPar (Sy (SPar (SPar (SSigned (PInput x P) SUnit)
                               (SSigned (POutput x Q) SUnit))
                         (SToken (TGate (SAnd SUnit SUnit) t))))
-              (Split hash_process SUnit SUnit))
+              (Split hash_process ground_process SUnit SUnit))
         W
       /\ W ≡ rule4_witness x P Q t.
 Proof.
@@ -854,7 +985,7 @@ Proof.
   unfold Sy. cbn [S_tr].
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PNil)
-                     (T_tr hash_process t))).
+                     (T_tr hash_process ground_process t))).
   split.
   - (* The system shape after cbn is:
        (((Pf-In | Pf-Out) | comp-token) | Split)
@@ -865,13 +996,13 @@ Proof.
       - (* Pre-rearrange: ((In | Out) | tok) | Split  ≡  (In | Out) | (Split | tok) *)
         apply (se_trans _
           (PPar (PPar (Pf (PInput x P) SUnit) (Pf (POutput x Q) SUnit))
-                (PPar (T_tr hash_process (TGate (SAnd SUnit SUnit) t))
-                      (Split hash_process SUnit SUnit)))).
+                (PPar (T_tr hash_process ground_process (TGate (SAnd SUnit SUnit) t))
+                      (Split hash_process ground_process SUnit SUnit)))).
         { apply se_par_assoc. }
         apply se_par_cong_r. apply se_par_comm.
       - (* Reduce on the RHS: Split fires against the compound token. *)
         apply rs_par_r.
-        apply (Split_operational hash_process hash_process_closed SUnit SUnit t).
+        apply (Split_operational hash_process hash_process_closed ground_process ground_process_closed SUnit SUnit t).
       - apply se_refl. }
     (* After Step 1, state is:
        (Pf-In | Pf-Out) | (POut(N s1) PNil | POut(N s2) (PDeref (Quote (T (TGate ...))))) *)
@@ -911,7 +1042,7 @@ Theorem rule4_simulation_atomic_atomic :
         (PPar (Sy (SPar (SPar (SSigned (PInput x P) s1)
                               (SSigned (POutput x Q) s2))
                         (SToken (TGate (SAnd s1 s2) t))))
-              (Split hash_process s1 s2))
+              (Split hash_process ground_process s1 s2))
         W
       /\ W ≡ rule4_witness x P Q t.
 Proof.
@@ -919,7 +1050,7 @@ Proof.
   unfold Sy. cbn [S_tr].
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PNil)
-                     (T_tr hash_process t))).
+                     (T_tr hash_process ground_process t))).
   split.
   - rewrite (p_tr_atomic_shape (PInput x P) s1 Hs1).
     rewrite (p_tr_atomic_shape (POutput x Q) s2 Hs2).
@@ -931,12 +1062,12 @@ Proof.
                               (PPar (lift_proc 1 0 (PInput x P)) (PDeref (NVar 0))))
                       (PInput (N s2)
                               (PPar (lift_proc 1 0 (POutput x Q)) (PDeref (NVar 0)))))
-                (PPar (T_tr hash_process (TGate (SAnd s1 s2) t))
-                      (Split hash_process s1 s2)))).
+                (PPar (T_tr hash_process ground_process (TGate (SAnd s1 s2) t))
+                      (Split hash_process ground_process s1 s2)))).
         { apply se_par_assoc. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_operational hash_process hash_process_closed s1 s2 t).
+        apply (Split_operational hash_process hash_process_closed ground_process ground_process_closed s1 s2 t).
       - apply se_refl. }
     (* Step 2: rearrange and fire left atomic gate. *)
     eapply rr_step.
@@ -1024,7 +1155,7 @@ Proof.
   - apply se_refl.
   - apply rs_comm.
   - cbn [subst_proc].
-    rewrite (N_tr_subst hash_process hash_process_closed s2).
+    rewrite (N_tr_subst hash_process hash_process_closed ground_process ground_process_closed s2).
     cbn [subst_name lift_name].
     rewrite (closed_proc_lift_zero M 1 0 HM).
     cbn [subst_proc].
@@ -1062,8 +1193,8 @@ Proof.
   - apply se_refl.
   - apply rs_comm.
   - cbn [subst_proc subst_name lift_name].
-    rewrite (N_tr_subst hash_process hash_process_closed s2).
-    rewrite (T_tr_lift hash_process hash_process_closed t1 1 0).
+    rewrite (N_tr_subst hash_process hash_process_closed ground_process ground_process_closed s2).
+    rewrite (T_tr_lift hash_process hash_process_closed ground_process ground_process_closed t1 1 0).
     rewrite subst_lift_two_one.
     cbn [subst_proc subst_name].
     apply se_refl.
@@ -1101,7 +1232,7 @@ Proof.
     rewrite subst_proc_par.
     (* Under semantic subst the outer residue is the bare [T t1] (no
        [PDeref (Quote _)] wrapper); T t1 is closed so subst is id. *)
-    rewrite (T_tr_subst hash_process hash_process_closed t1).
+    rewrite (T_tr_subst hash_process hash_process_closed ground_process ground_process_closed t1).
     rewrite subst_proc_deref_nvar_eq_quote.
     apply se_refl.
 Qed.
@@ -1115,20 +1246,20 @@ Lemma compound_inner_gate_fires_closed :
     closed_proc residue1 ->
     closed_proc N ->
     rho_step
-      (PPar (PInput (N_tr hash_process s2)
+      (PPar (PInput (N_tr hash_process ground_process s2)
                     (PPar (lift_proc 1 0 R)
                           (PPar residue1 (PDeref (NVar 0)))))
-            (POutput (N_tr hash_process s2) N))
+            (POutput (N_tr hash_process ground_process s2) N))
       (PPar R
             (PPar residue1 N)).
 Proof.
   intros R residue1 N s2 Hres1 HN.
   apply (rs_struct
     _
-    (PPar (PInput (N_tr hash_process s2)
+    (PPar (PInput (N_tr hash_process ground_process s2)
                   (PPar (lift_proc 1 0 R)
                         (PPar residue1 (PDeref (NVar 0)))))
-          (POutput (N_tr hash_process s2) N))
+          (POutput (N_tr hash_process ground_process s2) N))
     (subst_proc (PPar (lift_proc 1 0 R)
                       (PPar residue1 (PDeref (NVar 0))))
                 0
@@ -1207,20 +1338,20 @@ Theorem rule5_simulation_compound_atomic :
                                     (SSigned (POutput x Q) s2))
                               (SToken (TGate (SAnd u v) t1)))
                         (SToken (TGate s2 t2))))
-              (Split hash_process u v))
+              (Split hash_process ground_process u v))
         W
       /\ W ≡ rule5_witness_ca x P Q t1 t2.
 Proof.
   intros x P Q u v s2 t1 t2 Hs2.
   unfold Sy. cbn [S_tr].
-  rewrite (P_tr_and hash_process (PInput x P) u v).
+  rewrite (P_tr_and hash_process ground_process (PInput x P) u v).
   rewrite (p_tr_atomic_shape (POutput x Q) s2 Hs2).
-  rewrite (T_tr_gate hash_process (SAnd u v) t1).
-  rewrite (T_tr_gate hash_process s2 t2).
+  rewrite (T_tr_gate hash_process ground_process (SAnd u v) t1).
+  rewrite (T_tr_gate hash_process ground_process s2 t2).
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PPar (PNil)
-                           (T_tr hash_process t1))
-                     (T_tr hash_process t2))).
+                           (T_tr hash_process ground_process t1))
+                     (T_tr hash_process ground_process t2))).
   split.
   - eapply rr_step.
     { eapply rs_struct.
@@ -1230,9 +1361,9 @@ Proof.
         eapply se_trans. { apply se_par_cong_r. apply se_par_comm. }
         apply se_par_cross.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed u v
-                 (T_tr hash_process t1)
-                 (T_tr_closed hash_process hash_process_closed t1)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u v
+                 (T_tr hash_process ground_process t1)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t1)).
       - eapply se_trans. { apply se_par_cross. }
         eapply se_trans. { apply se_par_cong_l. apply se_par_assoc. }
         eapply se_trans.
@@ -1244,10 +1375,10 @@ Proof.
     eapply rho_reachable_trans.
     { apply rho_reachable_par_l.
       apply (compound_half_fires_two_step (PInput x P) u v PNil
-               (T_tr hash_process t1)
+               (T_tr hash_process ground_process t1)
                closed_PNil
                (closed_PDeref_Quote _
-                  (T_tr_closed hash_process hash_process_closed t1))). }
+                  (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t1))). }
     eapply rr_step.
     { apply rs_par_r. apply atomic_output_gate_fires. }
     eapply rr_step.
@@ -1276,39 +1407,39 @@ Theorem rule5_simulation_atomic_compound :
                                     (SSigned (POutput x Q) (SAnd u v)))
                               (SToken (TGate s1 t1)))
                         (SToken (TGate (SAnd u v) t2))))
-              (Split hash_process u v))
+              (Split hash_process ground_process u v))
         W
       /\ W ≡ rule5_witness_ac x P Q t1 t2.
 Proof.
   intros x P Q s1 u v t1 t2 Hs1.
   unfold Sy. cbn [S_tr].
   rewrite (p_tr_atomic_shape (PInput x P) s1 Hs1).
-  rewrite (P_tr_and hash_process (POutput x Q) u v).
-  rewrite (T_tr_gate hash_process s1 t1).
-  rewrite (T_tr_gate hash_process (SAnd u v) t2).
+  rewrite (P_tr_and hash_process ground_process (POutput x Q) u v).
+  rewrite (T_tr_gate hash_process ground_process s1 t1).
+  rewrite (T_tr_gate hash_process ground_process (SAnd u v) t2).
   exists (PPar (subst_proc P 0 (Quote Q))
-               (PPar (T_tr hash_process t1)
+               (PPar (T_tr hash_process ground_process t1)
                      (PPar (PNil)
-                           (T_tr hash_process t2)))).
+                           (T_tr hash_process ground_process t2)))).
   split.
   - eapply rr_step.
     { eapply rs_struct.
       - eapply se_trans. { apply se_par_assoc. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed u v
-                 (T_tr hash_process t2)
-                 (T_tr_closed hash_process hash_process_closed t2)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u v
+                 (T_tr hash_process ground_process t2)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t2)).
       - eapply se_trans. { apply se_par_assoc. }
         eapply se_trans. { apply se_par_cross. }
         apply se_par_cong_r. apply se_sym. apply se_par_assoc. }
     eapply rho_reachable_trans.
     { apply rho_reachable_par_r.
       apply (compound_half_fires_two_step (POutput x Q) u v PNil
-               (T_tr hash_process t2)
+               (T_tr hash_process ground_process t2)
                closed_PNil
                (closed_PDeref_Quote _
-                  (T_tr_closed hash_process hash_process_closed t2))). }
+                  (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t2))). }
     eapply rr_step.
     { apply rs_par_l. apply atomic_input_gate_fires. }
     eapply rr_step.
@@ -1336,21 +1467,21 @@ Theorem rule5_simulation_compound_compound :
                                     (SSigned (POutput x Q) (SAnd u2 v2)))
                               (SToken (TGate (SAnd u1 v1) t1)))
                         (SToken (TGate (SAnd u2 v2) t2))))
-              (PPar (Split hash_process u1 v1) (Split hash_process u2 v2)))
+              (PPar (Split hash_process ground_process u1 v1) (Split hash_process ground_process u2 v2)))
         W
       /\ W ≡ rule5_witness_cc x P Q t1 t2.
 Proof.
   intros x P Q u1 v1 u2 v2 t1 t2.
   unfold Sy. cbn [S_tr].
-  rewrite (P_tr_and hash_process (PInput x P) u1 v1).
-  rewrite (P_tr_and hash_process (POutput x Q) u2 v2).
-  rewrite (T_tr_gate hash_process (SAnd u1 v1) t1).
-  rewrite (T_tr_gate hash_process (SAnd u2 v2) t2).
+  rewrite (P_tr_and hash_process ground_process (PInput x P) u1 v1).
+  rewrite (P_tr_and hash_process ground_process (POutput x Q) u2 v2).
+  rewrite (T_tr_gate hash_process ground_process (SAnd u1 v1) t1).
+  rewrite (T_tr_gate hash_process ground_process (SAnd u2 v2) t2).
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PPar (PNil)
-                           (T_tr hash_process t1))
+                           (T_tr hash_process ground_process t1))
                      (PPar (PNil)
-                           (T_tr hash_process t2)))).
+                           (T_tr hash_process ground_process t2)))).
   split.
   - eapply rr_step.
     { eapply rs_struct.
@@ -1358,17 +1489,17 @@ Proof.
         eapply se_trans. { apply se_par_cong_l. apply se_par_assoc. }
         apply se_par_cong_l. apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_l. apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed u1 v1
-                 (T_tr hash_process t1)
-                 (T_tr_closed hash_process hash_process_closed t1)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u1 v1
+                 (T_tr hash_process ground_process t1)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t1)).
       - apply se_refl. }
     eapply rr_step.
     { eapply rs_struct.
       - apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed u2 v2
-                 (T_tr hash_process t2)
-                 (T_tr_closed hash_process hash_process_closed t2)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u2 v2
+                 (T_tr hash_process ground_process t2)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t2)).
       - eapply se_trans. { apply se_par_assoc. }
         eapply se_trans. { apply se_par_cong_r. apply se_par_cross. }
         eapply se_trans. { apply se_sym. apply se_par_assoc. }
@@ -1377,17 +1508,17 @@ Proof.
     eapply rho_reachable_trans.
     { apply rho_reachable_par_l.
       apply (compound_half_fires_two_step (PInput x P) u1 v1 PNil
-               (T_tr hash_process t1)
+               (T_tr hash_process ground_process t1)
                closed_PNil
                (closed_PDeref_Quote _
-                  (T_tr_closed hash_process hash_process_closed t1))). }
+                  (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t1))). }
     eapply rho_reachable_trans.
     { apply rho_reachable_par_r.
       apply (compound_half_fires_two_step (POutput x Q) u2 v2 PNil
-               (T_tr hash_process t2)
+               (T_tr hash_process ground_process t2)
                closed_PNil
                (closed_PDeref_Quote _
-                  (T_tr_closed hash_process hash_process_closed t2))). }
+                  (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t2))). }
     eapply rr_step.
     { eapply rs_struct.
       - apply se_par_cross.
@@ -1418,9 +1549,9 @@ Proof.
   split.
   - unfold Sy. cbn [S_tr].
     (* Unfold the token translation gates so the outputs are explicit. *)
-    rewrite (T_tr_gate hash_process s1 t1).
-    rewrite (T_tr_gate hash_process s2 t2).
-    rewrite (P_tr_and hash_process (PPar (PInput x P) (POutput x Q)) s1 s2).
+    rewrite (T_tr_gate hash_process ground_process s1 t1).
+    rewrite (T_tr_gate hash_process ground_process s2 t2).
+    rewrite (P_tr_and hash_process ground_process (PPar (PInput x P) (POutput x Q)) s1 s2).
     (* Step 1: outer fuel gate fires. *)
     eapply rr_step.
     { eapply rs_struct.
@@ -1472,7 +1603,7 @@ Theorem rule3_simulation :
         (PPar (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q))
                                  (SAnd s1 s2))
                         (SToken (TGate (SAnd s1 s2) t))))
-              (Split hash_process s1 s2))
+              (Split hash_process ground_process s1 s2))
         W
       /\ W ≡ rule3_witness x P Q t.
 Proof.
@@ -1481,7 +1612,7 @@ Proof.
   (* Witness shape: substituted body in parallel with all residues. *)
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PNil)
-                     (T_tr hash_process t))).
+                     (T_tr hash_process ground_process t))).
   split.
   - (* Step 1: Split fires. The shape after cbn is:
        ((Pf-redex | comp-token) | Split)
@@ -1491,18 +1622,18 @@ Proof.
       - (* ((Pf-redex | comp-token) | Split) ≡ (Pf-redex | (Split | comp-token)) *)
         apply (se_trans _
           (PPar (Pf (PPar (PInput x P) (POutput x Q)) (SAnd s1 s2))
-                (PPar (T_tr hash_process (TGate (SAnd s1 s2) t))
-                      (Split hash_process s1 s2)))).
+                (PPar (T_tr hash_process ground_process (TGate (SAnd s1 s2) t))
+                      (Split hash_process ground_process s1 s2)))).
         { apply se_par_assoc. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_operational hash_process hash_process_closed s1 s2 t).
+        apply (Split_operational hash_process hash_process_closed ground_process ground_process_closed s1 s2 t).
       - apply se_refl. }
     (* After Step 1:
          Pf-redex | (POut(N s1) PNil | POut(N s2) (T t))
        Step 2: outer gate fires on N s1 with PNil payload. Use the
        _closed variant since PNil is closed. *)
-    rewrite (P_tr_and hash_process (PPar (PInput x P) (POutput x Q)) s1 s2).
+    rewrite (P_tr_and hash_process ground_process (PPar (PInput x P) (POutput x Q)) s1 s2).
     eapply rr_step.
     { eapply rs_struct.
       - (* gate-pair | (s1-out | s2-out) ≡ (gate-pair | s1-out) | s2-out *)
@@ -1516,7 +1647,8 @@ Proof.
     eapply rr_step.
     { apply compound_inner_gate_fires_closed.
       - apply closed_PNil.
-      - apply T_tr_closed. assumption. }
+      - apply (T_tr_closed hash_process hash_process_closed
+                 ground_process ground_process_closed). }
     (* Step 4: inner COMM on x. *)
     eapply rr_step.
     { apply rs_par_l. apply rs_comm. }
@@ -1529,7 +1661,7 @@ Qed.
    ═══════════════════════════════════════════════════════════════════════════
 
    Rule 1 of [ca_step] is universally quantified over the signature [s].
-   When [s] is atomic ([SUnit] or [SHash bs]), the existing
+   When [s] is atomic ([SUnit], [SGround bs], or [SQuote bs]), the existing
    [rule1_simulation_atomic] lemma handles it. When [s] is compound
    ([SAnd s1 s2]), the LHS shape
 
@@ -1555,7 +1687,7 @@ Theorem rule1_simulation_compound :
         (PPar (Sy (SPar (SSigned (PPar (PInput x P) (POutput x Q))
                                  (SAnd s1 s2))
                         (SToken (TGate (SAnd s1 s2) t))))
-              (Split hash_process s1 s2))
+              (Split hash_process ground_process s1 s2))
         W
       /\ W ≡ rule3_witness x P Q t.
 Proof.
@@ -1566,7 +1698,7 @@ Qed.
 (* The Rule 1 generic dispatcher: for ANY signature [s] (atomic or
    compound, arbitrarily nested), the translation of the LHS reaches a
    witness via finitely many rho-steps. The auxiliary [Ctx] is [PNil]
-   for atomic signatures and [Split hash_process s1 s2] for compound
+   for atomic signatures and [Split hash_process ground_process s1 s2] for compound
    signatures.
 
    This is the "fully generic" form of Rule 1's faithfulness:
@@ -1582,7 +1714,7 @@ Theorem rule1_simulation_generic :
         W.
 Proof.
   intros x P Q s t.
-  destruct s as [| bs | s1 s2].
+  destruct s as [| bs | bs | s1 s2].
   - (* SUnit: Ctx = PNil. Lift the existing rule1_simulation_unit
        reachability over the trivial PNil context using rho_reachable_par_l. *)
     exists PNil.
@@ -1593,22 +1725,31 @@ Proof.
     split.
     + apply closed_PNil.
     + apply rho_reachable_par_l. exact Hreach.
-  - (* SHash bs: Ctx = PNil. Same pattern as the SUnit case. *)
+  - (* SGround bs: Ctx = PNil. Same pattern as the SUnit case. *)
     exists PNil.
-    pose proof (rule1_simulation_hash x P Q bs t) as Hreach.
+    pose proof (rule1_simulation_ground x P Q bs t) as Hreach.
     exists (PPar (PPar (subst_proc P 0 (Quote Q))
                        (T t))
                  PNil).
     split.
     + apply closed_PNil.
     + apply rho_reachable_par_l. exact Hreach.
-  - (* SAnd s1 s2: Ctx = Split hash_process s1 s2. Use rule1_simulation_compound. *)
-    exists (Split hash_process s1 s2).
+  - (* SQuote bs: Ctx = PNil. Same pattern as the SUnit case. *)
+    exists PNil.
+    pose proof (rule1_simulation_quote x P Q bs t) as Hreach.
+    exists (PPar (PPar (subst_proc P 0 (Quote Q))
+                       (T t))
+                 PNil).
+    split.
+    + apply closed_PNil.
+    + apply rho_reachable_par_l. exact Hreach.
+  - (* SAnd s1 s2: Ctx = Split hash_process ground_process s1 s2. Use rule1_simulation_compound. *)
+    exists (Split hash_process ground_process s1 s2).
     destruct (rule1_simulation_compound x P Q s1 s2 t) as [W [Hreach _]].
     exists W.
     split.
     + (* Split is closed by Split_closed (Translation.v). *)
-      apply (Split_closed hash_process hash_process_closed s1 s2).
+      apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed s1 s2).
     + exact Hreach.
 Qed.
 
@@ -1645,23 +1786,23 @@ Theorem rule4_simulation_compound_atomic :
         (PPar (Sy (SPar (SPar (SSigned (PInput x P) (SAnd u v))
                               (SSigned (POutput x Q) s2))
                         (SToken (TGate (SAnd (SAnd u v) s2) t))))
-              (PPar (Split hash_process (SAnd u v) s2)
-                    (Split hash_process u v)))
+              (PPar (Split hash_process ground_process (SAnd u v) s2)
+                    (Split hash_process ground_process u v)))
         W
       /\ W ≡ rule4_witness_ca x P Q t.
 Proof.
   intros x P Q u v s2 t Hs2.
   unfold Sy. cbn [S_tr].
-  rewrite (P_tr_and hash_process (PInput x P) u v).
+  rewrite (P_tr_and hash_process ground_process (PInput x P) u v).
   rewrite (p_tr_atomic_shape (POutput x Q) s2 Hs2).
-  rewrite (T_tr_gate hash_process (SAnd (SAnd u v) s2) t).
+  rewrite (T_tr_gate hash_process ground_process (SAnd (SAnd u v) s2) t).
   (* Witness shape: residues left-associated as ((res1 | res2) | res3);
      a single se_par_assoc at the end re-associates them to the right-
      associated shape of rule4_witness_ca. *)
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PPar (PNil)
                            PNil)
-                     (T_tr hash_process t))).
+                     (T_tr hash_process ground_process t))).
   split.
   - (* ── Step 1: Outer Split fires on the combined token ──
        Pre-rearrange ((PfInC | PfOutA) | tokC) | (OS | IS)
@@ -1675,13 +1816,13 @@ Proof.
         { apply se_par_cross. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed
-                 (SAnd u v) s2 (T_tr hash_process t)
-                 (T_tr_closed hash_process hash_process_closed t)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed
+                 (SAnd u v) s2 (T_tr hash_process ground_process t)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t)).
       - apply se_refl. }
     (* State: ((PfInC | PfOutA) | IS) | (o1 | o2)
          where o1 = POutput (N (SAnd u v)) PNil
-               o2 = POutput (N s2) (T_tr hash_process t) *)
+               o2 = POutput (N s2) (T_tr hash_process ground_process t) *)
     (* ── Step 2: Inner Split fires on o1 ──
        Pre-rearrange ((PfInC | PfOutA) | IS) | (o1 | o2)
                    ≡ (IS | o1) | ((PfInC | PfOutA) | o2),
@@ -1693,7 +1834,7 @@ Proof.
         { apply se_par_cong_l. apply se_par_comm. }
         apply se_par_cross.
       - apply rs_par_l.
-        apply (Split_fires_closed hash_process hash_process_closed u v PNil
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u v PNil
                  closed_PNil).
       - eapply se_trans.
         { apply se_par_cong_r. apply se_par_assoc. }
@@ -1720,7 +1861,7 @@ Proof.
     eapply rr_step.
     { apply rs_par_r. apply atomic_output_gate_fires. }
     (* State: ((PInput x P) | (res1 | res2)) | ((POutput x Q) | res3)
-         where res3 = PDeref (Quote (T_tr hash_process t)) *)
+         where res3 = PDeref (Quote (T_tr hash_process ground_process t)) *)
     (* ── Step 6: Inner COMM on x ──
        Rearrange via se_par_cross to expose (PInput x P) | (POutput x Q),
        then fire rs_comm on the left. *)
@@ -1754,21 +1895,21 @@ Theorem rule4_simulation_atomic_compound :
         (PPar (Sy (SPar (SPar (SSigned (PInput x P) s1)
                               (SSigned (POutput x Q) (SAnd u v)))
                         (SToken (TGate (SAnd s1 (SAnd u v)) t))))
-              (PPar (Split hash_process s1 (SAnd u v))
-                    (Split hash_process u v)))
+              (PPar (Split hash_process ground_process s1 (SAnd u v))
+                    (Split hash_process ground_process u v)))
         W
       /\ W ≡ rule4_witness_ac x P Q t.
 Proof.
   intros x P Q s1 u v t Hs1.
   unfold Sy. cbn [S_tr].
   rewrite (p_tr_atomic_shape (PInput x P) s1 Hs1).
-  rewrite (P_tr_and hash_process (POutput x Q) u v).
-  rewrite (T_tr_gate hash_process (SAnd s1 (SAnd u v)) t).
+  rewrite (P_tr_and hash_process ground_process (POutput x Q) u v).
+  rewrite (T_tr_gate hash_process ground_process (SAnd s1 (SAnd u v)) t).
   (* Witness shape: residues in the order they're reached after Step 6,
      namely ((res2|res3) | res1), then closing equivalence rotates them. *)
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PPar (PNil)
-                           (T_tr hash_process t))
+                           (T_tr hash_process ground_process t))
                      (PNil))).
   split.
   - (* ── Step 1: Outer Split fires on combined token (same as case (ca)). *)
@@ -1780,13 +1921,13 @@ Proof.
         { apply se_par_cross. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed
-                 s1 (SAnd u v) (T_tr hash_process t)
-                 (T_tr_closed hash_process hash_process_closed t)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed
+                 s1 (SAnd u v) (T_tr hash_process ground_process t)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t)).
       - apply se_refl. }
     (* State: ((PfInA | PfOutC) | IS) | (o1 | o2)
          where o1 = POutput (N s1) PNil
-               o2 = POutput (N (SAnd u v)) (T_tr hash_process t) *)
+               o2 = POutput (N (SAnd u v)) (T_tr hash_process ground_process t) *)
     (* ── Step 2: Inner Split fires on o2 ── *)
     eapply rr_step.
     { eapply rs_struct.
@@ -1794,10 +1935,10 @@ Proof.
            directly by se_par_cross with X=(PfInA|PfOutC), Y=IS, Z=o1, W=o2. *)
         apply se_par_cross.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed u v
-                 (T_tr hash_process t)
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u v
+                 (T_tr hash_process ground_process t)
                  (closed_PDeref_Quote _
-                    (T_tr_closed hash_process hash_process_closed t))).
+                    (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t))).
       - (* Post-rearrange: ((PfInA|PfOutC)|o1) | (u_out|v_out)
            ≡ ((PfOutC|u_out)|v_out) | (PfInA|o1) *)
         eapply se_trans.
@@ -1814,14 +1955,14 @@ Proof.
     eapply rho_reachable_trans.
     { apply rho_reachable_par_l.
       apply (compound_half_fires_two_step (POutput x Q) u v PNil
-               (T_tr hash_process t)
+               (T_tr hash_process ground_process t)
                closed_PNil
                (closed_PDeref_Quote _
                   (closed_PDeref_Quote _
-                     (T_tr_closed hash_process hash_process_closed t)))). }
+                     (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t)))). }
     (* State: ((POutput x Q) | (res2 | res3)) | (PfInA | o1)
          where res2 = PNil
-               res3 = PDeref (Quote (T_tr hash_process t)) *)
+               res3 = PDeref (Quote (T_tr hash_process ground_process t)) *)
     (* ── Step 5: Atomic left half fires on o1. *)
     eapply rr_step.
     { apply rs_par_r. apply atomic_input_gate_fires. }
@@ -1871,22 +2012,22 @@ Theorem rule4_simulation_compound_compound :
         (PPar (Sy (SPar (SPar (SSigned (PInput x P) (SAnd u1 v1))
                               (SSigned (POutput x Q) (SAnd u2 v2)))
                         (SToken (TGate (SAnd (SAnd u1 v1) (SAnd u2 v2)) t))))
-              (PPar (Split hash_process (SAnd u1 v1) (SAnd u2 v2))
-                    (PPar (Split hash_process u1 v1)
-                          (Split hash_process u2 v2))))
+              (PPar (Split hash_process ground_process (SAnd u1 v1) (SAnd u2 v2))
+                    (PPar (Split hash_process ground_process u1 v1)
+                          (Split hash_process ground_process u2 v2))))
         W
       /\ W ≡ rule4_witness_cc x P Q t.
 Proof.
   intros x P Q u1 v1 u2 v2 t.
   unfold Sy. cbn [S_tr].
-  rewrite (P_tr_and hash_process (PInput x P) u1 v1).
-  rewrite (P_tr_and hash_process (POutput x Q) u2 v2).
-  rewrite (T_tr_gate hash_process (SAnd (SAnd u1 v1) (SAnd u2 v2)) t).
+  rewrite (P_tr_and hash_process ground_process (PInput x P) u1 v1).
+  rewrite (P_tr_and hash_process ground_process (POutput x Q) u2 v2).
+  rewrite (T_tr_gate hash_process ground_process (SAnd (SAnd u1 v1) (SAnd u2 v2)) t).
   exists (PPar (subst_proc P 0 (Quote Q))
                (PPar (PPar (PNil)
                            PNil)
                      (PPar (PNil)
-                           (T_tr hash_process t)))).
+                           (T_tr hash_process ground_process t)))).
   split.
   - (* ── Step 1: Outer Split fires on combined token. *)
     eapply rr_step.
@@ -1897,9 +2038,9 @@ Proof.
         { apply se_par_cross. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed
-                 (SAnd u1 v1) (SAnd u2 v2) (T_tr hash_process t)
-                 (T_tr_closed hash_process hash_process_closed t)).
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed
+                 (SAnd u1 v1) (SAnd u2 v2) (T_tr hash_process ground_process t)
+                 (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t)).
       - apply se_refl. }
     (* ── Step 2: Left inner Split fires on o1c. *)
     eapply rr_step.
@@ -1916,7 +2057,7 @@ Proof.
         { apply se_par_cong_l. apply se_sym. apply se_par_assoc. }
         apply se_par_assoc.
       - apply rs_par_l.
-        apply (Split_fires_closed hash_process hash_process_closed u1 v1 PNil
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u1 v1 PNil
                  closed_PNil).
       - apply se_refl. }
     (* ── Step 3: Right inner Split fires on o2c. *)
@@ -1930,10 +2071,10 @@ Proof.
         { apply se_par_cong_r. apply se_par_comm. }
         apply se_par_rotr.
       - apply rs_par_l.
-        apply (Split_fires_closed hash_process hash_process_closed u2 v2
-                 (T_tr hash_process t)
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed u2 v2
+                 (T_tr hash_process ground_process t)
                  (closed_PDeref_Quote _
-                    (T_tr_closed hash_process hash_process_closed t))).
+                    (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t))).
       - eapply se_trans.
         { apply se_par_rotr. }
         eapply se_trans.
@@ -1953,11 +2094,11 @@ Proof.
     eapply rho_reachable_trans.
     { apply rho_reachable_par_r.
       apply (compound_half_fires_two_step (POutput x Q) u2 v2 PNil
-               (T_tr hash_process t)
+               (T_tr hash_process ground_process t)
                closed_PNil
                (closed_PDeref_Quote _
                   (closed_PDeref_Quote _
-                     (T_tr_closed hash_process hash_process_closed t)))). }
+                     (T_tr_closed hash_process hash_process_closed ground_process ground_process_closed t)))). }
     (* ── Step 6: Inner COMM on x. *)
     eapply rr_step.
     { eapply rs_struct.
@@ -1991,104 +2132,103 @@ Theorem rule4_simulation_generic :
         W.
 Proof.
   intros x P Q s1 s2 t.
-  destruct s1 as [| bs1 | u1 v1].
-  - (* s1 = SUnit, atomic *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SUnit, SUnit) *)
-      exists (Split hash_process SUnit SUnit).
-      destruct (rule4_simulation_atomic_atomic x P Q SUnit SUnit t
-                  (or_introl eq_refl) (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed SUnit SUnit).
-      * exact Hreach.
-    + (* (SUnit, SHash bs2) *)
-      exists (Split hash_process SUnit (SHash bs2)).
-      destruct (rule4_simulation_atomic_atomic x P Q SUnit (SHash bs2) t
-                  (or_introl eq_refl) (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed SUnit (SHash bs2)).
-      * exact Hreach.
-    + (* (SUnit, SAnd u2 v2): atomic_compound *)
-      exists (PPar (Split hash_process SUnit (SAnd u2 v2))
-                   (Split hash_process u2 v2)).
-      destruct (rule4_simulation_atomic_compound x P Q SUnit u2 v2 t
-                  (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed SUnit (SAnd u2 v2)).
-        -- apply (Split_closed hash_process hash_process_closed u2 v2).
-      * exact Hreach.
-  - (* s1 = SHash bs1, atomic *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SHash bs1, SUnit) *)
-      exists (Split hash_process (SHash bs1) SUnit).
-      destruct (rule4_simulation_atomic_atomic x P Q (SHash bs1) SUnit t
-                  (or_intror (ex_intro _ bs1 eq_refl)) (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed (SHash bs1) SUnit).
-      * exact Hreach.
-    + (* (SHash bs1, SHash bs2) *)
-      exists (Split hash_process (SHash bs1) (SHash bs2)).
-      destruct (rule4_simulation_atomic_atomic x P Q (SHash bs1) (SHash bs2) t
-                  (or_intror (ex_intro _ bs1 eq_refl))
-                  (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed (SHash bs1) (SHash bs2)).
-      * exact Hreach.
-    + (* (SHash bs1, SAnd u2 v2): atomic_compound *)
-      exists (PPar (Split hash_process (SHash bs1) (SAnd u2 v2))
-                   (Split hash_process u2 v2)).
-      destruct (rule4_simulation_atomic_compound x P Q (SHash bs1) u2 v2 t
-                  (or_intror (ex_intro _ bs1 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed (SHash bs1) (SAnd u2 v2)).
-        -- apply (Split_closed hash_process hash_process_closed u2 v2).
-      * exact Hreach.
+  (* Atomic×atomic: any two atomic signatures share a uniform witness via
+     [rule4_simulation_atomic_atomic]; we feed [is_atomic] proofs directly.
+     The 4-way [sig] destruct (SUnit/SGround/SQuote/SAnd) collapses the three
+     atomic shapes into one [is_atomic] argument per side. *)
+  assert (Haa : forall a1 a2 : sig,
+            is_atomic a1 -> is_atomic a2 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SSigned (PInput x P) a1)
+                                      (SSigned (POutput x Q) a2))
+                                (SToken (TGate (SAnd a1 a2) t)))) Ctx) W).
+  { intros a1 a2 Ha1 Ha2.
+    exists (Split hash_process ground_process a1 a2).
+    destruct (rule4_simulation_atomic_atomic x P Q a1 a2 t Ha1 Ha2)
+      as [W [Hreach _]].
+    exists W. split.
+    - apply (Split_closed hash_process hash_process_closed
+               ground_process ground_process_closed a1 a2).
+    - exact Hreach. }
+  (* Atomic×compound: outer Split on (a1 & (u2&v2)), inner Split on (u2&v2). *)
+  assert (Hac : forall a1 u2 v2 : sig,
+            is_atomic a1 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SSigned (PInput x P) a1)
+                                      (SSigned (POutput x Q) (SAnd u2 v2)))
+                                (SToken (TGate (SAnd a1 (SAnd u2 v2)) t)))) Ctx) W).
+  { intros a1 u2 v2 Ha1.
+    exists (PPar (Split hash_process ground_process a1 (SAnd u2 v2))
+                 (Split hash_process ground_process u2 v2)).
+    destruct (rule4_simulation_atomic_compound x P Q a1 u2 v2 t Ha1)
+      as [W [Hreach _]].
+    exists W. split.
+    - apply closed_PPar.
+      + apply (Split_closed hash_process hash_process_closed
+                 ground_process ground_process_closed a1 (SAnd u2 v2)).
+      + apply (Split_closed hash_process hash_process_closed
+                 ground_process ground_process_closed u2 v2).
+    - exact Hreach. }
+  (* Compound×atomic: outer Split on ((u1&v1) & a2), inner Split on (u1&v1). *)
+  assert (Hca : forall u1 v1 a2 : sig,
+            is_atomic a2 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SSigned (PInput x P) (SAnd u1 v1))
+                                      (SSigned (POutput x Q) a2))
+                                (SToken (TGate (SAnd (SAnd u1 v1) a2) t)))) Ctx) W).
+  { intros u1 v1 a2 Ha2.
+    exists (PPar (Split hash_process ground_process (SAnd u1 v1) a2)
+                 (Split hash_process ground_process u1 v1)).
+    destruct (rule4_simulation_compound_atomic x P Q u1 v1 a2 t Ha2)
+      as [W [Hreach _]].
+    exists W. split.
+    - apply closed_PPar.
+      + apply (Split_closed hash_process hash_process_closed
+                 ground_process ground_process_closed (SAnd u1 v1) a2).
+      + apply (Split_closed hash_process hash_process_closed
+                 ground_process ground_process_closed u1 v1).
+    - exact Hreach. }
+  destruct s1 as [| bg1 | bq1 | u1 v1].
+  - (* s1 = SUnit *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa SUnit SUnit is_atomic_unit is_atomic_unit).
+    + apply (Haa SUnit (SGround bg2) is_atomic_unit (is_atomic_ground bg2)).
+    + apply (Haa SUnit (SQuote bq2) is_atomic_unit (is_atomic_quote bq2)).
+    + apply (Hac SUnit u2 v2 is_atomic_unit).
+  - (* s1 = SGround bg1 *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa (SGround bg1) SUnit (is_atomic_ground bg1) is_atomic_unit).
+    + apply (Haa (SGround bg1) (SGround bg2) (is_atomic_ground bg1) (is_atomic_ground bg2)).
+    + apply (Haa (SGround bg1) (SQuote bq2) (is_atomic_ground bg1) (is_atomic_quote bq2)).
+    + apply (Hac (SGround bg1) u2 v2 (is_atomic_ground bg1)).
+  - (* s1 = SQuote bq1 *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa (SQuote bq1) SUnit (is_atomic_quote bq1) is_atomic_unit).
+    + apply (Haa (SQuote bq1) (SGround bg2) (is_atomic_quote bq1) (is_atomic_ground bg2)).
+    + apply (Haa (SQuote bq1) (SQuote bq2) (is_atomic_quote bq1) (is_atomic_quote bq2)).
+    + apply (Hac (SQuote bq1) u2 v2 (is_atomic_quote bq1)).
   - (* s1 = SAnd u1 v1, compound *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SAnd u1 v1, SUnit): compound_atomic *)
-      exists (PPar (Split hash_process (SAnd u1 v1) SUnit)
-                   (Split hash_process u1 v1)).
-      destruct (rule4_simulation_compound_atomic x P Q u1 v1 SUnit t
-                  (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed (SAnd u1 v1) SUnit).
-        -- apply (Split_closed hash_process hash_process_closed u1 v1).
-      * exact Hreach.
-    + (* (SAnd u1 v1, SHash bs2): compound_atomic *)
-      exists (PPar (Split hash_process (SAnd u1 v1) (SHash bs2))
-                   (Split hash_process u1 v1)).
-      destruct (rule4_simulation_compound_atomic x P Q u1 v1 (SHash bs2) t
-                  (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed (SAnd u1 v1) (SHash bs2)).
-        -- apply (Split_closed hash_process hash_process_closed u1 v1).
-      * exact Hreach.
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Hca u1 v1 SUnit is_atomic_unit).
+    + apply (Hca u1 v1 (SGround bg2) (is_atomic_ground bg2)).
+    + apply (Hca u1 v1 (SQuote bq2) (is_atomic_quote bq2)).
     + (* (SAnd u1 v1, SAnd u2 v2): compound_compound *)
-      exists (PPar (Split hash_process (SAnd u1 v1) (SAnd u2 v2))
-                   (PPar (Split hash_process u1 v1)
-                         (Split hash_process u2 v2))).
+      exists (PPar (Split hash_process ground_process (SAnd u1 v1) (SAnd u2 v2))
+                   (PPar (Split hash_process ground_process u1 v1)
+                         (Split hash_process ground_process u2 v2))).
       destruct (rule4_simulation_compound_compound x P Q u1 v1 u2 v2 t)
         as [W [Hreach _]].
       exists W.
       split.
       * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed
+        -- apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed
                     (SAnd u1 v1) (SAnd u2 v2)).
         -- apply closed_PPar.
-           ++ apply (Split_closed hash_process hash_process_closed u1 v1).
-           ++ apply (Split_closed hash_process hash_process_closed u2 v2).
+           ++ apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed u1 v1).
+           ++ apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed u2 v2).
       * exact Hreach.
 Qed.
 
@@ -2114,89 +2254,90 @@ Theorem rule5_simulation_generic :
         W.
 Proof.
   intros x P Q s1 s2 t1 t2.
-  destruct s1 as [| bs1 | u1 v1].
-  - (* s1 = SUnit, atomic *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SUnit, SUnit) *)
-      exists PNil.
-      destruct (rule5_simulation_atomic x P Q SUnit SUnit t1 t2
-                  (or_introl eq_refl) (or_introl eq_refl)) as [W [Hreach _]].
-      exists (PPar W PNil).
-      split.
-      * apply closed_PNil.
-      * apply rho_reachable_par_l. exact Hreach.
-    + (* (SUnit, SHash bs2) *)
-      exists PNil.
-      destruct (rule5_simulation_atomic x P Q SUnit (SHash bs2) t1 t2
-                  (or_introl eq_refl)
-                  (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists (PPar W PNil).
-      split.
-      * apply closed_PNil.
-      * apply rho_reachable_par_l. exact Hreach.
-    + (* (SUnit, SAnd u2 v2): atomic_compound *)
-      exists (Split hash_process u2 v2).
-      destruct (rule5_simulation_atomic_compound x P Q SUnit u2 v2 t1 t2
-                  (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed u2 v2).
-      * exact Hreach.
-  - (* s1 = SHash bs1, atomic *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SHash bs1, SUnit) *)
-      exists PNil.
-      destruct (rule5_simulation_atomic x P Q (SHash bs1) SUnit t1 t2
-                  (or_intror (ex_intro _ bs1 eq_refl))
-                  (or_introl eq_refl)) as [W [Hreach _]].
-      exists (PPar W PNil).
-      split.
-      * apply closed_PNil.
-      * apply rho_reachable_par_l. exact Hreach.
-    + (* (SHash bs1, SHash bs2) *)
-      exists PNil.
-      destruct (rule5_simulation_atomic x P Q (SHash bs1) (SHash bs2) t1 t2
-                  (or_intror (ex_intro _ bs1 eq_refl))
-                  (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists (PPar W PNil).
-      split.
-      * apply closed_PNil.
-      * apply rho_reachable_par_l. exact Hreach.
-    + (* (SHash bs1, SAnd u2 v2): atomic_compound *)
-      exists (Split hash_process u2 v2).
-      destruct (rule5_simulation_atomic_compound x P Q (SHash bs1) u2 v2 t1 t2
-                  (or_intror (ex_intro _ bs1 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed u2 v2).
-      * exact Hreach.
+  (* Atomic×atomic: uniform via [rule5_simulation_atomic], feeding [is_atomic]
+     proofs. The three atomic shapes collapse into one [is_atomic] argument. *)
+  assert (Haa : forall a1 a2 : sig,
+            is_atomic a1 -> is_atomic a2 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SPar (SSigned (PInput x P) a1)
+                                            (SSigned (POutput x Q) a2))
+                                      (SToken (TGate a1 t1)))
+                                (SToken (TGate a2 t2)))) Ctx) W).
+  { intros a1 a2 Ha1 Ha2.
+    exists PNil.
+    destruct (rule5_simulation_atomic x P Q a1 a2 t1 t2 Ha1 Ha2)
+      as [W [Hreach _]].
+    exists (PPar W PNil). split.
+    - apply closed_PNil.
+    - apply rho_reachable_par_l. exact Hreach. }
+  (* Atomic×compound: Split mediator on (u2 & v2). *)
+  assert (Hac : forall a1 u2 v2 : sig,
+            is_atomic a1 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SPar (SSigned (PInput x P) a1)
+                                            (SSigned (POutput x Q) (SAnd u2 v2)))
+                                      (SToken (TGate a1 t1)))
+                                (SToken (TGate (SAnd u2 v2) t2)))) Ctx) W).
+  { intros a1 u2 v2 Ha1.
+    exists (Split hash_process ground_process u2 v2).
+    destruct (rule5_simulation_atomic_compound x P Q a1 u2 v2 t1 t2 Ha1)
+      as [W [Hreach _]].
+    exists W. split.
+    - apply (Split_closed hash_process hash_process_closed
+               ground_process ground_process_closed u2 v2).
+    - exact Hreach. }
+  (* Compound×atomic: Split mediator on (u1 & v1). *)
+  assert (Hca : forall u1 v1 a2 : sig,
+            is_atomic a2 ->
+            exists Ctx W, closed_proc Ctx /\
+              rho_reachable
+                (PPar (Sy (SPar (SPar (SPar (SSigned (PInput x P) (SAnd u1 v1))
+                                            (SSigned (POutput x Q) a2))
+                                      (SToken (TGate (SAnd u1 v1) t1)))
+                                (SToken (TGate a2 t2)))) Ctx) W).
+  { intros u1 v1 a2 Ha2.
+    exists (Split hash_process ground_process u1 v1).
+    destruct (rule5_simulation_compound_atomic x P Q u1 v1 a2 t1 t2 Ha2)
+      as [W [Hreach _]].
+    exists W. split.
+    - apply (Split_closed hash_process hash_process_closed
+               ground_process ground_process_closed u1 v1).
+    - exact Hreach. }
+  destruct s1 as [| bg1 | bq1 | u1 v1].
+  - (* s1 = SUnit *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa SUnit SUnit is_atomic_unit is_atomic_unit).
+    + apply (Haa SUnit (SGround bg2) is_atomic_unit (is_atomic_ground bg2)).
+    + apply (Haa SUnit (SQuote bq2) is_atomic_unit (is_atomic_quote bq2)).
+    + apply (Hac SUnit u2 v2 is_atomic_unit).
+  - (* s1 = SGround bg1 *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa (SGround bg1) SUnit (is_atomic_ground bg1) is_atomic_unit).
+    + apply (Haa (SGround bg1) (SGround bg2) (is_atomic_ground bg1) (is_atomic_ground bg2)).
+    + apply (Haa (SGround bg1) (SQuote bq2) (is_atomic_ground bg1) (is_atomic_quote bq2)).
+    + apply (Hac (SGround bg1) u2 v2 (is_atomic_ground bg1)).
+  - (* s1 = SQuote bq1 *)
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Haa (SQuote bq1) SUnit (is_atomic_quote bq1) is_atomic_unit).
+    + apply (Haa (SQuote bq1) (SGround bg2) (is_atomic_quote bq1) (is_atomic_ground bg2)).
+    + apply (Haa (SQuote bq1) (SQuote bq2) (is_atomic_quote bq1) (is_atomic_quote bq2)).
+    + apply (Hac (SQuote bq1) u2 v2 (is_atomic_quote bq1)).
   - (* s1 = SAnd u1 v1, compound *)
-    destruct s2 as [| bs2 | u2 v2].
-    + (* (SAnd u1 v1, SUnit): compound_atomic *)
-      exists (Split hash_process u1 v1).
-      destruct (rule5_simulation_compound_atomic x P Q u1 v1 SUnit t1 t2
-                  (or_introl eq_refl)) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed u1 v1).
-      * exact Hreach.
-    + (* (SAnd u1 v1, SHash bs2): compound_atomic *)
-      exists (Split hash_process u1 v1).
-      destruct (rule5_simulation_compound_atomic x P Q u1 v1 (SHash bs2) t1 t2
-                  (or_intror (ex_intro _ bs2 eq_refl))) as [W [Hreach _]].
-      exists W.
-      split.
-      * apply (Split_closed hash_process hash_process_closed u1 v1).
-      * exact Hreach.
+    destruct s2 as [| bg2 | bq2 | u2 v2].
+    + apply (Hca u1 v1 SUnit is_atomic_unit).
+    + apply (Hca u1 v1 (SGround bg2) (is_atomic_ground bg2)).
+    + apply (Hca u1 v1 (SQuote bq2) (is_atomic_quote bq2)).
     + (* (SAnd u1 v1, SAnd u2 v2): compound_compound *)
-      exists (PPar (Split hash_process u1 v1) (Split hash_process u2 v2)).
+      exists (PPar (Split hash_process ground_process u1 v1) (Split hash_process ground_process u2 v2)).
       destruct (rule5_simulation_compound_compound x P Q u1 v1 u2 v2 t1 t2)
         as [W [Hreach _]].
       exists W.
       split.
       * apply closed_PPar.
-        -- apply (Split_closed hash_process hash_process_closed u1 v1).
-        -- apply (Split_closed hash_process hash_process_closed u2 v2).
+        -- apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed u1 v1).
+        -- apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed u2 v2).
       * exact Hreach.
 Qed.
 
@@ -2232,7 +2373,7 @@ Theorem translation_simulates_atomic_rules :
     (* For Rules 1, 2, 5 (no Split needed), there exists a reachable W. *)
     (forall x P Q s t,
        S = (SPar (SSigned (PPar (PInput x P) (POutput x Q)) s) (SToken (TGate s t))) ->
-       (s = SUnit \/ exists bs, s = SHash bs) ->
+       is_atomic s ->
        exists W, rho_reachable (Sy S) W) /\
     (forall x P Q s1 s2 t1 t2,
        S = (SPar (SPar (SSigned (PPar (PInput x P) (POutput x Q))
@@ -2343,11 +2484,11 @@ Proof.
     + apply closed_PNil.
     + apply rho_reachable_par_l. exact Hreach.
   - (* ca_rule3: needs Split (s1, s2). *)
-    exists (Split hash_process s1 s2).
+    exists (Split hash_process ground_process s1 s2).
     destruct (rule3_simulation x P Q s1 s2 t) as [W [Hreach _]].
     exists W.
     split.
-    + apply (Split_closed hash_process hash_process_closed s1 s2).
+    + apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed s1 s2).
     + exact Hreach.
   - (* ca_rule4: dispatch via rule4_simulation_generic. *)
     destruct (rule4_simulation_generic x P Q s1 s2 t) as [Ctx [W [HC Hr]]].
@@ -2566,7 +2707,7 @@ Theorem signed_process_alone_stuck :
 Proof.
   intros P s R Hstep.
   unfold Sy in Hstep. simpl in Hstep.
-  destruct s as [|bs|s1 s2]; simpl in Hstep;
+  destruct s as [|bs|bs|s1 s2]; simpl in Hstep;
     apply PInput_alone_stuck in Hstep; exact Hstep.
 Qed.
 
@@ -2972,13 +3113,25 @@ Proof.
     simpl in Heq. discriminate.
 Qed.
 
-(* The hash-signature analogue of [unit_gate_per_step_reverse]. The
-   SHash unit-token gate's only reduction lands at the post-gate state
+(* The ground-signature analogue of [unit_gate_per_step_reverse]. The
+   SGround unit-token gate's only reduction lands at the post-gate state
    [PPar P (PNil)] (same as the SUnit case, since the
    token's payload is PNil regardless of signature channel). *)
-Theorem hash_gate_per_step_reverse :
+Theorem ground_gate_per_step_reverse :
   forall (bs : list bool) (P : proc) (Q : proc),
-    rho_step (Sy (SPar (SSigned P (SHash bs)) (SToken (TGate (SHash bs) TUnit)))) Q ->
+    rho_step (Sy (SPar (SSigned P (SGround bs)) (SToken (TGate (SGround bs) TUnit)))) Q ->
+    Q ≡ PPar P (PNil).
+Proof.
+  intros bs P Q Hstep.
+  apply (fh_atomic_gate_step_helper (Quote (ground_process bs)) _ _ Hstep P).
+  cbn [S_tr P_tr T_tr N_tr].
+  apply se_refl.
+Qed.
+
+(* The cryptographic-quote-signature analogue of [unit_gate_per_step_reverse]. *)
+Theorem quote_gate_per_step_reverse :
+  forall (bs : list bool) (P : proc) (Q : proc),
+    rho_step (Sy (SPar (SSigned P (SQuote bs)) (SToken (TGate (SQuote bs) TUnit)))) Q ->
     Q ≡ PPar P (PNil).
 Proof.
   intros bs P Q Hstep.
@@ -3027,40 +3180,71 @@ Lemma N_tr_size_eq :
     N s1 ≡N N s2 ->
     sig_size s1 = sig_size s2.
 Proof.
-  induction s1 as [| bs1 | t1 IH1 t2 IH2]; intros s2 Heq.
+  (* The induction on [s1] and the inner [destruct s2] are now 4-way
+     (SUnit / SGround / SQuote / SAnd). Head counts: SUnit↦0, both atom axes
+     ↦1, SAnd↦2. For atomic×atomic the sizes are both 1, so the goal closes
+     by [reflexivity] WITHOUT needing cross-axis distinctness; the head-count
+     contradictions use [ground_process_head_count_one] on the ground axis and
+     [hash_process_head_count_one] on the quote axis. *)
+  induction s1 as [| bg1 | bq1 | t1 IH1 t2 IH2]; intros s2 Heq.
   - (* s1 = SUnit: N = Quote PNil.  PNil ≡ translation-of s2. *)
-    destruct s2 as [| bs2 | u1 u2]; cbn [N_tr sig_size].
+    destruct s2 as [| bg2 | bq2 | u1 u2]; cbn [N_tr sig_size].
     + reflexivity.
-    + (* Contradiction: head_count PNil = 0, head_count (hash_process bs2) = 1. *)
+    + (* Contradiction: head_count PNil = 0, head_count (ground_process bg2) = 1. *)
       exfalso.
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
       apply head_count_se in Hse.
       cbn [head_count] in Hse.
-      rewrite (hash_process_head_count_one bs2) in Hse. discriminate.
+      rewrite (ground_process_head_count_one bg2) in Hse. discriminate.
+    + (* Contradiction: head_count PNil = 0, head_count (hash_process bq2) = 1. *)
+      exfalso.
+      cbn [N_tr] in Heq.
+      inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
+      apply head_count_se in Hse.
+      cbn [head_count] in Hse.
+      rewrite (hash_process_head_count_one bq2) in Hse. discriminate.
     + (* Contradiction: head_count PNil = 0, head_count of compound = 2. *)
       exfalso.
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
       apply head_count_se in Hse.
       cbn [head_count] in Hse. discriminate.
-  - (* s1 = SHash bs1: N = Quote (hash_process bs1). *)
-    destruct s2 as [| bs2 | u1 u2]; cbn [N_tr sig_size].
+  - (* s1 = SGround bg1: N = Quote (ground_process bg1). *)
+    destruct s2 as [| bg2 | bq2 | u1 u2]; cbn [N_tr sig_size].
     + exfalso.
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
       apply head_count_se in Hse.
       cbn [head_count] in Hse.
-      rewrite (hash_process_head_count_one bs1) in Hse. discriminate.
-    + reflexivity.
+      rewrite (ground_process_head_count_one bg1) in Hse. discriminate.
+    + (* ground × ground: both size 1. *) reflexivity.
+    + (* ground × quote: both size 1 — no cross-axis distinctness needed. *)
+      reflexivity.
     + exfalso.
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
       apply head_count_se in Hse.
       cbn [head_count] in Hse.
-      rewrite (hash_process_head_count_one bs1) in Hse. discriminate.
+      rewrite (ground_process_head_count_one bg1) in Hse. discriminate.
+  - (* s1 = SQuote bq1: N = Quote (hash_process bq1). *)
+    destruct s2 as [| bg2 | bq2 | u1 u2]; cbn [N_tr sig_size].
+    + exfalso.
+      cbn [N_tr] in Heq.
+      inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
+      apply head_count_se in Hse.
+      cbn [head_count] in Hse.
+      rewrite (hash_process_head_count_one bq1) in Hse. discriminate.
+    + (* quote × ground: both size 1. *) reflexivity.
+    + (* quote × quote: both size 1. *) reflexivity.
+    + exfalso.
+      cbn [N_tr] in Heq.
+      inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
+      apply head_count_se in Hse.
+      cbn [head_count] in Hse.
+      rewrite (hash_process_head_count_one bq1) in Hse. discriminate.
   - (* s1 = SAnd t1 t2. *)
-    destruct s2 as [| bs2 | u1 u2]; cbn [N_tr sig_size].
+    destruct s2 as [| bg2 | bq2 | u1 u2]; cbn [N_tr sig_size].
     + exfalso.
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
@@ -3071,7 +3255,13 @@ Proof.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
       apply head_count_se in Hse.
       cbn [head_count] in Hse.
-      rewrite (hash_process_head_count_one bs2) in Hse. discriminate.
+      rewrite (ground_process_head_count_one bg2) in Hse. discriminate.
+    + exfalso.
+      cbn [N_tr] in Heq.
+      inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
+      apply head_count_se in Hse.
+      cbn [head_count] in Hse.
+      rewrite (hash_process_head_count_one bq2) in Hse. discriminate.
     + (* SAnd × SAnd: both sides have 2 heads. Use struct_equiv_heads_perm. *)
       cbn [N_tr] in Heq.
       inversion Heq as [P P' Hse Heq1 Heq2 | ]; subst.
@@ -3236,7 +3426,7 @@ Lemma fh_split_tok_step_helper :
   forall S T, rho_step S T ->
   forall s1 s2,
     S ≡ PPar (POutput (N (SAnd s1 s2)) PNil)
-             (Split hash_process s1 s2) ->
+             (Split hash_process ground_process s1 s2) ->
     T ≡ PPar (POutput (N s1) PNil)
              (POutput (N s2) (PNil)).
 Proof.
@@ -3254,7 +3444,7 @@ Proof.
        To apply fh_par_io_inv, we swap via se_par_comm. *)
     assert (Heq' :
       PPar (PInput xch Bi) (POutput xch Bo)
-        ≡ PPar (Split hash_process s1 s2)
+        ≡ PPar (Split hash_process ground_process s1 s2)
                (POutput (N (SAnd s1 s2)) PNil)).
     { eapply se_trans; [exact Heq | apply se_par_comm]. }
     unfold Split in Heq'.
@@ -3271,8 +3461,8 @@ Proof.
     eapply se_trans.
     { apply subst_proc_name_cong. apply se_name_quote. exact HBo. }
     cbn [subst_proc subst_name].
-    rewrite (N_tr_subst hash_process hash_process_closed s1).
-    rewrite (N_tr_subst hash_process hash_process_closed s2).
+    rewrite (N_tr_subst hash_process hash_process_closed ground_process ground_process_closed s1).
+    rewrite (N_tr_subst hash_process hash_process_closed ground_process ground_process_closed s2).
     apply se_refl.
   - (* rs_par_l: source PPar A1 B1, A1 → A1'.
        The canonical form has 2 heads total, rho_step needs >=2 heads in A1,
@@ -3287,7 +3477,7 @@ Proof.
     apply fh_hc_zero_se_PNil in HhcB0.
     assert (HA1_eq : A1 ≡
       PPar (POutput (N (SAnd s1 s2)) PNil)
-           (Split hash_process s1 s2)).
+           (Split hash_process ground_process s1 s2)).
     { eapply se_trans.
       { apply se_sym. apply se_par_nil. }
       eapply se_trans.
@@ -3310,7 +3500,7 @@ Proof.
     apply fh_hc_zero_se_PNil in HhcB0.
     assert (HA2_eq : A2 ≡
       PPar (POutput (N (SAnd s1 s2)) PNil)
-           (Split hash_process s1 s2)).
+           (Split hash_process ground_process s1 s2)).
     { eapply se_trans.
       { apply se_sym. apply se_nil_par. }
       eapply se_trans.
@@ -3325,7 +3515,7 @@ Proof.
   - (* rs_struct: Ps1 ≡ Ps1', step Ps1' Qs1', Qs1' ≡ Qs1. *)
     assert (HPs1'_eq : Ps1' ≡
       PPar (POutput (N (SAnd s1 s2)) PNil)
-           (Split hash_process s1 s2)).
+           (Split hash_process ground_process s1 s2)).
     { eapply se_trans.
       { apply se_sym. exact Hpre. }
       exact Heq. }
@@ -3346,19 +3536,19 @@ Qed.
    communicate with. Using [no_outputs_irreducible]. *)
 Lemma fh_gate_split_2head_stuck :
   forall S T P s1 s2,
-    S ≡ PPar (Pf P (SAnd s1 s2)) (Split hash_process s1 s2) ->
+    S ≡ PPar (Pf P (SAnd s1 s2)) (Split hash_process ground_process s1 s2) ->
     ~ rho_step S T.
 Proof.
   intros S T P s1 s2 Heq Hstep.
   assert (Hco : count_outputs S = 0).
   { pose proof (count_outputs_se _ _ Heq) as Hco'.
     rewrite Hco'.
-    rewrite (P_tr_and hash_process P s1 s2).
+    rewrite (P_tr_and hash_process ground_process P s1 s2).
     unfold Split. simpl. reflexivity. }
   assert (Hcr : count_replicates S = 0).
   { pose proof (count_replicates_se _ _ Heq) as Hcr'.
     rewrite Hcr'.
-    rewrite (P_tr_and hash_process P s1 s2).
+    rewrite (P_tr_and hash_process ground_process P s1 s2).
     unfold Split. simpl. reflexivity. }
   exact (no_outputs_irreducible S T Hco Hcr Hstep).
 Qed.
@@ -3390,7 +3580,7 @@ Proof.
        POutput (N (SAnd s1 s2)) PNil. In particular, xch ≡N N s1 (from
        the gate) and xch ≡N N (SAnd s1 s2) (from the token). These two
        give N s1 ≡N N (SAnd s1 s2), contradicting N_tr_signature_strict. *)
-    rewrite (P_tr_and hash_process P0 s1 s2) in Heq.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Heq.
     apply fh_par_io_inv in Heq.
     destruct Heq as [Hinp Hout].
     apply se_PInput_inj in Hinp. destruct Hinp as [Hxch_inp _].
@@ -3404,7 +3594,7 @@ Proof.
   - (* rs_par_l *)
     pose proof (head_count_se _ _ Heq) as Hhc.
     cbn [head_count] in Hhc.
-    rewrite (P_tr_and hash_process P0 s1 s2) in Hhc.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Hhc.
     cbn [head_count] in Hhc.
     assert (Hcr : count_replicates A1 = 0).
     { apply count_replicates_se in Heq. simpl in Heq. lia. }
@@ -3423,7 +3613,7 @@ Proof.
   - (* rs_par_r *)
     pose proof (head_count_se _ _ Heq) as Hhc.
     cbn [head_count] in Hhc.
-    rewrite (P_tr_and hash_process P0 s1 s2) in Hhc.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Hhc.
     cbn [head_count] in Hhc.
     assert (Hcr : count_replicates A2 = 0).
     { apply count_replicates_se in Heq. simpl in Heq. lia. }
@@ -3532,7 +3722,7 @@ Lemma compound_post_split_reach_final :
                     PNil)).
 Proof.
   intros P s1 s2.
-  rewrite (P_tr_and hash_process P s1 s2).
+  rewrite (P_tr_and hash_process ground_process P s1 s2).
   apply (compound_half_fires_two_step
            P s1 s2 PNil (PNil)
            closed_PNil
@@ -3556,19 +3746,19 @@ Lemma fh_compound_heads_split :
   forall A1 B1 P s1 s2,
     PPar A1 B1 ≡ PPar (PPar (Pf P (SAnd s1 s2))
                              (POutput (N (SAnd s1 s2)) PNil))
-                      (Split hash_process s1 s2) ->
+                      (Split hash_process ground_process s1 s2) ->
     head_count A1 = 2 -> head_count B1 = 1 ->
     ( (* Case (a): B1 ≡ Gate, A1 ≡ (TokOut | SplitP) *)
       (B1 ≡ Pf P (SAnd s1 s2) /\
        A1 ≡ PPar (POutput (N (SAnd s1 s2)) PNil)
-                 (Split hash_process s1 s2))
+                 (Split hash_process ground_process s1 s2))
     \/
       (* Case (b): B1 ≡ TokOut, A1 ≡ (Gate | SplitP) *)
       (B1 ≡ POutput (N (SAnd s1 s2)) PNil /\
-       A1 ≡ PPar (Pf P (SAnd s1 s2)) (Split hash_process s1 s2))
+       A1 ≡ PPar (Pf P (SAnd s1 s2)) (Split hash_process ground_process s1 s2))
     \/
       (* Case (c): B1 ≡ SplitP, A1 ≡ (Gate | TokOut) *)
-      (B1 ≡ Split hash_process s1 s2 /\
+      (B1 ≡ Split hash_process ground_process s1 s2 /\
        A1 ≡ PPar (Pf P (SAnd s1 s2))
                  (POutput (N (SAnd s1 s2)) PNil))).
 Proof.
@@ -3582,7 +3772,7 @@ Proof.
   cbn [heads] in Hpe.
   rewrite Hha, Hhb in Hpe.
   unfold Split in Hpe. cbn [heads] in Hpe.
-  rewrite (P_tr_and hash_process P s1 s2) in Hpe.
+  rewrite (P_tr_and hash_process ground_process P s1 s2) in Hpe.
   cbn [heads] in Hpe.
   destruct Hpe as [zs [Hle Hperm]].
   apply fh_list_equiv_3_inv in Hle.
@@ -3686,7 +3876,7 @@ Lemma fh_compound_gate_step_helper :
   forall P s1 s2,
     S ≡ PPar (PPar (Pf P (SAnd s1 s2))
                     (POutput (N (SAnd s1 s2)) PNil))
-             (Split hash_process s1 s2) ->
+             (Split hash_process ground_process s1 s2) ->
     T ≡ PPar (PPar (Pf P (SAnd s1 s2))
                     (POutput (N s1) PNil))
              (POutput (N s2) (PNil)).
@@ -3703,19 +3893,19 @@ Proof.
     exfalso.
     apply head_count_se in Heq.
     cbn [head_count] in Heq.
-    rewrite (P_tr_and hash_process P0 s1 s2) in Heq.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Heq.
     unfold Split in Heq.
     cbn [head_count] in Heq.
     lia.
   - (* rs_par_l: S = PPar A1 B1, A1 → A1'. *)
     pose proof (head_count_se _ _ Heq) as Hhc.
     cbn [head_count] in Hhc.
-    rewrite (P_tr_and hash_process P0 s1 s2) in Hhc.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Hhc.
     unfold Split in Hhc.
     cbn [head_count] in Hhc.
     assert (Hcr : count_replicates A1 = 0).
     { apply count_replicates_se in Heq. cbn [count_replicates] in Heq.
-      rewrite (P_tr_and hash_process P0 s1 s2) in Heq.
+      rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Heq.
       unfold Split in Heq. cbn [count_replicates] in Heq. lia. }
     pose proof (rho_step_head_count_ge_two _ _ Hstep1 Hcr) as HhcA.
     assert (HhcBcases : head_count B1 = 0 \/ head_count B1 = 1) by lia.
@@ -3725,7 +3915,7 @@ Proof.
       assert (HA1_eq : A1 ≡
         PPar (PPar (Pf P0 (SAnd s1 s2))
                     (POutput (N (SAnd s1 s2)) PNil))
-              (Split hash_process s1 s2)).
+              (Split hash_process ground_process s1 s2)).
       { eapply se_trans.
         { apply se_sym. apply se_par_nil. }
         eapply se_trans.
@@ -3768,12 +3958,12 @@ Proof.
   - (* rs_par_r: S = PPar B2 A2, A2 → A2'. Symmetric to rs_par_l. *)
     pose proof (head_count_se _ _ Heq) as Hhc.
     cbn [head_count] in Hhc.
-    rewrite (P_tr_and hash_process P0 s1 s2) in Hhc.
+    rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Hhc.
     unfold Split in Hhc.
     cbn [head_count] in Hhc.
     assert (Hcr : count_replicates A2 = 0).
     { apply count_replicates_se in Heq. cbn [count_replicates] in Heq.
-      rewrite (P_tr_and hash_process P0 s1 s2) in Heq.
+      rewrite (P_tr_and hash_process ground_process P0 s1 s2) in Heq.
       unfold Split in Heq. cbn [count_replicates] in Heq. lia. }
     pose proof (rho_step_head_count_ge_two _ _ Hstep2 Hcr) as HhcA.
     assert (HhcBcases : head_count B2 = 0 \/ head_count B2 = 1) by lia.
@@ -3783,7 +3973,7 @@ Proof.
       assert (HA2_eq : A2 ≡
         PPar (PPar (Pf P0 (SAnd s1 s2))
                     (POutput (N (SAnd s1 s2)) PNil))
-              (Split hash_process s1 s2)).
+              (Split hash_process ground_process s1 s2)).
       { eapply se_trans.
         { apply se_sym. apply se_nil_par. }
         eapply se_trans.
@@ -3799,7 +3989,7 @@ Proof.
       assert (HeqA2B2 : PPar A2 B2 ≡
         PPar (PPar (Pf P0 (SAnd s1 s2))
                     (POutput (N (SAnd s1 s2)) PNil))
-              (Split hash_process s1 s2)).
+              (Split hash_process ground_process s1 s2)).
       { eapply se_trans; [apply se_par_comm | exact Heq]. }
       assert (HhcA2' : head_count A2 = 2) by lia.
       destruct (fh_compound_heads_split _ _ _ _ _ HeqA2B2 HhcA2' HhcB1)
@@ -3819,7 +4009,7 @@ Proof.
     assert (HPs1'_eq : Ps1' ≡
       PPar (PPar (Pf P0 (SAnd s1 s2))
                   (POutput (N (SAnd s1 s2)) PNil))
-            (Split hash_process s1 s2)).
+            (Split hash_process ground_process s1 s2)).
     { eapply se_trans.
       { apply se_sym. exact Hpre. }
       exact Heq. }
@@ -3851,7 +4041,7 @@ Theorem compound_gate_per_step_reverse :
   forall (s1 s2 : sig) (P : proc) (Q : proc),
     rho_step (PPar (Sy (SPar (SSigned P (SAnd s1 s2))
                               (SToken (TGate (SAnd s1 s2) TUnit))))
-                   (Split hash_process s1 s2)) Q ->
+                   (Split hash_process ground_process s1 s2)) Q ->
     rho_reachable Q (PPar P (PPar (PNil)
                                   PNil)).
 Proof.
@@ -3870,7 +4060,7 @@ Proof.
      gate firings (outer then inner). We construct Q's first step by
      wrapping the outer gate firing in rs_struct to absorb the ≡, then
      chain with the inner gate firing. *)
-  rewrite (P_tr_and hash_process P s1 s2) in HQ.
+  rewrite (P_tr_and hash_process ground_process P s1 s2) in HQ.
   eapply rr_step.
   { eapply rs_struct.
     - exact HQ.
@@ -3892,10 +4082,10 @@ Qed.
    absorbed by two auxiliary definitions:
 
    - [gated_system P s]  — the "canonical LHS" of the fuel gate for
-     signature [s]. For atomic signatures (SUnit, SHash), it is
+     signature [s]. For atomic signatures (SUnit, SGround, SQuote), it is
      [Sy (SPar (SSigned P s) (SToken (TGate s TUnit)))].
      For compound (SAnd s1 s2), it additionally includes the Split
-     mediator: [PPar (Sy ...) (Split hash_process s1 s2)].
+     mediator: [PPar (Sy ...) (Split hash_process ground_process s1 s2)].
 
    - [gate_final P s]  — the "canonical post-gate state." For atomic
      signatures, this is [PPar P (PNil)]. For compound,
@@ -3913,21 +4103,24 @@ Qed.
 
 Definition gated_system (P : proc) (s : sig) : proc :=
   match s with
-  | SUnit     => Sy (SPar (SSigned P SUnit) (SToken (TGate SUnit TUnit)))
-  | SHash bs  => Sy (SPar (SSigned P (SHash bs))
-                          (SToken (TGate (SHash bs) TUnit)))
+  | SUnit      => Sy (SPar (SSigned P SUnit) (SToken (TGate SUnit TUnit)))
+  | SGround bs => Sy (SPar (SSigned P (SGround bs))
+                           (SToken (TGate (SGround bs) TUnit)))
+  | SQuote bs  => Sy (SPar (SSigned P (SQuote bs))
+                           (SToken (TGate (SQuote bs) TUnit)))
   | SAnd s1 s2 =>
       PPar (Sy (SPar (SSigned P (SAnd s1 s2))
                       (SToken (TGate (SAnd s1 s2) TUnit))))
-           (Split hash_process s1 s2)
+           (Split hash_process ground_process s1 s2)
   end.
 
 Definition gate_final (P : proc) (s : sig) : proc :=
   match s with
-  | SUnit     => PPar P (PNil)
-  | SHash _   => PPar P (PNil)
-  | SAnd _ _  => PPar P (PPar (PNil)
-                              PNil)
+  | SUnit      => PPar P (PNil)
+  | SGround _  => PPar P (PNil)
+  | SQuote _   => PPar P (PNil)
+  | SAnd _ _   => PPar P (PPar (PNil)
+                               PNil)
   end.
 
 Theorem gate_per_step_reverse_generic :
@@ -3936,13 +4129,16 @@ Theorem gate_per_step_reverse_generic :
     exists W, rho_reachable Q W /\ W ≡ gate_final P s.
 Proof.
   intros s P Q Hstep.
-  destruct s as [| bs | s1 s2].
+  destruct s as [| bs | bs | s1 s2].
   - (* SUnit: atomic case. W = Q, rr_refl, Q ≡ final. *)
     exists Q. split; [apply rr_refl |].
     exact (unit_gate_per_step_reverse P Q Hstep).
-  - (* SHash bs: atomic case. W = Q, rr_refl, Q ≡ final. *)
+  - (* SGround bs: atomic case. W = Q, rr_refl, Q ≡ final. *)
     exists Q. split; [apply rr_refl |].
-    exact (hash_gate_per_step_reverse bs P Q Hstep).
+    exact (ground_gate_per_step_reverse bs P Q Hstep).
+  - (* SQuote bs: atomic case. W = Q, rr_refl, Q ≡ final. *)
+    exists Q. split; [apply rr_refl |].
+    exact (quote_gate_per_step_reverse bs P Q Hstep).
   - (* SAnd s1 s2: compound case. W = final, rho_reachable Q W, se_refl. *)
     exists (gate_final P (SAnd s1 s2)). split.
     + exact (compound_gate_per_step_reverse s1 s2 P Q Hstep).

@@ -15,10 +15,16 @@ Inductive ll_formula : Type :=
   | LLWhyNot : ll_formula -> ll_formula
   | LLLolly : ll_formula -> ll_formula -> ll_formula.
 
+(* Both Def-3.3 atom axes ([ASGround] = ground [g], [ASQuote] = quote [#P])
+   map to the SAME linear-logic atom [LLAtom a]: the linear-resource demand
+   [Δ_s] is insensitive to which authentication axis produced the atom, so
+   the [ll_formula] target is unchanged from the pre-split development and
+   every DILL derivation re-closes verbatim. *)
 Fixpoint ll_of_sig_algebra (s : sig_algebra) : ll_formula :=
   match s with
   | ASUnit => LLUnit
-  | ASHash a => LLAtom a
+  | ASGround a => LLAtom a
+  | ASQuote a => LLAtom a
   | ASAnd s1 s2 => LLTensor (ll_of_sig_algebra s1) (ll_of_sig_algebra s2)
   | ASThreshold k members => LLThreshold k (map ll_of_sig_algebra members)
   | ASPlus choice s1 s2 =>
@@ -209,8 +215,9 @@ Theorem ll_sig_algebra_required_complete :
     sig_algebra_min_required s.
 Proof.
   induction s as
-    [|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+    [|a|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
      |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; cbn.
+  - reflexivity.
   - reflexivity.
   - reflexivity.
   - rewrite IH1, IH2. reflexivity.
@@ -229,8 +236,9 @@ Theorem ll_sig_algebra_consumed_matches_presented :
 Proof.
   fix IH 1.
   destruct s as
-    [|a|s1 s2|k members|choice s1 s2
+    [|a|a|s1 s2|k members|choice s1 s2
      |s1 s2|s|s|s1 s2]; cbn.
+  - reflexivity.
   - reflexivity.
   - reflexivity.
   - rewrite IH, IH. reflexivity.
@@ -422,4 +430,97 @@ Proof.
   split.
   - apply ll_unrestricted_reuse_preserves_context. exact Hin.
   - reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section: DR-10 Decode-Stage (DS) Guard — core/extension demand invariance
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The extension connectives ([ASThreshold], [ASPlus], [ASWith], [ASBang],
+   [ASWhyNot], [ASLolly]) belong to the ILLE (intuitionistic linear logic with
+   exponentials) layer that DR-10 keeps. The core cost-accounted signature
+   grammar (Def 3.3) is exactly [SUnit | SGround | SQuote | SAnd]; it embeds
+   into [sig_algebra] using ONLY the core connectives [ASUnit], [ASGround],
+   [ASQuote], [ASAnd]. This section discharges the DS-guard obligation that
+   the ILLE extension never changes the linear-token demand of a CORE
+   signature: the embedding's required-unit count equals the directly-computed
+   core token demand, and the exponential connectives never under-fund a core
+   obligation (with [ASWhyNot] carrying no core token by design).
+
+   This is purely structural: [ca_step] (in CostAccountedReduction.v) never
+   quantifies over [sig_algebra], so core reduction is independent of the
+   extension connectives by construction. The lemmas below make that
+   independence explicit at the demand level.                                *)
+
+(* A canonical byte-string-to-atom encoding so that the core signature
+   grammar (whose atoms carry [list bool]) embeds into the runtime
+   [sig_algebra] (whose atoms carry [nat]). Standard big-endian binary fold;
+   [true] is bit 1, [false] is bit 0. *)
+Fixpoint bits_to_atom (bs : list bool) : nat :=
+  match bs with
+  | [] => 0
+  | b :: rest => (if b then 1 else 0) + 2 * bits_to_atom rest
+  end.
+
+(* The CORE embedding: maps each Def-3.3 signature into the runtime
+   [sig_algebra] using only the four core connectives. Ground and quote
+   atoms land on their respective axis arms [ASGround]/[ASQuote]; neither
+   introduces any ILLE connective. *)
+Fixpoint sig_to_algebra (s : sig) : sig_algebra :=
+  match s with
+  | SUnit       => ASUnit
+  | SGround bs  => ASGround (bits_to_atom bs)
+  | SQuote bs   => ASQuote (bits_to_atom bs)
+  | SAnd s1 s2  => ASAnd (sig_to_algebra s1) (sig_to_algebra s2)
+  end.
+
+(* The token demand of a CORE signature, computed directly on [sig]: each
+   atomic axis (ground or quote) gates exactly one token; [SUnit] gates
+   none; [SAnd] sums its components. This is the per-COMM linear-token
+   obligation of the cost-accounted core. *)
+Fixpoint core_token_demand (s : sig) : nat :=
+  match s with
+  | SUnit       => 0
+  | SGround _   => 1
+  | SQuote _    => 1
+  | SAnd s1 s2  => core_token_demand s1 + core_token_demand s2
+  end.
+
+(* DS-guard (i), core-invariance: the linear-logic required-unit count of the
+   core embedding equals the directly-computed core token demand. The ILLE
+   decode stage therefore reproduces the core obligation exactly. *)
+Theorem core_demand_invariant_under_extension :
+  forall s,
+    ll_required_units (ll_of_sig_algebra (sig_to_algebra s)) =
+    core_token_demand s.
+Proof.
+  induction s as [| bs | bs | s1 IH1 s2 IH2]; cbn.
+  - reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - rewrite IH1, IH2. reflexivity.
+Qed.
+
+(* DS-guard (i), extension-never-under-funds: wrapping the core embedding in
+   the resource-preserving exponential [ASBang] (the "!" of ILLE) leaves the
+   core token demand unchanged, and the additive [ASWith] / multiplicative
+   [ASAnd] combinators sum the component demands — so an ILLE-decorated core
+   obligation always funds AT LEAST the bare core demand. The dual [ASWhyNot]
+   is the only connective that drops to zero, which is correct: a [?]-marked
+   resource carries no linear core token. *)
+Theorem extension_demand_ge_core :
+  forall s,
+    sig_algebra_min_required (ASBang (sig_to_algebra s)) >= core_token_demand s /\
+    sig_algebra_min_required (ASWith (sig_to_algebra s) (sig_to_algebra s))
+      >= core_token_demand s /\
+    sig_algebra_min_required (ASWhyNot (sig_to_algebra s)) = 0.
+Proof.
+  intro s.
+  assert (Hcore : sig_algebra_min_required (sig_to_algebra s) = core_token_demand s).
+  { rewrite <- core_demand_invariant_under_extension.
+    symmetry. apply ll_sig_algebra_required_complete. }
+  split; [| split].
+  - cbn. rewrite Hcore. lia.
+  - cbn. rewrite Hcore. lia.
+  - cbn. reflexivity.
 Qed.

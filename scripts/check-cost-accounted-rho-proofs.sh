@@ -51,7 +51,10 @@ echo "Compiling and checking Rocq theories..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities UseCaseAdequacy.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection UseCaseAdequacy SystemStructEquiv SyntacticSugar.
+Print Assumptions mint_inject_not_ca_step.
+Print Assumptions user_ca_step_does_not_mint.
+Print Assumptions admin_trans_mint_adds_exactly.
 Print Assumptions translation_faithful.
 Print Assumptions translation_strong_bisimilar_generic.
 Print Assumptions compound_gate_per_step_reverse.
@@ -262,6 +265,13 @@ Print Assumptions ll_unrestricted_reuse_preserves_context.
 Print Assumptions ll_unrestricted_can_be_reused.
 Print Assumptions ll_linear_cut_consumes_cut_witness.
 Print Assumptions ll_unrestricted_cut_preserves_linear_zone.
+Print Assumptions core_demand_invariant_under_extension.
+Print Assumptions extension_demand_ge_core.
+Print Assumptions sig_free_names_quote.
+Print Assumptions sse_par_unit.
+Print Assumptions token_decomp.
+Print Assumptions uniform_sugar_translation_equiv.
+Print Assumptions lollipop_sugar_translation_equiv.
 Quit.
 EOF
 then

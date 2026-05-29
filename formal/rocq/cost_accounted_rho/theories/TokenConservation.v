@@ -27,8 +27,10 @@
    rule1_decreases_by_one       │ "Rule 1 consumes exactly one fuel unit"
    rule2_decreases_by_two       │ "Rule 2 consumes exactly two fuel units"
    rule3_decreases_by_one       │ "Rule 3 consumes exactly one fuel unit"
-   rule4_decreases_by_one       │ "Rule 4 consumes exactly one fuel unit"
-   rule5_decreases_by_two       │ "Rule 5 consumes exactly two fuel units"
+   rule4_decreases_by_one       │ "May Rule 5 consumes one fuel unit" (April Rule 4)
+   rule5_decreases_by_two       │ "May Rule 4 consumes two fuel units" (April Rule 5)
+   (Lemma suffixes track the ca_rule4/ca_rule5 constructors; the May-2026 spec
+    Section 3.6 swaps the labels — see the canonical note in CostAccountedReduction.v.)
    ─────────────────────────────────────────────────────────────────────────
 
    Dependencies: Rocq 9.1.1 stdlib, CostAccountedSyntax,

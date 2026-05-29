@@ -87,6 +87,11 @@ theories/ChannelSeparation.v
 # Level 4: Token conservation (depends on CostAccountedReduction)
 theories/TokenConservation.v
 
+# Level 4a0: Minting-injection layering theorem (depends on TokenConservation).
+# Proves minting is exogenous token injection, never a cost-accounted step,
+# so the conservation/SN/confluence results survive verbatim.
+theories/MintingInjection.v
+
 # Level 4a: Post-evaluation fee settlement (depends on TokenConservation)
 theories/Settlement.v
 
@@ -149,6 +154,18 @@ theories/LinearLogicResources.v
 # on Stdlib). Mechanizes canonical multiplicative / additive / exponential
 # laws + Phase 2 Threshold permutation invariance.
 theories/LLIdentities.v
+
+# Level 3c: System-level structural equivalence + source-level free names
+# (depends on RhoSyntax, CostAccountedSyntax). Mechanizes the commutative-
+# monoid sys_equiv (parallel-unit law sse_par_unit, Appendix-B token_decomp)
+# and the FN_s(#P)=FN(P) free-name bridge (Def 3.3 g/#P axes; §3.5).
+theories/SystemStructEquiv.v
+
+# Level 3d: Section 3.8 syntactic sugar at the translation level (depends on
+# Translation). Mechanizes the uniform-signing and linear-transfer (⊸) sugar
+# defining equations as proc-level structural equivalences of the translated
+# images (option A; ⊸ desugars to nested plain-signature gate layers).
+theories/SyntacticSugar.v
 
 # Level 8: Use-case adequacy corollaries over the proof stack.
 theories/UseCaseAdequacy.v

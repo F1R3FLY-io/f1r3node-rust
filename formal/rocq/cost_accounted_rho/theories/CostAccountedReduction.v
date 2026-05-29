@@ -9,11 +9,23 @@
    that differ in how the redex is signed and how the authorising fuel
    token(s) are presented:
 
-     Rule 1  Atomic signature, whole redex, single token.
-     Rule 2  Compound signature, whole redex, split tokens.
-     Rule 3  Compound signature, whole redex, combined token.
-     Rule 4  Compound signature, split processes, combined token.
-     Rule 5  Compound signature, split processes, split tokens.
+     ca_rule1  Atomic signature, whole redex, single token.
+     ca_rule2  Compound signature, whole redex, split tokens.
+     ca_rule3  Compound signature, whole redex, combined token.
+     ca_rule4  Compound signature, split processes, combined token.
+     ca_rule5  Compound signature, split processes, split tokens.
+
+   May-2026 spec alignment: the constructor suffixes 4/5 retain the April-draft
+   numbering. The May-2026 paper "Cost-Accounted Rho Calculus: A Spectral
+   Decomposition of Phlogiston" (Section 3.6) swaps the labels of Rules 4 and 5
+   — the set of five rules is identical, only the numbering differs. The
+   spec-to-constructor mapping is therefore:
+       paper Rule 4 (split processes, SPLIT tokens)    = ca_rule5
+       paper Rule 5 (split processes, COMBINED token)  = ca_rule4
+   Renaming the constructors is intentionally avoided (it would churn the
+   positional case analyses in Confluence.v, StepDeterminism.v,
+   FuelEventDecomposition.v, and TokenConservation.v with no change in content);
+   the mapping is recorded here and in the traceability table below.
 
    In every rule the underlying computational effect is the same as in the
    pure calculus: a receiver  for(y ← x){P}  meets a sender  x!(Q)  and the
@@ -37,8 +49,8 @@
    ca_rule1                 │ Rule 1 (atomic, joined, single)    │
    ca_rule2                 │ Rule 2 (compound, joined, split)   │
    ca_rule3                 │ Rule 3 (compound, joined, combined)│
-   ca_rule4                 │ Rule 4 (compound, split, combined) │
-   ca_rule5                 │ Rule 5 (compound, split, split)    │
+   ca_rule4                 │ May Rule 5 (compound, split, combined) [April Rule 4]
+   ca_rule5                 │ May Rule 4 (compound, split, split)    [April Rule 5]
    ca_par_l, ca_par_r       │ PAR rule (system level)            │
    ca_reachable / "⤳*"      │ ⤳* (many cost-accounted steps)     │
    ─────────────────────────────────────────────────────────────────────────

@@ -69,11 +69,24 @@ Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
 Hypothesis hash_process_head_count_one :
   forall bs, head_count (hash_process bs) = 1.
 
+(* The ground-axis canonical process (Def 3.3 axis [g]) and its
+   structural/cryptographic hypotheses, mirroring the [hash_process_*]
+   block so the translation functions are uniformly parameterised by both
+   reflection axes. *)
+Variable ground_process : list bool -> proc.
+Hypothesis ground_process_injective :
+  forall b1 b2, ground_process b1 = ground_process b2 -> b1 = b2.
+Hypothesis ground_process_closed : forall bs, closed_proc (ground_process bs).
+Hypothesis ground_process_head_count_one :
+  forall bs, head_count (ground_process bs) = 1.
+Hypothesis ground_hash_disjoint :
+  forall b1 b2, ground_process b1 <> hash_process b2.
+
 (* Local notations for the section's translation functions. *)
-Notation N := (N_tr hash_process).
-Notation T := (T_tr hash_process).
-Notation Pf := (P_tr hash_process).
-Notation Sy := (S_tr hash_process).
+Notation N := (N_tr hash_process ground_process).
+Notation T := (T_tr hash_process ground_process).
+Notation Pf := (P_tr hash_process ground_process).
+Notation Sy := (S_tr hash_process ground_process).
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 1: Simulation Relations
@@ -163,24 +176,42 @@ Proof.
   apply rs_comm.
 Qed.
 
-(* The hash-signature analogue: the SHash unit-token gate fires in one
-   COMM step on the channel (Quote (hash_process bs)). The post-state
+(* The ground-signature analogue: the SGround unit-token gate fires in one
+   COMM step on the channel (Quote (ground_process bs)). The post-state
    shape is identical to the SUnit case because the unit token's payload
    (T TUnit = PNil) does not depend on the signature. *)
 (* Under semantic subst, the [PDeref (NVar 0)] in the gate body
    collapses to the token payload [T TUnit = PNil] directly; the old
    [PNil] residue no longer arises. *)
-Theorem hash_system_fuel_gate_fires : forall bs P,
+Theorem ground_system_fuel_gate_fires : forall bs P,
   rho_step
-    (Sy (SPar (SSigned P (SHash bs)) (SToken (TGate (SHash bs) TUnit))))
+    (Sy (SPar (SSigned P (SGround bs)) (SToken (TGate (SGround bs) TUnit))))
     (PPar P PNil).
 Proof.
   intros bs P.
   unfold Sy. simpl.
   unfold Pf, T.
   simpl.
-  (* The source is now PPar (PInput (Quote (hash_process bs)) ...)
-     (POutput (Quote (hash_process bs)) PNil). Apply rs_comm + simplify. *)
+  eapply rs_struct.
+  - apply se_refl.
+  - apply rs_comm.
+  - rewrite subst_proc_par.
+    rewrite subst_lift_zero.
+    rewrite subst_proc_deref_nvar_eq_quote.
+    apply se_refl.
+Qed.
+
+(* The cryptographic-quote-signature analogue: the SQuote unit-token gate
+   fires in one COMM step on the channel (Quote (hash_process bs)). *)
+Theorem quote_system_fuel_gate_fires : forall bs P,
+  rho_step
+    (Sy (SPar (SSigned P (SQuote bs)) (SToken (TGate (SQuote bs) TUnit))))
+    (PPar P PNil).
+Proof.
+  intros bs P.
+  unfold Sy. simpl.
+  unfold Pf, T.
+  simpl.
   eapply rs_struct.
   - apply se_refl.
   - apply rs_comm.
@@ -730,22 +761,39 @@ Proof.
   - apply post_gate_bisim.
 Qed.
 
-(* The hash-signature analogue of [unit_translation_strong_bisimilar].
-   Like the unit case, the SHash unit-token gate fires in one COMM step
+(* The ground-signature analogue of [unit_translation_strong_bisimilar].
+   Like the unit case, the SGround unit-token gate fires in one COMM step
    to land at the post-gate state [PPar P (PNil)], which
    is strongly bisimilar to P via [post_gate_bisim]. *)
-Theorem hash_translation_strong_bisimilar :
+Theorem ground_translation_strong_bisimilar :
   forall bs P,
     exists W,
       rho_reachable
-        (Sy (SPar (SSigned P (SHash bs)) (SToken (TGate (SHash bs) TUnit))))
+        (Sy (SPar (SSigned P (SGround bs)) (SToken (TGate (SGround bs) TUnit))))
         W
       /\ bisim W P.
 Proof.
   intros bs P.
   exists (PPar P (PNil)).
   split.
-  - apply rho_reachable_one. apply hash_system_fuel_gate_fires.
+  - apply rho_reachable_one. apply ground_system_fuel_gate_fires.
+  - apply post_gate_bisim.
+Qed.
+
+(* The cryptographic-quote-signature analogue of
+   [unit_translation_strong_bisimilar]. *)
+Theorem quote_translation_strong_bisimilar :
+  forall bs P,
+    exists W,
+      rho_reachable
+        (Sy (SPar (SSigned P (SQuote bs)) (SToken (TGate (SQuote bs) TUnit))))
+        W
+      /\ bisim W P.
+Proof.
+  intros bs P.
+  exists (PPar P (PNil)).
+  split.
+  - apply rho_reachable_one. apply quote_system_fuel_gate_fires.
   - apply post_gate_bisim.
 Qed.
 
@@ -1110,7 +1158,7 @@ Qed.
 Definition compound_canonical (s1 s2 : sig) (P : proc) : proc :=
   PPar (PPar (Pf P (SAnd s1 s2))
              (POutput (N (SAnd s1 s2)) PNil))
-       (Split hash_process s1 s2).
+       (Split hash_process ground_process s1 s2).
 
 Definition compound_post_split (s1 s2 : sig) (P : proc) : proc :=
   PPar (PPar (Pf P (SAnd s1 s2))
@@ -1129,8 +1177,8 @@ Lemma cg_post_split_reach_final :
 Proof.
   intros s1 s2 P.
   unfold compound_post_split, compound_final.
-  rewrite (P_tr_and hash_process P s1 s2).
-  apply (compound_half_fires_two_step hash_process hash_process_closed
+  rewrite (P_tr_and hash_process ground_process P s1 s2).
+  apply (compound_half_fires_two_step hash_process hash_process_closed ground_process ground_process_closed
            P s1 s2 PNil (PNil)
            closed_PNil
            (closed_PDeref_Quote PNil closed_PNil)).
@@ -1145,7 +1193,7 @@ Theorem compound_translation_strong_bisimilar :
       rho_reachable
         (PPar (Sy (SPar (SSigned P (SAnd s1 s2))
                         (SToken (TGate (SAnd s1 s2) TUnit))))
-              (Split hash_process s1 s2))
+              (Split hash_process ground_process s1 s2))
         W
       /\ bisim W P.
 Proof.
@@ -1155,8 +1203,8 @@ Proof.
   split.
   - (* Reachability via 3 reduction steps: Split, outer gate, inner gate. *)
     unfold Sy. cbn [S_tr].
-    rewrite (T_tr_gate hash_process (SAnd s1 s2) TUnit).
-    rewrite (P_tr_and hash_process P s1 s2).
+    rewrite (T_tr_gate hash_process ground_process (SAnd s1 s2) TUnit).
+    rewrite (P_tr_and hash_process ground_process P s1 s2).
     cbn [T_tr].
     (* State: ((PInput-nested-gate | POutput (N(SAnd s1 s2)) PNil) | Split). *)
     (* Step 1: rearrange so Split and tok are adjacent, fire Split, then
@@ -1169,13 +1217,13 @@ Proof.
         eapply se_trans. { apply se_par_assoc. }
         apply se_par_cong_r. apply se_par_comm.
       - apply rs_par_r.
-        apply (Split_fires_closed hash_process hash_process_closed
+        apply (Split_fires_closed hash_process hash_process_closed ground_process ground_process_closed
                                   s1 s2 PNil closed_PNil).
       - (* Post-rearrange: gate | (s1-out | s2-out) ≡ (gate | s1-out) | s2-out *)
         apply se_sym. apply se_par_assoc. }
     (* State: ((gate | s1-out) | s2-out). *)
     (* Steps 2-3: compound half fires (2 rho_steps via the helper). *)
-    apply (compound_half_fires_two_step hash_process hash_process_closed
+    apply (compound_half_fires_two_step hash_process hash_process_closed ground_process ground_process_closed
             P s1 s2 PNil (PNil) closed_PNil
             (closed_PDeref_Quote PNil closed_PNil)).
   - (* bisim: the post-state has two stuck residues; apply
@@ -1188,11 +1236,12 @@ Qed.
    Section 15: Generic Headline Theorems (All Signature Shapes)
    ═══════════════════════════════════════════════════════════════════════════
 
-   Dispatch over the three signature constructors (SUnit, SHash, SAnd) to
-   package the per-shape results into fully generic theorems that apply to
-   ANY Rholang/Rhocalc COMM event signature.
+   Dispatch over the four signature constructors (SUnit, SGround, SQuote,
+   SAnd) to package the per-shape results into fully generic theorems that
+   apply to ANY Rholang/Rhocalc COMM event signature.
 
-   For SUnit and SHash, the fuel gate fires without a mediator. To present
+   For SUnit, SGround, and SQuote, the fuel gate fires without a mediator.
+   To present
    a UNIFORM interface (always PPar _ Ctx), we set Ctx = PNil and wrap the
    existing reachability via one rs_struct step absorbing the se_par_nil
    equivalence [PPar X PNil ≡ X]. For SAnd, the Ctx is the Split mediator
@@ -1209,7 +1258,7 @@ Theorem translation_strong_bisimilar_generic :
       /\ bisim W P.
 Proof.
   intros s P.
-  destruct s as [| bs | s1 s2].
+  destruct s as [| bs | bs | s1 s2].
   - (* SUnit: Ctx = PNil.
        unit_translation_strong_bisimilar gives rho_reachable (Sy ...) W.
        We need rho_reachable (PPar (Sy ...) PNil) W.
@@ -1226,22 +1275,33 @@ Proof.
         -- apply se_refl.
       * rewrite post_gate_unit. apply rr_refl.
     + apply post_gate_bisim.
-  - (* SHash bs: Ctx = PNil. Same pattern as SUnit. *)
+  - (* SGround bs: Ctx = PNil. Same pattern as SUnit. *)
     exists PNil.
     exists (PPar P (PNil)).
     split; [exact I | split].
     + eapply rr_step.
       * eapply rs_struct.
         -- apply se_par_nil.
-        -- apply hash_system_fuel_gate_fires.
+        -- apply ground_system_fuel_gate_fires.
         -- apply se_refl.
       * apply rr_refl.
     + apply post_gate_bisim.
-  - (* SAnd s1 s2: Ctx = Split hash_process s1 s2. *)
-    exists (Split hash_process s1 s2).
+  - (* SQuote bs: Ctx = PNil. Same pattern as SUnit. *)
+    exists PNil.
+    exists (PPar P (PNil)).
+    split; [exact I | split].
+    + eapply rr_step.
+      * eapply rs_struct.
+        -- apply se_par_nil.
+        -- apply quote_system_fuel_gate_fires.
+        -- apply se_refl.
+      * apply rr_refl.
+    + apply post_gate_bisim.
+  - (* SAnd s1 s2: Ctx = Split hash_process ground_process s1 s2. *)
+    exists (Split hash_process ground_process s1 s2).
     destruct (compound_translation_strong_bisimilar s1 s2 P) as [W [Hr Hb]].
     exists W.
-    split; [apply (Split_closed hash_process hash_process_closed s1 s2)
+    split; [apply (Split_closed hash_process hash_process_closed ground_process ground_process_closed s1 s2)
            | split; [exact Hr | exact Hb]].
 Qed.
 

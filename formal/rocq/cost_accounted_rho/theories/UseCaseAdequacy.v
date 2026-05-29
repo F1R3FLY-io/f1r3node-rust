@@ -66,8 +66,8 @@ Qed.
 (* UC-CA-003: fuel channels are syntactically separated from application
    de Bruijn channels. *)
 Theorem uc_ca_003_signature_channel_separation :
-  forall (hash_process : list bool -> proc) s k,
-    NVar k <> N_tr hash_process s.
+  forall (hash_process ground_process : list bool -> proc) s k,
+    NVar k <> N_tr hash_process ground_process s.
 Proof.
   exact fuel_gate_no_app_channel_overlap.
 Qed.

@@ -107,6 +107,34 @@ Hypothesis hash_process_injective :
    [Print Assumptions] of every client theorem that depends on it. *)
 Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
 
+(* The canonical process associated with a GROUND signature (Def 3.3 axis
+   [g]). The spec (eq. app-sig-ground) maps [Σ⟦g⟧ = @H_g] for a canonical
+   process [H_g] encoding the ground signature; this is the ground-axis
+   analogue of [hash_process] (which realises the cryptographic-quote axis
+   [Σ⟦#P⟧ = @H(P⟦P⟧)]). We keep the construction abstract and require the
+   same structural/cryptographic properties, stated as Section hypotheses so
+   they surface in [Print Assumptions] of client theorems exactly like the
+   [hash_process_*] family. *)
+Variable ground_process : list bool -> proc.
+
+(* Ground injectivity: distinct ground signatures yield distinct canonical
+   processes (spec Remark "Ground-signature encoding"). *)
+Hypothesis ground_process_injective :
+  forall b1 b2, ground_process b1 = ground_process b2 -> b1 = b2.
+
+(* Ground processes are CLOSED, mirroring [hash_process_closed]. *)
+Hypothesis ground_process_closed : forall bs, closed_proc (ground_process bs).
+
+(* CROSS-AXIS DISJOINTNESS: a ground-signature channel can never coincide
+   with a cryptographic-quote channel. This is the one genuinely new audited
+   obligation introduced by the Def-3.3 g/#P split: it guarantees that the
+   two reflection axes inhabit disjoint regions of name space (a ground key
+   is never confusable with a process digest). It surfaces in
+   [Print Assumptions] of every client theorem that needs it, exactly like
+   the [hash_process_*] hypotheses. *)
+Hypothesis ground_hash_disjoint :
+  forall b1 b2, ground_process b1 <> hash_process b2.
+
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 1: Signature Translation N⟦·⟧
    ═══════════════════════════════════════════════════════════════════════════
@@ -117,8 +145,13 @@ Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
 
    - SUnit         ↦  @0           — the unit signature is the channel
                                       whose underlying process is nil.
-   - SHash bs      ↦  @H_bs        — atomic signatures are the canonical
-                                      processes given by hash_process.
+   - SGround bs    ↦  @H_g         — ground signatures map to the canonical
+                                      ground process [ground_process bs]
+                                      (spec eq. app-sig-ground, [Σ⟦g⟧=@H_g]).
+   - SQuote bs     ↦  @H(P⟦P⟧)     — cryptographic quotes map to the
+                                      hash-encoding process [hash_process bs]
+                                      (spec eq. app-sig-hash,
+                                      [Σ⟦#P⟧=@H(P⟦P⟧)]).
    - SAnd s1 s2    ↦  @( *N⟦s1⟧ | *N⟦s2⟧ )
                                    — compound signatures dereference the
                                       two component channels in parallel,
@@ -127,7 +160,8 @@ Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
 Fixpoint N_tr (s : sig) : name :=
   match s with
   | SUnit       => Quote PNil
-  | SHash bs    => Quote (hash_process bs)
+  | SGround bs  => Quote (ground_process bs)
+  | SQuote bs   => Quote (hash_process bs)
   | SAnd s1 s2  => Quote (PPar (PDeref (N_tr s1)) (PDeref (N_tr s2)))
   end.
 
@@ -198,8 +232,11 @@ Definition P_tr (P : proc) (s : sig) : proc :=
   | SUnit =>
       PInput (N_tr SUnit)
         (PPar (lift_proc 1 0 P) (PDeref (NVar 0)))
-  | SHash bs =>
-      PInput (N_tr (SHash bs))
+  | SGround bs =>
+      PInput (N_tr (SGround bs))
+        (PPar (lift_proc 1 0 P) (PDeref (NVar 0)))
+  | SQuote bs =>
+      PInput (N_tr (SQuote bs))
         (PPar (lift_proc 1 0 P) (PDeref (NVar 0)))
   | SAnd s1 s2 =>
       (* Outer fuel gate on N_tr s1; inside, inner fuel gate on N_tr s2.
@@ -307,9 +344,14 @@ Lemma P_tr_unit : forall P,
     = PInput (N_tr SUnit) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
 Proof. intros. reflexivity. Qed.
 
-Lemma P_tr_hash : forall P bs,
-  P_tr P (SHash bs)
-    = PInput (N_tr (SHash bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
+Lemma P_tr_ground : forall P bs,
+  P_tr P (SGround bs)
+    = PInput (N_tr (SGround bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
+Proof. intros. reflexivity. Qed.
+
+Lemma P_tr_quote : forall P bs,
+  P_tr P (SQuote bs)
+    = PInput (N_tr (SQuote bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
 Proof. intros. reflexivity. Qed.
 
 Lemma P_tr_and : forall P s1 s2,
@@ -340,10 +382,16 @@ Proof. intros. reflexivity. Qed.
 Lemma N_tr_unit : N_tr SUnit = Quote PNil.
 Proof. reflexivity. Qed.
 
-(* Translating a hash signature exposes the canonical process supplied
-   by the hash hypothesis. *)
-Lemma N_tr_hash : forall bs,
-  N_tr (SHash bs) = Quote (hash_process bs).
+(* Translating a ground signature exposes the canonical ground process
+   supplied by the ground hypothesis (spec [Σ⟦g⟧ = @H_g]). *)
+Lemma N_tr_ground : forall bs,
+  N_tr (SGround bs) = Quote (ground_process bs).
+Proof. intros. reflexivity. Qed.
+
+(* Translating a cryptographic-quote signature exposes the hash-encoding
+   process supplied by the hash hypothesis (spec [Σ⟦#P⟧ = @H(P⟦P⟧)]). *)
+Lemma N_tr_quote : forall bs,
+  N_tr (SQuote bs) = Quote (hash_process bs).
 Proof. intros. reflexivity. Qed.
 
 (* Translating a compound signature dereferences both component
@@ -370,9 +418,11 @@ Proof. intros. reflexivity. Qed.
 
 Lemma N_tr_closed : forall s, closed_name (N_tr s).
 Proof.
-  induction s as [| bs | s1 IHs1 s2 IHs2]; simpl.
+  induction s as [| bs | bs | s1 IHs1 s2 IHs2]; simpl.
   - (* SUnit -> Quote PNil *) apply closed_Quote, closed_PNil.
-  - (* SHash bs -> Quote (hash_process bs) *)
+  - (* SGround bs -> Quote (ground_process bs) *)
+    apply closed_Quote, ground_process_closed.
+  - (* SQuote bs -> Quote (hash_process bs) *)
     apply closed_Quote, hash_process_closed.
   - (* SAnd s1 s2 -> Quote (PPar (PDeref (N_tr s1)) (PDeref (N_tr s2))) *)
     apply closed_Quote, closed_PPar.

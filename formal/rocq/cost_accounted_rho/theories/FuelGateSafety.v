@@ -124,13 +124,14 @@ Proof. intros. simpl. exact I. Qed.
    for signature s."                                                       *)
 
 (* The translation of a token-gate has POutput at the head. *)
-Lemma t_tr_gate_shape : forall hp s t,
-  T_tr hp (TGate s t) = POutput (N_tr hp s) (T_tr hp t).
+Lemma t_tr_gate_shape : forall hp gp s t,
+  T_tr hp gp (TGate s t) = POutput (N_tr hp gp s) (T_tr hp gp t).
 Proof. intros. simpl. reflexivity. Qed.
 
-(* Note: t_tr_gate_shape takes the hash_process parameter explicitly because
-   N_tr and T_tr are defined inside Section TranslationDefs, and after
-   End, they become functions of hash_process. *)
+(* Note: t_tr_gate_shape takes the hash_process and ground_process parameters
+   explicitly because N_tr and T_tr are defined inside Section TranslationDefs,
+   and after End, they become functions of [hash_process] and
+   [ground_process]. *)
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 6: Main Safety Property
@@ -152,42 +153,51 @@ Proof. intros. simpl. reflexivity. Qed.
 
 (* The atomic case: P_tr unfolds to a PInput on the signature channel,
    with the user process lifted by 1 to account for the gate's binder. *)
-Lemma p_tr_unit_is_input : forall hp P,
-  P_tr hp P SUnit
-    = PInput (N_tr hp SUnit) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
+Lemma p_tr_unit_is_input : forall hp gp P,
+  P_tr hp gp P SUnit
+    = PInput (N_tr hp gp SUnit) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
 Proof. intros. unfold P_tr. reflexivity. Qed.
 
-Lemma p_tr_hash_is_input : forall hp P bs,
-  P_tr hp P (SHash bs)
-    = PInput (N_tr hp (SHash bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
+Lemma p_tr_ground_is_input : forall hp gp P bs,
+  P_tr hp gp P (SGround bs)
+    = PInput (N_tr hp gp (SGround bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
+Proof. intros. unfold P_tr. reflexivity. Qed.
+
+Lemma p_tr_quote_is_input : forall hp gp P bs,
+  P_tr hp gp P (SQuote bs)
+    = PInput (N_tr hp gp (SQuote bs)) (PPar (lift_proc 1 0 P) (PDeref (NVar 0))).
 Proof. intros. unfold P_tr. reflexivity. Qed.
 
 (* The compound case: the outermost form is a PInput on N_tr s1, and
    the user process is lifted by 2. *)
-Lemma p_tr_and_is_input : forall hp P s1 s2,
-  P_tr hp P (SAnd s1 s2) =
-    PInput (N_tr hp s1)
-      (PInput (N_tr hp s2)
+Lemma p_tr_and_is_input : forall hp gp P s1 s2,
+  P_tr hp gp P (SAnd s1 s2) =
+    PInput (N_tr hp gp s1)
+      (PInput (N_tr hp gp s2)
         (PPar (lift_proc 2 0 P)
           (PPar (PDeref (NVar 1)) (PDeref (NVar 0))))).
 Proof. intros. unfold P_tr. reflexivity. Qed.
 
 (* For every signature, the translation has a PInput at the head whose
-   channel is N_tr of the OUTERMOST atomic component of s. *)
-Lemma p_tr_head_channel : forall hp P s,
+   channel is N_tr of the OUTERMOST atomic component of s. The disjunction
+   has a fourth arm for the [SGround]/[SQuote] split of Def 3.3. *)
+Lemma p_tr_head_channel : forall hp gp P s,
   exists body,
-    (s = SUnit /\ P_tr hp P s = PInput (N_tr hp SUnit) body) \/
-    (exists bs, s = SHash bs /\ P_tr hp P s = PInput (N_tr hp (SHash bs)) body) \/
-    (exists s1 s2, s = SAnd s1 s2 /\ P_tr hp P s = PInput (N_tr hp s1) body).
+    (s = SUnit /\ P_tr hp gp P s = PInput (N_tr hp gp SUnit) body) \/
+    (exists bs, s = SGround bs /\ P_tr hp gp P s = PInput (N_tr hp gp (SGround bs)) body) \/
+    (exists bs, s = SQuote bs /\ P_tr hp gp P s = PInput (N_tr hp gp (SQuote bs)) body) \/
+    (exists s1 s2, s = SAnd s1 s2 /\ P_tr hp gp P s = PInput (N_tr hp gp s1) body).
 Proof.
-  intros. destruct s as [| bs | s1 s2].
+  intros. destruct s as [| bs | bs | s1 s2].
   - exists (PPar (lift_proc 1 0 P) (PDeref (NVar 0))). left. split; reflexivity.
   - exists (PPar (lift_proc 1 0 P) (PDeref (NVar 0))). right. left.
     exists bs. split; reflexivity.
-  - exists (PInput (N_tr hp s2)
+  - exists (PPar (lift_proc 1 0 P) (PDeref (NVar 0))). right. right. left.
+    exists bs. split; reflexivity.
+  - exists (PInput (N_tr hp gp s2)
               (PPar (lift_proc 2 0 P)
                     (PPar (PDeref (NVar 1)) (PDeref (NVar 0))))).
-    right. right. exists s1, s2. split; reflexivity.
+    right. right. right. exists s1, s2. split; reflexivity.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -214,12 +224,21 @@ Section FuelGateMismatch.
 Variable hp : list bool -> proc.
 Hypothesis hp_injective :
   forall b1 b2, hp b1 = hp b2 -> b1 = b2.
+Variable gp : list bool -> proc.
+Hypothesis gp_injective :
+  forall b1 b2, gp b1 = gp b2 -> b1 = b2.
+(* Cross-axis disjointness (Def 3.3): a ground channel can never equal a
+   cryptographic-quote channel. This is the one new audited obligation that
+   the g/#P split introduces; it powers the cross-axis mismatch-safety
+   theorem below. *)
+Hypothesis gp_hp_disjoint :
+  forall b1 b2, gp b1 <> hp b2.
 
-(* When two hash signatures differ, their N_tr-translated names
-   differ as Coq terms. This is the bridge between cryptographic
+(* When two cryptographic-quote signatures differ, their N_tr-translated
+   names differ as Coq terms. This is the bridge between cryptographic
    injectivity and Coq syntactic disequality. *)
-Lemma N_tr_hash_injective : forall bs1 bs2,
-  bs1 <> bs2 -> N_tr hp (SHash bs1) <> N_tr hp (SHash bs2).
+Lemma N_tr_quote_injective : forall bs1 bs2,
+  bs1 <> bs2 -> N_tr hp gp (SQuote bs1) <> N_tr hp gp (SQuote bs2).
 Proof.
   intros bs1 bs2 Hneq Heq.
   simpl in Heq.
@@ -228,16 +247,40 @@ Proof.
   contradiction.
 Qed.
 
-(* The headline safety result: no top-level COMM step is possible
-   when an atomic-hash fuel gate is paired with a token whose
-   signature has a different hash. *)
+(* The ground-axis analogue: distinct ground signatures give distinct
+   channels, via [gp_injective]. *)
+Lemma N_tr_ground_injective : forall bs1 bs2,
+  bs1 <> bs2 -> N_tr hp gp (SGround bs1) <> N_tr hp gp (SGround bs2).
+Proof.
+  intros bs1 bs2 Hneq Heq.
+  simpl in Heq.
+  injection Heq as Heq'.
+  apply gp_injective in Heq'.
+  contradiction.
+Qed.
+
+(* CROSS-AXIS distinctness: a ground channel and a quote channel are always
+   distinct Coq names, regardless of the underlying bytes. This is the
+   channel-level shadow of the [gp_hp_disjoint] disjointness hypothesis. *)
+Lemma N_tr_ground_quote_distinct : forall bs1 bs2,
+  N_tr hp gp (SGround bs1) <> N_tr hp gp (SQuote bs2).
+Proof.
+  intros bs1 bs2 Heq.
+  simpl in Heq.
+  injection Heq as Heq'.
+  apply (gp_hp_disjoint bs1 bs2). exact Heq'.
+Qed.
+
+(* The headline per-axis safety result: no top-level COMM step is possible
+   when an atomic quote fuel gate is paired with a token whose signature is
+   a different quote. *)
 Theorem fuel_gate_rejects_mismatched_token :
   forall (P : proc) (bs1 bs2 : list bool) (t : token),
     bs1 <> bs2 ->
     forall Q,
-      ~ (PPar (P_tr hp P (SHash bs1)) (T_tr hp (TGate (SHash bs2) t))
-         = PPar (PInput (N_tr hp (SHash bs1)) Q)
-                (POutput (N_tr hp (SHash bs1)) (T_tr hp t))).
+      ~ (PPar (P_tr hp gp P (SQuote bs1)) (T_tr hp gp (TGate (SQuote bs2) t))
+         = PPar (PInput (N_tr hp gp (SQuote bs1)) Q)
+                (POutput (N_tr hp gp (SQuote bs1)) (T_tr hp gp t))).
 Proof.
   intros P bs1 bs2 t Hneq Q Heq.
   (* Unfold T_tr and P_tr in the hypothesis so the POutput/PInput
@@ -251,14 +294,47 @@ Proof.
   symmetry in H1. contradiction.
 Qed.
 
+(* The ground-axis analogue of [fuel_gate_rejects_mismatched_token]. *)
+Theorem fuel_gate_rejects_mismatched_token_ground :
+  forall (P : proc) (bs1 bs2 : list bool) (t : token),
+    bs1 <> bs2 ->
+    forall Q,
+      ~ (PPar (P_tr hp gp P (SGround bs1)) (T_tr hp gp (TGate (SGround bs2) t))
+         = PPar (PInput (N_tr hp gp (SGround bs1)) Q)
+                (POutput (N_tr hp gp (SGround bs1)) (T_tr hp gp t))).
+Proof.
+  intros P bs1 bs2 t Hneq Q Heq.
+  simpl in Heq.
+  inversion Heq.
+  apply gp_injective in H1.
+  symmetry in H1. contradiction.
+Qed.
+
+(* CROSS-AXIS mismatch safety: a ground fuel gate can never be funded by a
+   cryptographic-quote token (and vice versa). An attacker holding a ground
+   key for one axis cannot synthesise fuel for the other axis. This is the
+   safety guarantee that the new [gp_hp_disjoint] obligation buys. *)
+Theorem fuel_gate_rejects_cross_axis_token :
+  forall (P : proc) (bs1 bs2 : list bool) (t : token),
+    forall Q,
+      ~ (PPar (P_tr hp gp P (SGround bs1)) (T_tr hp gp (TGate (SQuote bs2) t))
+         = PPar (PInput (N_tr hp gp (SGround bs1)) Q)
+                (POutput (N_tr hp gp (SGround bs1)) (T_tr hp gp t))).
+Proof.
+  intros P bs1 bs2 t Q Heq.
+  simpl in Heq.
+  inversion Heq.
+  apply (gp_hp_disjoint bs1 bs2). symmetry. exact H1.
+Qed.
+
 (* Direct corollary: the rs_comm rule cannot fire on a top-level
-   PPar of a hash-gated fuel gate and a token for a different hash.
+   PPar of a quote-gated fuel gate and a token for a different quote.
    This is the operational form of "no fuel theft." *)
 Corollary fuel_gate_no_top_comm_mismatched :
   forall (P : proc) (bs1 bs2 : list bool) (t : token) (R : proc),
     bs1 <> bs2 ->
     ~ rho_step
-        (PPar (P_tr hp P (SHash bs1)) (T_tr hp (TGate (SHash bs2) t)))
+        (PPar (P_tr hp gp P (SQuote bs1)) (T_tr hp gp (TGate (SQuote bs2) t)))
         R
     \/
     (* OR the step did NOT come from rs_comm at the top level. *)
@@ -291,11 +367,11 @@ End FuelGateMismatch.
    This is the formally verified "fuel gate is closed" theorem.            *)
 
 Theorem fuel_gate_stuck_isolated :
-  forall (hp : list bool -> proc) (P : proc) (s : sig) (R : proc),
-    ~ rho_step (P_tr hp P s) R.
+  forall (hp gp : list bool -> proc) (P : proc) (s : sig) (R : proc),
+    ~ rho_step (P_tr hp gp P s) R.
 Proof.
-  intros hp P s R Hstep.
-  destruct s as [|bs|s1 s2]; simpl in Hstep;
+  intros hp gp P s R Hstep.
+  destruct s as [|bs|bs|s1 s2]; simpl in Hstep;
     apply PInput_alone_stuck in Hstep; exact Hstep.
 Qed.
 
@@ -303,8 +379,8 @@ Qed.
    of rs_comm, rs_par_l, rs_par_r, or rs_struct, because the head is a
    PInput which cannot be the source of any rho_step in isolation. *)
 Corollary fuel_gate_irreducible :
-  forall (hp : list bool -> proc) (P : proc) (s : sig),
-    forall R, ~ rho_step (P_tr hp P s) R.
+  forall (hp gp : list bool -> proc) (P : proc) (s : sig),
+    forall R, ~ rho_step (P_tr hp gp P s) R.
 Proof. intros. apply fuel_gate_stuck_isolated. Qed.
 
 (* The "no body execution without token" property in its strongest
@@ -321,9 +397,9 @@ Proof. intros. apply fuel_gate_stuck_isolated. Qed.
    gate without that infrastructure simply does not fire.                 *)
 
 Theorem fuel_gate_body_protected :
-  forall (hp : list bool -> proc) (P : proc) (s : sig),
+  forall (hp gp : list bool -> proc) (P : proc) (s : sig),
     (* In isolation, NO reduction happens — the body is fully protected. *)
-    forall R, ~ rho_step (P_tr hp P s) R.
+    forall R, ~ rho_step (P_tr hp gp P s) R.
 Proof.
   intros. apply fuel_gate_stuck_isolated.
 Qed.

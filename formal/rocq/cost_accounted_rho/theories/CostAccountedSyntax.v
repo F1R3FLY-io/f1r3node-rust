@@ -29,7 +29,9 @@
    Rocq Definition          │ Paper Notation        │ Rust Implementation
    ─────────────────────────┼───────────────────────┼─────────────────────
    SUnit                    │ () (unit signature)   │ Sig::Unit
-   SHash bs                 │ hash(σ)               │ Sig::Hash(bytes)
+   SGround bs               │ g (ground signature)  │ Sig::Ground(bytes)
+   SQuote bs                │ #P (cryptographic     │ Sig::Quote(bytes)
+                            │     quote of process) │
    SAnd s1 s2               │ s₁ & s₂               │ Sig::And(s1, s2)
    TUnit                    │ () (empty token)      │ Token::Unit
    TGate s t                │ s : T                 │ Token::Gate(s, t)
@@ -62,21 +64,37 @@ From CostAccountedRho Require Import RhoSyntax.
 
    - [SUnit]      — the trivial unit signature, used to seal terms that
                     require no authentication.
-   - [SHash bs]   — an atomic signature represented as the byte string [bs]
-                    (the hash of some underlying signature value σ). We use
-                    [list bool] for the byte string to remain free of any
-                    external library dependencies.
+   - [SGround bs] — a GROUND signature [g ∈ G] (Def 3.3): an opaque value
+                    drawn from the cryptographic backend (e.g. an Ed25519
+                    public key, a secp256k1 key hash). We model it as the
+                    byte string [bs] to remain free of any external library
+                    dependency.
+   - [SQuote bs]  — a CRYPTOGRAPHIC QUOTE [#P] (Def 3.3): the hash of a
+                    process, the authentication-axis analogue of structural
+                    quoting [@P]. We model it as the byte string [bs] (the
+                    digest), and realise [FN_s(#P) = FN(P)] at the source
+                    level (see SystemStructEquiv.v) via the [hash_process]
+                    bridge rather than carrying a [proc] inside the atom.
    - [SAnd s1 s2] — the conjunction of two signatures. A holder of [SAnd]
                     is one who possesses both component signatures.
+
+   The two atomic byte-carrying constructors [SGround] and [SQuote] are the
+   two axes of Definition 3.3's signature grammar
+   [s(G) ::= g | #P | s & s]: [SGround] is the ground axis [g] and [SQuote]
+   is the cryptographic-quote axis [#P]. Cost behaviour is IDENTICAL for the
+   two — every cost rule treats a signature opaquely and each atomic
+   signature gates exactly one fuel token — so the split is a matter of
+   grammar fidelity (Def 3.3) and the wire-level [AtomKind], not of cost.
 
    Decidable equality on signatures is essential because reduction rules
    need to compare the signature on a token gate with the signature on a
    signed process to decide whether the gate fires.                          *)
 
 Inductive sig : Type :=
-  | SUnit  : sig                    (* () — unit signature *)
-  | SHash  : list bool -> sig       (* hash(σ) — atomic signature derived from byte string *)
-  | SAnd   : sig -> sig -> sig.     (* s₁ & s₂ — compound signature *)
+  | SUnit   : sig                   (* () — unit signature *)
+  | SGround : list bool -> sig      (* g — ground signature (Def 3.3 ground axis) *)
+  | SQuote  : list bool -> sig      (* #P — cryptographic quote (Def 3.3 quote axis) *)
+  | SAnd    : sig -> sig -> sig.    (* s₁ & s₂ — compound signature *)
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 2: Tokens
@@ -135,6 +153,7 @@ Definition sig_eq_dec : forall (s1 s2 : sig), {s1 = s2} + {s1 <> s2}.
 Proof.
   decide equality.
   - decide equality. decide equality.
+  - decide equality. decide equality.
 Defined.
 
 Definition token_eq_dec : forall (t1 t2 : token), {t1 = t2} + {t1 <> t2}.
@@ -175,7 +194,8 @@ Defined.
 Fixpoint sig_size (s : sig) : nat :=
   match s with
   | SUnit       => 1
-  | SHash _     => 1
+  | SGround _   => 1
+  | SQuote _    => 1
   | SAnd s1 s2  => 1 + sig_size s1 + sig_size s2
   end.
 
@@ -226,9 +246,15 @@ Proof.
   decide equality.
 Defined.
 
+(* The runtime signature-algebra carrier. Atoms are split along the same
+   two Def-3.3 axes as [sig]: [ASGround] (ground axis [g]) and [ASQuote]
+   (cryptographic-quote axis [#P]). Both atom arms behave IDENTICALLY in
+   every fixpoint below — each contributes a single required/presented atom
+   — because the linear-resource demand [Δ_s] is insensitive to the axis. *)
 Inductive sig_algebra : Type :=
   | ASUnit : sig_algebra
-  | ASHash : nat -> sig_algebra
+  | ASGround : nat -> sig_algebra
+  | ASQuote : nat -> sig_algebra
   | ASAnd : sig_algebra -> sig_algebra -> sig_algebra
   | ASThreshold : nat -> list sig_algebra -> sig_algebra
   | ASPlus : sig_choice -> sig_algebra -> sig_algebra -> sig_algebra
@@ -240,7 +266,8 @@ Inductive sig_algebra : Type :=
 Fixpoint sig_algebra_atoms (s : sig_algebra) : list nat :=
   match s with
   | ASUnit => []
-  | ASHash a => [a]
+  | ASGround a => [a]
+  | ASQuote a => [a]
   | ASAnd s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
   | ASThreshold _ members => concat (map sig_algebra_atoms members)
   | ASPlus _ s1 s2 => sig_algebra_atoms s1 ++ sig_algebra_atoms s2
@@ -253,7 +280,8 @@ Fixpoint sig_algebra_atoms (s : sig_algebra) : list nat :=
 Fixpoint sig_algebra_min_required (s : sig_algebra) : nat :=
   match s with
   | ASUnit => 0
-  | ASHash _ => 1
+  | ASGround _ => 1
+  | ASQuote _ => 1
   | ASAnd s1 s2 => sig_algebra_min_required s1 + sig_algebra_min_required s2
   | ASThreshold k _ => k
   | ASPlus ChooseLeft s1 _ => sig_algebra_min_required s1
@@ -267,7 +295,8 @@ Fixpoint sig_algebra_min_required (s : sig_algebra) : nat :=
 Fixpoint sig_algebra_all_required (s : sig_algebra) : bool :=
   match s with
   | ASUnit => true
-  | ASHash _ => true
+  | ASGround _ => true
+  | ASQuote _ => true
   | ASAnd s1 s2 => sig_algebra_all_required s1 && sig_algebra_all_required s2
   | ASThreshold _ _ => false
   | ASPlus _ _ _ => false
@@ -280,7 +309,8 @@ Fixpoint sig_algebra_all_required (s : sig_algebra) : bool :=
 Fixpoint sig_algebra_valid (s : sig_algebra) : bool :=
   match s with
   | ASUnit => true
-  | ASHash _ => true
+  | ASGround _ => true
+  | ASQuote _ => true
   | ASAnd s1 s2 => sig_algebra_valid s1 && sig_algebra_valid s2
   | ASThreshold k members =>
       (1 <=? k) && (k <=? length members) && forallb sig_algebra_valid members
@@ -294,7 +324,8 @@ Fixpoint sig_algebra_valid (s : sig_algebra) : bool :=
 Fixpoint sig_algebra_presented_atoms (s : sig_algebra) : list nat :=
   match s with
   | ASUnit => []
-  | ASHash a => [a]
+  | ASGround a => [a]
+  | ASQuote a => [a]
   | ASAnd s1 s2 => sig_algebra_presented_atoms s1 ++ sig_algebra_presented_atoms s2
   | ASThreshold _ members => concat (map sig_algebra_presented_atoms members)
   | ASPlus ChooseLeft s1 _ => sig_algebra_presented_atoms s1
@@ -361,8 +392,9 @@ Lemma sig_algebra_all_required_min_required_atoms :
     sig_algebra_min_required s = length (sig_algebra_atoms s).
 Proof.
   induction s as
-    [|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
+    [|a|a|s1 IH1 s2 IH2|k members|choice s1 IH1 s2 IH2
      |s1 IH1 s2 IH2|s IH|s IH|s1 IH1 s2 IH2]; intros Hall; cbn in *.
+  - reflexivity.
   - reflexivity.
   - reflexivity.
   - apply andb_prop in Hall as [H1 H2].

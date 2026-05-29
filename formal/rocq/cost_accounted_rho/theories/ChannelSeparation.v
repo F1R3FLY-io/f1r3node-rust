@@ -60,13 +60,18 @@ Section ChannelSeparationDefs.
 
 Variable hash_process : list bool -> proc.
 Hypothesis hash_process_closed : forall bs, closed_proc (hash_process bs).
+Variable ground_process : list bool -> proc.
+Hypothesis ground_process_closed : forall bs, closed_proc (ground_process bs).
 
 (* Import the translation definitions under the same parameters.
-   We re-state N_tr locally to avoid cross-section issues. *)
+   We re-state N_tr locally to avoid cross-section issues. The two
+   Def-3.3 atom axes map to their canonical processes: [SGround] to
+   [ground_process] and [SQuote] to [hash_process]. *)
 Fixpoint N_tr (s : sig) : name :=
   match s with
   | SUnit       => Quote PNil
-  | SHash bs    => Quote (hash_process bs)
+  | SGround bs  => Quote (ground_process bs)
+  | SQuote bs   => Quote (hash_process bs)
   | SAnd s1 s2  => Quote (PPar (PDeref (N_tr s1)) (PDeref (N_tr s2)))
   end.
 
@@ -76,9 +81,10 @@ Fixpoint N_tr (s : sig) : name :=
 
 Lemma N_tr_closed_local : forall s, closed_name (N_tr s).
 Proof.
-  induction s as [| bs | s1 IHs1 s2 IHs2]; simpl; unfold closed_name, closed_proc; simpl.
+  induction s as [| bs | bs | s1 IHs1 s2 IHs2]; simpl; unfold closed_name, closed_proc; simpl.
   - (* SUnit *) exact I.
-  - (* SHash bs *) exact (hash_process_closed bs).
+  - (* SGround bs *) exact (ground_process_closed bs).
+  - (* SQuote bs *) exact (hash_process_closed bs).
   - (* SAnd s1 s2 *)
     split.
     + exact IHs1.
@@ -116,8 +122,9 @@ Lemma N_tr_is_Quote : forall s,
   exists P, N_tr s = Quote P.
 Proof.
   intro s.
-  destruct s as [| bs | s1 s2]; simpl.
+  destruct s as [| bs | bs | s1 s2]; simpl.
   - exists PNil. reflexivity.
+  - exists (ground_process bs). reflexivity.
   - exists (hash_process bs). reflexivity.
   - exists (PPar (PDeref (N_tr s1)) (PDeref (N_tr s2))). reflexivity.
 Qed.
@@ -206,9 +213,11 @@ Theorem fuel_gate_channel_lift_invariant : forall s d c,
   lift_name d c (N_tr s) = N_tr s.
 Proof.
   intros s d c.
-  destruct s as [| bs | s1 s2]; simpl.
+  destruct s as [| bs | bs | s1 s2]; simpl.
   - (* SUnit *) reflexivity.
-  - (* SHash bs *)
+  - (* SGround bs *)
+    f_equal. apply closed_proc_lift_zero. apply ground_process_closed.
+  - (* SQuote bs *)
     f_equal. apply closed_proc_lift_zero. apply hash_process_closed.
   - (* SAnd s1 s2 *)
     f_equal. simpl. f_equal; f_equal.
