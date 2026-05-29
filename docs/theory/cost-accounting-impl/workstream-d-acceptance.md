@@ -1,6 +1,6 @@
 # Workstream D — Concurrent Acceptance + phlo→token + Removals (execution design)
 
-**Status:** Execution design (grounded, ready to implement). Spec `publications/cost-accounting/cost-accounted-rho.tex` is law. Conforms to the approved plan and `../cost-accounting-decision-records.md` (DR-9 token-per-COMM, DR-11 acceptance gate).
+**Status:** Execution design (grounded, ready to implement). Spec `publications/cost-accounting/cost-accounted-rho.tex` is law. Conforms to the approved plan and `../cost-accounting-decision-records.md` (DR-9 token-per-COMM, DR-11 acceptance gate). **The per-signature supply seam (`Σ⟦s⟧` representation, producer/consumer, decrement) is governed by [supply-realization-c-d-handoff.md](supply-realization-c-d-handoff.md) + DR-13.**
 
 ## Central representation decision (load-bearing)
 
@@ -37,8 +37,12 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
 - `demand(desugared: &Par, deploy_sig: &Sig) -> DemandEntry{ known_lower_bound, unknown }` per Def 17:
   `Δ_s({P}_s)=1+Δ_s(P)`, `Δ_s({P}_{s'})=Δ_s(P)` for s'≠s, `Δ_s(for/send/par)` recurse, `Δ_s(*x)` resolve-or-`unknown`.
   Includes `desugar_for_funding` (§7.4: uniform signing = 2 layers/for; `?!` = for on each side).
-- `supply(sig, read_channel) -> i64` = count token messages on `Σ⟦s⟧` (via `SignatureChannel::from_sig`) in the
-  **pre-state** (RSpace read, not in-RAM). `effective_supply` = Split/Join closure
+- `supply(sig, pre_state_hash) -> i64` decodes the **single balance datum** `(TOKEN_TAG, n)` on `Σ⟦s⟧` (via
+  `SignatureChannel::from_sig`) read from the merged pre-state with `RuntimeManager::get_data(pre_state_hash,
+  &from_sig(s).par)` (runtime_manager.rs:969); returns `n` (0 if absent). Supply is a **balance**, not a
+  per-message count (DR-13): `Σ_s` is the layer COUNT (Def 17) and the runtime's token normal form is already
+  a coalesced balance (`Token::Count{sig,remaining}`, accounting/mod.rs:1156-1164); O(1) per read (literal
+  messages would be O(n), bottlenecking the gate). `effective_supply` = Split/Join closure
   (`effectiveΣ_{s₁∘s₂}=Σ_{s₁∘s₂}+min(Σ_{s₁},Σ_{s₂})`, `effectiveΣ_{s₁}=Σ_{s₁}+Σ_{s₁∘s₂}`).
 - `is_funded(analysis, margin)`: Def 19 + Thm 20 over-approx — reject `unknown` unless
   `effectiveΣ_s ≥ known_lower_bound + margin`; `margin`+resolution are **shard-genesis constants**.

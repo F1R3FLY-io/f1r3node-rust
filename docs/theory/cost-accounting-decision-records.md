@@ -262,3 +262,32 @@ implement custom validators without loss of performance, behind verifiable oblig
 **Alternatives considered.** (a) A minimal (informal) entry-point contract — rejected by the user in favor
 of a richer, formally-specified, multi-prover contract; (b) default-validator-first, framework-later —
 folded in as the staging order (the built-in is proven first as the reference).
+
+---
+
+## DR-13 — Per-signature supply is a balance datum on `Σ⟦s⟧ = from_sig(s)`, committed at acceptance
+
+**Decision.** Token supply for a signature `s` is a **single balance-carrying datum** `(TOKEN_TAG, n)` on the
+unforgeable channel `SignatureChannel::from_sig(s)` (`Σ⟦s⟧`); `supply(s) = n` (0 if absent). It is written
+**only** by the Rust `sysAuthToken`-gated mint/settlement path (`produce_balance`), never from Rholang. The
+acceptance gate (DR-11) reads `Σ_s` in O(1) from the merged pre-state and commits `Δ_s` by decrementing an
+in-pass residual at block assembly; settlement writes `post = pre − ΣΔ_admitted`. The per-COMM token unit
+(DR-9) is diagnostic and yields `reconcile().consumed = Δ_s`. The validator's *draw* channel `@W_v` (spec
+Appendix B) is DISTINCT from the *supply pool* `Σ⟦v⟧`.
+
+**Spec basis.** §4.6 (per-`s` pool), Appendix A (`Σ⟦·⟧`, `K⟦s:S⟧ = send(Σ⟦s⟧, K⟦S⟧)`), Def 17 (`Σ_s` is a
+layer COUNT), §7.6 (compute `Σ` then accept), tex 1677-1729 (tokens *committed* at acceptance; "no
+interleaving of acceptance and execution"), Remark 11 (the s₀-collapse lifts the per-COMM gate to static
+analysis).
+
+**Rationale.** The balance is the spec's `Σ_s` count expressed in the runtime's existing normal form
+(`Token::Count{sig,remaining}`, accounting/mod.rs:1156-1164). A literal-message representation is O(n) per
+gate read and bottlenecks block assembly (extension-guard #2). `from_sig`'s unnameability in Rholang (no
+bytes→GPrivate surface primitive) makes supply unforgeable (extension-guard #3). Full design + formal
+obligations: [cost-accounting-impl/supply-realization-c-d-handoff.md](cost-accounting-impl/supply-realization-c-d-handoff.md).
+
+**Alternatives considered.** (a) literal nested-send messages, one per token — rejected (O(n) gate-read
+bottleneck); (b) a Rust-injected supply name `@sigSupplyCh` bound into `VB`'s continuation — rejected
+(re-exposes `Σ⟦v⟧` to the Rholang layer, enlarging the trusted surface); (c) a `sysAuthToken`-gated
+`sigChannelOps` system process resolving sig→channel — recorded as a future refinement for in-Rholang
+minting contracts (ERC-20-style), unnecessary while the only authorized writer is Rust.
