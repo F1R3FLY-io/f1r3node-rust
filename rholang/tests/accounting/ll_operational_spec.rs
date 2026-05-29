@@ -182,10 +182,10 @@ proptest! {
 #[test]
 fn threshold_changing_quorum_value_alone_preserves_channel() {
     let members = vec![
-        Sig::Hash(vec![0xA0]),
-        Sig::Hash(vec![0xA1]),
-        Sig::Hash(vec![0xA2]),
-        Sig::Hash(vec![0xA3]),
+        Sig::Ground(vec![0xA0]),
+        Sig::Ground(vec![0xA1]),
+        Sig::Ground(vec![0xA2]),
+        Sig::Ground(vec![0xA3]),
     ];
     let one_of_four = Sig::Threshold { threshold: 1, members: members.clone() };
     let two_of_four = Sig::Threshold { threshold: 2, members: members.clone() };
@@ -228,7 +228,8 @@ fn single_signer_compound_path_differs_from_legacy_via_domain_separation() {
     // Domain separation: distinct deploy_ids.
     assert_ne!(legacy_id, compound_id);
     // The runtime Sig values differ because the legacy path produces
-    // `Sig::Hash(domain_separated_legacy)` whereas the compound path
-    // produces `Sig::Hash(domain_separated_compound)`.
+    // `Sig::Quote(domain_separated_legacy)` whereas the compound path
+    // produces `Sig::Quote(domain_separated_compound)` (both `#P`-style
+    // process-hash digests, under distinct domain separators).
     assert_ne!(legacy_sig, compound_sig);
 }

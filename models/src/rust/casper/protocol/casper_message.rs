@@ -2127,6 +2127,74 @@ mod tests {
         Signed::create(data, alg, sk).expect("signed deploy")
     }
 
+    /// Consensus-fork guard for the Workstream-B ground-`g` / quote-`#P`
+    /// signature-atom split. The split adds `SigAtom.atom_kind` and the
+    /// `Sig::Ground`/`Sig::Quote` runtime variants, but NONE of that may
+    /// enter the deploy-signature preimage — otherwise every legacy
+    /// single-signature deploy on chain would re-hash to a different
+    /// `deploy_id` and the network would hard-fork.
+    ///
+    /// The preimage is `DeployData::_to_proto(..).encode_to_vec()`, and the
+    /// signing digest is `Signed::signature_hash(alg, preimage)`. Both the
+    /// preimage and the digest below were captured from the PRE-split code
+    /// (the `_to_proto` body emits only term/timestamp/phlo_price/phlo_limit/
+    /// valid_after_block_number/shard_id/expiration_timestamp and never a
+    /// `SigAtom`/`atom_kind`/`sig_algebra`). If this assertion ever fails,
+    /// the preimage changed — STOP: that is a consensus fork, and the fix is
+    /// to exclude the offending field from `_to_proto`, never to update the
+    /// pinned digest.
+    #[test]
+    fn legacy_deploy_signature_hash_is_unchanged_after_g_quote_split() {
+        use prost::Message;
+
+        // Fixed legacy single-sig deploy: term="Nil", timestamp=0,
+        // phlo_price=2, phlo_limit=5, valid_after_block_number=0,
+        // shard_id="root", no expiration.
+        let data = deploy_data(5, 2);
+
+        let preimage = DeployData::_to_proto(data.clone()).encode_to_vec();
+        // Preimage captured pre-split. Field tags: 2=term("Nil"),
+        // 7=phloPrice(2), 8=phloLimit(5), 11=shardId("root"). No SigAtom,
+        // no atom_kind, no sig_algebra.
+        const PINNED_PREIMAGE_HEX: &str = "12034e696c380240055a04726f6f74";
+        assert_eq!(
+            hex::encode(&preimage),
+            PINNED_PREIMAGE_HEX,
+            "deploy-signature preimage changed — consensus fork risk; \
+             do NOT update the pin, exclude the new field from _to_proto"
+        );
+
+        // Blake2b256 digest captured pre-split for the secp256k1 path.
+        const PINNED_GOLDEN_DIGEST_HEX: &str =
+            "2a5916d04fa60b482d5431b83f53a2ed16c83d9828d9c150b2d1f1ee473ed4ab";
+        let digest = Signed::<DeployData>::signature_hash(&Secp256k1::name(), preimage);
+        assert_eq!(
+            hex::encode(&digest),
+            PINNED_GOLDEN_DIGEST_HEX,
+            "legacy deploy signature_hash changed — consensus fork; \
+             the g/#P split must NOT touch the signing preimage"
+        );
+    }
+
+    /// A single-signature deploy serialized via the legacy `to_proto` path
+    /// must NOT carry the multi-sig/algebra fields: `sig_algebra` is `None`
+    /// and `cosigners` is empty. This is the structural complement to the
+    /// golden-vector pin — it asserts the split did not start emitting a
+    /// `SigCompound`/`SigAtom` onto the legacy single-sig wire shape.
+    #[test]
+    fn single_sig_to_proto_omits_sig_algebra_and_cosigners() {
+        let signed = signed_deploy(deploy_data(5, 2));
+        let proto = DeployData::to_proto(signed);
+        assert!(
+            proto.sig_algebra.is_none(),
+            "single-sig deploy must not emit sig_algebra"
+        );
+        assert!(
+            proto.cosigners.is_empty(),
+            "single-sig deploy must not emit cosigners"
+        );
+    }
+
     #[test]
     fn checked_total_phlo_charge_rejects_invalid_or_overflowing_inputs() {
         assert_eq!(deploy_data(5, 2).checked_total_phlo_charge(), Ok(10));
@@ -2227,6 +2295,7 @@ mod tests {
                 sig: prost::bytes::Bytes::from(sig),
                 sig_algorithm: Secp256k1::name(),
                 phlo_share,
+                ..Default::default()
             },
             pk_bytes_vec,
         )
@@ -2240,6 +2309,7 @@ mod tests {
             sig: prost::bytes::Bytes::new(),
             sig_algorithm: Secp256k1::name(),
             phlo_share: 0,
+            ..Default::default()
         }
     }
 

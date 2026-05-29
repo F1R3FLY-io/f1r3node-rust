@@ -209,7 +209,7 @@ message CompoundSigner {
 //     for `Plus` is carried via `plus_branch` (0 = left, 1 = right).
 message SigCompound {
   oneof connective {
-    SigAtom      atom      = 1;   // Sig::Hash leaf (atomic signature)
+    SigAtom      atom      = 1;   // Sig::Ground / Sig::Quote leaf (atom_kind selects axis)
     SigPair      tensor    = 2;   // Sig::And / Sig::Tensor (multiplicative ⊗)
     SigPlus      plus      = 3;   // Sig::Plus  (additive ⊕ with branch witness)
     SigPair      with_     = 4;   // Sig::With  (additive & — LL "with")
@@ -220,11 +220,27 @@ message SigCompound {
   }
 }
 
+// Distinguishes the two atomic signature axes of the cost-accounted
+// rho-calculus (`publications/cost-accounting/cost-accounted-rho.tex`
+// §App-A, eqs. eq:app-sig-ground / eq:app-sig-hash):
+//   GROUND (`g`)  — a ground signature key `g ∈ G`; Σ⟦g⟧ = quote(H_g).
+//   QUOTE  (`#P`) — a cryptographic process-hash `#P`; Σ⟦#P⟧ = quote(H(𝒫⟦P⟧)).
+// Both reflect to a quoted name on the wire, so the SIGNATURE-CHANNEL
+// derivation is identical for equal `pk` bytes; the axis is carried only
+// so the runtime `Sig` value round-trips faithfully. GROUND = 0 is the
+// proto3 default, so any legacy `SigAtom` decoded without this field is a
+// ground atom — preserving backward compatibility.
+enum AtomKind {
+  GROUND = 0;
+  QUOTE  = 1;
+}
+
 message SigAtom {
-  bytes  pk           = 1;
-  bytes  sig          = 2;
-  string sigAlgorithm = 3;
-  int64  phloShare    = 4;
+  bytes    pk           = 1;
+  bytes    sig          = 2;
+  string   sigAlgorithm = 3;
+  int64    phloShare    = 4;
+  AtomKind atom_kind    = 5;
 }
 
 message SigPair {

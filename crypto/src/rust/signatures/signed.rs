@@ -1,5 +1,7 @@
 use prost::Message;
 
+#[cfg(feature = "oqs_pq_experimental")]
+use super::oqs_pq::{Falcon512, MlDsa65, SlhDsaSha2_128s};
 use super::secp256k1_eth::Secp256k1Eth;
 use super::signatures_alg::SignaturesAlg;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -482,6 +484,16 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
             name if name == FrostSecp256k1::name() => {
                 FrostSecp256k1::domain_separated_hash(&serialized_data)
             }
+            #[cfg(feature = "oqs_pq_experimental")]
+            name if name == MlDsa65::name() => MlDsa65::domain_separated_hash(&serialized_data),
+            #[cfg(feature = "oqs_pq_experimental")]
+            name if name == Falcon512::name() => {
+                Falcon512::domain_separated_hash(&serialized_data)
+            }
+            #[cfg(feature = "oqs_pq_experimental")]
+            name if name == SlhDsaSha2_128s::name() => {
+                SlhDsaSha2_128s::domain_separated_hash(&serialized_data)
+            }
 
             _ => Blake2b256::hash(serialized_data),
         }
@@ -827,5 +839,102 @@ mod cosigned_tests {
         assert_eq!(cosigned.signers().len(), 1);
         assert_eq!(cosigned.signers()[0].phlo_share, 250);
         assert_eq!(cosigned.total_phlo_share(), 250);
+    }
+
+    /// Hybrid (classical + post-quantum) N-of-N multi-signature envelope:
+    /// a secp256k1 primary and an ML-DSA-65 cosigner, both signing the SAME
+    /// canonical payload but each over its OWN algorithm-specific
+    /// `signature_hash` (Blake2b256 for secp256k1, the ML-DSA domain-separated
+    /// hash for ML-DSA-65). Reuses the existing `Cosigned::from_signed_data`
+    /// path, which re-verifies every signer; construction succeeding proves
+    /// BOTH the classical and the post-quantum signature verify under the
+    /// generic-over-G signature surface (paper §4.5).
+    #[cfg(feature = "oqs_pq_experimental")]
+    #[test]
+    fn cosigned_hybrid_secp256k1_plus_ml_dsa_65_n_of_n_verifies() {
+        use crate::rust::signatures::oqs_pq::MlDsa65;
+        use crate::rust::signatures::secp256k1::Secp256k1;
+
+        let payload = TestPayload {
+            term: "hybrid_pq_classical".to_string(),
+            phlo_limit: 300,
+        };
+        let serialized = payload.encode_to_vec();
+
+        // Classical secp256k1 cosigner (Blake2b256 signing hash).
+        let secp = Secp256k1;
+        let (secp_sk, secp_pk) = secp.new_key_pair();
+        let secp_hash =
+            Signed::<TestPayload>::signature_hash(&Secp256k1::name(), serialized.clone());
+        let secp_sig = secp.sign(&secp_hash, &secp_sk.bytes);
+        assert!(!secp_sig.is_empty(), "secp256k1 must sign");
+        let secp_cosigner = Cosigner {
+            pk: secp_pk,
+            sig: prost::bytes::Bytes::from(secp_sig),
+            sig_algorithm: Box::new(secp),
+            phlo_share: 100,
+        };
+
+        // Post-quantum ML-DSA-65 cosigner (domain-separated signing hash).
+        let ml = MlDsa65;
+        let (ml_sk, ml_pk) = ml.new_key_pair();
+        assert!(!ml_sk.bytes.is_empty(), "ML-DSA-65 keygen must succeed");
+        let ml_hash =
+            Signed::<TestPayload>::signature_hash(&MlDsa65::name(), serialized.clone());
+        let ml_sig = ml.sign(&ml_hash, &ml_sk.bytes);
+        assert!(!ml_sig.is_empty(), "ML-DSA-65 must sign");
+        let ml_cosigner = Cosigner {
+            pk: ml_pk,
+            sig: prost::bytes::Bytes::from(ml_sig),
+            sig_algorithm: Box::new(ml),
+            phlo_share: 200,
+        };
+
+        // N-of-N: both signatures must verify for construction to succeed.
+        let cosigned = Cosigned::from_signed_data(
+            payload.clone(),
+            vec![secp_cosigner, ml_cosigner],
+            300,
+        )
+        .expect("hybrid secp256k1 + ML-DSA-65 envelope must construct (both verify)");
+        assert!(cosigned.is_compound());
+        assert_eq!(cosigned.signers().len(), 2);
+        assert_eq!(cosigned.total_phlo_share(), 300);
+
+        // Negative control: corrupt the ML-DSA-65 signature; N-of-N must reject.
+        let secp2 = Secp256k1;
+        let (secp2_sk, secp2_pk) = secp2.new_key_pair();
+        let secp2_hash =
+            Signed::<TestPayload>::signature_hash(&Secp256k1::name(), serialized.clone());
+        let secp2_sig = secp2.sign(&secp2_hash, &secp2_sk.bytes);
+        let secp2_cosigner = Cosigner {
+            pk: secp2_pk,
+            sig: prost::bytes::Bytes::from(secp2_sig),
+            sig_algorithm: Box::new(secp2),
+            phlo_share: 100,
+        };
+        let ml2 = MlDsa65;
+        let (ml2_sk, ml2_pk) = ml2.new_key_pair();
+        let ml2_hash =
+            Signed::<TestPayload>::signature_hash(&MlDsa65::name(), serialized.clone());
+        let mut ml2_sig = ml2.sign(&ml2_hash, &ml2_sk.bytes);
+        let mid = ml2_sig.len() / 2;
+        ml2_sig[mid] ^= 0x01; // tamper the PQ signature
+        let bad_ml_cosigner = Cosigner {
+            pk: ml2_pk,
+            sig: prost::bytes::Bytes::from(ml2_sig),
+            sig_algorithm: Box::new(ml2),
+            phlo_share: 200,
+        };
+        let err = Cosigned::from_signed_data(
+            payload,
+            vec![secp2_cosigner, bad_ml_cosigner],
+            300,
+        )
+        .expect_err("tampered PQ cosigner must fail N-of-N verification");
+        match err {
+            CosignedError::SignatureVerifyFailed { .. } => {}
+            other => panic!("expected SignatureVerifyFailed, got {:?}", other),
+        }
     }
 }

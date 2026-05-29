@@ -448,8 +448,8 @@ fn signature_channels_property_are_order_independent_and_domain_separated() {
                 proptest::collection::vec(any::<u8>(), 0..64),
             ),
             |(left_bytes, right_bytes)| {
-                let left = Sig::Hash(left_bytes.clone());
-                let right = Sig::Hash(right_bytes.clone());
+                let left = Sig::Ground(left_bytes.clone());
+                let right = Sig::Ground(right_bytes.clone());
 
                 if left_bytes != right_bytes {
                     prop_assert_ne!(
@@ -476,7 +476,7 @@ fn signature_channels_property_are_order_independent_and_domain_separated() {
 
 #[test]
 fn runtime_budget_initializes_from_signed_token_annotation() {
-    let sig = Sig::Hash(vec![1, 2, 3]);
+    let sig = Sig::Ground(vec![1, 2, 3]);
     let annotated = SignedProcess::metered(Par::default(), sig.clone(), 7);
     let budget = RuntimeBudget::new(Cost::create(0, "empty budget"));
 
@@ -489,7 +489,7 @@ fn runtime_budget_initializes_from_signed_token_annotation() {
 
 #[test]
 fn runtime_budget_reset_from_token_clears_oop_boundary() {
-    let sig = Sig::Hash(vec![1, 2, 3]);
+    let sig = Sig::Ground(vec![1, 2, 3]);
     let budget = RuntimeBudget::new(Cost::create(5, "reset budget"));
 
     budget.reserve_canonical(token_event(0, 10)).unwrap_err();
@@ -506,7 +506,7 @@ fn runtime_budget_reset_from_token_clears_oop_boundary() {
 
 #[test]
 fn runtime_budget_reset_from_token_clears_success_trace_window() {
-    let sig = Sig::Hash(vec![4, 5, 6]);
+    let sig = Sig::Ground(vec![4, 5, 6]);
     let budget = RuntimeBudget::new(Cost::create(5, "reset budget"));
 
     budget.reserve_canonical(token_event(0, 2)).unwrap();
@@ -537,7 +537,7 @@ fn reset_from_token_clears_all_recorded_state_between_deploys() {
     // attempt state (the lock-free SegQueue, the reconciliation accumulator,
     // and the cached reconciliation), so a reused budget never inherits a
     // prior deploy's cost — the cross-deploy isolation the runtime relies on.
-    let sig = Sig::Hash(vec![7, 8, 9]);
+    let sig = Sig::Ground(vec![7, 8, 9]);
     let budget = RuntimeBudget::new(Cost::create(64, "reset isolation"));
 
     // Deploy 1: record cost up to the budget.
@@ -782,7 +782,7 @@ fn unmetered_system_mode_restoration_preserves_later_metering() {
 
 #[test]
 fn coalesced_token_budget_refines_nested_gate_stack() {
-    let sig = Sig::Hash(vec![9]);
+    let sig = Sig::Ground(vec![9]);
     let nested = Token::gate(
         sig.clone(),
         Token::gate(sig.clone(), Token::coalesced(sig.clone(), 3)),
@@ -1288,15 +1288,15 @@ async fn negative_initial_phlo_is_rejected_before_metered_trace() {
 
 #[test]
 fn signature_channels_are_deploy_isolated() {
-    let left = SignatureChannel::from_sig(&Sig::Hash(vec![1]));
-    let right = SignatureChannel::from_sig(&Sig::Hash(vec![2]));
+    let left = SignatureChannel::from_sig(&Sig::Ground(vec![1]));
+    let right = SignatureChannel::from_sig(&Sig::Ground(vec![2]));
     let combined = SignatureChannel::from_sig(&Sig::And(
-        Box::new(Sig::Hash(vec![1])),
-        Box::new(Sig::Hash(vec![2])),
+        Box::new(Sig::Ground(vec![1])),
+        Box::new(Sig::Ground(vec![2])),
     ));
     let reversed = SignatureChannel::from_sig(&Sig::And(
-        Box::new(Sig::Hash(vec![2])),
-        Box::new(Sig::Hash(vec![1])),
+        Box::new(Sig::Ground(vec![2])),
+        Box::new(Sig::Ground(vec![1])),
     ));
 
     assert_ne!(left, right);
@@ -1317,13 +1317,15 @@ fn deploy_signature_scope_is_domain_separated_from_raw_signature_bytes() {
 
     let scoped_signature = budget.signature();
     match &scoped_signature {
-        Sig::Hash(bytes) => assert_eq!(bytes.as_slice(), budget.deploy_id().as_slice()),
-        _ => panic!("deploy signatures must map to hash-scoped accounting signatures"),
+        // The deploy-signature digest is a `#P`-style process-hash, so
+        // `set_deploy_signature` installs a `Sig::Quote` atom.
+        Sig::Quote(bytes) => assert_eq!(bytes.as_slice(), budget.deploy_id().as_slice()),
+        _ => panic!("deploy signatures must map to quote-scoped accounting signatures"),
     }
 
     assert_ne!(
         SignatureChannel::from_sig(&scoped_signature),
-        SignatureChannel::from_sig(&Sig::Hash(raw_signature))
+        SignatureChannel::from_sig(&Sig::Ground(raw_signature))
     );
 }
 
@@ -1337,14 +1339,15 @@ fn set_deploy_signatures_folds_into_left_associated_sig_and() {
     budget.set_deploy_signatures(&[sig_a, sig_b, sig_c]);
 
     let sig = budget.signature();
-    // Expected shape: Sig::And(Sig::And(Sig::Hash(h_a), Sig::Hash(h_b)), Sig::Hash(h_c))
+    // Expected shape: Sig::And(Sig::And(Sig::Quote(h_a), Sig::Quote(h_b)), Sig::Quote(h_c))
+    // — every per-signer hash is a `#P`-style process-hash, hence a Quote atom.
     match sig {
         Sig::And(outer_left, outer_right) => {
-            assert!(matches!(*outer_right, Sig::Hash(_)));
+            assert!(matches!(*outer_right, Sig::Quote(_)));
             match *outer_left {
                 Sig::And(inner_left, inner_right) => {
-                    assert!(matches!(*inner_left, Sig::Hash(_)));
-                    assert!(matches!(*inner_right, Sig::Hash(_)));
+                    assert!(matches!(*inner_left, Sig::Quote(_)));
+                    assert!(matches!(*inner_right, Sig::Quote(_)));
                 }
                 other => panic!(
                     "inner Sig::And expected, got {:?} — folding must be left-associated",
@@ -1357,17 +1360,18 @@ fn set_deploy_signatures_folds_into_left_associated_sig_and() {
 }
 
 #[test]
-fn set_deploy_signatures_single_signer_is_sig_hash() {
+fn set_deploy_signatures_single_signer_is_sig_quote() {
     let budget = RuntimeBudget::new(Cost::create(10, "single-signer compound scope"));
     let single_sig: &[u8] = &[0xde, 0xad, 0xbe, 0xef];
     budget.set_deploy_signatures(&[single_sig]);
 
     match budget.signature() {
-        Sig::Hash(_) => {
-            // Single-signer fold collapses to a flat Sig::Hash.
+        Sig::Quote(_) => {
+            // Single-signer fold collapses to a flat Sig::Quote (the
+            // per-signer digest is a `#P`-style process-hash).
         }
         other => panic!(
-            "single-signer set_deploy_signatures must produce Sig::Hash, got {:?}",
+            "single-signer set_deploy_signatures must produce Sig::Quote, got {:?}",
             other
         ),
     }
@@ -1434,9 +1438,9 @@ fn sig_threshold_reflection_permutation_invariant_in_members() {
     // Same member set, different orders ⇒ identical SignatureChannel.
     // This is the substrate guarantee that quorum verifier dispatch is
     // canonical-order-independent.
-    let m1 = Sig::Hash(vec![0xaa, 0xaa]);
-    let m2 = Sig::Hash(vec![0xbb, 0xbb]);
-    let m3 = Sig::Hash(vec![0xcc, 0xcc]);
+    let m1 = Sig::Ground(vec![0xaa, 0xaa]);
+    let m2 = Sig::Ground(vec![0xbb, 0xbb]);
+    let m3 = Sig::Ground(vec![0xcc, 0xcc]);
 
     let order_abc = Sig::Threshold {
         threshold: 2,
@@ -1467,8 +1471,8 @@ fn sig_threshold_reflection_distinct_from_and_with_same_member_set() {
     // same channel shape (intentional — verifier dispatches on the wire
     // shape's `threshold` field, not the channel shape), so we verify the
     // RUNTIME enum distinguishes them rather than the SignatureChannel.
-    let a = Sig::Hash(vec![1]);
-    let b = Sig::Hash(vec![2]);
+    let a = Sig::Ground(vec![1]);
+    let b = Sig::Ground(vec![2]);
     let threshold_ab = Sig::Threshold {
         threshold: 2,
         members: vec![a.clone(), b.clone()],
@@ -1481,10 +1485,10 @@ fn sig_threshold_reflection_distinct_from_and_with_same_member_set() {
 fn sig_threshold_nested_within_and_reflects_consistently() {
     // Sig::And(Threshold{2, [a,b,c]}, Hash(d)) should reflect to a channel
     // that's permutation-invariant in the threshold's members.
-    let a = Sig::Hash(vec![0x01]);
-    let b = Sig::Hash(vec![0x02]);
-    let c = Sig::Hash(vec![0x03]);
-    let d = Sig::Hash(vec![0x04]);
+    let a = Sig::Ground(vec![0x01]);
+    let b = Sig::Ground(vec![0x02]);
+    let c = Sig::Ground(vec![0x03]);
+    let d = Sig::Ground(vec![0x04]);
 
     let nested_abc = Sig::And(
         Box::new(Sig::Threshold {
@@ -1511,7 +1515,7 @@ fn sig_threshold_single_member_reflects_like_unit_and_member() {
     // Threshold{1, [m]} is "1-of-1" which is the degenerate case meaning
     // "m alone authorizes the deploy". Its reflection should NOT crash and
     // should be permutation-invariant trivially.
-    let m = Sig::Hash(vec![0xde, 0xad]);
+    let m = Sig::Ground(vec![0xde, 0xad]);
     let trivial = Sig::Threshold {
         threshold: 1,
         members: vec![m.clone()],
@@ -1547,8 +1551,8 @@ fn sig_threshold_empty_members_reflects_to_unit_channel() {
 #[test]
 fn sig_plus_reflection_commutative() {
     // σ ⊕ τ ≡ τ ⊕ σ at the channel level (signer-choice symmetry).
-    let a = Sig::Hash(vec![0x01]);
-    let b = Sig::Hash(vec![0x02]);
+    let a = Sig::Ground(vec![0x01]);
+    let b = Sig::Ground(vec![0x02]);
     let ab = Sig::Plus(Box::new(a.clone()), Box::new(b.clone()));
     let ba = Sig::Plus(Box::new(b), Box::new(a));
     assert_eq!(
@@ -1560,8 +1564,8 @@ fn sig_plus_reflection_commutative() {
 #[test]
 fn sig_with_reflection_commutative() {
     // σ & τ ≡ τ & σ (LL "with" / verifier-choice symmetry).
-    let a = Sig::Hash(vec![0x10]);
-    let b = Sig::Hash(vec![0x20]);
+    let a = Sig::Ground(vec![0x10]);
+    let b = Sig::Ground(vec![0x20]);
     let ab = Sig::With(Box::new(a.clone()), Box::new(b.clone()));
     let ba = Sig::With(Box::new(b), Box::new(a));
     assert_eq!(
@@ -1575,7 +1579,7 @@ fn sig_bang_idempotent_at_channel_level() {
     // !(!σ) ≡ !σ at the reflection layer. Bang is unary; double-bang
     // collapses because Bang's reflection is the inner channel, and the
     // outer Bang's reflection is the inner Bang's reflection = inner σ.
-    let a = Sig::Hash(vec![0x42; 8]);
+    let a = Sig::Ground(vec![0x42; 8]);
     let bang_a = Sig::Bang(Box::new(a));
     let bang_bang_a = Sig::Bang(Box::new(bang_a.clone()));
     assert_eq!(
@@ -1587,7 +1591,7 @@ fn sig_bang_idempotent_at_channel_level() {
 #[test]
 fn sig_whynot_idempotent_at_channel_level() {
     // ?(?σ) ≡ ?σ — dual of bang idempotence.
-    let a = Sig::Hash(vec![0xff; 8]);
+    let a = Sig::Ground(vec![0xff; 8]);
     let q_a = Sig::WhyNot(Box::new(a));
     let q_q_a = Sig::WhyNot(Box::new(q_a.clone()));
     assert_eq!(
@@ -1602,8 +1606,8 @@ fn sig_lolly_reflection_distinct_from_tensor() {
     // produce composition-shape channels, so we test the Sig enum
     // distinguishes them. Operationally Lolly is a capability (consume σ,
     // produce τ via the registry transformer), Tensor is joint possession.
-    let a = Sig::Hash(vec![0xa1]);
-    let b = Sig::Hash(vec![0xb2]);
+    let a = Sig::Ground(vec![0xa1]);
+    let b = Sig::Ground(vec![0xb2]);
     let lolly = Sig::Lolly(Box::new(a.clone()), Box::new(b.clone()));
     let and_ab = Sig::And(Box::new(a), Box::new(b));
     assert_ne!(lolly, and_ab); // enum distinguishes them
@@ -1617,12 +1621,12 @@ fn sig_ll_algebra_full_combinator_well_formed() {
     // Construct a deeply-nested LL expression combining every connective:
     //   And(Plus(Bang(a), WhyNot(b)), Threshold{2, [c, Lolly(d, e), With(f, Unit)]})
     // Reflection must succeed (no panic / no incorrect collapse).
-    let a = Sig::Hash(vec![0x01]);
-    let b = Sig::Hash(vec![0x02]);
-    let c = Sig::Hash(vec![0x03]);
-    let d = Sig::Hash(vec![0x04]);
-    let e = Sig::Hash(vec![0x05]);
-    let f = Sig::Hash(vec![0x06]);
+    let a = Sig::Ground(vec![0x01]);
+    let b = Sig::Ground(vec![0x02]);
+    let c = Sig::Ground(vec![0x03]);
+    let d = Sig::Ground(vec![0x04]);
+    let e = Sig::Ground(vec![0x05]);
+    let f = Sig::Ground(vec![0x06]);
 
     let expr = Sig::And(
         Box::new(Sig::Plus(
@@ -1648,18 +1652,18 @@ fn sig_proto_round_trip_every_connective() {
     // equal the original.
     let original = Sig::And(
         Box::new(Sig::Plus(
-            Box::new(Sig::Bang(Box::new(Sig::Hash(vec![0x01, 0x02])))),
-            Box::new(Sig::WhyNot(Box::new(Sig::Hash(vec![0x03, 0x04])))),
+            Box::new(Sig::Bang(Box::new(Sig::Ground(vec![0x01, 0x02])))),
+            Box::new(Sig::WhyNot(Box::new(Sig::Ground(vec![0x03, 0x04])))),
         )),
         Box::new(Sig::Threshold {
             threshold: 2,
             members: vec![
-                Sig::Hash(vec![0x05]),
+                Sig::Ground(vec![0x05]),
                 Sig::Lolly(
-                    Box::new(Sig::Hash(vec![0x06])),
-                    Box::new(Sig::Hash(vec![0x07])),
+                    Box::new(Sig::Ground(vec![0x06])),
+                    Box::new(Sig::Ground(vec![0x07])),
                 ),
-                Sig::With(Box::new(Sig::Hash(vec![0x08])), Box::new(Sig::Unit)),
+                Sig::With(Box::new(Sig::Ground(vec![0x08])), Box::new(Sig::Unit)),
             ],
         }),
     );
@@ -1677,11 +1681,92 @@ fn sig_proto_round_trip_unit() {
 }
 
 #[test]
-fn sig_proto_round_trip_hash_atom() {
-    let original = Sig::Hash(vec![0xde, 0xad, 0xbe, 0xef]);
+fn sig_proto_round_trip_ground_atom() {
+    let original = Sig::Ground(vec![0xde, 0xad, 0xbe, 0xef]);
     let proto = original.to_proto();
-    let decoded = Sig::from_proto(&proto).expect("Hash round-trip");
+    let decoded = Sig::from_proto(&proto).expect("Ground round-trip");
     assert_eq!(decoded, original);
+}
+
+#[test]
+fn sig_proto_round_trip_quote_atom() {
+    let original = Sig::Quote(vec![0xde, 0xad, 0xbe, 0xef]);
+    let proto = original.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("Quote round-trip");
+    assert_eq!(decoded, original);
+}
+
+/// The atom-kind axis (`Ground` vs `Quote`) must survive the
+/// `to_proto`/`from_proto` round-trip, the wire `SigAtom.atom_kind` tag
+/// must be emitted accordingly, and a `SigAtom` whose `atom_kind` is the
+/// proto3 default (0 / absent) must decode to `Ground` (backward compat).
+#[test]
+fn sig_proto_atom_kind_round_trips_and_defaults_to_ground() {
+    use models::casper::{sig_compound, AtomKind, SigAtom, SigCompound};
+
+    // (1) Ground emits atom_kind = GROUND.
+    let ground_proto = Sig::Ground(vec![0x01, 0x02]).to_proto();
+    match ground_proto.connective.as_ref().expect("connective") {
+        sig_compound::Connective::Atom(atom) => {
+            assert_eq!(atom.atom_kind, AtomKind::Ground as i32);
+        }
+        other => panic!("expected Atom, got {:?}", other),
+    }
+
+    // (2) Quote emits atom_kind = QUOTE.
+    let quote_proto = Sig::Quote(vec![0x01, 0x02]).to_proto();
+    match quote_proto.connective.as_ref().expect("connective") {
+        sig_compound::Connective::Atom(atom) => {
+            assert_eq!(atom.atom_kind, AtomKind::Quote as i32);
+        }
+        other => panic!("expected Atom, got {:?}", other),
+    }
+
+    // (3) A SigAtom with the DEFAULT atom_kind (0 == GROUND, the proto3
+    //     default a legacy encoder would leave unset) decodes to Ground.
+    let legacy_default_atom = SigCompound {
+        connective: Some(sig_compound::Connective::Atom(SigAtom {
+            pk: vec![0xaa, 0xbb].into(),
+            sig: Default::default(),
+            sig_algorithm: String::new(),
+            phlo_share: 0,
+            atom_kind: 0,
+        })),
+    };
+    assert_eq!(
+        Sig::from_proto(&legacy_default_atom).expect("legacy atom decodes"),
+        Sig::Ground(vec![0xaa, 0xbb]),
+        "atom_kind == 0 (default/absent) must decode to Ground"
+    );
+}
+
+/// Round-trip a compound expression mixing BOTH atom axes under `And` and
+/// every ILLE connective, asserting the axis is preserved through nesting.
+#[test]
+fn sig_proto_round_trip_mixed_ground_quote_under_connectives() {
+    let original = Sig::And(
+        Box::new(Sig::Plus(
+            Box::new(Sig::Bang(Box::new(Sig::Ground(vec![0x01, 0x02])))),
+            Box::new(Sig::WhyNot(Box::new(Sig::Quote(vec![0x03, 0x04])))),
+        )),
+        Box::new(Sig::Threshold {
+            threshold: 2,
+            members: vec![
+                Sig::Ground(vec![0x05]),
+                Sig::Lolly(
+                    Box::new(Sig::Quote(vec![0x06])),
+                    Box::new(Sig::Ground(vec![0x07])),
+                ),
+                Sig::With(Box::new(Sig::Quote(vec![0x08])), Box::new(Sig::Unit)),
+            ],
+        }),
+    );
+    let proto = original.to_proto();
+    let decoded = Sig::from_proto(&proto).expect("mixed-axis round-trip decode");
+    assert_eq!(
+        decoded, original,
+        "Ground/Quote axis must be preserved through And + every ILLE connective"
+    );
 }
 
 #[test]
@@ -1689,10 +1774,10 @@ fn sig_proto_round_trip_threshold_preserves_member_order() {
     let original = Sig::Threshold {
         threshold: 3,
         members: vec![
-            Sig::Hash(vec![0xaa]),
-            Sig::Hash(vec![0xbb]),
-            Sig::Hash(vec![0xcc]),
-            Sig::Hash(vec![0xdd]),
+            Sig::Ground(vec![0xaa]),
+            Sig::Ground(vec![0xbb]),
+            Sig::Ground(vec![0xcc]),
+            Sig::Ground(vec![0xdd]),
         ],
     };
     let proto = original.to_proto();

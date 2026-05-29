@@ -1427,7 +1427,7 @@ impl RuntimeOps {
 
     /// Legacy single-signature evaluate. Preserves byte-identical
     /// observable behavior for existing on-chain deploys (same `deploy_id`,
-    /// same `Sig::Hash` value, same normalizer env). Multi-signature
+    /// same `Sig::Quote` value, same normalizer env). Multi-signature
     /// dispatch happens in [`Self::evaluate_cosigned`] which this
     /// method delegates to via legacy uplift.
     pub async fn evaluate(

@@ -7,6 +7,7 @@ publish = false
 [features]
 default = []
 schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
+oqs_pq_experimental = ["crypto/oqs_pq_experimental"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

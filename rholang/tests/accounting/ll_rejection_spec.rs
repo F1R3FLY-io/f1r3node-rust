@@ -194,7 +194,7 @@ fn threshold_with_more_than_members_size_constructible_but_invalid() {
     // substrate is permissive (no panic on reflection).
     let sig = Sig::Threshold {
         threshold: 5,
-        members: vec![Sig::Hash(vec![0x01]), Sig::Hash(vec![0x02])],
+        members: vec![Sig::Ground(vec![0x01]), Sig::Ground(vec![0x02])],
     };
     let _channel = rholang::rust::interpreter::accounting::SignatureChannel::from_sig(&sig);
     // No panic = pass. The structural invariant is enforced upstream.

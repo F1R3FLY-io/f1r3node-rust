@@ -637,7 +637,10 @@ impl RuntimeBudget {
         // Cost-accounting channels are internal capabilities derived from,
         // but not equal to, the wire signature. Domain separation prevents
         // accidental reuse of raw signature bytes as another protocol hash.
-        *self.signature.lock().expect("signature lock") = Sig::Hash(hash);
+        // The deploy-signature digest is a `#P`-style process-hash (the
+        // Blake2b256 of the domain-separated wire signature), NOT a ground
+        // key `g`, so it is a `Sig::Quote` atom (eq:app-sig-hash).
+        *self.signature.lock().expect("signature lock") = Sig::Quote(hash);
     }
 
     /// Install a compound (multi-signer) deploy signature into the budget.
@@ -665,7 +668,7 @@ impl RuntimeBudget {
     /// For `signatures.len() == 1` this is observably distinct from
     /// [`set_deploy_signature`] (different `deploy_id` due to different domain
     /// separator), but operationally equivalent in terms of the resulting
-    /// `Sig::Hash` value and `SignatureChannel` reflection.
+    /// `Sig::Quote` value and `SignatureChannel` reflection.
     pub fn set_deploy_signatures(&self, signatures: &[&[u8]]) {
         assert!(
             !signatures.is_empty(),
@@ -684,14 +687,15 @@ impl RuntimeBudget {
             sig_hashes.push(Blake2b256::hash(domain_separated));
         }
 
-        // Fold into a left-associated Sig::And tree:
-        //   [h0]          => Sig::Hash(h0)
-        //   [h0, h1]      => Sig::And(Sig::Hash(h0), Sig::Hash(h1))
-        //   [h0, h1, h2]  => Sig::And(Sig::And(Sig::Hash(h0), Sig::Hash(h1)), Sig::Hash(h2))
+        // Fold into a left-associated Sig::And tree. Each per-signer hash is
+        // a `#P`-style process-hash digest, so every leaf is a `Sig::Quote`:
+        //   [h0]          => Sig::Quote(h0)
+        //   [h0, h1]      => Sig::And(Sig::Quote(h0), Sig::Quote(h1))
+        //   [h0, h1, h2]  => Sig::And(Sig::And(Sig::Quote(h0), Sig::Quote(h1)), Sig::Quote(h2))
         let mut iter = sig_hashes.iter().cloned();
         let first = iter.next().expect("non-empty per assert above");
-        let folded_sig: Sig = iter.fold(Sig::Hash(first), |acc, hash| {
-            Sig::And(Box::new(acc), Box::new(Sig::Hash(hash)))
+        let folded_sig: Sig = iter.fold(Sig::Quote(first), |acc, hash| {
+            Sig::And(Box::new(acc), Box::new(Sig::Quote(hash)))
         });
 
         // deploy_id derives from the full ordered concatenation of per-sig
@@ -909,8 +913,24 @@ impl Drop for UnmeteredBudgetScope {
 pub enum Sig {
     /// `1` — multiplicative unit. Identity for `And` / `Tensor`: σ ⊗ 1 ≡ σ.
     Unit,
-    /// Atomic signature: Blake2b256 of the domain-separated wire signature.
-    Hash(Vec<u8>),
+    /// Atomic GROUND signature `g ∈ G` (cost-accounted rho-calculus §App-A,
+    /// eq:app-sig-ground): a ground signature key whose translation is
+    /// `Σ⟦g⟧ = quote(H_g)`. Carries the opaque ground bytes. Distinct from
+    /// `Quote` only in its wire `AtomKind` tag and its source-level
+    /// translation (`H_g` vs `H(𝒫⟦P⟧)`); the cost behavior is identical (each
+    /// atom gates exactly one token) and `SignatureChannel::from_sig` derives
+    /// the SAME channel from equal bytes. `Ground` is the default atom axis
+    /// (proto3 `AtomKind::GROUND = 0`), so a `SigAtom` decoded without an
+    /// `atom_kind` field is a `Ground` atom — preserving backward compat.
+    Ground(Vec<u8>),
+    /// Atomic QUOTE signature `#P` (cost-accounted rho-calculus §App-A,
+    /// eq:app-sig-hash): a cryptographic process-hash whose translation is
+    /// `Σ⟦#P⟧ = quote(H(𝒫⟦P⟧))`. Carries the Blake2b256 of the
+    /// domain-separated wire signature — a `#P`-style process hash, NOT a
+    /// ground key. Produced by `set_deploy_signature` /
+    /// `set_deploy_signatures`. Reflects to the SAME channel as a `Ground`
+    /// atom of equal bytes (DR-1: the axis does not affect `Δ_s`).
+    Quote(Vec<u8>),
     /// Compound conjunction — both signature channels must contribute fuel.
     /// Corresponds to the cost-accounted-rho paper's `σ₁ & σ₂` operator
     /// (`publications/cost-accounting/cost-accounted-rho.tex` line 288).
@@ -960,7 +980,8 @@ pub enum Sig {
 impl Sig {
     /// Serialize the runtime `Sig` algebra into the `SigCompound`
     /// wire-format proto message (Phase 2+3 `CasperMessage.proto`).
-    /// `Sig::Hash` becomes a `SigAtom` (pk + sig + sigAlgorithm are
+    /// `Sig::Ground`/`Sig::Quote` become a `SigAtom` whose `atom_kind`
+    /// records the axis (`GROUND` vs `QUOTE`); pk + sig + sigAlgorithm are
     /// unavailable at this layer — they live on `Cosigner`); for the
     /// substrate-only serialization, atomic signatures are encoded as
     /// `pk = hash_bytes` placeholder. Downstream Cosigned-shape encoders
@@ -968,7 +989,8 @@ impl Sig {
     /// full SigAtom from the matching Cosigner.
     pub fn to_proto(&self) -> models::casper::SigCompound {
         use models::casper::{
-            sig_compound, SigAtom, SigBang, SigCompound, SigLolly, SigPair, SigPlus, SigThreshold,
+            sig_compound, AtomKind, SigAtom, SigBang, SigCompound, SigLolly, SigPair, SigPlus,
+            SigThreshold,
         };
         let connective = match self {
             Sig::Unit => sig_compound::Connective::Atom(SigAtom {
@@ -976,12 +998,21 @@ impl Sig {
                 sig: Default::default(),
                 sig_algorithm: String::new(),
                 phlo_share: 0,
+                atom_kind: AtomKind::Ground as i32,
             }),
-            Sig::Hash(bytes) => sig_compound::Connective::Atom(SigAtom {
+            Sig::Ground(bytes) => sig_compound::Connective::Atom(SigAtom {
                 pk: bytes.clone().into(),
                 sig: Default::default(),
                 sig_algorithm: String::new(),
                 phlo_share: 0,
+                atom_kind: AtomKind::Ground as i32,
+            }),
+            Sig::Quote(bytes) => sig_compound::Connective::Atom(SigAtom {
+                pk: bytes.clone().into(),
+                sig: Default::default(),
+                sig_algorithm: String::new(),
+                phlo_share: 0,
+                atom_kind: AtomKind::Quote as i32,
             }),
             Sig::And(left, right) => sig_compound::Connective::Tensor(Box::new(SigPair {
                 left: Some(Box::new(left.to_proto())),
@@ -1029,10 +1060,18 @@ impl Sig {
             .ok_or_else(|| "SigCompound.connective missing".to_string())?;
         match connective {
             sig_compound::Connective::Atom(atom) => {
+                use models::casper::AtomKind;
                 if atom.pk.is_empty() {
                     Ok(Sig::Unit)
                 } else {
-                    Ok(Sig::Hash(atom.pk.to_vec()))
+                    // proto3 default `GROUND = 0` ⇒ a legacy atom decoded
+                    // without an `atom_kind` field is a ground atom. Only an
+                    // explicit `QUOTE` tag produces `Sig::Quote`; any unknown
+                    // tag falls back to `Ground` (the conservative default).
+                    match AtomKind::try_from(atom.atom_kind) {
+                        Ok(AtomKind::Quote) => Ok(Sig::Quote(atom.pk.to_vec())),
+                        Ok(AtomKind::Ground) | Err(_) => Ok(Sig::Ground(atom.pk.to_vec())),
+                    }
                 }
             }
             sig_compound::Connective::Tensor(pair) => {
@@ -1200,7 +1239,14 @@ impl SignatureChannel {
             Sig::Unit => SignatureChannel {
                 par: Par::default(),
             },
-            Sig::Hash(bytes) => SignatureChannel {
+            // DR-1: the ground/quote axis does NOT affect the channel
+            // derivation — both `Σ⟦g⟧` and `Σ⟦#P⟧` reflect to a quoted name,
+            // and at the substrate the channel is the `GPrivate` keyed by the
+            // content-hash of the atom bytes. Equal bytes ⇒ equal channel,
+            // regardless of axis. Both arms are therefore byte-identical; the
+            // distinction lives only in the wire `AtomKind` and the
+            // source-level translation (`H_g` vs `H(𝒫⟦P⟧)`).
+            Sig::Ground(bytes) | Sig::Quote(bytes) => SignatureChannel {
                 par: Par::default().with_unforgeables(vec![GUnforgeable {
                     unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                         id: Blake2b256::hash(bytes.clone()),

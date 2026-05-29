@@ -84,7 +84,7 @@ fn bench_cosigned_construction(c: &mut Criterion) {
 fn bench_signature_channel_from_sig(c: &mut Criterion) {
     fn make_sig(depth: usize) -> Sig {
         if depth == 0 {
-            Sig::Hash(vec![0xCC])
+            Sig::Ground(vec![0xCC])
         } else {
             Sig::And(
                 Box::new(make_sig(depth - 1)),

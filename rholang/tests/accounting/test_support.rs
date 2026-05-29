@@ -2,8 +2,8 @@
 //! property-based test suite (Phase 4). Provides:
 //!
 //! - `any_sig()` / `any_sig_bounded(depth, leaves)`: proptest strategies
-//!   over the full `Sig` algebra (Unit, Hash, And, Threshold, Plus, With,
-//!   Bang, WhyNot, Lolly).
+//!   over the full `Sig` algebra (Unit, Ground, Quote, And, Threshold,
+//!   Plus, With, Bang, WhyNot, Lolly).
 //! - `channel_eq(&a, &b)`: thin wrapper around `SignatureChannel::eq` for
 //!   readability at proptest call sites. `SignatureChannel` already
 //!   derives `PartialEq`, and `from_sig` post-applies `ParSortMatcher::
@@ -32,10 +32,14 @@ pub fn channel_eq(a: &Sig, b: &Sig) -> bool {
 ///   Depth ≤ 5 keeps the search space tractable.
 /// - `leaves`: maximum total nodes across the whole expression.
 pub fn any_sig_bounded(depth: u32, leaves: u32) -> impl Strategy<Value = Sig> {
-    let atom_payload = any_atom_payload();
+    // Generate BOTH atom axes (ground `g` and quote `#P`) so the proto
+    // round-trip and channel-equivalence properties exercise the
+    // AtomKind tag on both branches. `any_atom_payload()` returns an opaque
+    // (non-Clone) Strategy, so we instantiate it once per branch.
     let leaf = prop_oneof![
         2 => Just(Sig::Unit),
-        8 => atom_payload.prop_map(Sig::Hash),
+        4 => any_atom_payload().prop_map(Sig::Ground),
+        4 => any_atom_payload().prop_map(Sig::Quote),
     ];
     leaf.prop_recursive(depth, leaves, 4, |inner| {
         prop_oneof![
@@ -86,9 +90,9 @@ fn threshold_strategy(
 /// across `lhs` and `rhs` expressions so equivalences are exercised.
 pub fn fixed_atoms() -> [Sig; 4] {
     [
-        Sig::Hash(vec![0xA0]),
-        Sig::Hash(vec![0xA1]),
-        Sig::Hash(vec![0xA2]),
-        Sig::Hash(vec![0xA3]),
+        Sig::Ground(vec![0xA0]),
+        Sig::Ground(vec![0xA1]),
+        Sig::Ground(vec![0xA2]),
+        Sig::Ground(vec![0xA3]),
     ]
 }

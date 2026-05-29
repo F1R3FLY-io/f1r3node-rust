@@ -14,6 +14,8 @@ use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
+#[cfg(feature = "oqs_pq_experimental")]
+use crypto::rust::signatures::oqs_pq::{Falcon512, MlDsa65, SlhDsaSha2_128s};
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -1497,6 +1499,12 @@ fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
         "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
         #[cfg(feature = "schnorr_secp256k1_experimental")]
         "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
+        #[cfg(feature = "oqs_pq_experimental")]
+        "oqs-ml-dsa-65/v1" => Ok(Box::new(MlDsa65)),
+        #[cfg(feature = "oqs_pq_experimental")]
+        "oqs-falcon-512/v1" => Ok(Box::new(Falcon512)),
+        #[cfg(feature = "oqs_pq_experimental")]
+        "oqs-slh-dsa-sha2-128s/v1" => Ok(Box::new(SlhDsaSha2_128s)),
         _ => Err(eyre!("Signature algorithm not supported: {}", name)),
     }
 }
