@@ -291,9 +291,16 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
+        // Early/cheap repeat_deploy pass — uses only parents' applied_sigs
+        // (no kept_chain_sigs overlay). Catches duplicates where the
+        // sig is in a direct parent's applied_sigs. The full check with
+        // kept_chain_sigs runs later in `validate_block_checkpoint`
+        // after `compute_parents_post_state` has produced the overlay
+        // (closes the bug-d hole). See applied-sigs-design.md.
+        let empty_kept: std::collections::HashMap<Bytes, i64> = std::collections::HashMap::new();
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(block, s, block_store, &empty_kept, expiration_threshold)
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -400,139 +407,119 @@ impl Validate {
     ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
     ///     is the primary defense against this; the validator-side
     ///     check is the second line of defense.
+    /// Validate that no deploy in `block.body.deploys` is already
+    /// applied in the merged pre-state derived from `block`'s parents.
+    ///
+    /// The merged pre-state's `applied_sigs` map (see
+    /// `casper::rust::merging::applied_sigs_merge`) is the canonical,
+    /// LFB-invariant record of "deploys whose effects are present in
+    /// the state the block builds on." A sig found in that map and
+    /// also in `body.deploys` is a double-execution attempt:
+    /// `InvalidRepeatDeploy`.
+    ///
+    /// Recovery (deploy applied at M, rejected by merge M', re-included
+    /// at N) is supported by construction: M' subtracts the sig from
+    /// applied_sigs, so N's merged pre-state does not contain it.
+    ///
+    /// See notes/applied-sigs-design.md §6.
     pub fn repeat_deploy(
         block: &BlockMessage,
-        s: &mut CasperSnapshot,
+        _s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
+        kept_chain_sigs: &std::collections::HashMap<Bytes, i64>,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve_at_parents, EffectsInParentsState,
+        use crate::rust::merging::applied_sigs_merge::{
+            effective_parent_indices, merge_pre_state,
         };
 
-        let parent_hashes: Vec<BlockHash> = block.header.parents_hash_list.clone();
-        let deploy_key_set: HashSet<Vec<u8>> = block
-            .body
-            .deploys
+        // Compute the merged pre-state's applied_sigs by trusting each
+        // parent's claimed body.state.applied_sigs (which the proposer
+        // computed via the merge layer with kept-chain semantics) and
+        // subtracting only THIS block's own rejected_deploys.
+        //
+        // Parents are reduced to a maximal antichain first — a parent
+        // that's an ancestor of another parent is dropped, matching
+        // `compute_parents_post_state`'s state-side dedup. Without this,
+        // the union of parents' applied_sigs re-introduces sigs that the
+        // descendant's merge already subtracted (recovery_cycle_spec).
+        //
+        // Trusting parent.body.state.applied_sigs requires the proposer to
+        // have computed it correctly via merge-integrated applied_sigs.
+        // If the proposer's claim is wrong, the future `applied_sigs_cache`
+        // validator (1h, deferred) catches the divergence.
+        let effective = effective_parent_indices(&block.header.parents_hash_list, &_s.dag);
+        let parent_messages: Vec<BlockMessage> = effective
             .iter()
-            .filter(|pd| {
-                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
-                    return true; // not rejected — must check
-                }
-                // Sig is in rejected_in_scope. Apply the exemption only if
-                // the sig's effects are NOT in canonical-from-parents
-                // pre-state — otherwise re-inclusion is double-execution
-                // and the repeat check must catch it.
-                match resolve_at_parents(
-                    &s.dag,
-                    block_store,
-                    &parent_hashes,
-                    expiration_threshold as i64,
-                    &pd.deploy.sig,
-                ) {
-                    Ok(EffectsInParentsState::InCanonicalState) => {
-                        tracing::warn!(
-                            "repeat_deploy: sig {} is in rejected_in_scope but \
-                             has clean canonical inclusion in parents' ancestry; \
-                             declining the recovery exemption to prevent \
-                             double-execution",
-                            hex::encode(&pd.deploy.sig),
-                        );
-                        true // keep in check set so the ancestor scan finds the repeat
-                    }
-                    Ok(_) => false, // NotInState or RejectedCanonically → exempt (recovery)
-                    Err(err) => {
-                        // Resolver failures are conservative-fail: keep the sig
-                        // in the check set so an inconsistency surfaces as
-                        // InvalidRepeatDeploy rather than being silently
-                        // exempted as a recovery candidate.
-                        tracing::warn!(
-                            "repeat_deploy: resolve_at_parents failed for sig \
-                             {}: {} — keeping sig in check set rather than \
-                             granting recovery exemption",
-                            hex::encode(&pd.deploy.sig),
-                            err,
-                        );
-                        true
-                    }
-                }
-            })
-            .map(|pd| pd.deploy.sig.to_vec())
+            .filter_map(|i| block_store.get(&block.header.parents_hash_list[*i]).ok().flatten())
             .collect();
-        if deploy_key_set.is_empty() {
-            return Either::Right(ValidBlock::Valid);
-        }
 
-        let block_metadata = BlockMetadata::from_block(block, false, None, None);
+        let parent_applied_sigs: Vec<&std::collections::HashMap<Bytes, i64>> = parent_messages
+            .iter()
+            .map(|p| &p.body.state.applied_sigs)
+            .collect();
 
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
-        let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
-            Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
-        };
+        let this_block_rejected: HashSet<Bytes> = block
+            .body
+            .rejected_deploys
+            .iter()
+            .map(|rd| rd.sig.clone())
+            .collect();
 
-        // Calculate max block number and earliest acceptable block number
-        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
-
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
-            init_parents,
-            |block_metadata| {
-                proto_util::get_parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &s.dag,
-                )
-                .unwrap_or_default()
-            },
-            |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
-            },
+        // Compute the merged pre-state's applied_sigs including the
+        // kept_chain_sigs overlay from the merge engine. Without the
+        // overlay, sigs applied in chains in the merge scope but not in
+        // direct parents would be missed — and the deploy could pass
+        // through the gate to be re-executed (bug-d / BUG FOUND).
+        let merged_pre_applied_sigs = merge_pre_state(
+            &parent_applied_sigs,
+            &this_block_rejected,
+            kept_chain_sigs,
+            block.body.state.block_number,
+            expiration_threshold as i64,
         );
 
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
-        let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
-      let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
-      let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
+        let parent_sizes: Vec<usize> = parent_applied_sigs.iter().map(|m| m.len()).collect();
+        tracing::info!(
+            target: "f1r3.trace.applied_sigs",
+            "[APPLIED-SIGS-REPEAT-DEPLOY-CHECK] block={} block_num={} parents={} parent_sizes={:?} this_block_rejected={} merged_pre_size={} body_deploys={} claimed_applied_sigs={}",
+            hex::encode(&block.block_hash[..block.block_hash.len().min(8)]),
+            block.body.state.block_number,
+            parent_applied_sigs.len(),
+            parent_sizes,
+            this_block_rejected.len(),
+            merged_pre_applied_sigs.len(),
+            block.body.deploys.len(),
+            block.body.state.applied_sigs.len(),
+        );
 
-      let duplicated_deploys = proto_util::deploys(&duplicated_block);
-      let duplicated_deploy = duplicated_deploys
-        .iter()
-        .map(|processed_deploy| &processed_deploy.deploy)
-        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-        .expect("Duplicated deploy should exist");
+        for pd in &block.body.deploys {
+            if merged_pre_applied_sigs.contains_key(&pd.deploy.sig) {
+                let sig_str = hex::encode(&pd.deploy.sig[..pd.deploy.sig.len().min(8)]);
+                let block_str = hex::encode(&block.block_hash[..block.block_hash.len().min(8)]);
+                let recorded_height = merged_pre_applied_sigs
+                    .get(&pd.deploy.sig)
+                    .copied()
+                    .unwrap_or(-1);
+                let message = format!(
+                    "deploy sig {} is already applied in merged pre-state at height {} \
+                     (current block {} at height {}); re-inclusion is double-execution",
+                    sig_str, recorded_height, block_str, block.body.state.block_number,
+                );
+                tracing::warn!("{}", Self::ignore(block, &message));
+                tracing::info!(
+                    target: "f1r3.trace.repeat_deploy",
+                    "[REPEAT-DEPLOY-REJECT] sig={} block={} block_num={} recorded_height={} reason=applied_sigs_hit",
+                    sig_str,
+                    block_str,
+                    block.body.state.block_number,
+                    recorded_height,
+                );
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+            }
+        }
 
-      let term = &duplicated_deploy.data.term;
-      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
-
-      let message = format!(
-        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
-        term,
-        &deployer_string,
-        timestamp_string,
-        block_hash_string,
-        current_block_hash_string
-      );
-
-      tracing::warn!("{}", Self::ignore(block, &message));
-      tracing::info!(
-        target: "f1r3.trace.repeat_deploy",
-        "[REPEAT-DEPLOY-REJECT] sig={} in_rejected_in_scope={} rejected_in_scope_len={} duplicated_block={} duplicated_block_num={} current_block={} current_block_num={}",
-        hex::encode(&duplicated_deploy.sig[..8.min(duplicated_deploy.sig.len())]),
-        s.rejected_in_scope.contains(&duplicated_deploy.sig),
-        s.rejected_in_scope.len(),
-        hex::encode(&duplicated_block.block_hash[..8.min(duplicated_block.block_hash.len())]),
-        duplicated_block_metadata.block_number,
-        hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
-        block.body.state.block_number,
-      );
-      BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-    });
-
-        maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
+        Either::Right(ValidBlock::Valid)
     }
 
     // This is not a slashable offence

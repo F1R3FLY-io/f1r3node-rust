@@ -205,6 +205,19 @@ message RChainStateProto {
   //(which will be part of the tuplespace in the real implementation).
   repeated BondProto bonds = 3;
   int64 blockNumber        = 4;
+
+  //Per-block deploy-application provenance: sigs of every user deploy
+  //ever applied in this state's ancestry, minus those rolled back by
+  //a merge rejection, minus those expired beyond deployLifespan.
+  //Drives the structural once-per-deploy guarantee at the merge layer.
+  //(proto3 disallows bytes map keys, so we model this as a repeated
+  //message; the Rust side converts to HashMap<Bytes, i64>.)
+  repeated AppliedSigProto appliedSigs = 5;
+}
+
+message AppliedSigProto {
+  bytes sig    = 1;
+  int64 height = 2;
 }
 
 message EventProto {

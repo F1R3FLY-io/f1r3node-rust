@@ -65,6 +65,14 @@ fn mk_casper_snapshot(
     snapshot
 }
 
+#[ignore = "Phase 1 applied_sigs design: spurious-rejection defense moved out of \
+repeat_deploy. The simplified repeat_deploy trusts body.rejected_deploys and \
+subtracts it from applied_sigs unconditionally. A block claiming a spurious \
+rejection (rejecting a sig that the merge didn't actually drop) is caught \
+upstream by validate_block_checkpoint's InvalidRejectedDeploy check \
+(computed-vs-claimed mismatch), not by repeat_deploy. This test was \
+defense-in-depth against that scenario; the protection now lives at a \
+different layer. See notes/applied-sigs-design.md §6."]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
     crate::init_logger();
@@ -136,7 +144,7 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
         rejected.insert(deploy_sig.clone());
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
 
         assert!(
             matches!(

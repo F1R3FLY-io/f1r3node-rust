@@ -1593,7 +1593,7 @@ impl BlockAPI {
                             "exploratoryDeploy: Computing merged state from {} parents",
                             parents.len()
                         );
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
+                        let (merged_state_hash, _rejected, _rejected_slashes, _kept_chain_sigs) =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),

@@ -781,10 +781,10 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &mut block_store, 50);
+        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
         assert_eq!(result1, Either::Right(ValidBlock::Valid));
 
-        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &mut block_store, 50);
+        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -828,7 +828,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
@@ -932,6 +932,11 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         block_y.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy_sig.clone(),
         }];
+        // Re-populate block_y.applied_sigs after the post-creation
+        // rejected_deploys mutation — the simplified `repeat_deploy`
+        // reads block_y.applied_sigs at validation, and the rejection
+        // must remove D from applied_sigs for the recovery semantic.
+        crate::helper::block_generator::populate_applied_sigs(&mut block_y, &block_store);
         block_store
             .put(block_y.block_hash.clone(), &block_y)
             .unwrap();
@@ -965,7 +970,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
         assert_eq!(
             result,
             Either::Right(ValidBlock::Valid),
@@ -1053,7 +1058,7 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, &std::collections::HashMap::new(), 50);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),

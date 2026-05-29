@@ -774,6 +774,13 @@ pub fn resolve_at_parents_batch(
         .expect("parent_heights nonempty");
     let scan_floor = (max_parent_height - deploy_lifespan).max(0);
 
+    // Timing instrumentation — see metrics_constants.rs RESOLVE_AT_PARENTS_*.
+    // Isolates the canonical-content LCA walk (the per-cycle cost whose
+    // scaling with DAG depth is the regression suspect) from the
+    // pre-existing ancestry BFS.
+    let __resolve_started = std::time::Instant::now();
+    let __bfs_started = std::time::Instant::now();
+
     // BFS from every parent backward over all-parent edges. The clean+
     // rejected events we collect here include events reachable via
     // secondary parents; the per-parent main-chain filter at the
@@ -839,6 +846,14 @@ pub fn resolve_at_parents_batch(
         }
     }
 
+    let __bfs_elapsed = __bfs_started.elapsed();
+    let __bfs_ms = __bfs_elapsed.as_secs_f64() * 1000.0;
+    metrics::histogram!(
+        crate::rust::metrics_constants::RESOLVE_AT_PARENTS_BFS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(__bfs_elapsed.as_secs_f64());
+
     // LFB anchor — diagnostic only. The exemption gate is
     // parents-anchored per the doc (lines 700+), not LFB-anchored.
     let lfb_hash = dag.last_finalized_block();
@@ -871,6 +886,134 @@ pub fn resolve_at_parents_batch(
         hex::encode(&lfb_hash[..8.min(lfb_hash.len())]),
         lfb_block_number,
         visited.len(),
+    );
+
+    // Canonical-content check: read `applied_sigs` from BOTH the live LFB
+    // and the LCA of the parents. Either is a valid anchor for "sig is
+    // already canonically applied in the state this proposal will build
+    // on" — the resolver must catch a sig in either set to align with
+    // what the merge engine will see.
+    //
+    // Why two references:
+    //   - LFB: finalized state. Catches canonical-sibling-with-same-content
+    //     (test_bonding_validators attempt 11, V3 block#6 — see
+    //     canonical_sibling_recovery_misfire_spec). LFB has the sig
+    //     directly even when the BFS finds the sig only in a sibling.
+    //   - LCA: the actual merge base used by `compute_parents_post_state`
+    //     (see interpreter_util.rs:1048 — `lfb_for_descendants` resolves
+    //     to LCA when available, LFB only as fallback). The LCA can be
+    //     ABOVE the live LFB when finalization is lagging the active
+    //     tips; in that gap the merge will base on a state that has the
+    //     sig even though `LFB.applied_sigs` doesn't yet. Production
+    //     attempt 14: LFB at block#42, LCA at block#43 — the sig was
+    //     in block#43's applied_sigs and the merge inherited those
+    //     writes; the resolver needs to see this too. See
+    //     pending_canonical_clean_predates_rejection_misfire_spec.
+    let lfb_applied_sigs: std::collections::HashMap<Bytes, i64> = block_store
+        .get(&lfb_hash)
+        .ok()
+        .flatten()
+        .map(|b| b.body.state.applied_sigs.clone())
+        .unwrap_or_default();
+
+    // Compute LCA = highest common ancestor of all parents (via any
+    // parent edge, matching interpreter_util.rs's LCA algorithm). Use a
+    // bounded `with_ancestors` per parent so this stays cheap on
+    // healthy DAGs. If the intersection is empty (impossible in a
+    // connected DAG with genesis, but defended), `lca_applied_sigs`
+    // stays empty and the LFB check carries on.
+    let __lca_started = std::time::Instant::now();
+    let mut __lca_max_ancestors: usize = 0;
+    let lca_applied_sigs: std::collections::HashMap<Bytes, i64> = {
+        // Bound the ancestor walk to the recovery window. A sig committed
+        // at or below `scan_floor` (= max_parent_height − deploy_lifespan)
+        // is lifespan-expired and can never be recovered, so the LCA only
+        // matters within [scan_floor, max_parent_height]. Pruning the walk
+        // at `scan_floor` caps it at ~deploy_lifespan blocks regardless of
+        // total DAG depth.
+        //
+        // This replaces an earlier unbounded walk-to-genesis (cost scaled
+        // with history length — the per-cycle DAG-depth regression) plus a
+        // hard 8192 cap that *cleared* the set when exceeded — silently
+        // emptying the intersection and disabling the canonical-content
+        // check on a deep DAG. Bounding by height removes both problems.
+        //
+        // Correctness: in the common case the parents' true LCA lies within
+        // `deploy_lifespan` of the tips, so the bounded walk reaches it
+        // exactly (identical to the unbounded result — the repro specs run
+        // on shallow DAGs where scan_floor=0, so they are unaffected). If
+        // parents diverged more than `deploy_lifespan` blocks ago, the true
+        // LCA is below the window; the intersection is then empty and
+        // `lca_applied_sigs` falls back to empty, which only degrades to the
+        // pre-LCA-fix behavior for that sig — and any sig at such an old LCA
+        // is lifespan-expired anyway.
+        let within_window = |h: &BlockHash| -> bool {
+            dag.block_number(h).map_or(false, |n| n >= scan_floor)
+        };
+        let mut intersection: Option<HashSet<BlockHash>> = None;
+        for parent_hash in parents {
+            let ancestor_set = match dag.with_ancestors(parent_hash.clone(), &within_window) {
+                Ok(set) => set,
+                Err(_) => HashSet::new(),
+            };
+            __lca_max_ancestors = __lca_max_ancestors.max(ancestor_set.len());
+            intersection = Some(match intersection {
+                None => ancestor_set,
+                Some(prev) => prev.intersection(&ancestor_set).cloned().collect(),
+            });
+        }
+        let lca_hash_opt: Option<BlockHash> = intersection
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|h| dag.block_number(&h).map(|n| (h, n)))
+            .max_by(|(ha, na), (hb, nb)| na.cmp(nb).then_with(|| hb.cmp(ha)))
+            .map(|(h, _)| h);
+        match lca_hash_opt {
+            Some(lca_hash) => block_store
+                .get(&lca_hash)
+                .ok()
+                .flatten()
+                .map(|b| b.body.state.applied_sigs.clone())
+                .unwrap_or_default(),
+            None => std::collections::HashMap::new(),
+        }
+    };
+    let __lca_elapsed = __lca_started.elapsed();
+    let __lca_ms = __lca_elapsed.as_secs_f64() * 1000.0;
+    metrics::histogram!(
+        crate::rust::metrics_constants::RESOLVE_AT_PARENTS_LCA_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(__lca_elapsed.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::RESOLVE_AT_PARENTS_LCA_ANCESTORS_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(__lca_max_ancestors as f64);
+
+    let __resolve_elapsed = __resolve_started.elapsed();
+    metrics::histogram!(
+        crate::rust::metrics_constants::RESOLVE_AT_PARENTS_TOTAL_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(__resolve_elapsed.as_secs_f64());
+
+    // Greppable timing breakdown for subprocess-test analysis (Prometheus
+    // metrics above only surface via the admin /metrics scrape). Emitted
+    // once per resolver call (once per propose cycle with exemption
+    // candidates), so info-level is safe. `lca_ms` + `lca_max_ancestors`
+    // isolate the canonical-content LCA walk — the DAG-depth-scaling
+    // regression suspect — from the pre-existing `bfs_ms` ancestry scan.
+    tracing::info!(
+        target: "f1r3.trace.resolve_timing",
+        "[TRACE-RESOLVE-BATCH-TIMING] sigs={} parents={} visited={} bfs_ms={:.1} lca_ms={:.1} lca_max_ancestors={} total_ms={:.1}",
+        sigs.len(),
+        parents.len(),
+        visited.len(),
+        __bfs_ms,
+        __lca_ms,
+        __lca_max_ancestors,
+        __resolve_elapsed.as_secs_f64() * 1000.0,
     );
 
     // Per-sig post-processing.
@@ -921,7 +1064,14 @@ pub fn resolve_at_parents_batch(
         // rejections are in any chosen parent's main-parent chain
         // (which would justify RejectedCanonically) or only in
         // sibling branches (which would make the admit-back a bug).
-        let mut has_finalized_clean = false;
+        //
+        // Seed `has_finalized_clean` from both LFB.applied_sigs AND
+        // LCA.applied_sigs. Either reference catches "this sig's effects
+        // are in the state the merge will base on." See the comment at
+        // the LCA computation above for why both are needed.
+        let in_lfb_applied_sigs = lfb_applied_sigs.contains_key(sig);
+        let in_lca_applied_sigs = lca_applied_sigs.contains_key(sig);
+        let mut has_finalized_clean = in_lfb_applied_sigs || in_lca_applied_sigs;
         let mut clean_check_log: Vec<(String, bool, bool)> = Vec::new();
         for (_h, clean_block) in &cleans {
             let in_lfb = is_in_lfb_main_chain(clean_block)?;
@@ -989,7 +1139,7 @@ pub fn resolve_at_parents_batch(
         };
         tracing::info!(
             target: "f1r3.trace.resolve_at_parents",
-            "[TRACE-RESOLVE-AT-PARENTS] sig={} parents_count={} cleans={} rejects={} state={:?} reason={} hypothetical={} lfb_block_number={} cleans_detail=[{}] rejects_detail=[{}] clean_check=[{}] reject_check=[{}] has_canonical_rejection={}",
+            "[TRACE-RESOLVE-AT-PARENTS] sig={} parents_count={} cleans={} rejects={} state={:?} reason={} hypothetical={} lfb_block_number={} in_lfb_applied_sigs={} in_lca_applied_sigs={} cleans_detail=[{}] rejects_detail=[{}] clean_check=[{}] reject_check=[{}] has_canonical_rejection={}",
             hex::encode(sig),
             parents.len(),
             cleans.len(),
@@ -998,6 +1148,8 @@ pub fn resolve_at_parents_batch(
             reason,
             hypothetical_state,
             lfb_block_number,
+            in_lfb_applied_sigs,
+            in_lca_applied_sigs,
             cleans_str,
             rejects_str,
             clean_check_str,

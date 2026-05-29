@@ -181,6 +181,7 @@ impl Genesis {
             post_state_hash: state_hash,
             block_number: genesis.block_number,
             bonds: Self::bonds_proto(&genesis.proof_of_stake),
+            applied_sigs: std::collections::HashMap::new(),
         };
 
         let failed_deploys: Vec<_> = processed_deploys

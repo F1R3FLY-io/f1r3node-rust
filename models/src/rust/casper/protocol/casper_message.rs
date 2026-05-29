@@ -533,6 +533,16 @@ pub struct F1r3flyState {
     pub post_state_hash: ByteString,
     pub bonds: Vec<Bond>,
     pub block_number: i64,
+    /// Sigs of user deploys ever applied in this state's ancestry,
+    /// keyed sig → block height at which the deploy was applied.
+    /// Maintained by `dag_merger`:
+    ///   merged_pre = ∪parents.applied_sigs − this_merge.rejected_deploys
+    ///                                       − lifespan-expired entries.
+    ///   post = merged_pre ∪ {sig: height | sig ∈ body.deploys}.
+    /// Drives the simplified `repeat_deploy` lookup and the proposer-side
+    /// deploy-selection filter. See
+    /// workspace/projects/system-integration/notes/applied-sigs-design.md.
+    pub applied_sigs: std::collections::HashMap<ByteString, i64>,
 }
 
 impl F1r3flyState {
@@ -546,10 +556,28 @@ impl F1r3flyState {
                 .map(|b| Bond::from_proto(b))
                 .collect(),
             block_number: proto.block_number,
+            applied_sigs: proto
+                .applied_sigs
+                .into_iter()
+                .map(|e| (e.sig, e.height))
+                .collect(),
         }
     }
 
     pub fn to_proto(&self) -> RChainStateProto {
+        // Canonicalize map iteration order — HashMap iteration is
+        // non-deterministic, but the resulting proto bytes feed into
+        // the block hash. Sort by sig bytes lexicographically.
+        let mut applied_sigs_entries: Vec<AppliedSigProto> = self
+            .applied_sigs
+            .iter()
+            .map(|(sig, height)| AppliedSigProto {
+                sig: sig.clone(),
+                height: *height,
+            })
+            .collect();
+        applied_sigs_entries.sort_by(|a, b| a.sig.as_ref().cmp(b.sig.as_ref()));
+
         RChainStateProto {
             pre_state_hash: self.pre_state_hash.clone(),
             post_state_hash: self.post_state_hash.clone(),
@@ -560,6 +588,7 @@ impl F1r3flyState {
                 .map(|b| Bond::to_proto(b))
                 .collect(),
             block_number: self.block_number,
+            applied_sigs: applied_sigs_entries,
         }
     }
 }

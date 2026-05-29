@@ -162,6 +162,17 @@ pub const COMPUTE_PARENTS_POST_STATE_LCA_TIME_METRIC: &str = "compute-parents-po
 pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
     "compute-parents-post-state.buffer-admits.time";
 
+// `resolve_at_parents_batch` (proposer recovery-exemption gate) breakdown.
+// `lca.time` and `lca.ancestors` isolate the canonical-content LCA walk —
+// the per-cycle cost whose scaling with DAG depth is the regression
+// suspect (see f1r3node-rust issues #45 / #23 for the analogous merge-side
+// degradation). `bfs.time` is the pre-existing ancestry scan; comparing
+// the two shows which dominates as history deepens.
+pub const RESOLVE_AT_PARENTS_TOTAL_TIME_METRIC: &str = "resolve-at-parents.total.time";
+pub const RESOLVE_AT_PARENTS_BFS_TIME_METRIC: &str = "resolve-at-parents.bfs.time";
+pub const RESOLVE_AT_PARENTS_LCA_TIME_METRIC: &str = "resolve-at-parents.lca.time";
+pub const RESOLVE_AT_PARENTS_LCA_ANCESTORS_METRIC: &str = "resolve-at-parents.lca.ancestors";
+
 // `Validate::block_summary` sub-step breakdown.
 pub const BLOCK_VALIDATION_BLOCK_HASH_TIME_METRIC: &str = "block.validation.block-hash.time";
 pub const BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC: &str = "block.validation.timestamp.time";

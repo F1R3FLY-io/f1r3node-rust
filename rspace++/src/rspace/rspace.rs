@@ -4,7 +4,7 @@
 // the functions are not async-compatible with Span trait's closure pattern.
 // This matches Scala's Span[F].traceI() and withMarks() semantics.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -65,6 +65,13 @@ pub struct RSpace<C, P, A, K> {
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     current_deploy_sig: Arc<std::sync::RwLock<Option<Vec<u8>>>>,
+    // Set of produce_hash hex strings written during the current execution
+    // context (between reset() calls). Used by MULTIDATUM-TRANSITION to
+    // classify each surviving datum: hex IS in this set → written this
+    // execution; hex NOT in this set → inherited from pre-state (cold
+    // storage). The pre-state classification is the bug-d / orphan-write
+    // smoking gun.
+    this_exec_produces: Arc<std::sync::RwLock<HashSet<String>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -234,6 +241,14 @@ where
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
         *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
+
+        // Clear the per-execution produce tracker. After reset(), any
+        // datum already on a channel is by definition inherited from
+        // the pre-state at `root` (cold-store-backed).
+        self.this_exec_produces
+            .write()
+            .expect("this_exec_produces write lock")
+            .clear();
 
         self.phase_a_locks.clear();
         self.phase_b_locks.clear();
@@ -519,6 +534,7 @@ where
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
             current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
+            this_exec_produces: Arc::new(std::sync::RwLock::new(HashSet::new())),
         }
     }
 
@@ -987,9 +1003,29 @@ where
                 .iter()
                 .map(|d| hex::encode(d.source.hash.bytes()))
                 .collect();
+            // Classify each surviving datum: was it written during the
+            // current execution (this block's deploys) or inherited from
+            // pre-state at reset()? Inherited = bug-d / orphan-write
+            // smoking gun — the datum came from cold storage via the
+            // parent block's claimed post_state_hash.
+            let this_exec = self
+                .this_exec_produces
+                .read()
+                .expect("this_exec_produces read lock");
+            let existing_provenance: Vec<&'static str> = existing_sources
+                .iter()
+                .map(|h| {
+                    if this_exec.contains(h) {
+                        "this-exec"
+                    } else {
+                        "inherited-from-pre-state"
+                    }
+                })
+                .collect();
+            drop(this_exec);
             tracing::warn!(
                 target: "f1r3.trace.multidatum_forensics",
-                "[MULTIDATUM-TRANSITION] thread={:?} hsid={:x} deploy_sig={} channel_hash={} pre_count={} post_count={} new_produce_hash={} existing_produce_hashes={:?}",
+                "[MULTIDATUM-TRANSITION] thread={:?} hsid={:x} deploy_sig={} channel_hash={} pre_count={} post_count={} new_produce_hash={} existing_produce_hashes={:?} existing_provenance={:?}",
                 std::thread::current().id(),
                 hsid,
                 self.current_deploy_sig_short(),
@@ -997,9 +1033,17 @@ where
                 pre_count,
                 pre_count + 1,
                 hex::encode(produce_ref.hash.bytes()),
-                existing_sources
+                existing_sources,
+                existing_provenance,
             );
         }
+        // Record this produce in the per-execution tracker BEFORE the
+        // put_datum so the trace classification reflects the write that
+        // is about to happen on a future multi-Datum check.
+        self.this_exec_produces
+            .write()
+            .expect("this_exec_produces write lock")
+            .insert(hex::encode(produce_ref.hash.bytes()));
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,

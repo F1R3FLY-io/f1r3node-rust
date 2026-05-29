@@ -321,6 +321,88 @@ pub async fn prepare_user_deploys(
         );
     }
 
+    // applied_sigs filter (notes/applied-sigs-design.md §4 proposer-side gate).
+    // Drop any candidate whose sig is already in the merge-integrated
+    // pre-state's applied_sigs. The validator's `repeat_deploy`
+    // (validate.rs:418) will reject the block otherwise, triggering a
+    // self-rejection retry loop ("Block validation failed with
+    // Invalid(InvalidRepeatDeploy) - proposal conditions no longer met,
+    // skipping propose").
+    //
+    // Use the SAME computation the validator uses: reduce parents to a
+    // maximal antichain via `effective_parent_indices` (dropping
+    // ancestor-parents whose `applied_sigs` are transitively in their
+    // descendant-parent's `applied_sigs`), then `merge_pre_state` with no
+    // this-merge rejection set (the proposer doesn't yet know its merge's
+    // rejection set at deploy-selection time; the validator will subtract
+    // this block's actual `rejected_deploys` when it re-checks). Passing
+    // an empty rejection set is a conservative over-approximation: it can
+    // only over-filter (delay a legitimate recovery by one round) and
+    // never under-filter (which would re-introduce the retry loop).
+    //
+    // No `rejected_in_scope` exemption is needed: legitimate recovery is
+    // handled by Phase 1's kept-chain subtraction at the ancestor merge.
+    // A sig that survives in the descendant's `applied_sigs` after the
+    // ancestor merge has been re-applied canonically — re-including it
+    // again is double-execution.
+    let pre_applied_filter_count = valid_unique.len();
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let effective_parent_idxs =
+        crate::rust::merging::applied_sigs_merge::effective_parent_indices(
+            &parent_hashes,
+            &casper_snapshot.dag,
+        );
+    let effective_parent_applied_sigs: Vec<&HashMap<Bytes, i64>> = effective_parent_idxs
+        .iter()
+        .map(|i| &casper_snapshot.parents[*i].body.state.applied_sigs)
+        .collect();
+    let deploy_lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    // Early Filter 2: uses parents' applied_sigs only (no kept_chain_sigs
+    // overlay — that's only available after compute_parents_post_state
+    // runs later in `create`). The full bug-d fix is a second post-merge
+    // filter at the create() level that drops candidates whose sig is in
+    // merge_kept_chain_sigs.
+    let empty_kept: HashMap<Bytes, i64> = HashMap::new();
+    let merged_pre_applied_sigs =
+        crate::rust::merging::applied_sigs_merge::merge_pre_state(
+            &effective_parent_applied_sigs,
+            &HashSet::new(),
+            &empty_kept,
+            block_number,
+            deploy_lifespan,
+        );
+    let valid_unique: HashSet<Signed<DeployData>> = valid_unique
+        .into_iter()
+        .filter(|d| {
+            if !merged_pre_applied_sigs.contains_key(&d.sig) {
+                return true;
+            }
+            tracing::info!(
+                target: "f1r3.trace.applied_sigs",
+                "[APPLIED-SIGS-PROPOSER-FILTER] block_number={} sig={} reason=in_merge_pre_applied_sigs",
+                block_number,
+                hex::encode(&d.sig[..d.sig.len().min(8)]),
+            );
+            false
+        })
+        .collect();
+    if valid_unique.len() != pre_applied_filter_count {
+        tracing::info!(
+            target: "f1r3.trace.applied_sigs",
+            "[APPLIED-SIGS-PROPOSER-FILTER-SUMMARY] block_number={} merged_pre_size={} effective_parents={} before={} after={} dropped={}",
+            block_number,
+            merged_pre_applied_sigs.len(),
+            effective_parent_idxs.len(),
+            pre_applied_filter_count,
+            valid_unique.len(),
+            pre_applied_filter_count - valid_unique.len(),
+        );
+    }
+
     let already_in_scope_count = already_in_scope.len();
 
     // Log deploy selection details when there are any deploys in the pool
@@ -803,7 +885,35 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (_pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let (_pre_state, _rejected_user_sigs, rejected_slashes, merge_kept_chain_sigs) =
+        merge_pre_info;
+
+    // Bug-d fix (post-merge Filter 2.5): drop any candidate deploy whose
+    // sig is in `merge_kept_chain_sigs`. The merge engine just told us
+    // these sigs are applied via kept chains in scope — `prepare_user_deploys`'s
+    // earlier Filter 2 only saw direct-parent applied_sigs and missed
+    // these. Including them in body would cause re-execution against a
+    // merge-result state that already has their prior writes (MULTIDATUM,
+    // BUG FOUND). Verified empirically in bonding attempt 9: 15
+    // slip-through blocks with `post_size < pre_size + body_deploys`.
+    {
+        let before_count = all_deploys.len();
+        let dropped: Vec<String> = all_deploys
+            .iter()
+            .filter(|d| merge_kept_chain_sigs.contains_key(&d.sig))
+            .map(|d| hex::encode(&d.sig[..d.sig.len().min(8)]))
+            .collect();
+        all_deploys.retain(|d| !merge_kept_chain_sigs.contains_key(&d.sig));
+        if before_count != all_deploys.len() {
+            tracing::info!(
+                target: "f1r3.trace.applied_sigs",
+                "[APPLIED-SIGS-POST-MERGE-KEPT-CHAIN-FILTER] dropped_count={} dropped_sigs={:?} kept_chain_sigs_count={}",
+                before_count - all_deploys.len(),
+                dropped,
+                merge_kept_chain_sigs.len(),
+            );
+        }
+    }
 
     // Union own slashes with merge-rejected slashes, dedup by
     // `invalid_block_hash`. Own detections take priority — any
@@ -947,6 +1057,114 @@ pub async fn create(
             .entered();
 
     tracing::event!(tracing::Level::DEBUG, mark = "before-packing-block");
+
+    // Compute the post-state applied_sigs (notes/applied-sigs-design.md §3 + §4).
+    //
+    // The merge layer (dag_merger) returned `merge_kept_chain_sigs`: sigs from
+    // kept chains in this round paired with their source-block heights. This
+    // is the canonical kept-chain view that captures multi-chain conflicts
+    // correctly (a sig in BOTH a kept and a dropped chain is marked applied
+    // here, where the naive union/subtract over `rejected_deploys` would
+    // wrongly drop it — the bonding-bug production repro).
+    //
+    // Per-case construction:
+    //   - 0 parents (genesis): empty.
+    //   - 1 parent: use parent.body.state.applied_sigs (inherited; no merge).
+    //   - multi-parent fast path (descendant covers all): use the descendant
+    //     parent's applied_sigs (the merge produced empty kept_chain_sigs in
+    //     this case — fast paths skip dag_merger).
+    //   - multi-parent real merge: use kept_chain_sigs as the canonical
+    //     "applied via kept chains" set. Inherit LFB.applied_sigs via the
+    //     effective parents' applied_sigs union (each parent's applied_sigs
+    //     transitively includes LFB's). Where parents and kept_chain_sigs
+    //     overlap, kept_chain_sigs's height (source block height) is used.
+    let applied_sigs = {
+        use crate::rust::merging::applied_sigs_merge::{
+            aggregate_post_state, effective_parent_indices,
+        };
+        let deploy_lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+        let parent_hashes: Vec<BlockHash> =
+            parents.iter().map(|p| p.block_hash.clone()).collect();
+        let effective = effective_parent_indices(&parent_hashes, &casper_snapshot.dag);
+        let effective_parents: Vec<&BlockMessage> =
+            effective.iter().map(|i| &parents[*i]).collect();
+
+        // Start with the union of effective parents' applied_sigs (preserves
+        // LFB baseline + any unrelated sigs the parents carry).
+        let mut merged_pre: std::collections::HashMap<Bytes, i64> =
+            std::collections::HashMap::new();
+        for p in &effective_parents {
+            for (sig, height) in p.body.state.applied_sigs.iter() {
+                merged_pre
+                    .entry(sig.clone())
+                    .and_modify(|h| {
+                        if *height < *h {
+                            *h = *height;
+                        }
+                    })
+                    .or_insert(*height);
+            }
+        }
+
+        // Overlay kept_chain_sigs from the merge — the merge's canonical
+        // kept-chain view. This OVERRIDES per-parent claims for any sig the
+        // merge resolved (in the multi-chain conflict case, the merge's
+        // decision wins). For sigs in kept_chain_sigs not in any parent's
+        // applied_sigs (genuinely new from a kept chain in scope), this
+        // inserts them.
+        for (sig, height) in merge_kept_chain_sigs.iter() {
+            merged_pre.insert(sig.clone(), *height);
+        }
+
+        // Lifespan filter.
+        let scan_floor = (block_data.block_number - deploy_lifespan).max(0);
+        merged_pre.retain(|_sig, h| *h >= scan_floor);
+
+        // Subtract this block's own claimed rejected_deploys. The merge's
+        // canonical rejections are already reflected in kept_chain_sigs not
+        // including them (rejected chains' sigs aren't in kept_chain_sigs).
+        // body.rejected_deploys here is the same set as the merge output, so
+        // this is a no-op for sigs already excluded — kept for the corner
+        // case where the proposer claims a rejection the merge didn't make
+        // (which would also fail other validation, but we're defensive here).
+        for sig in rejected_deploys.iter() {
+            // Only subtract if sig is NOT in kept_chain_sigs (a kept-chain
+            // sig has its effects applied; per the "anti-double-execute"
+            // logic in dag_merger lines 1389-1400, the merge already
+            // excluded such sigs from the rejected_user_deploys output, so
+            // this contains() check is a safety belt).
+            if !merge_kept_chain_sigs.contains_key(sig) {
+                merged_pre.remove(sig);
+            }
+        }
+
+        let merged_pre_size = merged_pre.len();
+        let post = aggregate_post_state(
+            merged_pre,
+            processed_deploys.iter().map(|pd| pd.deploy.sig.clone()),
+            block_data.block_number,
+        );
+        let sample_sigs: Vec<String> = post
+            .keys()
+            .take(4)
+            .map(|s| hex::encode(&s[..s.len().min(8)]))
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.applied_sigs",
+            "[APPLIED-SIGS-BLOCK-CREATE] block_number={} parents={} effective_parents={} kept_chain_sigs={} this_merge_rejected={} merged_pre_size={} body_deploys={} post_size={} sample_sigs={:?}",
+            block_data.block_number,
+            parents.len(),
+            effective_parents.len(),
+            merge_kept_chain_sigs.len(),
+            rejected_deploys.len(),
+            merged_pre_size,
+            processed_deploys.len(),
+            post.len(),
+            sample_sigs,
+        );
+        post
+    };
+
     // Create unsigned block
     let package_started = std::time::Instant::now();
     let pre_state_hash_for_result = pre_state_hash.clone();
@@ -961,6 +1179,7 @@ pub async fn create(
         rejected_deploys,
         processed_system_deploys,
         new_bonds,
+        applied_sigs,
         shard_id,
         casper_version,
     );
@@ -1016,6 +1235,7 @@ fn package_block(
     rejected_deploys: Vec<Bytes>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
+    applied_sigs: std::collections::HashMap<Bytes, i64>,
     shard_id: String,
     version: i64,
 ) -> BlockMessage {
@@ -1024,6 +1244,7 @@ fn package_block(
         post_state_hash,
         bonds: bonds_map,
         block_number: block_data.block_number,
+        applied_sigs,
     };
 
     let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys

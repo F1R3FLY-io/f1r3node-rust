@@ -98,6 +98,12 @@ pub type ParentsPostStateCacheVal = (
     StateHash,
     Vec<prost::bytes::Bytes>,
     Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
+    // kept_chain_sigs from dag_merger: sig → source-block height for sigs
+    // in kept (`to_merge`) chains. Empty for 0/1-parent or fast-path
+    // (descendant covers all) cases — callers use the parent's
+    // body.state.applied_sigs directly in those cases.
+    // See applied-sigs-design.md §3.
+    std::collections::HashMap<prost::bytes::Bytes, i64>,
 );
 
 impl RuntimeManager {

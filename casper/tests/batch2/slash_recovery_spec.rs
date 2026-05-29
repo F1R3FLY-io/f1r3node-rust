@@ -333,7 +333,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
             .disable_late_block_filtering,
     };
 
-    let (merged_state, merged_rejected, _) =
+    let (merged_state, merged_rejected, _, _kept_chain_sigs) =
         casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
             &nodes[1].block_store,
             snapshot.parents.clone(),
@@ -351,7 +351,15 @@ async fn e1c_re_issues_merge_rejected_slash() {
     };
     nodes[1]
         .runtime_manager
-        .put_cached_parents_post_state(cache_key, (merged_state, merged_rejected, vec![synthetic]));
+        .put_cached_parents_post_state(
+            cache_key,
+            (
+                merged_state,
+                merged_rejected,
+                vec![synthetic],
+                _kept_chain_sigs,
+            ),
+        );
     drop(snapshot);
 
     // Propose. A user deploy keeps `create_block` from short-circuiting
@@ -502,7 +510,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             .disable_late_block_filtering,
     };
 
-    let (merged_state, merged_rejected, _) =
+    let (merged_state, merged_rejected, _, _kept_chain_sigs) =
         casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
             &nodes[1].block_store,
             snapshot.parents.clone(),
@@ -520,7 +528,15 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     };
     nodes[1]
         .runtime_manager
-        .put_cached_parents_post_state(cache_key, (merged_state, merged_rejected, vec![synthetic]));
+        .put_cached_parents_post_state(
+            cache_key,
+            (
+                merged_state,
+                merged_rejected,
+                vec![synthetic],
+                _kept_chain_sigs,
+            ),
+        );
     drop(snapshot);
 
     // No user deploy. With allow_empty_blocks=false (TestNode default) and

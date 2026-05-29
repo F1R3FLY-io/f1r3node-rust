@@ -1,3 +1,6 @@
+pub mod applied_sigs_proposer_cycle_spec;
+pub mod bonding_bug_repro_spec;
+pub mod bonding_bug_runtime_repro_spec;
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
 pub mod dup_in_both_filter_spec;
@@ -6,6 +9,8 @@ pub mod finalizer_test;
 pub mod limited_parent_depth_spec;
 pub mod lmdb_key_value_store_spec;
 pub mod multi_validator_recovery_spec;
+pub mod canonical_sibling_recovery_misfire_spec;
+pub mod pending_canonical_clean_predates_rejection_misfire_spec;
 pub mod recovery_cycle_spec;
 pub mod recovery_repeat_deploy_misfire_spec;
 pub mod rholang_build_test;

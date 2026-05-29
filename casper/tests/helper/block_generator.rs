@@ -91,6 +91,76 @@ fn inject_post_state_hash(
     Ok(())
 }
 
+/// Populate `block.body.state.applied_sigs` from parents (loaded from
+/// `block_store`) + `block.body.deploys` − `block.body.rejected_deploys`.
+/// Mirrors what `block_creator` does in production. Tests that exercise
+/// the simplified `repeat_deploy` (which reads parents' `applied_sigs`)
+/// need the test fixtures to propagate the field; this helper does that.
+///
+/// **Public so tests that mutate `block.body.rejected_deploys` AFTER
+/// `create_block` can re-populate** — `create_block` runs `populate`
+/// once at construction with the rejected_deploys list empty, so any
+/// post-construction mutation of rejected_deploys requires the test
+/// to call `populate_applied_sigs` again.
+pub fn populate_applied_sigs(block: &mut BlockMessage, block_store: &KeyValueBlockStore) {
+    populate_applied_sigs_with_dag(block, block_store, None);
+}
+
+/// Variant that takes an optional `dag` for effective-parent-indices
+/// deduplication — matches production `block_creator`'s computation.
+/// Pass `None` for the single-parent (or no-dedup-needed) case.
+pub fn populate_applied_sigs_with_dag(
+    block: &mut BlockMessage,
+    block_store: &KeyValueBlockStore,
+    dag: Option<&block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation>,
+) {
+    use casper::rust::merging::applied_sigs_merge::{
+        aggregate_post_state, effective_parent_indices, merge_pre_state,
+    };
+    let parent_hashes: Vec<models::rust::block_hash::BlockHash> = block
+        .header
+        .parents_hash_list
+        .clone();
+    let effective: Vec<usize> = match dag {
+        Some(d) => effective_parent_indices(&parent_hashes, d),
+        None => (0..parent_hashes.len()).collect(),
+    };
+    let parent_messages: Vec<BlockMessage> = effective
+        .iter()
+        .filter_map(|i| block_store.get(&parent_hashes[*i]).ok().flatten())
+        .collect();
+    let parent_maps: Vec<&std::collections::HashMap<prost::bytes::Bytes, i64>> = parent_messages
+        .iter()
+        .map(|p| &p.body.state.applied_sigs)
+        .collect();
+    let rejected_set: std::collections::HashSet<prost::bytes::Bytes> = block
+        .body
+        .rejected_deploys
+        .iter()
+        .map(|rd| rd.sig.clone())
+        .collect();
+    // Standard test lifespan; matches mk_casper_snapshot defaults.
+    let lifespan = 50i64;
+    // Test helper: empty kept_chain_sigs is the default. Tests that
+    // exercise the kept_chain_sigs overlay should call merge_pre_state
+    // directly with the overlay populated.
+    let empty_kept: std::collections::HashMap<prost::bytes::Bytes, i64> =
+        std::collections::HashMap::new();
+    let merged_pre = merge_pre_state(
+        &parent_maps,
+        &rejected_set,
+        &empty_kept,
+        block.body.state.block_number,
+        lifespan,
+    );
+    let post = aggregate_post_state(
+        merged_pre,
+        block.body.deploys.iter().map(|pd| pd.deploy.sig.clone()),
+        block.body.state.block_number,
+    );
+    block.body.state.applied_sigs = post;
+}
+
 pub fn build_block(
     parents_hash_list: Vec<BlockHash>,
     creator: Option<Validator>,
@@ -156,7 +226,7 @@ pub fn create_genesis_block(
         .unwrap()
         .as_millis() as i64;
 
-    let genesis = build_block(
+    let mut genesis = build_block(
         vec![],
         Some(creator),
         now,
@@ -168,6 +238,11 @@ pub fn create_genesis_block(
         Some(pre_state_hash),
         Some(seq_num),
     );
+
+    // Populate applied_sigs from body.deploys (genesis has no parents).
+    // Production block_creator does this; test helpers must too so the
+    // simplified `repeat_deploy` sees correct state at validation.
+    populate_applied_sigs(&mut genesis, block_store);
 
     let modified_block = indexed_block_dag_storage
         .insert_indexed(&genesis, &genesis, false)
@@ -217,7 +292,7 @@ pub fn create_block(
         .unwrap()
         .as_millis() as i64;
 
-    let block = build_block(
+    let mut block = build_block(
         parents_hash_list,
         Some(creator),
         now,
@@ -229,6 +304,11 @@ pub fn create_block(
         Some(pre_state_hash),
         Some(seq_num),
     );
+
+    // Propagate applied_sigs from parents + this block's body.deploys.
+    // Production block_creator does this; tests must too so the simplified
+    // `repeat_deploy` sees correct state at validation.
+    populate_applied_sigs(&mut block, block_store);
 
     let modified_block = indexed_block_dag_storage
         .insert_indexed(&block, genesis, invalid)

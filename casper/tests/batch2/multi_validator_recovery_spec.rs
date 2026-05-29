@@ -306,7 +306,8 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // which is unioned into `rejected_user_deploys`. The shared sig_x
     // does NOT appear there: dedup retained it via the winning chain.
     let snapshot = mk_snapshot(&genesis_hash);
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let (_merged_state, rejected_sigs, rejected_slashes, _kept_chain_sigs) =
+        compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,

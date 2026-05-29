@@ -1,3 +1,4 @@
+pub mod applied_sigs_merge;
 pub mod block_index;
 pub mod conflict_set_merger;
 pub mod dag_merger;

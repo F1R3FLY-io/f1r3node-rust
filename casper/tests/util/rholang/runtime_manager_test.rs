@@ -2006,7 +2006,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, rejected_slashes) =
+    let (merged_state, rejected, rejected_slashes, _kept_chain_sigs) =
         compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
             .expect("merge parents");
 
@@ -2484,7 +2484,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, _rejected_slashes) =
+    let (merged_state, rejected, _rejected_slashes, _kept_chain_sigs) =
         compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
             .expect("merge parents");
 
@@ -3164,7 +3164,7 @@ new deployId(`rho:system:deployId`) in {
 
     // ── Merge [C, D] — simulates what a validator would compute when proposing
     //    a multi-parent block with parents [BC, BD]. LCA is genesis.
-    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+    let (merged_state, rejected, _rejected_slashes, _kept_chain_sigs) = compute_parents_post_state(
         &block_store,
         vec![block_c.clone(), block_d.clone()],
         &mk_snapshot(&genesis_hash),

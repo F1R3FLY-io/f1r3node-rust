@@ -567,6 +567,16 @@ where
         hex::encode(Blake2b256Hash::new(s.join("|").as_bytes()).bytes())
     };
 
+    info!(
+        target: "f1r3.trace.merge_provenance",
+        "[TRACE-MERGE-PRE-APPLY] to_merge_count={} datums_changes={} cont_changes={} numch_channels={} trie_actions_count={}",
+        to_merge_items.len(),
+        combined_datums_count,
+        combined_conts_count,
+        all_mergeable_channels.len(),
+        trie_actions.len()
+    );
+
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
 

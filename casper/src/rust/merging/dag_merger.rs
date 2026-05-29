@@ -261,6 +261,7 @@ fn detect_base_recovery_chains_pure(
     flagged
 }
 
+
 #[cfg(test)]
 mod base_recovery_dedup_tests {
     use std::collections::HashSet;
@@ -589,6 +590,14 @@ pub fn merge(
         Blake2b256Hash,
         Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
+        // kept_chain_sigs: sigs from kept (`to_merge`) chains paired with
+        // their source block's height. This is the merge's CANONICAL view
+        // of "deploys whose effects are in the merged pre-state from this
+        // round" — the kept-chain semantics that the naive
+        // `rejected_deploys` subtract cannot capture (a sig in both a kept
+        // and a rejected chain is correctly marked applied here).
+        // See applied-sigs-design.md §3.
+        HashMap<Bytes, i64>,
     ),
     CasperError,
 > {
@@ -1338,6 +1347,32 @@ pub fn merge(
         .map(|deploy| deploy.deploy_id.clone())
         .collect();
 
+    // Build the per-sig height map for applied_sigs (Phase 1 merge-integrated
+    // computation). Each kept chain contributes its deploys at the chain's
+    // source block number. Same sig in multiple kept chains takes min-height
+    // (earliest application is canonical).
+    let kept_chain_sigs: HashMap<Bytes, i64> = {
+        let mut acc: HashMap<Bytes, i64> = HashMap::new();
+        for branch in resolved.to_merge.iter() {
+            for chain in branch.0.iter() {
+                let h = chain.source_block_number;
+                for deploy in chain.deploys_with_cost.0.iter() {
+                    if is_system_deploy_id(&deploy.deploy_id) {
+                        continue;
+                    }
+                    acc.entry(deploy.deploy_id.clone())
+                        .and_modify(|existing| {
+                            if h < *existing {
+                                *existing = h;
+                            }
+                        })
+                        .or_insert(h);
+                }
+            }
+        }
+        acc
+    };
+
     let rejected = resolved.rejected;
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
@@ -1444,7 +1479,38 @@ pub fn merge(
         );
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    let new_state_hex = hex::encode(new_state.bytes());
+    let lfb_hex = hex::encode(lfb_post_state.bytes());
+    let equal_to_lfb = new_state_hex == lfb_hex;
+    let to_merge_chains: usize = resolved.to_merge.iter().map(|b| b.0.len()).sum();
+    let rejected_chains: usize = rejected.0.len();
+    let rejected_user_sigs: Vec<String> = rejected_user_deploys
+        .iter()
+        .map(|(sig, src)| {
+            format!(
+                "{}@{}",
+                hex::encode(&sig[..std::cmp::min(8, sig.len())]),
+                hex::encode(&src[..std::cmp::min(8, src.len())])
+            )
+        })
+        .collect();
+    tracing::info!(
+        target: "f1r3.trace.merge_provenance",
+        "[TRACE-MERGE-RESULT-PROVENANCE] new_state={} lfb_post_state={} equal_to_lfb={} to_merge_chains={} rejected_chains={} rejected_user_sigs=[{}]",
+        new_state_hex,
+        lfb_hex,
+        equal_to_lfb,
+        to_merge_chains,
+        rejected_chains,
+        rejected_user_sigs.join(","),
+    );
+
+    Ok((
+        new_state,
+        rejected_user_deploys,
+        rejected_slashes,
+        kept_chain_sigs,
+    ))
 }
 
 #[cfg(test)]

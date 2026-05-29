@@ -111,6 +111,7 @@ impl GenesisBuilder {
             post_state_hash: bytes::Bytes::new(),
             block_number: 0,
             bonds,
+            applied_sigs: std::collections::HashMap::new(),
         };
 
         let body = Body {

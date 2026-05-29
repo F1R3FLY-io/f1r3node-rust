@@ -202,6 +202,7 @@ pub fn block_element_gen(
                             post_state_hash,
                             bonds,
                             block_number,
+                            applied_sigs: std::collections::HashMap::new(),
                         },
                         deploys,
                         system_deploys: set_sys_deploys.clone().unwrap_or_default(),

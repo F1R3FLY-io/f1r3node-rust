@@ -1029,6 +1029,7 @@ async fn build_block_with_invalid_justification(
         post_state_hash: Bytes::new(),
         bonds: proto_util::bonds(&ctx.genesis.genesis_block),
         block_number: 1,
+        applied_sigs: std::collections::HashMap::new(),
     };
 
     let header = Header {

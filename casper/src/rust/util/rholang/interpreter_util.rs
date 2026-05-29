@@ -36,75 +36,6 @@ pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, I
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
 }
 
-/// Pre-compute admit decisions for a batch of rejected-deploy sigs in a
-/// single canonical-chain scan. The returned set contains the sigs that
-/// *should* be admitted to the rejected-deploy buffer — those whose
-/// current finalization state is `Pending`. Sigs whose state is terminal
-/// (`Finalized` / `Failed` / `Expired`) are absent from the returned
-/// set: they have already been resolved in the local canonical view and
-/// must not be re-proposed (re-proposal would either waste a slot or,
-/// in the catchup case, cause re-execution of already-canonical work
-/// against a different pre-state).
-///
-/// Catastrophic resolver failures (LFB lookup, block-store IO during
-/// the prelude) are treated conservatively as "do not admit" for any
-/// sig in the batch — transient failures must not open the
-/// re-execution hazard; sigs will be retried on the next merge
-/// rejection if still live.
-///
-/// This is the batched replacement for the previous per-sig
-/// `should_admit_to_rejected_buffer`. Cost: one BFS over the
-/// `deploy_lifespan` window regardless of sig count, instead of one
-/// BFS per sig. For an N-rejected merge with M-block window, this is
-/// O(M + N) block fetches versus O(N · M).
-fn compute_rejected_buffer_admits(
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    deploy_lifespan: i64,
-    sigs: &HashSet<Bytes>,
-) -> HashSet<Bytes> {
-    use crate::rust::api::deploy_finalization_status::{resolve_batch, DeployFinalizationState};
-    let __admits_start = std::time::Instant::now();
-    if sigs.is_empty() {
-        metrics::histogram!(
-            crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-        )
-        .record(__admits_start.elapsed().as_secs_f64());
-        return HashSet::new();
-    }
-    let result = match resolve_batch(dag, block_store, deploy_lifespan, sigs) {
-        Ok(statuses) => statuses
-            .into_iter()
-            .filter_map(|(sig, status)| {
-                if status.state == DeployFinalizationState::Pending {
-                    Some(sig)
-                } else {
-                    tracing::debug!(
-                        "RejectedDeployBuffer populate: skipping sig {} (state={:?}) — already resolved in canonical view",
-                        hex::encode(&sig),
-                        status.state
-                    );
-                    None
-                }
-            })
-            .collect(),
-        Err(err) => {
-            tracing::warn!(
-                "RejectedDeployBuffer populate: batched status check failed: {} — admitting nothing for this merge",
-                err
-            );
-            HashSet::new()
-        }
-    };
-    metrics::histogram!(
-        crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-    )
-    .record(__admits_start.elapsed().as_secs_f64());
-    result
-}
-
 fn with_ancestors_capped(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
@@ -170,7 +101,7 @@ pub async fn validate_block_checkpoint(
     );
 
     match computed_parents_info {
-        Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes)) => {
+        Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes, kept_chain_sigs)) => {
             let rejected_deploy_ids: HashSet<_> = rejected_deploys.iter().cloned().collect();
             let block_rejected_deploy_sigs: HashSet<_> = block
                 .body
@@ -178,6 +109,28 @@ pub async fn validate_block_checkpoint(
                 .iter()
                 .map(|d| d.sig.clone())
                 .collect();
+
+            // FULL repeat_deploy check with kept_chain_sigs overlay from
+            // the merge engine. The earlier check in block_summary used
+            // an empty overlay and may have missed kept-chain duplicates
+            // (the bug-d hole). Now that we have kept_chain_sigs, do the
+            // definitive gate before replay.
+            match crate::rust::validate::Validate::repeat_deploy(
+                block,
+                s,
+                block_store,
+                &kept_chain_sigs,
+                s.on_chain_state.shard_conf.deploy_lifespan as i32,
+            ) {
+                rspace_plus_plus::rspace::history::Either::Left(err) => {
+                    tracing::info!(
+                        "repeat_deploy (full, with kept_chain_sigs) rejected block {}",
+                        PrettyPrinter::build_string_no_limit(&block.block_hash),
+                    );
+                    return Ok(Either::Left(err));
+                }
+                rspace_plus_plus::rspace::history::Either::Right(_) => {}
+            }
 
             if incoming_pre_state_hash != computed_pre_state_hash {
                 // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
@@ -675,7 +628,8 @@ pub async fn compute_deploys_checkpoint(
         rejected_deploy_buffer,
     )?;
     let parents_ms = parents_started.elapsed().as_millis();
-    let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
+    let (pre_state_hash, rejected_deploys, _rejected_slashes, _kept_chain_sigs) =
+        computed_parents_info;
 
     // Filter out prepared deploys whose sigs were rejected by THIS round's
     // parent-merge. `prepare_user_deploys`' recovery exemption can select a
@@ -760,6 +714,11 @@ pub fn compute_parents_post_state(
         StateHash,
         Vec<Bytes>,
         Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
+        // kept_chain_sigs from dag_merger — sig → source-block-height for
+        // sigs in kept chains. Empty for 0/1-parent and fast-path cases;
+        // callers use parents' body.state.applied_sigs directly there.
+        // See applied-sigs-design.md §3.
+        std::collections::HashMap<Bytes, i64>,
     ),
     CasperError,
 > {
@@ -779,7 +738,7 @@ pub fn compute_parents_post_state(
                 "compute_parents_post_state timing: path=genesis, parents=0, total_ms={}",
                 total_started.elapsed().as_millis()
             );
-            Ok((state, Vec::new(), Vec::new()))
+            Ok((state, Vec::new(), Vec::new(), std::collections::HashMap::new()))
         }
 
         // For single parent, get its post state hash
@@ -791,7 +750,7 @@ pub fn compute_parents_post_state(
                 "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
                 total_started.elapsed().as_millis()
             );
-            Ok((state, Vec::new(), Vec::new()))
+            Ok((state, Vec::new(), Vec::new(), std::collections::HashMap::new()))
         }
 
         // Multiple parents - we might want to take some data from the parent with the most stake,
@@ -825,7 +784,7 @@ pub fn compute_parents_post_state(
                         cache_lookup_started.elapsed().as_millis(),
                         total_started.elapsed().as_millis()
                     );
-                    return Ok((state, Vec::new(), Vec::new()));
+                    return Ok((state, Vec::new(), Vec::new(), std::collections::HashMap::new()));
                 }
             }
 
@@ -864,7 +823,7 @@ pub fn compute_parents_post_state(
                             cache_lookup_started.elapsed().as_millis(),
                             total_started.elapsed().as_millis()
                         );
-                        return Ok((state, Vec::new(), Vec::new()));
+                        return Ok((state, Vec::new(), Vec::new(), std::collections::HashMap::new()));
                     }
                 }
             }
@@ -879,15 +838,16 @@ pub fn compute_parents_post_state(
                 snapshot_lfb_hash: s.last_finalized_block.clone(),
                 disable_late_block_filtering,
             };
-            if let Some((cached_state, cached_rejected, cached_slashes)) =
+            if let Some((cached_state, cached_rejected, cached_slashes, cached_kept_sigs)) =
                 runtime_manager.get_cached_parents_post_state(&cache_key)
             {
                 tracing::debug!(
                     target: "f1r3fly.compute_parents_post_state.cache",
-                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
+                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}, kept_chain_sigs={}",
                     cache_key.sorted_parent_hashes.len(),
                     cached_rejected.len(),
-                    cached_slashes.len()
+                    cached_slashes.len(),
+                    cached_kept_sigs.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.compute_parents_post_state.timing",
@@ -896,7 +856,7 @@ pub fn compute_parents_post_state(
                     cache_lookup_started.elapsed().as_millis(),
                     total_started.elapsed().as_millis()
                 );
-                return Ok((cached_state, cached_rejected, cached_slashes));
+                return Ok((cached_state, cached_rejected, cached_slashes, cached_kept_sigs));
             }
             let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
 
@@ -1178,7 +1138,12 @@ pub fn compute_parents_post_state(
                 let fallback_state = proto_util::post_state_hash(fallback_parent);
                 runtime_manager.put_cached_parents_post_state(
                     cache_key,
-                    (fallback_state.clone(), Vec::new(), Vec::new()),
+                    (
+                        fallback_state.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        std::collections::HashMap::new(),
+                    ),
                 );
                 tracing::debug!(
                     target: "f1r3fly.compute_parents_post_state.timing",
@@ -1192,7 +1157,7 @@ pub fn compute_parents_post_state(
                     lca_distance,
                     total_started.elapsed().as_millis()
                 );
-                return Ok((fallback_state, Vec::new(), Vec::new()));
+                return Ok((fallback_state, Vec::new(), Vec::new(), std::collections::HashMap::new()));
             }
 
             // Use DagMerger to merge parent states with scope
@@ -1306,14 +1271,51 @@ pub fn compute_parents_post_state(
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            let (state, rejected_user_pairs, rejected_slash_pairs, kept_chain_sigs) =
+                merger_result;
             tracing::info!(
                 target: "f1r3.trace.compute_parents_post_state",
-                "[TRACE-COMPUTE-PARENTS-MULTI-PARENT-RESULT] new_state={} merge_ms={} rejected_user_count={} rejected_slash_count={}",
+                "[TRACE-COMPUTE-PARENTS-MULTI-PARENT-RESULT] new_state={} merge_ms={} rejected_user_count={} rejected_slash_count={} kept_chain_sigs={}",
                 hex::encode(state.bytes()),
                 merge_ms,
                 rejected_user_pairs.len(),
-                rejected_slash_pairs.len()
+                rejected_slash_pairs.len(),
+                kept_chain_sigs.len()
+            );
+
+            // Provenance probe: which parent (if any) does the result match?
+            // If new_state == any parent's post_state, the merge inherited that
+            // parent's trie. If matches lfb_state, the merge returned LFB
+            // unchanged (no kept-chain contributions applied to LFB base).
+            let new_state_hex = hex::encode(state.bytes());
+            let lfb_hex = hex::encode(lfb_state.bytes());
+            let matched_parent: Vec<String> = parents
+                .iter()
+                .filter(|p| hex::encode(&p.body.state.post_state_hash) == new_state_hex)
+                .map(|p| {
+                    format!(
+                        "{}#{}",
+                        hex::encode(&p.block_hash[..p.block_hash.len().min(8)]),
+                        p.body.state.block_number,
+                    )
+                })
+                .collect();
+            // Also surface the post-state-time LFB (if it differs from the
+            // resolver-time LFB the proposer's Filter 1 saw, that's the timing
+            // race signature for the orphan-fork-residual class).
+            let lfb_at_compute_block_num = s
+                .dag
+                .block_number(&s.last_finalized_block)
+                .unwrap_or(-1);
+            tracing::info!(
+                target: "f1r3.trace.merge_provenance",
+                "[TRACE-MERGE-LFB-AT-COMPUTE-TIME] new_state={} lfb_state={} new_state_equals_lfb={} matched_parents=[{}] lfb_block_number={} lfb_block_hash={}",
+                new_state_hex,
+                lfb_hex,
+                new_state_hex == lfb_hex,
+                matched_parent.join(","),
+                lfb_at_compute_block_num,
+                hex::encode(&s.last_finalized_block[..s.last_finalized_block.len().min(8)]),
             );
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
@@ -1339,16 +1341,17 @@ pub fn compute_parents_post_state(
                     // lifespan window would do 10 000 block fetches.
                     // After batching: one BFS regardless of N, then
                     // dictionary lookups.
-                    let candidate_sigs: HashSet<Bytes> = rejected_user_pairs
+                    // With the applied_sigs design (notes/applied-sigs-design.md
+                    // §7), all rejected sigs are admit-eligible. The
+                    // once-per-deploy guarantee is enforced at the proposer-side
+                    // applied_sigs filter (block_creator.rs) and the validator-side
+                    // repeat_deploy applied_sigs check (validate.rs). The legacy
+                    // LFB-anchored gate (compute_rejected_buffer_admits via
+                    // resolve_batch) is retired.
+                    let admit_set: HashSet<Bytes> = rejected_user_pairs
                         .iter()
                         .map(|(sig, _)| sig.clone())
                         .collect();
-                    let admit_set: HashSet<Bytes> = compute_rejected_buffer_admits(
-                        &s.dag,
-                        block_store,
-                        s.on_chain_state.shard_conf.deploy_lifespan,
-                        &candidate_sigs,
-                    );
 
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for (sig, src_block) in &rejected_user_pairs {
@@ -1478,12 +1481,13 @@ pub fn compute_parents_post_state(
                         computed_state.clone(),
                         rejected.clone(),
                         rejected_slashes.clone(),
+                        kept_chain_sigs.clone(),
                     ),
                 );
             }
             tracing::debug!(
                 target: "f1r3fly.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, kept_chain_sigs={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
@@ -1493,9 +1497,10 @@ pub fn compute_parents_post_state(
                 visible_blocks_len,
                 rejected.len(),
                 rejected_slashes.len(),
+                kept_chain_sigs.len(),
                 total_started.elapsed().as_millis()
             );
-            Ok((computed_state, rejected, rejected_slashes))
+            Ok((computed_state, rejected, rejected_slashes, kept_chain_sigs))
         }
     }
 }

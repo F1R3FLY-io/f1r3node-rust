@@ -307,7 +307,8 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     // `collateral_lost_pairs`, which is unioned into the merge's
     // rejected-user output and admitted to the buffer.
     let snapshot = mk_snapshot(&genesis_hash);
-    let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
+    let (_merged_state, rejected_sigs, rejected_slashes, _kept_chain_sigs) =
+        compute_parents_post_state(
         &block_store,
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
