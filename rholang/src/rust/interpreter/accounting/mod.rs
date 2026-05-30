@@ -888,21 +888,28 @@ impl RuntimeBudget {
     }
 
     pub fn set_deploy_signature(&self, signature: &[u8]) {
-        let mut domain_separated_signature =
-            Vec::with_capacity(DEPLOY_SIGNATURE_DOMAIN.len() + signature.len());
-        domain_separated_signature.extend_from_slice(DEPLOY_SIGNATURE_DOMAIN);
-        domain_separated_signature.extend_from_slice(signature);
-        let hash = Blake2b256::hash(domain_separated_signature);
+        // The envelope `Sig` is derived by the ONE shared function
+        // [`envelope_sig_single`] so the runtime install, the D2 acceptance
+        // gate, and replay never drift (cost-accounting WD-D2 §D2.2 — one
+        // extracted derivation). The deploy-signature digest is a `#P`-style
+        // process-hash (the Blake2b256 of the domain-separated wire signature),
+        // NOT a ground key `g`, so it is a `Sig::Quote` atom (eq:app-sig-hash).
+        let sig = envelope_sig_single(signature);
+        // The deploy_id reuses the same digest: a `Sig::Quote(hash)` carries
+        // exactly the domain-separated Blake2b256, so this is byte-identical to
+        // the pre-extraction inline derivation.
         let mut deploy_id = [0; 32];
-        deploy_id.copy_from_slice(&hash[..32]);
+        match &sig {
+            Sig::Quote(hash) => deploy_id.copy_from_slice(&hash[..32]),
+            // `envelope_sig_single` is total to `Sig::Quote`; this arm is
+            // unreachable and exists only to keep the match exhaustive.
+            _ => unreachable!("envelope_sig_single always yields Sig::Quote"),
+        }
         *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
         // Cost-accounting channels are internal capabilities derived from,
         // but not equal to, the wire signature. Domain separation prevents
         // accidental reuse of raw signature bytes as another protocol hash.
-        // The deploy-signature digest is a `#P`-style process-hash (the
-        // Blake2b256 of the domain-separated wire signature), NOT a ground
-        // key `g`, so it is a `Sig::Quote` atom (eq:app-sig-hash).
-        *self.signature.lock().expect("signature lock") = Sig::Quote(hash);
+        *self.signature.lock().expect("signature lock") = sig;
     }
 
     /// Install a compound (multi-signer) deploy signature into the budget.
@@ -939,26 +946,17 @@ impl RuntimeBudget {
 
         // Domain-separated hash of each individual wire signature. Per-signature
         // domain separation uses the COMPOUND domain so single-element calls
-        // remain distinguishable from legacy single-sig deploys.
-        let mut sig_hashes: Vec<Vec<u8>> = Vec::with_capacity(signatures.len());
-        for sig_bytes in signatures.iter() {
-            let mut domain_separated =
-                Vec::with_capacity(COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + sig_bytes.len());
-            domain_separated.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
-            domain_separated.extend_from_slice(sig_bytes);
-            sig_hashes.push(Blake2b256::hash(domain_separated));
-        }
+        // remain distinguishable from legacy single-sig deploys. Shared with
+        // [`envelope_sig_compound`] so the runtime install and the D2 gate /
+        // replay derive ONE identical compound `Sig` (no drift).
+        let sig_hashes = compound_sig_hashes(signatures);
 
-        // Fold into a left-associated Sig::And tree. Each per-signer hash is
-        // a `#P`-style process-hash digest, so every leaf is a `Sig::Quote`:
+        // Fold into the left-associated `Sig::And` tree via the ONE shared
+        // function (WD-D2 §D2.2 — single extracted derivation):
         //   [h0]          => Sig::Quote(h0)
         //   [h0, h1]      => Sig::And(Sig::Quote(h0), Sig::Quote(h1))
         //   [h0, h1, h2]  => Sig::And(Sig::And(Sig::Quote(h0), Sig::Quote(h1)), Sig::Quote(h2))
-        let mut iter = sig_hashes.iter().cloned();
-        let first = iter.next().expect("non-empty per assert above");
-        let folded_sig: Sig = iter.fold(Sig::Quote(first), |acc, hash| {
-            Sig::And(Box::new(acc), Box::new(Sig::Quote(hash)))
-        });
+        let folded_sig: Sig = fold_compound_sig(&sig_hashes);
 
         // deploy_id derives from the full ordered concatenation of per-sig
         // hashes under the COMPOUND domain. Canonical-order input means
@@ -1247,6 +1245,91 @@ pub enum Sig {
     /// on-chain in the `rho:system:capabilities` registry contract per
     /// Phase 3 §3.5 design.
     Lolly(Box<Sig>, Box<Sig>),
+}
+
+/// Derive the envelope `Sig` of a SINGLE-signer deploy from its raw wire
+/// signature bytes — the spec's `#P`-style process-hash atom
+/// `Sig::Quote(Blake2b256(DEPLOY_SIGNATURE_DOMAIN ‖ sig))` (eq:app-sig-hash).
+///
+/// This is the ONE extracted derivation shared by the runtime install
+/// ([`RuntimeBudget::set_deploy_signature`]), the D2 acceptance gate
+/// (`casper/.../util/rholang/acceptance.rs`), and replay
+/// (`casper/.../rholang/replay_runtime.rs`) so the three can never drift on the
+/// envelope signature that keys the supply pool `Σ⟦s⟧` (cost-accounting WD-D2
+/// §D2.2 — getting the envelope wrong mis-keys the pool, so it MUST match the
+/// install). Legacy `DEPLOY_SIGNATURE_DOMAIN` so on-chain single-sig deploys
+/// keep their identity bit-for-bit.
+pub fn envelope_sig_single(signature: &[u8]) -> Sig {
+    let mut domain_separated_signature =
+        Vec::with_capacity(DEPLOY_SIGNATURE_DOMAIN.len() + signature.len());
+    domain_separated_signature.extend_from_slice(DEPLOY_SIGNATURE_DOMAIN);
+    domain_separated_signature.extend_from_slice(signature);
+    Sig::Quote(Blake2b256::hash(domain_separated_signature))
+}
+
+/// Per-signer domain-separated Blake2b256 hashes under the COMPOUND domain, in
+/// the (canonical, pk-ascending) order the caller supplies. Shared by
+/// [`RuntimeBudget::set_deploy_signatures`] (which additionally folds the
+/// concatenation into the `deploy_id`) and [`fold_compound_sig`].
+fn compound_sig_hashes(signatures: &[&[u8]]) -> Vec<Vec<u8>> {
+    let mut sig_hashes: Vec<Vec<u8>> = Vec::with_capacity(signatures.len());
+    for sig_bytes in signatures.iter() {
+        let mut domain_separated =
+            Vec::with_capacity(COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + sig_bytes.len());
+        domain_separated.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
+        domain_separated.extend_from_slice(sig_bytes);
+        sig_hashes.push(Blake2b256::hash(domain_separated));
+    }
+    sig_hashes
+}
+
+/// Fold per-signer hashes into the left-associated `Sig::And` tree (each leaf a
+/// `Sig::Quote` `#P`-atom), matching the cost-accounted rho-calculus `σ₁ & σ₂`
+/// compound operator (§3.2 Rules 2-5): fuel must come from ALL component
+/// channels. `hashes` MUST be non-empty (the caller guarantees ≥1 signer).
+fn fold_compound_sig(hashes: &[Vec<u8>]) -> Sig {
+    let mut iter = hashes.iter().cloned();
+    let first = iter
+        .next()
+        .expect("fold_compound_sig requires at least one signature hash");
+    iter.fold(Sig::Quote(first), |acc, hash| {
+        Sig::And(Box::new(acc), Box::new(Sig::Quote(hash)))
+    })
+}
+
+/// Derive the envelope `Sig` of a COMPOUND (multi-signer) deploy from the
+/// canonically-ordered per-signer wire signatures — the left-associated
+/// `Sig::And` fold of `Sig::Quote(Blake2b256(COMPOUND_DEPLOY_SIGNATURE_DOMAIN ‖
+/// sig_i))`. The same extracted derivation the runtime install uses (no drift,
+/// WD-D2 §D2.2). `signatures` MUST be non-empty and in canonical pk-ascending
+/// order (the `Cosigned` constructor enforces this).
+pub fn envelope_sig_compound(signatures: &[&[u8]]) -> Sig {
+    fold_compound_sig(&compound_sig_hashes(signatures))
+}
+
+/// The ONE function that derives a deploy's envelope `Sig` from its
+/// [`Cosigned`](crypto::rust::signatures::signed::Cosigned) envelope, used
+/// IDENTICALLY by the runtime install, the D2 acceptance gate, and replay
+/// (cost-accounting WD-D2 §D2.2). Dispatches on arity EXACTLY as
+/// [`crate::rust::interpreter::rho_runtime`]'s install site does
+/// (`casper/.../rholang/runtime.rs::evaluate_cosigned`): a single signer is the
+/// legacy `Sig::Quote` over `DEPLOY_SIGNATURE_DOMAIN`; a compound is the
+/// left-associated `Sig::And` fold over `COMPOUND_DEPLOY_SIGNATURE_DOMAIN`.
+///
+/// Under the s₀ collapse the envelope `Sig` drives ONLY the deploy's `sig_key`
+/// (= [`Sig::lane_hash`]) and hence its supply channel `Σ⟦s⟧`; getting it wrong
+/// mis-keys the pool. Anchoring gate + install + replay to this single function
+/// is the no-drift guarantee.
+pub fn envelope_sig<A>(cosigned: &crypto::rust::signatures::signed::Cosigned<A>) -> Sig
+where
+    A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
+{
+    if cosigned.is_compound() {
+        let sigs: Vec<&[u8]> = cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
+        envelope_sig_compound(&sigs)
+    } else {
+        envelope_sig_single(&cosigned.primary().sig)
+    }
 }
 
 impl Sig {
@@ -1925,5 +2008,93 @@ mod kani_cost_accounting {
         } else {
             assert_eq!(as_i64, remaining as i64);
         }
+    }
+}
+
+#[cfg(test)]
+mod envelope_sig_extraction_tests {
+    //! The ONE extracted envelope-`Sig` derivation (WD-D2 §D2.2) shared by the
+    //! runtime install, the D2 acceptance gate, and replay. These tests pin
+    //! both the SHAPE (single ⇒ `Sig::Quote`; n-signer ⇒ left-associated
+    //! `Sig::And`) and — the no-drift guarantee — that the extracted free
+    //! functions yield EXACTLY the `Sig` the `RuntimeBudget` install path
+    //! (`set_deploy_signature` / `set_deploy_signatures`) produces.
+    use super::*;
+
+    fn quote_of(domain: &[u8], sig: &[u8]) -> Sig {
+        let mut buf = Vec::with_capacity(domain.len() + sig.len());
+        buf.extend_from_slice(domain);
+        buf.extend_from_slice(sig);
+        Sig::Quote(Blake2b256::hash(buf))
+    }
+
+    /// Single signer ⇒ `Sig::Quote(Blake2b256(DEPLOY_SIGNATURE_DOMAIN ‖ sig))`.
+    #[test]
+    fn envelope_sig_single_is_quote() {
+        let sig = b"deploy-signature-bytes";
+        let expected = quote_of(DEPLOY_SIGNATURE_DOMAIN, sig);
+        assert_eq!(envelope_sig_single(sig), expected);
+        assert!(matches!(envelope_sig_single(sig), Sig::Quote(_)));
+    }
+
+    /// Two signers ⇒ left-associated `Sig::And(Quote(h0), Quote(h1))` over the
+    /// COMPOUND domain.
+    #[test]
+    fn envelope_sig_two_signers_is_left_assoc_and() {
+        let s0: &[u8] = b"signer-zero";
+        let s1: &[u8] = b"signer-one";
+        let h0 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s0);
+        let h1 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s1);
+        let expected = Sig::And(Box::new(h0), Box::new(h1));
+        assert_eq!(envelope_sig_compound(&[s0, s1]), expected);
+    }
+
+    /// Three signers ⇒ left-associated nesting
+    /// `And(And(Quote(h0), Quote(h1)), Quote(h2))`.
+    #[test]
+    fn envelope_sig_three_signers_is_left_assoc_nested() {
+        let s0: &[u8] = b"a";
+        let s1: &[u8] = b"b";
+        let s2: &[u8] = b"c";
+        let h0 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s0);
+        let h1 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s1);
+        let h2 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s2);
+        let expected = Sig::And(
+            Box::new(Sig::And(Box::new(h0), Box::new(h1))),
+            Box::new(h2),
+        );
+        assert_eq!(envelope_sig_compound(&[s0, s1, s2]), expected);
+    }
+
+    /// A single-element COMPOUND call collapses to a bare `Sig::Quote` (the
+    /// fold seed with no `And` applied) — distinct from the legacy single-sig
+    /// path only in the domain separator.
+    #[test]
+    fn envelope_sig_compound_singleton_is_bare_quote() {
+        let s0: &[u8] = b"only-signer";
+        let expected = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s0);
+        assert_eq!(envelope_sig_compound(&[s0]), expected);
+    }
+
+    /// No-drift: the extracted single-sig derivation equals the `Sig` the
+    /// runtime install (`set_deploy_signature`) actually stores. If this fires,
+    /// the gate/replay would key the supply pool differently from the install.
+    #[test]
+    fn envelope_sig_single_matches_install_path() {
+        let sig = b"on-chain-deploy-signature";
+        let budget = RuntimeBudget::new(Cost::create(100, "install-equivalence"));
+        budget.set_deploy_signature(sig);
+        assert_eq!(envelope_sig_single(sig), budget.signature());
+    }
+
+    /// No-drift: the extracted compound derivation equals the `Sig` the runtime
+    /// install (`set_deploy_signatures`) stores for a multi-signer deploy.
+    #[test]
+    fn envelope_sig_compound_matches_install_path() {
+        let s0: &[u8] = b"cosigner-aaaa";
+        let s1: &[u8] = b"cosigner-bbbb";
+        let budget = RuntimeBudget::new(Cost::create(100, "install-equivalence"));
+        budget.set_deploy_signatures(&[s0, s1]);
+        assert_eq!(envelope_sig_compound(&[s0, s1]), budget.signature());
     }
 }
