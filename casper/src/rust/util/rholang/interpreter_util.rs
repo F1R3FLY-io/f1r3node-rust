@@ -566,6 +566,31 @@ fn handle_errors(
                 Ok(Either::Right(None))
             }
 
+            ReplayFailure::ReplayAdmissionMismatch {
+                expected_admitted,
+                replay_admitted,
+                expected_rejected,
+                replay_rejected,
+                detail,
+            } => {
+                // WD-D2: the per-signature acceptance gate recomputed on replay
+                // disagreed with the block (over-admission / double-spend, or a
+                // settlement-debit total mismatch). The block is INVALID.
+                println!(
+                    "Found replay admission mismatch (expected_admitted={}, replay_admitted={}, expected_rejected={}, replay_rejected={}): {}",
+                    expected_admitted, replay_admitted, expected_rejected, replay_rejected, detail
+                );
+                tracing::warn!(
+                    "Found replay admission mismatch (expected_admitted={}, replay_admitted={}, expected_rejected={}, replay_rejected={}): {}",
+                    expected_admitted,
+                    replay_admitted,
+                    expected_rejected,
+                    replay_rejected,
+                    detail
+                );
+                Ok(Either::Right(None))
+            }
+
             ReplayFailure::SystemDeployErrorMismatch {
                 play_error,
                 replay_error,

@@ -125,6 +125,26 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(reset_start.elapsed().as_secs_f64());
 
+        // ── WD-D2 replay-side acceptance recompute (CONSENSUS-CRITICAL) ──────
+        // After the reset (the live store is now at `start_hash`, the block's
+        // pre-state) and BEFORE any deploy executes, recompute the settlement-
+        // debit map from `terms` (= `block.body.deploys`, the ADMITTED set) and
+        // re-verify admission. The debit map is fed to `post_eval_replay` so the
+        // close-block settlement debit is byte-identical to the play side; the
+        // re-verification asserts that for every PRESENT pool the admitted
+        // cumulative Δ_s does not exceed Σ_s (an over-admitting proposer ⇒
+        // double-spend, TM-CA-153). The reject direction is intentionally NOT
+        // re-derived here (rejected-deploy bodies are not in the block, only
+        // sigs) — a wrongly-rejected fundable deploy changes the admitted set and
+        // is caught by the post-state root check (wd-d2 §D2.4(b)).
+        let replay_debits = if with_cost_accounting {
+            self.recompute_and_verify_admission(&terms).await?
+        } else {
+            // Genesis / non-cost-accounted replay: no acceptance gate ran on the
+            // play side, so there is nothing to recompute or debit.
+            std::collections::BTreeMap::new()
+        };
+
         // Time user deploys phase
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
@@ -140,7 +160,7 @@ impl ReplayRuntimeOps {
         let mut system_deploy_results = Vec::new();
         for system_deploy in system_deploys {
             let result = self
-                .replay_block_system_deploy(block_data, &system_deploy)
+                .replay_block_system_deploy(block_data, &system_deploy, &replay_debits)
                 .await?;
             system_deploy_results.push(result);
         }
@@ -160,6 +180,79 @@ impl ReplayRuntimeOps {
             .record(checkpoint_start.elapsed().as_secs_f64());
 
         Ok((checkpoint.root, all_mergeable))
+    }
+
+    /// WD-D2 replay-side acceptance recompute + verification (CONSENSUS-CRITICAL).
+    ///
+    /// Reconstructs the ADMITTED deploy envelopes from `terms`
+    /// (= `block.body.deploys`) via the SAME `ProcessedDeploy::to_cosigned` the
+    /// runtime install uses, recomputes the per-pool settlement-debit map from
+    /// the live store (already `reset` to the block's pre-state) via
+    /// [`acceptance::recompute_settlement_debits`], and re-verifies admission:
+    /// for every PRESENT pool, the admitted cumulative `Σ Δ_s` (= the recomputed
+    /// debit) MUST be `≤ Σ_s` (the pre-state balance). A proposer that admitted
+    /// more than a pool funds (a double-spend / oversubscription, TM-CA-153)
+    /// fails this check with a [`ReplayFailure::ReplayAdmissionMismatch`] — the
+    /// replay-side counterpart of the play-side in-pass residual.
+    ///
+    /// Returns the recomputed debit map, fed to `post_eval_replay` so the
+    /// close-block settlement debit is byte-identical to the play side.
+    async fn recompute_and_verify_admission(
+        &self,
+        terms: &[ProcessedDeploy],
+    ) -> Result<
+        std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
+        CasperError,
+    > {
+        // Reconstruct the admitted envelopes (canonical pk-ascending per signer,
+        // identical to the play-side reconstruction and the runtime install).
+        let mut admitted = Vec::with_capacity(terms.len());
+        for term in terms {
+            admitted.push(term.to_cosigned().map_err(CasperError::RuntimeError)?);
+        }
+
+        let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
+            runtime_ops: &self.runtime_ops,
+        };
+        let debits =
+            crate::rust::util::rholang::acceptance::recompute_settlement_debits(admitted, &reader)
+                .await?;
+
+        // Re-verify admission: each PRESENT pool's admitted ΣΔ_s ≤ Σ_s. The
+        // recompute already restricted `debits` to present pools, so reading the
+        // present balance here and comparing catches an over-admitting proposer
+        // before the close-block settlement debit's `checked_sub` would (clearer
+        // diagnostic + fails the block at the gate boundary, not deep in
+        // closeBlock).
+        for (sig_key, debit) in &debits {
+            let balance = crate::rust::util::rholang::supply::read_balance(
+                &self.runtime_ops,
+                &debit.channel,
+            )
+            .await;
+            if debit.amount > balance {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_admission_mismatch(
+                        terms.len(),
+                        terms.len(),
+                        0,
+                        0,
+                        format!(
+                            "admitted ΣΔ_s={} exceeds Σ_s={} for pool {} — proposer over-admitted \
+                             (double-spend / oversubscription)",
+                            debit.amount,
+                            balance,
+                            hex::encode(sig_key)
+                        ),
+                    ),
+                ));
+            }
+        }
+
+        Ok(debits)
     }
 
     /**
@@ -468,6 +561,10 @@ impl ReplayRuntimeOps {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &ProcessedSystemDeploy,
+        settlement_debits: &std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
@@ -557,16 +654,25 @@ impl ReplayRuntimeOps {
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
 
-                // Cost-Accounted Rho Stage B (Decision 2.5/6.3): mirror the
-                // closeBlock-published epoch/genesis-block-1 mint into `Σ⟦v⟧`,
+                // Cost-Accounted Rho Stage B (Decision 2.5/6.3) + WD-D2: mirror
+                // the closeBlock-published epoch/genesis-block-1 mint into `Σ⟦v⟧`
+                // AND apply the WD-D2 settlement debits (`post Σ⟦s⟧ = pre − ΣΔ`),
                 // SYMMETRIC with the play-side `post_eval` in
-                // `RuntimeOps::play_system_deploy`. Run AFTER the rig/replay-data
-                // check so the bare supply-produce events never enter the rigged
-                // event set; the writes are captured by the final replay
-                // checkpoint in `replay_deploys`. The replay path enables the
-                // `ReplaySupplyMismatch` write-readback integrity guard.
+                // `RuntimeOps::play_system_deploy`. The debit map is the one
+                // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
+                // play-side `settlement_debits` are not serialized into the
+                // block) — same map ⇒ byte-identical writes. Run AFTER the
+                // rig/replay-data check so the bare supply-produce events never
+                // enter the rigged event set; the writes are captured by the
+                // final replay checkpoint in `replay_deploys`. The replay path
+                // enables the `ReplaySupplyMismatch` write-readback guard.
                 close_block_deploy
-                    .post_eval_replay(&mut self.runtime_ops, block_data, &pre_state_hash)
+                    .post_eval_replay(
+                        &mut self.runtime_ops,
+                        block_data,
+                        &pre_state_hash,
+                        settlement_debits,
+                    )
                     .await?;
 
                 Ok(map)

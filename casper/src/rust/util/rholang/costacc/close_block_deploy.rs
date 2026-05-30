@@ -83,39 +83,60 @@ impl CloseBlockDeploy {
         (MINT_LIST_ENV_KEY.to_string(), self.mint_list_channel())
     }
 
-    /// Shared implementation of the Stage-B supply dual-write, run on the LIVE
-    /// post-closeBlock runtime by [`SystemDeployTrait::post_eval`]. Reads the
-    /// `closeBlock`-published mint list `[(pk, amount)]` from the live store and
-    /// mirrors each amount into the per-validator supply pool
-    /// `Σ⟦v⟧ = from_sig(Ground(pk))` via [`supply::produce_balance`]
-    /// (read-modify-replace, single datum).
+    /// Shared implementation of the Stage-B supply mint + WD-D2 settlement
+    /// debit, run on the LIVE post-closeBlock runtime by
+    /// [`SystemDeployTrait::post_eval`] (play) / [`Self::post_eval_replay`]
+    /// (replay). Two phases, in order:
+    ///
+    /// 1. **Stage-B mint** (credit): read the `closeBlock`-published mint list
+    ///    `[(pk, amount)]` and mirror each amount into `Σ⟦v⟧ = from_sig(Ground(pk))`
+    ///    (epoch/genesis-block-1 mint).
+    /// 2. **WD-D2 settlement debit** (charge): for each `(sig_key, debit)` in
+    ///    `debits` (a deterministic `BTreeMap`), subtract `debit.amount` (= the
+    ///    gate's static `ΣΔ_s`) from the pool `Σ⟦s⟧` so `post = pre − ΣΔ_admitted`
+    ///    (cost-accounted-rho §7.7 / handoff Decision 4c). closeBlock is ALWAYS
+    ///    the last system deploy, so every admitted user deploy has executed by
+    ///    now. The debit runs AFTER the mint loop so a channel that is both
+    ///    minted and debited this block ends at `mint − debit` deterministically.
+    ///
+    /// CONSENSUS-CRITICAL replay symmetry: the debit MUST be byte-identical on
+    /// play and replay. Play passes `debits = &self.settlement_debits` (threaded
+    /// by the block proposer); replay passes the SAME map RECOMPUTED from
+    /// `block.body.deploys` (the debit amounts are not serialized into the
+    /// block) — the same deterministic function ⇒ the same map ⇒ identical writes.
     ///
     /// `is_replay` gates the [`ReplayFailure::ReplaySupplyMismatch`] write-readback
-    /// integrity guard (Decision 6.3): on replay, after writing `new_n`, the
-    /// balance read back from `Σ⟦v⟧` MUST equal `new_n` (a `produce_balance`
-    /// malfunction would otherwise silently diverge the post-state). The full
-    /// play↔replay supply equality is additionally enforced by the post-state
-    /// root comparison the replay validator already performs.
+    /// integrity guard (Decision 6.3) on BOTH phases: after each write the balance
+    /// read back MUST equal the just-written value. A settlement `checked_sub`
+    /// underflow is a HARD error (`expect`) — the gate guarantees `ΣΔ_s ≤ Σ_s`, so
+    /// underflow here is a gate-invariant violation, never reachable in a valid
+    /// block.
     async fn dual_write_supply(
         &self,
         runtime_ops: &mut RuntimeOps,
         _block_data: &BlockData,
         _pre_state_hash: &StateHash,
+        debits: &std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
         is_replay: bool,
     ) -> Result<(), CasperError> {
         let list_chan = self.mint_list_channel();
         let published = runtime_ops.get_data_par(&list_chan).await;
 
         // The list is the LAST datum produced on the channel (closeBlock writes
-        // it exactly once per close); an absent list ⇒ no mint this block (the
-        // common non-epoch, non-block-1 path) ⇒ nothing to mirror.
+        // it exactly once per close); an absent list ⇒ no MINT this block (the
+        // common non-epoch, non-block-1 path). Do NOT early-return here — the
+        // WD-D2 settlement DEBIT loop below must still run even when nothing is
+        // minted (a block with admitted user deploys but no epoch/genesis mint).
         let mut mints = match published
             .iter()
             .rev()
             .find_map(|p| RhoList::unapply(p))
         {
             Some(list) => decode_mint_list(&list)?,
-            None => return Ok(()),
+            None => Vec::new(),
         };
 
         // Canonical (pk-ascending) order so the per-mint `random_state`
@@ -142,6 +163,42 @@ impl CloseBlockDeploy {
                 if readback != new_n {
                     return Err(CasperError::ReplayFailure(
                         ReplayFailure::replay_supply_mismatch(hex::encode(pk), new_n, readback),
+                    ));
+                }
+            }
+        }
+
+        // ── WD-D2 settlement debit (charge), AFTER the mint loop ─────────────
+        // Iterate the debit map in its deterministic BTreeMap order (by SigKey)
+        // so the per-debit `random_state` index is identical on play and replay.
+        // Each debit subtracts the gate's static `ΣΔ_s` from the pool `Σ⟦s⟧`;
+        // a `checked_sub` underflow is a gate-invariant violation (the gate only
+        // admits a prefix whose cumulative Δ ≤ effective Σ), hence a hard error.
+        for (index, (_sig_key, debit)) in debits.iter().enumerate() {
+            if debit.amount == 0 {
+                // A zero-amount debit is a no-op (no admitted demand on this
+                // pool); skip it so the channel datum is untouched.
+                continue;
+            }
+            let old_n = supply::read_balance(runtime_ops, &debit.channel).await;
+            let new_n = old_n.checked_sub(debit.amount).expect(
+                "phlogiston supply underflow on settlement debit — gate invariant violated \
+                 (admitted ΣΔ_s exceeds Σ_s)",
+            );
+            let random_state = supply::debit_random_state(&close_rand, index as i64);
+            supply::produce_balance(runtime_ops, &debit.channel, new_n, random_state).await?;
+
+            if is_replay {
+                // Write-readback integrity (Decision 6.3), symmetric with the
+                // mint loop: the debited balance must read back as `new_n`.
+                let readback = supply::read_balance(runtime_ops, &debit.channel).await;
+                if readback != new_n {
+                    return Err(CasperError::ReplayFailure(
+                        ReplayFailure::replay_supply_mismatch(
+                            format!("debit:{}", hex::encode(_sig_key)),
+                            new_n,
+                            readback,
+                        ),
                     ));
                 }
             }
@@ -235,30 +292,51 @@ impl SystemDeployTrait for CloseBlockDeploy {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>,
     > {
-        // PLAY-side invocation (RuntimeOps::play_system_deploy). The replay-side
-        // invocation (replay_block_system_deploy) calls `post_eval_replay` so the
-        // `ReplaySupplyMismatch` write-readback guard activates there.
+        // PLAY-side invocation (RuntimeOps::play_system_deploy). The settlement
+        // debits are threaded on `self.settlement_debits` (populated by the block
+        // proposer's acceptance gate). The replay-side invocation
+        // (replay_block_system_deploy) calls `post_eval_replay` with the
+        // RECOMPUTED map so the `ReplaySupplyMismatch` write-readback guard
+        // activates there.
         Box::pin(async move {
-            self.dual_write_supply(runtime_ops, block_data, pre_state_hash, false)
-                .await
+            self.dual_write_supply(
+                runtime_ops,
+                block_data,
+                pre_state_hash,
+                &self.settlement_debits,
+                false,
+            )
+            .await
         })
     }
 }
 
 impl CloseBlockDeploy {
-    /// Replay-side entry point for the Stage-B supply dual-write. Identical to
-    /// the play-side `post_eval` write path (same recompute, same
-    /// `produce_balance`, same deterministic `random_state`) but with the
-    /// `ReplaySupplyMismatch` integrity guard enabled (Decision 6.3).
+    /// Replay-side entry point for the Stage-B supply mint + WD-D2 settlement
+    /// debit. Identical to the play-side `post_eval` write path (same mint, same
+    /// debit, same `produce_balance`, same deterministic `random_state`) but with
+    /// the `ReplaySupplyMismatch` write-readback integrity guard enabled
+    /// (Decision 6.3).
+    ///
+    /// `debits` is the settlement-debit map RECOMPUTED by `replay_deploys` from
+    /// `block.body.deploys` (the play-side `self.settlement_debits` is empty on a
+    /// replay-reconstructed close deploy — the debit amounts are not serialized
+    /// into the block). Passing the recomputed map (rather than `self`) is what
+    /// makes the debit byte-identical play↔replay.
+    ///
     /// CONSENSUS-CRITICAL: must mutate the live store byte-identically to the
-    /// play-side `post_eval`.
+    /// play-side `post_eval` given the same (recomputed) debit map.
     pub async fn post_eval_replay(
         &self,
         runtime_ops: &mut RuntimeOps,
         block_data: &BlockData,
         pre_state_hash: &StateHash,
+        debits: &std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
     ) -> Result<(), CasperError> {
-        self.dual_write_supply(runtime_ops, block_data, pre_state_hash, true)
+        self.dual_write_supply(runtime_ops, block_data, pre_state_hash, debits, true)
             .await
     }
 }

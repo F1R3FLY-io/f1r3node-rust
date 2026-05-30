@@ -14,8 +14,9 @@ use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::acceptance;
 use casper::rust::util::rholang::supply;
-use rholang::rust::interpreter::accounting::Sig;
+use rholang::rust::interpreter::accounting::{self, Sig};
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
 use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
@@ -575,7 +576,12 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 .unwrap();
 
             replay_ops
-                .replay_block_system_deploy(&block_data, &processed_system_deploy)
+                .replay_block_system_deploy(
+                    &block_data,
+                    &processed_system_deploy,
+                    // This is a pure Stage-B mint test (no WD-D2 settlement debit).
+                    &std::collections::BTreeMap::new(),
+                )
                 .await
                 .unwrap();
 
@@ -602,6 +608,228 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 play_balance, replay_balance,
                 "Σ⟦v⟧ balance diverged between play and replay"
             );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// CONSENSUS-CRITICAL WD-D2 gate-decision replay determinism. Exercises the
+/// settlement-debit play↔replay symmetry directly: PLAY applies the gate's
+/// threaded `AdmissionOutcome.debits` via `CloseBlockDeploy::post_eval`; REPLAY
+/// RECOMPUTES the identical debit map from the admitted deploys via
+/// `acceptance::recompute_settlement_debits` and applies it via
+/// `post_eval_replay`. Asserts (a) the recomputed map EQUALS the gate's play-side
+/// map, (b) the post-state root is BYTE-IDENTICAL, and (c) every `Σ⟦s⟧` balance
+/// matches — i.e. `post = pre − ΣΔ_admitted` holds identically on both paths.
+///
+/// The scenario provisions ONE signer's pool (PRESENT ⇒ enforced + debited) and
+/// leaves a second signer's pool ABSENT (admitted unenforced ⇒ no debit), so the
+/// test also pins the per-pool presence activation across the play/replay seam.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gate_decision_replay_determinism() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+
+            // Two real signed deploys with known token demand. `@0!(0) | @0!(0)`
+            // ⇒ Δ = 2 (two sends); `@0!(0)` ⇒ Δ = 1.
+            let d_funded = construct_deploy::source_deploy_now_full(
+                "@0!(0) | @0!(0)".to_string(),
+                Some(1),
+                None,
+                None,
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let d_absent = construct_deploy::source_deploy_now_full(
+                "@0!(0)".to_string(),
+                Some(1),
+                None,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+
+            let funded_cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+                d_funded.clone(),
+                d_funded.data.phlo_limit,
+            )
+            .unwrap();
+            let absent_cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
+                d_absent.clone(),
+                d_absent.data.phlo_limit,
+            )
+            .unwrap();
+
+            // The funded signer's supply pool channel.
+            let funded_env = accounting::envelope_sig(&funded_cosigned);
+            let funded_chan = supply::supply_channel(&funded_env);
+            let absent_env = accounting::envelope_sig(&absent_cosigned);
+            let absent_chan = supply::supply_channel(&absent_env);
+            // Distinct signers ⇒ distinct pools.
+            assert_ne!(funded_chan, absent_chan);
+
+            // ---- SEED: provision the funded signer's pool with Σ = 5 ----
+            // (Δ_funded = 2 ⇒ after the debit Σ = 3.) Leave the absent pool unset.
+            const SEED_BALANCE: i64 = 5;
+            let seed_runtime = runtime_manager.spawn_runtime().await;
+            let mut seed_ops = RuntimeOps::new(seed_runtime);
+            seed_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            supply::produce_balance(
+                &mut seed_ops,
+                &funded_chan,
+                SEED_BALANCE,
+                supply::mint_random_state(
+                    &Blake2b512Random::create_from_bytes(&[123_u8; 1]),
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+            let seeded_state = seed_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+
+            // ---- GATE (play side) against the seeded pre-state ----
+            let reader = acceptance::RuntimeManagerSupplyReader {
+                runtime_manager: &runtime_manager,
+                pre_state_hash: seeded_state.clone(),
+            };
+            let outcome = acceptance::admit_by_funding(
+                vec![funded_cosigned.clone(), absent_cosigned.clone()],
+                &reader,
+                /* margin */ 0,
+            )
+            .await
+            .unwrap();
+            // Both admitted (funded: Σ=5 ≥ Δ=2; absent: unenforced).
+            assert_eq!(outcome.admitted.len(), 2, "both deploys admitted");
+            assert!(outcome.rejected.is_empty());
+            // Exactly one debit: the funded pool, amount Δ=2. The absent pool is
+            // not debited (presence gate).
+            let funded_key = accounting::delta_sigma::sig_key(&funded_env);
+            let absent_key = accounting::delta_sigma::sig_key(&absent_env);
+            assert_eq!(outcome.debits.get(&funded_key).map(|d| d.amount), Some(2));
+            assert!(
+                outcome.debits.get(&absent_key).is_none(),
+                "absent pool must not be debited"
+            );
+
+            let block_data = BlockData {
+                time_stamp: 1,
+                block_number: 1, // non-epoch ⇒ no mint, isolating the debit
+                sender: _genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
+            let close_rand = system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                block_data.sender.clone(),
+                block_data.seq_num,
+            );
+
+            // ---- PLAY: apply the gate's threaded debit map via post_eval ----
+            let play_runtime = runtime_manager.spawn_runtime().await;
+            play_runtime.set_block_data(block_data.clone()).await;
+            let mut play_ops = RuntimeOps::new(play_runtime);
+            play_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
+                .await
+                .unwrap();
+            let mut play_close = CloseBlockDeploy::new(close_rand.clone());
+            play_close.settlement_debits = outcome.debits.clone();
+            play_close
+                .post_eval(&mut play_ops, &block_data, &seeded_state)
+                .await
+                .unwrap();
+            let play_post = play_ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+            play_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&play_post))
+                .await
+                .unwrap();
+            let play_funded_balance = supply::read_balance(&play_ops, &funded_chan).await;
+            assert_eq!(
+                play_funded_balance,
+                SEED_BALANCE - 2,
+                "play: post Σ⟦s⟧ = pre − ΣΔ = 5 − 2 = 3"
+            );
+
+            // ---- REPLAY: recompute the debit map, apply via post_eval_replay ----
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            replay_runtime.set_block_data(block_data.clone()).await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
+                .await
+                .unwrap();
+            let recompute_reader = acceptance::RuntimeOpsSupplyReader {
+                runtime_ops: &replay_ops.runtime_ops,
+            };
+            let recomputed = acceptance::recompute_settlement_debits(
+                vec![funded_cosigned.clone(), absent_cosigned.clone()],
+                &recompute_reader,
+            )
+            .await
+            .unwrap();
+            // (a) the recomputed map EQUALS the gate's play-side map.
+            assert_eq!(
+                recomputed, outcome.debits,
+                "replay-recomputed debit map must equal the play-side gate map"
+            );
+
+            let replay_close = CloseBlockDeploy::new(close_rand);
+            replay_close
+                .post_eval_replay(
+                    &mut replay_ops.runtime_ops,
+                    &block_data,
+                    &seeded_state,
+                    &recomputed,
+                )
+                .await
+                .unwrap();
+            let replay_post = replay_ops
+                .runtime_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+
+            // (b) byte-identical post-state root.
+            assert_eq!(
+                play_post, replay_post,
+                "play and replay post-state roots diverged on the WD-D2 settlement debit"
+            );
+
+            // (c) every Σ⟦s⟧ balance matches.
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&replay_post))
+                .await
+                .unwrap();
+            let replay_funded_balance =
+                supply::read_balance(&replay_ops.runtime_ops, &funded_chan).await;
+            assert_eq!(
+                play_funded_balance, replay_funded_balance,
+                "Σ⟦s⟧ balance diverged between play and replay after the settlement debit"
+            );
+            // The absent pool stays absent on both paths (never written).
+            let replay_absent_balance =
+                supply::read_balance(&replay_ops.runtime_ops, &absent_chan).await;
+            assert_eq!(replay_absent_balance, 0, "absent pool untouched");
         },
     )
     .await

@@ -214,6 +214,35 @@ pub fn mint_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Bla
     close_rand.split_byte(lo).split_byte(hi).to_bytes()
 }
 
+/// Deterministic per-DEBIT `random_state` for a WD-D2 settlement-debit produce,
+/// on a RNG path DISJOINT from both the mint loop ([`mint_random_state`]) and the
+/// close-block mint-list channel (`split_byte(0x2a)`). A validator may BOTH be
+/// minted (its `Σ⟦v⟧` credited at an epoch boundary) AND have a pool debited in
+/// the same close block; routing the debit through a distinct fixed
+/// `DEBIT_RNG_PATH` prefix split before the per-index splits guarantees the mint
+/// and debit produce DISTINCT datum identities even when they target the same
+/// channel — so the read-modify-replace leaves a single, deterministic datum and
+/// the post-state trie root is byte-identical on play and replay.
+///
+/// Anchored to the same close-block deploy `initial_rand` the mint uses
+/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
+/// advanced by the debit's position in the SORTED debit set — so the derivation
+/// is independent of fold/iteration order and byte-identical play/replay.
+pub fn debit_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+    // Fixed domain split distinct from the mint's index-derived first split
+    // (lo ∈ [0, 127]) and from the mint-list channel path (0x2a = 42): a
+    // negative tag is unreachable by the non-negative `index & 0x7f`, so the
+    // debit stream can never alias the mint stream.
+    const DEBIT_RNG_PATH: i8 = -0x2b; // disjoint from mint (lo≥0) and 0x2a
+    let lo = (index & 0x7f) as i8;
+    let hi = ((index >> 7) & 0x7f) as i8;
+    close_rand
+        .split_byte(DEBIT_RNG_PATH)
+        .split_byte(lo)
+        .split_byte(hi)
+        .to_bytes()
+}
+
 /// Read the pre-state hash the supply read/write operate against. The supply
 /// channel read/write target the LIVE hot store, which for `post_eval` is the
 /// post-closeBlock state; the `pre_state_hash` is carried only for diagnostics

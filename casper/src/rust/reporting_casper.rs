@@ -164,6 +164,21 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
+        // WD-D2: the REPORTING path (block-explorer event tracing) is a
+        // non-consensus diagnostics replay — it collects per-deploy reduction
+        // events and does NOT validate the post-state root. The close-block
+        // settlement-debit produce is a bare supply write with no reduction
+        // events to report, so reporting passes an EMPTY debit map (the
+        // settlement debit is faithfully applied + verified only on the
+        // consensus replay path, `ReplayRuntimeOps::replay_deploys`). This keeps
+        // the reporting runtime free of the gate-recompute machinery (which needs
+        // a `RuntimeOps` handle the reporting wrapper does not expose) while
+        // losing no consensus-relevant information.
+        let settlement_debits: std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        > = std::collections::BTreeMap::new();
+
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(
@@ -204,7 +219,7 @@ impl RhoReporterCasper {
             );
 
             let replay_result = runtime
-                .replay_block_system_deploy(block_data, system_deploy)
+                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits)
                 .await;
 
             let events = match replay_result {
@@ -330,15 +345,20 @@ impl ReportingRuntime {
         &mut self,
         block_data: &BlockData,
         processed_system_deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
+        settlement_debits: &std::collections::BTreeMap<
+            crate::rust::util::rholang::acceptance::SigKey,
+            crate::rust::util::rholang::acceptance::SettlementDebit,
+        >,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         // Create ReplayRuntimeOps from the runtime
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
-        // Replay the system deploy
+        // Replay the system deploy, threading the WD-D2 settlement debits so the
+        // reported events include the close-block settlement debit produce.
         replay_ops
-            .replay_block_system_deploy(block_data, processed_system_deploy)
+            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits)
             .await?;
 
         // Update the runtime from replay_ops

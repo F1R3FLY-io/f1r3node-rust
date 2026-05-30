@@ -107,7 +107,10 @@ pub struct AdmissionOutcome {
 ///
 /// Both decode through the SAME `supply::decode_balance_present`, so the read is
 /// byte-identical for a given state root.
-pub trait SupplyReader {
+///
+/// `Send + Sync` so a `&dyn SupplyReader` can be held across an `.await` inside a
+/// `Send` future (the gate runs on the async block-assembly / replay paths).
+pub trait SupplyReader: Send + Sync {
     /// Read `supply(s)` from `chan`: `Some(n)` if a balance datum is present
     /// (including `Some(0)`), `None` if the pool is absent.
     fn read_balance<'a>(
@@ -410,6 +413,65 @@ pub async fn admit_by_funding(
     canonical_sort(&mut outcome.admitted);
 
     Ok(outcome)
+}
+
+/// REPLAY recompute of the WD-D2 settlement-debit map from the block's ADMITTED
+/// deploys (`block.body.deploys`), for the replay-symmetric settlement debit.
+///
+/// `block.body.deploys` contains EXACTLY the gate-admitted envelopes (rejected
+/// deploys carry only a sig in `rejected_deploys`, not a body). So the per-pool
+/// settlement debit is simply `Σ Δ_s` over the admitted deploys in each PRESENT
+/// pool — the SAME quantity `admit_by_funding` accumulated on the play path
+/// (where `debits[pool].amount = Σ Δ_s over the admitted prefix`), recomputed
+/// here from the block alone. This recompute is MARGIN-FREE: the admission
+/// decision (which uses the margin) already happened on the play side and is
+/// fixed by the block's contents; replay only needs to reproduce the debit
+/// AMOUNTS. A PRESENT pool's debit is enforced by the settlement `checked_sub`
+/// (an over-admitting proposer ⇒ `ΣΔ_s > Σ_s` ⇒ underflow ⇒ a detectable invalid
+/// block — TM-CA-153 double-spend); an ABSENT pool is unenforced (no debit),
+/// matching the play-side presence gate.
+///
+/// Returns the recomputed map (identical to the play-side `AdmissionOutcome.debits`
+/// for a valid block) AND the count of admitted deploys (for the
+/// `ReplayAdmissionMismatch` diagnostic).
+pub async fn recompute_settlement_debits(
+    admitted: Vec<Cosigned<DeployData>>,
+    supply_reader: &dyn SupplyReader,
+) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
+    // Group admitted deploys by pool, summing Δ_s. A malformed term among the
+    // ADMITTED set cannot occur for a valid block (the proposer never admits a
+    // malformed deploy), but treat it defensively as zero demand so the recompute
+    // is total — the post-state root check backstops any such anomaly.
+    let mut demand_by_key: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
+    for cosigned in admitted {
+        let candidate = build_candidate(cosigned);
+        if candidate.malformed {
+            continue;
+        }
+        let entry = demand_by_key
+            .entry(candidate.sig_key)
+            .or_insert_with(|| (candidate.channel.clone(), 0));
+        entry.1 = entry.1.saturating_add(candidate.demand.known_lower_bound);
+    }
+
+    // Restrict to PRESENT pools (absent ⇒ unenforced ⇒ no debit), mirroring the
+    // play-side presence gate. Read each pool's presence exactly once.
+    let mut debits: BTreeMap<SigKey, SettlementDebit> = BTreeMap::new();
+    for (key, (channel, amount)) in demand_by_key {
+        if amount == 0 {
+            continue;
+        }
+        match supply_reader.read_balance(&channel).await? {
+            Some(_present) => {
+                debits.insert(key, SettlementDebit { channel, amount });
+            }
+            None => {
+                // Absent pool: the deploy was admitted unenforced on the play
+                // side (no debit). Skip.
+            }
+        }
+    }
+    Ok(debits)
 }
 
 #[cfg(test)]
