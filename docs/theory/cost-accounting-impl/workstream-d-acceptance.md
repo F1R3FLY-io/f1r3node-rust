@@ -49,6 +49,8 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
 - Tests: §7.4 8-token count; App. B 3-layer handler; closure arithmetic; `unknown` reject ±margin.
 
 ### D2 — block-assembly per-signature-group gate (`block_creator.rs::prepare_user_deploys`)
+
+> **Governed by [wd-d2-acceptance-gate.md](wd-d2-acceptance-gate.md)** (authoritative). Key refinements: the gate runs in `create()` after `compute_parents_post_state` (block_creator.rs:790), NOT literally inside `prepare_user_deploys` (no pre-state there); the **settlement debit** (`post Σ⟦s⟧ = pre − ΣΔ`) rides `CloseBlockDeploy::post_eval`/`post_eval_replay`; `ReplayAdmissionMismatch` guards the admitted set; margin = on-chain `min_phlo_price`. Tracked follow-ons (NOT consensus-critical): speculative execution-on-receipt → **D2-perf**; compound multi-pool debit → **D3** (D2 caps compounds at their own pool; single-signer exact).
 - New `admit_by_funding(deploys, pre_state_reader, margin) -> (admitted, rejected)`: group by
   `lane_hash(deploy_sig)`; per group sum `Δ_s`, read `Σ_s` once from the merged pre-state
   (`compute_parents_post_state` result, block_creator.rs:777-784); admit the largest **canonical-order
