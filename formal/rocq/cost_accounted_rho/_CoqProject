@@ -87,9 +87,11 @@ theories/ChannelSeparation.v
 # Level 4: Token conservation (depends on CostAccountedReduction)
 theories/TokenConservation.v
 
-# Level 4a0: Minting-injection layering theorem (depends on TokenConservation).
-# Proves minting is exogenous token injection, never a cost-accounted step,
-# so the conservation/SN/confluence results survive verbatim.
+# Level 4a0: Minting-injection layering theorem (depends on TokenConservation
+# and WalletNaming). Proves minting is exogenous token injection, never a
+# cost-accounted step (so conservation/SN/confluence survive verbatim), and —
+# Stage B — the supply-pool balance layer: Σ⟦v⟧ injectivity in pk, epoch-mint
+# idempotency on the balance, and user steps never move a supply balance.
 theories/MintingInjection.v
 
 # Level 4a: Post-evaluation fee settlement (depends on TokenConservation)
@@ -177,3 +179,11 @@ theories/UseCaseAdequacy.v
 # DOMAINS. Axiom- and hypothesis-free (concrete injective bit-encoder), so
 # its headline theorems are Closed under the global context.
 theories/WalletNaming.v
+
+# Level 4a1: Stage-C halt INTERFACE proved at Stage B (DR-3 / DR-13). Depends
+# on MintingInjection (the PoS-state / epoch-mint abstraction) — INDEPENDENT of
+# MainTheorem.v / the slashing tree (G-coordination). Proves a halted validator
+# is never minted and never gains supply, and that redemption (clearing the
+# halt) is the only way a halted validator regains supply. Concrete, so its
+# headline theorems are Closed under the global context.
+theories/MintingHalt.v

@@ -54,11 +54,16 @@
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Lia.
+From Stdlib Require Import Arith.PeanoNat.
+From Stdlib Require Import Bool.Bool.
+From Stdlib Require Import List.
+Import ListNotations.
 
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CostAccountedReduction.
 From CostAccountedRho Require Import TokenConservation.
+From CostAccountedRho Require Import WalletNaming.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Section 1: Minting as Exogenous Injection
@@ -310,4 +315,247 @@ Proof.
   intros S S' Htr.
   apply admin_trace_net_increase_bounded_by_minted in Htr.
   lia.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 5: The supply-pool balance layer (Stage B; DR-13)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Stage A proved the validator DRAW wallet @W_v is injective + domain-
+   separated (WalletNaming.v). Stage B adds the distinct SUPPLY POOL
+   Σ⟦v⟧ = from_sig(Ground(pk)) — the channel the WD-D2 acceptance gate reads
+   and the Rust [supply::produce_balance] writes — and the per-validator-per-
+   epoch mint ledger. We model:
+
+     - [supply_name pk]  : the content-addressed supply channel Σ⟦v⟧, a FOURTH
+       content-addressed family beside Wallet / Quarantine / FundingSlot. Built
+       with the SAME injective bit-encoder [encode_bits] (WalletNaming.v) under
+       a structurally-distinct [Supply] marker, so injectivity is inherited and
+       proved unconditionally.
+     - [pos_state]       : the administrative state the mint reads/writes — the
+       per-validator balances [pb_balance], the mint ledger [pb_minted] (the
+       Rholang "mintedEpochs": Set[(Pk,Int)]), and the halt set [pb_halted]
+       (the Rholang "mintingHalted": Set[Pk]).
+     - [epoch_mint]      : the Stage-B mint operation on [pos_state]; it credits
+       [amt] to [v] and records [(v,e)] ONLY when [v] is eligible (not halted,
+       not already minted for epoch [e]) — mirroring the Rholang fold predicate
+       and the Rust post_eval recompute. Otherwise it is the identity.
+
+   Everything is concrete (no axioms / Section hypotheses), so the headline
+   lemmas are Closed under the global context.                                 *)
+
+(* The supply-pool domain marker: a FOURTH structurally-distinct closed marker,
+   never equal to the three WalletNaming markers (a 4-deep [PReplicate] nest is
+   distinct from the 1/2/3-deep wallet/quarantine/funding-slot nests). *)
+Definition supply_marker : proc :=
+  PReplicate (PReplicate (PReplicate (PReplicate PNil))).
+
+(* Σ⟦v⟧ for validator [pk]: the quotation pairing the supply marker with the
+   injective bit-encoding of [pk]. The same shape as [domain_name], so the
+   supply channel inherits [encode_bits]'s injectivity. *)
+Definition supply_name (pk : pubkey) : name :=
+  Quote (PPar supply_marker (encode_bits pk)).
+
+(* DR-13 / Decision 7: the supply pool is INJECTIVE in the validator public
+   key — distinct validators' Σ⟦v⟧ channels are distinct, so a mint credited
+   for [pk1] can never land in [pk2]'s pool and the multi-parent merge engine
+   never conflates two validators' supply Produces. Proved by descending the
+   [Quote]/[PPar] (identical [supply_marker] on both sides) to the bit-encoding
+   equality and applying [encode_bits_injective] (WalletNaming.v's blake2b-
+   analogue injective encoder). *)
+Theorem supply_write_injective_in_pk : forall pk1 pk2,
+  supply_name pk1 = supply_name pk2 -> pk1 = pk2.
+Proof.
+  intros pk1 pk2 Heq.
+  unfold supply_name in Heq.
+  injection Heq as Hbits.
+  apply encode_bits_injective. exact Hbits.
+Qed.
+
+(* Inequality form: distinct keys ⇒ distinct supply pools. *)
+Corollary supply_name_distinct : forall pk1 pk2,
+  pk1 <> pk2 -> supply_name pk1 <> supply_name pk2.
+Proof.
+  intros pk1 pk2 Hne Heq. apply Hne.
+  apply supply_write_injective_in_pk. exact Heq.
+Qed.
+
+(* The supply pool is a DISTINCT channel family from the draw wallet @W_v: for
+   ANY keys, Σ⟦v⟧ ≠ @W_v' (the markers differ — supply is a 4-deep nest, wallet
+   a 1-deep nest). This is the DR-13 "@W_v is DISTINCT from Σ⟦v⟧" property at
+   the name layer: the gate's read channel can never collide with a draw. *)
+Theorem supply_wallet_disjoint : forall pk1 pk2,
+  supply_name pk1 <> wallet_name pk2.
+Proof.
+  intros pk1 pk2 Heq.
+  unfold supply_name, wallet_name, domain_name in Heq.
+  injection Heq as Hm _.
+  (* Hm : supply_marker = domain_marker Wallet, i.e. a 4-deep nest = 1-deep. *)
+  unfold supply_marker, domain_marker in Hm. discriminate.
+Qed.
+
+(* Public keys decide equality (bit-lists over [bool] have decidable equality),
+   used to evaluate the eligibility predicate concretely. *)
+Definition pubkey_eqb (a b : pubkey) : bool :=
+  if list_eq_dec Bool.bool_dec a b then true else false.
+
+Lemma pubkey_eqb_true_iff : forall a b, pubkey_eqb a b = true <-> a = b.
+Proof.
+  intros a b. unfold pubkey_eqb.
+  destruct (list_eq_dec Bool.bool_dec a b) as [Heq | Hne]; split; intro H;
+    try reflexivity; try assumption; try discriminate.
+  - exfalso. apply Hne. exact H.
+Qed.
+
+(* A (pubkey, epoch) pair decides equality (epoch is a [nat]). *)
+Definition mint_key_eqb (a b : pubkey * nat) : bool :=
+  pubkey_eqb (fst a) (fst b) && Nat.eqb (snd a) (snd b).
+
+Lemma mint_key_eqb_true_iff : forall a b, mint_key_eqb a b = true <-> a = b.
+Proof.
+  intros [a1 a2] [b1 b2]. unfold mint_key_eqb. simpl.
+  rewrite Bool.andb_true_iff, pubkey_eqb_true_iff, Nat.eqb_eq.
+  split.
+  - intros [-> ->]. reflexivity.
+  - intros Heq. injection Heq as -> ->. split; reflexivity.
+Qed.
+
+(* Membership of a (pk, epoch) in the mint ledger, as a boolean. *)
+Definition mint_key_inb (k : pubkey * nat) (l : list (pubkey * nat)) : bool :=
+  existsb (fun x => mint_key_eqb k x) l.
+
+Lemma mint_key_inb_true_iff : forall k l,
+  mint_key_inb k l = true <-> In k l.
+Proof.
+  intros k l. unfold mint_key_inb. rewrite existsb_exists. split.
+  - intros [x [Hin Heq]]. apply mint_key_eqb_true_iff in Heq. subst x. exact Hin.
+  - intros Hin. exists k. split; [exact Hin |]. apply mint_key_eqb_true_iff. reflexivity.
+Qed.
+
+(* Membership of a pk in the halt set, as a boolean. *)
+Definition pubkey_inb (v : pubkey) (l : list pubkey) : bool :=
+  existsb (fun x => pubkey_eqb v x) l.
+
+Lemma pubkey_inb_true_iff : forall v l,
+  pubkey_inb v l = true <-> In v l.
+Proof.
+  intros v l. unfold pubkey_inb. rewrite existsb_exists. split.
+  - intros [x [Hin Heq]]. apply pubkey_eqb_true_iff in Heq. subst x. exact Hin.
+  - intros Hin. exists v. split; [exact Hin |]. apply pubkey_eqb_true_iff. reflexivity.
+Qed.
+
+(* The administrative PoS economic state read/written by the Stage-B mint. *)
+Record pos_state : Type := {
+  pb_balance : pubkey -> nat;             (* Σ⟦v⟧ supply balances *)
+  pb_minted  : list (pubkey * nat);        (* "mintedEpochs": Set[(Pk,Int)] *)
+  pb_halted  : list pubkey                 (* "mintingHalted": Set[Pk] *)
+}.
+
+Definition balance_of (st : pos_state) (v : pubkey) : nat := pb_balance st v.
+
+(* Eligibility for an epoch mint — the EXACT predicate of the Rholang fold and
+   the Rust post_eval recompute: NOT halted AND NOT already minted for [e].
+   (Activeness is an orthogonal membership the caller folds over; halt +
+   not-already-minted are the idempotency/halt guards modeled here.) *)
+Definition mint_eligible (st : pos_state) (v : pubkey) (e : nat) : bool :=
+  negb (pubkey_inb v (pb_halted st)) && negb (mint_key_inb (v, e) (pb_minted st)).
+
+(* Credit [amt] to [v] (a point update of the balance function). *)
+Definition credit (st : pos_state) (v : pubkey) (amt : nat) : pubkey -> nat :=
+  fun w => if pubkey_eqb w v then pb_balance st w + amt else pb_balance st w.
+
+(* The Stage-B epoch mint on the administrative state. Eligible ⇒ credit [amt]
+   and record [(v,e)]; ineligible (halted or already minted this epoch) ⇒ the
+   IDENTITY (no balance change, no ledger change) — mirroring both the Rholang
+   guard (no second @W_v purse) and the Rust post_eval guard (no
+   produce_balance). [produce_balance]'s read-modify-REPLACE means an accidental
+   re-exec rewrites the SAME value, exactly captured by this idempotent shape. *)
+Definition epoch_mint (st : pos_state) (v : pubkey) (e : nat) (amt : nat) : pos_state :=
+  if mint_eligible st v e
+  then {| pb_balance := credit st v amt;
+          pb_minted  := (v, e) :: pb_minted st;
+          pb_halted  := pb_halted st |}
+  else st.
+
+(* Decision 7 / Decision 3: the epoch mint is IDEMPOTENT on the balance — once
+   [(v,e)] is in the mint ledger, re-running the epoch mint for [(v,e)] does not
+   change [v]'s balance. This is the formal core of multi-parent-merge / replay
+   mint-idempotency: a duplicated epoch mint is a no-op on Σ⟦v⟧. Immediate from
+   the eligibility guard short-circuiting [epoch_mint] to the identity. *)
+Theorem epoch_mint_idempotent_on_balance : forall st v e amt,
+  In (v, e) (pb_minted st) ->
+  balance_of (epoch_mint st v e amt) v = balance_of st v.
+Proof.
+  intros st v e amt Hin.
+  unfold epoch_mint, mint_eligible.
+  (* (v,e) ∈ minted ⇒ mint_key_inb (v,e) ... = true ⇒ negb ... = false ⇒
+     the eligibility conjunction is false ⇒ epoch_mint = st. *)
+  assert (Hmem : mint_key_inb (v, e) (pb_minted st) = true)
+    by (apply mint_key_inb_true_iff; exact Hin).
+  rewrite Hmem.
+  rewrite Bool.andb_false_r.
+  reflexivity.
+Qed.
+
+(* A halted validator is also never credited by an epoch mint (the halt guard),
+   regardless of the ledger — used by MintingHalt.v. *)
+Theorem halted_epoch_mint_balance_unchanged : forall st v e amt,
+  In v (pb_halted st) ->
+  balance_of (epoch_mint st v e amt) v = balance_of st v.
+Proof.
+  intros st v e amt Hin.
+  unfold epoch_mint, mint_eligible.
+  assert (Hmem : pubkey_inb v (pb_halted st) = true)
+    by (apply pubkey_inb_true_iff; exact Hin).
+  rewrite Hmem. simpl. reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 6: User reduction never moves a supply balance (Stage B)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The balance-layer companion of [user_ca_step_does_not_mint]. The cost-
+   accounted reduction relation [ca_step] acts on the token-fuel [system]; the
+   supply balances live in the ADMINISTRATIVE [pos_state], written ONLY by the
+   authorized mint/settlement path (DR-13: Σ⟦v⟧ is unwritable from the reducer).
+   We model the joint runtime configuration as a pair [(system, pos_state)] and
+   the user-reduction transition as stepping ONLY the [system] component, leaving
+   [pos_state] (hence every balance) fixed. Therefore no user step can increase
+   any supply balance — the balance-layer form of "user steps consume, never
+   mint."                                                                       *)
+
+Definition config : Type := (system * pos_state)%type.
+
+Inductive user_step : config -> config -> Prop :=
+  | us_reduce : forall S S' P,
+      ca_step S S' ->
+      user_step (S, P) (S', P).
+
+(* The administrative state is invariant under a user step. *)
+Lemma user_step_preserves_pos_state : forall S P S' P',
+  user_step (S, P) (S', P') -> P' = P.
+Proof.
+  intros S P S' P' Hstep. inversion Hstep; subst. reflexivity.
+Qed.
+
+(* Decision 7: a user [ca_step] does not INCREASE any validator's supply
+   balance — in fact it leaves every balance UNCHANGED, since balances live in
+   the administrative state the reducer cannot touch. The [<=] form mirrors
+   [user_ca_step_does_not_mint] at the balance layer. *)
+Theorem user_ca_step_does_not_increase_balance : forall S P S' P' v,
+  user_step (S, P) (S', P') ->
+  balance_of P' v <= balance_of P v.
+Proof.
+  intros S P S' P' v Hstep.
+  rewrite (user_step_preserves_pos_state S P S' P' Hstep).
+  lia.
+Qed.
+
+(* Exact (equality) form: a user step leaves every supply balance fixed. *)
+Corollary user_ca_step_balance_unchanged : forall S P S' P' v,
+  user_step (S, P) (S', P') ->
+  balance_of P' v = balance_of P v.
+Proof.
+  intros S P S' P' v Hstep.
+  rewrite (user_step_preserves_pos_state S P S' P' Hstep). reflexivity.
 Qed.
