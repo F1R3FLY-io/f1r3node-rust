@@ -33,7 +33,7 @@ The seam that previously caused confusion: **`@W_v` (the validator's *draw* chan
 3. **`@W_v` and `VB ≜ for(phlo<-@W_v){VH | *phlo}`** (tex eq:39/35) are installed verbatim by C-StageA as (i) the DR-3 halt mechanism (drain `@W_v` ⇒ `VB` blocks ⇒ validator offline, tex 3030-3036) and (ii) the spec-faithful structural anchor — but they are **not on the D acceptance read path** (the gate is lifted to static block-assembly analysis per Remark 11 / DR-11).
 - **Rejected:** (a) Rust-injected free name `@sigSupplyCh` into VB's continuation — re-exposes `Σ⟦v⟧` to Rholang, enlarges trusted surface (guard #3). (c) a `sigChannelOps` system process — extra attack surface for zero benefit (the only authorized caller is Rust, which calls `from_sig` directly); recorded as a future refinement for in-Rholang minting contracts.
 
-**Producer shapes** — Rust (C-StageB epoch/bond mint deploy, sibling to slash_deploy.rs):
+**Producer shapes** — Rust: the producer is `CloseBlockDeploy::post_eval` (a new default-no-op `SystemDeployTrait::post_eval` hook), with helpers in `casper/src/rust/util/rholang/supply.rs` (`TOKEN_TAG="phlo"`, `supply_channel`, `read_balance`/`decode_balance_datum`, `produce_balance`) — see [stageb-minting-halt-interface.md](stageb-minting-halt-interface.md). Sketch:
 ```
 let chan: Par = SignatureChannel::from_sig(&Sig::Ground(pk_bytes.clone())).par;
 let old_n: i64 = read_balance(pre_state, &chan);                       // decode (TOKEN_TAG, n); 0 if absent
