@@ -14,6 +14,8 @@ use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::supply;
+use rholang::rust::interpreter::accounting::Sig;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
 use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
@@ -266,6 +268,24 @@ async fn exec_replay_system_deploy<S: SystemDeployTrait>(
 
     match (value, eval_res) {
         (Either::Right(result), _) => {
+            // Cost-Accounted Rho Stage B: mirror the production replay path
+            // (`replay_block_system_deploy`) by running the system deploy's
+            // `post_eval` settlement hook on the LIVE replay runtime AFTER the
+            // replay-data check, BEFORE the checkpoint — symmetric with the
+            // play-side `play_system_deploy`. For `CloseBlockDeploy` this writes
+            // `Σ⟦v⟧`; for every other system deploy it is a no-op. Without this,
+            // the harness would diverge from play for an epoch/block-1 close.
+            let block_data = replay_runtime_ops
+                .runtime_ops
+                .runtime
+                .block_data_ref
+                .read()
+                .await
+                .clone();
+            system_deploy
+                .post_eval(&mut replay_runtime_ops.runtime_ops, &block_data, state_hash)
+                .await?;
+
             let checkpoint = replay_runtime_ops
                 .runtime_ops
                 .runtime
@@ -482,6 +502,118 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
     )
     .await
     .unwrap();
+}
+
+/// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
+/// Stage B supply mint (Decision 2.5/6). Plays a `CloseBlockDeploy` at an epoch
+/// boundary (block 0 ⇒ `0 % epochLength == 0`) whose `closeBlock` fold mints
+/// `epochPhlogiston` into every active genesis validator's draw wallet @W_v and
+/// publishes the mint list; the play-side `post_eval` mirrors each amount into
+/// the supply pool `Σ⟦v⟧ = from_sig(Ground(pk))`. It then replays the SAME block
+/// through the PRODUCTION `replay_block_system_deploy` path (which runs
+/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback
+/// guard) and asserts the post-state root is BYTE-IDENTICAL — i.e. the Rust
+/// mint-set recompute + `Σ⟦v⟧` dual-write are play/replay-symmetric. The test is
+/// non-vacuous: it independently asserts that `Σ⟦v⟧` actually carries the minted
+/// `epochPhlogiston` balance in the play post-state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_block_supply_mint_is_play_replay_deterministic() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let sender = genesis_context.validator_pks()[0].clone();
+            let block_data = BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: sender.clone(),
+                seq_num: 0,
+            };
+
+            // ---- PLAY ----
+            let play_runtime = runtime_manager.spawn_runtime().await;
+            play_runtime.set_block_data(block_data.clone()).await;
+            let mut play_ops = RuntimeOps::new(play_runtime);
+
+            let mut play_close = CloseBlockDeploy {
+                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    sender.clone(),
+                    block_data.seq_num,
+                ),
+            };
+            let play_result = play_ops
+                .play_system_deploy(&start_state, &mut play_close)
+                .await
+                .unwrap();
+
+            let (final_play_state_hash, processed_system_deploy) = match play_result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    ..
+                } => (state_hash, processed_system_deploy),
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("close-block play failed: {:?}", processed_system_deploy),
+            };
+
+            // Non-vacuity: Σ⟦v⟧ for an active genesis validator must carry the
+            // minted epochPhlogiston balance in the play post-state.
+            play_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
+                .await
+                .unwrap();
+            let supply_chan = supply::supply_channel(&Sig::Ground(sender.bytes.to_vec()));
+            let play_balance = supply::read_balance(&play_ops, &supply_chan).await;
+            assert!(
+                play_balance > 0,
+                "expected a positive Σ⟦v⟧ supply balance after the epoch mint, got {}",
+                play_balance
+            );
+
+            // ---- REPLAY (production path: replay_block_system_deploy) ----
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            replay_runtime.set_block_data(block_data.clone()).await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+
+            replay_ops
+                .replay_block_system_deploy(&block_data, &processed_system_deploy)
+                .await
+                .unwrap();
+
+            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
+            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
+
+            // The consensus-critical assertion: byte-identical post-state
+            // (including every Σ⟦v⟧ balance) between play and replay.
+            assert_eq!(
+                final_play_state_hash, final_replay_state_hash,
+                "play and replay post-state hashes diverged on the Stage-B supply mint"
+            );
+
+            // And the replayed Σ⟦v⟧ balance matches the play-time balance.
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
+                .await
+                .unwrap();
+            let replay_balance =
+                supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            assert_eq!(
+                play_balance, replay_balance,
+                "Σ⟦v⟧ balance diverged between play and replay"
+            );
+        },
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

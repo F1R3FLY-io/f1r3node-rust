@@ -20,6 +20,17 @@ pub enum ReplayFailure {
         replay_cost: u64,
     },
 
+    /// Cost-Accounted Rho Stage B (Decision 6.3): the per-validator supply
+    /// balance `Σ⟦v⟧` written by `CloseBlockDeploy::post_eval` on replay did not
+    /// match the expected `new_n` (write-readback integrity). A divergence here
+    /// signals a non-deterministic supply mint between play and replay — a
+    /// consensus fork — and is a sibling of [`ReplayFailure::ReplayCostMismatch`].
+    ReplaySupplyMismatch {
+        validator: String,
+        expected_balance: i64,
+        replay_balance: i64,
+    },
+
     SystemDeployErrorMismatch {
         play_error: String,
         replay_error: String,
@@ -46,6 +57,18 @@ impl ReplayFailure {
         ReplayFailure::ReplayCostMismatch {
             initial_cost,
             replay_cost,
+        }
+    }
+
+    pub fn replay_supply_mismatch(
+        validator: String,
+        expected_balance: i64,
+        replay_balance: i64,
+    ) -> Self {
+        ReplayFailure::ReplaySupplyMismatch {
+            validator,
+            expected_balance,
+            replay_balance,
         }
     }
 
@@ -84,6 +107,17 @@ impl std::fmt::Display for ReplayFailure {
                     f,
                     "Replay cost mismatch: initial_cost={}, replay_cost={}",
                     initial_cost, replay_cost
+                )
+            }
+            ReplayFailure::ReplaySupplyMismatch {
+                validator,
+                expected_balance,
+                replay_balance,
+            } => {
+                write!(
+                    f,
+                    "Replay supply mismatch for validator {}: expected_balance={}, replay_balance={}",
+                    validator, expected_balance, replay_balance
                 )
             }
             ReplayFailure::SystemDeployErrorMismatch {

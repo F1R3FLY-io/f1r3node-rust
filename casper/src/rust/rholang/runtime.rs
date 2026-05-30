@@ -1014,6 +1014,23 @@ impl RuntimeOps {
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
 
+        // Cost-Accounted Rho Stage B (Decision 2.5): run the system deploy's
+        // Rust-side settlement hook on the LIVE post-eval runtime, BEFORE the
+        // post-state checkpoint, ONLY on success. For `CloseBlockDeploy` this
+        // dual-writes the per-validator supply pool `Σ⟦v⟧` for the epoch /
+        // genesis-block-1 mint. The hook runs AFTER `play_system_deploy_internal`
+        // has already taken the event log (so its bare supply-produce events are
+        // NOT recorded into the system deploy's `event_list`), and its writes are
+        // captured by `create_checkpoint` below — symmetric with the replay-side
+        // invocation in `replay_block_system_deploy`. Default-no-op for every
+        // other system deploy.
+        if matches!(result, Either::Right(_)) {
+            let block_data = self.runtime.block_data_ref.read().await.clone();
+            system_deploy
+                .post_eval(self, &block_data, state_hash)
+                .await?;
+        }
+
         let final_state_hash = {
             let checkpoint = self.runtime.create_checkpoint().await;
             checkpoint.root.to_bytes_prost()

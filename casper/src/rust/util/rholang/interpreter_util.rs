@@ -548,6 +548,24 @@ fn handle_errors(
                 Ok(Either::Right(None))
             }
 
+            ReplayFailure::ReplaySupplyMismatch {
+                validator,
+                expected_balance,
+                replay_balance,
+            } => {
+                println!(
+                    "Found replay supply mismatch for validator {}: expected balance = {}, replay balance = {}",
+                    validator, expected_balance, replay_balance
+                );
+                tracing::warn!(
+                    "Found replay supply mismatch for validator {}: expected balance = {}, replay balance = {}",
+                    validator,
+                    expected_balance,
+                    replay_balance
+                );
+                Ok(Either::Right(None))
+            }
+
             ReplayFailure::SystemDeployErrorMismatch {
                 play_error,
                 replay_error,

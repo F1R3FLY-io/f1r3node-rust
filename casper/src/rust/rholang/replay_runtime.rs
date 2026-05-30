@@ -515,7 +515,7 @@ impl ReplayRuntimeOps {
             }
 
             SystemDeployData::CloseBlockSystemDeployData => {
-                let mut close_block_deploy = CloseBlockDeploy {
+                let close_block_deploy = CloseBlockDeploy {
                     initial_rand:
                         system_deploy_util::generate_close_deploy_random_seed_from_validator(
                             block_data.sender.bytes.clone(),
@@ -523,10 +523,17 @@ impl ReplayRuntimeOps {
                         ),
                 };
 
+                // Capture the pre-close store root for the Stage-B supply
+                // dual-write context (diagnostics / mismatch reporting); the
+                // supply read/write themselves target the live store.
+                let pre_state_hash: StateHash =
+                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
+
                 self.rig_system_deploy(processed_system_deploy).await?;
 
+                let mut close_block_deploy_mut = close_block_deploy.clone();
                 let (_, eval_result) = self
-                    .replay_system_deploy_internal(&mut close_block_deploy, &None)
+                    .replay_system_deploy_internal(&mut close_block_deploy_mut, &None)
                     .await?;
 
                 self.discard_event_log("close-block-system-deploy", false)
@@ -543,6 +550,19 @@ impl ReplayRuntimeOps {
 
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
+
+                // Cost-Accounted Rho Stage B (Decision 2.5/6.3): mirror the
+                // closeBlock-published epoch/genesis-block-1 mint into `Σ⟦v⟧`,
+                // SYMMETRIC with the play-side `post_eval` in
+                // `RuntimeOps::play_system_deploy`. Run AFTER the rig/replay-data
+                // check so the bare supply-produce events never enter the rigged
+                // event set; the writes are captured by the final replay
+                // checkpoint in `replay_deploys`. The replay path enables the
+                // `ReplaySupplyMismatch` write-readback integrity guard.
+                close_block_deploy
+                    .post_eval_replay(&mut self.runtime_ops, block_data, &pre_state_hash)
+                    .await?;
+
                 Ok(map)
             }
 
