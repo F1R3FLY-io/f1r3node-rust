@@ -274,6 +274,12 @@ Print Assumptions ll_linear_cut_consumes_cut_witness.
 Print Assumptions ll_unrestricted_cut_preserves_linear_zone.
 Print Assumptions core_demand_invariant_under_extension.
 Print Assumptions extension_demand_ge_core.
+Print Assumptions delta_s_tensor_additive.
+Print Assumptions funding_decidable.
+Print Assumptions sigma_s_balance_eq_stack_count.
+Print Assumptions funding_check_balance_sound.
+Print Assumptions funding_check_balance_sound_against_stack.
+Print Assumptions competing_funding_at_most_one_succeeds.
 Print Assumptions sig_free_names_quote.
 Print Assumptions sse_par_unit.
 Print Assumptions token_decomp.

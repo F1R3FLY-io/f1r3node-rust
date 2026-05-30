@@ -524,3 +524,176 @@ Proof.
   - cbn. rewrite Hcore. lia.
   - cbn. reflexivity.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section: WD-D5a — the PURE per-signature demand [delta_s], funding
+   decidability (Def 19 / Thm 20), and the supply-realization Decision-8
+   balance-fidelity lemmas
+   ═══════════════════════════════════════════════════════════════════════════
+
+   This section formalises the funding side of the acceptance gate that the
+   Rust analyzer [rholang/.../accounting/delta_sigma.rs] (WD-D1) implements, and
+   discharges the supply-realization obligations registered in
+   [docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md],
+   Decision 8.
+
+   The demand here is the PURE [delta_s] of the cost-accounted-rho paper
+   (Def 17): [LLUnit -> 0], [LLAtom -> 1], [LLTensor -> sum], every other
+   connective -> 0. It is DELIBERATELY distinct from [ll_required_units] (which
+   models the full ILLE algebra — [LLThreshold -> k], [LLPlus -> chosen branch],
+   etc.). [delta_s] counts ONLY the multiplicative-core layers, which is exactly
+   the per-signature linear-token demand the runtime meters under the s₀ collapse
+   (one token per token-consuming COMM, all attributed to the envelope signature;
+   the non-core connectives do not arise in the s₀-collapsed demand the gate
+   evaluates).                                                                  *)
+
+(* The pure demand [delta_s] (cost-accounted-rho Def 17), on the [ll_formula]
+   image of a signature. Matches the Rust [DemandEntry::known_lower_bound] for a
+   fully-resolvable term: the multiplicative-core layer count. *)
+Fixpoint delta_s (f : ll_formula) : nat :=
+  match f with
+  | LLUnit => 0
+  | LLAtom _ => 1
+  | LLTensor f1 f2 => delta_s f1 + delta_s f2
+  | LLThreshold _ _ => 0
+  | LLPlus _ _ _ => 0
+  | LLWith _ _ => 0
+  | LLBang _ => 0
+  | LLWhyNot _ => 0
+  | LLLolly _ _ => 0
+  end.
+
+(* [delta_s] is additive over the multiplicative tensor (cost-accounted-rho
+   Def 17 [Δ_s(T | U) = Δ_s(T) + Δ_s(U)] at the linear-logic image, where parallel
+   composition reflects to [LLTensor]). Definitional, but stated as a headline
+   theorem because the Rust [DemandEntry::combine] relies on exactly this
+   additivity (and the §7.4 example [Δ = Δ(debit) + Δ(credit)] is an instance). *)
+Theorem delta_s_tensor_additive :
+  forall f1 f2,
+    delta_s (LLTensor f1 f2) = delta_s f1 + delta_s f2.
+Proof. intros f1 f2. reflexivity. Qed.
+
+(* The funding obligation as a decidable predicate over the supply balance [n]
+   and the demand [d]: [funds n d] holds iff the supply meets or exceeds the
+   demand (cost-accounted-rho Def 19, [eq:funding-obligation] [Σ_s ≥ Δ_s]). *)
+Definition funds (n d : nat) : Prop := d <= n.
+
+(* Decidability of the funding check (cost-accounted-rho Thm 20): for any supply
+   balance [n] and any formula [f], it is decidable whether the funding
+   obligation [Σ_s ≥ Δ_s] holds — i.e. the validator can ALWAYS reach a verdict
+   (accept / reject) by a single integer comparison. This is the formal content
+   of "decidable in time linear in the size of the deployment's AST": [delta_s]
+   is one structural pass and the comparison is decidable [le_dec]. *)
+Theorem funding_decidable :
+  forall (n : nat) (f : ll_formula),
+    {funds n (delta_s f)} + {~ funds n (delta_s f)}.
+Proof.
+  intros n f. unfold funds. apply Compare_dec.le_dec.
+Qed.
+
+(* ─── Supply-realization Decision 8: balance ⇔ stack-depth fidelity ─────────
+
+   The runtime represents the per-signature supply [Σ_s] as a single balance
+   datum [n] on the channel [Σ⟦s⟧] (handoff Decision 2), rather than as [n]
+   literal stacked token messages. The fidelity obligation is that this balance
+   [n] EQUALS the paper's [Σ_s] of a depth-[n] [s]-indexed token stack
+   (Def 18: [Σ_s(s:S) = 1 + Σ_s(S)], [Σ_s(()) = 0]). We model an [s]-stack of
+   depth [n] and prove its count is [n], so the balance is a faithful encoding of
+   the layer count — the guard #1 of the handoff's spec-conformance verdict.    *)
+
+(* A depth-[n] token stack of a SINGLE signature [s], reflected to its
+   linear-logic image as an [n]-fold tensor of the atom [a] (the [s]-image),
+   bottoming out at [LLUnit] (the empty stack [()]). This mirrors the paper's
+   [s : s : … : ()] stack: each [::] is one tensor layer carrying one [s]-token. *)
+Fixpoint sig_stack (a : nat) (n : nat) : ll_formula :=
+  match n with
+  | 0 => LLUnit
+  | S k => LLTensor (LLAtom a) (sig_stack a k)
+  end.
+
+(* [sigma_s] of a stack is just [delta_s] of its linear-logic image — the supply
+   count and the demand count use the SAME per-layer accounting (the paper's
+   [Σ_s] and [Δ_s] both count [s]-layers; Def 17 / Def 18 are the same recursion
+   on the two sides of the inequality). *)
+Definition sigma_s (f : ll_formula) : nat := delta_s f.
+
+(* Decision-8 fidelity lemma [sigma_s_balance_eq_stack_count]: the balance [n]
+   equals [Σ_s] of a depth-[n] [s]-stack. So storing the supply as the integer
+   balance [n] loses no information relative to the paper's stack representation
+   — the two are equal as counts, which is exactly what the funding inequality
+   compares. *)
+Theorem sigma_s_balance_eq_stack_count :
+  forall (a : nat) (n : nat),
+    sigma_s (sig_stack a n) = n.
+Proof.
+  intros a n. unfold sigma_s.
+  induction n as [| k IH]; cbn.
+  - reflexivity.
+  - rewrite IH. reflexivity.
+Qed.
+
+(* ─── Supply-realization Decision 8: funding-check soundness over the balance ─
+
+   The Rust gate computes [is_funded(analysis, effective_supply_s, margin) =
+   (effective_supply_s >= known_lower_bound + margin)]. With the supply read as
+   the balance [n] and (for the spec-level obligation [Σ_s ≥ Δ_s]) a zero margin,
+   this is the decidable boolean [d <=? n]. The soundness obligation is that this
+   boolean verdict AGREES with the funding proposition [funds n d] — i.e. the
+   balance-read gate accepts exactly when [Σ_s ≥ Δ_s]. *)
+
+(* The gate's boolean funding check over the balance, at the spec obligation
+   (margin 0): accept iff [delta_s f <=? n]. *)
+Definition is_funded_balance (n : nat) (f : ll_formula) : bool :=
+  Nat.leb (delta_s f) n.
+
+(* Decision-8 soundness lemma [funding_check_balance_sound]: the boolean
+   balance-read funding check is TRUE iff the funding obligation [Σ_s ≥ Δ_s]
+   holds. Both directions, so the gate neither admits an under-funded deploy nor
+   rejects a funded one (the consensus-safety property of the acceptance gate). *)
+Theorem funding_check_balance_sound :
+  forall (n : nat) (f : ll_formula),
+    is_funded_balance n f = true <-> funds n (delta_s f).
+Proof.
+  intros n f. unfold is_funded_balance, funds.
+  apply Nat.leb_le.
+Qed.
+
+(* Bridge corollary: stating the soundness directly against the depth-[n] stack
+   supply makes the end-to-end chain explicit — the gate reading the balance [n]
+   (= [Σ_s] of the depth-[n] stack, by [sigma_s_balance_eq_stack_count]) accepts
+   the demand [delta_s f] iff that demand fits within the stack's supply. This is
+   the realized form of the paper's acceptance protocol step "[Σ_c ≥ Δ_c] ⇒
+   accept" (cost-accounted-rho §7.5). *)
+Theorem funding_check_balance_sound_against_stack :
+  forall (a : nat) (n : nat) (f : ll_formula),
+    is_funded_balance (sigma_s (sig_stack a n)) f = true
+      <-> funds n (delta_s f).
+Proof.
+  intros a n f.
+  rewrite funding_check_balance_sound.
+  rewrite sigma_s_balance_eq_stack_count.
+  reflexivity.
+Qed.
+
+(* Remark 21 (cost-accounted-rho, "deployment acceptance as linear proof
+   search"): two deployments competing for the same linear token are two proof
+   obligations over the same linear hypothesis, and AT MOST ONE can succeed. The
+   no-double-spend witness [ll_no_double_spend_single_witness] (above) already
+   proves a single linear atom cannot be consumed twice; we restate it here at
+   the [delta_s] layer as the funding-competition corollary so the WD-D5a headline
+   set carries the Remark-21 obligation explicitly: a single [s]-token (a
+   depth-1 stack, supply 1) funds AT MOST one unit of demand — a second
+   competing unit is unfunded. *)
+Theorem competing_funding_at_most_one_succeeds :
+  forall (a : nat),
+    (* one unit of demand against a single token: funded *)
+    funds (sigma_s (sig_stack a 1)) (delta_s (LLAtom a)) /\
+    (* two competing units of demand against that SAME single token: NOT funded
+       (the second proof obligation cannot also draw the one linear hypothesis) *)
+    ~ funds (sigma_s (sig_stack a 1))
+            (delta_s (LLTensor (LLAtom a) (LLAtom a))).
+Proof.
+  intro a. split.
+  - unfold funds. rewrite sigma_s_balance_eq_stack_count. cbn. lia.
+  - unfold funds. rewrite sigma_s_balance_eq_stack_count. cbn. lia.
+Qed.

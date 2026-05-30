@@ -17,6 +17,7 @@ use super::errors::InterpreterError;
 
 pub mod cost_accounting;
 pub mod costs;
+pub mod delta_sigma;
 pub mod has_cost;
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
