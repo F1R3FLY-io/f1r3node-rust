@@ -35,7 +35,16 @@ Record slashing_ledger := {
   slashing_bonded_stake : nat;
   slashing_coop_vault_balance : nat;
   slashing_active_validator_count : nat;
-  slashing_slashed_validator_count : nat
+  slashing_slashed_validator_count : nat;
+  (* Cost-Accounted Rho Stage-C two-effect slash + redemption (DR-3/DR-7;
+     workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+     Decision 4). The legacy slash "transferred forfeited stake to the coop
+     vault"; the LANDED two-effect slash instead EARMARKS the bond on a
+     per-offender quarantine (coop UNCHANGED at slash time) and HALTS minting
+     across epochs. These ledger fields expose those two new quantities at the
+     cost-accounting boundary so the conservation/unmetered facts can be stated. *)
+  slashing_quarantined_stake : nat;
+  slashing_minting_halted_count : nat
 }.
 
 Record composed_state := {
@@ -567,4 +576,129 @@ Proof.
     subst ledger.
     reflexivity.
   - reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 4: Stage-C two-effect slash + redemption at the cost boundary
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Cost-Accounted Rho Stage C (DR-3/DR-7; workstream-c-economic.md "Stage C",
+   stageb-minting-halt-interface.md Decision 4). The two-effect slash earmarks
+   the offender's stake on a per-offender quarantine (the legacy coop transfer
+   is gone — coop grows ONLY in the Guilty redemption branch) and halts minting.
+   Redemption (governance-triggered, PoS-multisig-quorum gated — DR-12) adjud: a
+   Vindicated/Guilty redeem un-halts and restores; a Burned redeem keeps the
+   validator halted and destroys the quarantined stake. As with the slash
+   effect, NONE of these touch a user deploy's evaluated fuel or settlement
+   arithmetic — they are system effects over the PoS ledger. This section
+   adopts the SHALLOW interface (the deep transition is verified in the slashing
+   tree: PoSContract.v `slashC` / ValidatorRedemption.v `redeem`). *)
+
+(* The Stage-C ledger conservation measure at the cost boundary: the funds the
+   ledger tracks across the slash/quarantine/redeem lifecycle — bonded stake +
+   coop vault + quarantined stake. Mirrors the slashing-tree
+   ValidatorRedemption.v `total_funds`. *)
+Definition ledger_tracked_funds (L : slashing_ledger) : nat :=
+  slashing_bonded_stake L
+  + slashing_coop_vault_balance L
+  + slashing_quarantined_stake L.
+
+(* A redemption system effect over the PoS ledger, the analog of
+   [slash_system_effect]: a before/after ledger pair carrying the adjudication. *)
+Record redeem_system_effect := {
+  redeem_effect_before : slashing_ledger;
+  redeem_effect_after : slashing_ledger
+}.
+
+Definition apply_redeem_system_effect
+  (C : composed_state)
+  (R : redeem_system_effect)
+  : composed_state :=
+  {|
+    composed_cost_boundary := composed_cost_boundary C;
+    composed_slashing_ledger := redeem_effect_after R
+  |}.
+
+(* The two-effect slash is unmetered for the user budget — the quarantine /
+   minting-halt fields (and every other ledger field) are carried entirely on
+   the slashing ledger; the user-evaluation system fuel is untouched. This is
+   the Stage-C-strengthened companion to
+   [slash_system_effect_is_unmetered_for_user_budget]. *)
+Theorem slash_two_effect_is_unmetered_for_user_budget :
+  forall C E,
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary (apply_slash_system_effect C E))) =
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+(* The redemption system effect is likewise unmetered for the user budget. *)
+Theorem redeem_system_effect_is_unmetered_for_user_budget :
+  forall C R,
+    system_token_count
+      (boundary_user_system
+        (composed_cost_boundary (apply_redeem_system_effect C R))) =
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C)).
+Proof.
+  reflexivity.
+Qed.
+
+(* The redemption effect preserves the user deploy's settlement inputs. *)
+Theorem redeem_preserves_fee_settlement_inputs :
+  forall C R,
+    let C' := apply_redeem_system_effect C R in
+    settlement_limit
+      (boundary_settlement (composed_cost_boundary C')) =
+      settlement_limit
+        (boundary_settlement (composed_cost_boundary C)) /\
+    settlement_price
+      (boundary_settlement (composed_cost_boundary C')) =
+      settlement_price
+        (boundary_settlement (composed_cost_boundary C)) /\
+    settlement_token_cost
+      (boundary_settlement (composed_cost_boundary C')) =
+      settlement_token_cost
+        (boundary_settlement (composed_cost_boundary C)).
+Proof.
+  intros C R. repeat split; reflexivity.
+Qed.
+
+(* Ledger-level conservation: a system effect (slash or redeem) that is
+   tracked-funds preserving on its before/after ledgers preserves the boundary's
+   tracked funds. The before/after relation is supplied as a hypothesis — the
+   DEEP per-outcome conservation (Vindicated/Guilty preserve, Burned reduces by
+   the burned bond) is proved structurally in the slashing tree
+   (ValidatorRedemption.v `slash_then_redeem_conserves_total` /
+   `slash_then_redeem_burned_reduces_total_by_bond`). Here we record that a
+   conserving effect's ledger arithmetic threads through `apply_*`. *)
+Theorem redeem_conserving_effect_preserves_tracked_funds :
+  forall C R,
+    ledger_tracked_funds (redeem_effect_after R)
+      = ledger_tracked_funds (composed_slashing_ledger C) ->
+    ledger_tracked_funds (composed_slashing_ledger (apply_redeem_system_effect C R))
+      = ledger_tracked_funds (composed_slashing_ledger C).
+Proof.
+  intros C R Hcons. unfold apply_redeem_system_effect. simpl. exact Hcons.
+Qed.
+
+(* The slash effect's quarantine/halt fields do not change the user budget OR
+   the settlement accounting — a single statement pinning the Stage-C two-effect
+   slash as cost-observationally inert for the user. *)
+Theorem slash_two_effect_preserves_user_cost_observables :
+  forall C E,
+    let C' := apply_slash_system_effect C E in
+    system_token_count
+      (boundary_user_system (composed_cost_boundary C')) =
+      system_token_count
+        (boundary_user_system (composed_cost_boundary C))
+    /\ settled_amount
+         (boundary_settlement (composed_cost_boundary C')) =
+       settled_amount
+         (boundary_settlement (composed_cost_boundary C)).
+Proof.
+  intros C E. split; reflexivity.
 Qed.

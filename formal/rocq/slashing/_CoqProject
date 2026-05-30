@@ -22,7 +22,13 @@
 #   EquivocationRecord     → Validator, Block
 #   DAGState               → Block, EquivocationRecord
 #   EquivocationDetector   → DAGState, InvalidBlock
-#   PoSContract            → Validator
+#   PoSContract            → Validator   (+ Stage-C two-effect PoSStateC/slashC,
+#                                          §7-§12: quarantine + mintingHalted,
+#                                          ADDITIVE — legacy PoSState/slash kept)
+#   ValidatorRedemption    → Validator, PoSContract  (Stage-C redeemSlashed:
+#                                          vindicated/guilty/burned adjudication
+#                                          + slash→redeem total conservation;
+#                                          INDEPENDENT of MainTheorem.v)
 #   SlashDeploy            → Block, PoSContract, InvalidBlock
 #   BlockCreator           → DAGState, SlashDeploy, EquivocationRecord
 #   ForkChoice             → DAGState, PoSContract
@@ -58,6 +64,7 @@ theories/EquivocationRecord.v
 theories/DAGState.v
 theories/EquivocationDetector.v
 theories/PoSContract.v
+theories/ValidatorRedemption.v
 theories/SlashDeploy.v
 theories/BlockCreator.v
 theories/ForkChoice.v
