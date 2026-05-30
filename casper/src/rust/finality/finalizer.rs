@@ -299,24 +299,49 @@ impl Finalizer {
         }
 
         // Step 2: Filter blocks that cannot be orphaned and precompute sort keys.
-        let filtered_agreements: Vec<(BlockMetadata, SharedWeightMap, WeightMap, i64, usize)> =
-            aggregated_agreements
-                .into_values()
-                .filter_map(|(message, message_weight_map, agreeing_weight_map)| {
-                    Self::cannot_be_orphaned(&message_weight_map, &agreeing_weight_map).then(|| {
-                        let stake_sum = agreeing_weight_map.values().sum::<i64>();
-                        let agreeing_size = agreeing_weight_map.len();
-                        (
-                            message,
-                            message_weight_map,
-                            agreeing_weight_map,
-                            stake_sum,
-                            agreeing_size,
-                        )
-                    })
-                })
-                .collect();
+        // Per-candidate diagnostics: for EVERY aggregated candidate (whether or
+        // not it has a majority) record (block_number, agreeing_stake,
+        // total_stake, majority?) so a stall is self-explanatory. When the
+        // validator set is split across sibling branches, NO candidate above the
+        // LFB reaches majority and `filtered_agreements_count` is 0 — these rows
+        // show exactly which heights fell short and by how much.
+        let mut candidate_diag: Vec<(i64, i64, i64, bool)> = Vec::new();
+        let mut filtered_agreements: Vec<(BlockMetadata, SharedWeightMap, WeightMap, i64, usize)> =
+            Vec::new();
+        for (message, message_weight_map, agreeing_weight_map) in aggregated_agreements.into_values()
+        {
+            let agreeing_stake = Self::checked_stake_sum(&agreeing_weight_map).unwrap_or(-1);
+            let total_stake = Self::checked_stake_sum(&message_weight_map).unwrap_or(-1);
+            let passed = Self::cannot_be_orphaned(&message_weight_map, &agreeing_weight_map);
+            candidate_diag.push((
+                message.block_number,
+                agreeing_stake,
+                total_stake,
+                passed,
+            ));
+            if passed {
+                let stake_sum = agreeing_weight_map.values().sum::<i64>();
+                let agreeing_size = agreeing_weight_map.len();
+                filtered_agreements.push((
+                    message,
+                    message_weight_map,
+                    agreeing_weight_map,
+                    stake_sum,
+                    agreeing_size,
+                ));
+            }
+        }
         let filtered_agreements_count = filtered_agreements.len();
+        // Sort diagnostics by height desc and keep the highest few for the trace.
+        candidate_diag.sort_by(|a, b| b.0.cmp(&a.0));
+        let candidate_diag_summary: String = candidate_diag
+            .iter()
+            .take(12)
+            .map(|(h, agree, total, ok)| {
+                format!("#{}:{}/{}{}", h, agree, total, if *ok { "*" } else { "" })
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         let mut deduped_filtered_agreements: Vec<(
             BlockMetadata,
             SharedWeightMap,
@@ -413,15 +438,47 @@ impl Finalizer {
                 lfb_result = Some((lfb_hash, ft_value));
                 break;
             } else {
-                tracing::debug!(
-                    target: "f1r3fly.finalizer.timing",
-                    "Finalizer candidate rejected by threshold: hash={:?}, fault_tolerance={:.6}, threshold={:.6}",
-                    message.block_hash,
+                tracing::info!(
+                    target: "f1r3.trace.finalizer",
+                    "[TRACE-FINALIZER-CANDIDATE-REJECTED] height={} hash={} fault_tolerance={:.6} threshold={:.6}",
+                    message.block_number,
+                    hex::encode(&message.block_hash),
                     fault_tolerance,
                     fault_tolerance_threshold
                 );
             }
         }
+        // Comprehensive stall-diagnosis summary (info, kept target). When the
+        // finalizer runs but does not advance the LFB, this single line says why:
+        //   - latest_messages: how many validators reported a latest message
+        //   - majority_candidates (filtered_agreements): blocks above the LFB
+        //     that have >1/2 stake agreeing. ZERO here = validator set is split
+        //     across sibling branches → nothing can finalize (the bond-stall
+        //     signature). candidates=... lists the highest heights as
+        //     `#height:agreeing/total` (`*` = reached majority).
+        //   - max_ft_upper_bound vs threshold: if candidates exist but FT is
+        //     below threshold, finalization is blocked on safety margin not split.
+        //   - budget_exhausted: finalizer hit its work/time budget (perf, not
+        //     consensus).
+        tracing::info!(
+            target: "f1r3.trace.finalizer",
+            "[TRACE-FINALIZER-DECISION] curr_lfb_height={} threshold={:.4} latest_messages={} agreements={} majority_candidates={} total_candidates={} upper_bound_pruned={} upper_bound_passed={} max_ft_upper_bound={:.6} clique_evals={} budget_exhausted={} lfb_lag={} catchup_mode={} found_new_lfb={} candidates=[{}]",
+            curr_lfb_height,
+            fault_tolerance_threshold,
+            latest_messages_count,
+            agreements_count,
+            filtered_agreements_count,
+            candidate_diag.len(),
+            upper_bound_pruned_count,
+            upper_bound_passed_count,
+            max_ft_upper_bound,
+            clique_eval_count,
+            budget_exhausted,
+            lfb_lag,
+            catchup_mode,
+            lfb_result.is_some(),
+            candidate_diag_summary,
+        );
         tracing::debug!(
             target: "f1r3fly.finalizer.timing",
             "Finalizer timing: latest_messages={}, layers_visited={}, agreements={}, filtered_agreements={}, deduped_filtered_agreements={}, message_weight_map_cache_hit={}, message_weight_map_cache_miss={}, message_weight_map_errors={}, main_parent_cache_hit={}, main_parent_cache_miss={}, candidate_cap={}, ranking_strategy={}, candidate_capped={}, upper_bound_pruned={}, upper_bound_passed={}, max_ft_upper_bound={:.6}, clique_evals={}, clique_ms={}, total_ms={}, budget_ms={}, step_timeout_ms={}, budget_exhausted={}, lfb_lag={}, catchup_mode={}, found_new_lfb={}, weight_map_ns={}, agreement_ns={}, parent_ns={}, next_push_ns={}",
