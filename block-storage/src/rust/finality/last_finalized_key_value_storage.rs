@@ -96,9 +96,12 @@ impl LastFinalizedKeyValueStorage {
         // Build blocks info map for DAG traversal
         let blocks_info_map: HashMap<BlockHash, BlockInfo> = block_metadata_db
             .collect(|(hash_serde, metadata)| {
-                Some((hash_serde.0.clone(), BlockInfo {
-                    parents: metadata.parents.clone(),
-                }))
+                Some((
+                    hash_serde.0.clone(),
+                    BlockInfo {
+                        parents: metadata.parents.clone(),
+                    },
+                ))
             })?
             .into_iter()
             .collect();

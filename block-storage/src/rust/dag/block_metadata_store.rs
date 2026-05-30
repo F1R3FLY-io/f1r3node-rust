@@ -262,9 +262,13 @@ impl BlockMetadataStore {
 
     // DAG state operations — all return O(1) clones via imbl structural sharing
 
-    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
+    pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> {
+        &self.dag_state
+    }
 
-    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> { self.dag_state.read().dag_set.clone() }
+    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> {
+        self.dag_state.read().dag_set.clone()
+    }
 
     pub fn contains(&self, hash: &BlockHash) -> bool {
         self.dag_state.read().dag_set.contains(hash)

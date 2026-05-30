@@ -80,5 +80,7 @@ impl KeyValueRejectedDeployBuffer {
         self.store.to_map().map(|map| map.into_values().collect())
     }
 
-    pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+    pub fn non_empty(&self) -> Result<bool, KvStoreError> {
+        self.store.non_empty()
+    }
 }
