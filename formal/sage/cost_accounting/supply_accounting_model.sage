@@ -98,6 +98,26 @@ def apply_op(state, op):
         # modeled as the supply zero here).
         s["halted"] = True
         s["balance"] = 0
+    elif kind == "fee_collect":
+        # Cost-Accounted Rho Stage D — the FeeExtract: credit `amount` tokens to
+        # the validator's FEE pool F_v (s["fees"]). NEVER touches the supply pool
+        # (cost ≠ fee; the fee reaches Σ⟦v⟧ only via fee_convert). Read-modify-add.
+        amount = int(op[1])
+        s["fees"] = s.get("fees", 0) + amount
+    elif kind == "fee_convert":
+        # Cost-Accounted Rho Stage D — the per-epoch fee→v conversion (spec
+        # tex:3095-3100). An ELIGIBLE validator (NOT halted AND NOT already
+        # converted this epoch) moves its WHOLE fee pool f into Σ⟦v⟧ 1:1 and
+        # zeroes F_v, recording converted (the convertedEpochs idempotency guard).
+        # The Σ⟦v⟧ credit equals EXACTLY the drained fees (BACKED, not minted —
+        # fee_convert_credit_is_backed). DR-4: f == 0 still records the epoch but
+        # credits nothing (no one-sided mint). Idempotent: a re-convert is a
+        # NO-OP on Σ⟦v⟧.
+        if (not s["halted"]) and (not s.get("converted", False)):
+            f = s.get("fees", 0)
+            s["balance"] = s["balance"] + f
+            s["fees"] = 0
+            s["converted"] = True
     elif kind == "user_step":
         # A user reduction step NEVER touches the supply pool (DR-13). Identity.
         pass
@@ -184,16 +204,47 @@ def check_properties(initial, ops):
                 p5 = False
             prefix_was_closed = True
 
+    # (P6) Stage-D fee→v conversion is BACKED + idempotent: across the trace, the
+    # TOTAL fees converted into Σ⟦v⟧ is at most the total fees ever COLLECTED (the
+    # convert is backed, never a mint), AND a validator is converted at most ONCE
+    # per epoch (the convertedEpochs guard ⇒ no double-credit under merge/replay).
+    p6 = True
+    sim = dict(initial)
+    total_collected = 0
+    total_converted = 0
+    convert_fired = 0
+    for op in ops:
+        if op[0] == "fee_collect":
+            total_collected += int(op[1])
+        before = sim.get("converted", False)
+        bal_before = sim["balance"]
+        fees_before = sim.get("fees", 0)
+        sim = apply_op(sim, op)
+        if op[0] == "fee_convert" and (not before) and sim.get("converted", False):
+            # A convert just fired: it credited Σ⟦v⟧ by EXACTLY the drained fees,
+            # and zeroed F_v (backed, 1:1).
+            convert_fired += 1
+            credited = sim["balance"] - bal_before
+            total_converted += credited
+            if credited != fees_before or sim.get("fees", 0) != 0:
+                p6 = False
+    # Backed: converted ≤ collected; idempotent: at most one convert per epoch.
+    if total_converted > total_collected or convert_fired > 1:
+        p6 = False
+
     return {"p1_no_negative": p1, "p2_no_double_credit": p2,
             "p3_settlement_conserves": p3, "p4_halt_no_credit": p4,
-            "p5_canonical_prefix_reject_both": p5}
+            "p5_canonical_prefix_reject_both": p5,
+            "p6_fee_convert_backed_idempotent": p6}
 
 
 def adversarial_search():
     """Exhaustively search all interleavings of a small op alphabet and assert
     the four supply safety properties hold over every reachable interleaving."""
     mint_amount = 1000
-    alphabet = [
+    # The ORIGINAL Stage-B/D2 op set, permuted in full (8! orderings) to preserve
+    # the prior supply/gate coverage verbatim.
+    base_alphabet = [
         ("mint", mint_amount),     # epoch mint (post_eval produce_balance)
         ("mint", mint_amount),     # DUPLICATE mint (multi-parent merge / replay)
         ("open_gate",),            # acceptance gate reads Σ_s -> residual
@@ -203,17 +254,28 @@ def adversarial_search():
         ("user_step",),            # a user reduction step (no supply effect)
         ("halt",),                 # slash: halt + zero Σ⟦v⟧
     ]
+    # The Stage-D fee ops, exercised in interleavings via the length-4 product
+    # over the FULL alphabet (avoids the 11! permutation blowup while still
+    # covering collect → convert → re-convert(merge) orderings against mints/halts).
+    fee_alphabet = [
+        ("fee_collect", 5),        # Stage D: FeeExtract into F_v
+        ("fee_convert",),          # Stage D: epoch fee→v convert (backed, 1:1)
+        ("fee_convert",),          # DUPLICATE convert (merge/replay) — guarded no-op
+    ]
+    full_alphabet = base_alphabet + fee_alphabet
     initial = {"balance": 0, "minted": False, "halted": False,
-               "residual": 0, "committed": 0, "prefix_open": False}
+               "residual": 0, "committed": 0, "prefix_open": False,
+               "fees": 0, "converted": False}
 
     total = 0
     violations = []
-    # Search every permutation of the alphabet (all orderings of the ops) plus
-    # every length-4 ordered selection (interleavings with repetition pressure).
+    # Search every permutation of the BASE alphabet (all orderings of the Stage-B/
+    # D2 ops, prior coverage) plus every length-4 ordered selection over the FULL
+    # alphabet (interleavings with repetition pressure, INCLUDING the fee ops).
     candidate_traces = []
-    for perm in itertools.permutations(alphabet):
+    for perm in itertools.permutations(base_alphabet):
         candidate_traces.append(list(perm))
-    for combo in itertools.product(alphabet, repeat=4):
+    for combo in itertools.product(full_alphabet, repeat=4):
         candidate_traces.append(list(combo))
 
     worst = None
@@ -266,6 +328,14 @@ def records():
         {"balance": 500, "minted": True, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("open_gate",), ("admit", 300), ("admit", 900), ("admit", 100), ("settle",)],
     )
+    # Stage D: collect a fee, convert it (Σ⟦v⟧ += f, F_v := 0), then a DUPLICATE
+    # convert is a guarded no-op (convertedEpochs) — Σ⟦v⟧ credited once, backed by
+    # the collected fee. post Σ⟦v⟧ = pre(0) + epochMint(1000) + convertedFees(5).
+    fee_convert_witness = check_properties(
+        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0,
+         "prefix_open": False, "fees": 0, "converted": False},
+        [("mint", 1000), ("fee_collect", 5), ("fee_convert",), ("fee_convert",)],
+    )
 
     common_invariants = [
         "no_negative_balance",
@@ -273,6 +343,7 @@ def records():
         "settlement_post_eq_pre_minus_admitted",
         "halted_validator_gains_no_supply",
         "canonical_prefix_reject_both",
+        "fee_convert_backed_and_idempotent",
     ]
 
     return [
@@ -357,6 +428,24 @@ def records():
             ["Rocq: admit_prefix_maximal", "Rocq: reject_both_sound",
              "TLA+: EvalScheduling RejectBothOnOversubscription",
              "Rust: admit_by_funding reject-both prefix"],
+        ),
+        record(
+            "supply_accounting",
+            "confirmed_safe",
+            "sage_supply_fee_convert_backed_and_idempotent",
+            "Stage D: the epoch fee→v conversion credits Σ⟦v⟧ by EXACTLY the collected fees that leave F_v (backed, 1:1 — never a mint), and a duplicated / multi-parent-merged convert is a guarded no-op (convertedEpochs). post Σ⟦v⟧ = pre + epochMint + convertedFees, with convertedFees ≤ feesCollected.",
+            canonical_scenario(
+                "supply_fee_convert_backed",
+                threat_family="settlement",
+                settlement={"epoch_mint": 1000, "fees_collected": 5, "converted_fees": 5},
+                concurrency={"racing_convert": True, "merge": "multi_parent"},
+                expected_invariants=common_invariants,
+                expected_classification="confirmed_safe",
+            ),
+            {"properties": fee_convert_witness},
+            ["Rocq: fee_collection_conserves", "Rocq: fee_convert_credit_is_backed",
+             "TLA+: EvalScheduling Inv_FeeConvertConserves / SupplyOnlyFromMintOrBackedFeeConvert",
+             "Sage: exchange_conservation", "DR-4 / TM-CA-158"],
         ),
     ]
 

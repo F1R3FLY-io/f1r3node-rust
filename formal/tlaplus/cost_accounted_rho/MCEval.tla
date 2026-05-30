@@ -12,6 +12,7 @@ MC_CostPerToken  == 1
 MC_StorageCostA  == 10   \* e.g., storage_cost_produce
 MC_StorageCostB  == 15   \* e.g., storage_cost_consume (different!)
 MC_MintAmount    == 1000 \* epochPhlogiston credited per eligible mint
+MC_FeeAmount     == 1    \* Stage D: flat per-deploy FeeExtract collected to F_v
 
 \* WD-D2 acceptance-gate instance: three deploys in a fixed canonical order,
 \* each demanding 2 tokens (Δ_s = 2), sharing a pool of 5. The gate admits the

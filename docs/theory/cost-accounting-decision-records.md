@@ -104,6 +104,26 @@ n_v!(*t_c) }}`, 1:1 peg).
 **Alternatives considered.** (a) Direct fee→stake bond increase — rejected: not what the spec's `Exchange`
 does (it requires both inputs); would also raise consensus weight over time (concentration risk).
 
+**Realization (Stage D).** Implemented as three layers (design `staged-fee-exchange.md`):
+1. The blessed **`Exchange.rhox`** (registered at `rho:lang:exchange`) is the spec's conserving 1:1 swap as
+   a persistent JOIN over ordinary **carrier** channels (`exchange_conserves_per_channel` /
+   `exchange_total_conserved` / `exchange_requires_both_inputs` in `Exchange.v`). It is genesis-wired exactly
+   like `capabilities_registry` and is the acquisition mechanism #13 clients use.
+2. The validator economic loop's fee→v conversion does NOT route through the blessed `Exchange` contract at
+   runtime; it is the **Rust `supply::produce_balance` mirror** (`CloseBlockDeploy::post_eval`): the
+   collected fee pool `F_v` is credited 1:1 into the gate pool `Σ⟦v⟧` (`Σ⟦v⟧ += f`, `F_v := 0`). Rationale:
+   `Σ⟦v⟧`/`F_v` are unnameable from Rholang (DR-13), so the credit is a Rust write — the same dual-write
+   discipline as the StageB mint. The 1:1 peg makes the Rust credit and the Exchange swap semantically
+   identical; the Rocq `fee_convert_credit_is_backed` proves the `Σ⟦v⟧` credit is BACKED by (equal to) the
+   drained fees, never a mint (DR-4: empty `F_v` ⇒ no credit).
+3. **fee ≠ cost:** the `F_v` collection (the spec's flat `FeeExtract`, one transferred token per processed
+   deploy) is SEPARATE from the WD-D2 settlement debit (the burned COST). The committed D2 gate/settlement is
+   unchanged by StageD. PoS owns only the conversion ELIGIBILITY (`active ∧ ¬mintingHalted ∧
+   ¬convertedEpochs`) + `convertedEpochs` idempotency, publishing the eligible list on
+   `sys:casper:feeConvertList`. (Scope note: the OD-4 `@W_v` draw-wallet purse mirror is not performed — the
+   convert credits the consensus pool `Σ⟦v⟧` only; see the `workstream-c-economic.md` Stage D realization
+   note for the replay-rig rationale and the follow-on Rust→PoS seam.)
+
 ---
 
 ## DR-5 — Remove precharge/refund; deploys draw from the wallet
@@ -314,6 +334,22 @@ adaptation, since Rust cannot name the pre-`closeBlock` PoS `stateCh`). Replay a
 write-readback guard. The consensus-critical play/replay symmetry is exercised by
 `close_block_supply_mint_is_play_replay_deterministic`. Full design:
 [cost-accounting-impl/stageb-minting-halt-interface.md](cost-accounting-impl/stageb-minting-halt-interface.md).
+
+**Fee-seam note (LANDED, Stage D).** The Stage-D FEE writes ride the SAME authorized `post_eval` write seam
+as the StageB mint, with a THIRD per-validator content-addressed pool: `F_v =
+supply::fee_collection_channel(pk)` (a `(TOKEN_TAG, n)` balance keyed by `Blake2b256(FEE_COLLECTION_DOMAIN ‖
+pk)` — domain-separated from `Σ⟦v⟧` and from `@W_v`, all three DISTINCT). Like `Σ⟦v⟧`, `F_v` is
+reducer-unwritable and written ONLY by Rust `produce_balance`. `CloseBlockDeploy::post_eval`/`post_eval_replay`
+gain two phases after the mint + settlement: (3a) COLLECTION — credit `F_v(proposer) += count` (the flat
+`FeeExtract`, `count = block.body.deploys.len()`, threaded play-side via `fee_credits`, recomputed replay-side
+from `terms.len()` by `recompute_fee_credits` — same recompute-from-block discipline as the settlement debit);
+(3b) CONVERSION — read the eligible `[(v, epochIdx)]` list PoS published on `sys:casper:feeConvertList`, and
+for each eligible `v` credit `Σ⟦v⟧ += f` and zero `F_v` (`f = read F_v(v)`; `f ≤ 0 ⇒ skip`, DR-4). Disjoint
+replay-stable `random_state` paths (`fee_collect_random_state` `-0x2e`, `fee_convert_random_state` `-0x2d`,
+disjoint from mint `lo≥0` / debit `-0x2b` / slash `-0x2c` / mint-list `0x2a`) + the `ReplaySupplyMismatch`
+readback guard on every fee write. The cost ≠ fee separation holds: the fee is a transferred token on `F_v`,
+the cost is the burned settlement debit on `Σ⟦s⟧`. Play/replay symmetry exercised by
+`fee_collection_and_convert_is_play_replay_deterministic` + `fee_convert_converted_epochs_idempotent_deterministic`.
 
 **Alternatives considered.** (a) literal nested-send messages, one per token — rejected (O(n) gate-read
 bottleneck); (b) a Rust-injected supply name `@sigSupplyCh` bound into `VB`'s continuation — rejected
