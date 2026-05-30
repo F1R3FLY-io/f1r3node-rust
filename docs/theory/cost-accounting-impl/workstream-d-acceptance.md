@@ -72,6 +72,16 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
 - Demote `costs.rs` per-op gas to **diagnostic**: COMM reductions issue `BillableTokenEvent{weight:1,
   kind:SourceStep}` per rendezvous + matching (Rules 1,3,5→1; 2,4→2); per-op charges record into the diagnostic
   accumulator and do NOT gate consensus. Consensus cost = consumed token count (DR-9). Pin with the 8-token test.
+- **D1→D3 counting-granularity handoff (LANDED D1 at `7911fa8b`).** WD-D1's `demand()` currently returns
+  `known_lower_bound` = the **per-SourceStep** count (matching the *pre-D3* runtime, which meters `new`/`match`/`if`
+  as `SourceStep`s — e.g. 9 = 8 COMMs + 1 `new` for the §7.4 example) AND separately exposes `comm_node_count`
+  = the **per-COMM** count (the spec's idealized `Δ_s`, DR-9 — 8 for §7.4). The validated invariant today is
+  `known_lower_bound == runtime consumed` (per-SourceStep). When D3 demotes per-op charges to diagnostic and makes
+  the consensus token count **per-COMM**, the gate's consensus demand MUST switch to `comm_node_count`, the
+  runtime's consensus-consumed count must equal it, and the `Δ_s == consumed` equivalence test must be re-pinned
+  against the per-COMM count. D2 (the gate) is granularity-agnostic — it consumes whatever `demand()` returns — so
+  D2 wires against the current `known_lower_bound`; D3 flips both `demand()`'s consensus output and the runtime to
+  per-COMM in lockstep.
 - Migrate references: `construct_deploy.rs`, `web_api.rs`/grpc/API, `options.rs`/CLI, `validate.rs`/dispatcher,
   fuzz/kani (`processed_deploy_settlement`, casper_message.rs:2055 kani) → fuzz token-supply/Δ_s instead.
 
