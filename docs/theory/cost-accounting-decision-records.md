@@ -67,8 +67,24 @@ quarantined stake is then returned, partially redistributed, or burned.
 **Rationale.** Realizes the spec's validator-economics model; supersedes the prior "bond→0 + immediate
 Coop-vault transfer." The bug-fix safety theorems are independent of the prior framing and are preserved.
 
+**Stage-B/C halt-interface refinement (Cost-Accounted Rho).** Effect (i) "remove all remaining phlogiston
+and halt further minting" is realized as THREE supply-side writes: (a) drain `@W_v` (consume the resident
+MakeMint purse ⇒ `VB` re-blocks ⇒ the DR-3 liveness halt); (b) insert the validator into the
+`"mintingHalted"` PoS state key (the cross-epoch mint halt — the Stage-B `closeBlock` fold and the Rust
+`CloseBlockDeploy::post_eval` recompute both skip `v ∈ mintingHalted`); and (c) **zero `Σ⟦v⟧`** via the
+slash deploy's Rust `post_eval` calling `supply::produce_balance(from_sig(Ground(pk)), 0)` — the
+spec-complete realization of "all remaining phlogiston is removed" (tex 3030-3033), idempotent, eliminating
+the residual-funding edge case. Redemption (`redeemSlashed`, DR-7) writes NEITHER `Σ⟦v⟧` NOR `@W_v` directly:
+it clears `mintingHalted` + removes stale `mintedEpochs (v, e≥current)` and lets the normal next-epoch mint
+re-fund (all phlogiston creation stays on the single authorized path). Proved by `MintingHalt.v`
+(`halted_validator_supply_not_increased`, `halted_validator_not_minted`) + `SlashFlow.tla` `Inv_HaltedNotMinted`.
+Stage B EXPOSES the `mintingHalted` key + `supply::produce_balance`; Stage C consumes them. See
+[cost-accounting-impl/stageb-minting-halt-interface.md](cost-accounting-impl/stageb-minting-halt-interface.md)
+Decision 4.
+
 **Alternatives considered.** (a) Keep the immediate Coop-vault transfer — rejected: the spec mandates a
-private adjudication channel.
+private adjudication channel. (b) VB-block + `mintingHalted` only, no `Σ⟦v⟧` zero — sufficient for consensus
+safety, rejected as the interface default (the explicit zero is spec-complete and edge-case-free).
 
 ---
 
@@ -285,6 +301,19 @@ analysis).
 gate read and bottlenecks block assembly (extension-guard #2). `from_sig`'s unnameability in Rholang (no
 bytes→GPrivate surface primitive) makes supply unforgeable (extension-guard #3). Full design + formal
 obligations: [cost-accounting-impl/supply-realization-c-d-handoff.md](cost-accounting-impl/supply-realization-c-d-handoff.md).
+
+**Producer-seam note (LANDED, Stage B).** The supply PRODUCER is `CloseBlockDeploy::post_eval` (a default-no-op
+`SystemDeployTrait::post_eval` hook invoked symmetrically in `RuntimeOps::play_system_deploy` and
+`ReplayRuntimeOps::replay_block_system_deploy`), with the helpers in
+`casper/src/rust/util/rholang/supply.rs` (`TOKEN_TAG="phlo"`, `supply_channel`, `decode_balance_datum`,
+`read_balance`, `produce_balance`). `produce_balance` is consume-existing-then-produce-new (single datum;
+`checked_add` overflow → `.expect("phlogiston supply overflow")`). The mint set is recomputed identically on
+play and replay because both re-run the same `closeBlock` fold, which publishes the `[(pk, amount)]` mint list
+onto a Rust-known, user-unforgeable env channel (`sys:casper:mintList`) that `post_eval` reads (the grounding
+adaptation, since Rust cannot name the pre-`closeBlock` PoS `stateCh`). Replay adds the `ReplaySupplyMismatch`
+write-readback guard. The consensus-critical play/replay symmetry is exercised by
+`close_block_supply_mint_is_play_replay_deterministic`. Full design:
+[cost-accounting-impl/stageb-minting-halt-interface.md](cost-accounting-impl/stageb-minting-halt-interface.md).
 
 **Alternatives considered.** (a) literal nested-send messages, one per token — rejected (O(n) gate-read
 bottleneck); (b) a Rust-injected supply name `@sigSupplyCh` bound into `VB`'s continuation — rejected
