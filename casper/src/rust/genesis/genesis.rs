@@ -94,6 +94,13 @@ impl Genesis {
         let either = standard_deploys::either(shard_id);
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
         let make_mint = standard_deploys::make_mint(shard_id);
+        // Cost-Accounted Rho Stage D: the blessed `Exchange` (rho:lang:exchange)
+        // — the spec's conserving 1:1 token swap (tex:3061-3084). Like
+        // `make_mint` it depends on nothing beyond Registry, so it is deployed
+        // right after the mint; the closeBlock per-epoch fee→v conversion
+        // (PoS.rhox) and #13 clients resolve it via its `rho:lang:exchange`
+        // shorthand.
+        let exchange = standard_deploys::exchange(shard_id);
         let auth_key = standard_deploys::auth_key(shard_id);
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
@@ -107,12 +114,14 @@ impl Genesis {
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
         let capabilities_registry = standard_deploys::capabilities_registry(shard_id);
 
-        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
         all_deploys.push(non_negative_number);
         all_deploys.push(make_mint);
+        // Stage D blessed Exchange, immediately after the mint (see binding above).
+        all_deploys.push(exchange);
         all_deploys.push(auth_key);
         all_deploys.push(system_vault);
         all_deploys.push(multi_sig_system_vault);

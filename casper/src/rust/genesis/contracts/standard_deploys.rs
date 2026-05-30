@@ -56,6 +56,15 @@ pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
 pub const CAPABILITIES_REGISTRY_PK: &str =
     "0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450";
+// Private key, timestamp, pubkey, signature, and URI for the blessed Exchange
+// (Cost-Accounted Rho, Stage D — the conserving 1:1 token swap, spec "Fee
+// conversion" tex:3061-3084) were generated via RegistrySigGen exactly like
+// CapabilitiesRegistry. The derived registry URI
+// (rho:id:h7oamwfmbdgahd4jk6kcf9kzqssapm6bifq5i4u77danpta6d1ejf5) is the
+// `rho:lang:exchange` shorthand in Registry.rho's bootstrapLookup table. The
+// pk/sig are RE-DERIVED per-shard at genesis (substituted into Exchange.rhox);
+// the URI is content-addressed from the pk alone, hence stable across shards.
+pub const EXCHANGE_PK: &str = "3f9c1a7e8b2d4056f1a3c7e90b4d28f6a5c3e1b7d9f08264a3c5e7091bd4f628";
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
@@ -69,6 +78,7 @@ pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
 pub const CAPABILITIES_REGISTRY_TIMESTAMP: i64 = 1748678400000;
+pub const EXCHANGE_TIMESTAMP: i64 = 1748678400001;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
@@ -84,6 +94,7 @@ lazy_static! {
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
     pub static ref CAPABILITIES_REGISTRY_PUB_KEY: PublicKey = to_public(CAPABILITIES_REGISTRY_PK);
+    pub static ref EXCHANGE_PUB_KEY: PublicKey = to_public(EXCHANGE_PK);
 }
 
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
@@ -101,6 +112,7 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
         &CAPABILITIES_REGISTRY_PUB_KEY,
+        &EXCHANGE_PUB_KEY,
     ]
 }
 
@@ -303,6 +315,45 @@ pub fn capabilities_registry(shard_id: &str) -> Signed<DeployData> {
         ),
         CAPABILITIES_REGISTRY_PK,
         CAPABILITIES_REGISTRY_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Genesis deploy for the Cost-Accounted Rho Stage-D blessed `Exchange`
+/// (`rho:lang:exchange`) — the spec's conserving 1:1 token swap ("Fee
+/// conversion" tex:3061-3084). Wired EXACTLY like [`capabilities_registry`]:
+/// derives the per-genesis-shard `(pub_key, sig)` pair via [`RegistrySigGen`]
+/// and substitutes them into the `Exchange.rhox` template so the contract
+/// bundle is signed with the stable per-shard key. The derived registry URI
+/// is content-addressed from the pubkey and is exposed as the
+/// `rho:lang:exchange` shorthand in `Registry.rho`.
+pub fn exchange(shard_id: &str) -> Signed<DeployData> {
+    use crypto::rust::private_key::PrivateKey;
+    use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+
+    let sk = PrivateKey::from_bytes(
+        &hex::decode(EXCHANGE_PK).expect("Invalid EXCHANGE_PK hex"),
+    );
+    let args = Args::new(
+        Some("Exchange".to_string()),
+        Some(EXCHANGE_TIMESTAMP),
+        Some(sk),
+    );
+    let derivation = RegistrySigGen::derive_from(&args);
+    let pub_key_hex = derivation.result.pk.to_string();
+    let sig_hex = derivation.result.sig.to_string();
+    to_deploy(
+        CompiledRholangTemplate::new(
+            "Exchange.rhox",
+            embedded_rho::EXCHANGE,
+            HashMap::new(),
+            &[
+                ("exchangePubKey", pub_key_hex.as_str()),
+                ("exchangeSig", sig_hex.as_str()),
+            ],
+        ),
+        EXCHANGE_PK,
+        EXCHANGE_TIMESTAMP,
         shard_id,
     )
 }

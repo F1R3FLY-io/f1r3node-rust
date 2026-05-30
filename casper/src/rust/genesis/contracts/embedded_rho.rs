@@ -23,3 +23,4 @@ pub const TOKEN_METADATA: &str = include_str!("../../../main/resources/TokenMeta
 pub const POS: &str = include_str!("../../../main/resources/PoS.rhox");
 pub const CAPABILITIES_REGISTRY: &str =
     include_str!("../../../main/resources/CapabilitiesRegistry.rhox");
+pub const EXCHANGE: &str = include_str!("../../../main/resources/Exchange.rhox");

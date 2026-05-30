@@ -7,6 +7,7 @@ pub mod block_data_contract_spec;
 pub mod capabilities_registry_spec;
 pub mod deep_recursion_spec;
 pub mod either_spec;
+pub mod exchange_spec;
 pub mod failing_result_collector_spec;
 pub mod list_ops_spec;
 pub mod make_mint_spec;
