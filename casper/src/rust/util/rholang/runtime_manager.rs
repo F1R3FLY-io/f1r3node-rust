@@ -211,6 +211,35 @@ impl RuntimeManager {
                         SystemDeployData::Empty => {
                             bytes.push(2);
                         }
+                        SystemDeployData::Redeem {
+                            validator_pk,
+                            outcome_tag,
+                            penalty,
+                            pos_multi_sig_public_keys,
+                            pos_multi_sig_quorum,
+                            authorizations,
+                        } => {
+                            // Cost-Accounted Rho Stage-C redemption (DR-7/DR-12).
+                            // Deterministic, length-prefixed encoding of the FULL
+                            // authorization material so every node feeds identical
+                            // bytes into the post-state hash. Little-endian is
+                            // consensus-determined here (mirrors the Slash arm
+                            // above); do not switch to big-endian.
+                            bytes.push(3);
+                            push_len_prefixed(&mut bytes, validator_pk);
+                            push_len_prefixed(&mut bytes, outcome_tag.as_bytes());
+                            bytes.extend_from_slice(&penalty.to_le_bytes());
+                            bytes.extend_from_slice(&(*pos_multi_sig_quorum).to_le_bytes());
+                            bytes.extend_from_slice(&(pos_multi_sig_public_keys.len() as u32).to_le_bytes());
+                            for key in pos_multi_sig_public_keys {
+                                push_len_prefixed(&mut bytes, key.as_bytes());
+                            }
+                            bytes.extend_from_slice(&(authorizations.len() as u32).to_le_bytes());
+                            for auth in authorizations {
+                                push_len_prefixed(&mut bytes, &auth.public_key);
+                                push_len_prefixed(&mut bytes, &auth.signature);
+                            }
+                        }
                     }
                 }
                 ProcessedSystemDeploy::Failed {

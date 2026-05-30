@@ -133,6 +133,11 @@ pub fn new(
                         sig_bytes.extend_from_slice(DeployIndex::SYS_CLOSE_BLOCK_DEPLOY_ID);
                         (sig_bytes.into(), DeployIndex::SYS_CLOSE_BLOCK_DEPLOY_COST)
                     }
+                    SystemDeployData::Redeem { .. } => {
+                        let mut sig_bytes = block_hash.to_vec();
+                        sig_bytes.extend_from_slice(DeployIndex::SYS_REDEEM_DEPLOY_ID);
+                        (sig_bytes.into(), DeployIndex::SYS_REDEEM_DEPLOY_COST)
+                    }
                     SystemDeployData::Empty => {
                         let mut sig_bytes = block_hash.to_vec();
                         sig_bytes.extend_from_slice(DeployIndex::SYS_EMPTY_DEPLOY_ID);

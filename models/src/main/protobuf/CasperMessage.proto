@@ -301,10 +301,34 @@ message SlashSystemDeployDataProto {
 message CloseBlockSystemDeployDataProto{
 }
 
+// Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12). Carries the
+// FULL redemption-authorization material so a block's redeem deploy round-trips
+// and replay can re-run the DR-12 PoS-multisig-quorum platform obligation
+// (RedeemDeploy::verify_multisig_quorum) byte-identically to play.
+message RedemptionAuthorizationProto {
+  bytes publicKey = 1;
+  bytes signature = 2;
+}
+
+message RedeemSystemDeployDataProto {
+  bytes validatorPk = 1;
+  // Outcome tag: "Vindicated" | "Guilty" | "Burned".
+  string outcomeTag = 2;
+  // Penalty for the Guilty outcome (0 for Vindicated / Burned).
+  int64 penalty = 3;
+  // The genesis-configured PoS-multisig authority keyset (hex-encoded), the
+  // quorum threshold, and the cosigner authorizations over the redemption
+  // digest — all replay inputs to the multisig-quorum verification.
+  repeated string posMultiSigPublicKeys = 4;
+  uint32 posMultiSigQuorum = 5;
+  repeated RedemptionAuthorizationProto authorizations = 6;
+}
+
 message SystemDeployDataProto{
   oneof systemDeploy{
     SlashSystemDeployDataProto slashSystemDeploy = 1;
     CloseBlockSystemDeployDataProto closeBlockSystemDeploy = 2;
+    RedeemSystemDeployDataProto redeemSystemDeploy = 3;
   }
 }
 

@@ -11,7 +11,9 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use casper::rust::util::rholang::costacc::redeem_deploy::{RedeemDeploy, RedemptionOutcome};
 use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
+use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::acceptance;
@@ -612,6 +614,589 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
     )
     .await
     .unwrap()
+}
+
+/// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
+/// Stage-C two-effect slash `Σ⟦v⟧`-zero (Decision 4 / 6.3). First funds an
+/// offender's supply pool with an epoch mint (so the zero is NON-vacuous), then
+/// PLAYS a `SlashDeploy` against that offender — whose `slash` contract resolves
+/// the offender from the seeded `invalidBlocks` index, publishes it on
+/// `sys:casper:slashedPk`, and whose play-side `post_eval` zeros
+/// `Σ⟦offender⟧ = from_sig(Ground(pk))`. It then REPLAYS the SAME slash through
+/// the PRODUCTION `replay_block_system_deploy` `Slash` branch (which runs
+/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback guard)
+/// and asserts the post-state root is BYTE-IDENTICAL and `Σ⟦offender⟧ == 0` on
+/// both paths — i.e. the offender resolution + `Σ⟦v⟧`-zero are play/replay-symmetric.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slash_zeros_supply_is_play_replay_deterministic() {
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
+
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            // The PROPOSER (slash issuer) is validator 0; the OFFENDER (the
+            // validator whose invalid block is slashed) is validator 1.
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+
+            // ── Step 1: fund Σ⟦offender⟧ with an epoch mint (non-vacuity) ──────
+            let mint_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 0, // 0 % epochLength == 0 ⇒ epoch boundary
+                sender: proposer.clone(),
+                seq_num: 0,
+            };
+            let mint_runtime = runtime_manager.spawn_runtime().await;
+            mint_runtime.set_block_data(mint_block_data.clone()).await;
+            let mut mint_ops = RuntimeOps::new(mint_runtime);
+            let mut mint_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    proposer.clone(),
+                    mint_block_data.seq_num,
+                ),
+            );
+            let mint_result = mint_ops
+                .play_system_deploy(&start_state, &mut mint_close)
+                .await
+                .unwrap();
+            let funded_state = match mint_result {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { .. } => panic!("epoch-mint close failed"),
+            };
+
+            let supply_chan = supply::supply_channel(&Sig::Ground(offender.bytes.to_vec()));
+            mint_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
+                .await
+                .unwrap();
+            let pre_slash_balance = supply::read_balance(&mint_ops, &supply_chan).await;
+            assert!(
+                pre_slash_balance > 0,
+                "non-vacuity: offender Σ⟦v⟧ must be positive before slash, got {}",
+                pre_slash_balance
+            );
+
+            // ── Step 2: seed invalidBlocks (blockHash -> offender) ────────────
+            let invalid_block_hash: prost::bytes::Bytes =
+                prost::bytes::Bytes::from_static(b"slash-play-replay-invalid-block");
+            let mut invalid_blocks: HashMap<prost::bytes::Bytes, prost::bytes::Bytes> =
+                HashMap::new();
+            invalid_blocks.insert(invalid_block_hash.clone(), offender.bytes.clone());
+
+            let slash_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 1,
+                sender: proposer.clone(),
+                seq_num: 1,
+            };
+
+            // ── Step 3: PLAY the slash ────────────────────────────────────────
+            let play_runtime = runtime_manager.spawn_runtime().await;
+            play_runtime.set_block_data(slash_block_data.clone()).await;
+            play_runtime.set_invalid_blocks(invalid_blocks.clone()).await;
+            let mut play_ops = RuntimeOps::new(play_runtime);
+            let mut play_slash = SlashDeploy {
+                invalid_block_hash: invalid_block_hash.clone(),
+                pk: proposer.clone(),
+                target_activation_epoch: 0,
+                initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+                    proposer.bytes.clone(),
+                    slash_block_data.seq_num,
+                    &invalid_block_hash,
+                ),
+            };
+            let play_result = play_ops
+                .play_system_deploy(&funded_state, &mut play_slash)
+                .await
+                .unwrap();
+            let (final_play_state_hash, processed_slash) = match play_result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    ..
+                } => (state_hash, processed_system_deploy),
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("slash play failed: {:?}", processed_system_deploy),
+            };
+
+            // The offender's Σ⟦v⟧ must be ZERO in the play post-state.
+            play_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
+                .await
+                .unwrap();
+            let play_post_balance = supply::read_balance(&play_ops, &supply_chan).await;
+            assert_eq!(
+                play_post_balance, 0,
+                "slash must zero Σ⟦offender⟧ on play, got {}",
+                play_post_balance
+            );
+
+            // ── Step 4: REPLAY the slash (production path) ────────────────────
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            replay_runtime.set_block_data(slash_block_data.clone()).await;
+            replay_runtime.set_invalid_blocks(invalid_blocks.clone()).await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&funded_state))
+                .await
+                .unwrap();
+            replay_ops
+                .replay_block_system_deploy(
+                    &slash_block_data,
+                    &processed_slash,
+                    &std::collections::BTreeMap::new(),
+                )
+                .await
+                .unwrap();
+            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
+            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
+
+            // The consensus-critical assertion: byte-identical post-state.
+            assert_eq!(
+                final_play_state_hash, final_replay_state_hash,
+                "play and replay post-state hashes diverged on the Stage-C slash Σ⟦v⟧-zero"
+            );
+
+            // And the replayed Σ⟦offender⟧ is also zero.
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
+                .await
+                .unwrap();
+            let replay_post_balance =
+                supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            assert_eq!(
+                replay_post_balance, 0,
+                "Σ⟦offender⟧ must be zero on replay too, got {}",
+                replay_post_balance
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// Helper: slash `offender` (seeded as the offender of `invalid_block_hash`) on
+/// top of `start_state` as proposer `proposer`, returning the post-slash state
+/// hash. Used by the redemption end-to-end test to reach a quarantined state.
+async fn play_one_slash(
+    runtime_manager: &RuntimeManager,
+    start_state: &StateHash,
+    proposer: &crypto::rust::public_key::PublicKey,
+    offender: &crypto::rust::public_key::PublicKey,
+    invalid_block_hash: &prost::bytes::Bytes,
+    seq_num: i32,
+) -> StateHash {
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
+    let mut invalid_blocks: HashMap<prost::bytes::Bytes, prost::bytes::Bytes> = HashMap::new();
+    invalid_blocks.insert(invalid_block_hash.clone(), offender.bytes.clone());
+    let block_data = BlockData {
+        time_stamp: 0,
+        block_number: 1,
+        sender: proposer.clone(),
+        seq_num,
+    };
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data.clone()).await;
+    runtime.set_invalid_blocks(invalid_blocks).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let mut slash = SlashDeploy {
+        invalid_block_hash: invalid_block_hash.clone(),
+        pk: proposer.clone(),
+        target_activation_epoch: 0,
+        initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+            proposer.bytes.clone(),
+            seq_num,
+            invalid_block_hash,
+        ),
+    };
+    match ops.play_system_deploy(start_state, &mut slash).await.unwrap() {
+        SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+        SystemDeployResult::PlayFailed { processed_system_deploy } => {
+            panic!("setup slash failed: {:?}", processed_system_deploy)
+        }
+    }
+}
+
+/// CONSENSUS-CRITICAL Stage-C redemption end-to-end (DR-7/DR-12). Drives the real
+/// `redeemSlashed` Rholang contract through `RedeemDeploy`:
+///   (1) fund + slash an offender (reaching a quarantined, halted, bond-0 state);
+///   (2) play a Vindicated redeem with a VALID PoS-multisig quorum — asserts the
+///       deploy SUCCEEDS, the validator is restored to active, and un-halted;
+///   (3) play a Vindicated redeem with an UNDER-QUORUM authorization — asserts the
+///       deploy is REJECTED (no restore: the validator stays quarantined/halted).
+/// The DR-12 multisig-quorum verification is the Rust platform obligation; the
+/// keyset/quorum/authorizations ride on `RedeemDeploy` (replay-carried).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redeem_outcomes_and_multisig_gate() {
+    use casper::rust::util::rholang::costacc::redeem_deploy::RedemptionAuthorization;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
+
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+            let invalid_block_hash: prost::bytes::Bytes =
+                prost::bytes::Bytes::from_static(b"redeem-e2e-invalid-block");
+
+            // ── (1) fund Σ⟦offender⟧ then slash to quarantine the offender ────
+            let mint_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: proposer.clone(),
+                seq_num: 0,
+            };
+            let mint_runtime = runtime_manager.spawn_runtime().await;
+            mint_runtime.set_block_data(mint_block_data.clone()).await;
+            let mut mint_ops = RuntimeOps::new(mint_runtime);
+            let mut mint_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    proposer.clone(),
+                    0,
+                ),
+            );
+            let funded_state = match mint_ops
+                .play_system_deploy(&start_state, &mut mint_close)
+                .await
+                .unwrap()
+            {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { .. } => panic!("epoch mint failed"),
+            };
+
+            let slashed_state = play_one_slash(
+                &runtime_manager,
+                &funded_state,
+                &proposer,
+                &offender,
+                &invalid_block_hash,
+                1,
+            )
+            .await;
+
+            // Build a custom 3-key multisig set (quorum 2) and its secrets. The
+            // RedeemDeploy carries its own keyset/quorum (replay-stable); the
+            // Rust DR-12 obligation verifies signatures over the redemption digest.
+            let secp = Secp256k1;
+            let keypairs: Vec<(Vec<u8>, Vec<u8>)> = (0..3)
+                .map(|_| {
+                    let (sk, pk) = secp.new_key_pair();
+                    (sk.bytes.to_vec(), pk.bytes.to_vec())
+                })
+                .collect();
+            let keyset: Vec<String> = keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
+
+            let make_redeem = |n_signers: usize, seq: i32| -> RedeemDeploy {
+                let mut d = RedeemDeploy {
+                    validator_pk: offender.bytes.to_vec(),
+                    outcome: RedemptionOutcome::Vindicated,
+                    pos_multi_sig_public_keys: keyset.clone(),
+                    pos_multi_sig_quorum: 2,
+                    authorizations: Vec::new(),
+                    initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
+                        proposer.bytes.clone(),
+                        seq,
+                        "Vindicated",
+                    ),
+                };
+                let digest = d.auth_digest();
+                d.authorizations = keypairs
+                    .iter()
+                    .take(n_signers)
+                    .map(|(sk, pk)| RedemptionAuthorization {
+                        public_key: pk.clone(),
+                        signature: secp.sign(&digest, sk),
+                    })
+                    .collect();
+                d
+            };
+
+            let redeem_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 2,
+                sender: proposer.clone(),
+                seq_num: 2,
+            };
+
+            // ── (3 first: under-quorum REJECTION on the quarantined state) ────
+            // Only 1 of 2 required signers ⇒ verify_multisig_quorum is false ⇒
+            // redeemSlashed rejects with NO state change.
+            let under_runtime = runtime_manager.spawn_runtime().await;
+            under_runtime.set_block_data(redeem_block_data.clone()).await;
+            let mut under_ops = RuntimeOps::new(under_runtime);
+            let mut under_redeem = make_redeem(1, 2);
+            assert!(
+                !under_redeem.verify_multisig_quorum(),
+                "1-of-2 must be under quorum"
+            );
+            let under_result = under_ops
+                .play_system_deploy(&slashed_state, &mut under_redeem)
+                .await
+                .unwrap();
+            // The deploy itself does not error, but the contract returns
+            // (false, ...) ⇒ play_system_deploy reports a system-deploy USER
+            // failure (PlayFailed). Either way, the offender must STAY quarantined.
+            let under_post_state = match under_result {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { .. } => slashed_state.clone(),
+            };
+            // Assert the offender is STILL halted (not restored) on the under-quorum path.
+            let under_runtime2 = runtime_manager.spawn_runtime().await;
+            let mut under_ops2 = RuntimeOps::new(under_runtime2);
+            assert!(
+                pos_validator_is_halted(&mut under_ops2, &under_post_state, &offender).await,
+                "under-quorum redemption must NOT restore: offender stays halted"
+            );
+
+            // ── (2) valid quorum (2-of-2) Vindicated ⇒ restore + un-halt ──────
+            let ok_runtime = runtime_manager.spawn_runtime().await;
+            ok_runtime.set_block_data(redeem_block_data.clone()).await;
+            let mut ok_ops = RuntimeOps::new(ok_runtime);
+            let mut ok_redeem = make_redeem(2, 2);
+            assert!(
+                ok_redeem.verify_multisig_quorum(),
+                "2-of-2 must meet quorum"
+            );
+            let ok_result = ok_ops
+                .play_system_deploy(&slashed_state, &mut ok_redeem)
+                .await
+                .unwrap();
+            let ok_post_state = match ok_result {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { processed_system_deploy } => {
+                    panic!("valid-quorum vindicated redeem failed: {:?}", processed_system_deploy)
+                }
+            };
+            let ok_runtime2 = runtime_manager.spawn_runtime().await;
+            let mut ok_ops2 = RuntimeOps::new(ok_runtime2);
+            assert!(
+                !pos_validator_is_halted(&mut ok_ops2, &ok_post_state, &offender).await,
+                "valid-quorum vindicated redemption must un-halt the offender"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// CONSENSUS-CRITICAL Stage-C redemption play/replay determinism (DR-7/DR-12).
+/// The slash Σ⟦v⟧-zero has `slash_zeros_supply_is_play_replay_deterministic`; this
+/// is its redemption analogue. A Vindicated `redeemSlashed` (un-halt + restore
+/// bond + clear quarantine + drop stale mintedEpochs) is a pure PoS-state
+/// transition with NO supply `post_eval` — redemption writes neither Σ⟦v⟧ nor
+/// @W_v; re-funding is deferred to the next epoch mint (spec tex:2382-2383). This
+/// pins that the transition is byte-identical on play and replay: a proposer that
+/// redeems and a validator that replays the block reach the same post-state root,
+/// so redemption cannot fork consensus.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redeem_vindicated_is_play_replay_deterministic() {
+    use casper::rust::util::rholang::costacc::redeem_deploy::RedemptionAuthorization;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
+
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+            let invalid_block_hash: prost::bytes::Bytes =
+                prost::bytes::Bytes::from_static(b"redeem-replay-invalid-block");
+
+            // ── fund Σ⟦offender⟧ then slash to reach a quarantined/halted state ──
+            let mint_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 0,
+                sender: proposer.clone(),
+                seq_num: 0,
+            };
+            let mint_runtime = runtime_manager.spawn_runtime().await;
+            mint_runtime.set_block_data(mint_block_data.clone()).await;
+            let mut mint_ops = RuntimeOps::new(mint_runtime);
+            let mut mint_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(proposer.clone(), 0),
+            );
+            let funded_state = match mint_ops
+                .play_system_deploy(&start_state, &mut mint_close)
+                .await
+                .unwrap()
+            {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { .. } => panic!("epoch mint failed"),
+            };
+            let slashed_state = play_one_slash(
+                &runtime_manager,
+                &funded_state,
+                &proposer,
+                &offender,
+                &invalid_block_hash,
+                1,
+            )
+            .await;
+
+            // ── build a VALID 2-of-2 Vindicated RedeemDeploy ──────────────────
+            let secp = Secp256k1;
+            let keypairs: Vec<(Vec<u8>, Vec<u8>)> = (0..3)
+                .map(|_| {
+                    let (sk, pk) = secp.new_key_pair();
+                    (sk.bytes.to_vec(), pk.bytes.to_vec())
+                })
+                .collect();
+            let keyset: Vec<String> = keypairs.iter().map(|(_, pk)| hex::encode(pk)).collect();
+            let mut redeem = RedeemDeploy {
+                validator_pk: offender.bytes.to_vec(),
+                outcome: RedemptionOutcome::Vindicated,
+                pos_multi_sig_public_keys: keyset.clone(),
+                pos_multi_sig_quorum: 2,
+                authorizations: Vec::new(),
+                initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
+                    proposer.bytes.clone(),
+                    2,
+                    "Vindicated",
+                ),
+            };
+            let digest = redeem.auth_digest();
+            redeem.authorizations = keypairs
+                .iter()
+                .take(2)
+                .map(|(sk, pk)| RedemptionAuthorization {
+                    public_key: pk.clone(),
+                    signature: secp.sign(&digest, sk),
+                })
+                .collect();
+            assert!(redeem.verify_multisig_quorum(), "2-of-2 must meet quorum");
+
+            let redeem_block_data = BlockData {
+                time_stamp: 0,
+                block_number: 2,
+                sender: proposer.clone(),
+                seq_num: 2,
+            };
+
+            // ── PLAY the Vindicated redeem ────────────────────────────────────
+            let play_runtime = runtime_manager.spawn_runtime().await;
+            play_runtime.set_block_data(redeem_block_data.clone()).await;
+            let mut play_ops = RuntimeOps::new(play_runtime);
+            let play_result = play_ops
+                .play_system_deploy(&slashed_state, &mut redeem)
+                .await
+                .unwrap();
+            let (final_play_state_hash, processed_redeem) = match play_result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    ..
+                } => (state_hash, processed_system_deploy),
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("vindicated redeem play failed: {:?}", processed_system_deploy),
+            };
+
+            // offender un-halted on play
+            let chk_runtime = runtime_manager.spawn_runtime().await;
+            let mut chk_ops = RuntimeOps::new(chk_runtime);
+            assert!(
+                !pos_validator_is_halted(&mut chk_ops, &final_play_state_hash, &offender).await,
+                "vindicated redeem must un-halt the offender on play"
+            );
+
+            // ── REPLAY the Vindicated redeem (production path) ────────────────
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            replay_runtime.set_block_data(redeem_block_data.clone()).await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&slashed_state))
+                .await
+                .unwrap();
+            replay_ops
+                .replay_block_system_deploy(
+                    &redeem_block_data,
+                    &processed_redeem,
+                    &std::collections::BTreeMap::new(),
+                )
+                .await
+                .unwrap();
+            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
+            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
+
+            // The consensus-critical assertion: byte-identical post-state.
+            assert_eq!(
+                final_play_state_hash, final_replay_state_hash,
+                "play and replay post-state hashes diverged on the Stage-C Vindicated redemption"
+            );
+
+            // offender un-halted on replay too
+            let chk_runtime2 = runtime_manager.spawn_runtime().await;
+            let mut chk_ops2 = RuntimeOps::new(chk_runtime2);
+            assert!(
+                !pos_validator_is_halted(&mut chk_ops2, &final_replay_state_hash, &offender).await,
+                "vindicated redeem must un-halt the offender on replay too"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// CONSENSUS-CRITICAL Stage-C halt observation. Reads the PoS `mintingHalted`
+/// Set[PublicKey] off `post_state` and returns whether `validator` is a member.
+/// Drives the `getMintingHalted` peek contract (PoS.rhox, added for Stage-C
+/// observability) through a registry-looked-up exploratory deploy, computing the
+/// membership predicate INSIDE Rholang (`halted.contains(pk)`) so the captured
+/// result is a single `GBool` — robust, no nested ESet decode. The exploratory
+/// deploy resets to `post_state` internally (read-only; no mutation).
+async fn pos_validator_is_halted(
+    ops: &mut RuntimeOps,
+    post_state: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+) -> bool {
+    use models::rhoapi::expr::ExprInstance;
+
+    // `return` is the FIRST `new` name, so it is the channel
+    // `play_exploratory_deploy` captures. Look PoS up from the registry, peek
+    // `getMintingHalted`, and send back the membership boolean for the offender.
+    let term = format!(
+        r#"
+        new return, poSCh, haltedCh,
+            rl(`rho:registry:lookup`)
+        in {{
+          rl!(`rho:system:pos`, *poSCh) |
+          for (@(_, PoS) <- poSCh) {{
+            @PoS!("getMintingHalted", *haltedCh) |
+            for (@halted <- haltedCh) {{
+              return!(halted.contains("{}".hexToBytes()))
+            }}
+          }}
+        }}"#,
+        hex::encode(validator.bytes.to_vec())
+    );
+
+    let (results, _cost) = ops
+        .play_exploratory_deploy(term, post_state)
+        .await
+        .expect("getMintingHalted exploratory query must execute");
+
+    // The captured return value is a single `GBool`: true iff the offender is
+    // still in `mintingHalted` (halted), false iff un-halted (restored).
+    results
+        .iter()
+        .flat_map(|p| p.exprs.iter())
+        .find_map(|e| match e.expr_instance {
+            Some(ExprInstance::GBool(b)) => Some(b),
+            _ => None,
+        })
+        .expect("getMintingHalted membership query must return a boolean")
 }
 
 /// CONSENSUS-CRITICAL WD-D2 gate-decision replay determinism. Exercises the

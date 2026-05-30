@@ -243,6 +243,25 @@ pub fn debit_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Bl
         .to_bytes()
 }
 
+/// Deterministic `random_state` for the Cost-Accounted Rho Stage-C slash
+/// `Σ⟦v⟧`-zero produce ([`SlashDeploy::post_eval`]), on a RNG path DISJOINT from
+/// the close-block mint ([`mint_random_state`], `lo ∈ [0,127]`), the WD-D2
+/// settlement debit ([`debit_random_state`], `-0x2b`), and the close-block
+/// mint-list channel (`0x2a`). A slash deploy has at most ONE offender pool to
+/// zero per deploy, so there is no per-index stream here — a single fixed
+/// domain split off the slash deploy's `initial_rand` suffices. Anchored to the
+/// slash deploy's replay-stable seed (`generate_slash_deploy_random_seed`,
+/// byte-identical play/replay for the same proposer + seq_num + invalid block
+/// hash), so the zeroed datum's identity — hence the post-state trie root — is
+/// byte-identical on play and replay (the consensus-critical symmetry).
+pub fn slash_random_state(slash_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random) -> Vec<u8> {
+    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), and
+    // mint-list (0x2a) paths: a slash-zero produce can never alias a mint or
+    // debit produce even when they target the same channel in different deploys.
+    const SLASH_RNG_PATH: i8 = -0x2c;
+    slash_rand.split_byte(SLASH_RNG_PATH).to_bytes()
+}
+
 /// Read the pre-state hash the supply read/write operate against. The supply
 /// channel read/write target the LIVE hot store, which for `post_eval` is the
 /// post-closeBlock state; the `pre_state_hash` is carried only for diagnostics

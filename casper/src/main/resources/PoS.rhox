@@ -176,6 +176,7 @@ in {
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, walletTag,
+                quarantineTag,
                 mintPhlogistonToValidators in {
               // `walletTag` is a fresh genesis-scoped unforgeable name (a sibling
               // of `posDeployStateTag` in kind: a content-addressing tag), used
@@ -188,6 +189,20 @@ in {
               // install — all of which live across sibling contract blocks. See the
               // full unforgeability/injectivity/merge-safety rationale at the
               // `mintPhlogiston`/VB definitions below.
+              //
+              // `quarantineTag` is its sibling for the Stage-C two-effect slash
+              // (Cost-Accounted Rho, spec Appendix B "Slashing" / DR-3): on slash
+              // the offender's stake is EARMARKED on the per-offender quarantine
+              // channel @(*quarantineTag, validatorPk) (NOT transferred to
+              // coopMultiVault — the transfer is deferred to `redeemSlashed`'s
+              // adjudication, avoiding the transfer-failure path). Like `walletTag`
+              // it is unforgeable (private tag), deterministic, and INJECTIVE in
+              // validatorPk (distinct offenders ⇒ distinct quarantine channels,
+              // disjoint from the wallet/funding-slot domains —
+              // formal/rocq/cost_accounted_rho/theories/WalletNaming.v
+              // `wallet_quarantine_domain_disjoint` /
+              // `quarantine_funding_slot_domain_disjoint`), so two offenders'
+              // quarantines never alias under a multi-parent merge.
               //
               // DR-13 (CRITICAL): @W_v (the validator's DRAW channel) is DISTINCT
               // from the SUPPLY POOL Σ⟦v⟧ = from_sig(Ground(pk)) that the WD-D2
@@ -230,6 +245,19 @@ in {
                 //   it (and lets the normal next-epoch mint re-fund). Genesis-init
                 //   empty (no validator starts halted).
                 "mintingHalted"    : Set(),
+                // Map[PublicKey, (Int, Channel)] - the Cost-Accounted Rho Stage-C
+                //   two-effect slash quarantine ledger (spec Appendix B "Slashing"
+                //   / DR-3, DR-7). An entry (pk -> (bond, quarantineCh)) records
+                //   that `pk`'s pre-slash bond `bond` is EARMARKED on its
+                //   per-offender quarantine channel `quarantineCh = @(*quarantineTag,
+                //   pk)` pending adjudication, while the REV itself stays in
+                //   `posVault` (NOT moved to coopMultiVault — the transfer is
+                //   deferred to `redeemSlashed`). `slash` inserts here; the three
+                //   `redeemSlashed` outcomes consume it: Vindicated restores `bond`
+                //   to the validator's active stake, Guilty{penalty} moves `penalty`
+                //   to coopMultiVault and restores the remainder, Burned destroys
+                //   it. Genesis-init empty (no validator starts quarantined).
+                "quarantinedStake" : {},
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
@@ -310,6 +338,26 @@ in {
               contract PoS(@"getActiveValidators", returnCh) = {
                 for (@state <<- stateCh) {
                   returnCh!(state.get("activeValidators"))
+                }
+              } |
+              // Cost-Accounted Rho Stage-C observability (DR-3/DR-7): peeks at the
+              // `mintingHalted` Set[PublicKey] — the cross-epoch mint-halt set the
+              // slash inserts into and `redeemSlashed` (Vindicated/Guilty) removes
+              // from. Read-only `<<-` peek (no state mutation), mirroring `getBonds`.
+              // Used by the Stage-C redemption e2e test to witness the un-halt
+              // effect (a restored validator must NOT be in this set).
+              contract PoS(@"getMintingHalted", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("mintingHalted"))
+                }
+              } |
+              // Cost-Accounted Rho Stage-C observability: peeks at the
+              // `quarantinedStake` Map[PublicKey, (Int, PublicKey)] — the
+              // per-offender earmark recorded by slash and cleared by every
+              // `redeemSlashed` outcome. Read-only `<<-` peek (no state mutation).
+              contract PoS(@"getQuarantinedStake", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("quarantinedStake"))
                 }
               } |
               // Peeks at active validator list.
@@ -719,9 +767,41 @@ in {
                 }
               } |
               new commitRewards in {
-                // Private method which transfers all of a validator's rewards + bond to the Coop vault.
-                // Slash expects (Boolean, Either[Nil, String]) on returnCh.
-                contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, returnCh) = {
+                // Cost-Accounted Rho Stage-C two-effect slash (spec Appendix B
+                // "Slashing" / DR-3, DR-7; docs/theory/cost-accounting-impl/
+                // workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+                // Decision 4). The slash has THREE supply-side effects on a
+                // positive-bond offender:
+                //   (i)   drain @W_v (consume the resident MakeMint purse — the
+                //         DR-3 LIVENESS halt: an empty @W_v leaves VB blocked so
+                //         the validator cannot draw fuel) + insert the offender
+                //         into `mintingHalted` (the cross-epoch mint halt — the
+                //         closeBlock fold skips a halted pk). Both are guarded by
+                //         `¬mintingHalted.contains(v)` so a re-slash is a no-op on
+                //         them (first-slash-only / idempotent).
+                //   (ii)  ZERO Σ⟦v⟧ — performed by the Rust `SlashDeploy::post_eval`
+                //         (supply::produce_balance(from_sig(Ground(offender)), 0)),
+                //         NOT in Rholang (Σ⟦v⟧ is unnameable in Rholang — DR-13).
+                //         The contract publishes the resolved offender pk onto the
+                //         Rust-known, user-unforgeable env channel `sys:casper:slashedPk`
+                //         (mirroring closeBlock's `mintList` seam); post_eval reads
+                //         it to zero exactly that offender's pool. A no-op slash (or
+                //         absent evidence) publishes NOTHING ⇒ post_eval zeros
+                //         nothing (idempotency: zeroing an already-zero Σ⟦v⟧ is a
+                //         no-op anyway).
+                //   (iii) bond→0, remove from active, and EARMARK the pre-slash bond
+                //         on the per-offender quarantine channel @(*quarantineTag,
+                //         offender) recorded in `quarantinedStake` (pending
+                //         `redeemSlashed` adjudication). `coopMultiVault` is left
+                //         UNCHANGED — the REV stays in `posVault` (no transfer here,
+                //         so no transfer-failure path); coop grows ONLY in
+                //         `redeemSlashed`'s Guilty branch.
+                //
+                // `slashedPk` is the env channel (SlashDeploy::slashed_pk_channel,
+                // `sys:casper:slashedPk`) onto which the resolved offender pk is
+                // published for the Rust Σ⟦v⟧-zero. Slash expects
+                // (Boolean, Either[Nil, String]) on returnCh.
+                contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, slashedPk, returnCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -743,11 +823,9 @@ in {
                                       for (@valBond <- valBondCh) {
                                         // Idempotency: a validator already at
                                         // stake 0 has been slashed by a prior
-                                        // call. The transfer of `valBond = 0`
-                                        // would fail with "Amount must be
-                                        // positive value", but the desired
-                                        // end state (validator at 0, removed
-                                        // from active set) is already reached.
+                                        // call. The desired end state (validator
+                                        // at 0, removed from active, halted,
+                                        // quarantined) is already reached.
                                         // Returning (true, Nil) here makes
                                         // PoS!"slash" safe to invoke from
                                         // every block whose body re-issues a
@@ -758,38 +836,63 @@ in {
                                         // filter_recoverable`) and for the
                                         // T-9.3 catch-all dispatcher that
                                         // mints a record per slashable
-                                        // variant.
+                                        // variant. No offender pk is published
+                                        // on `slashedPk`, so the Rust post_eval
+                                        // zeros nothing (Σ⟦v⟧ already zero).
                                         if (valBond <= 0) {
                                           stateUpdateCh!(state, (true, Nil))
                                         } else {
-                                          new transferDoneCh in {
-                                            @posVault!(
-                                              "transfer",
-                                              coopMultiVaultAddr,
-                                              valBond,
-                                              posAuthKey,
-                                              *transferDoneCh
-                                            ) |
-                                            for (@transferResult <- transferDoneCh) {
-                                              match transferResult {
-                                                (true, _) => {
-                                                  stateUpdateCh!({
-                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                    "activeValidators": state.get("activeValidators").delete(validator),
-                                                    "committedRewards" : state.get("committedRewards").delete(validator),
-                                                    "withdrawers"     : state.get("withdrawers"),
-                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                    "randomImages"    : state.get("randomImages"),
-                                                    "randomNumbers"   : state.get("randomNumbers")
-                                                  },
-                                                  (true, Nil))
-                                                }
-                                                (_, errorMessage) => {
-                                                  stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
-                                                }
-                                              }
-                                            }
-                                          }
+                                          // Positive-bond first slash: the
+                                          // two-effect quarantine. NO posVault
+                                          // transfer (coop unchanged); the bond
+                                          // is earmarked under the offender's
+                                          // quarantine identity and the offender
+                                          // is halted + zeroed (Rust post_eval).
+                                          // Drain @W_v (the DR-3 liveness halt)
+                                          // exactly once, guarded by ¬halted, so
+                                          // a re-slash does not double-drain. The
+                                          // quarantine "channel" the design records
+                                          // is the content-addressed name
+                                          // @(*quarantineTag, validator); since it
+                                          // is a pure function of the (in-scope)
+                                          // quarantineTag and the validator pk, we
+                                          // store the validator pk as the recovery
+                                          // key (the bond is read back via
+                                          // .nth(0)), keeping the stored datum a
+                                          // first-class process (a name cannot be a
+                                          // map VALUE directly in Rholang).
+                                          // Best-effort @W_v drain (the DR-3
+                                          // LIVENESS halt), composed IN PARALLEL so
+                                          // it never gates the consensus state
+                                          // update: a non-persistent `for` BLOCKS
+                                          // on an empty @W_v (an offline validator
+                                          // never funded), so gating the state
+                                          // update on it would hang the slash. The
+                                          // halt that consensus depends on is the
+                                          // `mintingHalted` insert + the Rust
+                                          // Σ⟦v⟧-zero below (both unconditional);
+                                          // the @W_v drain is the additional
+                                          // liveness re-block when a purse is
+                                          // resident. Guarded by ¬halted so a
+                                          // re-slash does not consume a fresh
+                                          // (post-redemption) purse.
+                                          (if (state.get("mintingHalted").contains(validator) == false) {
+                                            for (_ <- @(*walletTag, validator)) { Nil }
+                                          } else {
+                                            Nil
+                                          }) |
+                                          // Publish the offender pk for the Rust
+                                          // Σ⟦v⟧-zero (sys:casper:slashedPk).
+                                          slashedPk!(validator) |
+                                          stateUpdateCh!(
+                                            state
+                                              .set("allBonds", state.get("allBonds").set(validator, 0))
+                                              .set("activeValidators", state.get("activeValidators").delete(validator))
+                                              .set("committedRewards", state.get("committedRewards").delete(validator))
+                                              .set("mintingHalted", state.get("mintingHalted").add(validator))
+                                              .set("quarantinedStake", state.get("quarantinedStake").set(validator, (valBond, validator))),
+                                            (true, Nil)
+                                          )
                                         }
                                       }
                                     }
@@ -801,6 +904,189 @@ in {
                         }
                       } else {
                         returnCh!((false, "Invalid system auth token"))
+                      }
+                    }
+                  }
+                } |
+                // Cost-Accounted Rho Stage-C validator redemption (spec Appendix B
+                // "Slashing" / DR-7; docs/theory/cost-accounting-impl/
+                // workstream-c-economic.md "Stage C", stageb-minting-halt-interface.md
+                // Decision 4). Governance-triggered (NOT auto-emitted) adjudication
+                // of a quarantined (slashed) validator. DOUBLE-gated:
+                //   (1) `sysAuthToken` — a GSysAuthToken constructible ONLY by the
+                //       Rust RedeemDeploy (system_deploy.rs `mk_sys_auth_token`); and
+                //   (2) `multiSigVerified` — the PoS-multisig-quorum datum
+                //       authentication is a Rust PLATFORM OBLIGATION (DR-12): the
+                //       RedeemDeploy (redeem_deploy.rs) verifies that at least
+                //       the configured pos-multisig-quorum of the pos-multisig
+                //       public keyset (the genesis posMultiSigQuorum /
+                //       posMultiSigPublicKeys params)
+                //       authorized the redemption datum BEFORE dispatch and passes
+                //       the verdict in as `multiSigVerified`. A false value (under
+                //       quorum / unauthorized) rejects with NO state change — no
+                //       restore. (Both gates must hold; the sysAuthToken alone is
+                //       insufficient for redemption, unlike mint/slash.)
+                //
+                // `outcome` is one of (DR-3 two-effect adjudication):
+                //   ("Vindicated", _)       — innocent: restore the full quarantined
+                //                             bond to active stake, remove from
+                //                             `mintingHalted`, clear the quarantine,
+                //                             and remove STALE mintedEpochs (v, e≥cur)
+                //                             so the next-epoch mint re-funds Σ⟦v⟧/@W_v
+                //                             (redemption writes NEITHER directly —
+                //                             all phlogiston creation stays on the
+                //                             single authorized mint path).
+                //   ("Guilty", penalty)     — partial: move `penalty` (≤ quarantined
+                //                             bond) to coopMultiVault (the ONLY place
+                //                             coop grows now) and restore the
+                //                             remainder to active stake; un-halt +
+                //                             clear quarantine + clear stale epochs.
+                //   ("Burned", _)           — total: destroy the quarantined stake
+                //                             (REV stays in posVault as protocol
+                //                             surplus); the validator STAYS unbonded
+                //                             AND halted (NOT removed from
+                //                             `mintingHalted`), quarantine cleared.
+                // redeemSlashed expects (Boolean, Either[Nil, String]) on returnCh.
+                contract PoS(@"redeemSlashed", @validatorPk, @outcome, @sysAuthToken, @multiSigVerified, returnCh) = {
+                  new isValidTokenCh in {
+                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+                    for (@isValid <- isValidTokenCh) {
+                      if (isValid and multiSigVerified) {
+                        new blockDataCh, getBlockData(`rho:block:data`), stateProcessCh in {
+                          getBlockData!(*blockDataCh) |
+                          for (@blockNumber, _, _ <- blockDataCh) {
+                            runMVar!(*stateCh, *stateProcessCh, *returnCh) |
+                            for (@state, stateUpdateCh <- stateProcessCh) {
+                              // Redemption REQUIRES an active quarantine record
+                              // (DR-7 `redeem_requires_quarantine`): a validator that
+                              // was never slashed (or already redeemed) has nothing
+                              // to adjudicate — reject with no state change.
+                              if (state.get("quarantinedStake").contains(validatorPk) == false) {
+                                stateUpdateCh!(state, (false, "validator not quarantined"))
+                              } else {
+                                new quarantinedBondCh, currentEpochCh, clearStaleEpochs in {
+                                  quarantinedBondCh!(state.get("quarantinedStake").get(validatorPk).nth(0)) |
+                                  // The current epoch index; stale mint records are
+                                  // (v, e) with e >= currentEpoch — removing them lets
+                                  // the next-epoch mint re-fund a restored validator.
+                                  currentEpochCh!(blockNumber / $$epochLength$$) |
+                                  // Fold `mintedEpochs` keeping every entry EXCEPT
+                                  // this validator's records at epoch >= current.
+                                  for (@quarantinedBond <- quarantinedBondCh & @currentEpoch <- currentEpochCh) {
+                                    new staleClearedCh in {
+                                      @ListOps!("fold", state.get("mintedEpochs").toList(), Set(), *clearStaleEpochs, *staleClearedCh) |
+                                      contract clearStaleEpochs(@(epochPk, epochIdx), @acc, outCh) = {
+                                        if (epochPk == validatorPk and epochIdx >= currentEpoch) {
+                                          // Stale record for the redeemed validator:
+                                          // drop it (do not re-add to the accumulator).
+                                          outCh!(acc)
+                                        } else {
+                                          outCh!(acc.add((epochPk, epochIdx)))
+                                        }
+                                      } |
+                                      for (@freshEpochs <- staleClearedCh) {
+                                        match outcome {
+                                          ("Vindicated", _) => {
+                                            // Restore the full bond to active stake;
+                                            // un-halt; clear quarantine + stale epochs.
+                                            // No coop change, no direct Σ⟦v⟧/@W_v write.
+                                            stateUpdateCh!(
+                                              state
+                                                .set("allBonds", state.get("allBonds").set(validatorPk, quarantinedBond))
+                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                .set("mintedEpochs", freshEpochs),
+                                              (true, Nil)
+                                            )
+                                          }
+                                          ("Guilty", penalty) => {
+                                            // Partial: penalty (clamped to [0, bond])
+                                            // to coopMultiVault, remainder restored.
+                                            new penaltyCh, remainderCh in {
+                                              // Clamp so a penalty cannot exceed the
+                                              // quarantined bond (conservation; the
+                                              // Sage `redemption_model` penalty≤bond
+                                              // property) nor go negative.
+                                              if (penalty < 0) { penaltyCh!(0) }
+                                              else { if (penalty > quarantinedBond) { penaltyCh!(quarantinedBond) } else { penaltyCh!(penalty) } } |
+                                              for (@clampedPenalty <- penaltyCh) {
+                                                remainderCh!(quarantinedBond - clampedPenalty) |
+                                                for (@remainder <- remainderCh) {
+                                                  if (clampedPenalty <= 0) {
+                                                    // No penalty to move: behaves like
+                                                    // a (capped) restore of the whole
+                                                    // bond — no coop transfer needed.
+                                                    stateUpdateCh!(
+                                                      state
+                                                        .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
+                                                        .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                        .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                        .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                        .set("mintedEpochs", freshEpochs),
+                                                      (true, Nil)
+                                                    )
+                                                  } else {
+                                                    // Move the penalty REV from posVault
+                                                    // to coopMultiVault (the ONLY coop
+                                                    // growth path) before restoring.
+                                                    new transferDoneCh in {
+                                                      @posVault!("transfer", coopMultiVaultAddr, clampedPenalty, posAuthKey, *transferDoneCh) |
+                                                      for (@transferResult <- transferDoneCh) {
+                                                        match transferResult {
+                                                          (true, _) => {
+                                                            stateUpdateCh!(
+                                                              state
+                                                                .set("allBonds", state.get("allBonds").set(validatorPk, remainder))
+                                                                .set("activeValidators", state.get("activeValidators").add(validatorPk))
+                                                                .set("mintingHalted", state.get("mintingHalted").delete(validatorPk))
+                                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                                .set("mintedEpochs", freshEpochs),
+                                                              (true, Nil)
+                                                            )
+                                                          }
+                                                          (_, errorMessage) => {
+                                                            stateUpdateCh!(state, (false, "penalty transfer failed: " ++ errorMessage))
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          ("Burned", _) => {
+                                            // Total: destroy the quarantined stake.
+                                            // Validator stays unbonded (allBonds at 0
+                                            // from slash) AND halted (NOT un-halted);
+                                            // only the quarantine record is cleared.
+                                            // No coop change (REV stays in posVault as
+                                            // protocol surplus). Stale epochs cleared
+                                            // (harmless — halt blocks re-mint anyway).
+                                            stateUpdateCh!(
+                                              state
+                                                .set("quarantinedStake", state.get("quarantinedStake").delete(validatorPk))
+                                                .set("mintedEpochs", freshEpochs),
+                                              (true, Nil)
+                                            )
+                                          }
+                                          _ => {
+                                            stateUpdateCh!(state, (false, "unknown redemption outcome"))
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        // Either an invalid sysAuthToken OR an unverified/under-quorum
+                        // multisig: reject with NO state change (no restore).
+                        returnCh!((false, "Unauthorized redemption (sysAuthToken or multisig quorum)"))
                       }
                     }
                   }

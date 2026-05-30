@@ -77,6 +77,41 @@ pub fn generate_slash_deploy_random_seed(
     Tools::rng(&seed).split_byte(1)
 }
 
+/// Per-redemption random seed for the Cost-Accounted Rho Stage-C validator
+/// redemption system deploy (DR-7/DR-12). The redeem deploy's `source()`
+/// allocates its own private channels (`new ...`) from this rng, so the seed
+/// must be distinct per (validator, seq_num, outcome) to avoid aliasing those
+/// unforgeable names within a block, and identical across play/replay for the
+/// same inputs.
+///
+/// Derivation: a domain-tagged preimage
+/// `b"redeem:v1" || SYSTEM_DEPLOY_PREFIX || validator || seq_num || outcome_tag`,
+/// hashed via `Tools::rng` and `split_byte(3)`. The domain tag `b"redeem:v1"`
+/// and the distinct `split_byte(3)` keep this seed family disjoint from the
+/// close-block (`split_byte(0)`), slash (`split_byte(1)`), and epoch-mint
+/// (`split_byte(2)`) families. Like the slash/epoch-mint seeds it never derives
+/// from a signature (which can be empty on the threshold path) — the validator
+/// pk, sequence number, and outcome tag are always present and replay-stable.
+pub fn generate_redeem_deploy_random_seed(
+    validator: Validator,
+    seq_num: i32,
+    outcome_tag: &str,
+) -> Blake2b512Random {
+    const REDEEM_DOMAIN: &[u8] = b"redeem:v1";
+    let prefix = serialize_int32_fixed(SYSTEM_DEPLOY_PREFIX);
+    let seq = serialize_int32_fixed(seq_num);
+    let outcome = outcome_tag.as_bytes();
+    let mut seed: Vec<u8> = Vec::with_capacity(
+        REDEEM_DOMAIN.len() + prefix.len() + validator.len() + seq.len() + outcome.len(),
+    );
+    seed.extend_from_slice(REDEEM_DOMAIN);
+    seed.extend(prefix);
+    seed.extend(validator);
+    seed.extend(seq);
+    seed.extend_from_slice(outcome);
+    Tools::rng(&seed).split_byte(3)
+}
+
 /// Per-validator, per-sequence-number random seed for the epoch/bond
 /// phlogiston mint system deploy (Cost-Accounted Rho, spec Appendix B / §4.7;
 /// DR-13). The epoch mint runs once per epoch boundary per validator; the

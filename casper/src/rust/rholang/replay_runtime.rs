@@ -36,6 +36,9 @@ use crate::rust::metrics_constants::{
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
+use crate::rust::util::rholang::costacc::redeem_deploy::{
+    RedeemDeploy, RedemptionAuthorization, RedemptionOutcome,
+};
 use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
@@ -579,7 +582,7 @@ impl ReplayRuntimeOps {
                 issuer_public_key,
                 target_activation_epoch,
             } => {
-                let mut slash_deploy = SlashDeploy {
+                let slash_deploy = SlashDeploy {
                     invalid_block_hash: invalid_block_hash.clone(),
                     pk: issuer_public_key.clone(),
                     target_activation_epoch: *target_activation_epoch,
@@ -590,9 +593,16 @@ impl ReplayRuntimeOps {
                     ),
                 };
 
+                // Capture the pre-slash store root for the Stage-C supply
+                // `Σ⟦v⟧`-zero context (diagnostics / mismatch reporting); the
+                // supply read/write themselves target the live store.
+                let pre_state_hash: StateHash =
+                    self.runtime_ops.runtime.get_root().await.to_bytes_prost();
+
                 self.rig_system_deploy(processed_system_deploy).await?;
+                let mut slash_deploy_mut = slash_deploy.clone();
                 let (_, eval_result) = self
-                    .replay_system_deploy_internal(&mut slash_deploy, &None)
+                    .replay_system_deploy_internal(&mut slash_deploy_mut, &None)
                     .await?;
 
                 self.discard_event_log("slash-system-deploy", false).await;
@@ -608,6 +618,22 @@ impl ReplayRuntimeOps {
 
                 self.check_replay_data_with_fix(eval_result.errors.is_empty())
                     .await?;
+
+                // Cost-Accounted Rho Stage-C (Decision 4 + 6.3): zero the
+                // offender's supply pool `Σ⟦offender⟧`, SYMMETRIC with the
+                // play-side `post_eval` auto-call in
+                // `RuntimeOps::play_system_deploy`. The offender pk is the one
+                // the Rholang `slash` contract published on `sys:casper:slashedPk`
+                // (re-resolved from the SAME `invalid_block_hash` on replay), so
+                // the zeroed datum is byte-identical play↔replay. Run AFTER the
+                // rig/replay-data check so the bare supply-produce event never
+                // enters the rigged event set; the write is captured by the final
+                // replay checkpoint. The replay path enables the
+                // `ReplaySupplyMismatch` write-readback guard.
+                slash_deploy
+                    .post_eval_replay(&mut self.runtime_ops, block_data, &pre_state_hash)
+                    .await?;
+
                 Ok(map)
             }
 
@@ -675,6 +701,72 @@ impl ReplayRuntimeOps {
                     )
                     .await?;
 
+                Ok(map)
+            }
+
+            SystemDeployData::Redeem {
+                validator_pk,
+                outcome_tag,
+                penalty,
+                pos_multi_sig_public_keys,
+                pos_multi_sig_quorum,
+                authorizations,
+            } => {
+                // Cost-Accounted Rho Stage-C redemption replay (DR-7/DR-12).
+                // Reconstruct the RedeemDeploy from the block-body authorization
+                // material and re-run it. The DR-12 multisig-quorum verification
+                // (RedeemDeploy::verify_multisig_quorum, invoked from `env()`) is a
+                // DETERMINISTIC pure function of these fields, so replay re-derives
+                // the SAME `multiSigVerified` verdict as play — and the Rholang
+                // state transition replays via `replay_system_deploy_internal`.
+                // Redemption has NO supply `post_eval` (writes neither Σ⟦v⟧ nor
+                // @W_v), so there is no post-eval call here.
+                let outcome = match outcome_tag.as_str() {
+                    "Vindicated" => RedemptionOutcome::Vindicated,
+                    "Guilty" => RedemptionOutcome::Guilty { penalty: *penalty },
+                    "Burned" => RedemptionOutcome::Burned,
+                    other => {
+                        return Err(CasperError::ReplayFailure(ReplayFailure::internal_error(
+                            format!("unknown redemption outcome tag on replay: {}", other),
+                        )));
+                    }
+                };
+                let mut redeem_deploy = RedeemDeploy {
+                    validator_pk: validator_pk.to_vec(),
+                    outcome,
+                    pos_multi_sig_public_keys: pos_multi_sig_public_keys.clone(),
+                    pos_multi_sig_quorum: *pos_multi_sig_quorum,
+                    authorizations: authorizations
+                        .iter()
+                        .map(|a| RedemptionAuthorization {
+                            public_key: a.public_key.to_vec(),
+                            signature: a.signature.to_vec(),
+                        })
+                        .collect(),
+                    initial_rand: system_deploy_util::generate_redeem_deploy_random_seed(
+                        block_data.sender.bytes.clone(),
+                        block_data.seq_num,
+                        outcome_tag,
+                    ),
+                };
+
+                self.rig_system_deploy(processed_system_deploy).await?;
+                let (_, eval_result) = self
+                    .replay_system_deploy_internal(&mut redeem_deploy, &None)
+                    .await?;
+
+                self.discard_event_log("redeem-system-deploy", false).await;
+
+                let checkpoint_mergeable_start = Instant::now();
+                let map = self
+                    .runtime_ops
+                    .get_number_channels_data(&eval_result.mergeable)
+                    .await?;
+                metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .record(checkpoint_mergeable_start.elapsed().as_secs_f64());
+
+                self.check_replay_data_with_fix(eval_result.errors.is_empty())
+                    .await?;
                 Ok(map)
             }
 

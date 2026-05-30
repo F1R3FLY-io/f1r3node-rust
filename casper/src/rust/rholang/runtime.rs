@@ -154,6 +154,12 @@ impl RuntimeOps {
                     self.play_system_deploy(&current_hash, &mut close_deploy)
                         .await?
                 }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
+                    mut redeem_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
+                        .await?
+                }
             };
             match result {
                 SystemDeployResult::PlaySucceeded {
@@ -268,6 +274,12 @@ impl RuntimeOps {
                     mut close_deploy,
                 ) => {
                     self.play_system_deploy(&current_hash, &mut close_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Redeem(
+                    mut redeem_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut redeem_deploy)
                         .await?
                 }
             };
@@ -1064,6 +1076,42 @@ impl RuntimeOps {
                         final_state_hash,
                         event_log,
                         SystemDeployData::create_close(),
+                        mcl,
+                        system_deploy_result,
+                    ))
+                } else if let Some(redeem) = system_deploy
+                    .as_any()
+                    .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
+                {
+                    // Cost-Accounted Rho Stage-C redemption: persist the FULL
+                    // authorization material (validator, outcome, multisig
+                    // keyset/quorum, cosigner authorizations) so replay re-runs
+                    // the DR-12 quorum verification byte-identically to play.
+                    use crate::rust::util::rholang::costacc::redeem_deploy::RedemptionOutcome;
+                    let (outcome_tag, penalty) = match &redeem.outcome {
+                        RedemptionOutcome::Vindicated => ("Vindicated".to_string(), 0_i64),
+                        RedemptionOutcome::Guilty { penalty } => ("Guilty".to_string(), *penalty),
+                        RedemptionOutcome::Burned => ("Burned".to_string(), 0_i64),
+                    };
+                    let authorizations = redeem
+                        .authorizations
+                        .iter()
+                        .map(|a| models::rust::casper::protocol::casper_message::RedemptionAuthorizationData {
+                            public_key: a.public_key.clone().into(),
+                            signature: a.signature.clone().into(),
+                        })
+                        .collect();
+                    Ok(SystemDeployResult::play_succeeded(
+                        final_state_hash,
+                        event_log,
+                        SystemDeployData::create_redeem(
+                            redeem.validator_pk.clone().into(),
+                            outcome_tag,
+                            penalty,
+                            redeem.pos_multi_sig_public_keys.clone(),
+                            redeem.pos_multi_sig_quorum,
+                            authorizations,
+                        ),
                         mcl,
                         system_deploy_result,
                     ))

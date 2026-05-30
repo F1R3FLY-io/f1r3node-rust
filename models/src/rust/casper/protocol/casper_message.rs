@@ -818,6 +818,15 @@ impl ProcessedDeploy {
     }
 }
 
+/// A single cosigner authorization over the Cost-Accounted Rho Stage-C
+/// redemption datum (DR-7/DR-12): a `(public_key, signature)` pair carried in
+/// the block body so replay can re-run the multisig-quorum verification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RedemptionAuthorizationData {
+    pub public_key: ByteString,
+    pub signature: ByteString,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemDeployData {
     Slash {
@@ -826,6 +835,19 @@ pub enum SystemDeployData {
         target_activation_epoch: i64,
     },
     CloseBlockSystemDeployData,
+    /// Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12). Carries the
+    /// FULL redemption-authorization material so replay can re-run the DR-12
+    /// PoS-multisig-quorum platform obligation byte-identically to play.
+    Redeem {
+        validator_pk: ByteString,
+        /// Outcome tag: "Vindicated" | "Guilty" | "Burned".
+        outcome_tag: String,
+        /// Penalty for Guilty (0 otherwise).
+        penalty: i64,
+        pos_multi_sig_public_keys: Vec<String>,
+        pos_multi_sig_quorum: u32,
+        authorizations: Vec<RedemptionAuthorizationData>,
+    },
     Empty,
 }
 
@@ -846,6 +868,24 @@ impl SystemDeployData {
         Self::CloseBlockSystemDeployData
     }
 
+    pub fn create_redeem(
+        validator_pk: ByteString,
+        outcome_tag: String,
+        penalty: i64,
+        pos_multi_sig_public_keys: Vec<String>,
+        pos_multi_sig_quorum: u32,
+        authorizations: Vec<RedemptionAuthorizationData>,
+    ) -> Self {
+        Self::Redeem {
+            validator_pk,
+            outcome_tag,
+            penalty,
+            pos_multi_sig_public_keys,
+            pos_multi_sig_quorum,
+            authorizations,
+        }
+    }
+
     pub fn from_proto(proto: SystemDeployDataProto) -> Result<Self, String> {
         match proto
             .system_deploy
@@ -863,6 +903,21 @@ impl SystemDeployData {
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
+            system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(redeem) => Ok(Self::Redeem {
+                validator_pk: redeem.validator_pk,
+                outcome_tag: redeem.outcome_tag,
+                penalty: redeem.penalty,
+                pos_multi_sig_public_keys: redeem.pos_multi_sig_public_keys,
+                pos_multi_sig_quorum: redeem.pos_multi_sig_quorum,
+                authorizations: redeem
+                    .authorizations
+                    .into_iter()
+                    .map(|a| RedemptionAuthorizationData {
+                        public_key: a.public_key,
+                        signature: a.signature,
+                    })
+                    .collect(),
+            }),
         }
     }
 
@@ -884,6 +939,31 @@ impl SystemDeployData {
             Self::CloseBlockSystemDeployData => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::CloseBlockSystemDeploy(
                     CloseBlockSystemDeployDataProto {},
+                )),
+            },
+            Self::Redeem {
+                validator_pk,
+                outcome_tag,
+                penalty,
+                pos_multi_sig_public_keys,
+                pos_multi_sig_quorum,
+                authorizations,
+            } => SystemDeployDataProto {
+                system_deploy: Some(SystemDeploy::RedeemSystemDeploy(
+                    RedeemSystemDeployDataProto {
+                        validator_pk,
+                        outcome_tag,
+                        penalty,
+                        pos_multi_sig_public_keys,
+                        pos_multi_sig_quorum,
+                        authorizations: authorizations
+                            .into_iter()
+                            .map(|a| RedemptionAuthorizationProto {
+                                public_key: a.public_key,
+                                signature: a.signature,
+                            })
+                            .collect(),
+                    },
                 )),
             },
             Self::Empty => SystemDeployDataProto {

@@ -16,11 +16,15 @@ impl DeployIndex {
     pub const SYS_SLASH_DEPLOY_COST: u64 = 0;
     pub const SYS_CLOSE_BLOCK_DEPLOY_COST: u64 = 0;
     pub const SYS_EMPTY_DEPLOY_COST: u64 = 0;
+    // Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12) — like the
+    // other system deploys it carries no merge weight.
+    pub const SYS_REDEEM_DEPLOY_COST: u64 = 0;
 
     // These are to be put in rejected set in blocks, so prefix format is defined for identification purposes.
     pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[1];
     pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] = &[2];
     pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[3];
+    pub const SYS_REDEEM_DEPLOY_ID: &'static [u8] = &[4];
 
     pub fn new(
         sig: prost::bytes::Bytes,
