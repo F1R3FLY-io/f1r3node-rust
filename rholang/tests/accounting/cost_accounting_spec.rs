@@ -327,6 +327,10 @@ async fn check_phlo_limit_exceeded(contract: String, initial_phlo: i64) -> bool 
 fn token_event(local_index: u64, weight: u64) -> BillableTokenEvent {
     BillableTokenEvent {
         deploy_id: [7; 32],
+        // D0: per-signature lane key, constant within a deploy. The scalar
+        // fast path leaves the lane pool empty, so a fixed sentinel keeps the
+        // canonical `Ord` (deploy_id, sig_hash, …) stable across these events.
+        sig_hash: [0; 32],
         source_path: SourcePath(vec![local_index as u32]),
         redex_id: RedexId(local_index),
         local_index,
@@ -345,6 +349,10 @@ fn token_event_with(
 ) -> BillableTokenEvent {
     BillableTokenEvent {
         deploy_id: [deploy_tag; 32],
+        // D0: per-deploy lane key. Keyed off `deploy_tag` so events from
+        // distinct deploys carry distinct (but per-deploy-constant) lane keys,
+        // matching the one-compound-lane-per-deploy model.
+        sig_hash: [deploy_tag; 32],
         source_path: SourcePath(source_path),
         redex_id: RedexId(redex_id),
         local_index,

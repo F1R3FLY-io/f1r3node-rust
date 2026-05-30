@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_queue::SegQueue;
+use dashmap::DashMap;
 
 use costs::Cost;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -26,6 +27,17 @@ const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-sign
 const COMPOUND_DEPLOY_SIGNATURE_DOMAIN: &[u8] =
     b"f1r3node:cost-accounted-rho:compound-deploy-signature:v1";
 const COST_TRACE_DIGEST_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:cost-trace:v1";
+/// Domain separator for the per-signature lane key (`Sig::lane_hash`). The
+/// lane key digests the SAME canonical signature serialization that
+/// `SignatureChannel::from_sig` uses to derive the supply channel `Σ⟦s⟧`
+/// (`sig_canonical_bytes`), so a deploy's lane key for signature `s` and its
+/// supply channel are anchored to one canonical basis (no drift — see
+/// `docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`,
+/// "Integration invariant"). Distinct from the channel domain only by this
+/// separator: `lane_hash` is an internal map key (`[u8;32]`), while the
+/// channel is a `GPrivate`-keyed `Par`; both are pure functions of the same
+/// canonical bytes.
+const SIGNATURE_LANE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:signature-lane:v1";
 pub const MAX_COST_TRACE_EVENTS: u64 = 1_048_576;
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
 pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
@@ -71,6 +83,85 @@ pub struct RuntimeBudget {
     canonical_reconciliation: Arc<Mutex<Option<CanonicalReconciliation>>>,
     max_log_entries: usize,
     unmetered: Arc<AtomicU64>,
+    // Per-signature token pool (spec §4.6 spectral decomposition into
+    // per-signature pools; §7.6 "no interleaving" is PER-SIGNATURE, not
+    // global). The N=1 (single-signature) FAST PATH keeps this map EMPTY:
+    // every legacy single-signature deploy leaves `lanes` empty and runs the
+    // EXISTING scalar `attempt_one`/`reconcile`/`total_cost` path
+    // byte-identically — the lane pool is only consulted once a deploy has
+    // routed attempts into one or more lanes. Lock-free reads/inserts mirror
+    // `rspace_plus_plus/src/rspace/rspace.rs`'s `phase_a_locks`
+    // (`Arc<DashMap<…>>`): disjoint signatures key disjoint `Lane` entries, so
+    // concurrent per-lane reconciliation across distinct signatures never
+    // contends (the `lane_pool_disjoint` corollary in
+    // `formal/rocq/cost_accounted_rho/theories/ChannelSeparation.v`). Keyed by
+    // `Sig::lane_hash` — the same canonical basis as the supply channel
+    // `SignatureChannel::from_sig` (integration invariant).
+    lanes: Arc<DashMap<[u8; 32], Lane>>,
+}
+
+/// One per-signature token pool entry (spec §4.6). Structurally mirrors the
+/// `RuntimeBudget` scalar fields so `reconcile_lane` — the SAME canonical
+/// reconciliation walk used by the scalar path — applies unchanged per lane:
+/// atomics where the scalar path uses atomics (`initial_tokens`,
+/// `consumed_tokens`), a lock-free `attempt_queue` (wait-free MPMC
+/// `SegQueue`), and a `Mutex`-guarded `accumulator` + cached `reconciliation`
+/// touched ONLY at lane finalization (never on the per-event hot path), again
+/// matching the scalar budget. Each lane is an independent instance of the
+/// proven scalar budget (`rb_pool` in
+/// `formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v`).
+///
+/// `#[allow(dead_code)]`: D0 establishes the per-signature pool SUBSTRATE
+/// (struct + lock-free routing + per-lane reconciliation) and exercises it
+/// from the in-crate tests; the PRODUCTION write path that routes a deploy's
+/// charges into lanes lands at the D2 block-assembly funding gate
+/// (`block_creator.rs::admit_by_funding`, per
+/// `docs/theory/cost-accounting-impl/workstream-d-acceptance.md`). The
+/// `sig`/`consumed_tokens` fields are part of the spec'd `Lane` shape (§4.6)
+/// and are read on that future path; they are retained (not removed) so the
+/// substrate matches the design exactly. The N=1 scalar fast path never
+/// constructs a `Lane`.
+#[allow(dead_code)]
+struct Lane {
+    /// The whole-signature value σ this lane pools fuel for (Def 7.4 — no
+    /// per-component split; one compound lane per deploy in D-scope).
+    sig: Sig,
+    /// Initial token budget for this signature's pool. `AtomicI64` matching
+    /// the scalar `RuntimeBudget::initial_tokens`.
+    initial_tokens: AtomicI64,
+    /// Liveness counter for this lane (CAS-claimed weights). Strictly an
+    /// internal runtime gate, identical in role to the scalar
+    /// `consumed_tokens`; the consensus-relevant consumed value for the lane
+    /// comes from `reconcile_lane`, NOT this counter.
+    consumed_tokens: AtomicI64,
+    /// Lock-free append queue of every reservation ATTEMPT routed to this
+    /// lane (wait-free MPMC `SegQueue`), drained into `accumulator` by the
+    /// lane reconciliation. Mirrors the scalar `attempt_queue`.
+    attempt_queue: SegQueue<AttemptRecord>,
+    /// Reconciliation accumulator for this lane. Drained-into from
+    /// `attempt_queue` and re-walked by `reconcile_lane`. Touched only at lane
+    /// finalization, so the per-event path stays lock-free. Mirrors the scalar
+    /// `attempt_accumulator`.
+    accumulator: Mutex<Vec<AttemptRecord>>,
+    /// Cached canonical reconciliation for this lane (drain-append-recompute).
+    /// Mirrors the scalar `canonical_reconciliation`.
+    reconciliation: Mutex<Option<CanonicalReconciliation>>,
+}
+
+impl Lane {
+    // See the `Lane` doc comment: lane construction is on the staged D2
+    // production routing path and is exercised by the in-crate D0 tests.
+    #[allow(dead_code)]
+    fn new(sig: Sig, initial: i64) -> Self {
+        Self {
+            sig,
+            initial_tokens: AtomicI64::new(initial),
+            consumed_tokens: AtomicI64::new(0),
+            attempt_queue: SegQueue::new(),
+            accumulator: Mutex::new(Vec::new()),
+            reconciliation: Mutex::new(None),
+        }
+    }
 }
 
 /// One reservation attempt recorded during evaluation. Pushed to the
@@ -167,6 +258,20 @@ pub enum BillableKind {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BillableTokenEvent {
     pub deploy_id: [u8; 32],
+    /// Per-signature lane key (`Sig::lane_hash`) of the deploy's signature.
+    /// Placed immediately after `deploy_id` so the derived `Ord` on
+    /// `BillableTokenEvent` orders by `(deploy_id, sig_hash, source_path,
+    /// redex_id, local_index, kind, weight)`. Both `deploy_id` and `sig_hash`
+    /// are constant within a single deploy (the signature is installed before
+    /// evaluation begins), so the per-lane order — the projection of events
+    /// onto a fixed `sig_hash` — is a strict REFINEMENT of the global order:
+    /// the global walk over all events, restricted to one lane, visits that
+    /// lane's events in exactly the lane's own canonical order. This is the
+    /// `sig_hash`-second-key invariant the spectral decomposition (spec §4.6,
+    /// §7.6 "no interleaving is PER-SIGNATURE") relies on. In D-scope every
+    /// deploy carries ONE compound lane, so `sig_hash` is identical across a
+    /// deploy's events and the scalar fast path is unaffected.
+    pub sig_hash: [u8; 32],
     pub source_path: SourcePath,
     pub redex_id: RedexId,
     pub local_index: u64,
@@ -201,6 +306,10 @@ impl RuntimeBudget {
             canonical_reconciliation: Arc::new(Mutex::new(None)),
             max_log_entries,
             unmetered: Arc::new(AtomicU64::new(0)),
+            // N=1 fast path: the lane pool starts empty and stays empty for
+            // every legacy single-signature deploy (mirrors `rspace.rs`
+            // `phase_a_locks` construction).
+            lanes: Arc::new(DashMap::new()),
         }
     }
 
@@ -478,6 +587,49 @@ impl RuntimeBudget {
 
         let initial = self.initial_tokens.load(Ordering::Acquire);
 
+        // The canonical commit walk is shared with the per-signature lanes
+        // (`reconcile_lane`): scalar and per-lane reconciliation run the SAME
+        // pure walk over (initial, attempts), so the N=1 scalar path stays
+        // byte-identical to the pre-D0 implementation.
+        let attempts: Vec<AttemptRecord> = {
+            let accumulator = self
+                .attempt_accumulator
+                .lock()
+                .expect("attempt accumulator poisoned");
+            accumulator.clone()
+        };
+        let rec = Self::reconcile_lane(initial, &attempts);
+
+        // Repopulate the diagnostic `event_log` / `log` mirrors from the
+        // canonical committed set. This moves their population OFF the
+        // hot path (they were previously appended per-grant inside
+        // `attempt_one`) and onto finalization, so `get_event_log` /
+        // `get_log` now reflect the canonical committed set rather than a
+        // schedule-dependent record of CAS-race winners.
+        self.repopulate_diagnostic_logs(&rec.committed, &rec.cost_amounts);
+
+        *cache = Some(rec.clone());
+        rec
+    }
+
+    /// Pure canonical reconciliation over one signature's pool: given an
+    /// `initial` budget and the multiset of reservation `attempts` recorded
+    /// for that signature, return the canonical `CanonicalReconciliation`
+    /// (committed set, OOP boundary, clamped `consumed_units`, reconstructed
+    /// `cost_amounts`) in the schedule-INDEPENDENT canonical reduction order.
+    ///
+    /// This is the EXACT walk previously inlined in `reconcile()`; extracting
+    /// it lets BOTH the scalar fast path (`reconcile`, one signature, lanes
+    /// empty) and each per-signature lane (`reconcile_lane_pool`) call it. The
+    /// scalar path is therefore byte-identical to the pre-D0 implementation
+    /// (pinned by `legacy_single_sig_byte_identical`), and `total_cost` over
+    /// the lane pool is a commutative sum of independent applications of this
+    /// same function (spec §4.6 spectral decomposition; `rb_pool_total_cost =
+    /// Σ rb_total_cost` in `RuntimeBudgetRefinement.v`).
+    ///
+    /// Pure: no `self` access, no interior mutation — output depends only on
+    /// `(initial, attempts)`, never on Tokio scheduling.
+    fn reconcile_lane(initial: i64, attempts: &[AttemptRecord]) -> CanonicalReconciliation {
         // Bounded-K canonical window. Because every billable weight is
         // >= 1, the canonical commit walk commits at most `initial`
         // events before the first OOP boundary (1 more event). So only
@@ -499,13 +651,7 @@ impl RuntimeBudget {
         // logical event (e.g. through a loop) MUST see the repeated
         // attempt contribute, just as it did under the pre-Option-E
         // commit_lock contract.
-        let mut attempts: Vec<AttemptRecord> = {
-            let accumulator = self
-                .attempt_accumulator
-                .lock()
-                .expect("attempt accumulator poisoned");
-            accumulator.clone()
-        };
+        let mut attempts: Vec<AttemptRecord> = attempts.to_vec();
         attempts.sort_by(|a, b| a.event.cmp(&b.event));
         if attempts.len() > k_bound {
             attempts.truncate(k_bound);
@@ -532,22 +678,134 @@ impl RuntimeBudget {
             committed.push(rec.event);
         }
 
-        // Repopulate the diagnostic `event_log` / `log` mirrors from the
-        // canonical committed set. This moves their population OFF the
-        // hot path (they were previously appended per-grant inside
-        // `attempt_one`) and onto finalization, so `get_event_log` /
-        // `get_log` now reflect the canonical committed set rather than a
-        // schedule-dependent record of CAS-race winners.
-        self.repopulate_diagnostic_logs(&committed, &cost_amounts);
-
-        let rec = CanonicalReconciliation {
+        CanonicalReconciliation {
             committed,
             oop,
             consumed_units,
             cost_amounts,
+        }
+    }
+
+    /// Record one reservation ATTEMPT into the per-signature lane keyed by
+    /// `sig.lane_hash()`, creating the lane (seeded with `initial` tokens) on
+    /// first touch. Lock-free: the lane is found-or-inserted via
+    /// `DashMap::entry` (mirroring `rspace.rs` `phase_a_locks`), then the
+    /// attempt is pushed onto the lane's wait-free `SegQueue`. Returns the
+    /// runtime liveness outcome for the lane (`Granted`/`Oop`) via the lane's
+    /// own CAS counter — exactly the scalar `attempt_one` contract, applied
+    /// per lane.
+    ///
+    /// Disjoint signatures key disjoint `DashMap` entries (the
+    /// `lane_pool_disjoint` corollary), so concurrent reservations against
+    /// distinct signatures never contend (spec §7.6 per-signature
+    /// no-interleaving). The scalar fields and the legacy `attempt_one` path
+    /// are untouched, so leaving every deploy single-lane (`lanes` empty)
+    /// preserves the N=1 byte-identical fast path.
+    ///
+    /// `#[allow(dead_code)]`: this is the lane WRITE path. D0 lands it as
+    /// substrate (exercised by the in-crate tests); the production caller that
+    /// routes a deploy's charges into lanes lands at the D2 funding gate.
+    #[allow(dead_code)]
+    fn attempt_in_lane(
+        &self,
+        sig: &Sig,
+        initial: i64,
+        event: BillableTokenEvent,
+        amount: Option<Cost>,
+    ) -> AttemptOutcome {
+        let key = sig.lane_hash();
+        let lane = self
+            .lanes
+            .entry(key)
+            .or_insert_with(|| Lane::new(sig.clone(), initial));
+
+        // Record the attempt for the lane's canonical reconciliation, pushed
+        // lock-free before the CAS so the reconciliation sees every attempt
+        // even if the CAS race grants nothing (scalar `attempt_one` contract).
+        lane.attempt_queue.push(AttemptRecord {
+            event: event.clone(),
+            amount,
+        });
+
+        let lane_initial = lane.initial_tokens.load(Ordering::Acquire);
+        let weight = event.weight as i64;
+
+        // Lock-free CAS loop, identical to the scalar `attempt_one` gate.
+        let mut current = lane.consumed_tokens.load(Ordering::Acquire);
+        loop {
+            if current < 0 || lane_initial < 0 {
+                return AttemptOutcome::Oop;
+            }
+            if current >= lane_initial {
+                return AttemptOutcome::Oop;
+            }
+            let next = current.saturating_add(weight);
+            if next > lane_initial {
+                return AttemptOutcome::Oop;
+            }
+            match lane.consumed_tokens.compare_exchange(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return AttemptOutcome::Granted,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Reconcile ONE lane: drain its lock-free `attempt_queue` into the lane
+    /// accumulator and recompute its canonical reconciliation via the shared
+    /// `reconcile_lane` walk (drain-append-recompute, idempotent). Mirrors the
+    /// scalar `reconcile()` minus the diagnostic `event_log`/`log` mirrors
+    /// (lanes carry no diagnostic ring buffers; the scalar budget owns those).
+    fn reconcile_one_lane(lane: &Lane) -> CanonicalReconciliation {
+        let mut cache = lane.reconciliation.lock().expect("lane reconciliation");
+
+        let mut drained_any = false;
+        {
+            let mut accumulator = lane.accumulator.lock().expect("lane accumulator");
+            while let Some(record) = lane.attempt_queue.pop() {
+                accumulator.push(record);
+                drained_any = true;
+            }
+        }
+
+        if !drained_any {
+            if let Some(rec) = cache.as_ref() {
+                return rec.clone();
+            }
+        }
+
+        let initial = lane.initial_tokens.load(Ordering::Acquire);
+        let attempts: Vec<AttemptRecord> = {
+            let accumulator = lane.accumulator.lock().expect("lane accumulator");
+            accumulator.clone()
         };
+        let rec = Self::reconcile_lane(initial, &attempts);
         *cache = Some(rec.clone());
         rec
+    }
+
+    /// Sum of consumed cost over ALL per-signature lanes (spec §4.6 spectral
+    /// decomposition: the deploy's cost is `Σ_σ` over the per-signature pools).
+    /// Commutative / order-independent: each lane reconciles independently via
+    /// the pure `reconcile_lane` walk and the result is summed with saturating
+    /// addition, so the total is invariant under the order in which lanes are
+    /// visited (`rb_pool_total_cost = Σ rb_total_cost` in
+    /// `RuntimeBudgetRefinement.v`). Returns `None` when the lane pool is empty
+    /// — the signal that the deploy is on the N=1 scalar fast path.
+    fn lane_pool_total_cost(&self) -> Option<i64> {
+        if self.lanes.is_empty() {
+            return None;
+        }
+        let mut total: i64 = 0;
+        for lane in self.lanes.iter() {
+            let consumed = Self::reconcile_one_lane(lane.value()).consumed_units;
+            total = total.saturating_add(consumed);
+        }
+        Some(total)
     }
 
     /// Repopulate the bounded diagnostic `event_log` / `log` ring buffers
@@ -622,6 +880,9 @@ impl RuntimeBudget {
             .lock()
             .expect("attempt accumulator poisoned")
             .clear();
+        // Clear the per-signature lane pool so the reused budget starts on the
+        // N=1 scalar fast path again (mirrors `rspace.rs` `phase_a_locks.clear`).
+        self.lanes.clear();
         *cache = None;
     }
 
@@ -747,14 +1008,24 @@ impl RuntimeBudget {
     /// counter is a liveness gate and may not match the canonical commit
     /// when workers race. On OOP the reconciliation clamps to `initial`,
     /// preserving the `deploy.cost == phlo_limit` integration-test invariant.
+    ///
+    /// N=1 fast path: when the per-signature lane pool is empty (every legacy
+    /// single-signature deploy), this runs the EXISTING scalar reconciliation
+    /// byte-identically. When lanes are present, the deploy's cost is the
+    /// order-independent SUM over the per-signature pools (spec §4.6 spectral
+    /// decomposition; `lane_pool_total_cost`), each pool reconciled via the
+    /// SAME `reconcile_lane` walk.
     pub fn total_cost(&self) -> Cost {
         if self.unmetered.load(Ordering::Acquire) != 0 {
             return Cost::create(0, "unmetered token budget");
         }
-        Cost::create(
-            self.reconcile().consumed_units,
-            "consumed source-token units",
-        )
+        match self.lane_pool_total_cost() {
+            Some(total) => Cost::create(total, "consumed source-token units (per-signature pool)"),
+            None => Cost::create(
+                self.reconcile().consumed_units,
+                "consumed source-token units",
+            ),
+        }
     }
 
     pub fn remaining(&self) -> Cost {
@@ -1150,6 +1421,42 @@ impl Sig {
             }
         }
     }
+
+    /// Canonical, collision-resistant, shape-agnostic per-signature lane key.
+    ///
+    /// THE INTEGRATION INVARIANT (supply-realization-c-d-handoff.md): the lane
+    /// key and the supply channel `Σ⟦s⟧` MUST share one canonical basis so a
+    /// deploy's lane key for signature `s` and its supply channel are derived
+    /// from the same canonical signature serialization (no drift). We realize
+    /// that by deriving the lane key DIRECTLY from the supply channel: the lane
+    /// key is the Blake2b256 of the canonical wire encoding of the very `Par`
+    /// that [`SignatureChannel::from_sig`] produces. Both the lane pool
+    /// (`RuntimeBudget::lanes`) and the supply channel are therefore anchored
+    /// to the single function `from_sig`, so two signatures share a lane iff
+    /// they share a supply channel — exactly the no-drift property the C↔D
+    /// handoff requires.
+    ///
+    /// Shape-agnostic over ALL `Sig` variants because `from_sig` is total over
+    /// the algebra (`Unit`, `Ground`, `Quote`, `And`, `Threshold`, `Plus`,
+    /// `With`, `Bang`, `WhyNot`, `Lolly`): the atom axis collapses at the
+    /// channel (DR-1: equal atom bytes ⇒ equal channel) and compounds are made
+    /// permutation-invariant by `ParSortMatcher::sort_match`, so `lane_hash`
+    /// inherits the same canonical, axis-independent, permutation-invariant
+    /// identity. Domain-separated (`SIGNATURE_LANE_DOMAIN`) so the lane-key
+    /// digest can never collide with another protocol hash over the same Par
+    /// bytes.
+    pub fn lane_hash(&self) -> [u8; 32] {
+        use prost::Message;
+        let channel = SignatureChannel::from_sig(self).par;
+        let encoded = channel.encode_to_vec();
+        let mut domain_separated = Vec::with_capacity(SIGNATURE_LANE_DOMAIN.len() + encoded.len());
+        domain_separated.extend_from_slice(SIGNATURE_LANE_DOMAIN);
+        domain_separated.extend_from_slice(&encoded);
+        let hash = Blake2b256::hash(domain_separated);
+        let mut lane_key = [0_u8; 32];
+        lane_key.copy_from_slice(&hash[..32]);
+        lane_key
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1353,6 +1660,241 @@ fn token_units_to_i64(value: u64) -> i64 {
         i64::MAX
     } else {
         value as i64
+    }
+}
+
+#[cfg(test)]
+mod d0_lane_pool_tests {
+    use super::*;
+
+    // Build a deterministic attempt record with a fixed deploy/sig context;
+    // `local_index` drives the canonical `Ord` rank within a lane.
+    fn attempt(local_index: u64, weight: u64) -> AttemptRecord {
+        AttemptRecord {
+            event: BillableTokenEvent {
+                deploy_id: [9; 32],
+                sig_hash: [0; 32],
+                source_path: SourcePath(vec![local_index as u32]),
+                redex_id: RedexId(local_index),
+                local_index,
+                kind: BillableKind::SourceStep,
+                weight,
+            },
+            amount: Some(Cost::create(weight as i64, "test")),
+        }
+    }
+
+    // A distinct ground signature per lane index. `from_sig` content-hashes
+    // the atom bytes, so distinct bytes ⇒ distinct supply channels ⇒ distinct
+    // `lane_hash` ⇒ disjoint lanes (the `lane_pool_disjoint` corollary).
+    fn lane_sig(tag: u8) -> Sig {
+        Sig::Ground(vec![tag, tag, tag, tag])
+    }
+
+    /// The N=1 scalar fast path is BYTE-IDENTICAL to the pre-D0
+    /// implementation: a single-signature deploy never touches the lane pool,
+    /// and its `reconcile()` output equals the extracted `reconcile_lane`
+    /// walk over the same attempt multiset, field-for-field
+    /// (`committed`, `oop`, `consumed_units`, `cost_amounts`). This pins the
+    /// fast-path invariant — `total_cost()` provably takes the scalar branch
+    /// because `lanes` is empty and `lane_pool_total_cost()` is `None`.
+    #[test]
+    fn legacy_single_sig_byte_identical() {
+        let initial = 6_i64;
+        let budget = RuntimeBudget::new(Cost::create(initial, "scalar fast path"));
+
+        // Drive attempts through the PUBLIC scalar entry point — exactly what
+        // every legacy single-signature deploy does. Weights 2,3,4 with
+        // initial 6: the canonical walk commits 2 then 3 (running 5) and OOPs
+        // on 4; on OOP `consumed_units` clamps UP to `initial` (= 6),
+        // preserving the `deploy.cost == phlo_limit` invariant.
+        let attempts = vec![attempt(0, 2), attempt(1, 3), attempt(2, 4)];
+        for record in &attempts {
+            let _ = budget.reserve_canonical_with_cost(
+                record.event.clone(),
+                record.amount.clone().expect("test amount"),
+            );
+        }
+
+        // The lane pool MUST stay empty on the scalar path.
+        assert!(
+            budget.lanes.is_empty(),
+            "scalar fast path must not populate the lane pool"
+        );
+        assert_eq!(
+            budget.lane_pool_total_cost(),
+            None,
+            "empty lane pool signals the N=1 scalar fast path"
+        );
+
+        // The budget's scalar reconciliation must be byte-identical to the
+        // extracted canonical walk over the same attempt multiset.
+        let scalar = budget.reconcile();
+        let reference = RuntimeBudget::reconcile_lane(initial, &attempts);
+        assert_eq!(
+            scalar, reference,
+            "scalar reconcile() must equal reconcile_lane() field-for-field"
+        );
+
+        // Independently confirm the expected canonical answer: two events
+        // commit, the third OOPs, and consumed clamps to `initial`.
+        assert_eq!(scalar.consumed_units, initial);
+        assert_eq!(scalar.committed.len(), 2);
+        assert_eq!(scalar.oop.as_ref().map(|e| e.weight), Some(4));
+
+        // `total_cost()` takes the scalar branch and reports the clamped cost.
+        assert_eq!(budget.total_cost().value, initial);
+    }
+
+    /// The per-signature pool's `total_cost` is the order-independent SUM of
+    /// the per-lane canonical reconciliations, and each lane's reconciliation
+    /// equals the scalar reconciliation a standalone single-signature budget
+    /// would produce for that signature's events (spec §4.6 spectral
+    /// decomposition; `rb_pool_total_cost = Σ rb_total_cost`).
+    #[test]
+    fn per_lane_reconcile_is_sum_of_scalar() {
+        // Three disjoint signatures, each with its own budget and events.
+        // Lane A (initial 10): 3,4 → consumed 7, no OOP.
+        // Lane B (initial 5):  3,4 → commits 3, OOPs on 4 → clamps to 5.
+        // Lane C (initial 6):  2,3 → consumed 5, no OOP.
+        let lanes = [
+            (lane_sig(1), 10_i64, vec![attempt(0, 3), attempt(1, 4)]),
+            (lane_sig(2), 5_i64, vec![attempt(0, 3), attempt(1, 4)]),
+            (lane_sig(3), 6_i64, vec![attempt(0, 2), attempt(1, 3)]),
+        ];
+
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+
+        // Route every attempt into its signature's lane via the lock-free
+        // per-lane entry point. (Intentionally interleave lanes to exercise
+        // order-independence of the eventual sum.)
+        let max_len = lanes.iter().map(|(_, _, a)| a.len()).max().unwrap_or(0);
+        for i in 0..max_len {
+            for (sig, initial, attempts) in &lanes {
+                if let Some(record) = attempts.get(i) {
+                    let _ = budget.attempt_in_lane(
+                        sig,
+                        *initial,
+                        record.event.clone(),
+                        record.amount.clone(),
+                    );
+                }
+            }
+        }
+
+        // Expected per-lane consumed via the pure scalar walk, summed.
+        let expected_sum: i64 = lanes
+            .iter()
+            .map(|(_, initial, attempts)| {
+                RuntimeBudget::reconcile_lane(*initial, attempts).consumed_units
+            })
+            .sum();
+        // 7 (A) + 5 (B clamped) + 5 (C) = 17.
+        assert_eq!(expected_sum, 17);
+
+        // The pool total must equal that order-independent sum.
+        assert_eq!(
+            budget.lane_pool_total_cost(),
+            Some(expected_sum),
+            "lane_pool_total_cost must be the sum over per-signature lanes"
+        );
+
+        // And each lane must match a standalone scalar budget for the SAME
+        // signature's events (a lane is an independent instance of the scalar
+        // budget — `rb_pool`).
+        for (sig, initial, attempts) in &lanes {
+            let standalone = RuntimeBudget::new(Cost::create(*initial, "standalone"));
+            for record in attempts {
+                let _ = standalone.reserve_canonical_with_cost(
+                    record.event.clone(),
+                    record.amount.clone().expect("test amount"),
+                );
+            }
+            let scalar_consumed = standalone.reconcile().consumed_units;
+
+            let lane_consumed = {
+                let key = sig.lane_hash();
+                let lane_ref = budget.lanes.get(&key).expect("lane present after routing");
+                RuntimeBudget::reconcile_one_lane(lane_ref.value()).consumed_units
+            };
+            assert_eq!(
+                lane_consumed, scalar_consumed,
+                "each lane reconciliation must equal the scalar budget for that signature"
+            );
+        }
+
+        // `total_cost()` takes the pool branch (lanes non-empty).
+        assert_eq!(budget.total_cost().value, expected_sum);
+    }
+
+    /// The integration invariant: `Sig::lane_hash` shares ONE canonical basis
+    /// with `SignatureChannel::from_sig`. Signatures that reflect to the same
+    /// supply channel MUST share a lane key, and signatures with distinct
+    /// channels MUST get distinct lane keys.
+    #[test]
+    fn lane_hash_shares_from_sig_canonical_basis() {
+        // DR-1: the ground/quote axis collapses at the channel (equal bytes ⇒
+        // equal channel), so a Ground and a Quote atom over the SAME bytes
+        // share both the supply channel AND the lane key.
+        let g = Sig::Ground(vec![1, 2, 3, 4]);
+        let q = Sig::Quote(vec![1, 2, 3, 4]);
+        assert_eq!(
+            SignatureChannel::from_sig(&g).par,
+            SignatureChannel::from_sig(&q).par,
+            "DR-1: equal atom bytes ⇒ equal supply channel"
+        );
+        assert_eq!(
+            g.lane_hash(),
+            q.lane_hash(),
+            "lane_hash must agree wherever from_sig agrees (shared basis)"
+        );
+
+        // Distinct atom bytes ⇒ distinct channels ⇒ distinct lane keys.
+        let other = Sig::Ground(vec![9, 9, 9, 9]);
+        assert_ne!(
+            SignatureChannel::from_sig(&g).par,
+            SignatureChannel::from_sig(&other).par
+        );
+        assert_ne!(
+            g.lane_hash(),
+            other.lane_hash(),
+            "distinct supply channels ⇒ distinct lane keys"
+        );
+
+        // Permutation-invariance is inherited from `from_sig`
+        // (`ParSortMatcher::sort_match`): `And(a, b)` and `And(b, a)` reflect
+        // to the same channel, so they share a lane key.
+        let a = Sig::Ground(vec![1]);
+        let b = Sig::Ground(vec![2]);
+        let ab = Sig::And(Box::new(a.clone()), Box::new(b.clone()));
+        let ba = Sig::And(Box::new(b), Box::new(a));
+        assert_eq!(
+            SignatureChannel::from_sig(&ab).par,
+            SignatureChannel::from_sig(&ba).par,
+            "compound channel is permutation-invariant"
+        );
+        assert_eq!(
+            ab.lane_hash(),
+            ba.lane_hash(),
+            "lane_hash inherits compound permutation-invariance from from_sig"
+        );
+    }
+
+    /// Resetting the budget clears the lane pool, returning the reused budget
+    /// to the N=1 scalar fast path.
+    #[test]
+    fn reset_clears_lane_pool() {
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+        let sig = lane_sig(7);
+        let _ = budget.attempt_in_lane(&sig, 10, attempt(0, 3).event, Some(Cost::create(3, "t")));
+        assert!(!budget.lanes.is_empty());
+
+        budget.reset_from_token(&Token::coalesced(Sig::Unit, 4));
+        assert!(
+            budget.lanes.is_empty(),
+            "reset must clear the lane pool back to the scalar fast path"
+        );
+        assert_eq!(budget.lane_pool_total_cost(), None);
     }
 }
 

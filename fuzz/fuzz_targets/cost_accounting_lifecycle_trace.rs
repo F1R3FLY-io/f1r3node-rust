@@ -31,6 +31,8 @@ struct Input {
 fn event(index: u64, weight: u64) -> BillableTokenEvent {
     BillableTokenEvent {
         deploy_id: [3; 32],
+        // D0: per-signature lane key, constant within this single deploy.
+        sig_hash: [0; 32],
         source_path: SourcePath(vec![index as u32]),
         redex_id: RedexId(index),
         local_index: index,

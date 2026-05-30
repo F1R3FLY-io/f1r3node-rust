@@ -39,6 +39,8 @@ fn event(input: &EventInput, index: u64) -> BillableTokenEvent {
     };
     BillableTokenEvent {
         deploy_id: [input.kind; 32],
+        // D0: per-deploy lane key, constant within a deploy.
+        sig_hash: [input.kind; 32],
         source_path: SourcePath(vec![index as u32; path_len]),
         redex_id: RedexId(index),
         local_index: index,

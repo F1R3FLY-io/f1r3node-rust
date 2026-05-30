@@ -3822,3 +3822,189 @@ Proof.
                   (rb_new_valid initial) eq_refl Hmany1) as Hoop.
     simpl in Hoop. try rewrite Nat.add_0_l in Hoop. exact Hoop.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Per-Signature Token Pool (WD-D0)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The Rust `RuntimeBudget` gains a per-signature token pool
+   `lanes : DashMap<[u8;32], Lane>` (spec §4.6 spectral decomposition into
+   per-signature pools; §7.6 "no interleaving" is PER-SIGNATURE, not global).
+   Each `Lane` mirrors the scalar `RuntimeBudget` fields and is reconciled by
+   the SAME canonical walk (`reconcile_lane`, extracted from the scalar
+   `reconcile`), so a lane is an INDEPENDENT INSTANCE of the proven scalar
+   budget model above. The deploy's consumed cost is the SUM over lanes
+   (`RuntimeBudget::lane_pool_total_cost`).
+
+   We model:
+   - a lane [rb_lane] as a scalar budget paired with the event list routed to
+     it (`rb_state * list rb_event`);
+   - a pool [rb_pool] as a list of lanes;
+   - lane reconciliation [rb_lane_reconcile] as the SAME [rb_reconcile] used by
+     the scalar path — making "[rb_pool] = N independent instances of the
+     proven scalar budget" definitional;
+   - the pool total cost [rb_pool_total_cost] as the sum of per-lane
+     [rb_total_cost].
+
+   Headline obligations (the WD-D0 entries in
+   `docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`
+   Decision 8 and `workstream-d-acceptance.md` D0):
+   - [rb_pool_total_cost_eq_sum]: the reconciled pool's total cost equals the
+     sum over lanes of [rb_total_cost] of each independently-reconciled lane
+     ("[rb_pool_total_cost = Σ rb_total_cost]").
+   - [rb_pool_reconcile_preserves_valid]: each reconciled lane is valid, so the
+     pool is a vector of valid scalar budgets (N independent instances).
+   - [rb_pool_total_cost_permutation_invariant]: the pool total is INVARIANT
+     under reordering lanes — the commutative / order-independent sum that the
+     Rust `lane_pool_total_cost` and the 2-lane loom test rely on (disjoint
+     signatures contend on nothing, so visiting order is irrelevant).
+
+   No `Axiom`, no `Admitted`: everything reduces to the scalar theorems above
+   plus stdlib [map]/[fold_right]/[Permutation] facts. *)
+
+Definition rb_lane : Type := rb_state * list rb_event.
+
+Definition rb_pool : Type := list rb_lane.
+
+(* Reconcile ONE lane via the SAME canonical walk as the scalar path. This is
+   what makes a lane "an independent instance of the proven scalar budget". *)
+Definition rb_lane_reconcile (l : rb_lane) : rb_state :=
+  rb_reconcile (fst l) (snd l).
+
+(* Reconcile every lane independently (mirrors mapping `reconcile_one_lane`
+   over the `DashMap` entries). *)
+Definition rb_pool_reconcile (p : rb_pool) : list rb_state :=
+  map rb_lane_reconcile p.
+
+(* The deploy's pooled cost: the sum of `rb_total_cost` over a list of
+   (already-reconciled) lane states. Sum via `fold_right` over the mapped
+   per-lane costs — addition is commutative/associative, so the order in which
+   lanes are summed is irrelevant (proven in
+   [rb_pool_total_cost_permutation_invariant]). *)
+Definition rb_pool_total_cost (states : list rb_state) : nat :=
+  fold_right (fun b acc => rb_total_cost b + acc) 0 states.
+
+(* Convenience: the total cost of a pool, reconciling each lane first. *)
+Definition rb_pool_reconciled_total_cost (p : rb_pool) : nat :=
+  rb_pool_total_cost (rb_pool_reconcile p).
+
+(* `rb_pool_total_cost` distributes over `cons`. (`fold_right` on a cons
+   reduces definitionally, so this is a `reflexivity`.) *)
+Lemma rb_pool_total_cost_cons : forall b states,
+  rb_pool_total_cost (b :: states) = rb_total_cost b + rb_pool_total_cost states.
+Proof.
+  intros b states. reflexivity.
+Qed.
+
+(* `rb_pool_total_cost` is additive over list concatenation. *)
+Lemma rb_pool_total_cost_app : forall xs ys,
+  rb_pool_total_cost (xs ++ ys) =
+  rb_pool_total_cost xs + rb_pool_total_cost ys.
+Proof.
+  induction xs as [| b xs IH]; intros ys.
+  - reflexivity.
+  - simpl (_ ++ _). rewrite !rb_pool_total_cost_cons. rewrite IH. lia.
+Qed.
+
+(* HEADLINE: the reconciled pool's total cost is the SUM over lanes of the
+   `rb_total_cost` of each independently-reconciled lane. This is
+   `rb_pool_total_cost = Σ rb_total_cost` (WD-D0): the per-signature pool's
+   cost is exactly N independent applications of the scalar `rb_total_cost`,
+   one per lane, summed — the Rust `lane_pool_total_cost`. *)
+Theorem rb_pool_total_cost_eq_sum : forall p,
+  rb_pool_reconciled_total_cost p =
+  fold_right (fun l acc => rb_total_cost (rb_lane_reconcile l) + acc) 0 p.
+Proof.
+  intro p.
+  unfold rb_pool_reconciled_total_cost, rb_pool_total_cost, rb_pool_reconcile.
+  induction p as [| l p IH].
+  - simpl. reflexivity.
+  - simpl. rewrite IH. reflexivity.
+Qed.
+
+(* Each reconciled lane is a VALID scalar budget, given a valid seed: a lane is
+   an independent instance of the proven scalar budget, so it inherits
+   `rb_reconcile_preserves_valid`. *)
+Theorem rb_lane_reconcile_preserves_valid : forall l,
+  rb_valid (fst l) ->
+  rb_valid (rb_lane_reconcile l).
+Proof.
+  intros [b events] Hvalid. unfold rb_lane_reconcile. simpl in *.
+  apply rb_reconcile_preserves_valid. exact Hvalid.
+Qed.
+
+(* The whole reconciled pool is a vector of VALID scalar budgets, given that
+   each lane seed is valid (N independent instances of the proven budget). *)
+Theorem rb_pool_reconcile_preserves_valid : forall p,
+  Forall (fun l => rb_valid (fst l)) p ->
+  Forall rb_valid (rb_pool_reconcile p).
+Proof.
+  intros p Hall. unfold rb_pool_reconcile.
+  induction p as [| l p IH].
+  - simpl. constructor.
+  - simpl. inversion Hall as [| x xs Hx Hxs]; subst.
+    constructor.
+    + apply rb_lane_reconcile_preserves_valid. exact Hx.
+    + apply IH. exact Hxs.
+Qed.
+
+(* `rb_pool_total_cost` is invariant under permutation of the lane-state list:
+   the sum is commutative/associative, so it does not depend on the order in
+   which lanes are visited. This is the order-independence the Rust
+   `lane_pool_total_cost` (iterating a `DashMap`) and the 2-lane loom test
+   rely on. *)
+Theorem rb_pool_total_cost_permutation_invariant : forall states1 states2,
+  Permutation states1 states2 ->
+  rb_pool_total_cost states1 = rb_pool_total_cost states2.
+Proof.
+  intros states1 states2 Hperm.
+  induction Hperm.
+  - reflexivity.
+  - rewrite !rb_pool_total_cost_cons. rewrite IHHperm. reflexivity.
+  - rewrite !rb_pool_total_cost_cons. lia.
+  - rewrite IHHperm1. exact IHHperm2.
+Qed.
+
+(* Corollary: the reconciled-pool total cost is invariant under permutation of
+   the LANES themselves (reconcile commutes with the mapped permutation). The
+   deploy's pooled cost does not depend on lane-visit order — the spectral
+   decomposition is order-independent (spec §7.6 per-signature). *)
+Theorem rb_pool_reconciled_total_cost_permutation_invariant : forall p1 p2,
+  Permutation p1 p2 ->
+  rb_pool_reconciled_total_cost p1 = rb_pool_reconciled_total_cost p2.
+Proof.
+  intros p1 p2 Hperm.
+  unfold rb_pool_reconciled_total_cost, rb_pool_reconcile.
+  apply rb_pool_total_cost_permutation_invariant.
+  apply Permutation_map. exact Hperm.
+Qed.
+
+(* The N=1 fast path, formally: a single-lane pool's total cost is exactly the
+   scalar `rb_total_cost` of that one lane's reconciliation — no pool overhead,
+   byte-identical to the scalar budget (the Rust `legacy_single_sig_byte_identical`
+   invariant, lifted to the model). *)
+Theorem rb_pool_singleton_eq_scalar : forall l,
+  rb_pool_reconciled_total_cost (l :: nil) =
+  rb_total_cost (rb_lane_reconcile l).
+Proof.
+  intro l.
+  unfold rb_pool_reconciled_total_cost, rb_pool_reconcile, rb_pool_total_cost.
+  simpl. lia.
+Qed.
+
+(* The pooled total is the scalar consumed sum when no lane OOPs (every lane
+   metered): each `rb_total_cost` is just `rb_consumed`, so the pool total is
+   `Σ rb_consumed` — the per-signature decomposition of the deploy cost. *)
+Theorem rb_pool_total_cost_metered_eq_consumed_sum : forall states,
+  Forall (fun b => rb_unmetered b = false) states ->
+  rb_pool_total_cost states =
+  fold_right (fun b acc => rb_consumed b + acc) 0 states.
+Proof.
+  induction states as [| b states IH]; intro Hall.
+  - reflexivity.
+  - inversion Hall as [| x xs Hx Hxs]; subst.
+    rewrite rb_pool_total_cost_cons.
+    cbn [fold_right].
+    unfold rb_total_cost. rewrite Hx.
+    rewrite IH by exact Hxs. reflexivity.
+Qed.

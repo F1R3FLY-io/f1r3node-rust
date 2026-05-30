@@ -302,3 +302,78 @@ fn oop_truncation_keeps_consumed_clamped_under_every_schedule() {
         assert!(rec.oop.is_some());
     });
 }
+
+/// D0 — per-signature TOKEN POOL: two DISJOINT signatures each get their own
+/// `ToyBudget` lane (mirroring the production `RuntimeBudget::lanes`
+/// `DashMap<[u8;32], Lane>`, where disjoint signatures key disjoint entries
+/// per the `lane_pool_disjoint` corollary in `ChannelSeparation.v`). Two
+/// threads race reservations into the two lanes concurrently; the pool's
+/// `total_cost` is the SUM over per-lane canonical reconciliations.
+///
+/// The headline invariant, verified across every loom-explored schedule: the
+/// per-lane reconciliations are INDEPENDENT (a CAS race within one lane never
+/// touches the other lane's counter or log), and the pool total — the sum of
+/// the two per-lane `consumed_units` — is the SAME under every interleaving of
+/// the two threads. This is the concurrency face of spec §7.6 ("no
+/// interleaving" is PER-SIGNATURE, not global) and of
+/// `rb_pool_total_cost = Σ rb_total_cost` in `RuntimeBudgetRefinement.v`:
+/// disjoint signatures contend on nothing, so the order in which lanes are
+/// driven and summed is irrelevant.
+#[test]
+fn reconcile_two_disjoint_lanes_sum_is_schedule_independent() {
+    loom::model(|| {
+        // Lane A: initial 10, two events 3+4 → consumed 7, no OOP.
+        // Lane B: initial 5,  two events 3+4 → commits 3, OOPs on 4 → clamps 5.
+        // Pool total = 7 + 5 = 12 under EVERY schedule.
+        let lane_a = Arc::new(ToyBudget::new(10));
+        let lane_b = Arc::new(ToyBudget::new(5));
+
+        let a_lo = ToyEvent { rank: 1, weight: 3 };
+        let a_hi = ToyEvent { rank: 2, weight: 4 };
+        let b_lo = ToyEvent { rank: 1, weight: 3 };
+        let b_hi = ToyEvent { rank: 2, weight: 4 };
+
+        // Thread 1 drives lane A; thread 2 drives lane B. The two lanes share
+        // NOTHING, so their reservations proceed fully concurrently.
+        let t_a = {
+            let lane = lane_a.clone();
+            let (lo, hi) = (a_lo.clone(), a_hi.clone());
+            thread::spawn(move || {
+                let _ = lane.attempt(lo);
+                let _ = lane.attempt(hi);
+            })
+        };
+        let t_b = {
+            let lane = lane_b.clone();
+            let (lo, hi) = (b_lo.clone(), b_hi.clone());
+            thread::spawn(move || {
+                let _ = lane.attempt(lo);
+                let _ = lane.attempt(hi);
+            })
+        };
+
+        t_a.join().unwrap();
+        t_b.join().unwrap();
+
+        // Each lane reconciles independently via the canonical walk.
+        let rec_a = lane_a.reconcile();
+        let rec_b = lane_b.reconcile();
+
+        // Lane A commits both (no OOP, consumed 7); lane B OOPs and clamps 5.
+        assert_eq!(rec_a.consumed_units, 7);
+        assert!(rec_a.oop.is_none());
+        assert_eq!(rec_b.consumed_units, 5);
+        assert!(rec_b.oop.is_some());
+
+        // The pool total is the order-independent SUM over lanes — identical
+        // under every loom-explored interleaving (and summed in either order).
+        let total_ab = rec_a
+            .consumed_units
+            .saturating_add(rec_b.consumed_units);
+        let total_ba = rec_b
+            .consumed_units
+            .saturating_add(rec_a.consumed_units);
+        assert_eq!(total_ab, 12);
+        assert_eq!(total_ab, total_ba);
+    });
+}

@@ -333,6 +333,9 @@ fn generated_event(index: u64, event: &GeneratedEvent) -> BillableTokenEvent {
     };
     BillableTokenEvent {
         deploy_id: [event.deploy; 32],
+        // D0: per-deploy lane key (constant within a deploy), keyed off the
+        // generated deploy tag so distinct deploys get distinct lane keys.
+        sig_hash: [event.deploy; 32],
         source_path: SourcePath(event.path.clone()),
         redex_id: RedexId(redex_id),
         local_index,

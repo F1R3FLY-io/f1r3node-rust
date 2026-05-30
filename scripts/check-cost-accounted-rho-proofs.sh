@@ -51,7 +51,7 @@ echo "Compiling and checking Rocq theories..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation.
 Print Assumptions mint_inject_not_ca_step.
 Print Assumptions user_ca_step_does_not_mint.
 Print Assumptions admin_trans_mint_adds_exactly.
@@ -277,6 +277,15 @@ Print Assumptions domain_name_injective.
 Print Assumptions wallet_quarantine_domain_disjoint.
 Print Assumptions wallet_funding_slot_domain_disjoint.
 Print Assumptions quarantine_funding_slot_domain_disjoint.
+Print Assumptions lane_pool_disjoint.
+Print Assumptions lane_key_not_app_channel.
+Print Assumptions rb_pool_total_cost_eq_sum.
+Print Assumptions rb_lane_reconcile_preserves_valid.
+Print Assumptions rb_pool_reconcile_preserves_valid.
+Print Assumptions rb_pool_total_cost_permutation_invariant.
+Print Assumptions rb_pool_reconciled_total_cost_permutation_invariant.
+Print Assumptions rb_pool_singleton_eq_scalar.
+Print Assumptions rb_pool_total_cost_metered_eq_consumed_sum.
 Quit.
 EOF
 then

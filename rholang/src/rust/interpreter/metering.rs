@@ -38,17 +38,30 @@ pub struct MeteredMachine {
     /// [`MeteredMachine::child`] so the per-charge hot path never locks the
     /// budget's `deploy_id` Mutex.
     deploy_id: [u8; 32],
+    /// Per-signature lane key (`Sig::lane_hash`) of the deploy's signature,
+    /// cached by value alongside `deploy_id`. Like `deploy_id` it is constant
+    /// during a deploy (the signature is installed before evaluation begins),
+    /// so it is computed once per fork (in [`MeteredMachine::new`] /
+    /// [`MeteredMachine::child`]) and stamped onto every emitted
+    /// [`BillableTokenEvent`] without locking the budget's signature Mutex on
+    /// the per-charge hot path. In D-scope a deploy carries exactly ONE
+    /// compound lane (Def 7.4 — no per-component split; intra-deploy multi-σ
+    /// is a later funding-slots stage), so this value is identical across all
+    /// of a deploy's events and the N=1 scalar fast path is unaffected.
+    sig_hash: [u8; 32],
 }
 
 impl MeteredMachine {
     pub fn new(budget: RuntimeBudget) -> Self {
         let deploy_id = budget.deploy_id();
+        let sig_hash = budget.signature().lane_hash();
         Self {
             budget,
             pending: Arc::new(Mutex::new(VecDeque::new())),
             source_path: SourcePath(Vec::new()),
             next_local_index: Arc::new(AtomicU64::new(0)),
             deploy_id,
+            sig_hash,
         }
     }
 
@@ -67,6 +80,10 @@ impl MeteredMachine {
             // Re-read the deploy id once per fork (constant during eval), so
             // the per-charge path uses the cached value instead of a Mutex.
             deploy_id: self.budget.deploy_id(),
+            // The signature (hence its lane key) is likewise constant during
+            // eval; inheriting the parent's cached value avoids recomputing the
+            // `from_sig` channel digest per fork.
+            sig_hash: self.sig_hash,
         }
     }
 
@@ -120,6 +137,7 @@ impl MeteredMachine {
         let source_path = self.event_source_path(local_index);
         let event = BillableTokenEvent {
             deploy_id: self.deploy_id,
+            sig_hash: self.sig_hash,
             source_path,
             redex_id: RedexId(local_index),
             local_index,
@@ -139,6 +157,7 @@ impl MeteredMachine {
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
         let event = BillableTokenEvent {
             deploy_id: self.deploy_id,
+            sig_hash: self.sig_hash,
             source_path: source_path.clone(),
             redex_id: RedexId(local_index),
             local_index,

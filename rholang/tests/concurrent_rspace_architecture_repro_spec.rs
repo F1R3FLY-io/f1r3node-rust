@@ -64,6 +64,8 @@ fn concurrent_rspace_architecture_repro_cost_balance_must_not_be_mutex_protected
 fn concurrent_event(path: u32, weight: u64) -> BillableTokenEvent {
     BillableTokenEvent {
         deploy_id: [7; 32],
+        // D0: per-signature lane key, constant within this single deploy.
+        sig_hash: [0; 32],
         source_path: SourcePath(vec![path]),
         redex_id: RedexId(path as u64),
         local_index: path as u64,

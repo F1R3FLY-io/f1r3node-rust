@@ -225,4 +225,71 @@ Proof.
     + apply closed_name_lift_zero. apply N_tr_closed_local.
 Qed.
 
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 6: Per-Signature Lane-Pool Disjointness (WD-D0)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   D0 introduces a per-signature token pool: the runtime
+   `RuntimeBudget` holds `lanes : DashMap<[u8;32], Lane>` keyed by
+   `Sig::lane_hash(s)`, which is derived from the SAME canonical basis as
+   the supply channel `SignatureChannel::from_sig(s)` (the C↔D integration
+   invariant). In this model the channel-keying basis is exactly [N_tr],
+   so the lane key of a signature [s] is its fuel-gate channel [N_tr s]:
+
+     [lane_key s ≜ N_tr s].
+
+   The headline corollary [lane_pool_disjoint] discharges the spec
+   property "disjoint signatures ⇒ disjoint lanes ⇒ zero cross-signature
+   contention" (cost-accounted-rho §4.6 spectral decomposition; §7.6
+   "no interleaving is PER-SIGNATURE, not global"). It is a direct
+   corollary of [fuel_gate_no_app_channel_overlap] (Section 5): because a
+   lane key is a fuel-gate channel [N_tr s], which is a closed [Quote] and
+   therefore never an application channel [NVar k], two facts follow at
+   once for any two signatures whose channels differ:
+
+   (1) their lane keys differ (the lanes are distinct DashMap entries), and
+   (2) neither lane key coincides with ANY application channel [NVar k]
+       (so user-code reductions can never name — hence never contend —
+       a lane's channel).
+
+   Together these are precisely "zero cross-signature contention": the
+   lane keyspace is partitioned by the (distinct) signature channels and
+   is disjoint from the application-channel namespace.                     *)
+
+(* The lane key in the spectral-decomposition model: a signature's lane is
+   keyed by its (canonical) fuel-gate / supply channel. This mirrors the
+   Rust [Sig::lane_hash], which digests the very [SignatureChannel::from_sig]
+   channel, so the lane key and the supply channel share one basis. *)
+Definition lane_key (s : sig) : name := N_tr s.
+
+(** Per-signature lane-pool disjointness. For any two signatures whose
+    fuel-gate channels differ, their lanes are distinct entries, and
+    neither lane's channel is an application channel [NVar k]. Disjoint
+    signatures therefore key disjoint lanes that are also inaccessible to
+    user code — zero cross-signature contention. *)
+Theorem lane_pool_disjoint : forall s1 s2,
+  N_tr s1 <> N_tr s2 ->
+  lane_key s1 <> lane_key s2
+  /\ (forall k, NVar k <> lane_key s1)
+  /\ (forall k, NVar k <> lane_key s2).
+Proof.
+  intros s1 s2 Hchan.
+  unfold lane_key.
+  split; [exact Hchan |].
+  split.
+  - intro k. exact (fuel_gate_no_app_channel_overlap s1 k).
+  - intro k. exact (fuel_gate_no_app_channel_overlap s2 k).
+Qed.
+
+(** Reflexive face: a single signature's lane key is never an application
+    channel. (The degenerate "same signature" case of the disjointness
+    argument — the lane is always in the closed-channel namespace, so even
+    a self-comparison places the lane outside user code's reach.) *)
+Theorem lane_key_not_app_channel : forall s k,
+  NVar k <> lane_key s.
+Proof.
+  intros s k. unfold lane_key.
+  exact (fuel_gate_no_app_channel_overlap s k).
+Qed.
+
 End ChannelSeparationDefs.

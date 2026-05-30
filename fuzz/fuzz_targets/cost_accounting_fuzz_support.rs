@@ -38,6 +38,9 @@ pub fn billable_event(
     };
     BillableTokenEvent {
         deploy_id: [tag; 32],
+        // D0: per-deploy lane key, keyed off the deploy tag (constant within
+        // a deploy, distinct across deploys).
+        sig_hash: [tag; 32],
         source_path: SourcePath(vec![u32::from(tag); path_len]),
         redex_id: RedexId(index),
         local_index: index,
