@@ -11,5 +11,7 @@ CONSTANTS v1, v2, v3
 MC_Validators    == {v1, v2, v3}
 MC_InitialBonds  == (v1 :> 100 @@ v2 :> 100 @@ v3 :> 100)
 MC_MaxSeqNum     == 2
+MC_MintAmount    == 1000   \* Cost-Accounted Rho: epochPhlogiston per mint
+MC_EpochIndex    == 0      \* the single epoch index this model checks
 
 ============================================================================

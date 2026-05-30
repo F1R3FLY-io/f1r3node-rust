@@ -53,12 +53,35 @@ ASSUME CostPerToken \in Nat
 (*--------------------------------------------------------------------------*)
 VARIABLE channelTouches  \* Nat: number of bodies that have touched the channel
 
+(*--------------------------------------------------------------------------*)
+(* Cost-Accounted Rho Stage B: the per-validator SUPPLY pool Σ⟦v⟧ written    *)
+(* by the close-block epoch mint (CloseBlockDeploy::post_eval). We reuse     *)
+(* Bodies as the validator set. [supply] is the per-validator balance; it is *)
+(* written ONLY by the mint action (DR-13: Σ⟦v⟧ is reducer-unwritable, so a  *)
+(* user ExecuteBody never touches it). [halted] is the "mintingHalted" set   *)
+(* (Stage-C slash effect); [mintedThisEpoch] is the "mintedEpochs" guard for *)
+(* the single epoch this model checks. MintAmount is the per-epoch credit.   *)
+(*--------------------------------------------------------------------------*)
+VARIABLE supply           \* [Bodies -> Nat]: per-validator Σ⟦v⟧ balance
+VARIABLE halted           \* SUBSET Bodies: validators whose minting is halted
+VARIABLE mintedThisEpoch  \* SUBSET Bodies: validators already minted this epoch
+
+CONSTANT MintAmount       \* Nat: epochPhlogiston credited per eligible mint
+
+ASSUME MintAmount \in Nat /\ MintAmount > 0
+
+vars == <<executed, totalCost, extCost, orderSoFar, channelTouches,
+          supply, halted, mintedThisEpoch>>
+
 TypeOK ==
     /\ executed   \in SUBSET Bodies
     /\ totalCost  \in Nat
     /\ extCost    \in Nat
     /\ orderSoFar \in Seq(Bodies)
     /\ channelTouches \in Nat
+    /\ supply \in [Bodies -> Nat]
+    /\ halted \in SUBSET Bodies
+    /\ mintedThisEpoch \in SUBSET Bodies
 
 Init ==
     /\ executed       = {}
@@ -66,6 +89,11 @@ Init ==
     /\ extCost        = 0
     /\ orderSoFar     = << >>
     /\ channelTouches = 0
+    /\ supply          = [b \in Bodies |-> 0]
+    /\ mintedThisEpoch = {}
+    \* A nondeterministic initial halt set lets TLC explore halted AND
+    \* unhalted validators (the slash having already halted some validators).
+    /\ halted \in SUBSET Bodies
 
 (*--------------------------------------------------------------------------*)
 (* Action: Execute body b.                                                  *)
@@ -83,10 +111,29 @@ ExecuteBody(b) ==
                                      ELSE StorageCostB)
     /\ channelTouches' = channelTouches + 1
     /\ orderSoFar'     = Append(orderSoFar, b)
+    \* A user reduction step NEVER touches the supply pool (DR-13).
+    /\ UNCHANGED <<supply, halted, mintedThisEpoch>>
 
-Next == \E b \in Bodies : ExecuteBody(b)
+(*--------------------------------------------------------------------------*)
+(* Cost-Accounted Rho Stage B: the epoch mint. An ELIGIBLE validator        *)
+(* (active is implicit here; NOT halted AND NOT already minted this epoch)   *)
+(* is credited MintAmount on its Σ⟦v⟧ and recorded in mintedThisEpoch. This  *)
+(* is the SOLE supply-increasing action — the model's analogue of the        *)
+(* closeBlock fold + post_eval produce_balance. The eligibility guards       *)
+(* mirror mint_eligible (MintingInjection.v) and the Rholang predicate.      *)
+(*--------------------------------------------------------------------------*)
+MintValidator(b) ==
+    /\ b \notin halted
+    /\ b \notin mintedThisEpoch
+    /\ supply'          = [supply EXCEPT ![b] = supply[b] + MintAmount]
+    /\ mintedThisEpoch' = mintedThisEpoch \cup {b}
+    /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches, halted>>
 
-Spec == Init /\ [][Next]_<<executed, totalCost, extCost, orderSoFar, channelTouches>>
+Next ==
+    \/ \E b \in Bodies : ExecuteBody(b)
+    \/ \E b \in Bodies : MintValidator(b)
+
+Spec == Init /\ [][Next]_vars
 
 (*==========================================================================*)
 (* INVARIANTS                                                               *)
@@ -115,10 +162,58 @@ InternalizedCostDeterministic ==
 InternalizedCostBounded ==
     totalCost <= Cardinality(Bodies) * CostPerToken
 
+(*==========================================================================*)
+(* Cost-Accounted Rho Stage B SUPPLY INVARIANTS                             *)
+(*==========================================================================*)
+
+(*--------------------------------------------------------------------------*)
+(* HaltedValidatorSupplyNonIncreasing: a validator that is halted (the      *)
+(* "mintingHalted" set) never accrues supply — its Σ⟦v⟧ stays at its initial *)
+(* 0, because the mint action skips halted validators. State invariant; the  *)
+(* TLA+ analogue of halted_validator_supply_not_increased (MintingHalt.v).   *)
+(*--------------------------------------------------------------------------*)
+HaltedValidatorSupplyNonIncreasing ==
+    \A b \in Bodies : b \in halted => supply[b] = 0
+
+(*--------------------------------------------------------------------------*)
+(* Supply is bounded by the mint accounting: a validator's Σ⟦v⟧ is 0 unless  *)
+(* it was minted this epoch, in which case it is exactly MintAmount. So the  *)
+(* supply is created ONLY by a mint and is precisely accountable — the state *)
+(* form of "minting is the sole producer of supply" (DR-13). The TLA+        *)
+(* analogue of epoch_mint crediting exactly MintAmount to an eligible        *)
+(* validator and the identity otherwise.                                     *)
+(*--------------------------------------------------------------------------*)
+SupplyOnlyFromMint ==
+    \A b \in Bodies :
+        \/ /\ b \notin mintedThisEpoch
+           /\ supply[b] = 0
+        \/ /\ b \in mintedThisEpoch
+           /\ supply[b] = MintAmount
+
+(*--------------------------------------------------------------------------*)
+(* SupplyOnlyIncreasedByMint (ACTION property): across any step, every       *)
+(* validator's supply is non-decreasing, and it strictly increases ONLY on a *)
+(* mint step (when the validator transitions into mintedThisEpoch). A user   *)
+(* ExecuteBody leaves all supply UNCHANGED. This is the transition form of   *)
+(* user_ca_step_does_not_increase_balance + epoch_mint being the sole        *)
+(* producer.                                                                 *)
+(*--------------------------------------------------------------------------*)
+SupplyMonotoneStep ==
+    [][ \A b \in Bodies :
+          /\ supply'[b] >= supply[b]
+          /\ (supply'[b] > supply[b] => b \notin mintedThisEpoch /\ b \in mintedThisEpoch')
+      ]_vars
+
+(*--------------------------------------------------------------------------*)
+(* A halted validator's supply NEVER changes across any step (sticky halt).  *)
+(*--------------------------------------------------------------------------*)
+HaltedSupplyFrozenStep ==
+    [][ \A b \in Bodies : b \in halted => supply'[b] = supply[b] ]_vars
+
 (*--------------------------------------------------------------------------*)
 (* Progress: every body eventually executes (with fairness).                *)
 (*--------------------------------------------------------------------------*)
-Fairness == \A b \in Bodies : WF_<<executed, totalCost, extCost, orderSoFar, channelTouches>>(ExecuteBody(b))
+Fairness == \A b \in Bodies : WF_vars(ExecuteBody(b))
 LiveSpec == Spec /\ Fairness
 AllEventuallyDone == <>(executed = Bodies)
 

@@ -19,7 +19,9 @@ EXTENDS Integers, Sequences, FiniteSets, TLC
 CONSTANTS
     Validators,         \* Set of validator IDs
     InitialBonds,       \* [Validators -> Nat]: initial bond per validator
-    MaxSeqNum
+    MaxSeqNum,
+    MintAmount,         \* Cost-Accounted Rho: epochPhlogiston per eligible mint
+    EpochIndex          \* the single epoch index this model checks
 
 VARIABLES
     \* On-chain state (PoS Rholang contract):
@@ -27,6 +29,11 @@ VARIABLES
     activeValidators,   \* SUBSET Validators: not-yet-slashed
     coopVaultBalance,   \* Nat: forfeited stake destination
     slashedSet,         \* SUBSET Validators
+
+    \* Cost-Accounted Rho Stage B/C supply + halt state (DR-3 / DR-13):
+    mintingHalted,      \* SUBSET Validators: the "mintingHalted" set (slash effect)
+    supply,             \* [Validators -> Nat]: per-validator Σ⟦v⟧ supply pool
+    mintedEpochs,       \* SUBSET (Validators \X {EpochIndex}): the "mintedEpochs" ledger
 
     \* DAG state:
     blocks,             \* [Validators -> [seq -> SUBSET BlockId]]
@@ -41,10 +48,13 @@ VARIABLES
     forkChoiceLatest    \* [Validators -> Nat]: latest seq considered by FC
 
 vars == <<bonds, activeValidators, coopVaultBalance, slashedSet,
+          mintingHalted, supply, mintedEpochs,
           blocks, invalidBlocks, equivocationRecords,
           pendingSlashDeploys, rejectedSlashDeploys, recoveredSlashDeploys,
           noopSlashHashes,
           forkChoiceLatest>>
+
+ASSUME MintAmount \in Nat /\ MintAmount > 0
 
 \* Block IDs are encoded as (validator, seqNum, blockNum) triples.
 BlockId == Validators \X (1..MaxSeqNum) \X (1..2)
@@ -57,6 +67,9 @@ TypeOK ==
     /\ activeValidators \in SUBSET Validators
     /\ coopVaultBalance \in Nat
     /\ slashedSet       \in SUBSET Validators
+    /\ mintingHalted    \in SUBSET Validators
+    /\ supply           \in [Validators -> Nat]
+    /\ mintedEpochs     \in SUBSET (Validators \X {EpochIndex})
     /\ blocks           \in [Validators -> [1..MaxSeqNum -> SUBSET (1..2)]]
     /\ invalidBlocks    \in SUBSET BlockId
     /\ equivocationRecords \in SUBSET (Validators \X (0..MaxSeqNum))
@@ -74,6 +87,9 @@ Init ==
     /\ activeValidators = {v \in Validators : InitialBonds[v] > 0}
     /\ coopVaultBalance = 0
     /\ slashedSet       = {}
+    /\ mintingHalted    = {}
+    /\ supply           = [v \in Validators |-> 0]
+    /\ mintedEpochs     = {}
     /\ blocks           = [v \in Validators |->
                               [s \in 1..MaxSeqNum |-> {}]]
     /\ invalidBlocks    = {}
@@ -94,6 +110,7 @@ SignHonest(v, s) ==
     /\ blocks' = [blocks EXCEPT ![v] = [@ EXCEPT ![s] = {1}]]
     /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![v] = s]
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    mintingHalted, supply, mintedEpochs,
                     invalidBlocks, equivocationRecords, pendingSlashDeploys,
                     rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes>>
 
@@ -109,6 +126,7 @@ SignEquivocating(v, s) ==
     /\ equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
     /\ pendingSlashDeploys' = pendingSlashDeploys \cup {<<v, s, 2>>}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    mintingHalted, supply, mintedEpochs,
                     rejectedSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
 (****************************************************************************)
@@ -119,6 +137,7 @@ ObserveRejectedSlash(h) ==
     /\ h \notin rejectedSlashDeploys
     /\ rejectedSlashDeploys' = rejectedSlashDeploys \cup {h}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    mintingHalted, supply, mintedEpochs,
                     blocks, invalidBlocks, equivocationRecords,
                     pendingSlashDeploys, recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
@@ -132,6 +151,7 @@ RecoverRejectedSlash(h) ==
         THEN pendingSlashDeploys
         ELSE pendingSlashDeploys \cup {h}
     /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    mintingHalted, supply, mintedEpochs,
                     blocks, invalidBlocks, equivocationRecords,
                     rejectedSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
@@ -156,6 +176,12 @@ ExecuteSlash(h) ==
                     {d \in pendingSlashDeploys : d[1] # o}
                 /\ forkChoiceLatest' = [forkChoiceLatest EXCEPT ![o] = 0]
                 /\ noopSlashHashes' = noopSlashHashes
+                \* Cost-Accounted Rho Stage-C slash effect (Decision 4):
+                \* halt minting + zero Σ⟦v⟧ (drain @W_v is the bond zero-out
+                \* above). mintingHalted is idempotent (already-halted stays).
+                /\ mintingHalted' = mintingHalted \cup {o}
+                /\ supply' = [supply EXCEPT ![o] = 0]
+                /\ mintedEpochs' = mintedEpochs
           ELSE
             /\ bonds' = bonds
             /\ activeValidators' = activeValidators
@@ -164,8 +190,33 @@ ExecuteSlash(h) ==
             /\ pendingSlashDeploys' = pendingSlashDeploys \ {h}
             /\ forkChoiceLatest' = forkChoiceLatest
             /\ noopSlashHashes' = noopSlashHashes \cup {h}
+            \* A duplicate slash of an already-zero-bond offender keeps the
+            \* validator halted with zero supply (idempotent slash).
+            /\ mintingHalted' = mintingHalted \cup {h[1]}
+            /\ supply' = supply
+            /\ mintedEpochs' = mintedEpochs
     /\ UNCHANGED <<blocks, invalidBlocks, equivocationRecords,
                     rejectedSlashDeploys, recoveredSlashDeploys>>
+
+(****************************************************************************)
+(* Action: the Cost-Accounted Rho Stage-B epoch mint (closeBlock fold +     *)
+(* CloseBlockDeploy::post_eval). Credits MintAmount to an ELIGIBLE validator *)
+(* v — active AND NOT halted AND NOT already minted this epoch — on its      *)
+(* Σ⟦v⟧ supply pool, and records (v, EpochIndex) in mintedEpochs. The        *)
+(* eligibility guards mirror the Rholang predicate + the Rust post_eval      *)
+(* recompute + mint_eligible (MintingInjection.v). The mintedEpochs guard    *)
+(* makes a duplicated / multi-parent-merged mint a NO-OP (idempotency).      *)
+(****************************************************************************)
+EpochMint(v) ==
+    /\ v \in activeValidators
+    /\ v \notin mintingHalted
+    /\ <<v, EpochIndex>> \notin mintedEpochs
+    /\ supply' = [supply EXCEPT ![v] = supply[v] + MintAmount]
+    /\ mintedEpochs' = mintedEpochs \cup {<<v, EpochIndex>>}
+    /\ UNCHANGED <<bonds, activeValidators, coopVaultBalance, slashedSet,
+                    mintingHalted, blocks, invalidBlocks, equivocationRecords,
+                    pendingSlashDeploys, rejectedSlashDeploys,
+                    recoveredSlashDeploys, noopSlashHashes, forkChoiceLatest>>
 
 (****************************************************************************)
 (* Next                                                                     *)
@@ -176,6 +227,7 @@ Next ==
     \/ \E h \in BlockId                         : ObserveRejectedSlash(h)
     \/ \E h \in BlockId                         : RecoverRejectedSlash(h)
     \/ \E h \in BlockId                         : ExecuteSlash(h)
+    \/ \E v \in Validators                      : EpochMint(v)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(\E h \in BlockId : ExecuteSlash(h))
 
@@ -244,6 +296,36 @@ Inv_SlashSeedInputInjectiveByHash ==
         \A h1 \in BlockId :
           \A h2 \in BlockId :
             SlashSeedInput(p, s, h1) = SlashSeedInput(p, s, h2) => h1 = h2
+
+(****************************************************************************)
+(* Cost-Accounted Rho Stage B/C halt-interface invariants (DR-3 / DR-13).   *)
+(****************************************************************************)
+
+\* Inv_HaltedNotMinted: a halted validator is NEVER recorded in the mint
+\* ledger for the current epoch — so it never receives an epoch credit while
+\* halted (the cross-epoch halt). The EpochMint eligibility guard refuses any
+\* v in mintingHalted, and slash zeros the offender's supply, so a halted
+\* validator's (v, EpochIndex) record can be present ONLY if it was minted
+\* BEFORE being halted; this invariant asserts the stronger post-slash shape:
+\* a slashed/halted validator carries no supply (its Σ⟦v⟧ was zeroed and the
+\* halt blocks all further mints).
+Inv_HaltedNotMinted ==
+    \A v \in Validators : v \in mintingHalted => supply[v] = 0
+
+\* Inv_NoDoubleCreditUnderMerge: a validator is credited AT MOST once per
+\* epoch — its supply is bounded by a single MintAmount (the mintedEpochs
+\* idempotency guard prevents a second credit, even under a duplicated /
+\* multi-parent-merged epoch mint). Combined with Inv_HaltedNotMinted (a halt
+\* zeros it), supply[v] is always 0 or MintAmount.
+Inv_NoDoubleCreditUnderMerge ==
+    \A v \in Validators : supply[v] <= MintAmount
+
+\* Supply is created ONLY by the epoch mint: a validator's supply is non-zero
+\* only if it is recorded in mintedEpochs (and not subsequently zeroed by a
+\* slash). Equivalently, an unminted, unslashed validator has zero supply.
+Inv_SupplyOnlyFromMint ==
+    \A v \in Validators :
+        (supply[v] > 0) => (<<v, EpochIndex>> \in mintedEpochs /\ v \notin mintingHalted)
 
 (****************************************************************************)
 (* Liveness: every detected equivocation eventually triggers slash.          *)
