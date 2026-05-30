@@ -63,17 +63,25 @@ def apply_op(state, op):
             s["minted"] = True
     elif kind == "open_gate":
         # The acceptance gate reads Σ_s once and seeds the in-pass residual
-        # (DR-11 / WD-D2): residual := effectiveΣ_s = current balance.
+        # (DR-11 / WD-D2): residual := effectiveΣ_s = current balance. The
+        # per-group prefix starts OPEN (prefix_open = True) — admissions proceed
+        # in canonical order until the first non-fitting deploy closes it.
         s["residual"] = s["balance"]
         s["committed"] = 0
+        s["prefix_open"] = True
     elif kind == "admit":
-        # Admit a demand Δ iff it fits the residual; commit Δ (decrement the
-        # residual). Reject-both on oversubscription: a non-fitting Δ commits
-        # nothing (and leaves the residual for later admits in canonical order).
+        # Admit a demand Δ in CANONICAL ORDER iff the prefix is still open AND Δ
+        # fits the residual; then commit Δ (decrement the residual). §7.7
+        # reject-both / no-partial (WD-D2 admit_by_funding): the FIRST non-fitting
+        # deploy CLOSES the prefix (prefix_open = False) so it AND every later
+        # deploy in the group are rejected — a smaller later Δ does NOT sneak in.
         delta = int(op[1])
-        if delta <= s["residual"]:
+        if s.get("prefix_open", False) and delta <= s["residual"]:
             s["residual"] = s["residual"] - delta
             s["committed"] = s["committed"] + delta
+        elif s.get("prefix_open", False) and delta > s["residual"]:
+            # First non-fitting deploy: reject it AND close the prefix.
+            s["prefix_open"] = False
     elif kind == "settle":
         # Settlement debit = the committed demand: post = pre − ΣΔ_admitted.
         # This is the single consensus decrement (DR-13 Decision 4(c)). The
@@ -157,8 +165,28 @@ def check_properties(initial, ops):
         if was_halted and sim["balance"] > bal_before:
             p4 = False
 
+    # (P5) canonical-prefix reject-both (WD-D2 §7.7 no-partial): once the prefix
+    # has closed on a non-fitting deploy, NO later admit commits anything. We
+    # check that after prefix_open flips to False, committed never increases.
+    p5 = True
+    sim = dict(initial)
+    prefix_was_closed = False
+    for op in ops:
+        committed_before = sim["committed"]
+        if op[0] == "open_gate":
+            prefix_was_closed = False
+        sim = apply_op(sim, op)
+        # Track closure AFTER applying (a non-fitting admit closes it this step).
+        if op[0] == "admit" and not sim.get("prefix_open", False):
+            # If the prefix was already closed BEFORE this admit, no commit may
+            # have happened on this step (reject-both / all-after).
+            if prefix_was_closed and sim["committed"] > committed_before:
+                p5 = False
+            prefix_was_closed = True
+
     return {"p1_no_negative": p1, "p2_no_double_credit": p2,
-            "p3_settlement_conserves": p3, "p4_halt_no_credit": p4}
+            "p3_settlement_conserves": p3, "p4_halt_no_credit": p4,
+            "p5_canonical_prefix_reject_both": p5}
 
 
 def adversarial_search():
@@ -176,7 +204,7 @@ def adversarial_search():
         ("halt",),                 # slash: halt + zero Σ⟦v⟧
     ]
     initial = {"balance": 0, "minted": False, "halted": False,
-               "residual": 0, "committed": 0}
+               "residual": 0, "committed": 0, "prefix_open": False}
 
     total = 0
     violations = []
@@ -214,20 +242,29 @@ def records():
     )
 
     no_negative_witness = check_properties(
-        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0},
+        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("mint", 1000), ("open_gate",), ("admit", 300), ("settle",)],
     )
     double_credit_witness = check_properties(
-        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0},
+        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("mint", 1000), ("mint", 1000), ("open_gate",), ("admit", 900), ("settle",)],
     )
     halt_witness = check_properties(
-        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0},
+        {"balance": 0, "minted": False, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("halt",), ("mint", 1000)],
     )
     oversub_witness = check_properties(
-        {"balance": 500, "minted": True, "halted": False, "residual": 0, "committed": 0},
+        {"balance": 500, "minted": True, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
         [("open_gate",), ("admit", 300), ("admit", 900), ("settle",)],
+    )
+    # Canonical-prefix reject-both: with Σ=500 and demands [300, 900, 100] in
+    # canonical order, the 300 fits (residual 200), the 900 does NOT (closes the
+    # prefix), and the LATER 100 — though it WOULD fit the residual — is REJECTED
+    # because the prefix already closed (§7.7 reject it + all after). Settled
+    # debit = 300 only (NOT 400).
+    prefix_reject_witness = check_properties(
+        {"balance": 500, "minted": True, "halted": False, "residual": 0, "committed": 0, "prefix_open": False},
+        [("open_gate",), ("admit", 300), ("admit", 900), ("admit", 100), ("settle",)],
     )
 
     common_invariants = [
@@ -235,6 +272,7 @@ def records():
         "no_double_credit_under_merge",
         "settlement_post_eq_pre_minus_admitted",
         "halted_validator_gains_no_supply",
+        "canonical_prefix_reject_both",
     ]
 
     return [
@@ -302,6 +340,23 @@ def records():
             {"properties": oversub_witness},
             ["DR-13 Decision 4(b)/(c)", "Rocq: user_ca_step_does_not_increase_balance",
              "Rust: admit_by_funding reject-both"],
+        ),
+        record(
+            "supply_accounting",
+            "confirmed_safe",
+            "sage_supply_canonical_prefix_reject_both",
+            "Once the per-signature group's canonical prefix closes on a non-fitting deploy, every LATER deploy is rejected too — even one whose demand would still fit the residual (§7.7 no-partial). Settled debit = the closed prefix only.",
+            canonical_scenario(
+                "supply_canonical_prefix_reject_both",
+                threat_family="settlement",
+                settlement={"supply": 500, "demands": [300, 900, 100], "admitted": 300},
+                expected_invariants=common_invariants,
+                expected_classification="confirmed_safe",
+            ),
+            {"properties": prefix_reject_witness},
+            ["Rocq: admit_prefix_maximal", "Rocq: reject_both_sound",
+             "TLA+: EvalScheduling RejectBothOnOversubscription",
+             "Rust: admit_by_funding reject-both prefix"],
         ),
     ]
 

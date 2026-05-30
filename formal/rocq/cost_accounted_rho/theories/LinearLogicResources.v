@@ -697,3 +697,122 @@ Proof.
   - unfold funds. rewrite sigma_s_balance_eq_stack_count. cbn. lia.
   - unfold funds. rewrite sigma_s_balance_eq_stack_count. cbn. lia.
 Qed.
+
+(* ─── WD-D2 acceptance gate: per-group prefix admission (reject-both) ─────────
+
+   The block-assembly acceptance gate (cost-accounted-rho §7.6/§7.7), realized in
+   [casper/.../util/rholang/acceptance.rs::admit_by_funding], processes each
+   per-signature group of deployments in CANONICAL order against the group's
+   effective supply [cap], admitting the LARGEST PREFIX whose cumulative demand
+   [Σ Δ_s] does not exceed [cap], and — on the FIRST deployment that does not fit
+   — rejecting it AND every deployment after it in the group (§7.7 reject-both /
+   no-partial, tex 1696-1712). We model a group as the list [ds] of its
+   per-deployment demands (in canonical order; [Δ_s ≥ 0], here [nat]) and prove
+   the two headline properties the Rust code relies on: the admitted prefix is
+   the unique maximal canonical prefix (`admit_prefix_maximal`), and rejection is
+   downward-closed toward the tail (`reject_both_sound`). *)
+
+(* Cumulative demand of the first [k] deployments of a group (a prefix sum). *)
+Fixpoint cumdemand (ds : list nat) (k : nat) : nat :=
+  match k, ds with
+  | 0, _ => 0
+  | S k', [] => 0
+  | S k', d :: ds' => d + cumdemand ds' k'
+  end.
+
+(* The admitted prefix LENGTH: the largest [k] such that the cumulative demand of
+   the first [k] deployments fits within [cap]. Defined by the same left-to-right
+   residual walk the Rust gate performs ([residual -= Δ] while [Δ ≤ residual]),
+   stopping (and rejecting the rest) at the first non-fitting deployment. *)
+Fixpoint admitted_len (cap : nat) (ds : list nat) : nat :=
+  match ds with
+  | [] => 0
+  | d :: ds' =>
+      if Nat.leb d cap
+      then S (admitted_len (cap - d) ds')
+      else 0
+  end.
+
+(* The admitted prefix never exceeds the group size. *)
+Lemma admitted_len_le_length :
+  forall ds cap, admitted_len cap ds <= length ds.
+Proof.
+  induction ds as [| d ds' IH]; intro cap; cbn.
+  - lia.
+  - destruct (Nat.leb d cap) eqn:Hd.
+    + specialize (IH (cap - d)). lia.
+    + lia.
+Qed.
+
+(* SOUNDNESS of the admitted prefix: the cumulative demand of EXACTLY the admitted
+   prefix fits within [cap]. So every admitted deployment is funded — the gate
+   never admits an under-funded prefix (the consensus-safety direction). *)
+Lemma admitted_prefix_fits :
+  forall ds cap, cumdemand ds (admitted_len cap ds) <= cap.
+Proof.
+  induction ds as [| d ds' IH]; intro cap; cbn.
+  - lia.
+  - destruct (Nat.leb d cap) eqn:Hd.
+    + apply Nat.leb_le in Hd. cbn.
+      specialize (IH (cap - d)). lia.
+    + cbn. lia.
+Qed.
+
+(* MAXIMALITY of the admitted prefix: if the admitted prefix is STRICTLY shorter
+   than the whole group (i.e. some deployment was rejected), then admitting ONE
+   MORE deployment would STRICTLY EXCEED [cap]. Together with [admitted_prefix_fits]
+   this pins [admitted_len cap ds] as the unique largest canonical prefix whose
+   cumulative demand is [≤ cap] — the gate admits no fewer and no more. *)
+Theorem admit_prefix_maximal :
+  forall ds cap,
+    admitted_len cap ds < length ds ->
+    cap < cumdemand ds (S (admitted_len cap ds)).
+Proof.
+  induction ds as [| d ds' IH]; intros cap Hlt; cbn in *.
+  - lia.
+  - destruct (Nat.leb d cap) eqn:Hd.
+    + apply Nat.leb_le in Hd. cbn.
+      assert (Hlt' : admitted_len (cap - d) ds' < length ds') by lia.
+      specialize (IH (cap - d) Hlt'). lia.
+    + apply Nat.leb_gt in Hd. cbn. lia.
+Qed.
+
+(* The "rejected at index [j]" predicate: deployment [j] (0-based) of the group is
+   rejected iff it lies at or beyond the admitted prefix length. *)
+Definition rejected_at (cap : nat) (ds : list nat) (j : nat) : Prop :=
+  admitted_len cap ds <= j.
+
+(* REJECT-BOTH soundness (cost-accounted-rho §7.7, [eq:reject-both]): if a
+   deployment at canonical index [j] is rejected, then EVERY deployment at a later
+   index [j' ≥ j] is ALSO rejected — there is no "hole" where a later deployment
+   is admitted after an earlier one was rejected. This is the no-partial property
+   the Rust gate enforces by closing the per-group prefix on the first
+   non-fitting deployment ([prefix_open = false] for the remainder). It is a
+   direct corollary of [rejected_at] being an upward-closed (toward the tail)
+   threshold at [admitted_len]. *)
+Theorem reject_both_sound :
+  forall ds cap j j',
+    j <= j' ->
+    rejected_at cap ds j ->
+    rejected_at cap ds j'.
+Proof.
+  intros ds cap j j' Hjj' Hrej. unfold rejected_at in *. lia.
+Qed.
+
+(* Reject-both, stated the way the spec's duplicate-deployment example reads
+   (tex 1677-1712): once the cumulative demand through some prefix exceeds the
+   supply, the deployment that tipped it over AND all deployments after it are
+   rejected. This restates [admit_prefix_maximal] + [reject_both_sound] as the
+   single operational fact: the first index whose inclusive cumulative demand
+   exceeds [cap] is exactly [admitted_len], and everything from there on is
+   rejected. *)
+Corollary reject_both_from_first_overshoot :
+  forall ds cap,
+    admitted_len cap ds < length ds ->
+    (cap < cumdemand ds (S (admitted_len cap ds))) /\
+    (forall j', admitted_len cap ds <= j' -> rejected_at cap ds j').
+Proof.
+  intros ds cap Hlt. split.
+  - apply admit_prefix_maximal; exact Hlt.
+  - intros j' Hj'. unfold rejected_at. exact Hj'.
+Qed.

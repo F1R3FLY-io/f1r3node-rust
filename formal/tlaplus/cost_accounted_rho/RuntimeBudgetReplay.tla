@@ -510,6 +510,38 @@ ConsumedAndVerdictScheduleIndependent ==
               THEN reconciledOop # NoOop /\ reconciledConsumed = InitialBudget
               ELSE reconciledOop = NoOop /\ reconciledConsumed = TotalValidWeight)
 
+(* ---- WD-D2: admission_decision_schedule_independent -------------------- *)
+(*                                                                          *)
+(* The WD-D2 acceptance gate's ADMISSION DECISION is schedule-independent —  *)
+(* exactly the property [ConsumedAndVerdictScheduleIndependent] establishes   *)
+(* for the runtime budget, viewed through the gate↔budget isomorphism:        *)
+(*   pool supply Σ_s        ≙  InitialBudget                                  *)
+(*   per-deploy demand Δ_s  ≙  per-event Weight (canonical order)             *)
+(*   admitted prefix        ≙  the budget-fitting committed prefix            *)
+(* The admitted prefix length [RecCommitLen] and the consumed-at-admission    *)
+(* total [RecConsumed] read ONLY the constants (Events, Weight, Rank,         *)
+(* InitialBudget) — never the firing order — so EVERY behavior TLC explores   *)
+(* reaches the SAME admission verdict. Restated here so the WD-D2 headline     *)
+(* set carries the schedule-independence obligation explicitly: at the merge   *)
+(* frontier, the reconciled admission (committed length + consumed) equals the *)
+(* pure-function-of-constants value, independent of how COMM bodies were       *)
+(* scheduled. This is the formal content of "the gate's verdict is replay-     *)
+(* deterministic" — the same admitted/rejected partition on play and replay    *)
+(* (the [gate_decision_replay_determinism] Rust test).                         *)
+admission_decision_schedule_independent ==
+    frontier = 2 =>
+        \* The reconciled admission total (which the dynamics COULD make
+        \* schedule-dependent) equals the pure-function-of-constants value:
+        \* the admission verdict is the SAME in every behavior.
+        /\ reconciledConsumed = RecConsumed
+        /\ reconciledOop = RecOop
+        \* The admitted demand never oversubscribes the pool (Σ_s = InitialBudget).
+        /\ reconciledConsumed <= InitialBudget
+        /\ (~CapTruncates =>
+              IF TotalValidWeight <= InitialBudget
+              THEN reconciledConsumed = TotalValidWeight  \* all admitted, exact ΣΔ
+              ELSE reconciledConsumed = InitialBudget)     \* prefix capped at the pool
+
 (* total_cost is the clamped sum: min(InitialBudget, Σ valid weights) in the *)
 (* common (non-cap-truncated) case. Always reconciledConsumed <= both bounds.*)
 TotalCostMatchesClampedSum ==

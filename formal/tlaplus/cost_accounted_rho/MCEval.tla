@@ -13,4 +13,13 @@ MC_StorageCostA  == 10   \* e.g., storage_cost_produce
 MC_StorageCostB  == 15   \* e.g., storage_cost_consume (different!)
 MC_MintAmount    == 1000 \* epochPhlogiston credited per eligible mint
 
+\* WD-D2 acceptance-gate instance: three deploys in a fixed canonical order,
+\* each demanding 2 tokens (Δ_s = 2), sharing a pool of 5. The gate admits the
+\* first 2 (cumulative 4 <= 5) and rejects the 3rd (cumulative 6 > 5) — an
+\* OVERSUBSCRIBED block exercising reject-both + the settlement debit
+\* (post = 5 - 4 = 1).
+MC_CanonOrder    == <<b1, b2, b3>>
+MC_Demand        == [b \in MC_Bodies |-> 2]
+MC_PoolSupply    == 5
+
 =============================================================================

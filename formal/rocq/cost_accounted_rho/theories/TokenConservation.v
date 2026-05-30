@@ -37,7 +37,8 @@
                  CostAccountedReduction (this project)
    ═══════════════════════════════════════════════════════════════════════════ *)
 
-From Stdlib Require Import Lia.
+From Stdlib Require Import Lia Lists.List.
+Import ListNotations.
 
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -233,4 +234,70 @@ Proof.
   apply token_consumed_per_step in Hstep.
   destruct Hstep as [k [Hk Heq]].
   lia.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 5: WD-D2 Acceptance-Settlement Conservation (C↔D bridge)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The block-assembly acceptance gate admits a per-signature group of
+   deployments and then SETTLES the per-signature supply pool [Σ⟦s⟧] by
+   subtracting the SUM of the admitted deployments' demands [ΣΔ_admitted]
+   (cost-accounted-rho §7.7; supply-realization handoff Decision 4c). The
+   realized form (casper/.../costacc/close_block_deploy.rs::dual_write_supply)
+   is the integer balance update [new = old.checked_sub(ΣΔ)], applied exactly
+   once per block AFTER all admitted deployments have executed.
+
+   Here we prove the conservation law for that settlement at the balance level:
+   the post-settlement balance plus the debited amount equals the pre-settlement
+   balance — no fuel is created or destroyed by the settlement; the tokens that
+   leave the pool EXACTLY equal the admitted demand. This is the [TokenConservation]
+   counterpart, at the supply-balance layer, of the [system_token_count]
+   monotone-decrease theorem above (which conserves at the running-process layer):
+   together they pin "consumed = Δ_s" (the per-step decrease) AND "post = pre − ΣΔ"
+   (the settlement debit) as the two faces of one conserved quantity.            *)
+
+(* The total admitted demand of a group: the sum of its per-deployment demands,
+   in canonical order. (Demands are non-negative; modeled as [nat].) *)
+Fixpoint admitted_demand_sum (ds : list nat) : nat :=
+  match ds with
+  | nil => 0
+  | d :: ds' => d + admitted_demand_sum ds'
+  end.
+
+(* The post-settlement supply balance: pre-balance minus the total admitted
+   demand. ([nat] truncated subtraction; the gate guarantees [ΣΔ ≤ pre], so under
+   that hypothesis the subtraction is exact — see [settlement_conserves]). *)
+Definition settle_balance (pre : nat) (ds : list nat) : nat :=
+  pre - admitted_demand_sum ds.
+
+(* [settlement_conserves]: under the gate's funding guarantee [ΣΔ_admitted ≤ pre]
+   (which the acceptance gate enforces — it admits only a prefix whose cumulative
+   demand fits the effective supply, and the underflow-guarded [checked_sub] would
+   reject otherwise), the post-settlement balance plus the debited total EQUALS the
+   pre-balance: [post + ΣΔ = pre], i.e. [post = pre − ΣΔ] with the subtraction
+   exact. No fuel is created or destroyed by the acceptance settlement. *)
+Theorem settlement_conserves :
+  forall (pre : nat) (ds : list nat),
+    admitted_demand_sum ds <= pre ->
+    settle_balance pre ds + admitted_demand_sum ds = pre.
+Proof.
+  intros pre ds Hle. unfold settle_balance. lia.
+Qed.
+
+(* [accept_commit_conserves] (supply-realization handoff Decision 8,
+   [TokenConservation.v] obligation "accept_commit_conserves"): the headline
+   statement of the settlement law — the post-state supply balance is EXACTLY the
+   pre-state balance minus the sum of the admitted deployments' demands, and that
+   debited sum is EXACTLY the admitted demand total (which "= Σ reconcile.consumed"
+   at the runtime, by the per-deployment "consumed = Δ_s" bridge that
+   [replay_cost_mismatch] guards). Stated as the conjunction the C↔D bridge
+   requires: [post = pre − ΣΔ_admitted] ∧ [ΣΔ_admitted = Σ of the admitted demands]. *)
+Theorem accept_commit_conserves :
+  forall (pre : nat) (ds : list nat),
+    admitted_demand_sum ds <= pre ->
+    settle_balance pre ds = pre - admitted_demand_sum ds
+    /\ pre - settle_balance pre ds = admitted_demand_sum ds.
+Proof.
+  intros pre ds Hle. unfold settle_balance. split; lia.
 Qed.
