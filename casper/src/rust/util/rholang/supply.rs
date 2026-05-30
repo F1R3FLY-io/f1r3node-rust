@@ -117,6 +117,40 @@ pub async fn read_balance(runtime_ops: &RuntimeOps, chan: &Par) -> i64 {
     decode_balance_datum(&data)
 }
 
+/// Read the supply balance, DISTINGUISHING an ABSENT pool from a present
+/// zero-balance pool: returns `Some(n)` iff a `(TOKEN_TAG, n)` datum is resident
+/// on `chan` (even `n == 0`), and `None` iff no balance datum exists at all.
+///
+/// This is the WD-D2 acceptance-gate ACTIVATION discriminator (reported grounding
+/// refinement of the design's uniform "0 if absent"): a signer whose pool is
+/// ABSENT (`None`) is not yet under cost-accounting funding — the Cost-Accounted
+/// Rho ECONOMIC producer (Workstream C) has not provisioned its pool — so the
+/// gate admits it WITHOUT funding enforcement and WITHOUT a settlement debit
+/// (preserving pre-C / non-cost-accounted behavior bit-for-bit). A signer whose
+/// pool is PRESENT (`Some(n)`, including a drained `Some(0)`) IS under
+/// cost-accounting, so the gate enforces `Σ_s ≥ Δ_s + margin` and the §7.7
+/// reject-both discipline (a drained pool correctly rejects further spends — the
+/// spec's duplicate-deploy example, tex 1677-1687). `decode_balance_datum`
+/// cannot make this distinction (it folds absent and present-zero both to 0), so
+/// this presence probe is a separate, intentional read.
+pub async fn read_balance_present(runtime_ops: &RuntimeOps, chan: &Par) -> Option<i64> {
+    let data = runtime_ops.get_data_par(chan).await;
+    decode_balance_present(&data)
+}
+
+/// Like [`decode_balance_datum`] but returns `None` when NO `(TOKEN_TAG, n)`
+/// datum is present (vs `Some(n)` for a resident balance, including `Some(0)`).
+/// Total over arbitrary `&[Par]`; the first matching tuple wins (the
+/// single-datum invariant means at most one matches).
+pub fn decode_balance_present(data: &[Par]) -> Option<i64> {
+    for par in data {
+        if let Some(n) = decode_one_balance_par(par) {
+            return Some(n);
+        }
+    }
+    None
+}
+
 /// Write the supply balance `n` to `chan` as the SINGLE datum `(TOKEN_TAG, n)`.
 ///
 /// Read-modify-**replace**: any existing balance datum on `chan` is removed

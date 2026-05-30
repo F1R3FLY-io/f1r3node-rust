@@ -559,12 +559,12 @@ async fn run_block_creator_phase_split_memory_profile() {
         let system_deploys = if skip_system_deploy {
             Vec::new()
         } else {
-            vec![SystemDeployEnum::Close(CloseBlockDeploy {
-                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
                     validator_identity.public_key.clone(),
                     next_seq_num,
                 ),
-            })]
+            ))]
         };
 
         let rss_before = vm_rss_kb();

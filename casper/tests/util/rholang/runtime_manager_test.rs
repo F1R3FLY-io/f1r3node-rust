@@ -463,12 +463,8 @@ async fn close_block_should_make_epoch_change_and_reward_validator() {
                 &mut runtime_manager,
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
-                &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                },
-                &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                },
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
                 |_| true,
             )
             .await
@@ -487,12 +483,8 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
                 &mut runtime_manager,
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
-                &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                },
-                &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![1]),
-                },
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![1])),
                 |_| true,
             )
             .await;
@@ -534,12 +526,12 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
             play_runtime.set_block_data(block_data.clone()).await;
             let mut play_ops = RuntimeOps::new(play_runtime);
 
-            let mut play_close = CloseBlockDeploy {
-                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            let mut play_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
                     sender.clone(),
                     block_data.seq_num,
                 ),
-            };
+            );
             let play_result = play_ops
                 .play_system_deploy(&start_state, &mut play_close)
                 .await
@@ -728,13 +720,12 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     deploys0,
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        genesis_context.validator_pks()[0].clone(),
-                                        0,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    genesis_context.validator_pks()[0].clone(),
+                                    0,
+                                ),
+                            ),
                         ),
                     ],
                     BlockData {
@@ -785,13 +776,12 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     deploys1,
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        genesis_context.validator_pks()[0].clone(),
-                                        0,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    genesis_context.validator_pks()[0].clone(),
+                                    0,
+                                ),
+                            ),
                         ),
                     ],
                     BlockData {
@@ -1113,13 +1103,12 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     vec![deploy],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),
@@ -1207,13 +1196,12 @@ async fn compute_state_should_charge_deploys_separately() {
                     .unwrap()],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),
@@ -1238,13 +1226,12 @@ async fn compute_state_should_charge_deploys_separately() {
                     .unwrap()],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),
@@ -1259,13 +1246,12 @@ async fn compute_state_should_charge_deploys_separately() {
                     vec![deploy0, deploy1],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),
@@ -1363,13 +1349,12 @@ async fn system_settlement_use_case_does_not_change_user_runtime_cost() {
                     vec![deploy_with_settlement],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data,
@@ -1529,13 +1514,12 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                     vec![deploy],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),
@@ -3151,13 +3135,12 @@ async fn parallel_replay_determinism() {
                     vec![deploy],
                     vec![
                         casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                            CloseBlockDeploy {
-                                initial_rand:
-                                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                                        block_data.sender.clone(),
-                                        block_data.seq_num,
-                                    ),
-                            },
+                            CloseBlockDeploy::new(
+                                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                                    block_data.sender.clone(),
+                                    block_data.seq_num,
+                                ),
+                            ),
                         ),
                     ],
                     block_data.clone(),

@@ -521,6 +521,12 @@ impl ReplayRuntimeOps {
                             block_data.sender.bytes.clone(),
                             block_data.seq_num,
                         ),
+                    // Replay does NOT thread the play-side debit map (debits are
+                    // not serialized into the block); the settlement debit is
+                    // applied on replay via the RECOMPUTED map fed directly to
+                    // `post_eval_replay` (WD-D2, replay symmetry). The struct
+                    // field is left empty here.
+                    settlement_debits: Default::default(),
                 };
 
                 // Capture the pre-close store root for the Stage-B supply

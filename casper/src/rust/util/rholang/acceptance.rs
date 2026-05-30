@@ -54,9 +54,11 @@ use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
-use rholang::rust::interpreter::accounting::delta_sigma::{
-    self, Decomposition, DemandEntry, SigKey,
-};
+use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
+// Re-exported (NOT a private `use`) so settlement-debit consumers
+// (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
+// basis (`Sig::lane_hash`) without reaching into rholang internals.
+pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 
@@ -93,21 +95,27 @@ pub struct AdmissionOutcome {
     pub debits: BTreeMap<SigKey, SettlementDebit>,
 }
 
-/// An async per-channel supply-balance reader. Two implementations keep the
-/// gate's read symmetric across play and replay:
+/// An async per-channel supply-balance reader returning PRESENCE: `Some(n)` iff
+/// a balance datum is resident on `chan` (even `n == 0`), `None` iff the pool is
+/// absent. The presence distinction is the gate's per-pool ACTIVATION signal
+/// (see [`read_balance_present`] / `admit_by_funding`). Two implementations keep
+/// the gate's read symmetric across play and replay:
 ///   * play (block assembly): [`RuntimeManagerSupplyReader`] over a merged
 ///     pre-state HASH via `RuntimeManager::get_data`;
 ///   * replay: [`RuntimeOpsSupplyReader`] over the LIVE store already `reset` to
-///     `start_hash` via `supply::read_balance`.
+///     `start_hash`.
 ///
-/// Both decode through the SAME `supply::decode_balance_datum`, so the balance
-/// read is byte-identical for a given state root.
+/// Both decode through the SAME `supply::decode_balance_present`, so the read is
+/// byte-identical for a given state root.
 pub trait SupplyReader {
-    /// Read `supply(s) = n` from `chan` (0 if absent).
+    /// Read `supply(s)` from `chan`: `Some(n)` if a balance datum is present
+    /// (including `Some(0)`), `None` if the pool is absent.
     fn read_balance<'a>(
         &'a self,
         chan: &'a Par,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+    >;
 }
 
 /// Play-side supply reader: reads each pool from the merged pre-state hash via
@@ -121,21 +129,22 @@ impl<'rm> SupplyReader for RuntimeManagerSupplyReader<'rm> {
     fn read_balance<'a>(
         &'a self,
         chan: &'a Par,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let data = self
                 .runtime_manager
                 .get_data(self.pre_state_hash.clone(), chan)
                 .await?;
-            Ok(supply::decode_balance_datum(&data))
+            Ok(supply::decode_balance_present(&data))
         })
     }
 }
 
 /// Replay-side supply reader: reads each pool from the LIVE hot store (already
-/// `reset` to `start_hash`) via `supply::read_balance`. Same decoder, same root
-/// ⇒ byte-identical balances to the play-side `RuntimeManager::get_data` read.
+/// `reset` to `start_hash`) via `supply::read_balance_present`. Same decoder,
+/// same root ⇒ byte-identical presence/balances to the play-side read.
 pub struct RuntimeOpsSupplyReader<'ops> {
     pub runtime_ops: &'ops RuntimeOps,
 }
@@ -144,9 +153,10 @@ impl<'ops> SupplyReader for RuntimeOpsSupplyReader<'ops> {
     fn read_balance<'a>(
         &'a self,
         chan: &'a Par,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>
-    {
-        Box::pin(async move { Ok(supply::read_balance(self.runtime_ops, chan).await) })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
+    > {
+        Box::pin(async move { Ok(supply::read_balance_present(self.runtime_ops, chan).await) })
     }
 }
 
@@ -305,11 +315,21 @@ pub async fn admit_by_funding(
         }
     }
 
-    // 5. Read each distinct channel's RAW balance exactly once.
+    // 5. Read each distinct channel's PRESENCE + balance exactly once.
+    //    `present` records which pools exist (the per-pool ACTIVATION signal);
+    //    `raw` holds balances with absent ⇒ 0 (the Split/Join closure math).
+    let mut present: std::collections::BTreeSet<SigKey> = std::collections::BTreeSet::new();
     let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
     for (key, chan) in &channels_by_key {
-        let balance = supply_reader.read_balance(chan).await?;
-        raw.insert(*key, balance);
+        match supply_reader.read_balance(chan).await? {
+            Some(balance) => {
+                present.insert(*key);
+                raw.insert(*key, balance);
+            }
+            None => {
+                raw.insert(*key, 0);
+            }
+        }
     }
 
     // 6. Apply the Split/Join closure to get the EFFECTIVE supplies.
@@ -326,6 +346,20 @@ pub async fn admit_by_funding(
             .first()
             .map(|c| c.channel.clone())
             .unwrap_or_default();
+
+        // ACTIVATION (reported grounding refinement — see `supply::read_balance_present`):
+        // a group whose pool is ABSENT is not yet under cost-accounting funding
+        // (the Workstream-C economic producer has not provisioned it) ⇒ admit
+        // the whole group with NO enforcement and NO debit (pre-C /
+        // non-cost-accounted behavior, bit-for-bit). A PRESENT pool (including a
+        // drained `Some(0)`) IS under cost-accounting ⇒ enforce the funding
+        // obligation + §7.7 reject-both.
+        if !present.contains(&sig_key) {
+            for candidate in group {
+                outcome.admitted.push(candidate.cosigned);
+            }
+            continue;
+        }
 
         // The admission residual starts from the EFFECTIVE supply, EXCEPT for a
         // compound group where it is capped at the RAW compound pool
@@ -419,11 +453,13 @@ mod tests {
             &'a self,
             chan: &'a Par,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>,
+            Box<dyn std::future::Future<Output = Result<Option<i64>, CasperError>> + Send + 'a>,
         > {
             use prost::Message;
             let key = chan.encode_to_vec();
-            let balance = self.balances.get(&key).copied().unwrap_or(0);
+            // A `set` pool is PRESENT (`Some`); an unset pool is ABSENT (`None`).
+            // The gate enforces funding only for present pools (activation).
+            let balance = self.balances.get(&key).copied();
             Box::pin(async move { Ok(balance) })
         }
     }
@@ -569,6 +605,49 @@ mod tests {
             .expect("gate must not error");
         assert!(outcome.admitted.is_empty(), "malformed ⇒ not admitted");
         assert_eq!(outcome.rejected.len(), 1, "malformed ⇒ rejected");
+        assert!(outcome.debits.is_empty());
+    }
+
+    /// ACTIVATION: a deploy whose supply pool is ABSENT (never provisioned by
+    /// the cost-accounting economic producer) is admitted WITHOUT funding
+    /// enforcement and WITHOUT a debit — even though its Δ ≫ 0 and the supply
+    /// is (implicitly) 0. This is the pre-Workstream-C / non-cost-accounted
+    /// path that keeps existing blocks valid. Contrast `funded_unfunded_*`,
+    /// where the pool is PRESENT and the same Δ-vs-Σ shortfall rejects.
+    #[tokio::test]
+    async fn absent_pool_admits_without_enforcement() {
+        // Δ = 5, but NO pool is set for "frank" ⇒ pool absent ⇒ admit, no debit.
+        let f = cosigned(&n_sends(5), b"frank", 0, 10);
+        let reader = MockSupplyReader::new(); // empty: every pool absent
+        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1)
+            .await
+            .expect("gate must not error");
+        assert_eq!(outcome.admitted.len(), 1, "absent pool ⇒ admitted unenforced");
+        assert!(outcome.rejected.is_empty(), "absent pool ⇒ never rejected");
+        assert!(
+            outcome.debits.is_empty(),
+            "absent pool ⇒ no settlement debit (not under cost-accounting)"
+        );
+    }
+
+    /// A PRESENT but DRAINED pool (`Some(0)`) correctly REJECTS a further spend
+    /// — the §7.7 duplicate-deploy example (tex 1677-1687): once a signer's
+    /// supply is committed to 0, the next deploy sees Σ = 0 < Δ and is rejected.
+    /// This is the case `read_balance_present` exists to distinguish from an
+    /// absent pool (which would instead admit).
+    #[tokio::test]
+    async fn drained_present_pool_rejects() {
+        let g = cosigned(&n_sends(3), b"grace", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"grace", 0); // PRESENT, drained to zero
+        let outcome = admit_by_funding(vec![g], &reader, 0)
+            .await
+            .expect("gate must not error");
+        assert!(
+            outcome.admitted.is_empty(),
+            "present drained pool (Σ=0) ⇒ Δ=3 rejected"
+        );
+        assert_eq!(outcome.rejected.len(), 1);
         assert!(outcome.debits.is_empty());
     }
 }

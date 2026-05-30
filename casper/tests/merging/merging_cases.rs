@@ -58,12 +58,12 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
         let user_deploys = vec![d1, d2];
         let system_deploys = vec![
             casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(
-                CloseBlockDeploy {
-                    initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                CloseBlockDeploy::new(
+                    system_deploy_util::generate_close_deploy_random_seed_from_pk(
                         state_transition_creator.clone(),
                         seq_num,
                     ),
-                },
+                ),
             ),
         ];
 

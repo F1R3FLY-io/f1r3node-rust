@@ -32,9 +32,32 @@ pub const MINT_LIST_ENV_KEY: &str = "sys:casper:mintList";
 #[derive(Clone)]
 pub struct CloseBlockDeploy {
     pub initial_rand: Blake2b512Random,
+    /// WD-D2 settlement debits: per-pool `ΣΔ_s` to subtract from `Σ⟦s⟧` so
+    /// `post = pre − ΣΔ_admitted` (cost-accounted-rho §7.7 / handoff Decision
+    /// 4c). Keyed by `SigKey` (= `Sig::lane_hash`). Populated by the acceptance
+    /// gate on the PLAY path (block_creator.rs); RECOMPUTED from
+    /// `block.body.deploys` on REPLAY (replay_runtime.rs) — the debit amounts are
+    /// NOT serialized into the block, so this defaults EMPTY for genesis /
+    /// non-cost-accounted / replay-reconstructed close deploys and is filled in
+    /// by the recompute before `post_eval_replay`.
+    pub settlement_debits:
+        std::collections::BTreeMap<crate::rust::util::rholang::acceptance::SigKey, crate::rust::util::rholang::acceptance::SettlementDebit>,
 }
 
 impl CloseBlockDeploy {
+    /// Construct a close-block deploy carrying NO settlement debits (the common
+    /// case: genesis, replay-reconstructed close deploys, slashing/merging test
+    /// fixtures — none of which compute WD-D2 debits; only the block proposer's
+    /// `create()` populates `settlement_debits`, and replay RECOMPUTES them).
+    /// Keeps the many literal-construction sites stable as the struct gains the
+    /// `settlement_debits` field.
+    pub fn new(initial_rand: Blake2b512Random) -> Self {
+        Self {
+            initial_rand,
+            settlement_debits: std::collections::BTreeMap::new(),
+        }
+    }
+
     /// The deterministic, deploy-RNG-derived, user-unforgeable channel onto
     /// which `closeBlock` publishes its mint list. Derived from a FIXED split
     /// path (`split_byte(MINT_LIST_RNG_PATH)`) of the close-block deploy seed so

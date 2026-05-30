@@ -172,12 +172,12 @@ pub async fn equivocate_block(
     // System deploys: just CloseBlock. No SlashDeploys (this is the
     // Byzantine validator's first-equivocation block — it would not
     // self-slash).
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
-    })];
+    ))];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
@@ -313,12 +313,12 @@ pub async fn propose_with_explicit_justifications(
         seq_num: next_seq_num,
     };
 
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
-    })];
+    ))];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
@@ -486,12 +486,12 @@ pub async fn propose_with_block_mutation(
         seq_num: next_seq_num,
     };
 
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
-    })];
+    ))];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
@@ -634,12 +634,12 @@ pub async fn propose_neglecting_block(
     // `prepare_slashing_deploys`. The receiver's
     // `is_neglected_equivocation_detected_with_update` will see
     // the missing slash and classify NeglectedEquivocation.
-    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
-        initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+    let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
-    })];
+    ))];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
 
