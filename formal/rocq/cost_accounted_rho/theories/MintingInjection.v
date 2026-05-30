@@ -559,3 +559,72 @@ Proof.
   intros S P S' P' v Hstep.
   rewrite (user_step_preserves_pos_state S P S' P' Hstep). reflexivity.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 7: Stage-D fee→v conversion credit is BACKED, not minted
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The Stage-B epoch mint INJECTS new fuel into Σ⟦v⟧ (it is the SOLE producer,
+   Section 4 / the [AMint] case). The Stage-D fee CONVERSION does NOT: it moves
+   already-collected fees from the per-validator fee pool [F_v] into Σ⟦v⟧ 1:1.
+   The Σ⟦v⟧ credit is therefore BOUNDED BY (in fact EQUAL to) the fees that leave
+   F_v — it is BACKED, categorically distinct from a mint.
+
+   We model the per-validator fee pool [fb_fees] alongside the supply balance and
+   prove:
+
+     - [fee_convert_credit_is_backed] : the convert credits Σ⟦v⟧ by exactly the
+       drained fee amount f, and f ≤ the pre-convert F_v — the credit never
+       exceeds the collected fees (no inflation).
+     - [fee_convert_conserves_holding] : F_v + Σ⟦v⟧ is invariant across the
+       convert (the balance-layer conservation, cf. TokenConservation
+       [fee_collection_conserves]).
+     - [fee_convert_zero_is_noop] : an eligible validator with EMPTY fees
+       (f = 0) gets NO Σ⟦v⟧ credit (DR-4: no one-sided mint).
+
+   Concrete (no axioms / hypotheses), so the headline lemmas are Closed under the
+   global context.                                                               *)
+
+(* A per-validator fee+supply cell: the collected fee pool [fb_fees] = F_v and
+   the gate-pool balance [fb_supply] = Σ⟦v⟧. *)
+Record fee_balance : Type := {
+  fb_fees   : nat;   (* F_v : collected fees pending conversion *)
+  fb_supply : nat    (* Σ⟦v⟧ : the gate pool *)
+}.
+
+(* The 1:1 fee→v conversion on a single validator's cell: credit Σ⟦v⟧ by the
+   ENTIRE collected fee [fb_fees] and zero F_v. Mirrors the Rust post_eval
+   convert (read F_v = f; Σ⟦v⟧ += f; F_v := 0). *)
+Definition fb_convert (b : fee_balance) : fee_balance :=
+  {| fb_fees := 0; fb_supply := fb_supply b + fb_fees b |}.
+
+(* [fee_convert_credit_is_backed]: the conversion credits Σ⟦v⟧ by EXACTLY the
+   amount [fb_fees b] that is drained from F_v, and that credit is ≤ the
+   pre-convert collected fees — the Σ⟦v⟧ increase is BACKED by (equal to) the
+   fees that left F_v, never an unbacked injection. So, unlike the epoch mint
+   (the sole [AMint] producer), the fee convert cannot inflate Σ⟦v⟧ beyond the
+   collected fees. *)
+Theorem fee_convert_credit_is_backed : forall b,
+  fb_supply (fb_convert b) = fb_supply b + fb_fees b
+  /\ fb_supply (fb_convert b) - fb_supply b <= fb_fees b.
+Proof.
+  intros b. unfold fb_convert. simpl. split; lia.
+Qed.
+
+(* The total holding F_v + Σ⟦v⟧ is invariant across the convert (balance-layer
+   conservation; cf. TokenConservation [fee_collection_conserves]). *)
+Theorem fee_convert_conserves_holding : forall b,
+  fb_fees (fb_convert b) + fb_supply (fb_convert b) = fb_fees b + fb_supply b.
+Proof.
+  intros b. unfold fb_convert. simpl. lia.
+Qed.
+
+(* DR-4: an eligible validator whose collected fees are EMPTY (f = 0) receives
+   NO Σ⟦v⟧ credit from the convert (Σ⟦v⟧ unchanged) — there is no one-sided
+   mint; such a validator is funded only by the epoch mint. *)
+Theorem fee_convert_zero_is_noop : forall b,
+  fb_fees b = 0 ->
+  fb_supply (fb_convert b) = fb_supply b.
+Proof.
+  intros b Hzero. unfold fb_convert. simpl. rewrite Hzero. lia.
+Qed.

@@ -13,6 +13,26 @@
    show that, when the runtime reports a consumed-token count bounded by the
    deploy's limit, post-evaluation charged and refunded phlo exactly account
    for the escrowed amount.
+
+   ─────────────────────────────────────────────────────────────────────────
+   Stage-D REINTERPRETATION (DR-9): wallet-draw token conservation, price → 1
+   ─────────────────────────────────────────────────────────────────────────
+   The Cost-Accounted Rho realization (Stage A-D) collapses the legacy
+   escrow [limit * price] phlo settlement to a UNIT-token wallet draw: a deploy
+   draws [limit] tokens from the validator's draw wallet @W_v, consumes
+   [settlement_token_cost] of them, and the remainder is released back — there
+   is no separate per-token PRICE multiplier (the cost-accounted calculus meters
+   in unit tokens; §7). Under that reading [settlement_price] collapses to 1, so
+   [escrowed_amount = limit], [charged_amount = token_cost], and
+   [refund_amount = limit - token_cost], and the headline laws below
+   ([charged_plus_refund_eq_escrow], [post_evaluation_settlement_no_mint]) read
+   as the WALLET-DRAW token-conservation statements "drawn = charged + released"
+   and "no fuel synthesized by settlement". The theorems are stated for an
+   ARBITRARY [price] (including [price = 1]), so the UNIT reading is the
+   [price := 1] instance and the bodies are UNCHANGED — the Stage-D
+   reinterpretation is this note, not an edit. (cost ≠ fee: this settlement is
+   the COST/draw layer; the Stage-D FEE conversion is the separate
+   TokenConservation.v [fee_collection_conserves] layer.)
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Arith.PeanoNat Lia.

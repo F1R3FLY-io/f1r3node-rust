@@ -26,6 +26,23 @@
    All proofs are Qed-closed; no Axiom, no Admitted. The development is
    parameterized over nothing beyond what RuntimeBudgetRefinement already
    parameterizes — the multi-signer refinement adds no new assumptions.
+
+   ─────────────────────────────────────────────────────────────────────────
+   Stage-D REINTERPRETATION (DR-5): pos_charge/pos_refund → wallet-draw/commit
+   ─────────────────────────────────────────────────────────────────────────
+   Under the Cost-Accounted Rho realization the per-deployer PoS Map
+   charge/refund cycle is the WALLET-DRAW/commit cycle: a charge is a draw
+   reserved against the deployer's wallet, a refund is the release of the
+   unconsumed reservation, and the canonical-order FIFO drain
+   [fifo_drain_conservation] (Σ refund + total_cost = Σ charged) reads as
+   "Σ released + Σ committed = Σ reserved" — the wallet-draw conservation law.
+   The DISTINCTNESS / no-duplicate-attribution lemmas ([entries_distinct],
+   [pos_no_dup_charges], [pos_refund_no_cross_attribution],
+   [pos_map_currentdeploys_invariant]) are KEPT VERBATIM: they are exactly the
+   per-deployer (and, under multi-sig, per-cosigner) isolation the wallet-draw
+   model requires, so distinct deployers'/cosigners' draws never alias and the
+   FIFO release attributes to the right deployer. The Stage-D reinterpretation is
+   this note; the definitions and proof bodies are UNCHANGED.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Arith.PeanoNat Bool.Bool Lists.List Lia

@@ -187,3 +187,11 @@ theories/WalletNaming.v
 # halt) is the only way a halted validator regains supply. Concrete, so its
 # headline theorems are Closed under the global context.
 theories/MintingHalt.v
+
+# Level 4a8: Stage-D blessed Exchange — the conserving 1:1 token swap (spec
+# "Fee conversion" tex:3061-3084 / DR-4). Depends on TokenConservation +
+# MintingInjection. Proves per-channel + total conservation of the swap, the
+# DR-4 requires-both-inputs join property, and that Exchange is a cost-accounted
+# step (fuel-non-increasing) never an exogenous mint. Concrete, so its headline
+# theorems are Closed under the global context.
+theories/Exchange.v

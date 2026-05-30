@@ -51,7 +51,7 @@ echo "Compiling and checking Rocq theories..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation Exchange.
 Print Assumptions mint_inject_not_ca_step.
 Print Assumptions user_ca_step_does_not_mint.
 Print Assumptions admin_trans_mint_adds_exactly.
@@ -290,6 +290,16 @@ Print Assumptions reject_both_sound.
 Print Assumptions reject_both_from_first_overshoot.
 Print Assumptions settlement_conserves.
 Print Assumptions accept_commit_conserves.
+Print Assumptions fee_collection_conserves.
+Print Assumptions fee_collect_then_convert_conserves.
+Print Assumptions fee_convert_credit_is_backed.
+Print Assumptions fee_convert_conserves_holding.
+Print Assumptions fee_convert_zero_is_noop.
+Print Assumptions exchange_conserves_per_channel.
+Print Assumptions exchange_total_conserved.
+Print Assumptions exchange_requires_both_inputs.
+Print Assumptions exchange_is_ca_step_not_amint.
+Print Assumptions exchange_mints_nothing.
 Print Assumptions sig_free_names_quote.
 Print Assumptions sse_par_unit.
 Print Assumptions token_decomp.

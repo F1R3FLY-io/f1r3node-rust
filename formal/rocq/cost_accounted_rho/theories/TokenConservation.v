@@ -301,3 +301,78 @@ Theorem accept_commit_conserves :
 Proof.
   intros pre ds Hle. unfold settle_balance. split; lia.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 6: Stage-D fee collection + 1:1 conversion conserves (the FEE layer)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The COST lemmas above (settlement debit) are UNCHANGED. This section adds the
+   independent FEE-layer conservation law (Stage D; spec "Fee conversion"
+   tex:3061-3100). The fee is the spec's FeeExtract — a SEPARATE token,
+   TRANSFERRED to the validator (never the burned settlement debit; cost ≠ fee).
+   The realization holds two reducer-unwritable balances per validator: the fee
+   pool [F_v] (`supply::fee_collection_channel`) and the gate pool [Σ⟦v⟧]. The
+   economic loop is two writes:
+
+     - COLLECTION: [F_v += f] (one token per processed deploy);
+     - CONVERSION (1:1, at the epoch boundary): move the collected [f] from
+       [F_v] into [Σ⟦v⟧] — [Σ⟦v⟧ += f], [F_v := 0].
+
+   We prove that the conversion CONSERVES the validator's total fee+supply
+   holding: what leaves [F_v] EXACTLY equals what enters [Σ⟦v⟧], so the combined
+   total [F_v + Σ⟦v⟧] is invariant across the conversion. This is the balance-
+   layer companion of [exchange_total_conserved] (Exchange.v) at the per-validator
+   ledger, and the conservation half of [fee_convert_credit_is_backed]
+   (MintingInjection.v). No tokens are minted or destroyed by the fee loop.       *)
+
+(* The validator's fee + supply ledger: the collected fee pool [fee] = F_v and
+   the gate pool [sigma] = Σ⟦v⟧. *)
+Record fee_ledger : Type := {
+  fee_pool   : nat;   (* F_v : collected, not-yet-converted fees *)
+  supply_pool : nat   (* Σ⟦v⟧ : the gate pool *)
+}.
+
+(* COLLECTION: credit [f] tokens to the fee pool (the FeeExtract). *)
+Definition fee_collect (l : fee_ledger) (f : nat) : fee_ledger :=
+  {| fee_pool := fee_pool l + f; supply_pool := supply_pool l |}.
+
+(* CONVERSION (1:1): move the ENTIRE fee pool [f = fee_pool l] into the supply
+   pool and zero the fee pool. Mirrors the Rust post_eval convert (Σ⟦v⟧ += f,
+   F_v := 0) for an eligible validator with f > 0; for f = 0 it is the identity
+   (DR-4: no one-sided mint). *)
+Definition fee_convert (l : fee_ledger) : fee_ledger :=
+  {| fee_pool := 0; supply_pool := supply_pool l + fee_pool l |}.
+
+(* The validator's total fee+supply holding. *)
+Definition ledger_total (l : fee_ledger) : nat := fee_pool l + supply_pool l.
+
+(* [fee_collection_conserves]: the 1:1 fee conversion CONSERVES the combined
+   F_v + Σ⟦v⟧ total — exactly the [f] that leaves [F_v] enters [Σ⟦v⟧], so no
+   token is created or destroyed by the fee loop. (The COLLECTION that precedes
+   it added [f] from the client's transferred FeeExtract token, accounted at the
+   block level; here we pin that the CONVERSION step itself is conserving, the
+   property the multi-parent-merge / replay symmetry rests on.) *)
+Theorem fee_collection_conserves : forall l,
+  ledger_total (fee_convert l) = ledger_total l.
+Proof.
+  intros l. unfold ledger_total, fee_convert. simpl. lia.
+Qed.
+
+(* The convert credit to Σ⟦v⟧ is EXACTLY the fee pool that was drained (the
+   1:1 peg with no remainder), and the fee pool ends at 0 — the realization'
+   `Σ⟦v⟧ += f` / `F_v := 0`. *)
+Theorem fee_convert_credit_eq_drained : forall l,
+  supply_pool (fee_convert l) = supply_pool l + fee_pool l
+  /\ fee_pool (fee_convert l) = 0.
+Proof.
+  intros l. unfold fee_convert. simpl. split; reflexivity.
+Qed.
+
+(* End-to-end (collect then convert) conserves the total relative to the
+   pre-collection ledger PLUS the collected amount: the FeeExtract token [f] is
+   neither lost nor duplicated as it flows F_v → Σ⟦v⟧. *)
+Theorem fee_collect_then_convert_conserves : forall l f,
+  ledger_total (fee_convert (fee_collect l f)) = ledger_total l + f.
+Proof.
+  intros l f. unfold ledger_total, fee_convert, fee_collect. simpl. lia.
+Qed.
