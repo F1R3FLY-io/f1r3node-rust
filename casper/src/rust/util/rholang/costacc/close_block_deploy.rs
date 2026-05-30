@@ -28,6 +28,20 @@ use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 /// amount into `Σ⟦v⟧`.
 pub const MINT_LIST_ENV_KEY: &str = "sys:casper:mintList";
 
+/// Cost-Accounted Rho Stage D — env-channel key for the per-epoch fee→v
+/// conversion ELIGIBLE list `[(pk, epochIdx)]` that `closeBlock`'s
+/// `convertFeesToValidators` fold publishes (the economic loop, spec
+/// tex:3095-3100). It carries the validators ELIGIBLE for conversion this epoch
+/// (`active ∧ ¬mintingHalted ∧ ¬convertedEpochs`); PoS records `(pk, epochIdx)`
+/// in `convertedEpochs` (idempotency) and emits the pair. `post_eval` reads this
+/// list NON-destructively and, for each eligible `pk`, reads its Rust-held fee
+/// pool `F_v` count `f` (`supply::fee_collection_channel`), and — when `f > 0` —
+/// mirrors it 1:1 into `Σ⟦v⟧` (`produce_balance(Σ⟦v⟧, old + f)`) and ZEROES
+/// `F_v`. PoS owns ELIGIBILITY + idempotency; the fee balances + the `Σ⟦v⟧`
+/// mirror are the Rust dual-write half (DR-13). Same deploy-RNG-derived,
+/// user-unforgeable GPrivate discipline as the mint list.
+pub const FEE_CONVERT_LIST_ENV_KEY: &str = "sys:casper:feeConvertList";
+
 // Currently we use parentHash as initial random seed
 #[derive(Clone)]
 pub struct CloseBlockDeploy {
@@ -42,6 +56,16 @@ pub struct CloseBlockDeploy {
     /// by the recompute before `post_eval_replay`.
     pub settlement_debits:
         std::collections::BTreeMap<crate::rust::util::rholang::acceptance::SigKey, crate::rust::util::rholang::acceptance::SettlementDebit>,
+    /// Cost-Accounted Rho Stage D: the per-block FEE credit (the spec's
+    /// `FeeExtract` — flat one token per processed deploy, tex:2509-2521),
+    /// collected into the PROPOSING validator's fee channel `F_v`. `None` for
+    /// genesis / replay-reconstructed / slashing-test close deploys (no fee);
+    /// populated by the block proposer's `create()` and RECOMPUTED on replay
+    /// from `block.body.deploys` (the amount is NOT serialized into the block —
+    /// it rides the same recompute-from-block discipline as `settlement_debits`).
+    /// SIBLING of `settlement_debits`: the fee (a transferred token) is DISTINCT
+    /// from the cost (the burned settlement debit) — cost ≠ fee (D.0).
+    pub fee_credits: Option<crate::rust::util::rholang::acceptance::FeeCredit>,
 }
 
 impl CloseBlockDeploy {
@@ -55,6 +79,7 @@ impl CloseBlockDeploy {
         Self {
             initial_rand,
             settlement_debits: std::collections::BTreeMap::new(),
+            fee_credits: None,
         }
     }
 
@@ -81,6 +106,33 @@ impl CloseBlockDeploy {
 
     fn mk_mint_list_channel(&self) -> (String, Par) {
         (MINT_LIST_ENV_KEY.to_string(), self.mint_list_channel())
+    }
+
+    /// Stage D: the deterministic, deploy-RNG-derived, user-unforgeable channel
+    /// onto which `closeBlock` publishes the per-epoch fee→v conversion ELIGIBLE
+    /// list `[(pk, epochIdx)]`. Derived from a FIXED split path
+    /// (`split_byte(FEE_CONVERT_LIST_RNG_PATH)`) DISJOINT from the mint-list
+    /// channel (`0x2a`) and the return channel (no split) — so the env channels
+    /// never alias — and byte-identical on play and replay (same close-block seed).
+    pub fn fee_convert_list_channel(&self) -> Par {
+        const FEE_CONVERT_LIST_RNG_PATH: i8 = 0x2b; // disjoint from mint-list 0x2a
+        let id: Vec<u8> = self
+            .rand()
+            .split_byte(FEE_CONVERT_LIST_RNG_PATH)
+            .next()
+            .into_iter()
+            .map(|b| b as u8)
+            .collect();
+        Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
+        }])
+    }
+
+    fn mk_fee_convert_list_channel(&self) -> (String, Par) {
+        (
+            FEE_CONVERT_LIST_ENV_KEY.to_string(),
+            self.fee_convert_list_channel(),
+        )
     }
 
     /// Shared implementation of the Stage-B supply mint + WD-D2 settlement
@@ -204,6 +256,121 @@ impl CloseBlockDeploy {
             }
         }
 
+        // ── Stage D fee COLLECTION (phase 3a), AFTER mint + debit ─────────────
+        // The spec's FeeExtract (tex:2509-2521): credit the proposing validator's
+        // FEE pool `F_v = fee_collection_channel(pk)` by the per-block deploy count
+        // (one token per processed deploy). `F_v` is a Rust-nameable,
+        // content-addressed, reducer-unwritable pool (DR-13) — DISTINCT from
+        // `Σ⟦v⟧` (gate pool) and `@W_v` (draw). cost ≠ fee (D.0): the fee is a
+        // SEPARATE token TRANSFERRED to the validator, never the burned settlement
+        // debit. Play: `fee_credits` threaded by the proposer (`block.body.deploys`
+        // count); replay: RECOMPUTED from `terms.len()` (= `block.body.deploys`),
+        // byte-identical — the same recompute-from-block discipline as
+        // `settlement_debits`. Disjoint `fee_collect_random_state` path; readback
+        // guard (TM-CA-160 fee-credit play/replay divergence).
+        if let Some(fee) = &self.fee_credits {
+            if fee.amount > 0 {
+                let chan = supply::fee_collection_channel(&fee.recipient_pk);
+                let old_n = supply::read_balance(runtime_ops, &chan).await;
+                let new_n = old_n
+                    .checked_add(fee.amount)
+                    .expect("fee supply overflow on FeeExtract collection credit");
+                let random_state = supply::fee_collect_random_state(&close_rand);
+                supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
+
+                if is_replay {
+                    let readback = supply::read_balance(runtime_ops, &chan).await;
+                    if readback != new_n {
+                        return Err(CasperError::ReplayFailure(
+                            ReplayFailure::replay_supply_mismatch(
+                                format!("feeCollect:{}", hex::encode(&fee.recipient_pk)),
+                                new_n,
+                                readback,
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // ── Stage D fee→v CONVERSION Σ⟦v⟧ mirror (phase 3b), AFTER collection ──
+        // Read the per-epoch ELIGIBLE list `[(pk, epochIdx)]` that closeBlock's
+        // `convertFeesToValidators` fold published (validators that are
+        // active ∧ ¬halted ∧ ¬convertedEpochs; the `convertedEpochs` record is
+        // done Rholang-side in the fold). For each eligible `pk`, read its FEE
+        // pool `F_v` count `f`; when `f > 0`, 1:1-convert it into the reducer-
+        // unwritable gate pool `Σ⟦v⟧` (`produce_balance(Σ⟦v⟧, old + f)`) and ZERO
+        // `F_v`. DR-4: `f == 0` ⇒ NO Σ⟦v⟧ credit (no one-sided mint). Conserves:
+        // the `Σ⟦v⟧ += f` credit is EXACTLY the `f` fees that leave `F_v` (Rocq
+        // `fee_convert_credit_is_backed` / `fee_collection_conserves`).
+        //
+        // Replay symmetry: the eligible list is recomputed identically by the
+        // Rholang fold from the SAME pre-state PoS state (active/halted/converted
+        // ledgers), and each `f` is read from the SAME pre-state `F_v` pool — so
+        // the convert writes are byte-identical play↔replay. Sorted by pk so the
+        // per-credit `random_state` index is fold-order-independent.
+        let fee_list_chan = self.fee_convert_list_channel();
+        let fee_published = runtime_ops.get_data_par(&fee_list_chan).await;
+        let mut eligible = match fee_published
+            .iter()
+            .rev()
+            .find_map(|p| RhoList::unapply(p))
+        {
+            Some(list) => decode_mint_list(&list)?,
+            None => Vec::new(),
+        };
+        // Each entry is `(pk, epochIdx)`; sort by pk for fold-order independence.
+        eligible.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (index, (pk, _epoch_idx)) in eligible.iter().enumerate() {
+            let fee_chan = supply::fee_collection_channel(pk);
+            let f = supply::read_balance(runtime_ops, &fee_chan).await;
+            if f <= 0 {
+                // DR-4: an eligible validator with no collected fees gets no
+                // convert credit (never a one-sided mint). Leave F_v untouched.
+                continue;
+            }
+            // Credit Σ⟦v⟧ += f (the conserving 1:1 convert).
+            let supply_chan = supply_channel(&Sig::Ground(pk.clone()));
+            let old_v = supply::read_balance(runtime_ops, &supply_chan).await;
+            let new_v = old_v
+                .checked_add(f)
+                .expect("phlogiston supply overflow on fee-convert credit");
+            let credit_rand = supply::fee_convert_random_state(&close_rand, (index as i64) * 2);
+            supply::produce_balance(runtime_ops, &supply_chan, new_v, credit_rand).await?;
+
+            // Zero F_v (the converted fees have left the fee pool). A distinct
+            // index parity keeps the convert-credit and the F_v-zero produce
+            // identities distinct even on the same close seed.
+            let zero_rand = supply::fee_convert_random_state(&close_rand, (index as i64) * 2 + 1);
+            supply::produce_balance(runtime_ops, &fee_chan, 0, zero_rand).await?;
+
+            if is_replay {
+                // Write-readback integrity (Decision 6.3), symmetric with the
+                // mint/debit/collect loops: TM-CA-160 fee-credit play/replay guard.
+                let readback_v = supply::read_balance(runtime_ops, &supply_chan).await;
+                if readback_v != new_v {
+                    return Err(CasperError::ReplayFailure(
+                        ReplayFailure::replay_supply_mismatch(
+                            format!("feeConvert:{}", hex::encode(pk)),
+                            new_v,
+                            readback_v,
+                        ),
+                    ));
+                }
+                let readback_f = supply::read_balance(runtime_ops, &fee_chan).await;
+                if readback_f != 0 {
+                    return Err(CasperError::ReplayFailure(
+                        ReplayFailure::replay_supply_mismatch(
+                            format!("feeZero:{}", hex::encode(pk)),
+                            0,
+                            readback_f,
+                        ),
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -239,11 +406,12 @@ impl SystemDeployTrait for CloseBlockDeploy {
         poSCh,
         sysAuthToken(`sys:casper:authToken`),
         mintList(`sys:casper:mintList`),
+        feeConvertList(`sys:casper:feeConvertList`),
         return(`sys:casper:return`)
         in {
           rl!(`rho:system:pos`, *poSCh) |
           for(@(_, PoS) <- poSCh) {
-             @PoS!("closeBlock", *sysAuthToken, *mintList, *return)
+             @PoS!("closeBlock", *sysAuthToken, *mintList, *feeConvertList, *return)
           }
         }"#
     }
@@ -268,6 +436,11 @@ impl SystemDeployTrait for CloseBlockDeploy {
 
         let (mint_key, mint_value) = self.mk_mint_list_channel();
         env.insert(mint_key, mint_value);
+
+        // Stage D: the fee→v conversion eligible list channel (PoS publishes the
+        // eligible `(v, epochIdx)`; post_eval reads it to mirror each F_v into Σ⟦v⟧).
+        let (fee_convert_key, fee_convert_value) = self.mk_fee_convert_list_channel();
+        env.insert(fee_convert_key, fee_convert_value);
 
         let (ret_key, ret_value) = self.mk_return_channel();
         env.insert(ret_key, ret_value);

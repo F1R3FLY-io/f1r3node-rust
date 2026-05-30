@@ -1053,12 +1053,26 @@ pub async fn create(
     // `Σ⟦s⟧` (`post = pre − ΣΔ_admitted`). On replay these debits are RECOMPUTED
     // from `block.body.deploys` — they are NOT serialized into the block — so the
     // play-side map is purely a play-path optimization.
+    //
+    // Cost-Accounted Rho Stage D: it ALSO carries the per-block FEE credit (the
+    // spec's flat FeeExtract — one token per processed deploy, tex:2509-2521)
+    // for the PROPOSING validator. The fee count is `block.body.deploys.len()` =
+    // the admitted client deploys (`gate_outcome.admitted_client_count`) PLUS the
+    // proposer's own gate-exempt dummy deploys (both land in `body.deploys`); on
+    // replay the SAME count is recomputed from `terms.len()`. cost ≠ fee (D.0):
+    // this is a TRANSFERRED token, distinct from the burned settlement debit.
+    let fee_deploy_count = admitted_user_cosigned.len() + dummy_deploys.len();
+    let fee_credits = crate::rust::util::rholang::acceptance::recompute_fee_credits(
+        fee_deploy_count,
+        validator_identity.public_key.bytes.to_vec(),
+    );
     system_deploys_converted.push(SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
         settlement_debits,
+        fee_credits,
     }));
 
     // Use the adjusted `now_millis` captured at the start of create for block timestamp.

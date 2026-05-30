@@ -178,6 +178,9 @@ impl RhoReporterCasper {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         > = std::collections::BTreeMap::new();
+        // Stage D: likewise no fee credit on the reporting path (the fee-convert
+        // Σ⟦v⟧ mirror is a bare supply write with no reduction events).
+        let fee_credit: Option<crate::rust::util::rholang::acceptance::FeeCredit> = None;
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
@@ -219,7 +222,7 @@ impl RhoReporterCasper {
             );
 
             let replay_result = runtime
-                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits)
+                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_credit)
                 .await;
 
             let events = match replay_result {
@@ -349,6 +352,7 @@ impl ReportingRuntime {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         >,
+        fee_credit: &Option<crate::rust::util::rholang::acceptance::FeeCredit>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
@@ -356,9 +360,13 @@ impl ReportingRuntime {
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
         // Replay the system deploy, threading the WD-D2 settlement debits so the
-        // reported events include the close-block settlement debit produce.
+        // reported events include the close-block settlement debit produce. The
+        // Stage-D fee credit / fee-convert mirror is likewise threaded (reporting
+        // passes `None`, mirroring the EMPTY settlement-debit map above — both are
+        // bare supply writes with no reduction events to report; they are
+        // faithfully applied + verified only on the consensus replay path).
         replay_ops
-            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits)
+            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_credit)
             .await?;
 
         // Update the runtime from replay_ops

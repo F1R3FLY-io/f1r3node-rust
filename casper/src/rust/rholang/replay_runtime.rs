@@ -148,6 +148,23 @@ impl ReplayRuntimeOps {
             std::collections::BTreeMap::new()
         };
 
+        // Cost-Accounted Rho Stage D: RECOMPUTE the per-block fee credit from the
+        // block alone — count = `terms.len()` (= `block.body.deploys`, INCLUDING
+        // failed + dummy deploys, every fed deploy is a recorded ProcessedDeploy)
+        // and recipient = the proposing validator (`block_data.sender`). Same
+        // recompute-from-block discipline as `replay_debits`; fed to
+        // `replay_block_system_deploy` so the closeBlock F_v credit is
+        // byte-identical to the play side (the fee amount is NOT serialized into
+        // the block). Empty / non-cost-accounted blocks recompute to `None`.
+        let replay_fee_credit = if with_cost_accounting {
+            crate::rust::util::rholang::acceptance::recompute_fee_credits(
+                terms.len(),
+                block_data.sender.bytes.to_vec(),
+            )
+        } else {
+            None
+        };
+
         // Time user deploys phase
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
@@ -163,7 +180,12 @@ impl ReplayRuntimeOps {
         let mut system_deploy_results = Vec::new();
         for system_deploy in system_deploys {
             let result = self
-                .replay_block_system_deploy(block_data, &system_deploy, &replay_debits)
+                .replay_block_system_deploy(
+                    block_data,
+                    &system_deploy,
+                    &replay_debits,
+                    &replay_fee_credit,
+                )
                 .await?;
             system_deploy_results.push(result);
         }
@@ -568,6 +590,7 @@ impl ReplayRuntimeOps {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         >,
+        fee_credit: &Option<crate::rust::util::rholang::acceptance::FeeCredit>,
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
@@ -650,6 +673,13 @@ impl ReplayRuntimeOps {
                     // `post_eval_replay` (WD-D2, replay symmetry). The struct
                     // field is left empty here.
                     settlement_debits: Default::default(),
+                    // Cost-Accounted Rho Stage D: the per-block fee credit
+                    // RECOMPUTED in `replay_deploys` from `block.body.deploys`
+                    // (count = `terms.len()`) + the proposing validator
+                    // (`block_data.sender`). Threaded here so `seed_fee_count`
+                    // seeds the SAME `(sender, count)` datum the play side did,
+                    // making the closeBlock F_v credit byte-identical play↔replay.
+                    fee_credits: fee_credit.clone(),
                 };
 
                 // Capture the pre-close store root for the Stage-B supply
@@ -660,6 +690,12 @@ impl ReplayRuntimeOps {
 
                 self.rig_system_deploy(processed_system_deploy).await?;
 
+                // (Stage D: the `fee_credits` set on `close_block_deploy` above —
+                // RECOMPUTED from `block.body.deploys` — is read by `post_eval_replay`
+                // below for the byte-identical FeeExtract collection credit to the
+                // proposer's Rust fee pool `F_v`; the convert mirror reads the
+                // closeBlock-published eligible list from the store. No pre-eval
+                // Rholang seeding is involved.)
                 let mut close_block_deploy_mut = close_block_deploy.clone();
                 let (_, eval_result) = self
                     .replay_system_deploy_internal(&mut close_block_deploy_mut, &None)

@@ -93,6 +93,32 @@ pub struct AdmissionOutcome {
     /// Threaded to `CloseBlockDeploy.settlement_debits` on the play path;
     /// RECOMPUTED identically from `block.body.deploys` on replay.
     pub debits: BTreeMap<SigKey, SettlementDebit>,
+    /// Cost-Accounted Rho Stage D: the count of GATE-ADMITTED client deploy
+    /// envelopes (= `admitted.len()`). The per-block fee (the spec's flat
+    /// `FeeExtract` — ONE token per admitted client deploy, tex:2509-2521) is
+    /// credited to the proposing validator's fee channel `F_v`. The proposer
+    /// ADDS its own (gate-exempt) dummy-deploy count to this to obtain the
+    /// total fee = `block.body.deploys.len()`, which is what [`recompute_fee_credits`]
+    /// derives identically on replay from `terms.len()` (= `block.body.deploys`).
+    /// This count does NOT affect the D2 gate decision (it is read-only metadata
+    /// computed from the already-decided admitted set).
+    pub admitted_client_count: usize,
+}
+
+/// Cost-Accounted Rho Stage D fee credit (the spec's `FeeExtract`): a flat ONE
+/// token per admitted deploy in the block, collected into the PROPOSING
+/// validator's fee channel `F_v`. Distinct from the COST (the D2
+/// `SettlementDebit`, which burns from the signer's own `Σ⟦s⟧`): the fee is a
+/// SEPARATE token TRANSFERRED to the validator (§7 funding model). Carries the
+/// consensus-deterministic recipient (`block_data.sender`) and the amount.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeeCredit {
+    /// The proposing validator's public-key bytes (`block_data.sender.bytes`) —
+    /// the fee recipient. Used by `CloseBlockDeploy` to credit `F_v` for this pk.
+    pub recipient_pk: Vec<u8>,
+    /// The fee amount = `block.body.deploys.len() × 1` (flat 1-token per admitted
+    /// deploy). Recomputed identically on replay from `terms.len()`.
+    pub amount: i64,
 }
 
 /// An async per-channel supply-balance reader returning PRESENCE: `Some(n)` iff
@@ -412,6 +438,11 @@ pub async fn admit_by_funding(
     // so a final canonical sort restores the global execution order.
     canonical_sort(&mut outcome.admitted);
 
+    // Stage D (additive; does NOT touch the gate decision above): record the
+    // admitted client-deploy count for the fee credit. The proposer adds its
+    // own dummy-deploy count to reach `block.body.deploys.len()`.
+    outcome.admitted_client_count = outcome.admitted.len();
+
     Ok(outcome)
 }
 
@@ -472,6 +503,39 @@ pub async fn recompute_settlement_debits(
         }
     }
     Ok(debits)
+}
+
+/// Cost-Accounted Rho Stage D: REPLAY recompute of the per-block fee credit from
+/// the block's deploys (`block.body.deploys`) + the proposing validator
+/// (`block_data.sender`), MIRRORING [`recompute_settlement_debits`] in
+/// discipline (recomputed-from-the-block, never serialized into it).
+///
+/// The fee is the spec's flat `FeeExtract`: ONE token per deploy the validator
+/// processed in the block (tex:2509-2521), collected into the proposing
+/// validator's fee channel `F_v`. The amount is therefore EXACTLY the number of
+/// deploys recorded in `block.body.deploys` — a quantity that is byte-identical
+/// on the play side (`admitted_client_count + dummy_count = block.body.deploys.len()`)
+/// and the replay side (`deploy_count = terms.len()`, where `terms` IS
+/// `block.body.deploys`), INCLUDING failed and dummy deploys (every fed deploy is
+/// recorded as a `ProcessedDeploy`, failed or not — runtime.rs:881
+/// `is_failed: !eval_succeeded`). This is the same `terms.len()` identity that
+/// makes the settlement-debit recompute byte-identical; it is the StageD
+/// fork-safety bar (TM-CA-160 fee-credit play/replay divergence).
+///
+/// Returns `None` for an empty block (no deploys ⇒ no fee), so callers thread no
+/// fee credit through closeBlock in that case (a genesis / heartbeat-only block).
+/// `recipient_pk` is the consensus-deterministic `block_data.sender.bytes`.
+pub fn recompute_fee_credits(deploy_count: usize, recipient_pk: Vec<u8>) -> Option<FeeCredit> {
+    if deploy_count == 0 {
+        return None;
+    }
+    // Flat ONE token per admitted deploy (the spec's `c:()` FeeExtract; NO
+    // configurable rate — spec-literal). `deploy_count` is bounded by the
+    // block's deploy slot, far below i64::MAX, so the cast is exact.
+    Some(FeeCredit {
+        recipient_pk,
+        amount: deploy_count as i64,
+    })
 }
 
 #[cfg(test)]

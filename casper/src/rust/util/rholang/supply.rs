@@ -48,6 +48,36 @@ pub fn supply_channel(sig: &Sig) -> Par {
     SignatureChannel::from_sig(sig).par
 }
 
+/// Stage-D fee-collection domain: domain-separates the per-validator FEE pool
+/// `F_v` from the supply pool `Σ⟦v⟧` (both are content-addressed `GPrivate`s
+/// keyed by the validator pk, so without this prefix they would COLLIDE). A
+/// validator's collected fees and its gate-pool balance MUST live on distinct
+/// channels (D.2: `F_v` is distinct from `Σ⟦v⟧`).
+const FEE_COLLECTION_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:fee-collection:v1";
+
+/// `F_v ≜` the per-validator FEE-COLLECTION pool — a Rust-nameable,
+/// content-addressed `GPrivate` keyed by `Blake2b256(FEE_COLLECTION_DOMAIN ‖ pk)`.
+/// Holds the validator's accumulated collected-fee COUNT as a `(TOKEN_TAG, n)`
+/// balance datum (same encoding as `Σ⟦v⟧`, read/written by the SAME
+/// [`read_balance`] / [`produce_balance`] helpers). DISTINCT from `Σ⟦v⟧ =
+/// from_sig(Ground(pk))` (different domain ⇒ different `GPrivate` id) and from
+/// `@W_v` (a PoS-private Rholang channel). Unnameable from Rholang (DR-13: no
+/// bytes→GPrivate surface primitive), so the ONLY writer is this Rust module on
+/// `CloseBlockDeploy::post_eval` (the FeeExtract collection credit + the
+/// per-epoch convert zero).
+pub fn fee_collection_channel(pk: &[u8]) -> Par {
+    let mut domain_separated = Vec::with_capacity(FEE_COLLECTION_DOMAIN.len() + pk.len());
+    domain_separated.extend_from_slice(FEE_COLLECTION_DOMAIN);
+    domain_separated.extend_from_slice(pk);
+    Par::default().with_unforgeables(vec![models::rhoapi::GUnforgeable {
+        unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody(
+            models::rhoapi::GPrivate {
+                id: crypto::rust::hash::blake2b256::Blake2b256::hash(domain_separated),
+            },
+        )),
+    }])
+}
+
 /// Pure decoder: extract the balance `n` from a channel's resident pars.
 ///
 /// Finds the single `(GString(TOKEN_TAG), GInt(n))` tuple datum and returns
@@ -260,6 +290,54 @@ pub fn slash_random_state(slash_rand: &crypto::rust::hash::blake2b512_random::Bl
     // debit produce even when they target the same channel in different deploys.
     const SLASH_RNG_PATH: i8 = -0x2c;
     slash_rand.split_byte(SLASH_RNG_PATH).to_bytes()
+}
+
+/// Deterministic per-CONVERT `random_state` for the Cost-Accounted Rho Stage-D
+/// fee→v conversion `Σ⟦v⟧`-credit produce ([`CloseBlockDeploy::post_eval`]
+/// phase 3), on a RNG path DISJOINT from the mint loop ([`mint_random_state`],
+/// `lo ∈ [0,127]`), the WD-D2 settlement debit ([`debit_random_state`],
+/// `-0x2b`), the slash zero ([`slash_random_state`], `-0x2c`), and the
+/// close-block mint-list channel (`0x2a`). At an epoch boundary a validator may
+/// BOTH be epoch-minted (its `Σ⟦v⟧` credited in the mint loop) AND have its
+/// collected fees converted into `Σ⟦v⟧` in the SAME close block; routing the
+/// fee-convert credit through this distinct fixed `FEE_CONVERT_RNG_PATH` prefix
+/// split before the per-index splits guarantees the mint and the fee-convert
+/// produce DISTINCT datum identities even when they target the same channel —
+/// so the read-modify-replace leaves a single, deterministic datum and the
+/// post-state trie root is byte-identical on play and replay.
+///
+/// Anchored to the same close-block deploy `initial_rand` the mint uses
+/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay)
+/// and advanced by the convert's position in the SORTED fee-convert set — so the
+/// derivation is independent of fold/iteration order and byte-identical
+/// play/replay.
+pub fn fee_convert_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
+    // (-0x2c), and mint-list (0x2a) paths: a fee-convert credit can never alias
+    // a mint / debit / slash produce even when they target the same channel.
+    const FEE_CONVERT_RNG_PATH: i8 = -0x2d;
+    let lo = (index & 0x7f) as i8;
+    let hi = ((index >> 7) & 0x7f) as i8;
+    close_rand
+        .split_byte(FEE_CONVERT_RNG_PATH)
+        .split_byte(lo)
+        .split_byte(hi)
+        .to_bytes()
+}
+
+/// Deterministic `random_state` for the Cost-Accounted Rho Stage-D fee
+/// COLLECTION credit to `F_v` ([`CloseBlockDeploy::post_eval`] phase 3a: the
+/// proposer's per-block FeeExtract credit). On a RNG path DISJOINT from the mint
+/// (`lo ∈ [0,127]`), debit (`-0x2b`), slash (`-0x2c`), fee-convert (`-0x2d`),
+/// and the mint-list channel (`0x2a`). A single fixed domain split off the
+/// close-block deploy's replay-stable `initial_rand` suffices (one collection
+/// credit per close block — to the single proposer's `F_v`). Anchored to
+/// `generate_close_deploy_random_seed_from_*` (byte-identical play/replay for the
+/// same proposer + seq_num), so the credited datum's identity — hence the
+/// post-state — is byte-identical on play and replay.
+pub fn fee_collect_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random) -> Vec<u8> {
+    const FEE_COLLECT_RNG_PATH: i8 = -0x2e;
+    close_rand.split_byte(FEE_COLLECT_RNG_PATH).to_bytes()
 }
 
 /// Read the pre-state hash the supply read/write operate against. The supply

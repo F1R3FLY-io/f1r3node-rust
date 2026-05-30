@@ -177,7 +177,7 @@ in {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, walletTag,
                 quarantineTag,
-                mintPhlogistonToValidators in {
+                mintPhlogistonToValidators, convertFeesToValidators in {
               // `walletTag` is a fresh genesis-scoped unforgeable name (a sibling
               // of `posDeployStateTag` in kind: a content-addressing tag), used
               // ONLY to build the per-validator phlogiston DRAW wallet channel
@@ -210,6 +210,19 @@ in {
               // surface primitive — the unforgeability mechanism), so the Σ⟦v⟧
               // balance write is a Rust `produce_balance` co-located in the same
               // sysAuthToken-bearing system deploy; it is NOT written in Rholang.
+              //
+              // Cost-Accounted Rho Stage D (spec "Fee conversion" tex:3061-3100 /
+              // DR-4): the per-validator FEE pool F_v is a Rust-nameable,
+              // content-addressed balance (`supply::fee_collection_channel(pk)`,
+              // keyed by `Sig::Ground(pk)` under a distinct fee domain) — like
+              // Σ⟦v⟧, it is REDUCER-UNWRITABLE (no bytes→GPrivate surface
+              // primitive — DR-13) and written ONLY by Rust (`post_eval`: the
+              // per-block FeeExtract collection credit; the per-epoch convert zero).
+              // So PoS does NOT hold a Rholang fee carrier; `convertFeesToValidators`
+              // here decides ONLY per-validator ELIGIBILITY (active ∧ ¬halted ∧
+              // ¬convertedEpochs) + the `convertedEpochs` idempotency record, and
+              // publishes the eligible list on `sys:casper:feeConvertList` for
+              // `post_eval` to convert each eligible validator's F_v 1:1 into Σ⟦v⟧.
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -258,6 +271,16 @@ in {
                 //   to coopMultiVault and restores the remainder, Burned destroys
                 //   it. Genesis-init empty (no validator starts quarantined).
                 "quarantinedStake" : {},
+                // Set[(PublicKey, Int)] - per-validator-per-epoch fee-CONVERSION
+                //   ledger (Cost-Accounted Rho Stage D; spec tex:3095-3100 / DR-4).
+                //   An entry (pk, epochIndex) records that `pk`'s collected fees
+                //   F_v were already 1:1-converted to phlogiston for that epoch.
+                //   The closeBlock convertFeesToValidators fold skips any
+                //   (pk, epochIndex) already present, so a replayed /
+                //   multi-parent-duplicated epoch conversion is a NO-OP on F_v,
+                //   @W_v, and Σ⟦v⟧ (idempotency — the SIBLING guard of
+                //   `mintedEpochs`). Genesis-init empty (no fees collected yet).
+                "convertedEpochs"  : Set(),
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
@@ -613,6 +636,61 @@ in {
                           // Not eligible (inactive, halted, or already minted this
                           // epoch): no @W_v deposit, no Σ⟦v⟧ write, no record.
                           resultCh!((accState, accMints))
+                        }
+                      }
+                    }
+                  }
+                } |
+
+                // Cost-Accounted Rho Stage D — per-epoch fee→v CONVERSION
+                // ELIGIBILITY fold (the economic loop, spec tex:3095-3100; DR-4).
+                // Folds over `allBonds` and emits, for every validator `v` that is
+                // ELIGIBLE for `epochIdx`,
+                //
+                //   eligible(v) ≜ activeValidators.contains(v)
+                //               ∧ ¬mintingHalted.contains(v)
+                //               ∧ ¬convertedEpochs.contains((v, epochIdx))
+                //
+                // the pair (v, epochIdx), and records (v, epochIdx) in
+                // `convertedEpochs` (idempotency under replay / multi-parent merge —
+                // the merge engine dedups identical (v, E) records so a re-converted
+                // epoch credits Σ⟦v⟧ once). PoS owns ONLY the eligibility +
+                // idempotency decision here; it does NOT read F_v or write Σ⟦v⟧ /
+                // @W_v (those are reducer-unwritable, content-addressed Rust pools —
+                // DR-13). `CloseBlockDeploy::post_eval` reads the published eligible
+                // list and, for each `v`, reads its Rust-held fee pool F_v = f,
+                // credits Σ⟦v⟧ += f (the conserving 1:1 convert — bounded by the
+                // collected fees, Rocq `fee_convert_credit_is_backed`), and zeroes
+                // F_v. DR-4: an eligible validator whose F_v is EMPTY (f == 0) gets
+                // no Σ⟦v⟧ credit (Rust skips f == 0) — never a one-sided mint; the
+                // empty-fee validator is funded only by the epoch MINT.
+                //
+                // Returns (updatedState, eligibleList) on returnCh, where
+                //   updatedState : the state with `convertedEpochs` extended, and
+                //   eligibleList : List[(PublicKey, Int)] of (v, epochIdx) eligible.
+                contract convertFeesToValidators(@state, @epochIdx, @sysAuthToken, returnCh) = {
+                  new convertFold, seedCh in {
+                    // The fold accumulator is the pair (stateSoFar, eligibleSoFar).
+                    seedCh!((state, [])) |
+                    for (@seed <- seedCh) {
+                      @ListOps!("fold", state.get("allBonds").toList(), seed, *convertFold, *returnCh) |
+                      contract convertFold(@(pk, _bond), @(accState, accEligible), resultCh) = {
+                        if (
+                          accState.get("activeValidators").contains(pk) and
+                          (accState.get("mintingHalted").contains(pk) == false) and
+                          (accState.get("convertedEpochs").contains((pk, epochIdx)) == false)
+                        ) {
+                          // Eligible: record (pk, epochIdx) in convertedEpochs and
+                          // emit (pk, epochIdx) for post_eval's Σ⟦v⟧ convert mirror.
+                          resultCh!((
+                            accState.set("convertedEpochs",
+                              accState.get("convertedEpochs").add((pk, epochIdx))),
+                            accEligible ++ [(pk, epochIdx)]
+                          ))
+                        } else {
+                          // Not eligible (inactive, halted, or already converted
+                          // this epoch): no record, no emit.
+                          resultCh!((accState, accEligible))
                         }
                       }
                     }
@@ -1108,7 +1186,19 @@ in {
                 //     genesis bonded set. Newly-bonded validators get their first
                 //     mint on the next epoch boundary (the same fold; the catch-up
                 //     needs no separate set — spec draws no such distinction).
-                contract PoS(@"closeBlock", @sysAuthToken, mintList, ackCh) = {
+                // Cost-Accounted Rho Stage D: closeBlock ALSO drives the per-epoch
+                // fee→v CONVERSION (the economic loop). `feeConvertList` is a
+                // Rust-supplied, user-unforgeable channel: closeBlock publishes
+                // onto it the list [(v, epochIdx)] of validators ELIGIBLE for fee
+                // conversion this epoch (active ∧ ¬halted ∧ ¬convertedEpochs;
+                // empty off-epoch), records `convertedEpochs` (idempotency), and
+                // `CloseBlockDeploy::post_eval` reads it to convert each eligible
+                // validator's Rust-held fee pool F_v 1:1 into Σ⟦v⟧. PoS owns the
+                // ELIGIBILITY decision (it alone reads activeValidators /
+                // mintingHalted / convertedEpochs); the fee BALANCES + the Σ⟦v⟧
+                // mirror are the Rust dual-write half (DR-13 — F_v / Σ⟦v⟧ are
+                // reducer-unwritable, content-addressed pools written only by Rust).
+                contract PoS(@"closeBlock", @sysAuthToken, mintList, feeConvertList, ackCh) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -1125,6 +1215,11 @@ in {
                               // (publish an empty mint list so post_eval mirrors
                               // nothing).
                               new stateProcessCh in {
+                                // Stage D: no fee CONVERSION off the epoch boundary
+                                // (publish an empty feeConvertList so post_eval
+                                // mirrors nothing); the collection above still
+                                // accrued this block's fees onto F_v.
+                                feeConvertList!([]) |
                                 runMVar!(*stateCh, *stateProcessCh, *ackCh) |
                                 for (@state, stateUpdateCh <- stateProcessCh) {
                                   if (blockNumber == 1) {
@@ -1148,7 +1243,7 @@ in {
                                   accDepositsDoneCh, commitRewardsCh,
                                   newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh,
                                   commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer,
-                                  epochMintedCh
+                                  epochMintedCh, feeConvertedCh
                               in {
                                 PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
                                 for (@currentRewards <- currentEpochRewardCh) {
@@ -1170,24 +1265,55 @@ in {
                                           // 6. Pick new `activeValidators`
                                           pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
                                           for (@newValidators <- newValidatorsCh) {
-                                            // 7. Cost-Accounted Rho Stage B: mint
-                                            //    `epochPhlogiston` to every ACTIVE,
-                                            //    non-halted, not-yet-minted-this-epoch
-                                            //    validator (eligibility uses the
-                                            //    NEWLY-PICKED active set), recording
-                                            //    (pk, epochIdx) in `mintedEpochs`.
-                                            //    Publish the (pk, amount) mint list to
-                                            //    `mintList` for post_eval's Σ⟦v⟧ mirror.
-                                            mintPhlogistonToValidators!(
-                                              newRemovedQuantinueState.set("activeValidators", newValidators),
-                                              $$epochPhlogiston$$,
-                                              blockNumber / $$epochLength$$,
-                                              sysAuthToken,
-                                              *epochMintedCh
-                                            ) |
-                                            for (@(epochMintedState, epochMints) <- epochMintedCh) {
-                                              mintList!(epochMints) |
-                                              stateUpdateCh!(epochMintedState, (true, Nil))
+                                            // 6b. Cost-Accounted Rho Stage D: CONVERT
+                                            //     collected fees BEFORE the mint (spec
+                                            //     tex:3095-3100). Fold `allBonds`: for
+                                            //     each active ∧ ¬halted ∧
+                                            //     ¬convertedEpochs validator with F_v
+                                            //     count f > 0, 1:1-convert via the
+                                            //     blessed Exchange, deposit the @W_v
+                                            //     draw purse of k=f, zero F_v, record
+                                            //     (v, epochIdx) in convertedEpochs.
+                                            //     Publish (v, k) on `feeConvertList`
+                                            //     for post_eval's Σ⟦v⟧ mirror. Uses the
+                                            //     NEWLY-PICKED active set (eligibility),
+                                            //     and the converted state feeds the
+                                            //     mint below so both ledgers
+                                            //     (convertedEpochs + mintedEpochs)
+                                            //     advance in one runMVar transition.
+                                            new epochStateWithActiveCh in {
+                                              epochStateWithActiveCh!(newRemovedQuantinueState.set("activeValidators", newValidators)) |
+                                              for (@epochStateWithActive <- epochStateWithActiveCh) {
+                                                convertFeesToValidators!(
+                                                  epochStateWithActive,
+                                                  blockNumber / $$epochLength$$,
+                                                  sysAuthToken,
+                                                  *feeConvertedCh
+                                                ) |
+                                                for (@(feeConvertedState, feeConverts) <- feeConvertedCh) {
+                                                  feeConvertList!(feeConverts) |
+                                                  // 7. Cost-Accounted Rho Stage B: mint
+                                                  //    `epochPhlogiston` to every ACTIVE,
+                                                  //    non-halted, not-yet-minted-this-epoch
+                                                  //    validator, recording (pk, epochIdx)
+                                                  //    in `mintedEpochs`. Publish the
+                                                  //    (pk, amount) mint list to `mintList`
+                                                  //    for post_eval's Σ⟦v⟧ mirror. Runs on
+                                                  //    the fee-converted state so
+                                                  //    convertedEpochs is preserved.
+                                                  mintPhlogistonToValidators!(
+                                                    feeConvertedState,
+                                                    $$epochPhlogiston$$,
+                                                    blockNumber / $$epochLength$$,
+                                                    sysAuthToken,
+                                                    *epochMintedCh
+                                                  ) |
+                                                  for (@(epochMintedState, epochMints) <- epochMintedCh) {
+                                                    mintList!(epochMints) |
+                                                    stateUpdateCh!(epochMintedState, (true, Nil))
+                                                  }
+                                                }
+                                              }
                                             }
                                           }
                                         }

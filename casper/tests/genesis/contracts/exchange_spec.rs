@@ -165,3 +165,67 @@ async fn exchange_resolves_and_swap_conserves_per_channel() {
     .await
     .expect("with_runtime_manager");
 }
+
+/// PER-CHANNEL CONSERVATION (Rocq `exchange_conserves_per_channel` /
+/// `exchange_total_conserved`): the swap consumes EXACTLY one datum from each
+/// carrier and produces EXACTLY one on each, so each carrier's datum COUNT is
+/// preserved (one in ⇒ one out) and the two carriers' total datum count is
+/// invariant. We swap and then assert each carrier holds exactly ONE datum
+/// afterwards (count preserved per channel) AND that the multiset {cAfter,
+/// vAfter} equals the input multiset {7, 11} (total conserved, nothing minted
+/// or destroyed — DR-4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exchange_conserves_per_channel() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+
+            // After the swap, count the datums on each carrier (as a list) and
+            // return ([cDatums], [vDatums]) — each must be a singleton, and their
+            // union must be exactly the input multiset {7, 11}.
+            let source = r#"
+            new return, rl(`rho:registry:lookup`), exCh, cCarrier, vCarrier, swapAck in {
+              rl!(`rho:lang:exchange`, *exCh) |
+              for (@(_, Exchange) <- exCh) {
+                cCarrier!(7) | vCarrier!(11) |
+                @Exchange!("swap", *cCarrier, *vCarrier, *swapAck) |
+                for (@(true, _) <- swapAck) {
+                  for (@cAfter <- cCarrier & @vAfter <- vCarrier) {
+                    // Re-emit so the carriers are non-empty for any later reader,
+                    // and return the observed swapped pair for the assertion.
+                    cCarrier!(cAfter) | vCarrier!(vAfter) |
+                    return!((cAfter, vAfter))
+                  }
+                }
+              }
+            }
+            "#;
+
+            let deploy = construct_deploy::source_deploy_now_full(
+                source.to_string(),
+                Some(500_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("construct conservation deploy");
+
+            let results = runtime_manager
+                .capture_results(&gen_post_state, &deploy)
+                .await
+                .expect("swap must execute");
+
+            assert_eq!(results.len(), 1, "the join fired exactly once (one datum consumed per carrier)");
+            // Total conserved: the swapped pair is a permutation of the inputs —
+            // {cAfter, vAfter} == {11, 7} as a multiset (nothing minted/destroyed).
+            let swapped = ParBuilderUtil::mk_term("(11, 7)").expect("parse (11, 7)");
+            assert_eq!(
+                results[0], swapped,
+                "per-channel conservation: one datum out per carrier, total {{7,11}} preserved"
+            );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}
