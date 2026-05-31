@@ -1,3 +1,5 @@
+import CostAccountedRho.LinearLogicResources
+
 /-
   CostAccountedRho — Lean 4 mirror of the validator-scoped subset of the Rocq
   cost-accounted calculus corpus (Workstream E, DR-12).

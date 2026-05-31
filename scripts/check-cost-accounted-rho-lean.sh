@@ -33,9 +33,23 @@ echo "Building Lean validator obligations (offline; core Init only)..."
 ( cd "$LEAN_DIR" && lake build )
 
 # The contract theorem list. E6 expands this to the full S1-S4 / P1,P3 set.
+# E2 added the S2 (funding) + S3 (linearity) mirrors of the Rocq
+# LinearLogicResources.v obligations (fully-qualified so they resolve after
+# `import CostAccountedRho`).
 CONTRACT_THEOREMS=(
   scaffold_cost_accounted_ok
   scaffold_validator_ok
+  # S2 — funding (cost-accounted-rho §7.5; Rocq LinearLogicResources.v 553-699)
+  CostAccountedRho.delta_s_tensor_additive
+  CostAccountedRho.funding_decidable
+  CostAccountedRho.sigma_s_balance_eq_stack_count
+  CostAccountedRho.funding_check_balance_sound
+  CostAccountedRho.funding_check_balance_sound_against_stack
+  # S3 — linearity (cost-accounted-rho §7.6/§7.7; Rocq 324-393)
+  CostAccountedRho.ll_consume_linear_once_atom_exhausts
+  CostAccountedRho.ll_no_double_spend_single_witness
+  CostAccountedRho.ll_double_spend_requires_duplicate_witness
+  CostAccountedRho.ll_linear_no_contraction
 )
 
 echo "Axiom gate: #print axioms must show no sorryAx and no user axiom..."
