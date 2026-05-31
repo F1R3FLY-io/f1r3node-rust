@@ -37,6 +37,7 @@
 
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Sorting.Permutation.
+From Stdlib Require Import Lia.
 Import ListNotations.
 
 From CostAccountedRho Require Import RhoSyntax.
@@ -236,4 +237,51 @@ Proof.
   apply (fuel_events_consumed_perm S c1 c2
            (fuel_events_of_system S1) (fuel_events_of_system S2)
            Hp1 Hp2 Hrem).
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 6: D3 (DR-9, OD-3) — consumed = per-COMM count (consumed = Δ_s)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The D3 consensus cost model is ONE token per COMM (cost-accounted-rho §3.6
+   Rules 1-5, §7.2). At the calculus level a COMM is a fuel-GATE strip: each
+   [token_fuel_events] entry is exactly one token-consuming COMM, so the number
+   of consumed fuel events over a reachable reduction IS the per-COMM consensus
+   cost. The corollary below makes the "consumed = COMM count" bridge explicit:
+   for any reachable [S ⟶* S'], the length of the consumed fuel-event list (the
+   per-COMM count) equals the drop in [system_token_count] — i.e. the consumed
+   per-COMM count [Δ_s] is exactly [system_token_count S − system_token_count S'].
+   This is the Rocq witness for the Rust equivalence
+   "gate demand == runtime consumed == settlement debit", all per-COMM
+   (rholang/tests/accounting/delta_sigma_spec.rs). *)
+
+Theorem consumed_fuel_count_eq_token_drop :
+  forall S S' consumed,
+    Permutation (fuel_events_of_system S) (consumed ++ fuel_events_of_system S') ->
+    length consumed = system_token_count S - system_token_count S'.
+Proof.
+  intros S S' consumed Hperm.
+  (* The permutation preserves length: |fes S| = |consumed| + |fes S'|. *)
+  apply Permutation_length in Hperm.
+  rewrite length_app in Hperm.
+  (* Rewrite the fuel-event lengths to token counts via fuel_events_length. *)
+  rewrite !fuel_events_length in Hperm.
+  (* From |S| = |consumed| + |S'|, conclude |consumed| = |S| - |S'|. *)
+  lia.
+Qed.
+
+(* The per-COMM consensus cost of a reachable reduction is determined by the
+   endpoints alone (the COMM count [Δ_s] = the token-count drop), independent of
+   the reduction order — the consensus determinism the gate/runtime/settlement
+   bridge relies on. *)
+Corollary consumed_comm_count_determined_by_endpoints :
+  forall S S' consumed1 consumed2,
+    Permutation (fuel_events_of_system S) (consumed1 ++ fuel_events_of_system S') ->
+    Permutation (fuel_events_of_system S) (consumed2 ++ fuel_events_of_system S') ->
+    length consumed1 = length consumed2.
+Proof.
+  intros S S' c1 c2 Hp1 Hp2.
+  rewrite (consumed_fuel_count_eq_token_drop S S' c1 Hp1).
+  rewrite (consumed_fuel_count_eq_token_drop S S' c2 Hp2).
+  reflexivity.
 Qed.
