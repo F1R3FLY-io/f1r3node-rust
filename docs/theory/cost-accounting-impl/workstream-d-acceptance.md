@@ -115,14 +115,22 @@ delete).
   `replay_runtime.rs:406`; delete PoS.rhox `chargeDeploy`/`refundDeploy` (KEEP `sysAuthTokenOps`/`createUnfVault`);
   delete the precharge/refund seeds in `system_deploy_util.rs`; reconcile `MultiSignerRefinement.v`
   `pos_charge`/`pos_refund` (keep distinctness lemmas).
-- **D4.2 merge:** KEEP `dag_merger::merge`/`resolve_conflicts`/`compute_merged_state`/number-channel path
-  (the §2.3 channel-based reconciliation). **Plan correction:** `conflict_set_merger::merge` (:403) is a wrapper
-  `dag_merger` does NOT call — grep callers; delete only if zero production callers (else leave). Do NOT replace
-  channel-based `conflicts()` with a signature predicate.
-- **D4.3 run-to-completion:** gate `interpreter_util.rs::compute_parents_post_state` (747-) on "writes a shared
-  DATA channel" (channel-based) instead of `parents.len()` (769); disjoint-channel parents early-return; keep
-  the multi-parent merge for the shared-channel case. Reducer (`reduce.rs`) unchanged. Add a
-  `concurrent_rspace_architecture_repro_spec.rs`-sibling regression guard.
+- **D4.2 merge — DONE (DR-15).** KEPT `dag_merger::merge`/`resolve_conflicts`/`compute_merged_state`/number-channel
+  path (the §2.3 channel-based reconciliation). The orphaned `conflict_set_merger::merge` wrapper (zero production
+  callers — `dag_merger` calls `resolve_conflicts`/`compute_merged_state` directly) was **removed**, and its two
+  test consumers (the in-file `merge_rejects_negative_channel_balance`, and `tests/merging/merge_number_channel_spec.rs`)
+  **re-pointed** to those same two primitives (identical coverage; no test disabled). Channel-based `conflicts()`
+  was NOT replaced with a signature predicate.
+- **D4.3 run-to-completion — DONE (DR-15): NO production change.** Run-to-completion (the legacy RChain §2.1
+  serialize-execute-commit model) was never ported — the reducer already uses per-channel locks and
+  `dag_merger::merge` reconciles pre-computed event-log diffs, never re-executing deploys. `compute_parents_post_state`'s
+  `parents.len()` dispatch is the multi-parent **block-merge dispatcher** (the §2.3 keep-path entry point), NOT an
+  RtC gate; the literal "gate on writes-a-shared-DATA-channel instead of `parents.len()`; disjoint early-return" is a
+  **fork-risk misread** (0/1-parent cases have no shared-channel pair; an empty return for disjoint 2+ parents emits a
+  wrong post-state — the merged state is the deterministic number-channel fold, never empty). Disjointness is already an
+  empty-conflict number-channel fold. Reducer (`reduce.rs`) unchanged. Added a **determinism regression pin** to the
+  existing `compute_parents_post_state_regression_spec.rs` (the disjoint sibling-parent merge is byte-identical under
+  reversed parent order — spec §2.3 order-determinism).
 
 ### D5 — funding proof (Rocq) + TLA+
 - `LinearLogicResources.v`: define **pure** `delta_s` (LLUnit→0, LLAtom→1, LLTensor→sum, else 0 — NOT the ILLE
@@ -144,8 +152,8 @@ Rust tests: `reject_both_on_oversubscription`, `desugar_eight_token_count`, `spe
 ## Commit sequence
 D0a (event+lane_hash, no behavior change) → D0b (lane pool + `rb_pool` proof + loom) → D1 (`delta_sigma.rs`) →
 D5a (Rocq `delta_s`/`funding_decidable`) → D2 (gate + speculative discard + `replay_admission_mismatch`) →
-D5b (TLA+ `AcceptanceGate`) → D3 (phlo→token) → D4.1 (precharge/refund, atomic) → D4.2/D4.3 (merge/RtC gating) →
-D6 (full verification sweep).
+D5b (TLA+ `AcceptanceGate`) → D3 (phlo→token) → D4.1 (precharge/refund, atomic) → D4.2/D4.3 (dead-wrapper removal +
+RtC reinterpreted as already-channel-based, DR-15) → D6 (full verification sweep).
 
 ## Cross-workstream couplings
 - **B (g/#P split)** changes the `Sig` enum (`Hash`→`Ground|Quote`) that D0's `lane_hash` digests — `lane_hash`

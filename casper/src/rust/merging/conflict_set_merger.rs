@@ -393,62 +393,6 @@ where
     Ok(new_state)
 }
 
-/// R is a type for minimal rejection unit.
-/// IMPORTANT: actual_seq and late_seq must be passed in sorted order to ensure
-/// deterministic processing across all validators.
-///
-/// Convenience wrapper that runs `resolve_conflicts` followed by
-/// `compute_merged_state`. Callers that need to inspect or adjust the rejection
-/// set between the two steps should call them directly instead.
-pub fn merge<
-    R: Clone + Eq + std::hash::Hash + PartialOrd + Ord,
-    C: Clone,
-    P: Clone,
-    A: Clone,
-    K: Clone,
->(
-    actual_seq: Vec<R>,
-    late_seq: Vec<R>,
-    depends: impl Fn(&R, &R) -> bool,
-    cost: impl Fn(&R) -> u64,
-    state_changes: impl Fn(&R) -> Result<StateChange, HistoryError>,
-    mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
-    compute_trie_actions: impl Fn(
-        StateChange,
-        NumberChannelsDiff,
-    ) -> Result<Vec<HotStoreTrieAction<C, P, A, K>>, HistoryError>,
-    apply_trie_actions: impl Fn(
-        Vec<HotStoreTrieAction<C, P, A, K>>,
-    ) -> Result<Blake2b256Hash, HistoryError>,
-    get_data: impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
-    compute_branches: impl Fn(&HashableSet<R>) -> HashableSet<HashableSet<R>>,
-    compute_conflict_map: impl Fn(
-        &HashableSet<HashableSet<R>>,
-    ) -> Result<
-        HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
-        HistoryError,
-    >,
-) -> Result<(Blake2b256Hash, HashableSet<R>), HistoryError> {
-    let resolved = resolve_conflicts(
-        actual_seq,
-        late_seq,
-        &depends,
-        &cost,
-        &mergeable_channels,
-        &get_data,
-        &compute_branches,
-        &compute_conflict_map,
-    )?;
-    let new_state = compute_merged_state(
-        &resolved,
-        &state_changes,
-        &mergeable_channels,
-        &compute_trie_actions,
-        &apply_trie_actions,
-    )?;
-    Ok((new_state, resolved.rejected))
-}
-
 /// Compute optimal rejection configuration.
 /// Find the optimal rejection set from conflicting branches.
 fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
@@ -709,52 +653,77 @@ mod tests {
         let late_seq = Vec::<i32>::new();
         let base_channel = Blake2b256Hash::from_bytes(vec![7u8; 32]);
 
-        let result = merge(
-            actual_seq,
-            late_seq,
-            |_a, _b| false, // depends
-            |_r| 1,         // cost
-            |_r| Ok(StateChange::empty()),
-            |r| {
-                let mut diff = BTreeMap::new();
-                // item 1 decrements channel, item 2 increments channel
-                let delta = if *r == 1 { -1 } else { 1 };
-                diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
-                diff
-            },
-            |_state_change, _channels| Ok(Vec::<HotStoreTrieAction<i32, i32, i32, i32>>::new()),
-            |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| {
-                Ok(Blake2b256Hash::from_bytes(vec![9u8; 32]))
-            },
-            |_hash| Ok(Vec::new()),
-            // Each item is its own singleton branch.
-            |merge_set: &HashableSet<i32>| {
-                HashableSet(
-                    merge_set
-                        .0
-                        .iter()
-                        .map(|i| {
-                            let mut s = HashSet::new();
-                            s.insert(*i);
-                            HashableSet(s)
-                        })
-                        .collect(),
-                )
-            },
-            // Empty conflict map — every branch as a key with no conflicts.
-            // This test exercises only the rejection-via-mergeable-overflow
-            // path; the conflict-detection path is covered elsewhere.
-            |branches: &HashableSet<HashableSet<i32>>| {
-                Ok(branches
+        let depends = |_a: &i32, _b: &i32| false;
+        let cost = |_r: &i32| 1u64;
+        let state_changes = |_r: &i32| -> Result<StateChange, HistoryError> {
+            Ok(StateChange::empty())
+        };
+        let mergeable_channels = |r: &i32| -> NumberChannelsDiff {
+            let mut diff = BTreeMap::new();
+            // item 1 decrements channel, item 2 increments channel
+            let delta = if *r == 1 { -1 } else { 1 };
+            diff.insert(base_channel.clone(), (delta, MergeType::IntegerAdd));
+            diff
+        };
+        let compute_trie_actions = |_state_change: StateChange,
+                                    _channels: NumberChannelsDiff|
+         -> Result<Vec<HotStoreTrieAction<i32, i32, i32, i32>>, HistoryError> {
+            Ok(Vec::new())
+        };
+        let apply_trie_actions = |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| {
+            Ok(Blake2b256Hash::from_bytes(vec![9u8; 32]))
+        };
+        let get_data =
+            |_hash: Blake2b256Hash| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(Vec::new())
+            };
+        // Each item is its own singleton branch.
+        let compute_branches = |merge_set: &HashableSet<i32>| {
+            HashableSet(
+                merge_set
                     .0
                     .iter()
-                    .map(|b| (b.clone(), HashableSet(HashSet::new())))
-                    .collect())
-            },
-        );
+                    .map(|i| {
+                        let mut s = HashSet::new();
+                        s.insert(*i);
+                        HashableSet(s)
+                    })
+                    .collect(),
+            )
+        };
+        // Empty conflict map — every branch as a key with no conflicts.
+        // This test exercises only the rejection-via-mergeable-overflow
+        // path; the conflict-detection path is covered elsewhere.
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<i32>>| {
+            Ok(branches
+                .0
+                .iter()
+                .map(|b| (b.clone(), HashableSet(HashSet::new())))
+                .collect())
+        };
 
-        assert!(result.is_ok());
-        let (_new_state, rejected) = result.unwrap();
-        assert!(!rejected.0.is_empty());
+        // Re-pointed from the removed `merge` convenience wrapper to the two
+        // primitives it composed: resolve_conflicts then compute_merged_state.
+        let resolved = resolve_conflicts(
+            actual_seq,
+            late_seq,
+            &depends,
+            &cost,
+            &mergeable_channels,
+            &get_data,
+            &compute_branches,
+            &compute_conflict_map,
+        )
+        .expect("resolve_conflicts should succeed");
+        let _new_state = compute_merged_state(
+            &resolved,
+            &state_changes,
+            &mergeable_channels,
+            &compute_trie_actions,
+            &apply_trie_actions,
+        )
+        .expect("compute_merged_state should succeed");
+
+        assert!(!resolved.rejected.0.is_empty());
     }
 }

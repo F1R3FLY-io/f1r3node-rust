@@ -395,3 +395,48 @@ reverting a committed, spec-sanctioned decision — not a current obligation.
 ever demanded, but still a consensus no-op; subsumed by (a). (c) a PoS-state fee accumulator — rejected
 (duplicate `f` ledger, two sources of truth, merge-drift risk). (d) the `rho:casper:feeCount` Rust→PoS
 pre-eval seam — rejected (over-engineers a no-op; re-introduces a rejected coupling + replay fragility).
+
+---
+
+## DR-15 — Run-to-completion was already eliminated in the Rust port; D4.3 reinterpreted (the multi-parent merge dispatcher is retained)
+
+**Status.** Settled (Workstream D, D4.2/D4.3). **Spec law:** `cost-accounted-rho.tex` §2.1–§2.3 (tex:196–320).
+
+**Context.** The master plan's Wave-2 listed three parallel removals — precharge/refund (D4.1), "RtC-driven
+speculative-merge orchestration" (D4.2), and "run-to-completion callers" (D4.3). D4.1 landed (see DR-5).
+D4.2/D4.3 were specified against an inaccurate model of the current merge code. Grounding them in the Rust
+source (verified file:line + spec-line evidence) shows the removals they name **do not exist as such** in
+`f1r3node-rust`: the port is already the spec's §2.3 channel-based model.
+
+**Decision.**
+1. **Run-to-completion (spec §2.1, tex:196–227)** — the legacy RChain/Scala "execute one deployment to
+   termination, commit, then accept the next" serialization — **was never ported.** The reducer already runs
+   intra-deploy with per-channel locks (`rspace.rs` `phase_a/b_locks`), and the multi-parent merge
+   (`dag_merger::merge`) operates entirely on pre-computed event-log diffs (`DeployChainIndex` /
+   `NumberChannelsDiff`); it **never re-executes deploys.** The §2.3 replacement — acceptance by linear proof
+   — is live (`block_creator.rs` `acceptance::admit_by_funding` + the pure `delta_sigma.rs` gate; DR-9/DR-11).
+2. **`compute_parents_post_state`'s `parents.len()` dispatch is RETAINED (not re-gated).** It is the
+   multi-parent **block-merge dispatcher** (0 ⇒ genesis empty-trie hash; 1 ⇒ the parent's stored post-state;
+   2+ ⇒ descendant fast-paths → the channel-based DAG merge) — i.e. the entry point of the §2.3 path the spec
+   **preserves** (tex:305–308: "The only case requiring attention is deployments that interact via shared data
+   channels"). The plan's literal D4.3 — "gate on writes-a-shared-data-channel instead of parent count;
+   disjoint path early-returns empty" — is a **misread that would fork**: the 0/1-parent cases have no
+   shared-channel pair to test, and an "empty" return for disjoint 2+ parents emits a wrong post-state (the
+   merged state is the deterministic number-channel fold of both parents' diffs over the LFB base, never
+   empty). For disjoint parents the existing merge already yields that fold via an empty-conflict set, so no
+   re-gate is needed or correct. **No production change to `compute_parents_post_state`.**
+3. **`conflict_set_merger::merge` (the convenience wrapper) is REMOVED.** It had zero production callers
+   (`dag_merger::merge` calls `resolve_conflicts`/`compute_merged_state` directly); its only consumers were
+   two tests, re-pointed to those same two primitives (identical coverage; no test disabled). It was generic
+   plumbing, not an RtC artifact.
+4. **Determinism pin added.** `compute_parents_post_state_regression_spec.rs` now asserts the disjoint
+   sibling-parent merge is byte-identical under reversed input order — the §2.3 order-determinism guarantee.
+
+**Outcome — wholly (not partially) satisfied.** D4.2/D4.3's spec intent (§2.3: "merge reduces to the
+shared-data-channel residual, deterministically ordered") is fully realized and now regression-pinned; the
+only code residue (a dead wrapper) is removed; the fork-risk literal mechanism is correctly declined with
+proof. Workstream D's removal obligations (D4.1 precharge/refund + D4.2/D4.3 merge/RtC) are completely
+discharged. **No consensus-state change** — the wrapper was dead; the dispatcher and merge are untouched.
+
+**Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
+DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).

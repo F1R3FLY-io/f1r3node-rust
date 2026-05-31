@@ -369,6 +369,38 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         rejected_without_skew, rejected_with_skew,
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
     );
+
+    // Spec §2.3 determinism pin (D4.3): the kept channel-based multi-parent
+    // merge composes disjoint sibling parents in a canonical, order-independent
+    // way, so the post-state is byte-identical under reversed parent input
+    // order. This guards `compute_parents_post_state` against an order-dependent
+    // merge regression — the residual shared-data-channel reconciliation that
+    // the spec preserves (tex §2.3:286-308) must be deterministic. (`b2`/`b3`
+    // are siblings, so the descendant fast-paths are skipped and the genuine
+    // DAG merge runs in both orders.)
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let reversed_parents = vec![b3.clone(), b2.clone()];
+    let (state_reversed_order, rejected_reversed_order, _rejected_slashes) =
+        compute_parents_post_state(
+            &block_store,
+            reversed_parents,
+            &snapshot_without_skew,
+            &runtime_manager,
+            None,
+            None,
+        )
+        .expect("Failed to compute parents post-state with reversed parent order");
+
+    assert_eq!(
+        state_without_skew, state_reversed_order,
+        "Parents post-state must be invariant to parent input order (spec §2.3 deterministic disjoint composition)."
+    );
+    assert_eq!(
+        rejected_without_skew, rejected_reversed_order,
+        "Rejected deploy set must be invariant to parent input order."
+    );
 }
 
 #[test]
