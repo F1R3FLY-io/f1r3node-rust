@@ -5,8 +5,6 @@ use std::fmt;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[cfg(feature = "oqs_pq_experimental")]
-use super::oqs_pq::{Falcon512, MlDsa65, SlhDsaSha2_128s};
 use super::secp256k1::Secp256k1;
 use super::secp256k1_eth::Secp256k1Eth;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -95,12 +93,6 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
                     "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
                     "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
-                    #[cfg(feature = "oqs_pq_experimental")]
-                    "oqs-ml-dsa-65/v1" => Ok(Box::new(MlDsa65)),
-                    #[cfg(feature = "oqs_pq_experimental")]
-                    "oqs-falcon-512/v1" => Ok(Box::new(Falcon512)),
-                    #[cfg(feature = "oqs_pq_experimental")]
-                    "oqs-slh-dsa-sha2-128s/v1" => Ok(Box::new(SlhDsaSha2_128s)),
                     // "ed25519" => Ok(Box::new(Ed25519)),
                     _ => Err(de::Error::custom(format!("Unknown algorithm: {}", value))),
                 }
@@ -126,129 +118,7 @@ impl SignaturesAlgFactory {
             "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "frost-secp256k1" => Some(Box::new(FrostSecp256k1)),
-            #[cfg(feature = "oqs_pq_experimental")]
-            "oqs-ml-dsa-65/v1" => Some(Box::new(MlDsa65)),
-            #[cfg(feature = "oqs_pq_experimental")]
-            "oqs-falcon-512/v1" => Some(Box::new(Falcon512)),
-            #[cfg(feature = "oqs_pq_experimental")]
-            "oqs-slh-dsa-sha2-128s/v1" => Some(Box::new(SlhDsaSha2_128s)),
             _ => None,
-        }
-    }
-}
-
-/// Registry-parity tests for the OQS post-quantum backends.
-///
-/// The OQS algorithm names are registered in FIVE independent locations
-/// (factory `apply`, Deserialize `visit_str`, `signed::signature_hash`,
-/// `casper::validate::{verify_signature, signature_algorithm_supported}`, and
-/// `node::web_api::lookup_sig_algorithm`). The casper block-signature registry
-/// is a SEPARATE `match` that must agree with the crypto factory or block
-/// validation will reject otherwise-valid PQ-signed blocks. crypto cannot
-/// depend on casper (cycle), so we REPLICATE the casper predicate here with
-/// the exact same gated arms and assert that the crypto factory, the
-/// Deserialize visitor, the replicated casper predicate, and the canonical
-/// [`super::oqs_pq::OQS_REGISTERED_ALGORITHMS`] table never drift.
-#[cfg(all(test, feature = "oqs_pq_experimental"))]
-mod oqs_registry_parity_tests {
-    use serde::de::value::{Error as ValueError, StrDeserializer};
-    use serde::de::IntoDeserializer;
-
-    use super::super::oqs_pq::{
-        Falcon512, MlDsa65, SlhDsaSha2_128s, OQS_REGISTERED_ALGORITHMS,
-    };
-    use super::*;
-
-    /// Byte-for-byte replica of `casper::rust::validate::Validate::
-    /// signature_algorithm_supported`'s OQS arms. If casper's copy changes,
-    /// this replica must change too — that is the point: the parity test
-    /// fails loudly if the two registries diverge in their OQS coverage.
-    fn casper_signature_algorithm_supported_replica(algorithm: &str) -> bool {
-        match algorithm {
-            "secp256k1" => true,
-            a if a == MlDsa65::name() => true,
-            a if a == Falcon512::name() => true,
-            a if a == SlhDsaSha2_128s::name() => true,
-            _ => false,
-        }
-    }
-
-    /// Exercise the real `Deserialize` impl for `Box<dyn SignaturesAlg>` via a
-    /// `StrDeserializer`, which drives `deserialize_str` -> `visit_str`. No
-    /// JSON dependency required.
-    fn deserialize_accepts(name: &str) -> bool {
-        let de: StrDeserializer<ValueError> = name.into_deserializer();
-        let parsed: Result<Box<dyn SignaturesAlg>, ValueError> =
-            Box::<dyn SignaturesAlg>::deserialize(de);
-        match parsed {
-            Ok(alg) => alg.name() == name,
-            Err(_) => false,
-        }
-    }
-
-    #[test]
-    fn every_oqs_name_resolves_in_all_registries() {
-        for (name, _algorithm) in OQS_REGISTERED_ALGORITHMS.iter() {
-            // (1) Factory.
-            let factory = SignaturesAlgFactory::apply(name);
-            assert!(
-                factory.is_some(),
-                "SignaturesAlgFactory::apply({name}) must resolve"
-            );
-            assert_eq!(
-                factory.expect("checked some").name(),
-                *name,
-                "factory must round-trip the canonical name for {name}"
-            );
-
-            // (2) Deserialize visitor.
-            assert!(
-                deserialize_accepts(name),
-                "Deserialize visitor must accept {name}"
-            );
-
-            // (3) Replicated casper block-signature registry.
-            assert!(
-                casper_signature_algorithm_supported_replica(name),
-                "casper signature_algorithm_supported replica must accept {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn registries_reject_unversioned_and_unknown_names() {
-        // The unversioned names must NOT resolve anywhere — the `/v1` suffix is
-        // consensus-load-bearing.
-        for bad in ["oqs-ml-dsa-65", "oqs-falcon-512", "oqs-slh-dsa-sha2-128s", "totally-bogus"] {
-            assert!(
-                SignaturesAlgFactory::apply(bad).is_none(),
-                "factory must reject {bad}"
-            );
-            assert!(
-                !deserialize_accepts(bad),
-                "Deserialize visitor must reject {bad}"
-            );
-            assert!(
-                !casper_signature_algorithm_supported_replica(bad),
-                "casper replica must reject {bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn factory_and_casper_replica_agree_pointwise() {
-        // For every registered OQS name, all three boolean registries must
-        // return the same verdict (true). This is the anti-drift assertion.
-        for (name, _algorithm) in OQS_REGISTERED_ALGORITHMS.iter() {
-            let in_factory = SignaturesAlgFactory::apply(name).is_some();
-            let in_deserialize = deserialize_accepts(name);
-            let in_casper = casper_signature_algorithm_supported_replica(name);
-            assert_eq!(
-                (in_factory, in_deserialize, in_casper),
-                (true, true, true),
-                "registries disagree for {name}: factory={in_factory}, \
-                 deserialize={in_deserialize}, casper={in_casper}"
-            );
         }
     }
 }

@@ -1,8 +1,6 @@
 pub mod ed25519;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 pub mod frost_secp256k1;
-#[cfg(feature = "oqs_pq_experimental")]
-pub mod oqs_pq;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 pub mod schnorr_secp256k1;
 pub mod secp256k1;

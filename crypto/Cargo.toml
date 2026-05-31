@@ -7,11 +7,6 @@ publish = false
 [features]
 default = []
 schnorr_secp256k1_experimental = ["k256/schnorr"]
-# Off-by-default post-quantum signature backends (OQS / liboqs). Pulls in the
-# optional `oqs` crate, which builds liboqs from C via cmake (the `vendored`
-# feature of `oqs`). NEVER enabled in the default build — see
-# crypto/src/rust/signatures/oqs_pq.rs.
-oqs_pq_experimental = ["dep:oqs"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -29,11 +24,6 @@ k256 = { version = "0.13.4", features = ["ecdsa"] }
 tracing = { workspace = true }
 nanorand = "0.7.0"
 num-bigint = "0.4.6"
-# Optional post-quantum signatures via Open Quantum Safe. `default-features =
-# false` drops the KEM families and openssl glue we do not use; `vendored`
-# builds liboqs from C through cmake; `sigs` provides ML-DSA / FALCON / SPHINCS+.
-# Gated behind the `oqs_pq_experimental` feature — see [features] above.
-oqs = { version = "0.11", default-features = false, features = ["std", "sigs", "vendored"], optional = true }
 p256 = "0.13"
 pkcs8 = "0.10"
 prost = { workspace = true }

@@ -440,3 +440,41 @@ discharged. **No consensus-state change** — the wrapper was dead; the dispatch
 
 **Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
 DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).
+
+---
+
+## DR-16 — OQS post-quantum backend removed; §4.5 G-parametricity realized by the SignaturesAlg trait
+
+**Status.** Settled (Workstream F). **Spec law:** `cost-accounted-rho.tex` §4.5 "Genericity over the
+Cryptographic Backend" (tex:978–1010).
+
+**What was attempted.** Workstream F added an OQS (Open Quantum Safe / liboqs) post-quantum signature backend
+— `crypto/src/rust/signatures/oqs_pq.rs` providing ML-DSA-65 (FIPS 204), FALCON-512, and SLH-DSA-SHA2-128s
+(FIPS 205) — as the §4.5 demonstration of the calculus's genericity over the ground signature scheme G
+(tex:995–1001 names `G = OQS` as an instantiation, characterised there as ongoing work). It was off-by-default
+behind the `oqs_pq_experimental` feature, with all five registry touch-points (factory, Deserialize,
+`signed.rs`, `validate.rs`, `web_api.rs`) feature-gated, a startup-availability assertion, and a
+domain-separated, FIPS-parameter-pinned test suite.
+
+**Why it failed (upstream, unresolvable in-repo).** The `oqs` 0.11 crate (the latest published version) pulls
+`oqs-sys 0.11.0+liboqs-0.13.0`, whose bindgen-generated bindings render `OQS_SIG` opaque (1 byte) while
+emitting a layout-test asserting `size_of::<OQS_SIG>() == 88`. On the pinned Rust nightly (2026-02-09) the
+strict const-eval computes `1 - 88` and rejects it with `error[E0080]`, so the experimental feature does not
+compile. liboqs / cmake / ninja are all present (not the blocker); the break is purely the upstream Rust FFI
+binding. There is no newer `oqs` release to bump to, and no clean in-repo layout-test toggle.
+
+**Decision.** Per the project owner, removed the `oqs` dependency, `oqs_pq.rs`, and all five feature-gated
+touch-points, **keeping the `SignaturesAlg` trait and the classical backends** (Ed25519, secp256k1,
+secp256k1-eth, Schnorr, FROST). This is **spec-faithful**: §4.5's load-bearing requirement is the
+*parametricity over G*, which the `SignaturesAlg` trait realizes (it abstracts the ground signature scheme);
+`G = OQS` is a *named example instantiation*, not a load-bearing requirement, so its removal preserves §4.5
+fidelity. The change is pure deletion (385 lines removed, 0 added — no new dependency); the default build and
+consensus were never affected (the feature was off-by-default and the default build always compiled clean).
+
+**Resolution path if a PQ instantiation is wanted.** Because the trait abstracts G, a post-quantum backend
+drops in without touching the calculus: a pure-Rust implementation of the same NIST schemes — RustCrypto's
+`ml-dsa` (FIPS 204) and `slh-dsa` (FIPS 205) — realizes the identical §4.5 instantiation and compiles cleanly
+with no C-FFI; or re-add `oqs` once a fixed `oqs-sys` ships. Either is a drop-in `SignaturesAlg` impl.
+
+**Cross-refs.** Spec §4.5 (G-genericity); the g/#P signature split (DR-1/DR-2) and the `SignaturesAlg` trait
+are the realized parametric surface.

@@ -42,8 +42,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-#[cfg(feature = "oqs_pq_experimental")]
-use crypto::rust::signatures::oqs_pq::{Falcon512, MlDsa65, SlhDsaSha2_128s};
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -116,21 +114,6 @@ impl Validate {
                 let frost = FrostSecp256k1;
                 frost.verify(data, signature, pub_key)
             }
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == MlDsa65::name() => {
-                let ml_dsa = MlDsa65;
-                ml_dsa.verify(data, signature, pub_key)
-            }
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == Falcon512::name() => {
-                let falcon = Falcon512;
-                falcon.verify(data, signature, pub_key)
-            }
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == SlhDsaSha2_128s::name() => {
-                let slh_dsa = SlhDsaSha2_128s;
-                slh_dsa.verify(data, signature, pub_key)
-            }
             _ => false,
         }
     }
@@ -145,12 +128,6 @@ impl Validate {
             a if a == SchnorrSecp256k1::name() => true,
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             a if a == FrostSecp256k1::name() => true,
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == MlDsa65::name() => true,
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == Falcon512::name() => true,
-            #[cfg(feature = "oqs_pq_experimental")]
-            a if a == SlhDsaSha2_128s::name() => true,
             _ => false,
         }
     }

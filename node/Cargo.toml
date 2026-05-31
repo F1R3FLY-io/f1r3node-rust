@@ -11,11 +11,6 @@ schnorr_secp256k1_experimental = [
     "casper/schnorr_secp256k1_experimental",
     "models/schnorr_secp256k1_experimental",
 ]
-oqs_pq_experimental = [
-    "crypto/oqs_pq_experimental",
-    "casper/oqs_pq_experimental",
-    "models/oqs_pq_experimental",
-]
 
 [lib]
 doctest = false
