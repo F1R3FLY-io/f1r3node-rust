@@ -38,6 +38,12 @@ echo "Building Lean validator obligations (offline; core Init only)..."
 # `import CostAccountedRho`). E3 added the S1 (fuel-gate token safety) mirror of
 # FuelGateSafety.v and the S4 (transaction demand + single-token step
 # determinism) mirror of StepDeterminism.v + LinearLogicResources.v:481.
+# E4 added the P1 (slash-authorization soundness) mirror of the Rocq slashing
+# Validator.v BondMap slash taxonomy + ValidatorLifetime.v
+# (`stale_evidence_not_authorized`), and the P3 (verdict determinism) thin lift
+# of `ca_step_deterministic` to the validator-verdict level. P1 and P3 are
+# PLATFORM obligations that custom validators INHERIT (DR-12), proven here for
+# the built-in once (`Validator.*`, resolving after `import Validator`).
 CONTRACT_THEOREMS=(
   scaffold_cost_accounted_ok
   scaffold_validator_ok
@@ -69,6 +75,24 @@ CONTRACT_THEOREMS=(
   CostAccountedRho.token_split_zero
   CostAccountedRho.no_token_no_step
   CostAccountedRho.ca_step_one_token_example
+  # P1 — slash-authorization soundness (BondMap slash taxonomy;
+  #      Rocq slashing Validator.v 154-227) + the lifetime authorization kernel
+  #      (Rocq ValidatorLifetime.v 17-54 / MainTheorem.v:210)
+  Validator.bm_slash_lookup
+  Validator.bm_slash_idempotent_lookup
+  Validator.bm_slash_other
+  Validator.bm_lookup_slash_many_in
+  Validator.bm_lookup_slash_many_notin
+  Validator.bm_slash_many_order_independent
+  Validator.bm_slash_many_order_independent_seteq
+  Validator.stale_evidence_not_authorized
+  Validator.matching_lifetime_authorized
+  Validator.bm_slash_changes_lookup_example
+  # P3 — verdict determinism (validator-contract lift of
+  #      CostAccountedRho.ca_step_deterministic; Rocq StepDeterminism.v 156-222)
+  Validator.validator_verdict_deterministic
+  Validator.validator_verdict_deterministic_two_step
+  Validator.validator_verdict_example
 )
 
 echo "Axiom gate: #print axioms must show no sorryAx and no user axiom..."

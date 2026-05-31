@@ -1,3 +1,6 @@
+import Validator.SlashAuthorization
+import Validator.Determinism
+
 /-
   Validator — Lean 4 mirror of the validator / platform obligations and the
   named behavioral-contract aggregator (Workstream E, DR-12).
