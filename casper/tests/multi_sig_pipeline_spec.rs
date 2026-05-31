@@ -46,10 +46,9 @@ fn sign_canonical_hash(data: &DeployData, sk: &crypto::rust::private_key::Privat
 
 fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
     assert!(num_signers >= 2, "multi-sig requires at least 2 signers");
-    let primary_share = 100;
-    let other_share = 100;
-    let phlo_limit = (num_signers as i64) * other_share;
-    let data = baseline_deploy_data(phlo_limit);
+    // D3 (DR-9): no per-signer phlo_share; `baseline_deploy_data`'s phlo_limit
+    // arg is ignored (retained for call-site stability).
+    let data = baseline_deploy_data((num_signers as i64) * 100);
 
     let (primary_sk, primary_pk) = fresh_keypair();
     let primary_sig = sign_canonical_hash(&data, &primary_sk);

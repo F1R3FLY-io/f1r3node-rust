@@ -1,15 +1,23 @@
-// End-to-end regression test for the rejected-deploy recovery pipeline:
-// a deploy that is conflict-rejected during a multi-parent merge lands
-// in `KeyValueRejectedDeployBuffer` and is re-included in a subsequent
-// proposer's body.
+// D3 (DR-9, OD-2): this file previously exercised the rejected-deploy
+// recovery pipeline using a PRECHARGE-driven multi-parent-merge conflict: two
+// same-key deploys whose combined `phlo_limit × phlo_price` precharge drove the
+// shared REV vault below zero, which `conflict_set_merger::fold_rejection`
+// rejected, after which the rejected deploy landed in
+// `KeyValueRejectedDeployBuffer` and was re-proposed.
 //
-// Conflict generator: two deploys signed by the SAME funded key, each
-// requesting a phlogiston precharge that would individually leave the
-// shared vault solvent but together would drive the vault balance below
-// zero. `conflict_set_merger::fold_rejection` rejects whichever branch
-// it processes second to keep the merged state non-negative. The
-// Rholang body is `Nil`, so play execution has no `|` parallel
-// composition and is fully deterministic.
+// D3 REMOVES the per-deploy precharge, so two benign same-key deploys
+// (`@0!(0) | for(_<-@0)`, which write no mergeable number-channel diff) NO
+// LONGER conflict on a vault balance at merge — both branches merge cleanly.
+// The double-spend protection moved to the per-signature ACCEPTANCE GATE
+// (`util/rholang/acceptance.rs`: §7.7 reject-both / drained-pool), covered by
+// `reject_both_on_oversubscription` / `drained_present_pool_rejects` /
+// `per_signature_group_gate`. This test is therefore re-pinned to assert the
+// D3 behavior: the same-key benign deploys MERGE without a precharge-driven
+// rejection and both remain reachable. (The recovery-buffer/re-propose
+// machinery itself is consensus-critical and D3-independent; re-exercising it
+// under D3 requires a non-precharge merge-conflict trigger — a vault-draining
+// REV transfer or a provisioned Σ⟦s⟧ settlement-debit conflict — which is a
+// multi-parent-merge follow-on, not part of the D3 cost-model removal.)
 
 use casper::rust::util::construct_deploy;
 use prost::bytes::Bytes;
@@ -105,7 +113,7 @@ const PHLO_PRICE: i64 = 100_000;
 ///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
+async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
@@ -235,8 +243,20 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         "merge_block parents must include block_b"
     );
 
-    // The merge engine's negative-balance check must have rejected one
-    // of the two deploys, and it must be deploy_a (the lex-larger sig).
+    // D3 (DR-9, OD-2): this scenario's double-spend conflict was driven ENTIRELY
+    // by the per-deploy PRECHARGE (`phlo_limit × phlo_price` debited the source
+    // REV vault; two same-key precharges drove its mergeable balance below zero,
+    // which `conflict_set_merger::fold_rejection` rejected). D3 REMOVES the
+    // precharge: the benign `CONFLICT_RHO` (`@0!(0) | for(_<-@0)`) writes NO
+    // mergeable number-channel diff, so two same-key copies do NOT conflict on a
+    // vault balance — both branches merge cleanly. The double-spend protection
+    // moved to the per-signature ACCEPTANCE GATE (`util/rholang/acceptance.rs`):
+    // two deploys sharing a signature draw from one supply pool Σ⟦s⟧, and the
+    // §7.7 reject-both / drained-pool checks reject the second once the pool is
+    // committed — covered by the gate tests `reject_both_on_oversubscription`,
+    // `drained_present_pool_rejects`, and `per_signature_group_gate`. So under D3
+    // the merge admits both same-key benign deploys WITHOUT a precharge-driven
+    // rejection.
     let rejected_sigs: Vec<Bytes> = merge_block
         .body
         .rejected_deploys
@@ -244,109 +264,33 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         .map(|rd| rd.sig.clone())
         .collect();
     assert!(
-        !rejected_sigs.is_empty(),
-        "merge_block.body.rejected_deploys must be non-empty — combined \
-         precharge from two same-key deploys must drive the source vault \
-         balance below zero, which `conflict_set_merger::fold_rejection` \
-         catches by rejecting the second branch"
-    );
-    let conflict_sig = rejected_sigs
-        .iter()
-        .find(|s| **s == sig_a || **s == sig_b)
-        .cloned()
-        .expect("the rejected sig must be one of the two conflicting deploys");
-    assert_eq!(
-        conflict_sig,
-        sig_a,
-        "the rejected sig must be deploy_a's (the lex-larger sig that \
-         `fold_rejection` processes second). Got rejected sigs={:?}, \
+        !rejected_sigs.iter().any(|s| *s == sig_a || *s == sig_b),
+        "D3: neither same-key benign deploy is rejected at MERGE — the \
+         precharge-driven vault-balance conflict is removed; double-spend \
+         protection is the per-signature acceptance gate, not the merge \
+         engine's vault-balance check. Got merge rejected sigs={:?}, \
          sig_a={}, sig_b={}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
         hex::encode(&sig_a),
         hex::encode(&sig_b)
     );
-    let surviving_sig = sig_b.clone();
 
-    // Sync merge_block from validator 1 back to validator 0. The
-    // receive-side `validate_block_checkpoint` runs
-    // `compute_parents_post_state` with the buffer arg, which populates
-    // validator 0's own `KeyValueRejectedDeployBuffer`. The recovery
-    // proposer's snapshot BFS then sees merge_block's `rejected_deploys`
-    // and populates `rejected_in_scope`.
-    {
-        let (a, b) = nodes.split_at_mut(1);
-        a[0].sync_with_one(&mut b[0])
-            .await
-            .expect("sync merge_block 1 -> 0");
-    }
-    assert!(
-        nodes[0].contains(&merge_block.block_hash),
-        "validator 0 must observe merge_block before recovery propose"
-    );
-
-    // Validator 0's buffer must contain the rejected sig after sync.
-    {
-        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
-        let contains_rejected = buffer_guard
-            .contains_sig(&conflict_sig)
-            .expect("buffer.contains_sig");
+    // Both same-key deploys remain reachable in the canonical view via the
+    // deploy index (neither was dropped by a merge-time rejection).
+    let representation = nodes[0]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
+    for sig in [&sig_a, &sig_b] {
         assert!(
-            contains_rejected,
-            "validator 0's buffer must contain the rejected sig {} after \
-             syncing merge_block",
-            hex::encode(&conflict_sig)
+            representation
+                .lookup_by_deploy_id(&sig.to_vec())
+                .ok()
+                .flatten()
+                .is_some(),
+            "D3: same-key benign deploy sig {} must remain reachable in the \
+             canonical view (it was admitted, not merge-rejected)",
+            hex::encode(sig)
         );
     }
-
-    // Drive the recovery: validator 0 proposes recovery_block.
-    // `collect_self_chain_deploy_sigs` walks validator 0's prior latest
-    // (block_a) and finds deploy_a's sig there. Without the
-    // `rejected_in_scope` exemption, the self-chain dedup filter would
-    // drop the recovered sig from `prepared.deploys` and the new block's
-    // body would be missing the recovered deploy.
-    let marker_deploy_2 = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone()))
-            .expect("build marker_deploy_2")
-    };
-    let recovery_block = nodes[0]
-        .add_block_from_deploys(&[marker_deploy_2.clone()])
-        .await
-        .expect("validator 0 proposes recovery_block");
-
-    let recovery_sigs: Vec<&Bytes> = recovery_block
-        .body
-        .deploys
-        .iter()
-        .map(|pd| &pd.deploy.sig)
-        .collect();
-    assert!(
-        recovery_sigs.iter().any(|s| **s == conflict_sig),
-        "recovery_block.body.deploys must contain the recovered sig {} \
-         (pulled from the rejected-deploy buffer); got body.deploys \
-         sigs = {:?}. If this fires, check that both `prepare_user_deploys` \
-         and `collect_self_chain_deploy_sigs` exempt `rejected_in_scope` \
-         sigs from their in-scope dedup filters",
-        hex::encode(&conflict_sig),
-        recovery_sigs
-            .iter()
-            .map(|s| hex::encode(s.as_ref()))
-            .collect::<Vec<_>>()
-    );
-
-    // The surviving sig must remain reachable in the canonical view via
-    // the deploy index, pointing back to its pre-merge block.
-    assert!(
-        nodes[0]
-            .block_dag_storage
-            .get_representation()
-            .expect("dag representation")
-            .lookup_by_deploy_id(&surviving_sig.to_vec())
-            .ok()
-            .flatten()
-            .is_some(),
-        "the surviving sig {} must be reachable in the canonical view via \
-         the deploy index",
-        hex::encode(&surviving_sig)
-    );
 }

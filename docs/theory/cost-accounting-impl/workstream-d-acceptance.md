@@ -66,26 +66,47 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
   rejected==rejected_deploys. Determinism guards: pure analyzer, `BTreeMap` groups, Σ_s from deterministic
   merged pre-state, canonical deploy order.
 
-### D3 — DC phlo→token (365 refs across 50+ files; fresh-genesis per DR-6)
-- Remove `DeployData.phlo_limit`/`phlo_price` (casper_message.rs:994-997) + refund arithmetic (:1036-1117) +
-  proto fields (reserve tags). `validate_phlo` min-price → the acceptance gate (the economic-margin analogue
-  is the genesis `margin`). Reshape `Cosigned` (`signed.rs` `from_*` drop `phlo_limit`; `phlo_share` → 0/reserved
-  for funding-slots, since compound deploys draw from the compound lane per Def 7.4).
-- Demote `costs.rs` per-op gas to **diagnostic**: COMM reductions issue `BillableTokenEvent{weight:1,
-  kind:SourceStep}` per rendezvous + matching (Rules 1,3,5→1; 2,4→2); per-op charges record into the diagnostic
-  accumulator and do NOT gate consensus. Consensus cost = consumed token count (DR-9). Pin with the 8-token test.
-- **D1→D3 counting-granularity handoff (LANDED D1 at `7911fa8b`).** WD-D1's `demand()` currently returns
-  `known_lower_bound` = the **per-SourceStep** count (matching the *pre-D3* runtime, which meters `new`/`match`/`if`
-  as `SourceStep`s — e.g. 9 = 8 COMMs + 1 `new` for the §7.4 example) AND separately exposes `comm_node_count`
-  = the **per-COMM** count (the spec's idealized `Δ_s`, DR-9 — 8 for §7.4). The validated invariant today is
-  `known_lower_bound == runtime consumed` (per-SourceStep). When D3 demotes per-op charges to diagnostic and makes
-  the consensus token count **per-COMM**, the gate's consensus demand MUST switch to `comm_node_count`, the
-  runtime's consensus-consumed count must equal it, and the `Δ_s == consumed` equivalence test must be re-pinned
-  against the per-COMM count. D2 (the gate) is granularity-agnostic — it consumes whatever `demand()` returns — so
-  D2 wires against the current `known_lower_bound`; D3 flips both `demand()`'s consensus output and the runtime to
-  per-COMM in lockstep.
-- Migrate references: `construct_deploy.rs`, `web_api.rs`/grpc/API, `options.rs`/CLI, `validate.rs`/dispatcher,
-  fuzz/kani (`processed_deploy_settlement`, casper_message.rs:2055 kani) → fuzz token-supply/Δ_s instead.
+### D3 — DC phlo→token (fresh-genesis per DR-6) — **LANDED** (`bf082ee8`/`20705442`/`d2a47fbd`)
+The plan below LANDED as the 4 D3 commits. Annotations record where the
+implementation refined the plan (b1 diagnostic-refinement: annotate, don't
+delete).
+- Removed `DeployData.phlo_limit`/`phlo_price` + ALL escrow arithmetic
+  (`checked_total_phlo_charge[_value]`, `refund_amount_for_token_cost[_value]`,
+  `total_phlo_charge`, `validate_phlo`) + proto fields (tags RESERVED).
+  `Validate::phlo_price` block rule + its dispatch removed; `min_phlo_price`
+  RETAINED as the gate margin. Reshaped `Cosigned` (`signed.rs` `from_*` drop the
+  `phlo_limit` param; `Cosigner.phlo_share` DELETED outright per OD-4 — NOT
+  zeroed/reserved — and the share-sum `CosignedError` variants removed).
+- Demoted `costs.rs` per-op gas to **diagnostic**: send/receive issue
+  `BillableTokenEvent{kind: Comm}` (the consensus cost unit, OD-3) and
+  `new`/`match`/`if` issue `kind: Reduction` (diagnostic, cost 0);
+  Primitive/Substitution stay diagnostic. `reconcile_lane` counts each committed
+  `Comm` as 1, everything else as 0 ⇒ consensus consumed cost = the COMM count
+  (DR-9). Pinned by the §7.4 = **8** test.
+- **D1→D3 counting-granularity handoff — LANDED.** The plan proposed exposing a
+  SEPARATE `comm_node_count` field and switching the gate to it. The IMPLEMENTED
+  refinement is simpler and equivalent: `demand()`'s `known_lower_bound` itself
+  was flipped to the per-COMM count (`demand_par` keeps `+1` for send/receive
+  only; `new`/`match`/`if` stop `.plus_one()` but still recurse). The gate is
+  granularity-agnostic and consumes `known_lower_bound` unchanged — so no
+  separate `comm_node_count` field is needed; the gate's demand, the runtime's
+  consumed `total_cost()`, and the settlement debit all became per-COMM in
+  lockstep (§7.4 re-pins 9→8; App.B 6→5). Validated end-to-end by
+  `gate_demand_equals_runtime_comm_count` / `settlement_debit_equals_comm_count`
+  / `consensus_cost_excludes_per_op_gas` (delta_sigma_spec.rs + cost_accounting_spec.rs).
+- Accepted deploys run **unmetered-for-liveness** (OD-1): `evaluate_cosigned`
+  installs an `unsafe_max` token budget (no OOP cap) but stays metered, so
+  `total_cost()` still returns the real per-COMM count. The escrow precharge/
+  refund fan-out (`play_deploy_with_cost_accounting_cosigned` + replay twin) was
+  rewritten to gate-funded (KEEP the inner soft-checkpoint); `costacc/
+  {pre_charge,refund}_deploy.rs` + the precharge/refund seeds + PoS.rhox
+  `chargeDeploy`/`refundDeploy` were deleted (genesis still installs + works).
+- Migrated references: `construct_deploy.rs`, `web_api.rs`/grpc/API,
+  `options.rs`/CLI (removed `--phlo-*`), `validate.rs`/dispatcher; fuzz/kani
+  retargeted to token-supply/Δ_s + gate no-underflow (no `escrow=limit×price`).
+  Formal: Rocq per-COMM `consumed = token-drop` bridge (FuelEventDecomposition.v,
+  kernel-verified axiom-free), TLA+ schedule-independence under per-COMM, Sage
+  settlement re-pinned to the per-signature funding/no-underflow model.
 
 ### D4 — removals (after D2)
 - **D4.1 precharge/refund (one atomic commit):** delete `costacc/{pre_charge_deploy,refund_deploy}.rs`; rewrite
