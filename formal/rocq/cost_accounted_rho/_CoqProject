@@ -7,7 +7,7 @@
 # Source: cost-accounted-rho.pdf (Meredith)
 # Companion doc: docs/theory/cost-accounted-rho-verification.md
 #
-# 26 modules with kernel-checked theorem bodies. The development is
+# 32 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -45,7 +45,16 @@
 #                                 TranslationFaithfulness
 #   Replication                 → RhoSyntax, StructEquivInversion,
 #                                 StructEquivHeads, RhoReduction, Bisimulation
+#   WeakBarbedEquiv             → RhoReduction
 #   LinearLogicResources        → CostAccountedSyntax
+#   LLIdentities                → (standalone; Stdlib only)
+#   WalletNaming                → RhoSyntax
+#   MintingInjection            → TokenConservation, WalletNaming
+#   MintingHalt                 → MintingInjection
+#   Exchange                    → TokenConservation, MintingInjection
+#   SystemStructEquiv           → RhoSyntax, CostAccountedSyntax
+#   SyntacticSugar              → Translation
+#   MultiSignerRefinement       → RuntimeBudgetRefinement
 #   UseCaseAdequacy             → TokenConservation, Settlement,
 #                                 SlashingComposition, MergeableChannelAccounting,
 #                                 RuntimeBudgetRefinement,

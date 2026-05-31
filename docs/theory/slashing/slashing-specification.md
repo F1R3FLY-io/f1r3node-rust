@@ -154,7 +154,7 @@ artifacts may still use the alias.
 |-------------------------------------|-------------------------------------------------|
 | This document                       | ~1,800 lines markdown (incl. embedded diagrams) |
 | `slashing-verification.md`          | ~1,300 lines markdown                           |
-| `formal/rocq/slashing/theories/*.v` | 26 modules / ~7,700 lines                       |
+| `formal/rocq/slashing/theories/*.v` | 27 modules / ~7,700 lines                       |
 | `formal/tlaplus/slashing/*.tla`     | 7 base specs + MC instances                     |
 | `formal/sage/slashing/*.sage`       | 32 finite/search models                         |
 | PlantUML sources                    | 11 diagrams / ~1,700 lines                      |

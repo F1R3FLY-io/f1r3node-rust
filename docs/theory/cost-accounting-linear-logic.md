@@ -331,7 +331,7 @@ The `dill` relation is a faithful but **deliberately small fragment** of full DI
 
 ### 5.1 The `sig_algebra` type
 
-The earlier cost-accounted syntax modeled a signature with only three constructors — `SUnit`, `SHash`, `SAnd` (unit, atom, tensor) — at `CostAccountedSyntax.v:76`. The linear-logic work generalizes this to the full ILLE connective set in a *new* inductive, `sig_algebra` (`CostAccountedSyntax.v:229`):
+The cost-accounted core signature `sig` has the constructors `SUnit | SGround | SQuote | SAnd` (unit, the ground/quote atom axes per DR-1, tensor) at `CostAccountedSyntax.v:93`. The linear-logic work generalizes the atom to the full ILLE connective set in a *separate* inductive, `sig_algebra` (`CostAccountedSyntax.v:229`):
 
 ```coq
 Inductive sig_choice : Type := ChooseLeft | ChooseRight.

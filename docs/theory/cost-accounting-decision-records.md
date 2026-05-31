@@ -23,8 +23,8 @@ spec basis, and the alternatives considered (recorded for future reference). It 
 **Decision.** The core signature grammar realizes exactly `s(G) ::= g | #P | s∘s` (spec Def 3.3). The Rust
 `Sig::Hash(bytes)` atom — which conflated a *ground* signature `g` with a *cryptographic quote* `#P` — is
 split into `Ground(g)` and `Quote(#P)`; the wire `SigAtom` gains an `AtomKind{Ground=0,Quote=1}`
-discriminant (default `0` for back-compatibility). The Rocq `sig` gains `SGround`; `ASHash` is repurposed
-as the `#P` axis.
+discriminant (default `0` for back-compatibility). The Rocq `sig` gains `SGround` (the `g` axis) and `SQuote`
+(the `#P` axis), with linear-logic atom images `ASGround`/`ASQuote`.
 
 **Spec basis.** Def 3.3, §4.2 (cryptographic quoting), Remark 2.6 ("two axes of reflection").
 
@@ -52,6 +52,12 @@ atom is opaque), so a post-quantum migration requires no change to the cost sema
 
 **Alternatives considered.** (a) A `trait Backend<G>` genericization of `SignaturesAlg` — rejected:
 destabilizing churn for zero semantic gain; the dynamic-dispatch trait already suffices.
+
+**Superseded in part by DR-16.** The `G`-parametricity decision stands (realized by the `SignaturesAlg` trait
++ factory). The specific OQS post-quantum *instantiation* named above was removed (DR-16): its upstream
+`oqs-sys` dependency does not compile on the pinned toolchain. §4.5's requirement is the parametricity, not
+the OQS instantiation, so the trait satisfies it; a post-quantum backend re-enters as a drop-in
+`SignaturesAlg` impl (pure-Rust `ml-dsa`/`slh-dsa`, or `oqs` once a fixed `oqs-sys` ships).
 
 ---
 
@@ -478,3 +484,51 @@ with no C-FFI; or re-add `oqs` once a fixed `oqs-sys` ships. Either is a drop-in
 
 **Cross-refs.** Spec §4.5 (G-genericity); the g/#P signature split (DR-1/DR-2) and the `SignaturesAlg` trait
 are the realized parametric surface.
+
+---
+
+## DR-17 — §3.8 syntactic sugar and the `system`/`proc` representation choice
+
+**Status.** Settled (Workstream H). **Spec law:** `cost-accounted-rho.tex` §3.8 (syntactic sugar, tex:793–825),
+§3.2/§3.3/§3.5 (identities + free names, tex:592–619), §1 ("signed terms pervade the syntax", tex:162).
+
+**Context — the representation.** The Rocq syntax layers a Rho-calculus `proc` (`RhoSyntax.v`: `PInput`/`POutput`
+carry `proc` bodies/payloads) under a thin cost-accounted `system` (`CostAccountedSyntax.v:137`,
+`SSigned : proc -> sig -> system`). The signed thing is therefore a **bare `proc`**, and the spec's §3
+four-sort mutual grammar — where `for(y<-x){T}` carries a *signed-term* continuation `T` and `send(x,U)` a
+signed-term payload `U` (tex:439–471) — is **not natively representable** at the `system` level: a
+`system`-level equation cannot place a `{P}_s` continuation inside a `for` body, because that body is a `proc`,
+not a `system`. The §1 slogan "signed terms pervade the syntax" (tex:162) is the property this layering does
+not realize natively. (Self-documented at `SyntacticSugar.v:14–20`.)
+
+**Decision — Option A is the adopted, spec-faithful discharge.** The spec's §3.8 *defining equations* and the
+§3.2/§3.3/§3.5 *identities* are all discharged at the source/translation level and are proof-gated (axiom-free,
+in `scripts/check-cost-accounted-rho-proofs.sh`):
+
+| Spec obligation | tex | Rocq theorem (file:line) |
+|---|---|---|
+| §3.8 uniform signing `{·}_s` | 793–803 | `uniform_sugar_translation_equiv` (`SyntacticSugar.v:111`) |
+| §3.8 linear transfer `⊸` (desugars to nested plain-signature gates; coexists with the DR-10 ILLE extension) | 815–825 | `lollipop_sugar_translation_equiv` (`SyntacticSugar.v:148`) + the `lollipop_image_inner_gate_is_plain_*` witnesses |
+| §3.2 `T ∥ () ≡ T` (signed-term ∥-unit) | 615–619 | `sse_par_unit` (`SystemStructEquiv.v:94`) |
+| App. A `s:S ≡ (s:())∥S` (token-stack peel) | — | `token_decomp` (`SystemStructEquiv.v:124`) |
+| §3.5 `FN_s(#P)=FN(P)` (also `FN_s(g)=∅`, `FN_s(s₁∘s₂)=∪`) | 592–595 | `sig_free_names_quote`/`_ground`/`_and` (`SystemStructEquiv.v:457,465,472`) |
+| DR-10 core/extension demand invariance | — | `core_demand_invariant_under_extension` (`LinearLogicResources.v:492`) |
+
+Because every equation and identity the four-sort native grammar would let one *state* is already *proven* at
+the source/translation level, **the implementation conforms to §3.8 and §3.2/§3.3/§3.5**; the non-native
+expressibility of "signed terms pervade the syntax" is a **representation choice, not a spec-fidelity gap**.
+
+**Recorded representation migration (Option B), for a later faithful-native pass.** A representation change
+would make signed terms pervade the syntax natively: refactor `RhoSyntax.v` + `CostAccountedSyntax.v` into the
+spec's four mutually-inductive sorts `proc / name / signed-term / token-stack` (tex:433–471), re-type
+`PInput`/`POutput` to carry signed-term continuations/payloads, move `SSigned` to `… -> signed_term`,
+re-derive the locally-nameless binding/substitution machinery across the now-4-way mutual recursion, and
+re-mechanize the downstream stack (`CostAccountedReduction`, `Translation`, `TranslationFaithfulness`,
+`Bisimulation`, `TokenConservation`, `StrongNormalization`, `Confluence`, `StepDeterminism`) against the new
+carrier. The §3.8 sugars then become native `signed_term` equalities rather than translation-level `≡`. This
+is a multi-module re-mechanization that proves **no new theorem** (Option A already discharges every spec
+obligation); it is recorded here as the faithful-native representation it would take, available as a subsequent
+migration, and is intentionally not performed under the spec-minimal reconciliation.
+
+**Cross-refs.** DR-1 (the `g`/`#P` axes the sugar signs over), DR-10 (the ILLE extension; `⊸` coexists with it
+as sugar). Spec §3.8/§3.2/§3.3/§3.5/§1.

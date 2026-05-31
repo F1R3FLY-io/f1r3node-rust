@@ -91,7 +91,7 @@ The contribution split:
 
 ### 1.3 Scale and module DAG
 
-26 Rocq modules, ~7,700 lines total (including BugFixSlashAuthorization,
+27 Rocq modules, ~7,700 lines total (including BugFixSlashAuthorization,
 BugFixSeqArithmetic, BugFixDuplicateJustifications, ValidatorLifetime,
 BugFixWithdrawTransferFailure). The dependency DAG matches the one
 in `_CoqProject` (see also `slashing-specification.md` §1.7):
@@ -2742,7 +2742,7 @@ and Rust file that realize it):
 All directories below are present in this repository.
 
 ```
-formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
+formal/rocq/slashing/theories/                 (27 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
 ├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
 ├── Block.v                           (Block, Justification, equivocation predicate)

@@ -12,11 +12,12 @@
 #   docs/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 26 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 27 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
 #   Validator              (standalone)
+#   ValidatorLifetime      → Validator
 #   Block                  → Validator
 #   InvalidBlock           → Block
 #   EquivocationRecord     → Validator, Block
@@ -48,6 +49,8 @@
 #                                  embedding of PoSState; withdrawer/reward
 #                                  maps; safety + total-funds preservation
 #                                  + parallel-fold order-independence)
+#   BugFixAtomicBufferDagTransition → (standalone; T-9.20 atomic buffer DAG
+#                                  transition bug fix #17)
 #   MainTheorem            → all of the above (composition)
 #
 # The development models the on-chain Rholang `slash` contract at

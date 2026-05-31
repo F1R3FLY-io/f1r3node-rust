@@ -23,7 +23,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 26 modules and 20,846 lines of development, and
+in **Rocq 9.1.1** across 32 modules and 25,776 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC and
 selectively cross-checked by Apalache. The headline results include
 contextual forward reachability
@@ -43,7 +43,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 685 `Qed.`/`Defined.` proof terms are discharged without any
+All 967 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -126,7 +126,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 26 modules and 20,846 lines, with 685 `Qed.` or
+   development spans 32 modules and 25,776 lines, with 967 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -153,8 +153,10 @@ This article proves that claim. Concretely, we contribute:
    fuel-event multiset determinism (`fuel_events_consumed_perm`).
 
 4. Independent **TLA+** finite-state correctness models (Section 10),
-   verified by TLC across 22 specifications and cross-checked through
-   Apalache for the typed threat/search-frontier models: the four core
+   verified by TLC across 25 specifications and cross-checked through
+   Apalache for the typed threat/search-frontier models, plus the
+   validator behavioral contract proven deductively by TLAPS in
+   `formal/tlaplus/validator/Validator.tla` (Section 10.7): the four core
    protocol/scheduling models up to 12,960 distinct states, plus
    runtime-budget replay, threat-model, search-frontier, and typed
    mergeable-channel models that check implementation-facing invariants —
@@ -278,9 +280,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 26 modules                                                 |
-| Total lines of Rocq                              | 20,846                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 685                                                        |
+| Rocq source files                                | 32 modules                                                 |
+| Total lines of Rocq                              | 25,776                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 967                                                        |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -303,7 +305,7 @@ on any axiom from Section 12.2.1.
 ### 1.7 Module Dependency Graph
 
 Arrows point from dependency to dependent (`A ──► B` means "module `B`
-imports module `A`"). The 26 modules organize into seven dependency
+imports module `A`"). The 32 modules organize into seven dependency
 tiers corresponding to the proof layers of §7.1.
 
 ```
@@ -735,6 +737,32 @@ under structural equivalence modulo name equivalence:
 These transport lemmas are required by the weak-barb definitions
 (Section 6.6), which close under both reachability and channel name
 equivalence.
+
+### 3.7 Representation Choice: §3.8 Sugar and the `system`/`proc` Layering
+
+The Rocq syntax layers a pure-process `proc` (`RhoSyntax.v`:
+`PInput`/`POutput`/`PPar`/`PDeref`) beneath a `system` sort
+(`CostAccountedSyntax.v`: `SSigned`/`SToken`/`SPar`) that carries the
+signing and token-stack metadata of §3.1. This is the "extension of pure
+rho" modelling choice rather than the spec's native four-sort grammar in
+which signed terms pervade the syntax. Under this layering, the spec's
+§3.8 syntactic-sugar defining equations — uniform signing `{·}_s` and
+the linear-transfer lollipop `⊸` — and the §3.2/§3.5 source-level
+identities are discharged at the **source/translation level** (Option A,
+proof-gated): each sugar form is given meaning by its Appendix-A image in
+the pure calculus, and the desugared right-hand side is proven
+structurally equivalent (`≡` on `proc`) to the sugar left-hand side
+(`uniform_sugar_translation_equiv`, `lollipop_sugar_translation_equiv` in
+`SyntacticSugar.v`; `sse_par_unit`, `token_decomp`, `sig_free_names` in
+`SystemStructEquiv.v`). The lollipop desugars to a pair of nested
+plain-signature fuel-gate layers, so it coexists with the compound-signature
+authorization algebra without introducing a new signature constructor.
+The native four-sort grammar — under which the §3.8 sugars become native
+signed-term equalities — is available as a subsequent representation
+migration that this development records but does not require. The
+representation choice and both options are documented in detail in
+**DR-17** (`cost-accounting-decision-records.md` §3.8 representation
+choice).
 
 ---
 
@@ -3534,6 +3562,52 @@ catching specification bugs that a proof might miss (e.g., off-by-one
 errors in the conservation accounting, incorrect preconditions on
 actions, or unexpected deadlocks in the Split/Join/gate interaction).
 
+### 10.7 Validator Behavioral Contract (Multi-Prover)
+
+The built-in validator is named by a **behavioral contract** (DR-12): the
+obligation set a Cost-Accounted-Rho validator must satisfy, with each
+obligation discharged in all three provers — TLA+, Rocq, and Lean. The
+contract subtrees **re-export** already-proven, kernel-checked obligations
+under contract handles; they do not re-prove. Of the arithmetic
+obligations, the validator's funding/zeroing/order-independence clauses are
+discharged **deductively by TLAPS** in `formal/tlaplus/validator/Validator.tla`
+(five TLAPS-proven theorems), while the state-machine obligations stay
+TLC-checked under `RuntimeBudgetReplay.tla` (§10.5).
+
+The contract has four **spec** obligations (S1–S4) and three **platform**
+obligations (P1–P3, labeled out-of-spec per DR-12). Each is proven in
+Lean and Rocq, and named by a `validator_contract_*` clause in
+`formal/rocq/validator/theories/Contract.v` /
+`formal/lean/Validator/Contract.lean`:
+
+| ID | Obligation                              | Spec / basis | Rocq obligation (re-exported)                                   | TLA+ / Lean |
+|----|-----------------------------------------|--------------|-----------------------------------------------------------------|-------------|
+| S1 | Token-presence syntactic validity       | §6.3         | `FuelGateSafety.fuel_gate_rejects_mismatched_token`             | TLA+ token-present rewrite; Lean E3 |
+| S2 | Acceptance correctness (`Σ_s ≥ Δ_s`, pre-exec) | §7.6  | `LinearLogicResources.funding_decidable`                        | `admission_decision_schedule_independent`; Lean E2 |
+| S3 | Linear no-double-spend / reject-both     | §7.7         | `LinearLogicResources.ll_no_double_spend_single_witness`        | committed-prefix; Lean E2 |
+| S4 | For-comprehension = atomic funded txn    | §7.1         | `StepDeterminism.ca_step_deterministic`, `core_token_demand`    | single-COMM fire; Lean E3 |
+| P1 | Slash-authorization soundness            | DR-12        | `MainTheorem.main_T9_12_stale_evidence_not_authorized`          | `AuthorizedSlashFlow`; Lean E4 |
+| P2 | Finalization safety                      | DR-12        | `MainTheorem.main_T10_fork_choice_exclusion`                    | `EquivocationDetector`; Lean E6.5 |
+| P3 | Determinism / replay-equivalence         | DR-12        | `StepDeterminism.ca_step_deterministic`                         | `ConsumedAndVerdictScheduleIndependent`; Lean E4 |
+
+S1–S4 originate in the CostAccountedRho development; P1/P2 originate in the
+Slashing development. The S2/S3 acceptance obligations (`Σ_s ≥ Δ_s`,
+reject-both on the first under-funded deploy) are the proof side of the
+per-signature static linear-proof acceptance gate decided at block
+assembly (**DR-11**). Every clause inherits "Closed under the global
+context" from its single underlying term, so `Print Assumptions
+validator_contract_X` reports exactly what the obligation reports
+(axiom-free for all seven); the proof gate (§12) re-queries each clause's
+assumptions. A custom validator re-discharges S1–S4 + P3 for its own
+admission/decision functions and inherits P1/P2 from the fixed Rust
+platform shell. The full obligation set, prover assignments, and
+custom-validator seam are documented in
+[`cost-accounting-impl/workstream-e-validator-contract.md`](cost-accounting-impl/workstream-e-validator-contract.md);
+the worked reference artifacts are
+`formal/rocq/validator/theories/Contract.v`,
+`formal/lean/Validator/Contract.lean`, and
+`formal/tlaplus/validator/Validator.tla`.
+
 ---
 
 ## 11. Module Reference
@@ -3570,7 +3644,16 @@ references.
 | `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| **Total**                   | **20,846** | **685**  |                                                                                                                                                                                                                                                                                    |
+| `MintingInjection.v`        | 630        | 26       | Minting is exogenous token injection, never a `ca_step`; supply-pool balance layer (`Σ⟦v⟧` injectivity in pk, epoch-mint idempotency, user steps never move a supply balance) |
+| `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
+| `Exchange.v`                | 203        | 7        | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
+| `SystemStructEquiv.v`       | 474        | 14       | System-level structural equivalence (`sys_equiv`): parallel-unit law `sse_par_unit`, Appendix-B token-stack decomposition `token_decomp`, and source-level free names `sig_free_names` (Def 3.3 axes; §3.5) |
+| `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
+| `WalletNaming.v`            | 313        | 14       | Per-validator wallet `@W_v` naming (Stage A): injectivity in the validator public key and pairwise disjointness of the wallet / quarantine / funding-slot seed domains |
+| `MultiSignerRefinement.v`   | 530        | 31       | Phase 1.10 multi-signature deploy support: per-deployer Map-in-MVar PoS refinement, single-signer observable equivalence to the legacy contract, and canonical-order FIFO refund-drain conservation |
+| `LinearLogicResources.v`    | 818        | 38       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, and the runtime `sig_algebra` bridge |
+| `LLIdentities.v`            | 587        | 51       | Phase 2/3 ILLE algebraic identities: multiplicative (tensor/and), additive (plus/with), and exponential (bang/why-not) laws plus Phase 2 Threshold permutation invariance at the reflection layer |
+| **Total**                   | **25,776** | **967**  |                                                                                                                                                                                                                                                                                    |
 
 Theorem counts are `Qed.` + `Defined.` occurrences (the proofs that
 contribute kernel-checked terms). Earlier totals listed in this table
@@ -4141,15 +4224,20 @@ the budget is exhausted, no further branches do paid work.
 **Consensus-surface scope (read first).** The single consensus cost
 quantity computed here is `total_cost` (clamped) — together with the
 deploy status and the post-state hash, those are the consensus cost
-integrity of a deploy. The per-operation `cost_trace_digest` and
-`cost_trace_event_count` are **not** consensus quantities: they are
-removed from the replay comparison and from the signed block-hash
-preimage, and are retained as **diagnostics/telemetry only** (see
-TM-CA-151 in [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md)).
+integrity of a deploy. This is the **token-per-COMM** cost model of
+**DR-9**: consensus enforces the conserved token total, and the
+per-operation `cost_trace_digest` and `cost_trace_event_count` are
+diagnostic only — **not** consensus quantities. They are removed from
+the replay comparison and from the signed block-hash preimage, and are
+retained as **diagnostics/telemetry only** (see TM-CA-151 in
+[`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and
+**DR-9**/**DR-16** in
+[`cost-accounting-decision-records.md`](cost-accounting-decision-records.md)).
 The post-hoc canonical reconciliation below is therefore the bounded-`K`
 machinery that computes the consensus `total_cost` and a *diagnostic*
-boundary; it is no longer presented as the protector of a consensus
-digest.
+boundary (the multi-parent merge dispatcher this reconciliation feeds is
+retained per **DR-15**); it is no longer presented as the protector of a
+consensus digest.
 
 **Where determinism actually comes from.** The schedule-independence of
 the consensus quantity `total_cost` is *not* manufactured by the
