@@ -185,6 +185,12 @@ impl ReplayRuntimeOps {
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
+        self.runtime_ops
+            .runtime
+            .reducer
+            .space
+            .set_current_deploy_sig(processed_deploy.deploy.sig.to_vec());
+
         let rig_start = Instant::now();
         self.rig(processed_deploy).await?;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)

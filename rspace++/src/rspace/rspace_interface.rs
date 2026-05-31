@@ -198,4 +198,6 @@ pub trait ISpace<
     async fn is_replay(&self) -> bool;
 
     async fn update_produce(&self, produce: Produce) -> ();
+
+    fn set_current_deploy_sig(&self, _sig: Vec<u8>) {}
 }

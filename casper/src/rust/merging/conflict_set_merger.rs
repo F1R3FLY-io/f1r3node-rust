@@ -309,6 +309,12 @@ where
         to_merge_items.extend(branch_items);
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        to_merge_items_count = to_merge_items.len(),
+        "compute_merged_state entry"
+    );
+
     // Combine state changes from all items to be merged with timing
     let (all_changes, combine_all_changes_time) =
         measure_result_time(|| -> Result<StateChange, HistoryError> {
@@ -340,17 +346,42 @@ where
         let item_channels = mergeable_channels(item);
         for (key, value) in item_channels.iter() {
             let (incoming_diff, incoming_mt) = *value;
+            let ch_hex = hex::encode(key.bytes());
             match all_mergeable_channels.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
+                        tracing::warn!(
+                            target: "f1r3fly.merge.dag",
+                            channel = %ch_hex,
+                            existing = ?existing.1,
+                            incoming = ?incoming_mt,
+                            "merge-type mismatch on channel"
+                        );
                         return Err(HistoryError::MergeError(format!(
                             "MergeType mismatch on channel {:?}: {:?} vs {:?}",
                             key, existing.1, incoming_mt,
                         )));
                     }
+                    let prev = existing.0;
                     existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    tracing::trace!(
+                        target: "f1r3fly.merge.dag",
+                        channel = %ch_hex,
+                        merge_type = ?incoming_mt,
+                        prev_diff = prev,
+                        incoming_diff,
+                        combined_diff = existing.0,
+                        "mergeable channel diff combined"
+                    );
                 }
                 None => {
+                    tracing::trace!(
+                        target: "f1r3fly.merge.dag",
+                        channel = %ch_hex,
+                        merge_type = ?incoming_mt,
+                        diff = incoming_diff,
+                        "mergeable channel first occurrence"
+                    );
                     all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
                 }
             }
@@ -360,6 +391,16 @@ where
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
+
+    tracing::debug!(
+        target: "f1r3fly.merge.provenance",
+        to_merge_count = to_merge_items.len(),
+        datums_changes = combined_datums_count,
+        cont_changes = combined_conts_count,
+        numch_channels = all_mergeable_channels.len(),
+        trie_actions = trie_actions.len(),
+        "merge pre-apply summary"
+    );
 
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;

@@ -1014,7 +1014,13 @@ pub fn compute_parents_post_state(
                 return Ok((fallback_state, Vec::new(), Vec::new()));
             }
 
-            // Use DagMerger to merge parent states with scope
+            tracing::debug!(
+                target: "f1r3fly.casper.parent_selection",
+                parents_count = parents.len(),
+                lfb_state = %hex::encode(lfb_state.bytes()),
+                visible_blocks = visible_blocks_len,
+                "multi-parent merge entry",
+            );
             let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
@@ -1032,6 +1038,15 @@ pub fn compute_parents_post_state(
             let merge_ms = merge_started.elapsed().as_millis();
 
             let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+
+            tracing::debug!(
+                target: "f1r3fly.casper.parent_selection",
+                new_state = %hex::encode(state.bytes()),
+                merge_ms,
+                rejected_user_count = rejected_user_pairs.len(),
+                rejected_slash_count = rejected_slash_pairs.len(),
+                "multi-parent merge result",
+            );
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
             // Looking up the `Signed<DeployData>` from the block store lets the block

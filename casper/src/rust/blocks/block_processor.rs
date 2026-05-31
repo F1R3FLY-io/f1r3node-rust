@@ -227,7 +227,21 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         // CasperSnapshot cannot be constructed
         snapshot_opt: Option<CasperSnapshot>,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        // Record block size
+        tracing::debug!(
+            target: "f1r3fly.casper.block_processing",
+            hash = %hex::encode(&block.block_hash),
+            sender = %hex::encode(&block.sender),
+            block_number = block.body.state.block_number,
+            seq = block.seq_num,
+            parents = %block
+                .header
+                .parents_hash_list
+                .iter()
+                .map(|h| hex::encode(h))
+                .collect::<Vec<_>>()
+                .join(","),
+            "block received",
+        );
         let block_size = block.to_proto().encode_to_vec().len();
         metrics::histogram!(BLOCK_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(block_size as f64);
@@ -256,7 +270,15 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
 
         // Record validation outcome
         let _ = match &status {
-            Either::Right(_valid_block) => {
+            Either::Right(valid_block) => {
+                tracing::debug!(
+                    target: "f1r3fly.casper.block_processing",
+                    hash = %hex::encode(&block.block_hash),
+                    block_number = block.body.state.block_number,
+                    outcome = "VALID",
+                    variant = ?valid_block,
+                    "block outcome",
+                );
                 metrics::counter!(BLOCK_VALIDATION_SUCCESS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 self.dependencies
@@ -264,6 +286,14 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                     .await
             }
             Either::Left(invalid_block) => {
+                tracing::warn!(
+                    target: "f1r3fly.casper.block_processing",
+                    hash = %hex::encode(&block.block_hash),
+                    block_number = block.body.state.block_number,
+                    outcome = "INVALID",
+                    reason = ?invalid_block,
+                    "block outcome",
+                );
                 metrics::counter!(BLOCK_VALIDATION_FAILED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 // this is to maintain backward compatibility with casper validate method.

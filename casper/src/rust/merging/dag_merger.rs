@@ -78,11 +78,20 @@ pub fn merge(
     ),
     CasperError,
 > {
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
-    // This includes:
-    // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
-    // Previously we only included descendants, which missed deploy effects from sibling branches.
+    let lfb_hex = hex::encode(lfb_post_state.bytes());
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        lfb_post_state = %lfb_hex,
+        "dag merge lfb post-state"
+    );
+
+    let lfb_hex = hex::encode(lfb_post_state.bytes());
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        lfb_post_state = %lfb_hex,
+        "dag merge lfb post-state"
+    );
+
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
             // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
@@ -399,8 +408,23 @@ pub fn merge(
                 &*reader,
                 &mergeable_chs,
                 |hash: &Blake2b256Hash, channel_changes, number_chs: &NumberChannelsDiff| {
+                    let ch_hex = hex::encode(hash.bytes());
+                    tracing::trace!(
+                        target: "f1r3fly.rholang.dispatcher",
+                        channel = %ch_hex,
+                        in_mergeable_chs = number_chs.get(hash).is_some(),
+                        number_chs_size = number_chs.len(),
+                        "merge dispatcher channel"
+                    );
                     if let Some(number_ch_val) = number_chs.get(hash) {
                         let (diff, merge_type) = *number_ch_val;
+                        tracing::trace!(
+                            target: "f1r3fly.rholang.dispatcher",
+                            channel = %ch_hex,
+                            merge_type = ?merge_type,
+                            diff,
+                            "merge dispatcher fold path"
+                        );
                         let base_get_data = |h: &Blake2b256Hash| reader.get_data(h);
                         Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
                             hash,
@@ -410,6 +434,11 @@ pub fn merge(
                             base_get_data,
                         )?))
                     } else {
+                        tracing::trace!(
+                            target: "f1r3fly.rholang.dispatcher",
+                            channel = %ch_hex,
+                            "merge dispatcher fallback path"
+                        );
                         Ok(None)
                     }
                 },
@@ -417,7 +446,12 @@ pub fn merge(
         }
     };
 
-    let apply_trie_actions_fn = |actions| {
+    let apply_trie_actions_fn = |actions: Vec<_>| {
+        tracing::debug!(
+            target: "f1r3fly.merge.dag",
+            actions_count = actions.len(),
+            "dag merge apply actions"
+        );
         history_repository
             .reset(lfb_post_state)
             .map(|reset_repo| reset_repo.do_checkpoint(actions))
@@ -601,6 +635,12 @@ pub fn merge(
         &apply_trie_actions_fn,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
+
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        new_root = %hex::encode(new_state.bytes()),
+        "dag merge apply result"
+    );
 
     let rejected = resolved.rejected;
 

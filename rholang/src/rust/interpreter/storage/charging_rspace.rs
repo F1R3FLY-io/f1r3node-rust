@@ -223,6 +223,10 @@ impl ChargingRSpace {
             async fn update_produce(&self, produce: Produce) -> () {
                 self.space.update_produce(produce).await
             }
+
+            fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+                self.space.set_current_deploy_sig(sig);
+            }
         }
 
         ChargingRSpace { space, cost }

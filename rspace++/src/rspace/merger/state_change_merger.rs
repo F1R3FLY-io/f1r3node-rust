@@ -42,6 +42,15 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         &NumberChannelsDiff,
     ) -> Result<Option<HotStoreTrieAction<C, P, A, K>>, HistoryError>,
 ) -> Result<Vec<HotStoreTrieAction<C, P, A, K>>, HistoryError> {
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        datums_channels = changes.datums_changes.len(),
+        cont_channels = changes.cont_changes.len(),
+        joins_channels = changes.consume_channels_to_join_serialized_map.len(),
+        mergeable_chs = mergeable_chs.len(),
+        "compute-trie-actions entry"
+    );
+
     // Sort continuation changes by hash of consume channels for deterministic
     // ordering
     let mut cont_changes_sorted: Vec<_> = changes
@@ -249,6 +258,34 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         result.extend(changes.added.clone());
         result
     };
+
+    let ch_hex = hex::encode(history_pointer.bytes());
+    tracing::trace!(
+        target: "f1r3fly.merge.dag",
+        channel = %ch_hex,
+        init_len = init.len(),
+        added_len = changes.added.len(),
+        removed_len = changes.removed.len(),
+        new_val_len = new_val.len(),
+        "make-trie-action"
+    );
+    if new_val.len() > 1 {
+        let init_hashes: Vec<String> = init.iter().map(hex::encode).collect();
+        let added_hashes: Vec<String> = changes.added.iter().map(hex::encode).collect();
+        let removed_hashes: Vec<String> = changes.removed.iter().map(hex::encode).collect();
+        let new_val_hashes: Vec<String> = new_val.iter().map(hex::encode).collect();
+        tracing::warn!(
+            target: "f1r3fly.rspace.multidatum",
+            site = "merge",
+            channel = %ch_hex,
+            new_val_len = new_val.len(),
+            init_hashes = ?init_hashes,
+            added_hashes = ?added_hashes,
+            removed_hashes = ?removed_hashes,
+            new_val_hashes = ?new_val_hashes,
+            "merge produced multi-datum channel value"
+        );
+    }
 
     if new_val.is_empty() && !init.is_empty() {
         // Case 1: All items present in base are removed - remove action
