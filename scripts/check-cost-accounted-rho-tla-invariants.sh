@@ -123,8 +123,44 @@ for i in "${!specs[@]}"; do
     fi
 done
 
+# ─────────────────────────────────────────────────────────────────────────
+# Validator behavioral contract (Workstream E, stage E5): the arithmetic
+# obligations of the built-in validator's contract, discharged DEDUCTIVELY
+# by TLAPS (not bounded model-checking) in formal/tlaplus/validator/
+# Validator.tla. The state-machine obligations stay TLC-checked above
+# (RuntimeBudgetReplay). Local-only, like the rest of this script.
+VALIDATOR_TLA_DIR="$REPO_ROOT/formal/tlaplus/validator"
+if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]] \
+   && [[ -f "$VALIDATOR_TLA_DIR/Validator.tla" ]]; then
+    printf "  %-40s " "Validator (TLAPS contract proofs)"
+    # TLAPS and its zenon backend install under ~/.local; make them findable
+    # without disturbing the TLC PATH used above (scoped to this subshell).
+    VALIDATOR_PATH="$HOME/.local/tlaps/bin:$HOME/.local/bin:/usr/bin:$PATH"
+    if PATH="$VALIDATOR_PATH" command -v tlapm >/dev/null 2>&1; then
+        # Run TLAPS from the validator dir so its .tlacache lands locally.
+        tlaps_out=$( cd "$VALIDATOR_TLA_DIR" \
+            && PATH="$VALIDATOR_PATH" tlapm Validator.tla 2>&1 || true )
+        # tlapm prints one "All N obligations proved." per module root; the
+        # imported TLAPS.tla reports "All 0 obligation proved", so success is
+        # a non-zero-obligation "All N obligations proved." for Validator.tla
+        # with no "failed"/"omitted" anywhere.
+        if echo "$tlaps_out" | grep -Eq "All [1-9][0-9]* obligations? proved\." \
+           && ! echo "$tlaps_out" | grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)"; then
+            echo "PASS"
+            passes=$((passes + 1))
+        else
+            echo "FAIL"
+            failures=$((failures + 1))
+            failed_specs+=("Validator(TLAPS)")
+            echo "$tlaps_out" | tail -10 | sed 's/^/    /'
+        fi
+    else
+        echo "SKIP (tlapm not on PATH)"
+    fi
+fi
+
 echo
-echo "Summary: $passes passed, $failures failed (total ${#specs[@]})"
+echo "Summary: $passes passed, $failures failed (total $((${#specs[@]} + 1)))"
 if [[ $failures -gt 0 ]]; then
     echo "Failed specs:"
     printf '  - %s\n' "${failed_specs[@]}"

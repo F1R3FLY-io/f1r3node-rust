@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROOF_ROOT="$ROOT/formal/rocq/cost_accounted_rho"
 THEORIES="$PROOF_ROOT/theories"
+SLASHING_ROOT="$ROOT/formal/rocq/slashing"
+VALIDATOR_ROOT="$ROOT/formal/rocq/validator"
+VALIDATOR_THEORIES="$VALIDATOR_ROOT/theories"
 VERIFICATION_DOCS=(
   "$ROOT/docs/theory/cost-accounted-rho-verification.md"
   "$ROOT/docs/theory/cost-accounting-migration.md"
@@ -16,6 +19,12 @@ echo "Checking cost-accounted rho proof hygiene..."
 SANITIZED_THEORIES="$(mktemp -d)"
 for proof in "$THEORIES"/*.v; do
   perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/$(basename "$proof")"
+done
+# Validator behavioral-contract aggregation (Workstream E, stage E5): a thin
+# subtree that NAMES the contract by re-exporting already-proven obligations.
+# Subject it to the same Admitted/Axiom/incompletion-marker hygiene gate.
+for proof in "$VALIDATOR_THEORIES"/*.v; do
+  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
 done
 
 assumptions="$(mktemp)"
@@ -48,6 +57,23 @@ echo "Compiling and checking Rocq theories..."
     proof_modules+=("CostAccountedRho.${module}")
   done < <(rg -N '^[[:space:]]*theories/[A-Za-z0-9_]+\.v[[:space:]]*$' _CoqProject | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   rocqchk -Q theories CostAccountedRho "${proof_modules[@]}" >/dev/null 2>&1
+)
+
+echo "Compiling the Slashing development (validator contract dependency)..."
+(
+  cd "$SLASHING_ROOT"
+  rocq makefile -f _CoqProject -o Makefile >/dev/null
+  make -j"${ROCQ_JOBS:-2}" >/dev/null
+)
+
+echo "Compiling and checking the validator contract aggregation..."
+(
+  cd "$VALIDATOR_ROOT"
+  rocq makefile -f _CoqProject -o Makefile >/dev/null 2>&1
+  make -j"${ROCQ_JOBS:-2}" >/dev/null
+  rocqchk -Q ../cost_accounted_rho/theories CostAccountedRho \
+          -Q ../slashing/theories Slashing \
+          -Q theories Validator Validator.Contract >/dev/null 2>&1
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
@@ -325,6 +351,32 @@ Quit.
 EOF
 then
   echo "error: failed to query headline theorem assumptions" >&2
+  sed -n '1,160p' "$assumptions" >&2
+  exit 1
+fi
+
+# Validator behavioral contract (Workstream E, stage E5): assert every
+# validator_contract_* clause is axiom-free. Each clause is a re-export of an
+# already-axiom-free obligation (S1-S4 from CostAccountedRho, P1/P2 from
+# Slashing), so it inherits "Closed under the global context". Append to the
+# SAME assumptions file so the closed-count invariant below covers these
+# Print Assumptions lines too (the $0 grep counts them).
+if ! rocq repl -Q "$THEORIES" CostAccountedRho \
+               -Q "$SLASHING_ROOT/theories" Slashing \
+               -Q "$VALIDATOR_THEORIES" Validator >> "$assumptions" 2>&1 <<'EOF'
+From Validator Require Import Contract.
+Print Assumptions validator_contract_S1.
+Print Assumptions validator_contract_S2.
+Print Assumptions validator_contract_S3.
+Print Assumptions validator_contract_S4.
+Print Assumptions validator_contract_P1.
+Print Assumptions validator_contract_P1_effect.
+Print Assumptions validator_contract_P2.
+Print Assumptions validator_contract_P3.
+Quit.
+EOF
+then
+  echo "error: failed to query validator contract assumptions" >&2
   sed -n '1,160p' "$assumptions" >&2
   exit 1
 fi
