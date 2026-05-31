@@ -35,7 +35,9 @@ echo "Building Lean validator obligations (offline; core Init only)..."
 # The contract theorem list. E6 expands this to the full S1-S4 / P1,P3 set.
 # E2 added the S2 (funding) + S3 (linearity) mirrors of the Rocq
 # LinearLogicResources.v obligations (fully-qualified so they resolve after
-# `import CostAccountedRho`).
+# `import CostAccountedRho`). E3 added the S1 (fuel-gate token safety) mirror of
+# FuelGateSafety.v and the S4 (transaction demand + single-token step
+# determinism) mirror of StepDeterminism.v + LinearLogicResources.v:481.
 CONTRACT_THEOREMS=(
   scaffold_cost_accounted_ok
   scaffold_validator_ok
@@ -50,6 +52,23 @@ CONTRACT_THEOREMS=(
   CostAccountedRho.ll_no_double_spend_single_witness
   CostAccountedRho.ll_double_spend_requires_duplicate_witness
   CostAccountedRho.ll_linear_no_contraction
+  # S1 — fuel-gate token safety (cost-accounted-rho §6.3; Rocq FuelGateSafety.v 277-328)
+  CostAccountedRho.fuel_gate_rejects_mismatched_token
+  CostAccountedRho.fuel_gate_rejects_mismatched_token_ground
+  CostAccountedRho.fuel_gate_rejects_cross_axis_token
+  CostAccountedRho.gate_fires_iff_names_eq
+  CostAccountedRho.fuel_gate_no_fire_mismatched
+  CostAccountedRho.fuel_gate_no_fire_cross_axis
+  CostAccountedRho.gate_fires_self
+  # S4 — transaction demand (§7.1; Rocq LinearLogicResources.v:481) +
+  #      single-token step determinism (Rocq StepDeterminism.v 69-222)
+  CostAccountedRho.core_token_demand_and_additive
+  CostAccountedRho.ca_step_deterministic
+  CostAccountedRho.ca_step_requires_token_node
+  CostAccountedRho.sys_token_node_count_monotonic
+  CostAccountedRho.token_split_zero
+  CostAccountedRho.no_token_no_step
+  CostAccountedRho.ca_step_one_token_example
 )
 
 echo "Axiom gate: #print axioms must show no sorryAx and no user axiom..."
