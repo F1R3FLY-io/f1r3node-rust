@@ -65,8 +65,6 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
         Signed::create(
             DeployData {
                 time_stamp: timestamp,
-                phlo_price: 1,
-                phlo_limit: 9000000,
                 valid_after_block_number: 1,
                 term,
                 shard_id,
@@ -88,7 +86,6 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
         is_failed: false,
         system_deploy_error: None,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     })
 }

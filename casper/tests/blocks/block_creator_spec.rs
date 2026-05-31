@@ -40,8 +40,6 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
-        phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,

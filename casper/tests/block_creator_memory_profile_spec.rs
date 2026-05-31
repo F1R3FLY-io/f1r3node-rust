@@ -76,8 +76,6 @@ fn create_deploy(
     let deploy_data = DeployData {
         term: format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
         time_stamp: timestamp,
-        phlo_price: 1,
-        phlo_limit: 100000,
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,

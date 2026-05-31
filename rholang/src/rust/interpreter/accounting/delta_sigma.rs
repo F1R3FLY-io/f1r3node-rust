@@ -26,17 +26,17 @@
 //! The static `Δ_s` MUST equal the runtime's actual consumed token count for a
 //! funded deploy that runs to completion — the spec's "consumed = Δ_s", which
 //! `replay_cost_mismatch` (replay_runtime.rs) guards as `total_cost == consumed`.
-//! The runtime (DR-9 token-per-COMM) emits exactly ONE
-//! `BillableTokenEvent{kind: SourceStep}` per COMM-driving AST reduction
-//! (`metering.rs` → `reduce.rs`): `eval_send`, `eval_receive`, `eval_new`,
-//! `eval_match`, `eval_if` each issue one `SourceStep` when the node fires. So
-//! the runtime's consumed TOKEN count (each `SourceStep` counted as one,
-//! weight-normalized) over a fully-reducing deploy equals the number of `Send` +
-//! `Receive` + `New` + `Match` + `If` nodes reachable in its `Par`. [`demand`]
-//! counts that exact node set. This equivalence is validated against the live
-//! runtime in `rholang/tests/accounting/delta_sigma_spec.rs` for the §7.4
-//! debit/credit example (8 token-consuming COMMs) and the Appendix-B 3-layer
-//! validator handler.
+//! D3 (DR-9 one-token-per-COMM, OD-3): the runtime emits a
+//! `BillableTokenEvent{kind: Comm}` at each token-consuming COMM (`eval_send`,
+//! `eval_receive`) and a DIAGNOSTIC `BillableTokenEvent{kind: Reduction}` at
+//! each non-COMM structural reduction (`eval_new`, `eval_match`, `eval_if`). The
+//! consensus consumed cost (`reconcile_lane`) counts ONLY the `Comm` events —
+//! one token per COMM — so over a fully-reducing deploy it equals the number of
+//! `Send` + `Receive` nodes reachable in its `Par` (NOT `New`/`Match`/`If`).
+//! [`demand`] counts that exact COMM node set. This equivalence is validated
+//! against the live runtime in `rholang/tests/accounting/delta_sigma_spec.rs`
+//! for the §7.4 debit/credit example (8 token-consuming COMMs) and the
+//! Appendix-B 3-layer validator handler.
 //!
 //! ## `?!` / uniform-signing desugaring (§7.4 — "8 not 6")
 //!
@@ -93,11 +93,12 @@ pub fn sig_key(sig: &Sig) -> SigKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DemandEntry {
     /// `known_lower_bound = Δ_s` over the statically-resolvable part of the term:
-    /// the number of token-consuming COMM reductions (the runtime's `SourceStep`
-    /// nodes — send / receive / new / match / if) attributed to `s`. Under the
-    /// s₀ collapse this is the whole desugared `Par`'s node count when `s` is the
-    /// envelope signature, and `0` for any other signature. `i64` to match the
-    /// supply unit (`Σ_s`, a balance) so the funding comparison is one integer
+    /// the number of token-consuming COMM reductions (the runtime's `Comm`
+    /// nodes — send / receive ONLY; D3/OD-3 excludes new / match / if, which are
+    /// DIAGNOSTIC `Reduction`s) attributed to `s`. Under the s₀ collapse this is
+    /// the whole desugared `Par`'s COMM-node count when `s` is the envelope
+    /// signature, and `0` for any other signature. `i64` to match the supply
+    /// unit (`Σ_s`, a balance) so the funding comparison is one integer
     /// inequality in identical units.
     pub known_lower_bound: i64,
     /// `true` iff the term contains an unresolvable dequotation `*x` (a `Drop` /
@@ -153,11 +154,13 @@ impl DemandEntry {
 /// node, no normalization or fixpoint.
 ///
 /// The set of counted nodes is exactly the set on which the runtime emits a
-/// `BillableTokenEvent{kind: SourceStep}` (see module docs): `Send`, `Receive`,
-/// `New`, `Match`, `If`. An `EMethodBody` expression is NOT a COMM (the runtime
-/// charges it as a `Primitive`, not a `SourceStep`) but its receiver/arguments
-/// may contain nested processes, so it is recursed without contributing a node.
-/// An `EVarBody` in process position that is a `bound_var` / `free_var` is an
+/// `BillableTokenEvent{kind: Comm}` (see module docs): `Send`, `Receive`. D3
+/// (DR-9, OD-3): `New`, `Match`, `If` are DIAGNOSTIC `Reduction`s — they are
+/// RECURSED (their process-position bodies fire COMMs) but do NOT themselves
+/// contribute a counted node. An `EMethodBody` expression is NOT a COMM (the
+/// runtime charges it as a `Primitive`) but its receiver/arguments may contain
+/// nested processes, so it is recursed without contributing a node. An
+/// `EVarBody` in process position that is a `bound_var` / `free_var` is an
 /// un-inlined `*name` dequotation — the over-approximation trigger.
 ///
 /// Note on the s₀ collapse and the `deploy_sig` parameter: because the
@@ -226,43 +229,41 @@ fn demand_par(par: &Par) -> DemandEntry {
         acc = acc.combine(node);
     }
 
-    // New: name allocation. The runtime meters `eval_new` as one SourceStep
-    // (`new_bindings_cost`), so it is one token-consuming reduction under the s₀
-    // collapse. The scoped body IS a process position: recurse.
+    // New: name allocation. D3 (DR-9, OD-3): the runtime meters `eval_new` as a
+    // DIAGNOSTIC `Reduction`, NOT a `Comm` — so it contributes ZERO to the
+    // per-COMM consensus demand. We still RECURSE into the scoped body (a
+    // process position whose COMMs fire), but the `new` node itself no longer
+    // counts. This is the §7.4 "9 → 8" re-pin: the `new` no longer adds a token.
     for new in &par.news {
-        let mut node = DemandEntry::ZERO.plus_one();
         if let Some(body) = &new.p {
-            node = node.combine(demand_par(body));
+            acc = acc.combine(demand_par(body));
         }
-        acc = acc.combine(node);
     }
 
-    // Match: the runtime meters `eval_match` as one SourceStep. The scrutinee
-    // `target` is a value position (NOT recursed); each case's continuation
-    // `source` IS a process position (the matched branch fires its COMMs):
-    // recurse.
+    // Match: D3 (DR-9, OD-3): the runtime meters `eval_match` as a DIAGNOSTIC
+    // `Reduction`, NOT a `Comm` — ZERO toward the per-COMM consensus demand.
+    // The scrutinee `target` is a value position (NOT recursed); each case's
+    // continuation `source` IS a process position (the matched branch fires its
+    // COMMs): recurse without counting the match node.
     for mat in &par.matches {
-        let mut node = DemandEntry::ZERO.plus_one();
         for case in &mat.cases {
             if let Some(source) = &case.source {
-                node = node.combine(demand_par(source));
+                acc = acc.combine(demand_par(source));
             }
         }
-        acc = acc.combine(node);
     }
 
-    // If: first-class conditional. The runtime meters `eval_if` as one SourceStep
-    // (`match_eval_cost`). The `condition` is a value position (NOT recursed);
-    // both branches ARE process positions: recurse.
+    // If: first-class conditional. D3 (DR-9, OD-3): the runtime meters `eval_if`
+    // as a DIAGNOSTIC `Reduction`, NOT a `Comm` — ZERO toward the per-COMM
+    // consensus demand. The `condition` is a value position (NOT recursed); both
+    // branches ARE process positions: recurse without counting the if node.
     for conditional in &par.conditionals {
-        let mut node = DemandEntry::ZERO.plus_one();
         if let Some(if_true) = &conditional.if_true {
-            node = node.combine(demand_par(if_true));
+            acc = acc.combine(demand_par(if_true));
         }
         if let Some(if_false) = &conditional.if_false {
-            node = node.combine(demand_par(if_false));
+            acc = acc.combine(demand_par(if_false));
         }
-        acc = acc.combine(node);
     }
 
     // Bundles wrap a body in a read/write capability annotation; the bundle
@@ -556,8 +557,11 @@ mod tests {
     }
 
     #[test]
-    fn new_counts_self_plus_scoped_body() {
-        // new x in { send | send }  ⇒ 1 (new) + 2 (sends).
+    fn new_does_not_count_but_recurses_scoped_body() {
+        // D3 (DR-9, OD-3): `new x in { send | send }` ⇒ 2 (the two body sends
+        // only). The `new` node is a DIAGNOSTIC `Reduction`, NOT a `Comm`, so it
+        // contributes 0; its scoped body is still recursed. This is the §7.4
+        // "9 → 8" re-pin in miniature (the `new` no longer adds a token).
         let new = New {
             bind_count: 1,
             p: Some(par_with_sends(2)),
@@ -568,7 +572,7 @@ mod tests {
         let mut par = Par::default();
         par.news.push(new);
         let entry = demand(&par, &atom(1));
-        assert_eq!(entry.known_lower_bound, 3);
+        assert_eq!(entry.known_lower_bound, 2);
         assert!(!entry.unknown);
     }
 

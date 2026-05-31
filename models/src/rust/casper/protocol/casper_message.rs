@@ -593,11 +593,6 @@ pub struct ProcessedDeploy {
     /// Empty for legacy single-signature deploys. Round-trips through
     /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
     pub cosigners: Vec<crate::casper::CompoundSigner>,
-    /// Primary signer's phlo share. Zero for legacy single-signature deploys
-    /// (in which case the primary covers the entire `phlo_limit`); explicit
-    /// value when `cosigners` is non-empty. Round-trips through
-    /// `DeployDataProto.primary_phlo_share` (proto field 15).
-    pub primary_phlo_share: i64,
     /// M-of-N quorum threshold (Phase 2). 0 = N-of-N semantics (every
     /// signer's signature must verify); k > 0 = at least k signatures
     /// must verify. Round-trips through `DeployDataProto.cosigner_threshold`
@@ -606,20 +601,10 @@ pub struct ProcessedDeploy {
 }
 
 impl ProcessedDeploy {
-    pub fn try_refund_amount(&self) -> Result<i64, String> {
-        let token_cost = i64::try_from(self.cost.cost).map_err(|_| {
-            format!(
-                "Token cost {} exceeds the supported i64 settlement range.",
-                self.cost.cost
-            )
-        })?;
-        self.deploy.data.refund_amount_for_token_cost(token_cost)
-    }
-
-    pub fn refund_amount(&self) -> i64 {
-        self.try_refund_amount()
-            .expect("deploy phlo terms must be validated before refund settlement")
-    }
+    // D3 (DR-9): `try_refund_amount`/`refund_amount` are REMOVED — there is no
+    // escrow to refund. The deploy's `cost` is the per-COMM token count, debited
+    // once from the per-signature supply pool Σ⟦s⟧ at block close (no per-deploy
+    // pre-charge/refund settlement).
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
         Self {
@@ -629,15 +614,14 @@ impl ProcessedDeploy {
             is_failed: false,
             system_deploy_error: None,
             cosigners: Vec::new(),
-            primary_phlo_share: 0,
             cosigner_threshold: 0,
         }
     }
 
     /// Construct an empty processed-deploy stub from a `Cosigned<DeployData>`
-    /// envelope, preserving the full cosigner list and primary phlo share.
-    /// Used by error-envelope construction paths in the multi-sig runtime
-    /// fan-out where a deploy fails BEFORE evaluation begins.
+    /// envelope, preserving the full cosigner list. Used by error-envelope
+    /// construction paths in the multi-sig runtime fan-out where a deploy
+    /// fails BEFORE evaluation begins.
     pub fn empty_from_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Self {
@@ -649,23 +633,19 @@ impl ProcessedDeploy {
             sig_algorithm: primary.sig_algorithm.clone(),
         };
         let is_compound = cosigned.is_compound();
-        let (cosigners, primary_phlo_share) = if is_compound {
-            (
-                cosigned
-                    .signers()
-                    .iter()
-                    .skip(1)
-                    .map(|c| crate::casper::CompoundSigner {
-                        pk: c.pk.bytes.clone().into(),
-                        sig: c.sig.clone(),
-                        sig_algorithm: c.sig_algorithm.name(),
-                        phlo_share: c.phlo_share,
-                    })
-                    .collect(),
-                primary.phlo_share,
-            )
+        let cosigners = if is_compound {
+            cosigned
+                .signers()
+                .iter()
+                .skip(1)
+                .map(|c| crate::casper::CompoundSigner {
+                    pk: c.pk.bytes.clone().into(),
+                    sig: c.sig.clone(),
+                    sig_algorithm: c.sig_algorithm.name(),
+                })
+                .collect()
         } else {
-            (Vec::new(), 0_i64)
+            Vec::new()
         };
         Self {
             deploy,
@@ -674,7 +654,6 @@ impl ProcessedDeploy {
             is_failed: false,
             system_deploy_error: None,
             cosigners,
-            primary_phlo_share,
             // empty_from_cosigned has no view of the runtime threshold —
             // callers needing M-of-N must set the field after construction.
             cosigner_threshold: 0,
@@ -682,19 +661,18 @@ impl ProcessedDeploy {
     }
 
     /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
-    /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`
-    /// AND `primary_phlo_share == 0`), uplifts via
-    /// `Cosigned::from_single_signer` for byte-identical replay behavior.
-    /// For multi-sig deploys, rebuilds the full canonical envelope with
-    /// per-signer re-verification.
+    /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`),
+    /// uplifts via `Cosigned::from_single_signer` for byte-identical replay
+    /// behavior. For multi-sig deploys, rebuilds the full canonical envelope
+    /// with per-signer re-verification.
     pub fn to_cosigned(
         &self,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-        if self.cosigners.is_empty() && self.primary_phlo_share == 0 {
+        if self.cosigners.is_empty() {
             // Legacy single-sig path: byte-identical to single-sig replay.
-            Cosigned::from_single_signer(self.deploy.clone(), self.deploy.data.phlo_limit)
+            Cosigned::from_single_signer(self.deploy.clone())
                 .map_err(|e| format!("legacy uplift to Cosigned failed: {}", e))
         } else {
             // Multi-sig: rebuild signer list with full re-verification.
@@ -702,7 +680,6 @@ impl ProcessedDeploy {
                 pk: self.deploy.pk.clone(),
                 sig: self.deploy.sig.clone(),
                 sig_algorithm: self.deploy.sig_algorithm.clone(),
-                phlo_share: self.primary_phlo_share,
             };
             let mut signers = Vec::with_capacity(1 + self.cosigners.len());
             signers.push(primary);
@@ -718,7 +695,6 @@ impl ProcessedDeploy {
                     pk: PublicKey::from_bytes(&cs.pk),
                     sig: cs.sig.clone(),
                     sig_algorithm: alg,
-                    phlo_share: cs.phlo_share,
                 });
             }
             // Phase 2 dispatch on threshold; preserves replay determinism
@@ -728,7 +704,6 @@ impl ProcessedDeploy {
                 Cosigned::from_signed_data_threshold(
                     self.deploy.data.clone(),
                     signers,
-                    self.deploy.data.phlo_limit,
                     self.cosigner_threshold as u32,
                 )
                 .map_err(|e| {
@@ -738,12 +713,8 @@ impl ProcessedDeploy {
                     )
                 })
             } else {
-                Cosigned::from_signed_data(
-                    self.deploy.data.clone(),
-                    signers,
-                    self.deploy.data.phlo_limit,
-                )
-                .map_err(|e| format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e))
+                Cosigned::from_signed_data(self.deploy.data.clone(), signers)
+                    .map_err(|e| format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e))
             }
         }
     }
@@ -755,8 +726,6 @@ impl ProcessedDeploy {
             timestamp: self.deploy.data.time_stamp,
             sig: PrettyPrinter::build_string_no_limit(&self.deploy.sig),
             sig_algorithm: self.deploy.sig_algorithm.name(),
-            phlo_price: self.deploy.data.phlo_price,
-            phlo_limit: self.deploy.data.phlo_limit,
             valid_after_block_number: self.deploy.data.valid_after_block_number,
             cost: self.cost.cost,
             errored: self.is_failed,
@@ -772,11 +741,10 @@ impl ProcessedDeploy {
             .ok_or_else(|| "Missing deploy field".to_string())?;
         // Capture cosigner metadata BEFORE moving `deploy_proto` into
         // `DeployData::from_proto`. The inner Signed<DeployData> carries
-        // only the primary signer; the cosigners[] + primary_phlo_share
-        // populate the ProcessedDeploy fields directly so the multi-sig
-        // shape survives serialization.
+        // only the primary signer; the cosigners[] populate the
+        // ProcessedDeploy fields directly so the multi-sig shape survives
+        // serialization.
         let cosigners = deploy_proto.cosigners.clone();
-        let primary_phlo_share = deploy_proto.primary_phlo_share;
         let cosigner_threshold = deploy_proto.cosigner_threshold;
         Ok(Self {
             deploy: DeployData::from_proto(deploy_proto)?,
@@ -795,7 +763,6 @@ impl ProcessedDeploy {
                 }
             },
             cosigners,
-            primary_phlo_share,
             cosigner_threshold,
         })
     }
@@ -806,7 +773,6 @@ impl ProcessedDeploy {
         // ProcessedDeploy level into the inner DeployDataProto so the
         // wire shape carries it through block-storage round-trip.
         deploy_proto.cosigners = self.cosigners;
-        deploy_proto.primary_phlo_share = self.primary_phlo_share;
         deploy_proto.cosigner_threshold = self.cosigner_threshold;
         ProcessedDeployProto {
             deploy: Some(deploy_proto),
@@ -1071,10 +1037,6 @@ pub struct DeployData {
     pub term: String,
     #[serde(rename = "timestamp")]
     pub time_stamp: i64,
-    #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
-    #[serde(rename = "phloLimit")]
-    pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
     pub valid_after_block_number: i64,
     #[serde(rename = "shardId")]
@@ -1098,7 +1060,6 @@ struct AlgebraAtom {
     pk: Vec<u8>,
     sig: prost::bytes::Bytes,
     sig_algorithm: String,
-    phlo_share: i64,
 }
 
 impl AlgebraAtom {
@@ -1107,94 +1068,18 @@ impl AlgebraAtom {
             pk: atom.pk.to_vec(),
             sig: atom.sig.clone(),
             sig_algorithm: atom.sig_algorithm.clone(),
-            phlo_share: atom.phlo_share,
         }
     }
 }
 
 impl DeployData {
-    fn checked_total_phlo_charge_value(phlo_limit: i64, phlo_price: i64) -> Option<i64> {
-        if phlo_limit < 0 || phlo_price < 0 {
-            return None;
-        }
-        phlo_limit.checked_mul(phlo_price)
-    }
-
-    fn refund_amount_for_token_cost_value(
-        phlo_limit: i64,
-        phlo_price: i64,
-        token_cost: i64,
-    ) -> Option<i64> {
-        if phlo_limit < 0 || phlo_price < 0 || token_cost < 0 {
-            return None;
-        }
-        Self::checked_total_phlo_charge_value(phlo_limit, phlo_price)?;
-        let refundable_tokens = phlo_limit.saturating_sub(token_cost).max(0);
-        refundable_tokens.checked_mul(phlo_price)
-    }
-
-    pub fn validate_phlo(&self, min_phlo_price: i64) -> Result<(), String> {
-        if self.phlo_limit < 0 {
-            return Err(format!(
-                "Phlo limit {} must be non-negative.",
-                self.phlo_limit
-            ));
-        }
-        if self.phlo_price < 0 {
-            return Err(format!(
-                "Phlo price {} must be non-negative.",
-                self.phlo_price
-            ));
-        }
-        if self.phlo_price < min_phlo_price {
-            return Err(format!(
-                "Phlo price {} is less than minimum price {}.",
-                self.phlo_price, min_phlo_price
-            ));
-        }
-        self.checked_total_phlo_charge().map(|_| ())
-    }
-
-    pub fn checked_total_phlo_charge(&self) -> Result<i64, String> {
-        if self.phlo_limit < 0 {
-            return Err(format!(
-                "Phlo limit {} must be non-negative.",
-                self.phlo_limit
-            ));
-        }
-        if self.phlo_price < 0 {
-            return Err(format!(
-                "Phlo price {} must be non-negative.",
-                self.phlo_price
-            ));
-        }
-        Self::checked_total_phlo_charge_value(self.phlo_limit, self.phlo_price).ok_or_else(|| {
-            format!(
-                "Phlo charge overflows i64: limit={}, price={}",
-                self.phlo_limit, self.phlo_price
-            )
-        })
-    }
-
-    pub fn total_phlo_charge(&self) -> i64 {
-        self.checked_total_phlo_charge()
-            .expect("deploy phlo terms must be validated before settlement")
-    }
-
-    pub fn refund_amount_for_token_cost(&self, token_cost: i64) -> Result<i64, String> {
-        if token_cost < 0 {
-            return Err(format!("Token cost {} must be non-negative.", token_cost));
-        }
-        self.checked_total_phlo_charge()?;
-        let refundable_tokens = self.phlo_limit.saturating_sub(token_cost).max(0);
-        Self::refund_amount_for_token_cost_value(self.phlo_limit, self.phlo_price, token_cost)
-            .ok_or_else(|| {
-                format!(
-                    "Deploy refund overflows i64: refundable_tokens={}, price={}",
-                    refundable_tokens, self.phlo_price
-                )
-            })
-    }
+    // D3 (DR-9): the singular-phlo escrow/price arithmetic
+    // (`checked_total_phlo_charge[_value]`, `total_phlo_charge`,
+    // `refund_amount_for_token_cost[_value]`, `validate_phlo`) is REMOVED. A
+    // deploy's cost is the per-COMM token count (computed by the runtime); it
+    // is funded by the per-signature supply pool Σ⟦s⟧ and gated at block
+    // assembly (`casper/.../util/rholang/acceptance.rs`). There is no per-deploy
+    // budget cap and no refund settlement.
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -1224,8 +1109,6 @@ impl DeployData {
         Self {
             term: proto.term,
             time_stamp: proto.timestamp,
-            phlo_price: proto.phlo_price,
-            phlo_limit: proto.phlo_limit,
             valid_after_block_number: proto.valid_after_block_number,
             shard_id: proto.shard_id,
             // 0 in protobuf means not set, convert to None
@@ -1244,10 +1127,9 @@ impl DeployData {
     /// [`Self::from_proto_cosigned`].
     ///
     /// `ProcessedDeploy::from_proto` calls this routine and SEPARATELY
-    /// captures `proto.cosigners` and `proto.primary_phlo_share` into the
-    /// `ProcessedDeploy.cosigners` and `ProcessedDeploy.primary_phlo_share`
-    /// fields, so the cosigner data is preserved across deserialization
-    /// even though the inner `Signed<DeployData>` only carries the primary.
+    /// captures `proto.cosigners` into the `ProcessedDeploy.cosigners` field,
+    /// so the cosigner data is preserved across deserialization even though the
+    /// inner `Signed<DeployData>` only carries the primary.
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
@@ -1264,20 +1146,15 @@ impl DeployData {
 
     /// Multi-signature aware decode. Returns a [`Cosigned<DeployData>`]
     /// envelope covering both legacy single-sig wire deploys (`cosigners`
-    /// empty → one-element envelope with the primary signer's phlo_share
-    /// equal to `phlo_limit`) and multi-sig wire deploys (`cosigners`
-    /// non-empty → N-element envelope with explicit per-signer shares).
+    /// empty → one-element envelope) and multi-sig wire deploys (`cosigners`
+    /// non-empty → N-element envelope).
     ///
     /// Invariants enforced by `Cosigned::from_signed_data` at construction:
     /// 1. All signers' signatures verify against the canonical message hash.
     /// 2. Canonical pk-ascending sort; no duplicates.
-    /// 3. Σ phlo_share == phlo_limit.
     ///
-    /// For multi-sig deploys: the primary signer (fields 1/4/5 of
-    /// `DeployDataProto`) contributes `primary_phlo_share` (field 15);
-    /// each cosigner in `cosigners[]` (field 14) contributes their own
-    /// `phlo_share`. The sum must equal `phlo_limit` (field 8) — enforced
-    /// by `Cosigned::from_signed_data`.
+    /// D3 (DR-9): there is no per-signer `phlo_share` and no share-sum
+    /// invariant — fuel is the per-signature supply pool Σ⟦s⟧.
     pub fn from_proto_cosigned(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
@@ -1296,8 +1173,6 @@ impl DeployData {
         // of proto upfront so the later _from_proto consumes the rest.
         let sig_algebra = proto.sig_algebra.clone();
 
-        // Capture phlo_limit before consuming `proto` for _from_proto.
-        let phlo_limit = proto.phlo_limit;
         let is_multi_sig = !proto.cosigners.is_empty();
         let cosigner_threshold = proto.cosigner_threshold;
         let total_signers = 1 + proto.cosigners.len() as i32;
@@ -1309,22 +1184,15 @@ impl DeployData {
                 cosigner_threshold, total_signers
             ));
         }
-        let primary_phlo_share = if is_multi_sig {
-            // Multi-sig: explicit share from wire field 15.
-            proto.primary_phlo_share
-        } else {
-            // Legacy single-sig: primary covers entire phlo_limit.
-            phlo_limit
-        };
 
         // Build the canonical signer list. Primary first (will be sorted
-        // canonically by Cosigned::from_signed_data).
+        // canonically by Cosigned::from_signed_data). D3 (DR-9): no per-signer
+        // phlo_share — funding is the per-signature supply pool Σ⟦s⟧.
         let mut signers = Vec::with_capacity(1 + proto.cosigners.len());
         signers.push(Cosigner {
             pk: PublicKey::from_bytes(&proto.deployer),
             sig: proto.sig.clone(),
             sig_algorithm: primary_alg,
-            phlo_share: primary_phlo_share,
         });
         for cs in &proto.cosigners {
             let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
@@ -1338,7 +1206,6 @@ impl DeployData {
                 pk: PublicKey::from_bytes(&cs.pk),
                 sig: cs.sig.clone(),
                 sig_algorithm: alg,
-                phlo_share: cs.phlo_share,
             });
         }
 
@@ -1346,32 +1213,27 @@ impl DeployData {
         // Phase 3 dispatch: when sig_algebra is set, the flat cosigners
         // path is ignored; verification walks the algebra.
         if let Some(algebra) = sig_algebra {
-            return Self::from_proto_cosigned_with_sig_algebra(data, &algebra, phlo_limit);
+            return Self::from_proto_cosigned_with_sig_algebra(data, &algebra);
         }
         // Phase 2 dispatch: cosigner_threshold == 0 → N-of-N (Phase 1
         // semantics; every signer must verify); cosigner_threshold > 0 →
         // M-of-N (at least `threshold` valid signatures required;
         // placeholder signers with empty sig are admitted).
         if cosigner_threshold == 0 {
-            Cosigned::from_signed_data(data, signers, phlo_limit).map_err(|e| {
+            Cosigned::from_signed_data(data, signers).map_err(|e| {
                 format!(
                     "Cosigned envelope validation failed (is_multi_sig={}): {}",
                     is_multi_sig, e
                 )
             })
         } else {
-            Cosigned::from_signed_data_threshold(
-                data,
-                signers,
-                phlo_limit,
-                cosigner_threshold as u32,
-            )
-            .map_err(|e| {
-                format!(
-                    "Cosigned threshold envelope validation failed (threshold={}, total_signers={}): {}",
-                    cosigner_threshold, total_signers, e
-                )
-            })
+            Cosigned::from_signed_data_threshold(data, signers, cosigner_threshold as u32)
+                .map_err(|e| {
+                    format!(
+                        "Cosigned threshold envelope validation failed (threshold={}, total_signers={}): {}",
+                        cosigner_threshold, total_signers, e
+                    )
+                })
         }
     }
 
@@ -1398,13 +1260,12 @@ impl DeployData {
     pub fn from_proto_cosigned_with_sig_algebra(
         data: DeployData,
         sig_algebra: &crate::casper::SigCompound,
-        phlo_limit: i64,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
         // Walk the algebra and collect EVERY atom into the signer list
-        // (with its actual sig / phlo_share), and compute the minimum
-        // number of valid signatures the algebra requires (`min_required`).
+        // (with its actual sig), and compute the minimum number of valid
+        // signatures the algebra requires (`min_required`).
         // Per-connective semantics live in `min_required_for`:
         //
         //   - Atom: 1 (must verify)
@@ -1435,7 +1296,6 @@ impl DeployData {
                 pk: PublicKey::from_bytes(&atom.pk),
                 sig: atom.sig,
                 sig_algorithm: alg,
-                phlo_share: atom.phlo_share,
             });
         }
 
@@ -1446,7 +1306,7 @@ impl DeployData {
         //   - Otherwise → from_signed_data_threshold with min_required.
         let total = signers.len() as u32;
         if min_required == total && Self::algebra_is_all_required(sig_algebra)? {
-            Cosigned::from_signed_data(data, signers, phlo_limit)
+            Cosigned::from_signed_data(data, signers)
                 .map_err(|e| format!("Cosigned sig_algebra validation failed: {}", e))
         } else if min_required == 0 {
             let presented: Vec<Cosigner> = signers
@@ -1459,21 +1319,19 @@ impl DeployData {
                         .to_string(),
                 );
             }
-            Cosigned::from_signed_data(data, presented, phlo_limit).map_err(|e| {
+            Cosigned::from_signed_data(data, presented).map_err(|e| {
                 format!(
                     "Cosigned sig_algebra optional-present validation failed: {}",
                     e
                 )
             })
         } else {
-            Cosigned::from_signed_data_threshold(data, signers, phlo_limit, min_required).map_err(
-                |e| {
-                    format!(
-                        "Cosigned sig_algebra threshold validation failed (min_required={}): {}",
-                        min_required, e
-                    )
-                },
-            )
+            Cosigned::from_signed_data_threshold(data, signers, min_required).map_err(|e| {
+                format!(
+                    "Cosigned sig_algebra threshold validation failed (min_required={}): {}",
+                    min_required, e
+                )
+            })
         }
     }
 
@@ -1669,8 +1527,6 @@ impl DeployData {
         DeployDataProto {
             term: dd.term,
             timestamp: dd.time_stamp,
-            phlo_price: dd.phlo_price,
-            phlo_limit: dd.phlo_limit,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
             // Only include expirationTimestamp if set to maintain backward compatibility
@@ -1683,8 +1539,6 @@ impl DeployData {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,
-            phlo_price: dd.data.phlo_price,
-            phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
             deployer: dd.pk.bytes.clone().into(),
@@ -1698,10 +1552,9 @@ impl DeployData {
 
     /// Serialize a [`Cosigned<DeployData>`] back to [`DeployDataProto`] wire
     /// format. For single-signer cosigned envelopes the output is
-    /// byte-identical to `to_proto(signed)` (cosigners empty,
-    /// primary_phlo_share = 0). For multi-signer envelopes the additional
-    /// cosigners populate the `cosigners[]` field and `primary_phlo_share`
-    /// carries the primary signer's contribution.
+    /// byte-identical to `to_proto(signed)` (cosigners empty). For
+    /// multi-signer envelopes the additional cosigners populate the
+    /// `cosigners[]` field. D3 (DR-9): no per-signer phlo_share.
     pub fn to_proto_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> DeployDataProto {
@@ -1711,28 +1564,19 @@ impl DeployData {
             cosigned
                 .signers()
                 .iter()
-                .skip(1) // primary occupies fields 1/4/5/15; cosigners[] is the rest
+                .skip(1) // primary occupies fields 1/4/5; cosigners[] is the rest
                 .map(|c| crate::casper::CompoundSigner {
                     pk: c.pk.bytes.clone().into(),
                     sig: c.sig.clone(),
                     sig_algorithm: c.sig_algorithm.name(),
-                    phlo_share: c.phlo_share,
                 })
                 .collect()
         } else {
             Vec::new()
         };
-        // For multi-sig deploys, primary_phlo_share is the explicit share
-        // from the wire. For single-sig (legacy uplift), set to 0 so
-        // round-trip with `from_proto_cosigned` recovers the single-sig
-        // legacy semantics (where the primary's share = phlo_limit and
-        // `cosigners` is empty).
-        let primary_phlo_share = if is_compound { primary.phlo_share } else { 0 };
         DeployDataProto {
             term: cosigned.data.term.clone(),
             timestamp: cosigned.data.time_stamp,
-            phlo_price: cosigned.data.phlo_price,
-            phlo_limit: cosigned.data.phlo_limit,
             valid_after_block_number: cosigned.data.valid_after_block_number,
             shard_id: cosigned.data.shard_id.clone(),
             deployer: primary.pk.bytes.clone().into(),
@@ -1740,7 +1584,6 @@ impl DeployData {
             sig_algorithm: primary.sig_algorithm.name(),
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
             cosigners: cosigners_proto,
-            primary_phlo_share,
             // Single-signer / N-of-N round-trip emits 0 (legacy semantics).
             // M-of-N round-trip requires the caller to set this directly on
             // the proto AFTER calling this routine; the Cosigned envelope
@@ -2126,59 +1969,12 @@ impl MergeableEntryResponse {
     }
 }
 
-#[cfg(kani)]
-mod kani_cost_accounting {
-    use super::*;
-
-    #[kani::proof]
-    fn checked_total_phlo_charge_rejects_negative_inputs() {
-        let phlo_limit: i64 = kani::any();
-        let phlo_price: i64 = kani::any();
-        kani::assume(phlo_limit < 0 || phlo_price < 0);
-
-        let result = DeployData::checked_total_phlo_charge_value(phlo_limit, phlo_price);
-
-        assert!(result.is_none());
-    }
-
-    #[kani::proof]
-    fn checked_total_phlo_charge_matches_product_on_small_valid_domain() {
-        let phlo_limit_raw: u8 = kani::any();
-        let phlo_price_raw: u8 = kani::any();
-        let phlo_limit = i64::from(phlo_limit_raw);
-        let phlo_price = i64::from(phlo_price_raw);
-
-        let result = DeployData::checked_total_phlo_charge_value(phlo_limit, phlo_price);
-
-        assert_eq!(result.unwrap(), phlo_limit * phlo_price);
-    }
-
-    #[kani::proof]
-    fn refund_amount_is_bounded_on_small_valid_domain() {
-        let phlo_limit_raw: u8 = kani::any();
-        let phlo_price_raw: u8 = kani::any();
-        let token_cost_raw: u8 = kani::any();
-        kani::assume(phlo_limit_raw <= 15);
-        kani::assume(phlo_price_raw <= 15);
-        kani::assume(token_cost_raw <= 20);
-        let phlo_limit = i64::from(phlo_limit_raw);
-        let phlo_price = i64::from(phlo_price_raw);
-        let token_cost = i64::from(token_cost_raw);
-
-        let refund =
-            DeployData::refund_amount_for_token_cost_value(phlo_limit, phlo_price, token_cost)
-                .expect("bounded valid domain");
-        let escrow = phlo_limit * phlo_price;
-
-        assert!(refund >= 0);
-        assert!(refund <= escrow);
-        if token_cost <= phlo_limit {
-            assert_eq!(refund + token_cost * phlo_price, escrow);
-        } else {
-            assert_eq!(refund, 0);
-        }
-    }
-}
+// D3 (DR-9): the escrow-charge/refund kani proofs (over the now-deleted
+// `checked_total_phlo_charge_value` / `refund_amount_for_token_cost_value`)
+// are removed with the escrow model. The replacement supply-side
+// no-underflow kani proof lives with the settlement writer (Commit 2 fuzz/
+// kani retarget — see `docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
+// §Sequencing, Commit 2).
 
 #[cfg(test)]
 mod tests {
@@ -2189,12 +1985,10 @@ mod tests {
 
     use super::*;
 
-    fn deploy_data(phlo_limit: i64, phlo_price: i64) -> DeployData {
+    fn deploy_data() -> DeployData {
         DeployData {
             term: "Nil".to_string(),
             time_stamp: 0,
-            phlo_price,
-            phlo_limit,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
@@ -2224,35 +2018,45 @@ mod tests {
     /// to exclude the offending field from `_to_proto`, never to update the
     /// pinned digest.
     #[test]
-    fn legacy_deploy_signature_hash_is_unchanged_after_g_quote_split() {
+    fn deploy_signature_hash_excludes_retired_phlo_fields() {
         use prost::Message;
 
+        // D3 (DR-9, fresh-genesis): the deploy-signature preimage NO LONGER
+        // carries phloPrice (tag 7) / phloLimit (tag 8) — those tags are
+        // reserved and `_to_proto` never emits them. This re-pins the preimage
+        // and digest for the post-D3 single-sig wire shape. The retired tag
+        // bytes (`3802...40...` for tags 7/8) MUST be absent.
+        //
         // Fixed legacy single-sig deploy: term="Nil", timestamp=0,
-        // phlo_price=2, phlo_limit=5, valid_after_block_number=0,
-        // shard_id="root", no expiration.
-        let data = deploy_data(5, 2);
+        // valid_after_block_number=0, shard_id="root", no expiration.
+        let data = deploy_data();
 
         let preimage = DeployData::_to_proto(data.clone()).encode_to_vec();
-        // Preimage captured pre-split. Field tags: 2=term("Nil"),
-        // 7=phloPrice(2), 8=phloLimit(5), 11=shardId("root"). No SigAtom,
-        // no atom_kind, no sig_algebra.
-        const PINNED_PREIMAGE_HEX: &str = "12034e696c380240055a04726f6f74";
+        // Post-D3 preimage. Field tags: 2=term("Nil"), 11=shardId("root").
+        // timestamp/valid_after_block_number default to 0 (omitted). No tag 7
+        // (phloPrice) or tag 8 (phloLimit), no SigAtom/atom_kind/sig_algebra.
+        const PINNED_PREIMAGE_HEX: &str = "12034e696c5a04726f6f74";
         assert_eq!(
             hex::encode(&preimage),
             PINNED_PREIMAGE_HEX,
             "deploy-signature preimage changed — consensus fork risk; \
-             do NOT update the pin, exclude the new field from _to_proto"
+             do NOT update the pin, exclude the offending field from _to_proto"
+        );
+        // The retired phloPrice/phloLimit tag-7/8 bytes must NOT appear.
+        assert!(
+            !hex::encode(&preimage).contains("3802") && !preimage.windows(2).any(|w| w == [0x40, 0x05]),
+            "retired phloPrice/phloLimit bytes must be absent from the D3 preimage"
         );
 
-        // Blake2b256 digest captured pre-split for the secp256k1 path.
+        // Blake2b256 digest of the post-D3 preimage (secp256k1 path).
         const PINNED_GOLDEN_DIGEST_HEX: &str =
-            "2a5916d04fa60b482d5431b83f53a2ed16c83d9828d9c150b2d1f1ee473ed4ab";
+            "c2ac266875edd634b52a2c7272ea7e1e06d5a33a1864ad90a471d56aa89b45df";
         let digest = Signed::<DeployData>::signature_hash(&Secp256k1::name(), preimage);
         assert_eq!(
             hex::encode(&digest),
             PINNED_GOLDEN_DIGEST_HEX,
-            "legacy deploy signature_hash changed — consensus fork; \
-             the g/#P split must NOT touch the signing preimage"
+            "post-D3 deploy signature_hash changed — re-pin only if the wire \
+             shape intentionally changed (fresh-genesis)"
         );
     }
 
@@ -2263,7 +2067,7 @@ mod tests {
     /// `SigCompound`/`SigAtom` onto the legacy single-sig wire shape.
     #[test]
     fn single_sig_to_proto_omits_sig_algebra_and_cosigners() {
-        let signed = signed_deploy(deploy_data(5, 2));
+        let signed = signed_deploy(deploy_data());
         let proto = DeployData::to_proto(signed);
         assert!(
             proto.sig_algebra.is_none(),
@@ -2275,94 +2079,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn checked_total_phlo_charge_rejects_invalid_or_overflowing_inputs() {
-        assert_eq!(deploy_data(5, 2).checked_total_phlo_charge(), Ok(10));
-        assert!(deploy_data(i64::MAX, 2)
-            .checked_total_phlo_charge()
-            .is_err());
-        assert!(deploy_data(-1, 2).checked_total_phlo_charge().is_err());
-        assert!(deploy_data(10, -1).checked_total_phlo_charge().is_err());
-        assert!(deploy_data(10, 1).validate_phlo(2).is_err());
-    }
+    // D3 (DR-9): the escrow unit tests (`checked_total_phlo_charge_*`,
+    // `refund_amount_is_bounded_by_valid_escrow`,
+    // `settlement_edge_cases_are_total_and_deterministic`) and the
+    // `refund_amount_property_is_bounded_by_valid_escrow` proptest are removed
+    // with the escrow arithmetic they exercised. A deploy's cost is the
+    // per-COMM token count (validated by the runtime/replay equivalence in the
+    // `casper`/`rholang` crates), debited once from Σ⟦s⟧ — there is no per-deploy
+    // charge/refund to bound.
 
-    #[test]
-    fn refund_amount_is_bounded_by_valid_escrow() {
-        let partial = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(5, 2)),
-            cost: PCost { cost: 1 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-        };
-        assert_eq!(partial.try_refund_amount(), Ok(8));
-
-        let exhausted = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(5, 2)),
-            cost: PCost { cost: 10 },
-            deploy_log: Vec::new(),
-            is_failed: true,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-        };
-        assert_eq!(exhausted.try_refund_amount(), Ok(0));
-
-        let negative_price = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(10, -1)),
-            cost: PCost { cost: 1 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-        };
-        assert!(negative_price.try_refund_amount().is_err());
-
-        let oversized_cost = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(10, 1)),
-            cost: PCost { cost: u64::MAX },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-        };
-        assert!(oversized_cost.try_refund_amount().is_err());
-    }
-
-    #[test]
-    fn settlement_edge_cases_are_total_and_deterministic() {
-        assert_eq!(deploy_data(10, 0).checked_total_phlo_charge(), Ok(0));
-        assert_eq!(deploy_data(10, 0).refund_amount_for_token_cost(5), Ok(0));
-        assert_eq!(deploy_data(0, 10).checked_total_phlo_charge(), Ok(0));
-        assert_eq!(deploy_data(0, 10).refund_amount_for_token_cost(0), Ok(0));
-        assert_eq!(deploy_data(5, 2).refund_amount_for_token_cost(5), Ok(0));
-        assert_eq!(deploy_data(5, 2).refund_amount_for_token_cost(8), Ok(0));
-        assert!(deploy_data(5, 2).refund_amount_for_token_cost(-1).is_err());
-        assert_eq!(
-            deploy_data(i64::MAX, 1).checked_total_phlo_charge(),
-            Ok(i64::MAX)
-        );
-        assert_eq!(
-            deploy_data(i64::MAX, 1).refund_amount_for_token_cost(i64::MAX),
-            Ok(0)
-        );
-        assert!(deploy_data(i64::MAX, 2)
-            .checked_total_phlo_charge()
-            .is_err());
-    }
-
-    fn fresh_atom_signing(
-        payload: &DeployData,
-        phlo_share: i64,
-    ) -> (crate::casper::SigAtom, Vec<u8>) {
+    fn fresh_atom_signing(payload: &DeployData) -> (crate::casper::SigAtom, Vec<u8>) {
         let secp = Secp256k1;
         let (sk, pk) = secp.new_key_pair();
         let serialized = DeployData::_to_proto(payload.clone()).encode_to_vec();
@@ -2374,7 +2100,6 @@ mod tests {
                 pk: pk.bytes.clone().into(),
                 sig: prost::bytes::Bytes::from(sig),
                 sig_algorithm: Secp256k1::name(),
-                phlo_share,
                 ..Default::default()
             },
             pk_bytes_vec,
@@ -2388,16 +2113,15 @@ mod tests {
             pk: pk.bytes.into(),
             sig: prost::bytes::Bytes::new(),
             sig_algorithm: Secp256k1::name(),
-            phlo_share: 0,
             ..Default::default()
         }
     }
 
     #[test]
     fn from_proto_cosigned_sig_algebra_tensor_validates_both_branches() {
-        let payload = deploy_data(200, 1);
-        let (atom_a, _) = fresh_atom_signing(&payload, 100);
-        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let payload = deploy_data();
+        let (atom_a, _) = fresh_atom_signing(&payload);
+        let (atom_b, _) = fresh_atom_signing(&payload);
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
                 crate::casper::SigPair {
@@ -2410,15 +2134,15 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 200)
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
             .expect("Tensor with two valid signers must verify");
         assert_eq!(cosigned.signers().len(), 2);
     }
 
     #[test]
     fn from_proto_cosigned_sig_algebra_plus_chosen_left_only() {
-        let payload = deploy_data(100, 1);
-        let (atom_a, _) = fresh_atom_signing(&payload, 100);
+        let payload = deploy_data();
+        let (atom_a, _) = fresh_atom_signing(&payload);
         let atom_b_unsigned = empty_atom(); // not chosen, sig is empty
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Plus(Box::new(
@@ -2435,16 +2159,16 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
             .expect("Plus with chosen=0 + valid left sig must verify");
         assert_eq!(cosigned.signers().len(), 2);
     }
 
     #[test]
     fn from_proto_cosigned_sig_algebra_threshold_2_of_3_satisfied() {
-        let payload = deploy_data(200, 1);
-        let (atom_a, _) = fresh_atom_signing(&payload, 100);
-        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let payload = deploy_data();
+        let (atom_a, _) = fresh_atom_signing(&payload);
+        let (atom_b, _) = fresh_atom_signing(&payload);
         let atom_c_unsigned = empty_atom();
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Threshold(
@@ -2466,14 +2190,14 @@ mod tests {
                 },
             )),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 200)
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
             .expect("Threshold 2-of-3 with 2 valid sigs must verify");
         assert_eq!(cosigned.signers().len(), 3);
     }
 
     #[test]
     fn from_proto_cosigned_sig_algebra_whynot_admits_absent_signer() {
-        let payload = deploy_data(0, 1);
+        let payload = deploy_data();
         let absent_atom = empty_atom();
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
@@ -2487,7 +2211,7 @@ mod tests {
         // one signer in the envelope, so the algebra walks to "optional"
         // and the Cosigned constructor sees a single placeholder. This
         // exercises the "WhyNot absent" code path.
-        let result = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 0);
+        let result = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra);
         // The envelope requires a non-empty signer list; absent WhyNot
         // alone is invalid (the deploy must have at least one signer).
         // We expect this to fail at the empty-signer-list invariant
@@ -2500,8 +2224,8 @@ mod tests {
 
     #[test]
     fn from_proto_cosigned_sig_algebra_whynot_present_signer_verifies() {
-        let payload = deploy_data(100, 1);
-        let (atom, _) = fresh_atom_signing(&payload, 100);
+        let payload = deploy_data();
+        let (atom, _) = fresh_atom_signing(&payload);
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
                 crate::casper::SigCompound {
@@ -2509,18 +2233,19 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
-            .expect("present WhyNot signer must verify when it funds phlo");
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect("present WhyNot signer must verify");
         assert_eq!(cosigned.signers().len(), 1);
-        assert_eq!(cosigned.total_phlo_share(), 100);
     }
 
     #[test]
     fn from_proto_cosigned_sig_algebra_whynot_present_invalid_rejected() {
-        let payload = deploy_data(100, 1);
-        let other_payload = deploy_data(100, 99);
-        let (mut atom, _) = fresh_atom_signing(&other_payload, 100);
-        atom.phlo_share = 100;
+        let payload = deploy_data();
+        let other_payload = DeployData {
+            term: "other-payload".to_string(),
+            ..deploy_data()
+        };
+        let (atom, _) = fresh_atom_signing(&other_payload);
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
                 crate::casper::SigCompound {
@@ -2528,7 +2253,7 @@ mod tests {
                 },
             ))),
         };
-        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
             .expect_err("present invalid WhyNot signer must reject");
         assert!(
             err.contains("failed signature verification"),
@@ -2539,9 +2264,9 @@ mod tests {
 
     #[test]
     fn from_proto_cosigned_sig_algebra_plus_invalid_chosen_branch_rejected() {
-        let payload = deploy_data(100, 1);
-        let (atom_a, _) = fresh_atom_signing(&payload, 100);
-        let (atom_b, _) = fresh_atom_signing(&payload, 100);
+        let payload = deploy_data();
+        let (atom_a, _) = fresh_atom_signing(&payload);
+        let (atom_b, _) = fresh_atom_signing(&payload);
         let algebra = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Plus(Box::new(
                 crate::casper::SigPlus {
@@ -2555,7 +2280,7 @@ mod tests {
                 },
             ))),
         };
-        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra, 100)
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
             .expect_err("invalid chosen_branch must reject");
         assert!(err.contains("chosen_branch"));
     }
@@ -2563,52 +2288,16 @@ mod tests {
     #[test]
     fn processed_deploy_cosigner_threshold_roundtrips_through_proto() {
         let processed = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data(100, 1)),
+            deploy: signed_deploy(deploy_data()),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
             cosigners: Vec::new(),
-            primary_phlo_share: 100,
             cosigner_threshold: 2,
         };
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
         assert_eq!(decoded.cosigner_threshold, 2);
-        assert_eq!(decoded.primary_phlo_share, 100);
-    }
-
-    proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
-
-        #[test]
-        fn refund_amount_property_is_bounded_by_valid_escrow(
-            phlo_limit in 0i64..1_000_000,
-            phlo_price in 0i64..1_000_000,
-            token_cost in 0u64..2_000_000,
-        ) {
-            let processed = ProcessedDeploy {
-                deploy: signed_deploy(deploy_data(phlo_limit, phlo_price)),
-                cost: PCost { cost: token_cost },
-                deploy_log: Vec::new(),
-                is_failed: false,
-                system_deploy_error: None,
-            cosigners: Vec::new(),
-            primary_phlo_share: 0,
-            cosigner_threshold: 0,
-            };
-
-            let refund = processed.try_refund_amount().unwrap();
-            let escrow = phlo_limit.checked_mul(phlo_price).unwrap();
-            prop_assert!(refund >= 0);
-            prop_assert!(refund <= escrow);
-
-            let token_cost_i64 = i64::try_from(token_cost).unwrap();
-            if token_cost_i64 <= phlo_limit {
-                prop_assert_eq!(refund + token_cost_i64 * phlo_price, escrow);
-            } else {
-                prop_assert_eq!(refund, 0);
-            }
-        }
     }
 }

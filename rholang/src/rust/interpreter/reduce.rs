@@ -999,7 +999,10 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.metering.reserve_source_step(send_eval_cost())?;
+        // D3 (DR-9, OD-3): a send is a token-consuming COMM — the consensus
+        // cost unit (one token per COMM). `send_eval_cost` is the diagnostic
+        // weight; only the COMM count gates consensus.
+        self.metering.reserve_comm(send_eval_cost())?;
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
@@ -1042,7 +1045,10 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.metering.reserve_source_step(receive_eval_cost())?;
+        // D3 (DR-9, OD-3): a receive is a token-consuming COMM — the consensus
+        // cost unit (one token per COMM). `receive_eval_cost` is the diagnostic
+        // weight; only the COMM count gates consensus.
+        self.metering.reserve_comm(receive_eval_cost())?;
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -1219,7 +1225,10 @@ impl DebruijnInterpreter {
             },
         );
 
-        self.metering.reserve_source_step(match_eval_cost())?;
+        // D3 (DR-9, OD-3): `match` is a non-COMM structural reduction —
+        // DIAGNOSTIC only (it is metered for fidelity but contributes 0 to the
+        // consensus consumed cost).
+        self.metering.reserve_reduction(match_eval_cost())?;
         let evaled_target = self.eval_expr(
             mat.target
                 .as_ref()
@@ -1239,7 +1248,9 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.metering.reserve_source_step(match_eval_cost())?;
+        // D3 (DR-9, OD-3): `if` is a non-COMM structural reduction —
+        // DIAGNOSTIC only (metered for fidelity, 0 toward consensus cost).
+        self.metering.reserve_reduction(match_eval_cost())?;
         let evaled_cond = self.eval_expr(
             conditional
                 .condition
@@ -1372,8 +1383,12 @@ impl DebruijnInterpreter {
             })
         };
 
+        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
+        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the
+        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
+        // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
-            .reserve_source_step(new_bindings_cost(new.bind_count as i64))?;
+            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
             Ok(env) => {
                 self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)

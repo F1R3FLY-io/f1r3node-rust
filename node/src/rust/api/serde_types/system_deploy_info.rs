@@ -138,7 +138,12 @@ impl From<SystemDeployDataProto> for SystemDeployDataSerde {
                     close,
                 ),
             ) => Self::CloseBlockSystemDeploy(close.into()),
-            None => Self::CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde {}),
+            // The Stage-C `RedeemSystemDeploy` oneof variant has no dedicated
+            // JSON serde view yet; surface it as the degenerate close-block
+            // shape (matching the `None` fallback) — this diagnostic serde is
+            // not a consensus surface. (Pre-existing gap, unrelated to D3.)
+            Some(models::casper::system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(_))
+            | None => Self::CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde {}),
         }
     }
 }

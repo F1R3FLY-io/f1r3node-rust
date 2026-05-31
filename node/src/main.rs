@@ -148,8 +148,6 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 Ok(())
             }
             OptionsSubCommand::Deploy {
-                phlo_limit,
-                phlo_price,
                 valid_after_block,
                 private_key,
                 private_key_path,
@@ -160,8 +158,6 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                     get_private_key(private_key, private_key_path, &mut console_io()?)?;
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
-                    phlo_limit,
-                    phlo_price,
                     valid_after_block,
                     &private_key,
                     &location,

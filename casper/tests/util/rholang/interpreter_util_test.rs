@@ -111,7 +111,6 @@ impl TestContext {
                 is_failed: false,
                 system_deploy_error: None,
                 cosigners: Vec::new(),
-                primary_phlo_share: 0,
                 cosigner_threshold: 0,
             })
             .collect()

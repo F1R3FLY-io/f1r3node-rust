@@ -34,26 +34,25 @@ lazy_static! {
     };
 }
 
+// D3 (DR-9): `phlo_limit` / `phlo_price` are retained as (ignored) Option
+// parameters for test-caller signature stability — a deploy no longer carries
+// an escrow price/limit (cost = per-COMM count). They do not enter `DeployData`.
 pub fn source_deploy(
     source: String,
     timestamp: i64,
-    phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    _phlo_limit: Option<i64>,
+    _phlo_price: Option<i64>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
     let sec = sec.unwrap_or_else(|| DEFAULT_SEC.clone());
-    let phlo_limit = phlo_limit.unwrap_or(90000);
-    let phlo_price = phlo_price.unwrap_or(1);
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
     let shard_id = shard_id.unwrap_or_default();
 
     let data = DeployData {
         term: source,
         time_stamp: timestamp,
-        phlo_price,
-        phlo_limit,
         valid_after_block_number,
         shard_id,
         expiration_timestamp: None,
@@ -89,13 +88,12 @@ pub fn source_deploy_now_full(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let phlo_limit = phlo_limit.unwrap_or(1000000);
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,
         timestamp,
-        Some(phlo_limit),
+        phlo_limit,
         phlo_price,
         sec,
         valid_after_block_number,
@@ -122,7 +120,6 @@ pub fn basic_processed_deploy(
         is_failed: false,
         system_deploy_error: None,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     })
 }

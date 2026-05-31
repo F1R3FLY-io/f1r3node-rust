@@ -240,8 +240,8 @@ pub async fn validate_block_checkpoint(
                         Some(deploy) => {
                             let term_preview: String = deploy.data.term.chars().take(50).collect();
                             format!(
-                                " (term={}..., timestamp={}, phloLimit={})",
-                                term_preview, deploy.data.time_stamp, deploy.data.phlo_limit
+                                " (term={}..., timestamp={})",
+                                term_preview, deploy.data.time_stamp
                             )
                         }
                         None => " (deploy data not found in block)".to_string(),

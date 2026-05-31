@@ -70,9 +70,9 @@ pub enum OptionsSubCommand {
     Run(RunOptions),
     Eval(EvalOptions),
     Repl,
+    // D3 (DR-9): the `--phlo-limit` / `--phlo-price` deploy flags are removed —
+    // a deploy carries no escrow price/limit (cost = per-COMM token count).
     Deploy {
-        phlo_limit: i64,
-        phlo_price: i64,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -587,16 +587,11 @@ pub struct EvalOptions {
 }
 
 /// Deploy subcommand - Deploy a Rholang source file to Casper on an existing running node
+///
+/// D3 (DR-9): the `--phlo-limit` / `--phlo-price` flags are removed — a deploy
+/// carries no escrow price/limit (cost = per-COMM token count).
 #[derive(Args, Debug, Clone)]
 pub struct DeployOptions {
-    /// The amount of phlo to use for the transaction
-    #[arg(long = "phlo-limit")]
-    pub phlo_limit: u64,
-
-    /// The price of phlo for this transaction in units dust/phlo
-    #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
-
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
     pub valid_after_block_number: Option<u64>,

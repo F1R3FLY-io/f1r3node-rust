@@ -408,8 +408,6 @@ fn rho_spec_deploy() -> Signed<DeployData> {
     let deploy_data = DeployData {
         term: compiled.code,
         time_stamp: RHO_SPEC_TIMESTAMP,
-        phlo_price: 0,
-        phlo_limit: i64::MAX,
         valid_after_block_number: 0,
         shard_id: SHARD_ID.to_string(),
         expiration_timestamp: None,

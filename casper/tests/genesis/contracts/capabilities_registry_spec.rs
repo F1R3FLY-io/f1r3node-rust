@@ -143,14 +143,12 @@ fn capabilities_registry_lolly_capability_handle_round_trip_via_sig_compound() {
         pk: vec![0x01; 33].into(),
         sig: vec![0x10; 64].into(),
         sig_algorithm: "secp256k1".to_string(),
-        phlo_share: 50,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let to_atom = SigAtom {
         pk: vec![0x02; 33].into(),
         sig: vec![0x20; 64].into(),
         sig_algorithm: "secp256k1".to_string(),
-        phlo_share: 50,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let original = SigCompound {
@@ -189,7 +187,6 @@ fn capabilities_registry_bang_uses_bound_round_trip_via_sig_compound() {
         pk: vec![0x03; 33].into(),
         sig: vec![0x30; 64].into(),
         sig_algorithm: "secp256k1".to_string(),
-        phlo_share: 100,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let handle = vec![0xDE, 0xAD, 0xBE, 0xEF];
@@ -222,7 +219,6 @@ fn capabilities_registry_unbounded_bang_uses_bound_zero_round_trip() {
         pk: vec![0x04; 33].into(),
         sig: vec![0x40; 64].into(),
         sig_algorithm: "secp256k1".to_string(),
-        phlo_share: 0,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let original = SigCompound {

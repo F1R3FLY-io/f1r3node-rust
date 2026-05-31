@@ -81,7 +81,6 @@ async fn integration_t_invalid_repeat_deploy() {
         is_failed: false,
         system_deploy_error: None,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     };
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {

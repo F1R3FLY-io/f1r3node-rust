@@ -4,8 +4,10 @@
 //! The headline test is the LOAD-BEARING EQUIVALENCE (consensus-critical, the
 //! gate↔runtime bridge): the static `demand().known_lower_bound` MUST equal the
 //! runtime's actual consumed token count — the number of
-//! `BillableTokenEvent{kind: SourceStep}` events the reducer emits — for a funded
-//! deploy that runs to completion. This is the spec's "consumed = Δ_s", which
+//! `BillableTokenEvent{kind: Comm}` events the reducer emits — for a funded
+//! deploy that runs to completion. D3 (DR-9, OD-3): consensus cost = ONE token
+//! per COMM (send/receive ONLY); `new`/`match`/`if` are diagnostic `Reduction`s
+//! that contribute ZERO. This is the spec's "consumed = Δ_s", which
 //! `replay_cost_mismatch` guards as `total_cost == consumed`. If this ever
 //! diverges the acceptance gate would admit deploys the runtime cannot fund (or
 //! reject fundable ones), forking consensus.
@@ -13,8 +15,10 @@
 //! We validate it against:
 //!   * the cost-accounting paper's §7.4 debit/credit example, whose desugared
 //!     form has **8 token-consuming COMMs** (the "8 not 6" semantic count after
-//!     `?!` desugaring — proven here by counting send + receive COMM nodes), and
-//!   * the Appendix-B three-layer validator handler.
+//!     `?!` desugaring); D3 re-pins consensus cost to exactly that 8 (the outer
+//!     `new` no longer counts — §7.4 "9 → 8"), and
+//!   * the Appendix-B three-layer validator handler (5 COMMs under D3 — its
+//!     outer `new` no longer counts, so 6 → 5).
 //!
 //! Both contracts are parsed through `Compiler::source_to_adt` — the SAME
 //! normalizer path the runtime evaluates — so `demand` analyses exactly the `Par`
@@ -55,9 +59,10 @@ async fn fresh_runtime() -> RhoRuntimeImpl {
 }
 
 /// Run `contract` to completion on a fresh runtime with an abundant budget and
-/// return the runtime's consumed TOKEN count: the number of `SourceStep`
-/// `BillableTokenEvent`s in the finalized canonical event log (DR-9
-/// token-per-COMM — each COMM-driving reduction is ONE token, weight-normalized).
+/// return the runtime's consumed TOKEN count: the number of `Comm`
+/// `BillableTokenEvent`s in the finalized canonical event log (D3/DR-9
+/// token-per-COMM — each COMM is ONE token; `Reduction`/`Primitive`/
+/// `Substitution` events are diagnostic and excluded from the consensus tally).
 async fn runtime_consumed_token_count(contract: &str) -> usize {
     let mut runtime = fresh_runtime().await;
     let result = runtime
@@ -72,7 +77,7 @@ async fn runtime_consumed_token_count(contract: &str) -> usize {
     runtime
         .get_cost_event_log()
         .iter()
-        .filter(|event| event.kind == BillableKind::SourceStep)
+        .filter(|event| event.kind == BillableKind::Comm)
         .count()
 }
 
@@ -153,10 +158,10 @@ fn comm_node_count(par: &Par) -> usize {
 /// orchestrator against two reply-emitting handlers; fully reduces to `Nil`. The
 /// desugared form has exactly **8 token-consuming COMMs** (4 sends + 4
 /// for-comprehensions) — the paper's semantic count (Def 17, §7.4) — plus the
-/// single outer `new` that allocates the channels. The runtime meters all 9
-/// reductions (8 COMMs + 1 `new`) as `SourceStep` tokens; `demand` counts the
-/// same 9. The 8-COMM core is asserted separately via `comm_node_count` to pin
-/// the "8 not 6" semantic count.
+/// single outer `new` that allocates the channels. D3 (DR-9, OD-3): the
+/// CONSENSUS cost is the COMM count = 8 (the outer `new` is a diagnostic
+/// `Reduction`, NOT a `Comm`, so it no longer counts — this is the §7.4 "9 → 8"
+/// re-pin); `demand` and the runtime's `Comm`-event count both equal 8.
 const SEC_7_4_DEBIT_CREDIT: &str = r#"new d, c, dr, cr in {
     for(@x, ret <= d){ ret!(x) } |
     for(@y, ret <= c){ ret!(y) } |
@@ -187,8 +192,8 @@ async fn delta_s_equals_runtime_consumed_for_sec_7_4_example() {
         "the §7.4 desugared example must have 8 token-consuming COMMs (semantic count)"
     );
 
-    // The static demand (which also counts the `new` allocation the runtime
-    // meters) must equal the runtime's consumed token count exactly.
+    // D3 (DR-9, OD-3): the static demand (per-COMM) must equal the runtime's
+    // consumed COMM-event count exactly.
     let analysis = demand(&par, &envelope_sig());
     let runtime_consumed = runtime_consumed_token_count(SEC_7_4_DEBIT_CREDIT).await;
 
@@ -198,11 +203,13 @@ async fn delta_s_equals_runtime_consumed_for_sec_7_4_example() {
     );
     assert_eq!(
         analysis.known_lower_bound as usize, runtime_consumed,
-        "Δ_s ({}) must equal the runtime consumed token count ({}) for the §7.4 example",
+        "Δ_s ({}) must equal the runtime consumed COMM count ({}) for the §7.4 example",
         analysis.known_lower_bound, runtime_consumed
     );
-    // Concretely: 8 COMMs + 1 `new` = 9.
-    assert_eq!(analysis.known_lower_bound, 9);
+    // §7.4 "9 → 8": consensus cost = the 8 COMMs (the outer `new` no longer
+    // counts). gate demand == runtime consumed == 8 == comm_node_count.
+    assert_eq!(analysis.known_lower_bound, 8);
+    assert_eq!(analysis.known_lower_bound as usize, comms);
 }
 
 #[tokio::test]
@@ -219,23 +226,89 @@ async fn delta_s_equals_runtime_consumed_for_app_b_handler() {
         analysis.known_lower_bound, runtime_consumed
     );
     // The App.B handler embeds the paper's 3 signed `{·}_v` layers; the desugared
-    // realization meters 3 fors + 2 setup sends + 1 FeeExtract send (= 6 COMMs)
-    // under 1 `new`. Pin the COMM core (>= the 3 signed layers) and the total.
+    // realization meters 2 receives (the `for dep` / `for tok`) + 2 setup sends
+    // (`dq!` / `ac!`) + 1 FeeExtract send (`fee!`) = 5 COMMs, under 1 `new`. D3
+    // (DR-9, OD-3): consensus cost = the 5 COMMs (the `new` is a diagnostic
+    // Reduction worth 0, so the App.B count drops 6 → 5). Pin the COMM core (>= 3
+    // signed layers) and the total.
     assert!(
         comm_node_count(&par) >= 3,
         "the App.B handler must carry at least its 3 signed-layer COMMs"
     );
-    assert_eq!(analysis.known_lower_bound, 6);
+    assert_eq!(analysis.known_lower_bound, 5);
+    // gate demand == runtime consumed == comm_node_count, all per-COMM.
+    assert_eq!(analysis.known_lower_bound as usize, comm_node_count(&par));
+}
+
+/// D3 (DR-9, OD-3) — GATE DEMAND == RUNTIME COMM COUNT. The block-assembly
+/// gate's static `demand().known_lower_bound` MUST equal the runtime's actual
+/// consumed COMM-event count for every funded, fully-reducing deploy. This is
+/// the consensus-critical D1→D3 bridge (the gate admits exactly what the runtime
+/// consumes); the explicit pin complements the §7.4 / App.B headline examples.
+#[tokio::test]
+async fn gate_demand_equals_runtime_comm_count() {
+    let contracts = [
+        SEC_7_4_DEBIT_CREDIT,
+        APP_B_HANDLER,
+        r#"@"a"!(1)"#,
+        r#"new x in { x!(1) | for(y <- x){ Nil } }"#,
+        r#"new x, r in { x!(1) | for(y <- x){ r!(*y) } | for(z <- r){ Nil } }"#,
+    ];
+    for contract in contracts {
+        let par = normalized_par(contract);
+        let demand_count = demand(&par, &envelope_sig()).known_lower_bound;
+        let runtime_comm_count = runtime_consumed_token_count(contract).await as i64;
+        let comm_nodes = comm_node_count(&par) as i64;
+        assert_eq!(
+            demand_count, runtime_comm_count,
+            "gate demand ({}) must equal runtime COMM count ({}) for: {}",
+            demand_count, runtime_comm_count, contract
+        );
+        assert_eq!(
+            demand_count, comm_nodes,
+            "gate demand ({}) must equal the static COMM-node count ({}) for: {}",
+            demand_count, comm_nodes, contract
+        );
+    }
+}
+
+/// D3 (DR-9, OD-3) — SETTLEMENT DEBIT == COMM COUNT. The per-pool settlement
+/// debit the gate accumulates (`acceptance.rs`: `Σ demand.known_lower_bound`
+/// over the admitted prefix) is, for a single admitted deploy, exactly that
+/// deploy's per-COMM demand. With a zero safety margin and a supply that exactly
+/// meets the demand, the admitted deploy's debit equals its COMM count — so
+/// `post Σ⟦s⟧ = pre − COMM_count`. We pin this debit==COMM identity directly on
+/// the analyzer (the gate's `is_funded` admits iff `Σ ≥ Δ + margin`, and the
+/// debit it then subtracts is `Δ`, the COMM count).
+#[tokio::test]
+async fn settlement_debit_equals_comm_count() {
+    for contract in [SEC_7_4_DEBIT_CREDIT, APP_B_HANDLER, r#"@"a"!(1) | @"b"!(2)"#] {
+        let par = normalized_par(contract);
+        let analysis = demand(&par, &envelope_sig());
+        let comm_count = comm_node_count(&par) as i64;
+        // The demand (== the debit the gate subtracts) is the COMM count.
+        assert_eq!(analysis.known_lower_bound, comm_count);
+        // A supply that exactly meets the demand (margin 0) admits the deploy;
+        // the debit then drives `post = pre − Δ = pre − comm_count`.
+        let supply = analysis.known_lower_bound;
+        assert!(is_funded(&analysis, supply, 0), "Σ = Δ must admit at margin 0");
+        let post = supply - analysis.known_lower_bound; // the settlement write.
+        assert_eq!(post, 0, "post Σ⟦s⟧ = pre − COMM_count must be exact");
+    }
 }
 
 /// Cross-check on smaller fully-reducing deploys to widen the equivalence
 /// evidence beyond the two headline examples.
 #[tokio::test]
 async fn delta_s_equals_runtime_consumed_across_assorted_deploys() {
+    // D3 (DR-9, OD-3): per-COMM counts (send/receive only; `new` is a diagnostic
+    // Reduction worth 0). One send ⇒ 1. `new x in { x!(1) | for(y<-x){Nil} }` ⇒
+    // 1 send + 1 receive = 2 (the `new` no longer counts). The third adds one
+    // more send in the receive body ⇒ 3.
     let cases = [
         (r#"@"a"!(1)"#, 1_i64),
-        (r#"new x in { x!(1) | for(y <- x){ Nil } }"#, 3),
-        (r#"new x, r in { x!(1) | for(y <- x){ r!(*y) } }"#, 4),
+        (r#"new x in { x!(1) | for(y <- x){ Nil } }"#, 2),
+        (r#"new x, r in { x!(1) | for(y <- x){ r!(*y) } }"#, 3),
     ];
     for (contract, expected) in cases {
         let par = normalized_par(contract);
@@ -322,16 +395,16 @@ async fn effective_supply_closure_over_real_lane_hashes() {
 
 #[tokio::test]
 async fn is_funded_gate_at_margin_boundaries_for_real_demand() {
-    // Analyze a real fully-reducing deploy: Δ = 9 for the §7.4 example.
+    // Analyze a real fully-reducing deploy: D3 per-COMM Δ = 8 for §7.4.
     let analysis = demand(&normalized_par(SEC_7_4_DEBIT_CREDIT), &envelope_sig());
-    assert_eq!(analysis.known_lower_bound, 9);
+    assert_eq!(analysis.known_lower_bound, 8);
     assert!(!analysis.unknown);
 
     let margin = 2_i64;
-    // Σ = Δ + margin - 1 = 10 ⇒ reject (one short of the margin).
-    assert!(!is_funded(&analysis, 10, margin));
-    // Σ = Δ + margin = 11 ⇒ accept.
-    assert!(is_funded(&analysis, 11, margin));
+    // Σ = Δ + margin - 1 = 9 ⇒ reject (one short of the margin).
+    assert!(!is_funded(&analysis, 9, margin));
+    // Σ = Δ + margin = 10 ⇒ accept.
+    assert!(is_funded(&analysis, 10, margin));
     // Σ well above ⇒ accept.
     assert!(is_funded(&analysis, 100, margin));
 }

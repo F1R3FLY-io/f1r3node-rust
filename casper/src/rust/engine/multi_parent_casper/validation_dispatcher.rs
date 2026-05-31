@@ -33,7 +33,6 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
 use crate::rust::slashing_authorization::checked_base_seq;
@@ -176,24 +175,11 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    let (phlo_price_result, t6) = timed_step(
-        "phlo-price",
-        BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
-        async {
-            Ok(Validate::phlo_price(
-                block,
-                this.casper_shard_conf.min_phlo_price,
-            ))
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
-    if let Either::Left(_) = phlo_price_result {
-        tracing::warn!(
-            "One or more deploys has phloPrice lower than {}",
-            this.casper_shard_conf.min_phlo_price
-        );
-    }
+    // D3 (DR-9, D.5): the per-block `phlo-price` validation step is REMOVED —
+    // deploys carry no phlo price/limit. Per-signature funding is settled at
+    // block assembly by the acceptance gate (against Σ⟦s⟧); replay re-derives
+    // the same settlement debits, and an over-admitting proposer underflows the
+    // pool (a detectable invalid block) — no separate price rule is needed.
 
     let requested_as_dependency = this
         .casper_buffer_storage
@@ -214,13 +200,13 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
             "summary={}, checkpoint={}, bonds={}, neglected-invalid={}, \
-             neglected-equiv={}, phlo={}, simple-equiv={}",
-            t1, t2, t3, t4, t5, t6, t7
+             neglected-equiv={}, simple-equiv={}",
+            t1, t2, t3, t4, t5, t7
         ),
         _ => format!(
-            "summary={}, neglected-invalid={}, neglected-equiv={}, phlo={}, \
+            "summary={}, neglected-invalid={}, neglected-equiv={}, \
              simple-equiv={} (checkpoint and bonds-cache skipped — self-created)",
-            t1, t4, t5, t6, t7
+            t1, t4, t5, t7
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);

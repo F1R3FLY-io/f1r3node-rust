@@ -25,7 +25,6 @@ use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC,
     BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC,
-    BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC,
     BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC,
     BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
     BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
@@ -35,11 +34,9 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use crate::rust::util::rholang::costacc::redeem_deploy::{
     RedeemDeploy, RedemptionAuthorization, RedemptionOutcome,
 };
-use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -337,100 +334,25 @@ impl ReplayRuntimeOps {
 
     /// Replay path mirror of [`RuntimeOps::play_deploy_with_cost_accounting_cosigned`].
     ///
-    /// Reconstructs the [`Cosigned<DeployData>`] envelope from the on-disk
-    /// `ProcessedDeploy.deploy: Signed<DeployData>` shape via
-    /// `Cosigned::from_single_signer`. For legacy single-sig deploys (the
-    /// only on-disk shape today) the loop runs exactly once with the
-    /// primary signer, producing byte-identical replay traces to the
-    /// pre-multi-sig implementation. When §1.9 extends `ProcessedDeploy`
-    /// to carry the cosigner list, multi-sig replay activates automatically
-    /// — the canonical pk-ascending iteration order + per-signer-index
-    /// seed derivation match the play path exactly.
-    ///
-    /// Each per-cosigner pre-charge / refund replays through
-    /// `replay_system_deploy_internal` with the SAME `rand` derivation as
-    /// the play path. Canonical signer order ensures both paths iterate
-    /// cosigners in identical order on play and replay.
+    /// D3 (DR-9, OD-1/OD-2): the escrow pre-charge / refund replay fan-out is
+    /// REMOVED. A deploy's fundedness was settled once against Σ⟦s⟧ by the
+    /// block's acceptance gate (recomputed deterministically on replay by
+    /// `recompute_settlement_debits`); there is no per-cosigner charge/refund to
+    /// re-run here. Replay simply re-evaluates the user deploy and asserts the
+    /// per-COMM cost matches the stored `processed_deploy.cost` (the
+    /// `replay_cost_mismatch` consensus check inside [`Self::run_user_deploy`]).
+    /// The user deploy runs UNMETERED-FOR-LIVENESS via `evaluate` (which the
+    /// play path's `evaluate_cosigned` mirrors with an `unsafe_max` budget), so
+    /// play and replay observe the same per-COMM `total_cost()`.
     async fn process_deploy_with_cost_accounting(
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
-        // Reconstitute the Cosigned<DeployData> envelope from the on-disk
-        // ProcessedDeploy shape. For legacy single-sig deploys
-        // (`cosigners.is_empty() && primary_phlo_share == 0`), this uplifts
-        // via Cosigned::from_single_signer for byte-identical replay. For
-        // multi-sig deploys (per §1.9.5 ProcessedDeploy extension), the full
-        // canonical cosigner envelope is reconstructed with per-signer
-        // re-verification — enabling end-to-end multi-sig replay.
-        let cosigned = processed_deploy
-            .to_cosigned()
-            .map_err(CasperError::RuntimeError)?;
-        let is_compound = cosigned.is_compound();
-        let phlo_price = cosigned.data.phlo_price;
-
-        // MIRROR of the play path: per-deploy-group id scoping the PoS
-        // charge-tracking channel. Derived from the SAME reconstructed
-        // Cosigned envelope, so play and replay use identical group channels.
-        let dgid = system_deploy_util::deploy_group_id(&cosigned);
-
-        // (B) Pre-charge replay fan-out — canonical pk-ascending order.
-        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "precharge-started");
-        let precharge_start = Instant::now();
-        for (i, signer) in cosigned.signers().iter().enumerate() {
-            let charge = signer.phlo_share.saturating_mul(phlo_price);
-            let rand = if is_compound {
-                system_deploy_util::generate_pre_charge_deploy_random_seed_for_signer(&cosigned, i)
-            } else {
-                // Legacy single-sig: byte-identical seed to existing on-chain deploys.
-                system_deploy_util::generate_pre_charge_deploy_random_seed(&processed_deploy.deploy)
-            };
-            let mut pre_charge_deploy = PreChargeDeploy {
-                charge_amount: charge,
-                pk: signer.pk.clone(),
-                rand,
-                deploy_group_id: dgid.clone(),
-                is_first: i == 0,
-            };
-            let precharge_result = self
-                .replay_system_deploy_internal(
-                    &mut pre_charge_deploy,
-                    // Only the FIRST cosigner's pre-charge sees the
-                    // `system_deploy_error` (legacy single-sig had one
-                    // pre-charge with this contract). For multi-sig, later
-                    // cosigners replay against `None` because the play path
-                    // already short-circuited on any earlier failure via
-                    // `revert_to_soft_checkpoint` + InsufficientPhloByCosigner.
-                    if i == 0 {
-                        &processed_deploy.system_deploy_error
-                    } else {
-                        &None
-                    },
-                )
-                .await;
-            match precharge_result {
-                Ok((_, mut system_eval_result)) => {
-                    let discard_start = Instant::now();
-                    self.discard_event_log("precharge", false).await;
-                    metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
-                        .record(discard_start.elapsed().as_secs_f64());
-                    if system_eval_result.errors.is_empty() {
-                        mergeable_channels.extend(system_eval_result.mergeable.drain());
-                    }
-                    tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime",
-                        "precharge-done cosigner_index={}", i);
-                }
-                Err(err) => {
-                    self.discard_event_log("precharge", true).await;
-                    return Err(err);
-                }
-            };
-        }
-        metrics::histogram!(BLOCK_REPLAY_DEPLOY_PRECHARGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .record(precharge_start.elapsed().as_secs_f64());
-
         let eval_successful = if processed_deploy.system_deploy_error.is_none() {
-            // Run the user deploy in a transaction
+            // Re-evaluate the user deploy. `run_user_deploy` owns the
+            // soft-checkpoint rollback for a failed deploy and the per-COMM
+            // `replay_cost_mismatch` consensus check.
             let evaluate_start = Instant::now();
             let (_, successful) = self
                 .run_user_deploy(processed_deploy, mergeable_channels)
@@ -438,63 +360,6 @@ impl ReplayRuntimeOps {
             metrics::histogram!(BLOCK_REPLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(evaluate_start.elapsed().as_secs_f64());
             tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "deploy-eval-done");
-
-            // (D) Refund replay fan-out — FIFO drain matching play path.
-            tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime", "refund-started");
-            let refund_start = Instant::now();
-            let total_refund = processed_deploy
-                .try_refund_amount()
-                .map_err(CasperError::RuntimeError)?;
-            let total_charge = cosigned.total_phlo_share().saturating_mul(phlo_price);
-            let total_used = total_charge.saturating_sub(total_refund);
-            let mut remaining_used = total_used;
-            for (i, signer) in cosigned.signers().iter().enumerate() {
-                let signer_charged = signer.phlo_share.saturating_mul(phlo_price);
-                let signer_consumed = signer_charged.min(remaining_used);
-                remaining_used -= signer_consumed;
-                let refund_amount = signer_charged - signer_consumed;
-                let rand = if is_compound {
-                    system_deploy_util::generate_refund_deploy_random_seed_for_signer(&cosigned, i)
-                } else {
-                    system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy)
-                };
-                let mut refund_deploy = RefundDeploy {
-                    refund_amount,
-                    pk: signer.pk.clone(),
-                    rand,
-                    deploy_group_id: dgid.clone(),
-                };
-                let refund_result = self
-                    .replay_system_deploy_internal(&mut refund_deploy, &None)
-                    .await;
-                match refund_result {
-                    Ok((_, mut system_eval_result)) => {
-                        let discard_start = Instant::now();
-                        self.discard_event_log("refund", false).await;
-                        metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "refund")
-                            .record(discard_start.elapsed().as_secs_f64());
-                        if system_eval_result.errors.is_empty() {
-                            mergeable_channels.extend(system_eval_result.mergeable.drain());
-                        }
-                        tracing::debug!(target: "f1r3fly.casper.replay-rho-runtime",
-                            "refund-done cosigner_index={}", i);
-                    }
-                    Err(err) => {
-                        self.discard_event_log("refund", true).await;
-                        return Err(err);
-                    }
-                }
-            }
-            debug_assert_eq!(
-                remaining_used, 0,
-                "FIFO drain incomplete on replay: remaining_used={} after fan-out; \
-                 total_used={} > Σ(phlo_share × phlo_price)={} — multi-payer \
-                 accounting bug on replay path",
-                remaining_used, total_used, total_charge
-            );
-            metrics::histogram!(BLOCK_REPLAY_DEPLOY_REFUND_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .record(refund_start.elapsed().as_secs_f64());
-
             successful
         } else {
             // If there was an expected failure in the system deploy, skip user deploy execution

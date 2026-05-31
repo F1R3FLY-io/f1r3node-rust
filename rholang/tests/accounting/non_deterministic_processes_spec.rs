@@ -375,9 +375,13 @@ async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
         full_cost_services,
     )
     .await;
+    // D3 (DR-9, OD-3): the GPT4 mock term `gpt4!("abc", *output)` is ONE COMM
+    // (the external-service call is a diagnostic primitive, not a COMM), so its
+    // per-COMM consensus cost is 1. A budget of `cost - 1` (= 0) then OOPs on
+    // that single COMM, exercising the replay OOP-consistency path.
     assert!(
-        full_cost_play.cost.value > 1,
-        "GPT4 mock term should consume tokens before it can exhaust a smaller budget"
+        full_cost_play.cost.value >= 1,
+        "GPT4 mock term should consume at least one COMM token"
     );
 
     let external_services =

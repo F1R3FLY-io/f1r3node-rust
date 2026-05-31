@@ -190,8 +190,6 @@ mod tests {
             data: DeployData {
                 term: "Nil".to_string(),
                 time_stamp: 1,
-                phlo_price: 1,
-                phlo_limit: 1,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
@@ -280,8 +278,6 @@ mod tests {
         let data = DeployData {
             term: "Nil".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
-            phlo_limit: 200,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
@@ -294,16 +290,14 @@ mod tests {
             pk: pk1.clone(),
             sig: Bytes::from(sig1),
             sig_algorithm: Box::new(secp.clone()),
-            phlo_share: 100,
         };
         let signer2 = Cosigner {
             pk: pk2.clone(),
             sig: Bytes::from(sig2),
             sig_algorithm: Box::new(secp.clone()),
-            phlo_share: 100,
         };
         let cosigned =
-            Cosigned::from_signed_data(data, vec![signer1, signer2], 200).expect("valid");
+            Cosigned::from_signed_data(data, vec![signer1, signer2]).expect("valid");
         let env = normalizer_env_from_cosigned_deploy(&cosigned);
 
         let cosigners_par = env
@@ -351,8 +345,7 @@ mod tests {
         // shape (single-element cosigners list, primary deployer == sole signer)
         // to what `normalizer_env_from_deploy` produces for the same Signed.
         let deploy = signed_deploy_fixture();
-        let cosigned = Cosigned::from_single_signer(deploy.clone(), deploy.data.phlo_limit)
-            .expect("legacy uplift");
+        let cosigned = Cosigned::from_single_signer(deploy.clone()).expect("legacy uplift");
 
         let env_legacy = normalizer_env_from_deploy(&deploy);
         let env_cosigned = normalizer_env_from_cosigned_deploy(&cosigned);

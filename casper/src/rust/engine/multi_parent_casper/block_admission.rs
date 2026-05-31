@@ -241,10 +241,9 @@ pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
                 pk: c.pk.bytes.clone().into(),
                 sig: c.sig.clone(),
                 sig_algorithm: c.sig_algorithm.name(),
-                phlo_share: c.phlo_share,
             })
             .collect();
-        Some((cosigners_proto, cosigned.primary().phlo_share))
+        Some(cosigners_proto)
     } else {
         None
     };
@@ -257,13 +256,10 @@ pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
     // Mirror cosigner extras into the sidecar map for proposer-side
     // reconstruction. Only populated for compound deploys; single-signer
     // deploys are uniquely identified by primary sig in the legacy pool.
-    if let Some((cosigners, primary_phlo_share)) = metadata {
+    if let Some(cosigners) = metadata {
         this.pending_cosigner_metadata.lock().insert(
             primary_sig.clone(),
-            super::types::PendingCosignerMetadata {
-                cosigners,
-                primary_phlo_share,
-            },
+            super::types::PendingCosignerMetadata { cosigners },
         );
     }
 

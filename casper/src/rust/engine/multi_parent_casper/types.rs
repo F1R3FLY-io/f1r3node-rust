@@ -50,14 +50,12 @@ use crate::rust::validator_identity::ValidatorIdentity;
 ///
 /// `cosigners` is the canonical-order list of cosigners EXCLUDING the
 /// primary (primary lives in the legacy `Signed<DeployData>` already stored
-/// in `deploy_storage`). `primary_phlo_share` is the primary's contribution
-/// to `phlo_limit`. Together they round-trip the wire `CompoundSigner` data
-/// (proto field 14) and `primary_phlo_share` (proto field 15) from
-/// `DeployDataProto`.
+/// in `deploy_storage`). It round-trips the wire `CompoundSigner` data
+/// (proto field 14) from `DeployDataProto`. D3 (DR-9): no per-signer
+/// phlo_share.
 #[derive(Clone, Debug)]
 pub struct PendingCosignerMetadata {
     pub cosigners: Vec<models::casper::CompoundSigner>,
-    pub primary_phlo_share: i64,
 }
 
 // Phase 13 (TC-2): the previous `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES`

@@ -724,125 +724,17 @@ in {
                       ackCh!(Nil)
                     }
                   }
-                } |
-
-                // Private method which charges a deployer for a deploy.
-                // Deployer's funds are deposited into the block sender's vault.
-                // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"chargeDeploy", @deployerId, @deployGroupId, @isFirst, @amount, @sysAuthToken, return) = {
-                  new isValidTokenCh in {
-                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
-                    for (@isValid <- isValidTokenCh) {
-                      if (isValid) {
-                        // Seed the group-scoped map with `{}` exactly once, on the
-                        // first cosigner. Inlined take/process/put on the
-                        // group-scoped channel (rather than runMVar) because the
-                        // channel is constructed dynamically from deployGroupId.
-                        if (isFirst) { @(*posDeployStateTag, deployGroupId)!({}) } |
-                        for (@state <- @(*posDeployStateTag, deployGroupId)) {
-                          if (state.contains(deployerId)) {
-                            // Defensive: never charge the same cosigner twice
-                            // per deploy. Unreachable if the deploy-decode
-                            // boundary's `Cosigned::from_signed_data`
-                            // dedup invariant holds; surfaced as an explicit
-                            // error for debuggability.
-                            @(*posDeployStateTag, deployGroupId)!(state) |
-                            return!((false, "Cosigner already charged for this deploy"))
-                          } else if (state.size() >= $$maxCosignersPerDeploy$$) {
-                            // Defense-in-depth: bound per-deploy cosigner
-                            // count (configurable per shard via
-                            // `casper_conf.rs::max_cosigners_per_deploy`).
-                            @(*posDeployStateTag, deployGroupId)!(state) |
-                            return!((false, "Cosigner cap exceeded for this deploy"))
-                          } else {
-                            new depositCh in {
-                              deposit!(deployerId, amount, posVaultAddr, *depositCh) |
-                              for (@depositResult <- depositCh){
-                                match depositResult {
-                                  (true, _) => {
-                                    @(*posDeployStateTag, deployGroupId)!(state.set(deployerId, amount)) |
-                                    return!(depositResult)
-                                  }
-                                  (_, errorMessage) => {
-                                    @(*posDeployStateTag, deployGroupId)!(state) |
-                                    return!((false, "Deploy payment failed: " ++ errorMessage))
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      } else {
-                        return!((false, "Invalid system auth token"))
-                      }
-                    }
-                  }
-                } |
-                // Private method which refunds a deployer if too much was charged in chargeDeploy.
-                // Funds are transferred from the block sender's vault to the deployer.
-                // Takes an explicit `@deployerId` argument so multi-signature
-                // refunds (one per cosigner) route to the correct vault.
-                // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"refundDeploy", @deployerId, @deployGroupId, @refundAmount, @sysAuthToken, return) = {
-                  new isValidTokenCh in {
-                    sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
-                    for (@isValid <- isValidTokenCh) {
-                      if (isValid) {
-                        // Inlined take/process/put on the SAME group-scoped
-                        // channel the pre-charge used. The residual `{}` left
-                        // after the last delete does not collide with other
-                        // deploys (the channel is deploy-unique), so no teardown.
-                        for (@state <- @(*posDeployStateTag, deployGroupId)) {
-                          match state.get(deployerId) {
-                            Nil => {
-                              // No in-flight charge recorded for this deployerId.
-                              // Map remains unchanged.
-                              @(*posDeployStateTag, deployGroupId)!(state) |
-                              return!((false, "No in-flight charge for this deployer"))
-                            }
-                            initialPaymentAmount => {
-                              if (refundAmount < 0) {
-                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
-                                return!((false, "Invalid refund amount"))
-                              } else if (refundAmount > initialPaymentAmount) {
-                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
-                                return!((false, "Refund exceeds initial deploy payment"))
-                              } else if (refundAmount > 0) {
-                                new vaultAddressCh, transferCh in {
-                                  vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
-                                  for (@deployerVaultAddress <- vaultAddressCh) {
-                                    // Transfer (from sender to deployer) called in refundDeploy.
-                                    @posVault!("transfer", deployerVaultAddress, refundAmount, posAuthKey, *transferCh) |
-                                    for (@transferResult <- transferCh) {
-                                      match transferResult {
-                                        (true, _) => {
-                                          @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
-                                          return!((true, Nil))
-                                        }
-                                        (_, errorMessage) => {
-                                          @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
-                                          return!((false, "(Bug found) Deploy refund failed: " ++ errorMessage))
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              } else {
-                                // refundAmount == 0: no transfer needed; clean
-                                // up the Map entry so the cosigner cannot be
-                                // re-refunded.
-                                @(*posDeployStateTag, deployGroupId)!(state.delete(deployerId)) |
-                                return!((true, Nil))
-                              }
-                            }
-                          }
-                        }
-                      } else {
-                        return!((false, "Invalid system auth token"))
-                      }
-                    }
-                  }
                 }
+                // D3 (DR-9, OD-2): the per-deploy escrow `chargeDeploy` /
+                // `refundDeploy` PoS methods are REMOVED. A deploy's cost is the
+                // per-COMM token count, funded by the per-signature supply pool
+                // Σ⟦s⟧ and settled ONCE at block close by the acceptance gate —
+                // there is no per-deploy pre-charge / refund round-trip, so the
+                // group-scoped charge-tracking channel `@(*posDeployStateTag,
+                // deployGroupId)` is no longer written. (`posDeployStateTag`
+                // remains a harmless unused fresh name scoping the surrounding
+                // mint/convert/bootstrap contracts.) The removed-method body
+                // followed here, before `new commitRewards`.
               } |
               new commitRewards in {
                 // Cost-Accounted Rho Stage-C two-effect slash (spec Appendix B

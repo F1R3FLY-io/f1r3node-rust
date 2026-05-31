@@ -129,8 +129,6 @@ fn to_deploy(
     let deploy_data = DeployData {
         time_stamp: timestamp,
         term: compiled_source.code,
-        phlo_limit: i64::MAX, // Equivalent to accounting.MAX_VALUE in Scala
-        phlo_price: 0,
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,

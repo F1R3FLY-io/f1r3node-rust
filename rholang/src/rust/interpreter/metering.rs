@@ -87,8 +87,20 @@ impl MeteredMachine {
         }
     }
 
-    pub fn reserve_source_step(&self, amount: Cost) -> Result<(), InterpreterError> {
-        self.reserve_cost(BillableKind::SourceStep, amount)
+    /// Charge a token-consuming COMM reduction (send / receive). D3 (DR-9,
+    /// OD-3): this is THE consensus cost unit — `reconcile_lane` counts each
+    /// committed `Comm` as 1. `amount` is the per-op diagnostic weight (still
+    /// recorded in the event log/digest), but only the COMM COUNT gates
+    /// consensus.
+    pub fn reserve_comm(&self, amount: Cost) -> Result<(), InterpreterError> {
+        self.reserve_cost(BillableKind::Comm, amount)
+    }
+
+    /// Charge a non-COMM structural reduction (new / match / if). D3 (DR-9,
+    /// OD-3): DIAGNOSTIC only — it is metered for fidelity (event log/digest)
+    /// but contributes ZERO to the consensus consumed cost.
+    pub fn reserve_reduction(&self, amount: Cost) -> Result<(), InterpreterError> {
+        self.reserve_cost(BillableKind::Reduction, amount)
     }
 
     pub fn reserve_primitive(&self, amount: Cost) -> Result<(), InterpreterError> {
@@ -271,7 +283,7 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(10, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::SourceStep, 1);
+        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 1);
         machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Substitution, 2);
         machine.drain_canonical().unwrap();
 
@@ -279,7 +291,9 @@ mod tests {
         assert_eq!(event_log.len(), 2);
         assert_eq!(event_log[0].source_path, SourcePath(vec![1]));
         assert_eq!(event_log[1].source_path, SourcePath(vec![2]));
-        assert_eq!(budget.total_cost().value, 3);
+        // D3 (DR-9, OD-3): consensus cost is the COMM count. One COMM + one
+        // (diagnostic) Substitution ⇒ total_cost = 1 (the Substitution is 0).
+        assert_eq!(budget.total_cost().value, 1);
     }
 
     #[test]
@@ -287,11 +301,11 @@ mod tests {
         let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        // A live charge that exceeds the budget is rejected by the liveness
-        // gate, and the canonical reconciliation clamps the consumed cost.
+        // D3 (DR-9, OD-3): a single COMM costs ONE token (its `Cost` weight is
+        // diagnostic), so it fits the 1-token budget and commits.
         machine
             .child(0)
-            .reserve_source_step(Cost::create(2, "over budget"))
+            .reserve_comm(Cost::create(11, "send eval"))
             .ok();
         assert_eq!(budget.total_cost().value, 1);
     }
@@ -329,11 +343,11 @@ mod tests {
 
         machine
             .child(1)
-            .reserve_source_step(Cost::create(1, "right branch"))
+            .reserve_comm(Cost::create(11, "right branch"))
             .unwrap();
         machine
             .child(0)
-            .reserve_source_step(Cost::create(1, "left branch"))
+            .reserve_comm(Cost::create(11, "left branch"))
             .unwrap();
 
         let canonical = budget.get_canonical_event_log();
@@ -343,17 +357,24 @@ mod tests {
 
     #[test]
     fn canonical_drain_records_stable_oop_descriptor() {
-        let budget = RuntimeBudget::new(Cost::create(3, "test"));
+        // D3 (DR-9, OD-3): the OOP boundary is per-COMM. A 1-COMM budget admits
+        // one COMM; the second COMM is the OOP boundary. A diagnostic
+        // Substitution (cost 0) interleaved between them commits for free and
+        // never triggers OOP. Canonical order puts source_path [1] before [2],
+        // so the lower-ranked COMM commits and the higher-ranked COMM OOPs.
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
         let machine = MeteredMachine::new(budget.clone());
 
-        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::SourceStep, 3);
-        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Substitution, 3);
+        machine.enqueue_billable(SourcePath(vec![2]), BillableKind::Comm, 11);
+        machine.enqueue_billable(SourcePath(vec![3]), BillableKind::Substitution, 3);
+        machine.enqueue_billable(SourcePath(vec![1]), BillableKind::Comm, 11);
 
         assert_eq!(
             machine.drain_canonical(),
             Err(InterpreterError::OutOfPhlogistonsError)
         );
-        assert_eq!(budget.total_cost().value, 3);
+        // Consensus consumed = the COMM budget (1); the over-budget COMM clamps.
+        assert_eq!(budget.total_cost().value, 1);
         assert_eq!(
             budget.last_oop_event().map(|event| event.source_path),
             Some(SourcePath(vec![2]))

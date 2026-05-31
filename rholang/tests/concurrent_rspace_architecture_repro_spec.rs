@@ -69,7 +69,7 @@ fn concurrent_event(path: u32, weight: u64) -> BillableTokenEvent {
         source_path: SourcePath(vec![path]),
         redex_id: RedexId(path as u64),
         local_index: path as u64,
-        kind: BillableKind::SourceStep,
+        kind: BillableKind::Comm,
         weight,
     }
 }

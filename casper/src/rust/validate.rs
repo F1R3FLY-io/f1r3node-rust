@@ -20,9 +20,12 @@
 //! 4. `neglected_invalid_block` — reject the block if it has invalid
 //!    justifications whose bonded sender is *still* bonded (T-9.7).
 //! 5. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
-//! 6. `phlo_price` — minimum phlo-price check.
-//! 7. `check_equivocations` — direct equivocation check against the
+//! 6. `check_equivocations` — direct equivocation check against the
 //!    sender's prior latest message.
+//!
+//! D3 (DR-9): the former per-block `phlo_price` minimum-price rule is REMOVED —
+//! deploys carry no phlo price/limit; per-signature funding is settled at block
+//! assembly by the acceptance gate (against Σ⟦s⟧).
 //!
 //! ## Slashing-protocol position
 //!
@@ -1471,16 +1474,9 @@ impl Validate {
         }
     }
 
-    /// All deploys must have valid phlo terms and a price >= minPhloPrice.
-    pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.validate_phlo(min_phlo_price).is_ok())
-        {
-            Either::Right(ValidBlock::Valid)
-        } else {
-            Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
-        }
-    }
+    // D3 (DR-9, D.5): the `Validate::phlo_price` block rule (all deploys must
+    // carry valid phlo terms and a price ≥ minPhloPrice) is REMOVED — deploys
+    // carry no phlo price/limit. Funding is enforced at block assembly by the
+    // per-signature acceptance gate (`util/rholang/acceptance.rs`) against
+    // Σ⟦s⟧, with `min_phlo_price` repurposed as that gate's safety margin.
 }

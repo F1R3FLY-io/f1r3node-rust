@@ -26,12 +26,12 @@ fn fresh_keypair() -> (crypto::rust::private_key::PrivateKey, PublicKey) {
     Secp256k1.new_key_pair()
 }
 
-fn baseline_deploy_data(phlo_limit: i64) -> DeployData {
+// D3 (DR-9): `phlo_limit` is retained as an (ignored) parameter for caller
+// stability — a deploy carries no escrow price/limit.
+fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
         time_stamp: 100,
-        phlo_price: 1,
-        phlo_limit,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
@@ -61,7 +61,6 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
             pk: pk.bytes.clone().into(),
             sig: sign_canonical_hash(&data, &sk),
             sig_algorithm: Secp256k1::name(),
-            phlo_share: other_share,
         });
     }
 
@@ -71,14 +70,11 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
         timestamp: data.time_stamp,
         sig: primary_sig,
         sig_algorithm: Secp256k1::name(),
-        phlo_price: data.phlo_price,
-        phlo_limit: data.phlo_limit,
         valid_after_block_number: data.valid_after_block_number,
         shard_id: data.shard_id.clone(),
         language: String::new(),
         expiration_timestamp: 0,
         cosigners,
-        primary_phlo_share: primary_share,
         cosigner_threshold: 0,
         sig_algebra: None,
     }
@@ -94,14 +90,11 @@ fn build_single_sig_proto() -> DeployDataProto {
         timestamp: data.time_stamp,
         sig,
         sig_algorithm: Secp256k1::name(),
-        phlo_price: data.phlo_price,
-        phlo_limit: data.phlo_limit,
         valid_after_block_number: data.valid_after_block_number,
         shard_id: data.shard_id.clone(),
         language: String::new(),
         expiration_timestamp: 0,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
         sig_algebra: None,
     }
@@ -115,15 +108,14 @@ fn multi_sig_deploy_wire_codec_round_trip() {
     //   - per-signer signature verification against canonical hash
     //   - canonical pk-ascending sort
     //   - no-duplicate-signer invariant
-    //   - Σ phlo_share == phlo_limit
+    //   D3 (DR-9): there is no Σ phlo_share == phlo_limit invariant.
     let cosigned = DeployData::from_proto_cosigned(original.clone())
         .expect("multi-sig wire deploy must decode");
     assert_eq!(cosigned.signers().len(), 3);
     assert!(cosigned.is_compound());
-    assert_eq!(cosigned.total_phlo_share(), cosigned.data.phlo_limit);
 
     // Round-trip: serialize back to proto, decode again. The cosigner list
-    // and phlo shares must round-trip bit-identically.
+    // must round-trip bit-identically.
     let re_proto = DeployData::to_proto_cosigned(&cosigned);
     assert_eq!(re_proto.cosigners.len(), 2); // 3 signers total = primary + 2
     assert_eq!(
@@ -136,7 +128,6 @@ fn multi_sig_deploy_wire_codec_round_trip() {
     for (a, b) in re_cosigned.signers().iter().zip(cosigned.signers().iter()) {
         assert_eq!(a.pk, b.pk);
         assert_eq!(a.sig, b.sig);
-        assert_eq!(a.phlo_share, b.phlo_share);
     }
 }
 
@@ -147,17 +138,14 @@ fn single_sig_deploy_wire_codec_back_compat() {
         .expect("single-sig wire deploy must decode through cosigned path");
     assert_eq!(cosigned.signers().len(), 1);
     assert!(!cosigned.is_compound());
-    assert_eq!(cosigned.signers()[0].phlo_share, original.phlo_limit);
 
     // Round-trip back through to_proto_cosigned. For single-sig deploys,
-    // cosigners must be empty and primary_phlo_share must be 0 — recovers
-    // the byte-identical legacy wire shape.
+    // cosigners must be empty — recovers the byte-identical legacy wire shape.
     let re_proto = DeployData::to_proto_cosigned(&cosigned);
     assert!(
         re_proto.cosigners.is_empty(),
         "single-sig round-trip must produce empty cosigners"
     );
-    assert_eq!(re_proto.primary_phlo_share, 0);
     assert_eq!(re_proto.deployer, original.deployer);
     assert_eq!(re_proto.sig, original.sig);
 }
@@ -183,19 +171,8 @@ fn multi_sig_wire_rejects_tampered_cosigner_signature() {
     );
 }
 
-#[test]
-fn multi_sig_wire_rejects_share_sum_mismatch() {
-    let mut bad = build_multi_sig_proto(3);
-    // Inflate one cosigner's share so the sum no longer matches phlo_limit.
-    bad.cosigners.last_mut().unwrap().phlo_share = 1_000_000;
-    let err =
-        DeployData::from_proto_cosigned(bad).expect_err("share sum mismatch must be rejected");
-    assert!(
-        err.contains("PhloShareMismatch") || err.contains("phlo_share"),
-        "expected share-sum mismatch rejection, got: {}",
-        err
-    );
-}
+// D3 (DR-9): `multi_sig_wire_rejects_share_sum_mismatch` is removed — there is
+// no `Σ phlo_share == phlo_limit` invariant to violate.
 
 #[test]
 fn multi_sig_wire_rejects_duplicate_signer() {
@@ -214,9 +191,9 @@ fn multi_sig_wire_rejects_duplicate_signer() {
 
 #[test]
 fn processed_deploy_to_cosigned_legacy_uplift() {
-    // Legacy single-sig ProcessedDeploy: cosigners.is_empty() AND
-    // primary_phlo_share == 0. to_cosigned() should produce a one-element
-    // envelope via Cosigned::from_single_signer.
+    // Legacy single-sig ProcessedDeploy: cosigners.is_empty(). to_cosigned()
+    // should produce a one-element envelope via Cosigned::from_single_signer.
+    // D3 (DR-9): no per-signer phlo_share.
     let data = baseline_deploy_data(100);
     let (sk, _pk) = fresh_keypair();
     let signed = Signed::<DeployData>::create(data, Box::new(Secp256k1), sk).expect("sign");
@@ -227,13 +204,11 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
         is_failed: false,
         system_deploy_error: None,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     };
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
     assert_eq!(cosigned.signers().len(), 1);
     assert!(!cosigned.is_compound());
-    assert_eq!(cosigned.signers()[0].phlo_share, 100); // primary covers phlo_limit
     assert_eq!(cosigned.signers()[0].pk, signed.pk);
     assert_eq!(cosigned.signers()[0].sig, signed.sig);
 }
@@ -265,7 +240,6 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
             pk: c.pk.bytes.clone().into(),
             sig: c.sig.clone(),
             sig_algorithm: c.sig_algorithm.name(),
-            phlo_share: c.phlo_share,
         })
         .collect();
     let pd = ProcessedDeploy {
@@ -275,7 +249,6 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         is_failed: false,
         system_deploy_error: None,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share,
         cosigner_threshold: 0,
     };
     let reconstructed = pd
@@ -283,10 +256,6 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         .expect("multi-sig reconstruction must succeed");
     assert_eq!(reconstructed.signers().len(), 3);
     assert!(reconstructed.is_compound());
-    assert_eq!(
-        reconstructed.total_phlo_share(),
-        reconstructed.data.phlo_limit
-    );
     // Canonical sort preserved (primary at index 0 of the reconstructed
     // envelope may differ from `cosigned_decoded.primary()` after re-sort
     // because Cosigned::from_signed_data re-canonicalizes; both envelopes
@@ -327,7 +296,6 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
             pk: c.pk.bytes.clone().into(),
             sig: c.sig.clone(),
             sig_algorithm: c.sig_algorithm.name(),
-            phlo_share: c.phlo_share,
         })
         .collect();
     let pd_before = ProcessedDeploy {
@@ -337,18 +305,15 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         is_failed: false,
         system_deploy_error: None,
         cosigners: extras,
-        primary_phlo_share: primary.phlo_share,
         cosigner_threshold: 0,
     };
     let pd_proto = pd_before.clone().to_proto();
-    // Cosigners + primary_phlo_share should be in the inner DeployDataProto.
+    // Cosigners should be in the inner DeployDataProto (D3: no primary_phlo_share).
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
     assert_eq!(inner_deploy.cosigners.len(), 3);
-    assert_eq!(inner_deploy.primary_phlo_share, primary.phlo_share);
 
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
     assert_eq!(pd_after.cosigners.len(), pd_before.cosigners.len());
-    assert_eq!(pd_after.primary_phlo_share, pd_before.primary_phlo_share);
 
     // Reconstruction from the round-tripped ProcessedDeploy still produces
     // a valid Cosigned envelope with per-signer signature re-verification.
@@ -370,18 +335,15 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
         is_failed: false,
         system_deploy_error: None,
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     };
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
-    // Legacy single-sig: cosigners empty + primary_phlo_share == 0.
+    // Legacy single-sig: cosigners empty (D3: no primary_phlo_share).
     assert!(inner_deploy.cosigners.is_empty());
-    assert_eq!(inner_deploy.primary_phlo_share, 0);
 
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
     assert!(pd_after.cosigners.is_empty());
-    assert_eq!(pd_after.primary_phlo_share, 0);
     assert_eq!(pd_after.deploy.pk, pd_before.deploy.pk);
     assert_eq!(pd_after.deploy.sig, pd_before.deploy.sig);
 }
@@ -394,13 +356,14 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
 
 use models::casper::{sig_compound, SigAtom, SigCompound, SigPair, SigPlus, SigThreshold};
 
-fn make_signed_atom(data: &DeployData, phlo_share: i64) -> SigAtom {
+// D3 (DR-9): `phlo_share` retained as an (ignored) param for caller stability;
+// a sig atom carries no escrow share.
+fn make_signed_atom(data: &DeployData, _phlo_share: i64) -> SigAtom {
     let (sk, pk) = fresh_keypair();
     SigAtom {
         pk: pk.bytes.clone().into(),
         sig: sign_canonical_hash(data, &sk),
         sig_algorithm: Secp256k1::name(),
-        phlo_share,
         atom_kind: models::casper::AtomKind::Ground as i32,
     }
 }
@@ -433,7 +396,6 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
         pk: pk_dummy.bytes.into(),
         sig: sign_canonical_hash(&baseline_deploy_data(999), &sk_dummy), // wrong-deploy sig
         sig_algorithm: Secp256k1::name(),
-        phlo_share: 999,
     };
 
     let (primary_sk, primary_pk) = fresh_keypair();
@@ -443,20 +405,17 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
         timestamp: data.time_stamp,
         sig: sign_canonical_hash(&data, &primary_sk),
         sig_algorithm: Secp256k1::name(),
-        phlo_price: data.phlo_price,
-        phlo_limit: data.phlo_limit,
         valid_after_block_number: data.valid_after_block_number,
         shard_id: data.shard_id.clone(),
         language: String::new(),
         expiration_timestamp: 0,
         cosigners: vec![bogus_cosigner],
-        primary_phlo_share: 999_999, // would fail Σ check
         cosigner_threshold: 0,
         sig_algebra: Some(algebra),
     };
 
-    // The flat-cosigners path would fail (bogus sig + bogus share-sum),
-    // but the sig_algebra path validates the two real atoms and succeeds.
+    // The flat-cosigners path would fail (bogus sig), but the sig_algebra path
+    // validates the two real atoms and succeeds.
     let cosigned = DeployData::from_proto_cosigned(proto)
         .expect("sig_algebra dispatch must succeed despite bogus flat cosigners");
     assert_eq!(cosigned.signers().len(), 2);
@@ -481,10 +440,9 @@ fn sig_algebra_tensor_3_atoms_processed_deploy_round_trip() {
         }))),
     };
 
-    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 300)
+    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra)
         .expect("Tensor with 3 atoms must verify");
     assert_eq!(cosigned.signers().len(), 3);
-    assert_eq!(cosigned.total_phlo_share(), 300);
 }
 
 #[test]
@@ -499,7 +457,6 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
         pk: pk_c.bytes.clone().into(),
         sig: Bytes::new(),
         sig_algorithm: Secp256k1::name(),
-        phlo_share: 0,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let algebra = SigCompound {
@@ -512,7 +469,7 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
             ],
         })),
     };
-    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 200)
+    let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra)
         .expect("Threshold 2-of-3 with 2 valid sigs must verify");
     assert_eq!(cosigned.signers().len(), 3);
     assert_eq!(cosigned.cosigner_threshold(), 2);
@@ -530,7 +487,7 @@ fn sig_algebra_invalid_walk_plus_chosen_branch_out_of_range_rejected() {
             chosen_branch: 99, // invalid: must be 0 or 1
         }))),
     };
-    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 100)
+    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra)
         .expect_err("invalid chosen_branch must be rejected");
     assert!(
         err.contains("chosen_branch"),
@@ -549,13 +506,12 @@ fn sig_algebra_unknown_signature_algorithm_rejected() {
         pk: pk.bytes.into(),
         sig: sign_canonical_hash(&data, &sk),
         sig_algorithm: "nonexistent_alg_v9999".to_string(),
-        phlo_share: 100,
         atom_kind: models::casper::AtomKind::Ground as i32,
     };
     let algebra = SigCompound {
         connective: Some(sig_compound::Connective::Atom(atom_bad)),
     };
-    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra, 100)
+    let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra)
         .expect_err("unknown sig_algorithm must be rejected");
     assert!(
         err.contains("Unknown signature algorithm") || err.contains("nonexistent_alg_v9999"),

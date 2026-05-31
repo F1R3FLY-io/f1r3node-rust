@@ -675,7 +675,6 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
             is_failed: false,
             system_deploy_error: None,
             cosigners: Vec::new(),
-            primary_phlo_share: 0,
             cosigner_threshold: 0,
         })
         .collect();

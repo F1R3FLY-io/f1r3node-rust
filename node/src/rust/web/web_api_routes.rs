@@ -548,8 +548,6 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
-            phlo_price: if is_full { Some(10) } else { None },
-            phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
             } else {
@@ -730,8 +728,9 @@ mod tests {
         // Full view includes deploy execution details
         assert_eq!(json["deployer"], "0487def456");
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
-        assert!(json.get("phloLimit").is_some());
+        // D3 (DR-9): the deploy response no longer carries phloPrice / phloLimit.
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
     }

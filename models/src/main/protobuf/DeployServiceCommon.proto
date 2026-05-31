@@ -132,13 +132,16 @@ message TransferInfo {
 }
 
 message DeployInfo{
+  // D3 (DR-9): phloPrice/phloLimit removed — a deploy's cost is the per-COMM
+  // token count (reported in `cost`); there is no escrow price/limit. Tags
+  // 7, 8 RESERVED.
+  reserved 7, 8;
+  reserved "phloPrice", "phloLimit";
   string deployer             = 1;
   string term                 = 2;
   int64  timestamp            = 3;
   string  sig                 = 4;
   string sigAlgorithm         = 5;
-  int64 phloPrice             = 7;
-  int64 phloLimit             = 8;
   int64 validAfterBlockNumber = 9;
   uint64 cost                 = 10;
   bool errored                = 11;

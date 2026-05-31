@@ -17,12 +17,10 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 use prost::Message;
 
-fn payload(phlo_limit: i64) -> DeployData {
+fn payload(time_stamp: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
-        time_stamp: 1700000000000,
-        phlo_price: 1,
-        phlo_limit,
+        time_stamp,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
@@ -39,28 +37,23 @@ fn sign_with(
     Bytes::from(alg.sign(&hash, &sk.bytes))
 }
 
-fn mk_cosigner(
-    data: &DeployData,
-    alg: Box<dyn SignaturesAlg>,
-    phlo_share: i64,
-) -> (Cosigner, PublicKey) {
+fn mk_cosigner(data: &DeployData, alg: Box<dyn SignaturesAlg>) -> (Cosigner, PublicKey) {
     let (sk, pk) = alg.new_key_pair();
     let sig = sign_with(data, alg.as_ref(), &sk);
     let cosigner = Cosigner {
         pk: pk.clone(),
         sig,
         sig_algorithm: alg,
-        phlo_share,
     };
     (cosigner, pk)
 }
 
 #[test]
 fn cosigned_mixed_secp256k1_and_ed25519() {
-    let data = payload(200);
-    let (s_secp, _) = mk_cosigner(&data, Box::new(Secp256k1), 100);
-    let (s_ed, _) = mk_cosigner(&data, Box::new(Ed25519), 100);
-    let cosigned = Cosigned::from_signed_data(data, vec![s_secp, s_ed], 200)
+    let data = payload(1700000000000);
+    let (s_secp, _) = mk_cosigner(&data, Box::new(Secp256k1));
+    let (s_ed, _) = mk_cosigner(&data, Box::new(Ed25519));
+    let cosigned = Cosigned::from_signed_data(data, vec![s_secp, s_ed])
         .expect("mixed secp256k1 + ed25519 envelope must verify");
     assert_eq!(cosigned.signers().len(), 2);
     // Both algorithms preserved on the canonical signer list.
@@ -75,11 +68,11 @@ fn cosigned_mixed_secp256k1_and_ed25519() {
 
 #[test]
 fn cosigned_mixed_three_algorithms_secp_ed25519_secp_eth() {
-    let data = payload(300);
-    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1), 100);
-    let (s2, _) = mk_cosigner(&data, Box::new(Ed25519), 100);
-    let (s3, _) = mk_cosigner(&data, Box::new(Secp256k1Eth), 100);
-    let cosigned = Cosigned::from_signed_data(data, vec![s1, s2, s3], 300)
+    let data = payload(1700000000001);
+    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1));
+    let (s2, _) = mk_cosigner(&data, Box::new(Ed25519));
+    let (s3, _) = mk_cosigner(&data, Box::new(Secp256k1Eth));
+    let cosigned = Cosigned::from_signed_data(data, vec![s1, s2, s3])
         .expect("3-way mixed-algorithm envelope must verify");
     assert_eq!(cosigned.signers().len(), 3);
     let alg_names: std::collections::HashSet<_> = cosigned
@@ -95,36 +88,32 @@ fn cosigned_mixed_three_algorithms_secp_ed25519_secp_eth() {
 
 #[test]
 fn cosigned_threshold_mixed_algorithms_quorum_satisfied() {
-    let data = payload(200);
-    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1), 100);
-    let (s2, _) = mk_cosigner(&data, Box::new(Ed25519), 100);
-    // Placeholder atom — counts toward `n` but not toward `valid_signers`.
+    let data = payload(1700000000002);
+    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1));
+    let (s2, _) = mk_cosigner(&data, Box::new(Ed25519));
+    // Placeholder atom — counts toward the signer list but not toward
+    // `valid_signers`.
     let (_, pk_c) = Secp256k1.new_key_pair();
     let placeholder = Cosigner {
         pk: pk_c,
         sig: Bytes::new(),
         sig_algorithm: Box::new(Secp256k1),
-        phlo_share: 0,
     };
-    let cosigned = Cosigned::from_signed_data_threshold(
-        data,
-        vec![s1, s2, placeholder],
-        200,
-        2,
-    )
-    .expect("2-of-3 mixed-algorithm threshold must verify");
+    let cosigned =
+        Cosigned::from_signed_data_threshold(data, vec![s1, s2, placeholder], 2)
+            .expect("2-of-3 mixed-algorithm threshold must verify");
     assert_eq!(cosigned.signers().len(), 3);
     assert_eq!(cosigned.cosigner_threshold(), 2);
 }
 
 #[test]
 fn cosigned_mixed_algorithm_tampered_signature_rejected() {
-    let data = payload(200);
-    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1), 100);
+    let data = payload(1700000000003);
+    let (s1, _) = mk_cosigner(&data, Box::new(Secp256k1));
     // s2 signed for a DIFFERENT payload — verification must fail.
-    let other_data = payload(99999);
-    let (s2_for_other, _) = mk_cosigner(&other_data, Box::new(Ed25519), 100);
-    let err = Cosigned::from_signed_data(data, vec![s1, s2_for_other], 200)
+    let other_data = payload(9999999999999);
+    let (s2_for_other, _) = mk_cosigner(&other_data, Box::new(Ed25519));
+    let err = Cosigned::from_signed_data(data, vec![s1, s2_for_other])
         .expect_err("tampered mixed-algorithm envelope must be rejected");
     match err {
         CosignedError::SignatureVerifyFailed { .. } => {}

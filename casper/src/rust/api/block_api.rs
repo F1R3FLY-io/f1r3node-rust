@@ -273,7 +273,10 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        min_phlo_price: i64,
+        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
+        // shard's gate margin upstream; NO LONGER an admission check here (the
+        // per-deploy `validate_phlo` was removed).
+        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -410,7 +413,10 @@ impl BlockAPI {
                     Ok(())
                 }
             })
-            .and_then(|_| d.data.validate_phlo(min_phlo_price))
+            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
+            // REMOVED — there is no phlo price/limit on a deploy. `min_phlo_price`
+            // is RETAINED only as the block-assembly gate's safety margin
+            // (acceptance.rs / block_creator.rs), not an API admission check.
             .and_then(|_| {
                 // Check if deploy has already expired based on expirationTimestamp
                 let now = std::time::SystemTime::now()
@@ -472,7 +478,10 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        min_phlo_price: i64,
+        // D3 (DR-9, D.5): retained for API/caller signature stability and as the
+        // shard's gate margin upstream; NO LONGER an admission check here (the
+        // per-deploy `validate_phlo` was removed).
+        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -599,7 +608,8 @@ impl BlockAPI {
                 }
                 Ok(())
             })
-            .and_then(|_| cosigned.data.validate_phlo(min_phlo_price))
+            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
+            // REMOVED (no phlo price/limit on a deploy).
             .and_then(|_| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

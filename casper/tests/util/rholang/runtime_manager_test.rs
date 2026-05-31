@@ -10,9 +10,7 @@ use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
-use casper::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use casper::rust::util::rholang::costacc::redeem_deploy::{RedeemDeploy, RedemptionOutcome};
-use casper::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -307,156 +305,11 @@ async fn exec_replay_system_deploy<S: SystemDeployTrait>(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let user_pk = construct_deploy::DEFAULT_PUB.clone();
-            let state_hash_0 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &genesis_block.body.state.post_state_hash,
-                &mut PreChargeDeploy {
-                    charge_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                    deploy_group_id: vec![1u8; 32],
-                    is_first: true,
-                },
-                &mut PreChargeDeploy {
-                    charge_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                    deploy_group_id: vec![1u8; 32],
-                    is_first: true,
-                },
-                |_| true,
-            )
-            .await
-            .unwrap();
-
-            let state_hash_1 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_0,
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
-                },
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
-                },
-                |result| *result == 0,
-            )
-            .await
-            .unwrap();
-
-            let state_hash_2 = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_1,
-                &mut RefundDeploy {
-                    refund_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
-                    deploy_group_id: vec![1u8; 32],
-                },
-                &mut RefundDeploy {
-                    refund_amount: 9000000,
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
-                    deploy_group_id: vec![1u8; 32],
-                },
-                |_| true,
-            )
-            .await
-            .unwrap();
-
-            let _ = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &state_hash_2,
-                &mut CheckBalance {
-                    pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
-                },
-                &mut CheckBalance {
-                    pk: user_pk,
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
-                },
-                |result| *result == 9000000,
-            )
-            .await
-            .unwrap();
-        },
-    )
-    .await
-    .unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refund_deploy_should_reject_refunds_above_recorded_precharge() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let user_pk = construct_deploy::DEFAULT_PUB.clone();
-            let state_hash = compare_successful_system_deploys(
-                &mut runtime_manager,
-                &genesis_context,
-                &genesis_block.body.state.post_state_hash,
-                &mut PreChargeDeploy {
-                    charge_amount: 100,
-                    pk: user_pk,
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                    deploy_group_id: vec![2u8; 32],
-                    is_first: true,
-                },
-                &mut PreChargeDeploy {
-                    charge_amount: 100,
-                    pk: construct_deploy::DEFAULT_PUB.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
-                    deploy_group_id: vec![2u8; 32],
-                    is_first: true,
-                },
-                |_| true,
-            )
-            .await
-            .unwrap();
-
-            let runtime = runtime_manager.spawn_runtime().await;
-            runtime
-                .set_block_data(BlockData {
-                    time_stamp: 0,
-                    block_number: 0,
-                    sender: genesis_context.validator_pks()[0].clone(),
-                    seq_num: 0,
-                })
-                .await;
-            let mut runtime_ops = RuntimeOps::new(runtime);
-            let result = runtime_ops
-                .play_system_deploy(
-                    &state_hash,
-                    &mut RefundDeploy {
-                        refund_amount: 101,
-                        pk: construct_deploy::DEFAULT_PUB.clone(),
-                        rand: Blake2b512Random::create_from_bytes(&vec![1]),
-                        deploy_group_id: vec![2u8; 32],
-                    },
-                )
-                .await
-                .unwrap();
-
-            match result {
-                SystemDeployResult::PlayFailed {
-                    processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
-                } => assert!(error_msg.contains("Refund exceeds initial deploy payment")),
-                _ => panic!("over-refund must fail as a system deploy user error"),
-            }
-        },
-    )
-    .await
-    .unwrap()
-}
+// D3 (DR-9, OD-2): `pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount`
+// and `refund_deploy_should_reject_refunds_above_recorded_precharge` are removed
+// — the escrow PreChargeDeploy / RefundDeploy system deploys they exercised no
+// longer exist. A deploy's cost is the per-COMM token count, settled once
+// against Σ⟦s⟧ at block close (no per-deploy charge/refund round-trip).
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn close_block_should_make_epoch_change_and_reward_validator() {
@@ -1487,16 +1340,12 @@ async fn gate_decision_replay_determinism() {
             )
             .unwrap();
 
-            let funded_cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-                d_funded.clone(),
-                d_funded.data.phlo_limit,
-            )
-            .unwrap();
-            let absent_cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(
-                d_absent.clone(),
-                d_absent.data.phlo_limit,
-            )
-            .unwrap();
+            let funded_cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(d_funded.clone())
+                    .unwrap();
+            let absent_cosigned =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(d_absent.clone())
+                    .unwrap();
 
             // The funded signer's supply pool channel.
             let funded_env = accounting::envelope_sig(&funded_cosigned);

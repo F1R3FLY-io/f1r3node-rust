@@ -397,7 +397,6 @@ fn reconstruct_cosigned(
             pk: signed.pk.clone(),
             sig: signed.sig.clone(),
             sig_algorithm: signed.sig_algorithm.clone(),
-            phlo_share: meta.primary_phlo_share,
         };
         let mut signers = Vec::with_capacity(1 + meta.cosigners.len());
         signers.push(primary);
@@ -412,22 +411,18 @@ fn reconstruct_cosigned(
                 pk: crypto::rust::public_key::PublicKey::from_bytes(&cs.pk),
                 sig: cs.sig.clone(),
                 sig_algorithm: alg,
-                phlo_share: cs.phlo_share,
             });
         }
-        Cosigned::from_signed_data(signed.data.clone(), signers, signed.data.phlo_limit).map_err(
-            |e| {
-                CasperError::RuntimeError(format!(
-                    "Cosigned reconstruction failed on proposer side: {}",
-                    e
-                ))
-            },
-        )
+        Cosigned::from_signed_data(signed.data.clone(), signers).map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Cosigned reconstruction failed on proposer side: {}",
+                e
+            ))
+        })
     } else {
-        let phlo_limit = signed.data.phlo_limit;
-        crypto::rust::signatures::signed::Cosigned::from_single_signer(signed, phlo_limit).map_err(
-            |e| CasperError::RuntimeError(format!("legacy uplift to Cosigned failed in proposer: {}", e)),
-        )
+        crypto::rust::signatures::signed::Cosigned::from_single_signer(signed).map_err(|e| {
+            CasperError::RuntimeError(format!("legacy uplift to Cosigned failed in proposer: {}", e))
+        })
     }
 }
 

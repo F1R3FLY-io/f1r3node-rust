@@ -230,9 +230,11 @@ fn build_candidate(cosigned: Cosigned<DeployData>) -> Candidate {
     match Compiler::source_to_adt(&cosigned.data().term) {
         Ok(par) => {
             let desugared = delta_sigma::desugar_for_funding(&par);
-            // `known_lower_bound`, NOT `comm_node_count` (D1→D3 handoff): the
-            // current per-SourceStep runtime consumes exactly this count; the
-            // per-COMM count would over-admit. D3 flips both in lockstep.
+            // D3 (DR-9): `demand` is now the per-COMM count (send/receive only;
+            // new/match/if are diagnostic Reductions). `known_lower_bound`
+            // therefore equals the runtime's consumed per-COMM `total_cost()`,
+            // so gate demand == runtime consumed == settlement debit, all
+            // per-COMM (the D1→D3 handoff completed in lockstep).
             let demand = delta_sigma::demand(&desugared, &envelope);
             Candidate {
                 cosigned,
@@ -599,8 +601,6 @@ mod tests {
         let data = DeployData {
             term: term.to_string(),
             time_stamp: ts,
-            phlo_price: 1,
-            phlo_limit: 1_000_000,
             valid_after_block_number: vabn,
             shard_id: String::new(),
             expiration_timestamp: None,
@@ -613,8 +613,7 @@ mod tests {
             sig: Bytes::copy_from_slice(sig),
             sig_algorithm: Box::new(Secp256k1),
         };
-        Cosigned::from_single_signer(signed, 1_000_000)
-            .expect("from_single_signer cannot fail for a non-negative phlo_limit")
+        Cosigned::from_single_signer(signed).expect("from_single_signer is infallible")
     }
 
     /// `n` parallel sends `@0!(0) | … | @0!(0)` ⇒ Δ = n (each send is one

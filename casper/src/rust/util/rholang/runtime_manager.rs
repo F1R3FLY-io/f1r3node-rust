@@ -1496,8 +1496,6 @@ mod tests {
         DeployData {
             term: "Nil".to_string(),
             time_stamp: 0,
-            phlo_price: 1,
-            phlo_limit: 10,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
@@ -1534,7 +1532,6 @@ mod tests {
             is_failed: false,
             system_deploy_error: None,
             cosigners: Vec::new(),
-            primary_phlo_share: 0,
             cosigner_threshold: 0,
         }
     }
@@ -2004,22 +2001,12 @@ mod tests {
             assert!(!fixture.cross_surface_role.is_empty());
             match fixture.semantic_oracle.as_str() {
                 "runtime_to_settlement_fuel_isolation" => {
-                    let deploy = DeployData {
-                        term: "v13-source-semantic".to_string(),
-                        time_stamp: 0,
-                        phlo_price: fixture_i64(&fixture.settlement, "phlo_price"),
-                        phlo_limit: fixture_i64(&fixture.settlement, "phlo_limit"),
-                        valid_after_block_number: 0,
-                        shard_id: "root".to_string(),
-                        expiration_timestamp: None,
-                    };
-                    let token_cost = fixture_i64(&fixture.settlement, "token_cost");
-                    let refund = deploy
-                        .refund_amount_for_token_cost(token_cost)
-                        .expect("v13 settlement refund");
-                    assert_eq!(refund, fixture_i64(&fixture.settlement, "refund"));
-                    assert!(refund <= deploy.checked_total_phlo_charge().unwrap());
-
+                    // D3 (DR-9, OD-2): the escrow refund/charge projection
+                    // (`refund_amount_for_token_cost` / `checked_total_phlo_charge`)
+                    // has no successor — a deploy carries no phlo price/limit. The
+                    // surviving invariant is that the recorded per-COMM
+                    // `ProcessedDeploy.cost` is the runtime's consumed cost
+                    // evidence (now settled once against Σ⟦s⟧ at block close).
                     let user_deploy = processed_deploy(
                         signed_deploy(),
                         fixture.expected_total_cost as u64,
@@ -2027,7 +2014,7 @@ mod tests {
                     );
                     assert_eq!(
                         user_deploy.cost.cost, fixture.expected_total_cost as u64,
-                        "v13 fixture {} settlement refund must not mutate runtime cost evidence",
+                        "v13 fixture {} per-COMM runtime cost evidence must be preserved",
                         fixture.id
                     );
                 }

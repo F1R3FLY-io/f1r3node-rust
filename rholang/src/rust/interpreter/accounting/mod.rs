@@ -249,9 +249,28 @@ pub struct SourcePath(pub Vec<u32>);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RedexId(pub u64);
 
+/// The kind of a billable token event. D3 (DR-9, OD-3) splits the former
+/// single `SourceStep` into two CONSENSUS-relevant-vs-diagnostic kinds:
+///
+///   * [`BillableKind::Comm`] — a token-consuming COMM reduction (send /
+///     receive). THIS is the consensus cost unit: the spec's "one token per
+///     COMM" (cost-accounted-rho §3.6 Rules 1-5, §7.2). `reconcile_lane`
+///     counts each committed `Comm` as exactly 1 toward `consumed_units`.
+///   * [`BillableKind::Reduction`] — a non-COMM structural reduction
+///     (`new` / `match` / `if`). Metered for DIAGNOSTIC fidelity (it walks
+///     into the event log + digest with its per-op weight) but contributes
+///     ZERO to the consensus consumed cost.
+///
+/// `Primitive` / `Substitution` are likewise DIAGNOSTIC-only (per-op gas):
+/// they appear in the event log/digest but never gate consensus. The split
+/// is INTERNAL (never on the wire) — it only affects how `reconcile_lane`
+/// tallies the per-COMM consensus cost vs. the diagnostic stream.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BillableKind {
-    SourceStep,
+    /// Token-consuming COMM reduction (send / receive). Consensus cost = 1.
+    Comm,
+    /// Non-COMM structural reduction (new / match / if). Diagnostic; cost = 0.
+    Reduction,
     Primitive(String),
     Substitution,
 }
@@ -443,11 +462,22 @@ impl RuntimeBudget {
         });
 
         let initial = self.initial_tokens.load(Ordering::Acquire);
-        let weight = event.weight as i64;
+        // D3 (DR-9, OD-3): the liveness gate is PER-COMM, coherent with the
+        // consensus tally in `reconcile_lane`. A COMM costs ONE token; a
+        // diagnostic event (Reduction / Primitive / Substitution) costs ZERO
+        // and is ALWAYS granted (it can never exhaust the budget). The per-op
+        // `weight` is diagnostic only and no longer gates liveness.
+        let cost_unit = Self::consensus_cost_unit(&event.kind);
 
-        // Lock-free CAS loop. On overflow, return Oop without writing the
-        // clamp — the canonical reconciliation establishes the consensus
-        // consumed/OOP values; this counter is just a liveness gate.
+        // A zero-cost event always proceeds (it does not touch the budget).
+        if cost_unit == 0 {
+            return AttemptOutcome::Granted;
+        }
+
+        // Lock-free CAS loop for a COMM (cost_unit == 1). On overflow, return
+        // Oop without writing the clamp — the canonical reconciliation
+        // establishes the consensus consumed/OOP values; this counter is just a
+        // liveness gate.
         let mut current = self.consumed_tokens.load(Ordering::Acquire);
         loop {
             if current < 0 || initial < 0 {
@@ -456,7 +486,7 @@ impl RuntimeBudget {
             if current >= initial {
                 return AttemptOutcome::Oop;
             }
-            let next = current.saturating_add(weight);
+            let next = current.saturating_add(cost_unit);
             if next > initial {
                 return AttemptOutcome::Oop;
             }
@@ -631,21 +661,23 @@ impl RuntimeBudget {
     /// Pure: no `self` access, no interior mutation — output depends only on
     /// `(initial, attempts)`, never on Tokio scheduling.
     fn reconcile_lane(initial: i64, attempts: &[AttemptRecord]) -> CanonicalReconciliation {
-        // Bounded-K canonical window. Because every billable weight is
-        // >= 1, the canonical commit walk commits at most `initial`
-        // events before the first OOP boundary (1 more event). So only
-        // the lowest-K events by the canonical `Ord` can influence the
-        // committed set, the OOP boundary, or `consumed_units`; events
-        // beyond rank K are provably never read by the walk. Keeping
-        // only the lowest K bounds memory and replaces the prior global
-        // O(N log N) sort over up to MAX_COST_TRACE_EVENTS elements.
+        // D3 (DR-9, OD-3): the consensus cost unit is the COMM count, not the
+        // per-op weight. `consumed_units` tallies ONE per committed
+        // [`BillableKind::Comm`] event and ZERO for every other kind
+        // (Reduction / Primitive / Substitution are DIAGNOSTIC). The liveness
+        // OOP boundary likewise fires when the budget would admit one COMM too
+        // many: a metered budget of `initial` tokens commits at most `initial`
+        // COMMs, then OOPs on the next COMM. Zero-cost (non-COMM) events never
+        // trigger OOP — they commit freely for diagnostic fidelity.
         //
-        // `initial.max(0)` keeps K >= 1 even for a non-positive budget
-        // (the walk then OOPs on the first event and clamps consumed to
-        // `initial`, preserving the prior behavior).
-        let k_bound = (initial.max(0) as u64)
-            .saturating_add(1)
-            .min(MAX_COST_TRACE_EVENTS) as usize;
+        // The pre-D3 `initial`-rank K-window truncation assumed every event
+        // cost >= 1; that no longer holds (only COMMs cost 1), so the walk is
+        // bounded only by the hard `MAX_COST_TRACE_EVENTS` cap (the attempt
+        // count is bounded upstream by `reduce.rs::eval_inner`'s term-count
+        // limit). Accepted user deploys run with `initial == i64::MAX`
+        // (unmetered-for-liveness, OD-1), so the boundary never fires and
+        // `consumed_units` is the exact total COMM count.
+        let k_bound = MAX_COST_TRACE_EVENTS as usize;
 
         // Canonical sort key is the derived Ord on BillableTokenEvent.
         // Multiplicity is preserved: a deploy that re-attempts the same
@@ -658,16 +690,20 @@ impl RuntimeBudget {
             attempts.truncate(k_bound);
         }
 
-        // Simulate the canonical commit walk.
+        // Simulate the canonical commit walk, counting COMMs as the consensus
+        // cost. `cost_unit_of` is 1 for a COMM, 0 otherwise.
         let mut committed = Vec::with_capacity(attempts.len());
         let mut cost_amounts: Vec<Cost> = Vec::new();
         let mut consumed_units: i64 = 0;
         let mut oop: Option<BillableTokenEvent> = None;
 
         for rec in attempts.into_iter() {
-            let weight = rec.event.weight as i64;
-            let next = consumed_units.saturating_add(weight);
-            if next > initial {
+            let cost_unit = Self::consensus_cost_unit(&rec.event.kind);
+            let next = consumed_units.saturating_add(cost_unit);
+            // Only a COMM that would exceed the budget is an OOP boundary.
+            // A zero-cost event (cost_unit == 0) can never exceed `initial`
+            // (it leaves `consumed_units` unchanged), so it always commits.
+            if cost_unit > 0 && next > initial {
                 oop = Some(rec.event);
                 consumed_units = initial;
                 break;
@@ -684,6 +720,19 @@ impl RuntimeBudget {
             oop,
             consumed_units,
             cost_amounts,
+        }
+    }
+
+    /// The per-event CONSENSUS cost contribution (DR-9 one-token-per-COMM):
+    /// `1` for a token-consuming COMM (send / receive), `0` for every
+    /// diagnostic kind (new / match / if Reductions, Primitives,
+    /// Substitutions). This is the single source of truth for the per-COMM
+    /// consensus tally used by [`Self::reconcile_lane`].
+    #[inline]
+    fn consensus_cost_unit(kind: &BillableKind) -> i64 {
+        match kind {
+            BillableKind::Comm => 1,
+            BillableKind::Reduction | BillableKind::Primitive(_) | BillableKind::Substitution => 0,
         }
     }
 
@@ -729,9 +778,15 @@ impl RuntimeBudget {
         });
 
         let lane_initial = lane.initial_tokens.load(Ordering::Acquire);
-        let weight = event.weight as i64;
+        // D3 (DR-9, OD-3): per-COMM liveness gate (identical to the scalar
+        // `attempt_one`). A diagnostic (cost 0) event always proceeds; only a
+        // COMM (cost 1) draws from the lane budget.
+        let cost_unit = Self::consensus_cost_unit(&event.kind);
+        if cost_unit == 0 {
+            return AttemptOutcome::Granted;
+        }
 
-        // Lock-free CAS loop, identical to the scalar `attempt_one` gate.
+        // Lock-free CAS loop for a COMM, identical to the scalar `attempt_one`.
         let mut current = lane.consumed_tokens.load(Ordering::Acquire);
         loop {
             if current < 0 || lane_initial < 0 {
@@ -740,7 +795,7 @@ impl RuntimeBudget {
             if current >= lane_initial {
                 return AttemptOutcome::Oop;
             }
-            let next = current.saturating_add(weight);
+            let next = current.saturating_add(cost_unit);
             if next > lane_initial {
                 return AttemptOutcome::Oop;
             }
@@ -1118,13 +1173,18 @@ impl RuntimeBudget {
             }
             update(&event.redex_id.0.to_le_bytes());
             update(&event.local_index.to_le_bytes());
+            // D3 (OD-3): kind tag — `Primitive` and `Substitution` keep their
+            // legacy tags (1, 2); the former `SourceStep` tag (0) is RETIRED
+            // and split into `Comm` (3) and `Reduction` (4). All tags remain
+            // distinct so the diagnostic digest stays collision-free.
             match &event.kind {
-                BillableKind::SourceStep => update(&[0]),
                 BillableKind::Primitive(name) => {
                     update(&[1]);
                     feed_len_prefixed(update, name.as_bytes());
                 }
                 BillableKind::Substitution => update(&[2]),
+                BillableKind::Comm => update(&[3]),
+                BillableKind::Reduction => update(&[4]),
             }
             update(&event.weight.to_le_bytes());
         }
@@ -1352,21 +1412,18 @@ impl Sig {
                 pk: Default::default(),
                 sig: Default::default(),
                 sig_algorithm: String::new(),
-                phlo_share: 0,
                 atom_kind: AtomKind::Ground as i32,
             }),
             Sig::Ground(bytes) => sig_compound::Connective::Atom(SigAtom {
                 pk: bytes.clone().into(),
                 sig: Default::default(),
                 sig_algorithm: String::new(),
-                phlo_share: 0,
                 atom_kind: AtomKind::Ground as i32,
             }),
             Sig::Quote(bytes) => sig_compound::Connective::Atom(SigAtom {
                 pk: bytes.clone().into(),
                 sig: Default::default(),
                 sig_algorithm: String::new(),
-                phlo_share: 0,
                 atom_kind: AtomKind::Quote as i32,
             }),
             Sig::And(left, right) => sig_compound::Connective::Tensor(Box::new(SigPair {
@@ -1751,9 +1808,17 @@ fn token_units_to_i64(value: u64) -> i64 {
 mod d0_lane_pool_tests {
     use super::*;
 
-    // Build a deterministic attempt record with a fixed deploy/sig context;
-    // `local_index` drives the canonical `Ord` rank within a lane.
+    // Build a deterministic COMM attempt record with a fixed deploy/sig
+    // context; `local_index` drives the canonical `Ord` rank within a lane.
+    // D3 (DR-9, OD-3): the consensus cost of a COMM is ONE, regardless of its
+    // diagnostic `weight`, so `consumed_units` tallies the COMM COUNT.
     fn attempt(local_index: u64, weight: u64) -> AttemptRecord {
+        attempt_kind(local_index, weight, BillableKind::Comm)
+    }
+
+    // Like [`attempt`] but with an explicit kind, so tests can exercise the
+    // per-COMM vs. diagnostic (`Reduction`/`Primitive`/`Substitution`) split.
+    fn attempt_kind(local_index: u64, weight: u64, kind: BillableKind) -> AttemptRecord {
         AttemptRecord {
             event: BillableTokenEvent {
                 deploy_id: [9; 32],
@@ -1761,7 +1826,7 @@ mod d0_lane_pool_tests {
                 source_path: SourcePath(vec![local_index as u32]),
                 redex_id: RedexId(local_index),
                 local_index,
-                kind: BillableKind::SourceStep,
+                kind,
                 weight,
             },
             amount: Some(Cost::create(weight as i64, "test")),
@@ -1783,16 +1848,19 @@ mod d0_lane_pool_tests {
     /// fast-path invariant — `total_cost()` provably takes the scalar branch
     /// because `lanes` is empty and `lane_pool_total_cost()` is `None`.
     #[test]
-    fn legacy_single_sig_byte_identical() {
-        let initial = 6_i64;
+    fn legacy_single_sig_scalar_equals_lane_per_comm() {
+        // D3 (DR-9, OD-3): the consensus cost is the COMM COUNT. With an
+        // `initial` budget of 2 COMM tokens and three COMM attempts, the
+        // canonical walk commits the first two COMMs (running count 2) and OOPs
+        // on the third; on OOP `consumed_units` clamps UP to `initial` (= 2).
+        // The per-op `weight` is now DIAGNOSTIC and does NOT affect the count.
+        let initial = 2_i64;
         let budget = RuntimeBudget::new(Cost::create(initial, "scalar fast path"));
 
         // Drive attempts through the PUBLIC scalar entry point — exactly what
-        // every legacy single-signature deploy does. Weights 2,3,4 with
-        // initial 6: the canonical walk commits 2 then 3 (running 5) and OOPs
-        // on 4; on OOP `consumed_units` clamps UP to `initial` (= 6),
-        // preserving the `deploy.cost == phlo_limit` invariant.
-        let attempts = vec![attempt(0, 2), attempt(1, 3), attempt(2, 4)];
+        // every legacy single-signature deploy does. Weights are arbitrary
+        // (diagnostic); each event is a COMM, so each costs ONE token.
+        let attempts = vec![attempt(0, 11), attempt(1, 11), attempt(2, 11)];
         for record in &attempts {
             let _ = budget.reserve_canonical_with_cost(
                 record.event.clone(),
@@ -1811,8 +1879,8 @@ mod d0_lane_pool_tests {
             "empty lane pool signals the N=1 scalar fast path"
         );
 
-        // The budget's scalar reconciliation must be byte-identical to the
-        // extracted canonical walk over the same attempt multiset.
+        // The budget's scalar reconciliation must equal the extracted canonical
+        // walk over the same attempt multiset, field-for-field.
         let scalar = budget.reconcile();
         let reference = RuntimeBudget::reconcile_lane(initial, &attempts);
         assert_eq!(
@@ -1820,14 +1888,68 @@ mod d0_lane_pool_tests {
             "scalar reconcile() must equal reconcile_lane() field-for-field"
         );
 
-        // Independently confirm the expected canonical answer: two events
-        // commit, the third OOPs, and consumed clamps to `initial`.
+        // Per-COMM canonical answer: two COMMs commit, the third OOPs, and
+        // consumed clamps to `initial` (= the COMM budget).
         assert_eq!(scalar.consumed_units, initial);
         assert_eq!(scalar.committed.len(), 2);
-        assert_eq!(scalar.oop.as_ref().map(|e| e.weight), Some(4));
+        assert!(scalar.oop.is_some(), "the third COMM is the OOP boundary");
 
-        // `total_cost()` takes the scalar branch and reports the clamped cost.
+        // `total_cost()` takes the scalar branch and reports the COMM count.
         assert_eq!(budget.total_cost().value, initial);
+    }
+
+    /// D3 (DR-9, OD-3): a diagnostic `Reduction` event COMMITS (it appears in
+    /// the committed set / event log) but contributes ZERO to the per-COMM
+    /// consensus consumed cost, and never triggers an OOP boundary. A budget of
+    /// 1 COMM token admits ONE COMM plus arbitrarily many Reductions.
+    #[test]
+    fn reduction_events_are_diagnostic_and_cost_zero() {
+        let budget = RuntimeBudget::new(Cost::create(1, "one-comm budget"));
+        // One COMM (cost 1) interleaved with three Reductions (cost 0 each).
+        let attempts = vec![
+            attempt_kind(0, 11, BillableKind::Comm),
+            attempt_kind(1, 128, BillableKind::Reduction),
+            attempt_kind(2, 256, BillableKind::Reduction),
+            attempt_kind(3, 64, BillableKind::Reduction),
+        ];
+        for record in &attempts {
+            let _ = budget.reserve_canonical_with_cost(
+                record.event.clone(),
+                record.amount.clone().expect("test amount"),
+            );
+        }
+        let rec = budget.reconcile();
+        // All four events commit (the single COMM fits the 1-token budget; the
+        // Reductions cost 0), and none is an OOP boundary.
+        assert_eq!(rec.committed.len(), 4, "COMM + 3 Reductions all commit");
+        assert!(rec.oop.is_none(), "no OOP — only the COMM costs, and it fits");
+        // Consensus consumed cost is the COMM count = 1, NOT the weight sum.
+        assert_eq!(rec.consumed_units, 1);
+        assert_eq!(budget.total_cost().value, 1);
+    }
+
+    /// A second COMM on a 1-token budget IS the OOP boundary even when
+    /// diagnostic Reductions precede it (the Reductions commit for free; the
+    /// over-budget COMM clamps consumed to the COMM budget).
+    #[test]
+    fn second_comm_over_budget_is_oop_despite_reductions() {
+        let budget = RuntimeBudget::new(Cost::create(1, "one-comm budget"));
+        let attempts = vec![
+            attempt_kind(0, 11, BillableKind::Comm),
+            attempt_kind(1, 100, BillableKind::Reduction),
+            attempt_kind(2, 11, BillableKind::Comm),
+        ];
+        for record in &attempts {
+            let _ = budget.reserve_canonical_with_cost(
+                record.event.clone(),
+                record.amount.clone().expect("test amount"),
+            );
+        }
+        let rec = budget.reconcile();
+        // The first COMM and the Reduction commit; the second COMM OOPs.
+        assert_eq!(rec.committed.len(), 2);
+        assert!(rec.oop.is_some(), "the second COMM exceeds the 1-token budget");
+        assert_eq!(rec.consumed_units, 1, "consumed clamps to the COMM budget");
     }
 
     /// The per-signature pool's `total_cost` is the order-independent SUM of
@@ -1837,14 +1959,15 @@ mod d0_lane_pool_tests {
     /// decomposition; `rb_pool_total_cost = Σ rb_total_cost`).
     #[test]
     fn per_lane_reconcile_is_sum_of_scalar() {
-        // Three disjoint signatures, each with its own budget and events.
-        // Lane A (initial 10): 3,4 → consumed 7, no OOP.
-        // Lane B (initial 5):  3,4 → commits 3, OOPs on 4 → clamps to 5.
-        // Lane C (initial 6):  2,3 → consumed 5, no OOP.
+        // Three disjoint signatures, each with its own budget and COMM events.
+        // D3 (DR-9, OD-3): each COMM costs ONE token (weights are diagnostic).
+        // Lane A (initial 10): 2 COMMs → consumed 2, no OOP.
+        // Lane B (initial 1):  2 COMMs → 1 commits, OOPs on the 2nd → clamps to 1.
+        // Lane C (initial 6):  2 COMMs → consumed 2, no OOP.
         let lanes = [
-            (lane_sig(1), 10_i64, vec![attempt(0, 3), attempt(1, 4)]),
-            (lane_sig(2), 5_i64, vec![attempt(0, 3), attempt(1, 4)]),
-            (lane_sig(3), 6_i64, vec![attempt(0, 2), attempt(1, 3)]),
+            (lane_sig(1), 10_i64, vec![attempt(0, 11), attempt(1, 11)]),
+            (lane_sig(2), 1_i64, vec![attempt(0, 11), attempt(1, 11)]),
+            (lane_sig(3), 6_i64, vec![attempt(0, 11), attempt(1, 11)]),
         ];
 
         let budget = RuntimeBudget::new(Cost::unsafe_max());
@@ -1873,8 +1996,8 @@ mod d0_lane_pool_tests {
                 RuntimeBudget::reconcile_lane(*initial, attempts).consumed_units
             })
             .sum();
-        // 7 (A) + 5 (B clamped) + 5 (C) = 17.
-        assert_eq!(expected_sum, 17);
+        // 2 (A) + 1 (B clamped) + 2 (C) = 5 COMMs.
+        assert_eq!(expected_sum, 5);
 
         // The pool total must equal that order-independent sum.
         assert_eq!(

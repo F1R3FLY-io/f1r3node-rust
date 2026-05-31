@@ -135,32 +135,38 @@ message HeaderProto {
 /**
  * Note: deploys are uniquely keyed by (`deployer`, `timestamp`).
  *
- * Multi-signature support is provided via the `cosigners` and `primary_phlo_share`
- * fields, realizing the compound-signature operational semantics of the
- * cost-accounted rho-calculus paper (`publications/cost-accounting/cost-accounted-rho.tex`,
- * §3.2 Rules 2-5). When `cosigners` is empty, the deploy is a legacy single-signer
- * deploy: fields 1/4/5 hold the only signer and `phloLimit` (field 8) is its share.
- * When `cosigners` is non-empty, the primary signer occupies index 0 (fields 1/4/5)
- * with phlo share `primary_phlo_share` (field 15), and additional cosigners occupy
- * `cosigners` (field 14) entries with their own (pk, sig, sig_algorithm, phlo_share).
- * The wire decoder enforces canonical `pk.bytes` ascending sort, no duplicate signers,
- * Σ(primary_phlo_share + cosigners[i].phlo_share) == phloLimit, and that every
- * signer's signature verifies against the canonical message hash.
+ * Multi-signature support is provided via the `cosigners` field, realizing the
+ * compound-signature operational semantics of the cost-accounted rho-calculus
+ * paper (`publications/cost-accounting/cost-accounted-rho.tex`, §3.2 Rules 2-5).
+ * When `cosigners` is empty, the deploy is a legacy single-signer deploy: fields
+ * 1/4/5 hold the only signer. When `cosigners` is non-empty, the primary signer
+ * occupies index 0 (fields 1/4/5) and additional cosigners occupy `cosigners`
+ * (field 14) entries with their own (pk, sig, sig_algorithm). The wire decoder
+ * enforces canonical `pk.bytes` ascending sort, no duplicate signers, and that
+ * every signer's signature verifies against the canonical message hash.
+ *
+ * D3 (DR-9): there is NO per-deploy phlo escrow/price and NO per-signer
+ * phlo_share. A deploy's cost is the per-COMM token count, funded by the
+ * per-signature supply pool Σ⟦s⟧ and gated at block assembly (Def 19, §7.6).
  */
 message DeployDataProto {
+  // Cost-Accounted Rho D3 (DR-9, fresh-genesis): the singular-phlo
+  // escrow/price model is REMOVED. Consensus cost is now the per-COMM
+  // token count gated by the per-signature supply pool Σ⟦s⟧ (no per-deploy
+  // phloPrice/phloLimit, no per-signer phlo_share). The retired tags are
+  // RESERVED so they can never be reused with a different meaning.
+  reserved 7, 8, 15;
+  reserved "phloPrice", "phloLimit", "primary_phlo_share";
   bytes  deployer             = 1; //public key
   string term                 = 2; //rholang source code to deploy (will be parsed into `Par`)
   int64  timestamp            = 3; //millisecond timestamp
   bytes  sig                  = 4; //signature of (hash(term) + timestamp) using private key
   string sigAlgorithm         = 5; //name of the algorithm used to sign
-  int64 phloPrice             = 7; //phlo price
-  int64 phloLimit             = 8; //phlo limit for the deployment
   int64 validAfterBlockNumber = 10;
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
   string language             = 12;//language (rholang or metta) of the source code
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
   repeated CompoundSigner cosigners = 14; //additional cosigners (empty = legacy single-sig)
-  int64 primary_phlo_share   = 15; //primary signer's phlo share; required iff cosigners != []; Σ shares == phloLimit
   // Phase 2: M-of-N threshold quorum size.
   //   0  → N-of-N (Phase 1 semantics): every signer must verify.
   //   k>0 → M-of-N: at least `k` of `cosigners.len() + 1` signers must
@@ -171,8 +177,8 @@ message DeployDataProto {
   // Phase 3: LL-rich signature algebra. When present, OVERRIDES
   // `cosigners[]` and `cosigner_threshold` — the deploy is validated
   // against the algebraic expression instead of the flat list. Atomic
-  // leaves (SigAtom) carry the per-signer (pk, sig, sig_algorithm,
-  // phlo_share) tuples, and the algebra describes their combination.
+  // leaves (SigAtom) carry the per-signer (pk, sig, sig_algorithm) tuples,
+  // and the algebra describes their combination.
   // See `rholang/src/rust/interpreter/accounting/mod.rs::Sig` for the
   // operational semantics.
   optional SigCompound sig_algebra = 17;
@@ -182,10 +188,13 @@ message DeployDataProto {
 // in `DeployDataProto.cosigners` (decoder enforces). Each cosigner signs
 // the same canonical message hash as the primary deployer.
 message CompoundSigner {
+  // D3 (DR-9): per-signer phlo_share is removed; funding is per-signature
+  // supply Σ⟦s⟧, not an escrow share. Tag 4 RESERVED.
+  reserved 4;
+  reserved "phloShare";
   bytes  pk           = 1; //cosigner public key
   bytes  sig          = 2; //cosigner signature of (hash(term) + timestamp) using private key
   string sigAlgorithm = 3; //name of the algorithm used to sign (e.g., "secp256k1", "ed25519")
-  int64  phloShare    = 4; //this cosigner's contribution to phloLimit
 }
 
 // Phase 2 / Phase 3 LL-rich signature algebra wire encoding.
@@ -236,10 +245,12 @@ enum AtomKind {
 }
 
 message SigAtom {
+  // D3 (DR-9): per-leaf phlo_share is removed (no escrow share). Tag 4 RESERVED.
+  reserved 4;
+  reserved "phloShare";
   bytes    pk           = 1;
   bytes    sig          = 2;
   string   sigAlgorithm = 3;
-  int64    phloShare    = 4;
   AtomKind atom_kind    = 5;
 }
 

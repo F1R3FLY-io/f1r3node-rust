@@ -566,16 +566,6 @@ impl WebApi for WebApiImpl {
             } else {
                 None
             },
-            phlo_price: if is_full {
-                Some(deploy.phlo_price)
-            } else {
-                None
-            },
-            phlo_limit: if is_full {
-                Some(deploy.phlo_limit)
-            } else {
-                None
-            },
             sig_algorithm: if is_full {
                 Some(deploy.sig_algorithm.clone())
             } else {
@@ -1144,15 +1134,9 @@ pub struct DeployRequest {
     /// single-signature deploys. When non-empty, the deploy is treated as
     /// a multi-signature deploy and validated via `Cosigned::from_signed_data`
     /// (per-signer signature verification, canonical pk-ascending sort,
-    /// no-duplicate check, Σ phlo_share == phloLimit invariant).
+    /// no-duplicate check). D3 (DR-9): no per-signer phlo_share / share-sum.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cosigners: Vec<CosignerJson>,
-    /// Primary signer's phlo share. Required iff `cosigners` is non-empty.
-    /// For legacy single-signature deploys (empty `cosigners`), this is
-    /// ignored and the primary's share is set to `data.phloLimit`
-    /// automatically by the multi-sig decode path.
-    #[serde(rename = "primaryPhloShare", default)]
-    pub primary_phlo_share: i64,
 }
 
 /// JSON shape for one cosigner in a multi-signature [`DeployRequest`].
@@ -1168,11 +1152,8 @@ pub struct CosignerJson {
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    /// This cosigner's contribution to the deploy's `phloLimit`. All
-    /// cosigner shares plus the primary's share must sum exactly to
-    /// `phloLimit` — enforced by `Cosigned::from_signed_data`.
-    #[serde(rename = "phloShare")]
-    pub phlo_share: i64,
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1337,10 +1318,8 @@ pub struct DeployResponse {
     pub term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
-    pub phlo_limit: Option<i64>,
+    // D3 (DR-9): phloPrice / phloLimit removed from the deploy response — a
+    // deploy's cost is the per-COMM token count (in `cost`), no escrow.
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
     pub sig_algorithm: Option<String>,
     #[serde(
@@ -1531,13 +1510,14 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
 /// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
 /// both legacy single-signature requests (cosigners empty → one-element
-/// envelope with primary share = phloLimit) and multi-signature requests
-/// (cosigners non-empty → N-element envelope with explicit per-signer
-/// shares). Invariants enforced by `Cosigned::from_signed_data`:
+/// envelope) and multi-signature requests (cosigners non-empty → N-element
+/// envelope). Invariants enforced by `Cosigned::from_signed_data`:
 ///
 /// - Every signer's signature verifies against the canonical message hash.
 /// - Canonical pk-ascending sort; no duplicate cosigner public keys.
-/// - Σ(primary_phlo_share + cosigners[i].phlo_share) == phloLimit.
+///
+/// D3 (DR-9): no per-signer phlo_share and no share-sum invariant — funding is
+/// the per-signature supply pool Σ⟦s⟧.
 fn to_cosigned_deploy(
     request: &DeployRequest,
 ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>> {
@@ -1548,19 +1528,13 @@ fn to_cosigned_deploy(
     let primary_sig_bytes = hex::decode(&request.signature)
         .map_err(|e| eyre!("Primary signature is not valid base16: {}", e))?;
 
-    let primary_phlo_share = if request.cosigners.is_empty() {
-        // Legacy single-sig: primary covers entire phlo_limit.
-        request.data.phlo_limit
-    } else {
-        request.primary_phlo_share
-    };
-
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
     let mut signers = Vec::with_capacity(1 + request.cosigners.len());
     signers.push(Cosigner {
         pk: PublicKey::from_bytes(&primary_pk_bytes),
         sig: primary_sig_bytes.into(),
         sig_algorithm: lookup_sig_algorithm(&request.sig_algorithm)?,
-        phlo_share: primary_phlo_share,
     });
     for (i, cs) in request.cosigners.iter().enumerate() {
         let pk_bytes = hex::decode(&cs.pk).map_err(|e| {
@@ -1573,11 +1547,10 @@ fn to_cosigned_deploy(
             pk: PublicKey::from_bytes(&pk_bytes),
             sig: sig_bytes.into(),
             sig_algorithm: lookup_sig_algorithm(&cs.sig_algorithm)?,
-            phlo_share: cs.phlo_share,
         });
     }
 
-    Cosigned::from_signed_data(request.data.clone(), signers, request.data.phlo_limit)
+    Cosigned::from_signed_data(request.data.clone(), signers)
         .map_err(|e| eyre!("Cosigned envelope validation failed: {}", e))
 }
 
@@ -1970,8 +1943,6 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
-            phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
@@ -1986,8 +1957,9 @@ mod tests {
         assert_eq!(json["isFinalized"], true);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
-        assert!(json.get("phloLimit").is_some());
+        // D3 (DR-9): no phloPrice / phloLimit in the response.
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
         assert!(json.get("transfers").is_some());
     }
 
@@ -2004,8 +1976,6 @@ mod tests {
             deployer: None,
             term: None,
             system_deploy_error: None,
-            phlo_price: None,
-            phlo_limit: None,
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
@@ -2035,8 +2005,6 @@ mod tests {
             data: DeployData {
                 term: "contract".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
-                phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
@@ -2045,7 +2013,6 @@ mod tests {
             signature: "fedcba9876543210".to_string(),
             sig_algorithm: "secp256k1".to_string(),
             cosigners: Vec::new(),
-            primary_phlo_share: 0,
         };
 
         let json = serde_json::to_string(&request).unwrap();

@@ -25,12 +25,11 @@ use rholang::rust::interpreter::accounting::{
     costs::Cost, RuntimeBudget, Sig, SignatureChannel,
 };
 
-fn baseline_deploy_data(phlo_limit: i64) -> DeployData {
+// D3 (DR-9): `phlo_limit` retained as an (ignored) param for caller stability.
+fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
         time_stamp: 1700000000000,
-        phlo_price: 1,
-        phlo_limit,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
@@ -39,19 +38,16 @@ fn baseline_deploy_data(phlo_limit: i64) -> DeployData {
 
 fn build_n_signers(data: &DeployData, n: usize) -> Vec<Cosigner> {
     let secp = Secp256k1;
-    let share = data.phlo_limit / (n as i64);
-    let leftover = data.phlo_limit - share * (n as i64);
     let serialized = data.to_message().encode_to_vec();
     let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
     (0..n)
-        .map(|i| {
+        .map(|_| {
             let (sk, pk) = secp.new_key_pair();
             let sig = Bytes::from(secp.sign(&hash, &sk.bytes));
             Cosigner {
                 pk,
                 sig,
                 sig_algorithm: Box::new(Secp256k1),
-                phlo_share: if i == 0 { share + leftover } else { share },
             }
         })
         .collect()
@@ -70,7 +66,6 @@ fn bench_cosigned_construction(c: &mut Criterion) {
                     let cosigned = Cosigned::from_signed_data(
                         black_box(data.clone()),
                         black_box(signers.clone()),
-                        black_box(1024 * (signers.len() as i64)),
                     )
                     .expect("envelope construction");
                     black_box(cosigned);
@@ -141,7 +136,6 @@ fn bench_cosigned_threshold_64_choose_32(c: &mut Criterion) {
             pk,
             sig: Bytes::new(),
             sig_algorithm: Box::new(Secp256k1),
-            phlo_share: 0,
         });
     }
     c.bench_function("Cosigned::from_signed_data_threshold/64-of-32", |b| {
