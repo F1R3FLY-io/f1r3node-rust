@@ -111,6 +111,14 @@ MC_TE.cfg
 MC_TE.out
 *.st
 
+# Lean 4 / Lake (formal/lean — Workstream E validator contract)
+##############
+formal/lean/.lake/
+formal/lean/build/
+formal/lean/.axiom_gate_driver.lean
+*.olean
+*.ilean
+
 *.temp
 
 .pgmcp.toml
