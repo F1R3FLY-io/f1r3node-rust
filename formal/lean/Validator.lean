@@ -1,5 +1,6 @@
 import Validator.SlashAuthorization
 import Validator.Determinism
+import Validator.Contract
 
 /-
   Validator — Lean 4 mirror of the validator / platform obligations and the

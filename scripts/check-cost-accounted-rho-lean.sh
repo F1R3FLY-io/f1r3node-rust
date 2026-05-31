@@ -93,6 +93,16 @@ CONTRACT_THEOREMS=(
   Validator.validator_verdict_deterministic
   Validator.validator_verdict_deterministic_two_step
   Validator.validator_verdict_example
+  # E6 — the named behavioral contract (built-in validator proven in Lean):
+  #      validator_contract_built_in_* alias each obligation as a contract clause.
+  Validator.validator_contract_built_in_S1
+  Validator.validator_contract_built_in_S2
+  Validator.validator_contract_built_in_S3
+  Validator.validator_contract_built_in_S4
+  Validator.validator_contract_built_in_P1
+  Validator.validator_contract_built_in_P1_order_independent
+  Validator.validator_contract_built_in_P1_stale_evidence
+  Validator.validator_contract_built_in_P3
 )
 
 echo "Axiom gate: #print axioms must show no sorryAx and no user axiom..."
