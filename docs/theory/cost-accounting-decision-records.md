@@ -120,9 +120,10 @@ does (it requires both inputs); would also raise consensus weight over time (con
    deploy) is SEPARATE from the WD-D2 settlement debit (the burned COST). The committed D2 gate/settlement is
    unchanged by StageD. PoS owns only the conversion ELIGIBILITY (`active ∧ ¬mintingHalted ∧
    ¬convertedEpochs`) + `convertedEpochs` idempotency, publishing the eligible list on
-   `sys:casper:feeConvertList`. (Scope note: the OD-4 `@W_v` draw-wallet purse mirror is not performed — the
-   convert credits the consensus pool `Σ⟦v⟧` only; see the `workstream-c-economic.md` Stage D realization
-   note for the replay-rig rationale and the follow-on Rust→PoS seam.)
+   `sys:casper:feeConvertList`. **Settled (DR-14, user-ratified): the OD-4 `@W_v` mirror is unnecessary; `Σ⟦v⟧`-only is the permanent,
+   spec-complete fee realization** — the convert credits the consensus pool `Σ⟦v⟧` only (the released form of
+   the single spec phlo location); the `@W_v` purse *amount* is operationally inert under the s₀-collapse, so
+   no `@W_v` fee-credit — and no Rust→PoS seam to perform it — is built. See DR-14.)
 
 ---
 
@@ -356,3 +357,41 @@ bottleneck); (b) a Rust-injected supply name `@sigSupplyCh` bound into `VB`'s co
 (re-exposes `Σ⟦v⟧` to the Rholang layer, enlarging the trusted surface); (c) a `sysAuthToken`-gated
 `sigChannelOps` system process resolving sig→channel — recorded as a future refinement for in-Rholang
 minting contracts (ERC-20-style), unnecessary while the only authorized writer is Rust.
+
+---
+
+## DR-14 — `Σ⟦v⟧`-only fee realization is permanent and spec-complete (the `@W_v` fee-mirror is unnecessary)
+
+**Decision.** Stage D's fee→phlogiston conversion credits the per-signature supply pool `Σ⟦v⟧` ONLY (the
+load-bearing, gate-read pool). It does **not** credit the validator's `@W_v` draw wallet with the converted
+fee amount (the "OD-4 `@W_v` mirror"), and the project will **not** build the proposed `rho:casper:feeCount`
+Rust→PoS pre-eval data seam to do so. `Σ⟦v⟧`-only is the permanent, spec-complete realization of the spec's
+fee feedback loop. (User-ratified after an independent second-opinion Plan-agent review.)
+
+**Spec basis.** The spec has a SINGLE phlogiston location — the wallet `\quot{W_v}` holding a token stack
+(tex:2389-2392) — and `Σ⟦v⟧` (the spec's `n_v`) is the *released form* of that stack ("a token stack becomes
+a chain of sends … on the signature channel", tex:1906; released by `\drop{t}`, tex:1965). So "fees can be
+converted to replenish the phlogiston supply" (tex:3097-3098) is satisfied the moment `Σ⟦v⟧` is credited —
+`Σ⟦v⟧` *is* the supply. Under the adopted s₀-collapse (Remark 11, tex:1063-1071; §5; §6.4 block-validity is a
+*presence* predicate) the static acceptance gate (DR-11) against `Σ⟦v⟧` is the operative funding check.
+
+**Rationale.** (1) *No-op:* the `@W_v` purse *amount* is read by nothing — every consumer reads presence, not
+quantity (VB `for(phlo<=@W_v){*phlo}` drops it with VH=nil; slash `for(_<-@W_v){Nil}` discards it; no
+`getBalance`/arithmetic on a `@W_v` purse exists). Crediting `@W_v` with the fee amount changes no
+consensus-observable state. (2) *Safety:* a Rust→PoS pre-eval seam to feed the fee count `f` into the Rholang
+`closeBlock` would re-introduce the DR-13 alternative-(b)-rejected Rholang-exposure of a Rust economic
+quantity plus a standing replay-rig fragility (the seed `produce` double-counts the rigged play event log →
+`ConsumeFailed`), on the most consensus-critical path — all to perform a no-op. (3) *Performance:* `Σ⟦v⟧`-only
+is the landed code (zero new work, no new `RwLock`/system-process read, no contention). `@W_v` presence (the
+DR-3 halt anchor) continues to be maintained by the epoch mint.
+
+**When it would matter (and why it does not now).** The `@W_v` amount-mirror would be load-bearing ONLY under
+the spec's *literal* per-COMM measured-`VB`-draw model (where `@W_v`'s amount gates each draw). DR-11 rejected
+that model on O(n)-gate-read performance grounds in favor of the s₀-collapse. So the mirror is contingent on
+reverting a committed, spec-sanctioned decision — not a current obligation.
+
+**Alternatives considered.** (a) *`Σ⟦v⟧`-only, permanent* — CHOSEN. (b′) a Rust-side fixed *presence* top-up of
+`@W_v` (no `f`, riding the existing `post_eval` seam) — viable if a literal "wallet replenished" artifact is
+ever demanded, but still a consensus no-op; subsumed by (a). (c) a PoS-state fee accumulator — rejected
+(duplicate `f` ledger, two sources of truth, merge-drift risk). (d) the `rho:casper:feeCount` Rust→PoS
+pre-eval seam — rejected (over-engineers a no-op; re-introduces a rejected coupling + replay fragility).
