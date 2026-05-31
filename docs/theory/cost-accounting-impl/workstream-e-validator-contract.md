@@ -143,15 +143,31 @@ plus the named-contract aggregation (`validator/` subtrees re-export, they do no
   admission/decision functions (P1/P2 inherited from the Rust shell), and is checked by the local
   `check-cost-accounted-rho-{proofs,tla-invariants,lean}.sh` scripts (E7 ships a template).
 
-## 4. Custom-validator seam (forward reference to E7)
+## 4. Custom-validator seam (E7)
 
-Spec-minimal — no plugin framework (§7.7: one well-specified proof-checker, swappable economics). Three
-layers, all already present; E7 documents and lightly hardens them: (1) the Rholang economic/adjudication
-contract is genesis-deployed with parameter substitution (`genesis/contracts/standard_deploys.rs`,
-`pos_generator`), so a custom validator supplies its own `PoS.rhox`-shaped source; (2) the Rust platform
-shell (gate, slash-auth, equivocation, finalization) is fixed and enforces the contract mechanically (the
-settlement-debit `checked_sub` underflow makes an over-admitting proposer's block a detectable invalid
-block); (3) the proof bundle (TLA+ + Rocq-or-Lean over S1–S4 + P3) is the script-checkable obligation set.
+Spec-minimal — no plugin framework (§7.7: one well-specified proof-checker, swappable economics). A custom
+validator customizes the **economics/adjudication** (in Rholang) and ships a **proof bundle** discharging the
+contract for its decision functions; it **inherits** the fixed Rust platform shell. Three layers:
+
+1. **Economic / adjudication contract (swappable, Rholang).** The PoS contract is genesis-deployed from
+   `casper/src/main/resources/PoS.rhox` via `genesis/contracts/standard_deploys.rs` (the `pos` generator —
+   a `CompiledRholangTemplate` with `ProofOfStake` parameter substitution; `embedded_rho::POS`,
+   `genesis.rs`). A custom validator supplies its own `PoS.rhox`-shaped source plus `ProofOfStake` params
+   (minimumBond, maximumBond, epochLength, quarantineLength, the PoS-multisig keys/quorum, initialPhlogiston,
+   epochPhlogiston). This is the customer-facing extension point — economics/adjudication, **not** the gate.
+2. **Platform shell (fixed, Rust — enforces the contract mechanically).** The acceptance gate
+   (`acceptance.rs::admit_by_funding`, DR-13-forced in Rust), the slash-authorization predicate
+   (`validate.rs`), equivocation detection, and the finalization oracle are fixed and apply to ANY deployed
+   economic contract. Enforcement is mechanical: the settlement-debit `checked_sub` underflow makes an
+   over-admitting (contract-violating) proposer's block a *detectable invalid block* — so a custom economic
+   contract cannot compromise consensus safety regardless of its proof bundle. **P1/P2 are inherited** (not
+   re-discharged by the custom validator).
+3. **Proof bundle (what a custom validator ships).** TLA+ + (Rocq **or** Lean) discharges of **S1–S4 + P3**
+   for its admission/decision functions, checked by the local
+   `check-cost-accounted-rho-{proofs,tla-invariants,lean}.sh` scripts. The **built-in** `validator/` artifacts
+   are the worked reference to copy and adapt: `formal/tlaplus/validator/Validator.tla`,
+   `formal/rocq/validator/theories/Contract.v`, `formal/lean/Validator/Contract.lean`. See
+   **`examples/custom-validator/README.md`** for the obligation checklist and bundle structure.
 
 ## 5. Scope guardrails
 
