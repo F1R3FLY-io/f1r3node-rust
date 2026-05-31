@@ -822,3 +822,56 @@ mod tests {
         assert_eq!(sig_key(&sig), sig.lane_hash());
     }
 }
+
+#[cfg(kani)]
+mod kani_funding {
+    //! D3 (DR-9) bounded model check of the per-signature funding/settlement
+    //! NO-UNDERFLOW property (Commit 2 — replaces the retired
+    //! `escrow = limit × price` kani). The settlement debit is the per-COMM
+    //! demand `Δ_s`; an admitted (funded) deploy's debit must never underflow
+    //! the supply pool Σ⟦s⟧ (`post = pre − Δ ≥ 0`).
+    use super::*;
+
+    #[kani::proof]
+    fn funded_settlement_debit_never_underflows_supply() {
+        let demand: i64 = kani::any();
+        let supply: i64 = kani::any();
+        let margin: i64 = kani::any();
+        // Bound the inputs to a sane non-adversarial domain (the gate computes in
+        // i128, but Δ / Σ / margin are bounded balances/counts in practice).
+        kani::assume(demand >= 0 && demand <= 1_000_000);
+        kani::assume(supply >= 0 && supply <= 1_000_000);
+        kani::assume(margin >= 0 && margin <= 1_000_000);
+
+        let analysis = DemandEntry {
+            known_lower_bound: demand,
+            unknown: false,
+        };
+        if is_funded(&analysis, supply, margin) {
+            // Funded ⇒ Σ ≥ Δ + margin ≥ Δ, so the settlement write
+            // `post = Σ − Δ` is non-negative (never underflows the pool) and
+            // leaves at least `margin` headroom.
+            assert!(supply - demand >= margin);
+            assert!(supply - demand >= 0);
+        }
+    }
+
+    #[kani::proof]
+    fn reject_below_demand_plus_margin() {
+        let demand: i64 = kani::any();
+        let supply: i64 = kani::any();
+        let margin: i64 = kani::any();
+        kani::assume(demand >= 0 && demand <= 1_000_000);
+        kani::assume(supply >= 0 && supply <= 1_000_000);
+        kani::assume(margin >= 0 && margin <= 1_000_000);
+
+        let analysis = DemandEntry {
+            known_lower_bound: demand,
+            unknown: false,
+        };
+        // The §7.7 reject direction: Σ strictly below Δ + margin is NOT funded.
+        if supply < demand + margin {
+            assert!(!is_funded(&analysis, supply, margin));
+        }
+    }
+}

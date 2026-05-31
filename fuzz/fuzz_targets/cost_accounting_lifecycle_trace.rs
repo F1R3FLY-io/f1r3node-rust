@@ -36,7 +36,7 @@ fn event(index: u64, weight: u64) -> BillableTokenEvent {
         source_path: SourcePath(vec![index as u32]),
         redex_id: RedexId(index),
         local_index: index,
-        kind: BillableKind::SourceStep,
+        kind: BillableKind::Comm,
         weight,
     }
 }

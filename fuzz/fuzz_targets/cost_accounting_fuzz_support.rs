@@ -31,8 +31,11 @@ pub fn billable_event(
     descriptor_len: usize,
     path_len: usize,
 ) -> BillableTokenEvent {
+    // D3 (DR-9, OD-3): `Comm` is the consensus cost unit (cost 1); `Primitive` /
+    // `Substitution` are diagnostic (cost 0). (`Reduction` is also diagnostic;
+    // the COMM-vs-diagnostic split is what the per-COMM tally exercises.)
     let kind = match tag % 3 {
-        0 => BillableKind::SourceStep,
+        0 => BillableKind::Comm,
         1 => BillableKind::Primitive("p".repeat(descriptor_len)),
         _ => BillableKind::Substitution,
     };
@@ -60,21 +63,20 @@ pub fn event_is_invalid(event: &BillableTokenEvent) -> bool {
         )
 }
 
-pub fn deploy_data(phlo_limit: i64, phlo_price: i64) -> DeployData {
+// D3 (DR-9): a deploy carries no phlo escrow price/limit.
+pub fn deploy_data() -> DeployData {
     DeployData {
         term: "Nil".to_string(),
         time_stamp: 0,
-        phlo_price,
-        phlo_limit,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
         expiration_timestamp: None,
     }
 }
 
-pub fn signed_deploy(seed: u8, phlo_limit: i64, phlo_price: i64) -> Signed<DeployData> {
+pub fn signed_deploy(seed: u8) -> Signed<DeployData> {
     Signed {
-        data: deploy_data(phlo_limit, phlo_price),
+        data: deploy_data(),
         pk: PublicKey::from_bytes(&[seed; 65]),
         sig: Bytes::from(vec![seed.wrapping_add(1); 64]),
         sig_algorithm: Box::new(Secp256k1Eth),
@@ -83,13 +85,12 @@ pub fn signed_deploy(seed: u8, phlo_limit: i64, phlo_price: i64) -> Signed<Deplo
 
 pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
     ProcessedDeploy {
-        deploy: signed_deploy(seed, 100, 1),
+        deploy: signed_deploy(seed),
         cost: PCost { cost },
         deploy_log: Vec::new(),
         is_failed: failed,
         system_deploy_error: failed.then(|| "fuzz failure".to_string()),
         cosigners: Vec::new(),
-        primary_phlo_share: 0,
         cosigner_threshold: 0,
     }
 }

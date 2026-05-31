@@ -1,15 +1,19 @@
-//! Fuzz replay-field roundtrips together with Casper settlement arithmetic.
+//! Fuzz the replay-field roundtrip together with the D3 (DR-9) per-COMM
+//! funding/settlement invariants.
 //!
-//! The oracle ties two production boundaries together: processed-deploy
-//! protobuf conversion must preserve the scalar cost and failure flag, and the
-//! deploy settlement helper must keep refunds total, bounded, and unable to
-//! replenish runtime fuel.
+//! The oracle ties two production boundaries together:
+//!   1. processed-deploy protobuf conversion must preserve the scalar per-COMM
+//!      `cost` and the failure flag across the wire (play == replay shape); and
+//!   2. the per-signature gate (`is_funded`) must keep the settlement debit
+//!      (= `Δ_s`, the COMM count) total, bounded, and UNDERFLOW-FREE for an
+//!      admitted deploy (replacing the removed escrow refund arithmetic).
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+use rholang::rust::interpreter::accounting::delta_sigma::{is_funded, DemandEntry};
 
 mod cost_accounting_fuzz_support;
 
@@ -18,12 +22,17 @@ struct Input {
     seed: u8,
     cost: u64,
     failed: bool,
-    phlo_limit: i64,
-    phlo_price: i64,
-    token_cost: i64,
+    /// `Δ_s` per-COMM demand.
+    demand: i64,
+    /// `Σ_s` effective supply.
+    supply: i64,
+    /// Genesis safety margin.
+    margin: i64,
 }
 
 fuzz_target!(|input: Input| {
+    // (1) Replay-shape roundtrip: the per-COMM `cost` and failure flag survive
+    // the ProcessedDeploy protobuf conversion byte-identically.
     let processed =
         cost_accounting_fuzz_support::processed_deploy(input.seed, input.cost, input.failed);
     let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto())
@@ -31,30 +40,27 @@ fuzz_target!(|input: Input| {
     assert_eq!(decoded.cost.cost, input.cost);
     assert_eq!(decoded.is_failed, input.failed);
 
-    let deploy = DeployData {
-        term: "Nil".to_string(),
-        time_stamp: 0,
-        phlo_price: input.phlo_price,
-        phlo_limit: input.phlo_limit,
-        valid_after_block_number: 0,
-        shard_id: "root".to_string(),
-        expiration_timestamp: None,
+    // (2) Funding/settlement: an admitted (funded) deploy's settlement debit
+    // (= the COMM demand) never underflows the supply, and the gate decision is
+    // monotone in supply and demand.
+    let analysis = DemandEntry {
+        known_lower_bound: input.demand,
+        unknown: false,
     };
-    let refund = deploy.refund_amount_for_token_cost(input.token_cost);
-    if input.phlo_limit < 0 || input.phlo_price < 0 || input.token_cost < 0 {
-        assert!(refund.is_err());
-        return;
+    let funded = is_funded(&analysis, input.supply, input.margin);
+
+    if funded && input.margin >= 0 {
+        let residual = i128::from(input.supply) - i128::from(analysis.known_lower_bound);
+        assert!(
+            residual >= 0,
+            "funded ⇒ settlement debit (= Δ COMMs) must not underflow Σ⟦s⟧"
+        );
     }
-    let Some(escrow) = input.phlo_limit.checked_mul(input.phlo_price) else {
-        assert!(refund.is_err());
-        return;
-    };
-    let refund = refund.expect("valid settlement terms");
-    assert!(refund >= 0);
-    assert!(refund <= escrow);
-    if input.token_cost <= input.phlo_limit {
-        assert_eq!(refund + input.token_cost * input.phlo_price, escrow);
-    } else {
-        assert_eq!(refund, 0);
+
+    // Monotone in supply: more supply keeps a funded deploy funded.
+    if funded {
+        if let Some(more) = input.supply.checked_add(1) {
+            assert!(is_funded(&analysis, more, input.margin));
+        }
     }
 });

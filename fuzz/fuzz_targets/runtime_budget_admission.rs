@@ -33,7 +33,7 @@ fn event(input: &EventInput, index: u64) -> BillableTokenEvent {
         usize::from(input.descriptor_len) % (MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES + 8);
     let path_len = usize::from(input.path_len) % (MAX_COST_TRACE_SOURCE_PATH_COMPONENTS + 8);
     let kind = match input.kind % 3 {
-        0 => BillableKind::SourceStep,
+        0 => BillableKind::Comm,
         1 => BillableKind::Primitive("x".repeat(descriptor_len)),
         _ => BillableKind::Substitution,
     };
