@@ -14,7 +14,8 @@
  */
 new
   MakeMint, rs(`rho:registry:insertSigned:secp256k1`), uriOut,
-  rl(`rho:registry:lookup`), NonNegativeNumberCh
+  rl(`rho:registry:lookup`), NonNegativeNumberCh,
+  stdout(`rho:io:stdout`)
 in {
   rl!(`rho:lang:nonNegativeNumber`, *NonNegativeNumberCh) |
   for(@(_, NonNegativeNumber) <- NonNegativeNumberCh) {
@@ -150,6 +151,7 @@ in {
                               } else {
                                 // Insufficient funds in src purse.
                                 // The amount must now be subtracted from this purse.
+                                stdout!(["[CONTRACT-MAKEMINT-DEPOSIT-FAIL]", "branch=sub-insufficient", "amount=", amount, "src=", src.toByteArray()]) |
                                 new subCh in {
                                   balance!("sub", amount, *subCh) |
                                   for (_ <- subCh) {
@@ -166,6 +168,7 @@ in {
                             }
                           } else {
                             // Failed to add funds to this purse due to overflow or negative amount.
+                            stdout!(["[CONTRACT-MAKEMINT-DEPOSIT-FAIL]", "branch=add-overflow-or-negative", "amount=", amount, "src=", src.toByteArray()]) |
                             success!(false) |
                             if (Nil != *logCh) {
                               bd!(*bdCh) |
@@ -177,6 +180,7 @@ in {
                         }
                       } else {
                         // Mint mismatch. No transfer occurs.
+                        stdout!(["[CONTRACT-MAKEMINT-DEPOSIT-FAIL]", "branch=mint-mismatch", "amount=", amount, "src=", src.toByteArray(), "thisDecr=", thisDecr, "srcDecr=", srcDecr]) |
                         success!(false) |
                         if (Nil != *logCh) {
                           bd!(*bdCh) |
