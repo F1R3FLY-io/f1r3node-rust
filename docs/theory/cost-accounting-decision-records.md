@@ -610,3 +610,39 @@ and correctly excludes Burned (never active).
 
 **Cross-refs.** DR-3 (two-effect slashing + redemption), DR-7 (redemption authority = PoS multisig), DR-12
 (validator multi-prover contract). Spec paragraphs *Slashing* / *Stake vs.\ phlogiston*.
+
+---
+
+## DR-19 — Speculative execution-on-receipt (D2-perf, task #11) is NOT implemented: a data-driven, spec-minimal decision
+
+**Context.** Task #11 ("D2-perf: speculative execution-on-receipt + committed I/O gate") proposed pre-executing
+gate-passing deploys at ingress into a discardable soft-checkpoint, with a `committed` flag gating I/O sinks
+(stdout, peer sends), to hide deploy-execution latency before a proposer assembles a block.
+
+**Decision.** Do **not** implement it. This is a *decision to close*, not a deferral of required work.
+
+**Rationale (verified, not assumed).**
+1. **Not spec-required.** The spec mandates accept-then-execute (tex 1726–1729), which the acceptance gate
+   already provides: no admitted deploy executes before the funding decision, and rejected deploys never
+   execute. The spec does **not** mandate speculative execution-on-receipt — DR-11's "gate-before-speculate"
+   is a *constraint on any speculation* (it must not feed acceptance/commit), **not** a requirement to
+   speculate (`docs/theory/cost-accounting-impl/wd-d2-acceptance-gate.md` §D2.6: "Nothing consensus-critical
+   is deferred").
+2. **No measured bottleneck.** The data-driven mandate is "profile before optimizing" — an optimization needs
+   a measured target. There is currently **no** execution-on-receipt at all (deploys sit in storage until a
+   proposer picks them), and no production workload against which to measure whether the receipt→assembly
+   window is latency-bound. Building a large architectural change (a new ingress execution trigger + a
+   speculative soft-checkpoint lifecycle + a `committed` I/O gate, touching ingress/runtime/I/O) **absent a
+   measured bottleneck is textbook premature optimization**, which the project's engineering principles
+   explicitly forbid.
+3. **Spec-minimalism.** Adding a non-spec-required subsystem on consensus-adjacent paths introduces
+   complexity and risk for zero measured benefit.
+
+**Revisit trigger (a concrete condition, not a standing deferral).** Reopen *only* if profiling under a
+representative production workload shows the receipt→assembly window is a measured throughput/latency
+bottleneck. The enabling machinery (`create_soft_checkpoint` / `revert_to_soft_checkpoint`, ~33 call sites)
+already exists, so the option stays cheap to take up later. The acceptance gate's correctness is independent
+of this decision (a pure O(AST) static analysis that needs no speculative results).
+
+**Cross-refs.** DR-11 (acceptance gate; gate-before-speculate), `wd-d2-acceptance-gate.md` §D2.6. Spec §7.6
+accept-then-execute (tex 1726–1729).
