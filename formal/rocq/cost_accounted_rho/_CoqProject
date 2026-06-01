@@ -204,3 +204,11 @@ theories/MintingHalt.v
 # step (fuel-non-increasing) never an exogenous mint. Concrete, so its headline
 # theorems are Closed under the global context.
 theories/Exchange.v
+
+# GSLT/OSLF capstone — discharges spec §6.1 (the calculus is a well-formed
+# GSLT: Types / Equations / Rewrites) and §7.7 (the OSLF-generated linear
+# resource logic: the funding judgment Σ_s ≥ Δ_s is decidable, the gate is a
+# sound proof-checker, an underfunded deploy is rejected, and the logic is
+# linear / no-contraction). Assembles already-proven Qed-closed results;
+# framework-independent (no MeTTaIL). Closed under the global context.
+theories/GSLTOSLFCapstone.v
