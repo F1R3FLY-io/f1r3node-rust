@@ -833,6 +833,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             epoch_length: conf.casper.genesis_block_data.epoch_length,
             quarantine_length: conf.casper.genesis_block_data.quarantine_length,
             min_phlo_price: conf.casper.min_phlo_price,
+            // Task #13a: thread the spec-strict gate flag onto this GC-path
+            // shard conf from the same shard-genesis config (default OFF).
+            strict_funding_enforcement: conf.casper.strict_funding_enforcement,
             disable_late_block_filtering: conf.casper.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: conf.standalone,

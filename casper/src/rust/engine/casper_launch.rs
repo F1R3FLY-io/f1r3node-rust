@@ -157,6 +157,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
+            // Task #13a: spec-strict acceptance-gate activation, wired from the
+            // shard-genesis `CasperConf` (default OFF = back-compat). Same
+            // shard constant on every node ⇒ the gate verdict is
+            // replay-deterministic (mirrors `min_phlo_price` directly above).
+            strict_funding_enforcement: conf.strict_funding_enforcement,
             // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
             // all validators) are included in merged state. Prevents deploy loss during network
             // partitions or validator catchup. Default is true (disabled).

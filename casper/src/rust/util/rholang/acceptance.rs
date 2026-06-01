@@ -71,6 +71,7 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::util::rholang::replay_failure::ReplayFailure;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::supply;
 
@@ -442,12 +443,23 @@ fn compute_settlement_debits(
 /// merged pre-state hash; replay: live store reset to `start_hash`). `margin` is
 /// the on-chain genesis safety buffer (`min_phlo_price`).
 ///
+/// `strict` is the shard-genesis activation mode (task #13a;
+/// `CasperShardConf::strict_funding_enforcement`). When `false` (default =
+/// back-compat) the gate is TRANSITIONAL: an ABSENT pool is admitted unenforced
+/// with no debit (the early `continue` below). When `true` the gate is
+/// SPEC-STRICT (§7.6 step 5): an absent pool is NOT early-admitted — it falls
+/// through to the normal enforcement path where (absent ⇒ effective supply 0) a
+/// `Δ > 0` deploy fails `is_funded` and is rejected, while a `Δ = 0` deploy is
+/// admitted with no debit. `strict` is the SAME shard constant on play and
+/// replay, so the verdict is replay-deterministic.
+///
 /// Returns the [`AdmissionOutcome`]: admitted envelopes in canonical order, the
 /// rejected primary sigs, and the per-pool settlement debits.
 pub async fn admit_by_funding(
     deploys: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
     margin: i64,
+    strict: bool,
 ) -> Result<AdmissionOutcome, CasperError> {
     // 1. Canonicalize the (nondeterministically-ordered) input.
     let mut ordered = deploys;
@@ -531,7 +543,19 @@ pub async fn admit_by_funding(
         // non-cost-accounted behavior, bit-for-bit). A PRESENT pool (including a
         // drained `Some(0)`) IS under cost-accounting ⇒ enforce the funding
         // obligation + §7.7 reject-both.
-        if !present.contains(&sig_key) {
+        //
+        // Task #13a: this transitional early-admit is gated on `!strict`. With
+        // `strict` OFF the `!strict &&` short-circuits to the EXACT same
+        // early-admit `continue` as before (byte-identical back-compat). With
+        // `strict` ON we do NOT early-admit — the group falls through to the
+        // enforcement path below, where an absent pool's effective supply is 0
+        // (`effective.get(&sig_key).unwrap_or(&0)`), so a `Δ > 0` deploy fails
+        // `is_funded(_, 0, margin)` and is rejected (§7.6 step 5: rejected
+        // without executing any part, no state change, no tokens consumed),
+        // while a `Δ = 0` deploy passes with a zero debit. This reuses the
+        // EXISTING present-drained-pool rejection path (strict-absent ≡
+        // present-zero).
+        if !strict && !present.contains(&sig_key) {
             for candidate in group {
                 outcome.admitted.push(candidate.cosigned);
             }
@@ -610,9 +634,23 @@ pub async fn admit_by_funding(
 /// Returns the recomputed map (identical to the play-side `AdmissionOutcome.debits`
 /// for a valid block) AND the count of admitted deploys (for the
 /// `ReplayAdmissionMismatch` diagnostic).
+///
+/// `strict` is the shard-genesis activation mode (task #13a;
+/// `CasperShardConf::strict_funding_enforcement`), threaded the SAME on play and
+/// replay. The DEBIT MATH is strict-INDEPENDENT (the amounts depend only on the
+/// admitted set, already fixed in the block, so flag-OFF is byte-identical to
+/// pre-#13a and the #12 compound debit is untouched). The flag adds ONE
+/// replay-side admission RE-VERIFICATION: under `strict`, a valid block's gate
+/// would NEVER admit a deploy whose pool is ABSENT (strict rejects underfunded
+/// deploys, and an absent pool funds nothing beyond `Δ = 0`), so if the block
+/// records an ADMITTED deploy with `Δ > 0` on an absent pool, the proposer
+/// bypassed the strict gate ⇒ the block is INVALID
+/// ([`ReplayFailure::ReplayAdmissionMismatch`]). When `strict` is `false` this
+/// check is skipped (absent ⇒ unenforced, matching the transitional gate).
 pub async fn recompute_settlement_debits(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
+    strict: bool,
 ) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
     // 1. Group admitted deploys by pool, summing Δ_s, AND collect the Split/Join
     //    decompositions + every distinct channel (group + compound component) —
@@ -669,6 +707,39 @@ pub async fn recompute_settlement_debits(
             }
         }
     }
+
+    // Task #13a STRICT replay RE-VERIFICATION: under spec-strict funding, the
+    // gate would NEVER admit a `Δ > 0` deploy onto an ABSENT pool (absent ⇒
+    // effective supply 0 ⇒ rejected, §7.6 step 5). So a recorded ADMITTED group
+    // with positive demand whose own pool is absent on the block's pre-state
+    // means the proposer bypassed the strict gate ⇒ INVALID block. (Skipped
+    // when `!strict`: the transitional gate admits absent pools unenforced, so
+    // this is exactly the byte-identical pre-#13a behavior.) Iterates the
+    // PRE-filter `demand_by_group` (deterministic `SigKey` order) so absent
+    // admitted groups are still visible here before the present-filter below
+    // drops them.
+    if strict {
+        for (key, (_channel, amount)) in &demand_by_group {
+            if *amount > 0 && !present.contains(key) {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_admission_mismatch(
+                        0,
+                        0,
+                        0,
+                        0,
+                        format!(
+                            "strict funding: admitted deploy with ΣΔ_s={} targets ABSENT pool \
+                             (SigKey {}, effective supply 0) — proposer bypassed the spec-strict \
+                             gate (§7.6 step 5: underfunded deploy must be rejected)",
+                            amount,
+                            hex::encode(key),
+                        ),
+                    ),
+                ));
+            }
+        }
+    }
+
     let demand_by_group: BTreeMap<SigKey, (Par, i64)> = demand_by_group
         .into_iter()
         .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
@@ -877,9 +948,10 @@ mod tests {
         reader.set(b"alice", 3); // exactly one Δ=3 deploy fits
         reader.set(b"bob", 2); // the Δ=2 deploy fits
 
-        let outcome = admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0)
-            .await
-            .expect("gate must not error");
+        let outcome =
+            admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0, false)
+                .await
+                .expect("gate must not error");
 
         // Group A: canonical order is a0 (ts=10) before a1 (ts=20); a0 admitted,
         // a1 rejected (pool exhausted). Group B: b0 admitted independently.
@@ -908,7 +980,7 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set(b"carol", 2);
 
-        let outcome = admit_by_funding(vec![c0.clone(), c1.clone()], &reader, 0)
+        let outcome = admit_by_funding(vec![c0.clone(), c1.clone()], &reader, 0, false)
             .await
             .expect("gate must not error");
 
@@ -934,7 +1006,7 @@ mod tests {
         let d = cosigned(&n_sends(demand), b"dave", 0, 10);
         let mut reader_ok = MockSupplyReader::new();
         reader_ok.set(b"dave", (demand as i64) + margin);
-        let accepted = admit_by_funding(vec![d.clone()], &reader_ok, margin)
+        let accepted = admit_by_funding(vec![d.clone()], &reader_ok, margin, false)
             .await
             .expect("gate must not error");
         assert_eq!(accepted.admitted.len(), 1, "Σ = Δ+margin ⇒ accepted");
@@ -948,7 +1020,7 @@ mod tests {
         // Σ = 5 (= Δ+margin−1) ⇒ rejected.
         let mut reader_short = MockSupplyReader::new();
         reader_short.set(b"dave", (demand as i64) + margin - 1);
-        let rejected = admit_by_funding(vec![d.clone()], &reader_short, margin)
+        let rejected = admit_by_funding(vec![d.clone()], &reader_short, margin, false)
             .await
             .expect("gate must not error");
         assert!(rejected.admitted.is_empty(), "Σ = Δ+margin−1 ⇒ rejected");
@@ -964,7 +1036,7 @@ mod tests {
         let bad = cosigned("for(x <- @0){ ", b"erin", 0, 10);
         let mut reader = MockSupplyReader::new();
         reader.set(b"erin", 1_000);
-        let outcome = admit_by_funding(vec![bad], &reader, 0)
+        let outcome = admit_by_funding(vec![bad], &reader, 0, false)
             .await
             .expect("gate must not error");
         assert!(outcome.admitted.is_empty(), "malformed ⇒ not admitted");
@@ -983,7 +1055,8 @@ mod tests {
         // Δ = 5, but NO pool is set for "frank" ⇒ pool absent ⇒ admit, no debit.
         let f = cosigned(&n_sends(5), b"frank", 0, 10);
         let reader = MockSupplyReader::new(); // empty: every pool absent
-        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1)
+        // strict = false ⇒ the TRANSITIONAL early-admit path (back-compat).
+        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1, /* strict */ false)
             .await
             .expect("gate must not error");
         assert_eq!(outcome.admitted.len(), 1, "absent pool ⇒ admitted unenforced");
@@ -1004,7 +1077,7 @@ mod tests {
         let g = cosigned(&n_sends(3), b"grace", 0, 10);
         let mut reader = MockSupplyReader::new();
         reader.set(b"grace", 0); // PRESENT, drained to zero
-        let outcome = admit_by_funding(vec![g], &reader, 0)
+        let outcome = admit_by_funding(vec![g], &reader, 0, false)
             .await
             .expect("gate must not error");
         assert!(
@@ -1013,6 +1086,119 @@ mod tests {
         );
         assert_eq!(outcome.rejected.len(), 1);
         assert!(outcome.debits.is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // #13a — spec-strict acceptance-gate activation (§7.6 step 5).
+    // With `strict = true`, an ABSENT pool is treated as present-zero: a Δ>0
+    // deploy is REJECTED (no execution, no debit), a Δ=0 deploy is admitted
+    // with no debit. With `strict = false` the gate is byte-identical to the
+    // transitional per-pool-presence behavior (back-compat).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// #13a.1 — STRICT inverse of `absent_pool_admits_without_enforcement`: with
+    /// `strict = true`, a Δ>0 deploy on an ABSENT pool is REJECTED (§7.6 step 5:
+    /// rejected without executing any part), NOT admitted. Admitted is empty,
+    /// rejected has it, and there is NO settlement debit.
+    #[tokio::test]
+    async fn strict_absent_pool_rejects() {
+        // Δ = 5, NO pool set for "frank" ⇒ pool absent ⇒ under strict, Σ=0 < Δ
+        // ⇒ rejected. (Contrast `absent_pool_admits_without_enforcement`, which
+        // admits the identical deploy with strict = false.)
+        let f = cosigned(&n_sends(5), b"frank", 0, 10);
+        let reader = MockSupplyReader::new(); // empty: every pool absent
+        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1, /* strict */ true)
+            .await
+            .expect("gate must not error");
+        assert!(
+            outcome.admitted.is_empty(),
+            "strict + absent pool + Δ>0 ⇒ rejected (effective supply 0)"
+        );
+        assert_eq!(outcome.rejected.len(), 1, "the underfunded deploy is rejected");
+        assert!(
+            outcome.debits.is_empty(),
+            "rejected ⇒ no settlement debit (no tokens consumed)"
+        );
+    }
+
+    /// #13a.2 — STRICT zero-demand admit: with `strict = true`, a Δ=0 deploy
+    /// (no token-consuming COMMs) on an ABSENT pool is ADMITTED with NO debit —
+    /// the §7.6-step-5 carve-out (an underfunded deploy is one with Δ>0; a Δ=0
+    /// deploy demands nothing, so a zero supply funds it). The funded predicate
+    /// is `Σ ≥ Δ + margin`; with the absent pool's effective Σ=0 and Δ=0, this
+    /// is `0 ≥ margin`, so the carve-out holds at margin 0 (the buffer is a
+    /// per-deploy safety surcharge, inapplicable to a no-op deploy on a zero
+    /// pool). Pin the carve-out at margin 0.
+    #[tokio::test]
+    async fn strict_absent_pool_admits_zero_demand() {
+        // A term with no sends/receives ⇒ Δ = 0 (Nil/new/par are not COMMs).
+        let z = cosigned("Nil", b"zoe", 0, 10);
+        let reader = MockSupplyReader::new(); // "zoe" pool absent
+        let outcome = admit_by_funding(vec![z], &reader, /* margin */ 0, /* strict */ true)
+            .await
+            .expect("gate must not error");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "strict + absent pool + Δ=0 ⇒ admitted (demands nothing)"
+        );
+        assert!(outcome.rejected.is_empty(), "Δ=0 ⇒ never rejected");
+        assert!(
+            outcome.debits.is_empty(),
+            "Δ=0 ⇒ zero settlement debit on the (absent) pool"
+        );
+    }
+
+    /// #13a.3 — BACK-COMPAT byte-identity: with `strict = false`, the
+    /// admitted/rejected/debit outcome for a given input set is byte-identical
+    /// to the TRANSITIONAL gate. Runs three representative groups — an absent
+    /// pool (admitted unenforced, no debit), a present funded pool (admitted +
+    /// debited), and a present drained pool (rejected) — and asserts the exact
+    /// transitional verdict, the same one the pre-#13a gate produced.
+    #[tokio::test]
+    async fn strict_flag_off_is_byte_identical_to_transitional() {
+        // absent: Δ=4, no pool        ⇒ admitted, no debit
+        // funded: Δ=2, Σ=5            ⇒ admitted, debit 2
+        // drained: Δ=3, Σ=0 (present) ⇒ rejected, no debit
+        let absent = cosigned(&n_sends(4), b"abs", 0, 10);
+        let funded = cosigned(&n_sends(2), b"fund", 0, 20);
+        let drained = cosigned(&n_sends(3), b"drain", 0, 30);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"fund", 5); // present, funds Δ=2
+        reader.set(b"drain", 0); // present, drained ⇒ rejects Δ=3
+        // "abs" intentionally unset ⇒ absent.
+
+        let outcome = admit_by_funding(
+            vec![absent.clone(), funded.clone(), drained.clone()],
+            &reader,
+            /* margin */ 0,
+            /* strict */ false,
+        )
+        .await
+        .expect("gate must not error");
+
+        // Admitted: absent (unenforced) + funded. Rejected: drained.
+        let admitted_sigs: std::collections::BTreeSet<&[u8]> =
+            outcome.admitted.iter().map(|c| c.primary().sig.as_ref()).collect();
+        assert_eq!(outcome.admitted.len(), 2, "absent + funded admitted");
+        assert!(admitted_sigs.contains(&b"abs".as_ref()), "absent admitted unenforced");
+        assert!(admitted_sigs.contains(&b"fund".as_ref()), "funded admitted");
+        assert_eq!(outcome.rejected.len(), 1, "drained rejected");
+        assert_eq!(
+            outcome.rejected[0].as_ref(),
+            b"drain".as_ref(),
+            "the drained-pool deploy is the rejected one"
+        );
+
+        // Debits: exactly the funded pool (Δ=2). Absent + drained ⇒ no debit.
+        let abs_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"abs"));
+        let fund_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"fund"));
+        let drain_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"drain"));
+        assert_eq!(outcome.debits.len(), 1, "exactly one debit (the funded pool)");
+        assert_eq!(outcome.debits.get(&fund_key).map(|d| d.amount), Some(2), "funded -= 2");
+        assert!(outcome.debits.get(&abs_key).is_none(), "absent ⇒ no debit");
+        assert!(outcome.debits.get(&drain_key).is_none(), "drained/rejected ⇒ no debit");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1273,15 +1459,15 @@ mod tests {
         reader.set_sig(&left, 5);
         reader.set_sig(&right, 5);
 
-        // ---- PLAY: the gate's threaded debit map ----
-        let outcome = admit_by_funding(vec![compound.clone()], &reader, /* margin */ 0)
+        // ---- PLAY: the gate's threaded debit map (strict OFF — #12 unchanged) ----
+        let outcome = admit_by_funding(vec![compound.clone()], &reader, /* margin */ 0, false)
             .await
             .expect("gate must not error");
         assert_eq!(outcome.admitted.len(), 1, "compound deploy admitted on effectiveΣ");
         assert!(outcome.rejected.is_empty());
 
         // ---- REPLAY: recompute from the admitted set over the SAME pre-state ----
-        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader, false)
             .await
             .expect("recompute must not error");
 
@@ -1323,12 +1509,12 @@ mod tests {
         reader.set_sig(&left, 4);
         reader.set_sig(&right, 4);
 
-        let outcome = admit_by_funding(vec![compound.clone()], &reader, 0)
+        let outcome = admit_by_funding(vec![compound.clone()], &reader, 0, false)
             .await
             .expect("gate must not error");
         assert_eq!(outcome.admitted.len(), 1, "admitted on component-pair credit");
 
-        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader, false)
             .await
             .expect("recompute must not error");
         assert_eq!(

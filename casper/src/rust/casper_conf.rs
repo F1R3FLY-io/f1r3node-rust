@@ -58,6 +58,24 @@ pub struct CasperConf {
     #[serde(rename = "min-phlo-price")]
     pub min_phlo_price: i64,
 
+    /// Cost-Accounted Rho acceptance-gate activation mode (task #13a). When
+    /// `false` (default = back-compat), the per-signature funding gate is in
+    /// the TRANSITIONAL per-pool-presence mode: a deploy whose supply pool
+    /// `Σ⟦s⟧` is ABSENT (not yet provisioned by the economic producer) is
+    /// admitted UNENFORCED with no settlement debit (pre-cost-accounting
+    /// behavior, bit-for-bit). When `true`, the gate is SPEC-STRICT (§7.6
+    /// step 5): an absent pool is treated as a present-zero pool (`Σ = 0`),
+    /// so an underfunded (`Δ > 0`) deploy is REJECTED without executing any
+    /// part (no state change, no tokens consumed), and only a `Δ = 0` deploy
+    /// is admitted (with no debit). Shard-genesis constant, immutable per
+    /// shard (DR-6); every node in a shard shares it, so the gate verdict is
+    /// replay-deterministic (mirrors `min_phlo_price`).
+    #[serde(
+        rename = "strict-funding-enforcement",
+        default = "default_strict_funding_enforcement"
+    )]
+    pub strict_funding_enforcement: bool,
+
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 
@@ -147,6 +165,12 @@ fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 fn default_max_user_deploys_per_block() -> u32 { 32 }
 
 fn default_disable_late_block_filtering() -> bool { true }
+
+/// Default for `strict_funding_enforcement` (task #13a): OFF. Existing shards
+/// (which never set this key) keep the TRANSITIONAL per-pool-presence gate ⇒
+/// their replay is byte-identical to pre-#13a. Operators opt into the
+/// spec-strict §7.6-step-5 rejection at genesis by setting it `true`.
+fn default_strict_funding_enforcement() -> bool { false }
 
 fn default_enable_mergeable_channel_gc() -> bool { false }
 

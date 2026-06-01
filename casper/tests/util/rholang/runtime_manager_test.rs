@@ -98,6 +98,7 @@ async fn replay_compute_state(
             },
             None,
             false,
+            false, // strict_funding_enforcement (#13a)
         )
         .await
 }
@@ -1392,6 +1393,10 @@ async fn gate_decision_replay_determinism() {
                 vec![funded_cosigned.clone(), absent_cosigned.clone()],
                 &reader,
                 /* margin */ 0,
+                // strict = false: this test exercises the TRANSITIONAL gate
+                // (one present pool enforced + debited, one absent pool admitted
+                // unenforced) and the play↔replay symmetry of that path.
+                /* strict */ false,
             )
             .await
             .unwrap();
@@ -1463,6 +1468,9 @@ async fn gate_decision_replay_determinism() {
             let recomputed = acceptance::recompute_settlement_debits(
                 vec![funded_cosigned.clone(), absent_cosigned.clone()],
                 &recompute_reader,
+                // strict = false: same transitional path as the play side above
+                // (absent pool unenforced ⇒ no admission re-verification error).
+                false,
             )
             .await
             .unwrap();
@@ -1668,6 +1676,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await
                 .unwrap();
@@ -1724,6 +1733,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     },
                     None,
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await
                 .unwrap();
@@ -2036,6 +2046,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await
                 .unwrap();
@@ -2456,6 +2467,7 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await;
 
@@ -2527,6 +2539,7 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                     &block_data,
                     None,
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await
                 .unwrap();
@@ -2632,6 +2645,7 @@ async fn joins_should_be_replayed_correctly() {
                     &block_data,
                     Some(invalid_blocks),
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await
                 .unwrap();
@@ -2716,6 +2730,7 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
                 &play_block_data,
                 None,
                 false,
+                false, // strict_funding_enforcement (#13a)
             )
             .await;
 
@@ -4086,6 +4101,7 @@ async fn parallel_replay_determinism() {
                     &block_data,
                     None,
                     false,
+                    false, // strict_funding_enforcement (#13a)
                 )
                 .await;
 

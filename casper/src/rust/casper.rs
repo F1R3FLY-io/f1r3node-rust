@@ -345,6 +345,16 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
+    /// Cost-Accounted Rho acceptance-gate activation mode (task #13a). `false`
+    /// (default) = TRANSITIONAL per-pool-presence gate (absent pool ⇒ admit
+    /// unenforced, no debit; back-compat). `true` = SPEC-STRICT (§7.6 step 5):
+    /// an absent pool is a present-zero pool, so an underfunded (`Δ > 0`)
+    /// deploy is rejected and only a `Δ = 0` deploy is admitted (no debit).
+    /// Shard-genesis constant shared by every node ⇒ replay-deterministic
+    /// (mirrors `min_phlo_price`). Threaded onto both the play gate
+    /// (`admit_by_funding`) and the replay recompute
+    /// (`recompute_settlement_debits`) so play and replay agree.
+    pub strict_funding_enforcement: bool,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
@@ -417,6 +427,11 @@ impl CasperShardConf {
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
+            // Task #13a: default OFF = transitional per-pool-presence gate
+            // (back-compat). `CasperShardConf::new()` is the basis for every
+            // `..CasperShardConf::new()`-spread literal, so this default
+            // covers all such sites.
+            strict_funding_enforcement: false,
             disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,

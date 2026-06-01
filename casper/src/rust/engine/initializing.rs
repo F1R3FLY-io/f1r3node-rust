@@ -952,6 +952,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &block_data,
                 None, // No invalid blocks for genesis
                 true, // isGenesis = true
+                // Task #13a: pass the engine's shard-conf strict flag. Genesis
+                // replays with cost-accounting OFF, so the value is inert here,
+                // but threading the real shard constant keeps the call uniform.
+                self.casper_shard_conf.strict_funding_enforcement,
             )
             .await;
 
@@ -1023,6 +1027,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &block_data,
                 Some(invalid_blocks_map),
                 is_genesis,
+                // Task #13a: historical-block replay (rebuilding the mergeable
+                // cache) uses the engine's shard-conf strict flag — the SAME
+                // shard constant the block was validated under, so the
+                // recompute is deterministic.
+                self.casper_shard_conf.strict_funding_enforcement,
             )
             .await;
 

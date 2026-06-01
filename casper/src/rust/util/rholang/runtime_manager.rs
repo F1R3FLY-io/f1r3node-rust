@@ -786,6 +786,14 @@ impl RuntimeManager {
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+        // Task #13a: shard-genesis spec-strict acceptance-gate mode
+        // (`CasperShardConf::strict_funding_enforcement`). Threaded from the
+        // validation caller (which has the shard conf) down to the replay-side
+        // recompute so play and replay evaluate the gate with the SAME constant
+        // (replay determinism). Genesis / historical-replay callers that have
+        // no live snapshot pass their engine's shard-conf value (cost-accounting
+        // is off for genesis, so the value is inert there).
+        strict_funding_enforcement: bool,
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
@@ -895,6 +903,7 @@ impl RuntimeManager {
                 block_data,
                 Some(invalid_blocks),
                 is_genesis,
+                strict_funding_enforcement,
             )
             .await?;
 

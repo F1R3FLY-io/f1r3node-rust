@@ -874,10 +874,18 @@ pub async fn create(
     // the gate reads, so until C provisions a signer's pool that pool is ABSENT —
     // and the gate admits its deploys UNENFORCED + UNDEBITED (pre-C /
     // non-cost-accounted operation, bit-for-bit). A PRESENT pool (including a
-    // drained `Some(0)`) is enforced. The gate therefore runs UNCONDITIONALLY and
-    // is a no-op until pools are provisioned — no separate activation flag, no
-    // new genesis param. The margin is the on-chain `min_phlo_price` (D2.5).
+    // drained `Some(0)`) is enforced. The margin is the on-chain
+    // `min_phlo_price` (D2.5).
+    //
+    // Task #13a: the per-pool-presence activation above is the TRANSITIONAL
+    // default. The shard-genesis `strict_funding_enforcement` flag (off by
+    // default = back-compat) switches the gate to SPEC-STRICT (§7.6 step 5):
+    // an absent pool is then treated as present-zero, so an underfunded deploy
+    // is rejected rather than admitted unenforced. The same shard constant is
+    // threaded into the replay-side recompute, so play and replay agree.
     let gate_margin = casper_snapshot.on_chain_state.shard_conf.min_phlo_price;
+    let strict_funding_enforcement =
+        casper_snapshot.on_chain_state.shard_conf.strict_funding_enforcement;
     let gate_outcome = {
         let t = std::time::Instant::now();
         let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
@@ -888,6 +896,7 @@ pub async fn create(
             user_cosigned_for_gate,
             &reader,
             gate_margin,
+            strict_funding_enforcement,
         )
         .await?;
         tracing::debug!(

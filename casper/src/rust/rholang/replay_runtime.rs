@@ -87,6 +87,9 @@ impl ReplayRuntimeOps {
         block_data: &BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
+        // Task #13a: shard-genesis spec-strict acceptance-gate mode, threaded
+        // verbatim into the replay-side recompute (same constant as play).
+        strict_funding_enforcement: bool,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
 
@@ -99,8 +102,15 @@ impl ReplayRuntimeOps {
             .set_invalid_blocks(invalid_blocks)
             .await;
 
-        self.replay_deploys(start_hash, terms, system_deploys, !is_genesis, block_data)
-            .await
+        self.replay_deploys(
+            start_hash,
+            terms,
+            system_deploys,
+            !is_genesis,
+            block_data,
+            strict_funding_enforcement,
+        )
+        .await
     }
 
     /* REPLAY Deploy evaluators */
@@ -115,6 +125,11 @@ impl ReplayRuntimeOps {
         system_deploys: Vec<ProcessedSystemDeploy>,
         with_cost_accounting: bool,
         block_data: &BlockData,
+        // Task #13a: the shard-genesis spec-strict acceptance-gate mode
+        // (`CasperShardConf::strict_funding_enforcement`), threaded from the
+        // validation caller so the replay-side recompute + re-verification use
+        // the SAME constant as the play-side gate (replay determinism).
+        strict_funding_enforcement: bool,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         // Time reset phase - Span[F].traceI("reset") from Scala
         let reset_start = Instant::now();
@@ -138,7 +153,8 @@ impl ReplayRuntimeOps {
         // sigs) — a wrongly-rejected fundable deploy changes the admitted set and
         // is caught by the post-state root check (wd-d2 §D2.4(b)).
         let replay_debits = if with_cost_accounting {
-            self.recompute_and_verify_admission(&terms).await?
+            self.recompute_and_verify_admission(&terms, strict_funding_enforcement)
+                .await?
         } else {
             // Genesis / non-cost-accounted replay: no acceptance gate ran on the
             // play side, so there is nothing to recompute or debit.
@@ -222,6 +238,7 @@ impl ReplayRuntimeOps {
     async fn recompute_and_verify_admission(
         &self,
         terms: &[ProcessedDeploy],
+        strict_funding_enforcement: bool,
     ) -> Result<
         std::collections::BTreeMap<
             crate::rust::util::rholang::acceptance::SigKey,
@@ -239,9 +256,16 @@ impl ReplayRuntimeOps {
         let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
             runtime_ops: &self.runtime_ops,
         };
-        let debits =
-            crate::rust::util::rholang::acceptance::recompute_settlement_debits(admitted, &reader)
-                .await?;
+        // Task #13a: thread the shard-genesis strict flag (same constant as the
+        // play side) into the recompute. Under `strict`, the recompute ALSO
+        // re-verifies that no admitted `Δ > 0` deploy targets an absent pool
+        // (a proposer that bypassed the spec-strict gate ⇒ invalid block).
+        let debits = crate::rust::util::rholang::acceptance::recompute_settlement_debits(
+            admitted,
+            &reader,
+            strict_funding_enforcement,
+        )
+        .await?;
 
         // Re-verify admission: each PRESENT pool's admitted ΣΔ_s ≤ Σ_s. The
         // recompute already restricted `debits` to present pools, so reading the

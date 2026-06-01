@@ -280,6 +280,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 &rholang::rust::interpreter::system_processes::BlockData::from_block(block),
                 None,
                 true,
+                // Task #13a: genesis-candidate replay runs with cost-accounting
+                // OFF (`is_genesis = true`), so the strict flag is inert — the
+                // acceptance recompute is skipped entirely. Pass `false`.
+                false,
             )
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;

@@ -73,6 +73,7 @@ mod tests {
                 ceremony_master_mode: false,
             },
             min_phlo_price: 0,
+            strict_funding_enforcement: false,
             heartbeat_conf: HeartbeatConf {
                 enabled: false,
                 check_interval: Duration::from_secs(60),

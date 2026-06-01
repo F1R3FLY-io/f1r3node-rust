@@ -323,9 +323,19 @@ pub async fn validate_block_checkpoint(
                 // Using tracing events for async - Span[F] equivalent from Scala
                 tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-started");
                 let replay_start = std::time::Instant::now();
-                let replay_result =
-                    replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
-                        .await?;
+                // Read the shard-conf strict flag (Copy `bool`) into a local
+                // before the `&mut s.dag` borrow in the call below, so the
+                // disjoint borrows don't trip the borrow checker.
+                let strict_funding_enforcement =
+                    s.on_chain_state.shard_conf.strict_funding_enforcement;
+                let replay_result = replay_block(
+                    incoming_pre_state_hash,
+                    block,
+                    &mut s.dag,
+                    runtime_manager,
+                    strict_funding_enforcement,
+                )
+                .await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(replay_start.elapsed().as_secs_f64());
                 tracing::debug!(target: "f1r3fly.casper.replay-block", "replay-block-finished");
@@ -342,6 +352,10 @@ async fn replay_block(
     block: &BlockMessage,
     dag: &mut KeyValueDagRepresentation,
     runtime_manager: &RuntimeManager,
+    // Task #13a: the shard-genesis spec-strict acceptance-gate mode, read from
+    // the validating snapshot's on-chain shard conf and threaded into the
+    // replay-side recompute (same constant as the play-side gate).
+    strict_funding_enforcement: bool,
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
     // Extract deploys and system deploys from the block
     let internal_deploys = proto_util::deploys(block);
@@ -437,6 +451,7 @@ async fn replay_block(
                 &block_data,
                 Some(invalid_blocks.clone()),
                 is_genesis,
+                strict_funding_enforcement,
             )
             .await;
 
