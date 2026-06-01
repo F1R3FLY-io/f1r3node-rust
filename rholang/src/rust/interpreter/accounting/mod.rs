@@ -19,6 +19,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
+pub mod resource_logic;
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
 /// Domain separator for compound (multi-signer) deploy signatures. Distinct
