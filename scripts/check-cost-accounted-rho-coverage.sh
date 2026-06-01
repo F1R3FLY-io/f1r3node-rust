@@ -12,6 +12,17 @@
 #   - rholang/src/rust/interpreter/accounting/mod.rs         (>= 85%)
 #   - casper/src/rust/rholang/runtime.rs                     (>= 80%)
 #
+# NOTE (2026-06-01, per user direction): these LINE-coverage thresholds are an
+# UNVALIDATED, superficial proxy. Line coverage is not a proper completeness
+# measure (BRANCH coverage is), and the numbers above were aspirational guesses
+# (introduced in 9474d987; never validated, because this gate was blocked by
+# failing tests until 2026-06-01). The OPERATIVE quality bar for the
+# cost-accounting substrate is thorough testing + multi-prover formal
+# verification (Rocq + Lean + TLA+/TLAPS + Sage), NOT this LoC number.
+# Threshold recalibration (and a move to branch coverage) is DEFERRED to a
+# later user-led testing pass; until then a sub-threshold result here is
+# informational, not a completion blocker.
+#
 # Output:
 #   - target/llvm-cov/html/index.html (browsable line-level coverage)
 #   - target/llvm-cov/cost-accounted-rho-summary.txt
@@ -70,9 +81,15 @@ THRESHOLDS["casper/src/rust/rholang/runtime.rs"]=80
 failures=0
 for file in "${!THRESHOLDS[@]}"; do
     threshold="${THRESHOLDS[$file]}"
-    # Extract line coverage from the summary. llvm-cov format:
-    #   <path>     LineCount  Lines   Lines%   ...
-    actual=$(grep "$file" "$SUMMARY" 2>/dev/null | awk '{print $7}' | sed 's/%//' || echo "0")
+    # Extract LINE coverage from the summary. The `cargo llvm-cov
+    # --summary-only` columns are (whitespace-separated, filename has no
+    # spaces): $1 Filename, $2 Regions, $3 MissedRegions, $4 Cover(region%),
+    # $5 Functions, $6 MissedFunctions, $7 Executed(function%), $8 Lines,
+    # $9 MissedLines, $10 Cover(LINE%), $11 Branches, ... So line coverage —
+    # the metric this gate documents — is field $10 (NOT $7, which is function
+    # coverage; this gate previously read $7 by mistake and so gated on the
+    # wrong metric).
+    actual=$(grep "$file" "$SUMMARY" 2>/dev/null | awk '{print $10}' | sed 's/%//' || echo "0")
     if [[ -z "$actual" ]]; then
         actual=0
     fi
