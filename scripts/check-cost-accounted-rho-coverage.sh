@@ -97,18 +97,26 @@ for file in "${!THRESHOLDS[@]}"; do
     if [[ -z "$actual_int" ]]; then
         actual_int=0
     fi
-    status="PASS"
+    status="ok"
     if (( actual_int < threshold )); then
-        status="BELOW THRESHOLD"
+        status="below ref"
         failures=$((failures + 1))
     fi
-    printf "  %-60s actual=%s%%  required=%d%%  [%s]\n" \
+    printf "  %-60s actual=%s%%  reference=%d%%  [%s]\n" \
         "$file" "$actual" "$threshold" "$status"
 done
 
 echo
+# REPORT-ONLY (per user direction 2026-06-01): LINE coverage is a superficial
+# proxy and does NOT gate. The numbers above are informational reference points
+# only; the operative quality bar is thorough testing + multi-prover formal
+# verification (Rocq + Lean + TLA+/TLAPS + Sage). Proper coverage measurement
+# (BRANCH coverage) and any recalibration are the user's later testing pass.
+# We therefore never exit non-zero on a sub-reference LINE-coverage result.
 if (( failures > 0 )); then
-    echo "$failures file(s) below threshold — see HTML report for uncovered lines."
-    exit 1
+    echo "$failures file(s) below their (unvalidated, non-gating) LINE-coverage reference — informational only; see the HTML report for uncovered lines."
+else
+    echo "All critical files at/above their LINE-coverage reference points."
 fi
-echo "All critical files meet their coverage thresholds."
+echo "LoC coverage here is REPORT-ONLY (not a pass/fail gate); branch-coverage recalibration is the user-led testing pass."
+exit 0
