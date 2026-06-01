@@ -6,9 +6,12 @@
 # formal verification stays local — this script is NOT a CI step.
 #
 # Runs TLC against every .cfg under formal/tlaplus/cost_accounted_rho/
-# whose paired .tla module exists. Uses systemd-run with resource limits
-# matching the project standard (96G RAM, 1800% CPU, 30 IO weight, 200
-# tasks) so a single rogue model can't lock the machine.
+# whose paired .tla module exists. Every TLC run goes through the shared
+# scripts/lib/tlc-run.sh launcher, which enforces a strict memory envelope
+# (on-disk metadir — NOT tmpfs; bounded -Xmx heap; bounded workers; and a
+# hard systemd-run MemoryMax / MemorySwapMax=0 ceiling) so a single large
+# model can't exhaust RAM. Tune via TLC_HEAP / TLC_WORKERS / TLC_RSS /
+# TLC_METADIR_ROOT (see the helper header).
 #
 # Each run is reported as PASS / FAIL based on the TLC output. Exit
 # code 0 iff every spec reports "Model checking completed. No error
@@ -40,6 +43,11 @@ if ! command -v tlc >/dev/null 2>&1; then
     echo "ERROR: tlc binary not on PATH; install tlaplus tooling" >&2
     exit 2
 fi
+
+# Shared memory-bounded TLC launcher: on-disk metadir, capped -Xmx heap,
+# capped workers, hard systemd MemoryMax ceiling. See scripts/lib/tlc-run.sh.
+export TLC_REPO_ROOT="$REPO_ROOT"
+source "$REPO_ROOT/scripts/lib/tlc-run.sh"
 
 cd "$TLA_DIR"
 
@@ -90,16 +98,20 @@ if [[ ${#specs[@]} -eq 0 ]]; then
 fi
 
 echo "Running TLC against ${#specs[@]} cost_accounted_rho specs"
-echo "Resource limits: MemoryMax=96G CPUQuota=1800% IOWeight=30 TasksMax=200"
+echo "Memory envelope: -Xmx${TLC_HEAP}, ${TLC_WORKERS} workers, on-disk metadir, MemoryMax=${TLC_RSS} (MemorySwapMax=0)"
 echo
 
 passes=0
 failures=0
 failed_specs=()
-# Use a unique per-spec metadir to avoid collisions when run rapidly
-# in sequence (TLC defaults to ./states which is a single global dir
-# per cwd and is not safe to share across invocations).
-METADIR_ROOT="$(mktemp -d)"
+# Per-spec metadirs under an ON-DISK root. NOT mktemp -d, which lands in
+# TMPDIR=/tmp — tmpfs (RAM) on this host, so TLC's multi-GB state graph
+# would spill into RAM instead of onto the NVMe. Cleared up front (a prior
+# SIGKILL'd run leaks its metadir because the EXIT trap never fires) and
+# again on exit.
+METADIR_ROOT="$TLC_METADIR_ROOT/cost-accounted-gate"
+rm -rf "$METADIR_ROOT"
+mkdir -p "$METADIR_ROOT"
 trap 'rm -rf "$METADIR_ROOT"' EXIT
 
 for i in "${!specs[@]}"; do
@@ -107,9 +119,7 @@ for i in "${!specs[@]}"; do
     spec_root="${spec_roots[$i]}"
     printf "  %-40s " "${base} (${spec_root%.tla})"
     metadir="$METADIR_ROOT/$base"
-    mkdir -p "$metadir"
-    output=$(tlc -deadlock -metadir "$metadir" \
-        -config "${base}.cfg" "$spec_root" 2>&1 || true)
+    output=$(tlc_run "$metadir" "${base}.cfg" "$spec_root" -deadlock 2>&1 || true)
     if echo "$output" | grep -q "Model checking completed. No error has been found"; then
         echo "PASS"
         passes=$((passes + 1))

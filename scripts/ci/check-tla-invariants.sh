@@ -33,36 +33,34 @@ if [[ ! -d "$TLA_DIR" ]]; then
     exit 2
 fi
 
-# Locate TLC. Common installation paths:
-#   • $TLA_TOOLS_JAR pointing at tla2tools.jar (preferred, explicit)
-#   • Java + tla2tools.jar in /usr/share/tla / /opt/tlaplus / ~/.tla
-#   • `tlc` wrapper script on PATH
-TLC_CMD=""
-if [[ -n "${TLA_TOOLS_JAR:-}" && -f "$TLA_TOOLS_JAR" ]]; then
-    TLC_CMD="java -XX:+UseParallelGC -jar $TLA_TOOLS_JAR"
-elif command -v tlc >/dev/null 2>&1; then
-    TLC_CMD="tlc"
-else
-    for candidate in \
-        /usr/share/tla/tla2tools.jar \
-        /opt/tlaplus/tla2tools.jar \
-        "$HOME/.tla/tla2tools.jar"
-    do
-        if [[ -f "$candidate" ]]; then
-            TLC_CMD="java -XX:+UseParallelGC -jar $candidate"
-            break
-        fi
-    done
-fi
+# Shared memory-bounded TLC launcher: on-disk metadir (NOT tmpfs), capped
+# -Xmx heap, capped workers (this script previously used `-workers auto`,
+# = 64 threads on this host, which multiplied TLC's peak frontier and —
+# with a tmpfs metadir — OOM'd the machine on MC_SlashFlow), and a hard
+# systemd MemoryMax ceiling. The slashing models are heavier than the
+# cost_accounted_rho ones: the exhaustive MC_EquivocationDetector's
+# fingerprint set and MC_SlashFlow's liveness graph want > 8 GB, so default
+# to a roomier-but-still-bounded 16g heap / 24G ceiling / 8 workers (all
+# overridable via TLC_HEAP / TLC_RSS / TLC_WORKERS). Anything that overflows
+# the heap spills to the on-disk metadir (DiskFPSet) rather than RAM, and
+# the 24G cgroup cap kills a runaway cleanly instead of OOM-ing the host.
+# The helper also resolves TLC (jar or `tlc` wrapper), erroring if absent.
+: "${TLC_HEAP:=16g}"
+: "${TLC_RSS:=24G}"
+: "${TLC_WORKERS:=8}"
+export TLC_REPO_ROOT="$REPO_ROOT"
+source "$REPO_ROOT/scripts/lib/tlc-run.sh"
 
-if [[ -z "$TLC_CMD" ]]; then
-    echo "ERROR: TLC not found. Set TLA_TOOLS_JAR=/path/to/tla2tools.jar," >&2
-    echo "       install tlaplus, or place the jar at one of: " >&2
-    echo "         /usr/share/tla/tla2tools.jar" >&2
-    echo "         /opt/tlaplus/tla2tools.jar" >&2
-    echo "         ~/.tla/tla2tools.jar" >&2
-    exit 3
-fi
+# On-disk (NVMe) home for the per-config TLC logs — NOT /tmp, which is
+# tmpfs (RAM) on this host.
+LOG_DIR="$REPO_ROOT/target/slashing-tla-logs"
+mkdir -p "$LOG_DIR"
+
+# Clear this runner's on-disk metadirs up front (a SIGKILL'd prior run leaks
+# them, since the EXIT trap can't fire on SIGKILL) and again on exit, so
+# TLC's multi-GB state graphs don't accumulate on the NVMe across runs.
+\rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true
+trap '\rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true' EXIT
 
 # Post-fix configs: each must TLC-clean.
 POST_FIX_CONFIGS=(
@@ -91,15 +89,19 @@ for cfg in "${POST_FIX_CONFIGS[@]}"; do
         continue
     fi
     printf "CHECK  %-40s ... " "$cfg"
-    if $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla" >"/tmp/tlc-$cfg.log" 2>&1; then
+    if tlc_run "$(tlc_metadir "slashing-$cfg")" "$cfg.cfg" "$cfg.tla" >"$LOG_DIR/tlc-$cfg.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
-        echo "--- last 40 lines of /tmp/tlc-$cfg.log ---"
-        tail -40 "/tmp/tlc-$cfg.log"
+        echo "--- last 40 lines of $LOG_DIR/tlc-$cfg.log ---"
+        tail -40 "$LOG_DIR/tlc-$cfg.log"
         echo "--- end log ---"
         failed=$((failed + 1))
     fi
+    # Reclaim this model's on-disk state graph immediately (MC_SlashFlow
+    # alone reaches ~11 GB); without this the per-model metadirs accumulate
+    # on the NVMe until the EXIT trap. The log under $LOG_DIR is retained.
+    \rm -rf "$TLC_METADIR_ROOT/slashing-$cfg" 2>/dev/null || true
 done
 
 if (( failed > 0 )); then

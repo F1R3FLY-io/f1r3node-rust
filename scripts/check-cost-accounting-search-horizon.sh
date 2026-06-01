@@ -17,12 +17,24 @@ fi
 SEARCH_MODE="${SEARCH_MODE:-frontier}"
 SAGE_OBJECTIVES="${SAGE_OBJECTIVES:-all}"
 SEARCH_RSS_LIMIT="${SEARCH_RSS_LIMIT:-32G}"
-TLC_MAX_HEAP="${TLC_MAX_HEAP:-28g}"
+# TLC heap lowered 28g -> 8g: the cost_accounted_rho models are small, and
+# 28g was ~3.5x this host's safe per-process envelope. SEARCH_RSS_LIMIT
+# stays 32G because it also caps the heavier sage/cargo/fuzz runs (e.g.
+# libfuzzer's 28G self-limit); TLC gets its own tighter ceiling below.
+TLC_MAX_HEAP="${TLC_MAX_HEAP:-8g}"
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 export DOT_SAGE="${DOT_SAGE:-/tmp/sage}"
 
 mkdir -p "$OUT_DIR"
 mkdir -p "$DOT_SAGE"
+
+# Route TLC model-checking through the shared memory-bounded launcher
+# (on-disk metadir, capped -Xmx heap, capped workers, systemd MemoryMax
+# ceiling). TLC gets its own tighter ceiling (TLC_RSS, default 16G) and a
+# single worker for memory headroom; the non-TLC searches keep using
+# run_bounded + SEARCH_RSS_LIMIT below.
+export TLC_REPO_ROOT="$ROOT" TLC_HEAP="$TLC_MAX_HEAP" TLC_RSS="${TLC_RSS:-16G}" TLC_WORKERS="${TLC_WORKERS:-1}"
+source "$ROOT/scripts/lib/tlc-run.sh"
 
 run() {
   echo "+ $*"
@@ -381,14 +393,11 @@ run_sage_horizon() {
 run_tlc_model() {
   local config="$1"
   local module="$2"
-  local metadir="$OUT_DIR/tlc-$module"
-  mkdir -p "$metadir"
+  # Bounded heap/workers + on-disk metadir + systemd ceiling, via the
+  # shared helper. Metadir stays under OUT_DIR (NVMe, managed by this run).
   (
     cd "$TLA_DIR"
-    run_bounded java "-Xmx$TLC_MAX_HEAP" -cp "$TLC_JAR" tlc2.TLC \
-      -metadir "$metadir" \
-      -config "$config" \
-      "$module"
+    tlc_run "$OUT_DIR/tlc-$module" "$config" "$module"
   )
 }
 
