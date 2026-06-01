@@ -376,3 +376,183 @@ Theorem fee_collect_then_convert_conserves : forall l f,
 Proof.
   intros l f. unfold ledger_total, fee_convert, fee_collect. simpl. lia.
 Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   Section 7: #12 — Compound (Split/Join) MULTI-POOL settlement conservation
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The Section-5 settlement law [settlement_conserves] covers the SINGLE-pool
+   debit ([post = pre − ΣΔ]) — the common single-signer shape. This section adds
+   the conservation law for the COMPOUND ([Sig::And s₁ s₂]) debit, where one
+   admitted compound group settles across THREE pools at once (spec §3.6 Rule 2 +
+   Rule 4, tex 677-728: a compound-signed COMM consumes ONE token from each
+   COMPONENT pool, OR one token from the combined pool; App. A Split/Join,
+   tex 2020-2245). The realized form
+   (casper/.../util/rholang/acceptance.rs::compute_settlement_debits) splits the
+   group's cumulative admitted demand [k] COMBINED-POOL-FIRST:
+
+     draw_compound = min(k, Σ⟦compound⟧)
+     draw_pair     = k − draw_compound        (≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) by admission)
+     Σ⟦compound⟧ −= draw_compound ; Σ⟦s₁⟧ −= draw_pair ; Σ⟦s₂⟧ −= draw_pair
+
+   Two faces of the conserved quantity are proven here at the balance layer:
+   (a) underflow-safety — each of the three post-balances stays [≥ 0]; and
+   (b) conservation — the three post-balances plus the tokens drawn EXACTLY equal
+   the three pre-balances. As with the [system_token_count] decrease theorems
+   (Section 1), the BRIDGE is that the [draw_compound·1 + draw_pair·2] total tokens
+   matches the two-token-per-compound-COMM semantics: drawing the matched
+   COMPONENT pair costs two tokens (one per component, [rule2_decreases_by_two] /
+   [rule5_decreases_by_two]), and drawing the COMBINED pool costs one
+   ([rule4_decreases_by_one] / [rule3_decreases_by_one]).
+
+   These are [Nat]/[lia]-provable; the only hypotheses are exactly the admission
+   bounds the Rust gate enforces ([draw_compound ≤ Σ_comp] from
+   [k.min(sigma_compound)], and [draw_pair ≤ min Σ₁ Σ₂] from the effective-supply
+   admission [k ≤ Σ_compound + min(Σ₁,Σ₂)] combined with the combined-pool-first
+   split). *)
+
+(* The total tokens DRAWN by a compound settlement: one per combined-pool unit,
+   TWO per component-pair unit (the matched pair debits BOTH [Σ⟦s₁⟧] and [Σ⟦s₂⟧]).
+   This is the [draw_compound·1 + draw_pair·2] of the Rust debit and the
+   Rule-4 (combined, 1 token) / Rule-2 (split pair, 2 tokens) bridge. *)
+Definition compound_tokens_drawn (draw_compound draw_pair : nat) : nat :=
+  draw_compound + 2 * draw_pair.
+
+(* [compound_split_debit_conserves] (#12 core): under the admission bounds
+   [draw_compound ≤ Σ_comp] and [draw_pair ≤ min Σ₁ Σ₂], the three-pool compound
+   settlement is (a) UNDERFLOW-SAFE — every post-balance is [≥ 0] (trivially in
+   [nat], so stated as the EXACT post-balance value, with the subtraction not
+   truncating, which IS the [≥ 0]-with-exact-debit content the [checked_sub]
+   backstop guarantees); and (b) CONSERVING — the three post-balances plus the
+   tokens drawn equal the three pre-balances. No fuel is created or destroyed by
+   the compound multi-pool debit. *)
+Theorem compound_split_debit_conserves :
+  forall (sigma_comp sigma1 sigma2 draw_compound draw_pair : nat),
+    draw_compound <= sigma_comp ->
+    draw_pair <= Nat.min sigma1 sigma2 ->
+    (* (a) underflow-safety: each post-balance is the exact (non-truncating)
+       difference, hence [≥ 0] and the debited amount is exactly the draw. *)
+    (sigma_comp - draw_compound) + draw_compound = sigma_comp /\
+    (sigma1 - draw_pair) + draw_pair = sigma1 /\
+    (sigma2 - draw_pair) + draw_pair = sigma2 /\
+    (* (b) conservation: post-balances + tokens-drawn = pre-balances. *)
+    (sigma_comp - draw_compound) + (sigma1 - draw_pair) + (sigma2 - draw_pair)
+      + compound_tokens_drawn draw_compound draw_pair
+      = sigma_comp + sigma1 + sigma2.
+Proof.
+  intros sigma_comp sigma1 sigma2 draw_compound draw_pair Hc Hp.
+  unfold compound_tokens_drawn.
+  (* [draw_pair ≤ min σ₁ σ₂] gives [draw_pair ≤ σ₁] and [draw_pair ≤ σ₂]. *)
+  assert (Hp1 : draw_pair <= sigma1) by lia.
+  assert (Hp2 : draw_pair <= sigma2) by lia.
+  repeat split; lia.
+Qed.
+
+(* The underflow-safety face stated directly as the three [≥ 0] inequalities the
+   spec's funding obligation guarantees (every settled pool ends non-negative).
+   In [nat] these hold unconditionally, but pairing them with the admission
+   bounds documents that the EXACT (non-truncating) difference is what the Rust
+   [checked_sub] computes — an over-draw would underflow and reject the block. *)
+Corollary compound_split_debit_no_underflow :
+  forall (sigma_comp sigma1 sigma2 draw_compound draw_pair : nat),
+    draw_compound <= sigma_comp ->
+    draw_pair <= Nat.min sigma1 sigma2 ->
+    sigma_comp - draw_compound >= 0 /\
+    sigma1 - draw_pair >= 0 /\
+    sigma2 - draw_pair >= 0 /\
+    (* and the exact debited amounts recover the pre-balances (no truncation): *)
+    sigma_comp = (sigma_comp - draw_compound) + draw_compound /\
+    sigma1 = (sigma1 - draw_pair) + draw_pair /\
+    sigma2 = (sigma2 - draw_pair) + draw_pair.
+Proof.
+  intros sigma_comp sigma1 sigma2 draw_compound draw_pair Hc Hp.
+  assert (Hp1 : draw_pair <= sigma1) by lia.
+  assert (Hp2 : draw_pair <= sigma2) by lia.
+  repeat split; lia.
+Qed.
+
+(* ─── Multi-pool generalization: a LIST of (pre, draw) settlements ────────────
+
+   A block may settle MANY pools at once (every admitted group + every compound
+   component). The cross-group residual ledger (acceptance.rs) keeps the SUMMED
+   draw on each distinct pool [≤] its pre-state balance, so each pool's net
+   (pre, draw) pair independently satisfies [draw ≤ pre]. Conservation then lifts
+   to the whole block: the sum of post-balances plus the sum of draws equals the
+   sum of pre-balances. The 3-pool [compound_split_debit_conserves] is the
+   required core; this list form shows it composes across an arbitrary number of
+   pools (the block-level settlement-conservation statement). *)
+
+(* Sum of pre-state balances over a list of (pre, draw) pool settlements. *)
+Fixpoint settlement_pre_sum (ps : list (nat * nat)) : nat :=
+  match ps with
+  | nil => 0
+  | (pre, _) :: ps' => pre + settlement_pre_sum ps'
+  end.
+
+(* Sum of tokens drawn over the settlements. *)
+Fixpoint settlement_draw_sum (ps : list (nat * nat)) : nat :=
+  match ps with
+  | nil => 0
+  | (_, draw) :: ps' => draw + settlement_draw_sum ps'
+  end.
+
+(* Sum of post-state balances ([pre − draw] per pool). *)
+Fixpoint settlement_post_sum (ps : list (nat * nat)) : nat :=
+  match ps with
+  | nil => 0
+  | (pre, draw) :: ps' => (pre - draw) + settlement_post_sum ps'
+  end.
+
+(* The per-pool admission bound holds for EVERY pool in the list: each pool's
+   drawn amount does not exceed its pre-state balance (the cross-group residual
+   ledger's invariant). *)
+Definition all_draws_within (ps : list (nat * nat)) : Prop :=
+  Forall (fun p => snd p <= fst p) ps.
+
+(* [multi_settlement_conserves]: under the per-pool admission bound, the
+   block-level settlement is CONSERVING — [Σ post + Σ draws = Σ pre]. By list
+   induction; each cons-cell discharges its own [pre − draw + draw = pre] via the
+   head bound, and the tail by the inductive hypothesis. This is the list
+   composition of [compound_split_debit_conserves] (whose three pools are three
+   such (pre, draw) entries: [(Σ_comp, draw_compound)], [(Σ₁, draw_pair)],
+   [(Σ₂, draw_pair)]). *)
+Theorem multi_settlement_conserves :
+  forall (ps : list (nat * nat)),
+    all_draws_within ps ->
+    settlement_post_sum ps + settlement_draw_sum ps = settlement_pre_sum ps.
+Proof.
+  intros ps Hwithin.
+  induction ps as [| [pre draw] ps' IH]; cbn.
+  - reflexivity.
+  - (* head bound [draw ≤ pre] from the [Forall], tail by IH. *)
+    inversion Hwithin as [| p ps'' Hhead Htail Heq]; subst.
+    cbn in Hhead.
+    specialize (IH Htail).
+    lia.
+Qed.
+
+(* Bridge corollary: the 3-pool compound debit is an INSTANCE of the list-level
+   block settlement conservation. Packaging the compound's three pools as the
+   list [(Σ_comp, draw_compound); (Σ₁, draw_pair); (Σ₂, draw_pair)] and applying
+   [multi_settlement_conserves] yields the same conserved identity (modulo the
+   [2·draw_pair] regrouping, since the pair-draw appears in TWO list entries —
+   one per component — which is exactly the [compound_tokens_drawn] two-token
+   accounting). This ties the focused 3-pool core to the general block law. *)
+Corollary compound_debit_is_block_settlement_instance :
+  forall (sigma_comp sigma1 sigma2 draw_compound draw_pair : nat),
+    draw_compound <= sigma_comp ->
+    draw_pair <= Nat.min sigma1 sigma2 ->
+    let ps := (sigma_comp, draw_compound)
+                :: (sigma1, draw_pair)
+                :: (sigma2, draw_pair) :: nil in
+    settlement_post_sum ps + settlement_draw_sum ps = settlement_pre_sum ps /\
+    settlement_draw_sum ps = compound_tokens_drawn draw_compound draw_pair.
+Proof.
+  intros sigma_comp sigma1 sigma2 draw_compound draw_pair Hc Hp ps.
+  assert (Hwithin : all_draws_within ps).
+  { unfold ps, all_draws_within.
+    repeat constructor; cbn; lia. }
+  split.
+  - apply multi_settlement_conserves; exact Hwithin.
+  - unfold ps, settlement_draw_sum, compound_tokens_drawn. cbn. lia.
+Qed.

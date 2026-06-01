@@ -573,6 +573,25 @@ Theorem delta_s_tensor_additive :
     delta_s (LLTensor f1 f2) = delta_s f1 + delta_s f2.
 Proof. intros f1 f2. reflexivity. Qed.
 
+(* [compound_demand_splits_to_components] (#12, settlement context): a compound
+   signature [Sig::And s₁ s₂] reflects to [LLTensor (ll_of_sig_algebra s₁)
+   (ll_of_sig_algebra s₂)] (see [ll_of_sig_algebra] on [ASAnd]), so its pure
+   demand [Δ_s] is EXACTLY the sum of the two COMPONENT demands — one obligation
+   per component. This is the demand-side analogue of the per-component
+   settlement DEBIT (acceptance.rs::compute_settlement_debits draws one token per
+   component pool per compound COMM, spec §3.6 Rule 2 / Rule 4): the compound's
+   total demand SPLITS additively into the components it must fund, which is why
+   the multi-pool debit ([Σ⟦s₁⟧ −= draw_pair], [Σ⟦s₂⟧ −= draw_pair]) settles the
+   same quantity the compound demanded. It names [delta_s_tensor_additive] for
+   the settlement bridge rather than re-deriving it. *)
+Corollary compound_demand_splits_to_components :
+  forall s1 s2,
+    delta_s (ll_of_sig_algebra (ASAnd s1 s2)) =
+    delta_s (ll_of_sig_algebra s1) + delta_s (ll_of_sig_algebra s2).
+Proof.
+  intros s1 s2. cbn [ll_of_sig_algebra]. apply delta_s_tensor_additive.
+Qed.
+
 (* The funding obligation as a decidable predicate over the supply balance [n]
    and the demand [d]: [funds n d] holds iff the supply meets or exceeds the
    demand (cost-accounted-rho Def 19, [eq:funding-obligation] [Σ_s ≥ Δ_s]). *)

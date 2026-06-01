@@ -308,6 +308,7 @@ Print Assumptions ll_unrestricted_cut_preserves_linear_zone.
 Print Assumptions core_demand_invariant_under_extension.
 Print Assumptions extension_demand_ge_core.
 Print Assumptions delta_s_tensor_additive.
+Print Assumptions compound_demand_splits_to_components.
 Print Assumptions funding_decidable.
 Print Assumptions sigma_s_balance_eq_stack_count.
 Print Assumptions funding_check_balance_sound.
@@ -318,6 +319,10 @@ Print Assumptions reject_both_sound.
 Print Assumptions reject_both_from_first_overshoot.
 Print Assumptions settlement_conserves.
 Print Assumptions accept_commit_conserves.
+Print Assumptions compound_split_debit_conserves.
+Print Assumptions compound_split_debit_no_underflow.
+Print Assumptions multi_settlement_conserves.
+Print Assumptions compound_debit_is_block_settlement_instance.
 Print Assumptions fee_collection_conserves.
 Print Assumptions fee_collect_then_convert_conserves.
 Print Assumptions fee_convert_credit_is_backed.

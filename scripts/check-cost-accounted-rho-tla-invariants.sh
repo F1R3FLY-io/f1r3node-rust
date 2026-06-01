@@ -53,6 +53,7 @@ cd "$TLA_DIR"
 #   tlc -config <base>.cfg <wrapper>.tla
 declare -A WRAPPED_BY
 WRAPPED_BY[CompoundProtocol]=MCCompound
+WRAPPED_BY[CompoundSettlement]=MCCompoundSettlement
 WRAPPED_BY[CostAccountedRho]=MC
 WRAPPED_BY[CostAccountingSearchFrontier]=MCCostAccountingSearchFrontier
 WRAPPED_BY[CostAccountingThreats]=MCCostAccountingThreats

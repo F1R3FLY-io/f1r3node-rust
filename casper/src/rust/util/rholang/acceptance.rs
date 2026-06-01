@@ -37,15 +37,22 @@
 //! and prefix selection — replay recomputes the identical verdict from
 //! `block.body.deploys`.
 //!
-//! ## Compound (multi-pool) scope — D2 cap (tracked D2→D3 follow-on)
+//! ## Compound (multi-pool) settlement — EXACT per-component debit (#12)
 //!
-//! D2 computes `effective_supply_with` faithfully for the ADMISSION decision
-//! (so a compound deploy may be admitted on component-pair credit), but DEBITS
-//! only directly-targeted pools and CAPS a compound's admission at its OWN pool
-//! `Σ_compound` — keeping the settlement single-pool and underflow-free. The full
-//! multi-pool draw-allocation is a funding-slot mechanism, out of the D2
-//! consensus-gate scope. Single-signer (the only shape the pool carries today,
-//! all §7.4 examples) is EXACT: `Σ⟦s⟧ -= Σ Δ_s`.
+//! The gate computes `effective_supply_with` faithfully for the ADMISSION
+//! decision (a compound deploy is fundable up to `effectiveΣ_compound =
+//! Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`), AND settles the debit EXACTLY per spec
+//! §3.6 Rule 2 + Rule 4: a compound-signed COMM consumes ONE token from the
+//! combined pool `Σ⟦compound⟧` OR a matched pair from the component pools
+//! `Σ⟦s₁⟧, Σ⟦s₂⟧`. [`compute_settlement_debits`] splits each admitted compound
+//! group's cumulative demand `k` combined-pool-first (`draw_compound =
+//! min(k, Σ⟦compound⟧)`, `draw_pair = k − draw_compound`), emitting up to THREE
+//! `SettlementDebit`s (compound, left, right). A cross-group residual ledger
+//! keeps the SUMMED draw on any pool ≤ its raw balance (underflow-safe even when
+//! a component is shared by several compounds + its own single-signer group).
+//! Single-signer (the common shape, all §7.4 examples) is UNCHANGED — one exact
+//! debit `Σ⟦s⟧ -= Σ Δ_s`. The SAME function runs on play and replay
+//! ([`recompute_settlement_debits`]) ⇒ byte-identical debits (fork safety).
 
 use std::collections::BTreeMap;
 
@@ -288,6 +295,144 @@ fn collect_decompositions(
     }
 }
 
+/// CONSENSUS-CRITICAL (#12): the EXACT per-component (Split/Join) compound
+/// settlement debit. Given each PRESENT group's cumulative admitted demand
+/// `k = ΣΔ_admitted` (`demand_by_group`, keyed + channel'd by the group's
+/// `SigKey`), the Split/Join `decompositions`, the RAW pre-state pool balances
+/// `raw` (`Σ⟦s⟧`, absent ⇒ 0), and the resolved `channel` for every key
+/// (`channels_by_key`, covering groups AND compound components), produce the
+/// per-pool settlement-debit map so that, for every admitted compound group:
+///
+/// ```text
+/// draw_compound = min(k, Σ⟦compound⟧)
+/// draw_pair     = k − draw_compound        // ≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) by admission
+/// debit: Σ⟦compound⟧ −= draw_compound ;  Σ⟦s₁⟧ −= draw_pair ;  Σ⟦s₂⟧ −= draw_pair
+/// ```
+///
+/// (spec §3.6 Rule 2 + Rule 4: a compound-signed COMM consumes ONE token from
+/// EACH component pool; the combined pool is drawn first, the matched component
+/// pair second). A single-signature (non-compound) group is UNCHANGED — one
+/// debit `k` on its OWN pool — so the no-compound path is byte-identical to the
+/// pre-#12 single-pool debit (back-compat).
+///
+/// ## The cross-group shared-component residual ledger (the #12 invariant)
+///
+/// A component pool `Σ⟦s₁⟧` may be drawn by MULTIPLE compound groups (and by its
+/// OWN single-signer group, if one is also in the block) in the same block. To
+/// keep the SUMMED draw on every pool ≤ its RAW balance (underflow-safe across
+/// groups, not just within one), a `residual` ledger initialized to `raw`
+/// tracks each pool's LIVE remaining balance: every draw (a compound's own-pool
+/// draw, each component pair-draw, and a non-compound group's own-pool draw)
+/// `saturating_sub`-decrements the ledger, and each compound pair-draw is BOUND
+/// by `min(remaining, residual[s₁], residual[s₂])`. Groups are processed in
+/// deterministic `BTreeMap` (`SigKey`-ascending) order, so the ledger evolves
+/// identically on play and replay. The non-compound own-pool draw decrements the
+/// ledger at the FULL admitted `k` (matching the pre-#12 single-pool debit) but
+/// is itself never residual-capped (its `checked_sub` backstop in
+/// `close_block_deploy.rs` remains the hard underflow guard); decrementing the
+/// ledger for it ensures a later compound that shares that pool as a component
+/// sees the reduced residual, so the cross-group SUM stays ≤ raw regardless of
+/// the relative `SigKey` order of the single-signer group and the compound.
+///
+/// Pure (no I/O); a function purely of `(demand_by_group, decompositions, raw,
+/// channels_by_key)`. Called IDENTICALLY by [`admit_by_funding`] (play) and
+/// [`recompute_settlement_debits`] (replay) — the single code path is what makes
+/// the debit map byte-identical (the fork-safety bar).
+fn compute_settlement_debits(
+    demand_by_group: &BTreeMap<SigKey, (Par, i64)>,
+    decompositions: &[Decomposition],
+    raw: &BTreeMap<SigKey, i64>,
+    channels_by_key: &BTreeMap<SigKey, Par>,
+) -> BTreeMap<SigKey, SettlementDebit> {
+    // The LIVE remaining balance of every pool (groups + components), seeded
+    // from the raw pre-state balances. Absent pools are not present in `raw`
+    // (read as 0). Processed in `SigKey` order via the BTreeMap, deterministic
+    // on play and replay.
+    let mut residual: BTreeMap<SigKey, i64> = raw.clone();
+    let read_residual =
+        |residual: &BTreeMap<SigKey, i64>, key: &SigKey| -> i64 { *residual.get(key).unwrap_or(&0) };
+
+    // Accumulated draw amount per distinct channel (`SigKey`); summed across all
+    // groups that touch a pool. A compound group emits up to THREE draws
+    // (compound, left, right); a non-compound group emits one (its own pool).
+    let mut draw_by_key: BTreeMap<SigKey, i64> = BTreeMap::new();
+
+    // Index the decompositions by compound key so a compound group resolves its
+    // component pair in O(1). The runtime forms only a single `Sig::And` per
+    // top-level envelope (the group's `SigKey`), so each compound group key maps
+    // to exactly one decomposition; an n≥3 left-assoc fold contributes nested
+    // decompositions on keys that are NOT standalone groups (no demand entry),
+    // so they never drive a group draw here.
+    let mut decomposition_by_compound: BTreeMap<SigKey, Decomposition> = BTreeMap::new();
+    for decomposition in decompositions {
+        decomposition_by_compound
+            .entry(decomposition.compound)
+            .or_insert(*decomposition);
+    }
+
+    for (group_key, (_channel, k)) in demand_by_group {
+        let k = *k;
+        if k <= 0 {
+            continue;
+        }
+        match decomposition_by_compound.get(group_key) {
+            Some(decomposition) => {
+                // Compound group: combined pool first, then the component pair.
+                let sigma_compound = read_residual(&residual, group_key);
+                let draw_compound = k.min(sigma_compound);
+                let remaining = k - draw_compound;
+
+                let sigma_left = read_residual(&residual, &decomposition.left);
+                let sigma_right = read_residual(&residual, &decomposition.right);
+                // ≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) by the admission bound; further bound by the
+                // LIVE residual of BOTH components for cross-group safety.
+                let draw_pair = remaining.min(sigma_left).min(sigma_right).max(0);
+
+                if draw_compound > 0 {
+                    *residual.entry(*group_key).or_insert(0) -= draw_compound;
+                    *draw_by_key.entry(*group_key).or_insert(0) += draw_compound;
+                }
+                if draw_pair > 0 {
+                    *residual.entry(decomposition.left).or_insert(0) -= draw_pair;
+                    *residual.entry(decomposition.right).or_insert(0) -= draw_pair;
+                    *draw_by_key.entry(decomposition.left).or_insert(0) += draw_pair;
+                    *draw_by_key.entry(decomposition.right).or_insert(0) += draw_pair;
+                }
+            }
+            None => {
+                // Single-signature group: one debit `k` on its own pool
+                // (byte-identical to the pre-#12 single-pool path — NOT residual-
+                // capped; the `checked_sub` backstop in close_block_deploy.rs is
+                // the hard underflow guard). Decrement the ledger so a later
+                // compound sharing this pool as a component sees the reduction.
+                let current = read_residual(&residual, group_key);
+                residual.insert(*group_key, current.saturating_sub(k));
+                *draw_by_key.entry(*group_key).or_insert(0) += k;
+            }
+        }
+    }
+
+    // Materialize one `SettlementDebit` per distinct channel (the summed draw),
+    // keyed by `SigKey`. Resolve each channel from `channels_by_key` (the gate
+    // read every group + component channel exactly once into it); a key absent
+    // there cannot occur (every drawn key is a group or a decomposition
+    // component, all of which are recorded), but fall back to the group's own
+    // channel defensively so the function is total.
+    let mut debits: BTreeMap<SigKey, SettlementDebit> = BTreeMap::new();
+    for (key, amount) in draw_by_key {
+        if amount <= 0 {
+            continue;
+        }
+        let channel = channels_by_key
+            .get(&key)
+            .cloned()
+            .or_else(|| demand_by_group.get(&key).map(|(chan, _)| chan.clone()))
+            .unwrap_or_default();
+        debits.insert(key, SettlementDebit { channel, amount });
+    }
+    debits
+}
+
 /// The per-signature acceptance gate (cost-accounted-rho §7.6/§7.7). See the
 /// module docs and `wd-d2-acceptance-gate.md` §D2.2 for the binding algorithm.
 ///
@@ -366,12 +511,13 @@ pub async fn admit_by_funding(
     // 6. Apply the Split/Join closure to get the EFFECTIVE supplies.
     let effective = delta_sigma::effective_supply_with(&raw, &decompositions);
 
-    // The set of compound keys (a compound's admission is capped at its OWN
-    // pool `Σ_compound` in D2 — component-pair credit is non-spendable here).
-    let compound_keys: std::collections::BTreeSet<SigKey> =
-        decompositions.iter().map(|d| d.compound).collect();
-
-    // 7. Per-group prefix admission (reject-both), accumulating Σ Δ_s.
+    // 7. Per-group prefix admission (reject-both), accumulating Σ Δ_s per group.
+    //    The cumulative admitted demand of each PRESENT group is recorded into
+    //    `demand_by_group` (channel + `k = ΣΔ_admitted`); the EXACT per-pool
+    //    settlement debit (combined-pool-first split + shared-component residual
+    //    ledger — #12) is computed AFTER the walk by [`compute_settlement_debits`],
+    //    the SINGLE shared function replay also runs (byte-identity).
+    let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     for (sig_key, group) in groups {
         let channel = group
             .first()
@@ -392,17 +538,12 @@ pub async fn admit_by_funding(
             continue;
         }
 
-        // The admission residual starts from the EFFECTIVE supply, EXCEPT for a
-        // compound group where it is capped at the RAW compound pool
-        // `Σ_compound` (D2 single-pool debit safety — see module docs).
-        let effective_supply = *effective.get(&sig_key).unwrap_or(&0);
-        let mut residual: i64 = if compound_keys.contains(&sig_key) {
-            // Cap at the compound's own pool: admit no more than `Σ_compound`
-            // can fund directly, so the single-pool debit never underflows.
-            effective_supply.min(*raw.get(&sig_key).unwrap_or(&0))
-        } else {
-            effective_supply
-        };
+        // The admission residual is the EFFECTIVE supply (#12: NO artificial
+        // `min(Σ_compound)` cap — a compound group is fundable up to its full
+        // `effectiveΣ_compound = Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`; the exact
+        // multi-pool draw is settled by `compute_settlement_debits`, which keeps
+        // the per-pool debit underflow-safe).
+        let mut residual: i64 = *effective.get(&sig_key).unwrap_or(&0);
 
         let mut group_debit: i64 = 0;
         let mut prefix_open = true;
@@ -425,15 +566,17 @@ pub async fn admit_by_funding(
         }
 
         if group_debit > 0 {
-            outcome.debits.insert(
-                sig_key,
-                SettlementDebit {
-                    channel,
-                    amount: group_debit,
-                },
-            );
+            demand_by_group.insert(sig_key, (channel, group_debit));
         }
     }
+
+    // 8. Settle the per-pool debit EXACTLY (#12): split each admitted compound
+    //    group's cumulative demand `k` combined-pool-first into `(Σ⟦compound⟧,
+    //    Σ⟦s₁⟧, Σ⟦s₂⟧)`, bounding the shared component draws by a cross-group
+    //    residual ledger. The SAME function (over identically-derived inputs)
+    //    runs on replay ⇒ byte-identical `BTreeMap<SigKey, SettlementDebit>`.
+    outcome.debits =
+        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key);
 
     // Re-impose canonical order on the admitted set: the per-group walk emits
     // each group's prefix in canonical order, but group iteration is by SigKey,
@@ -471,40 +614,75 @@ pub async fn recompute_settlement_debits(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
 ) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
-    // Group admitted deploys by pool, summing Δ_s. A malformed term among the
-    // ADMITTED set cannot occur for a valid block (the proposer never admits a
-    // malformed deploy), but treat it defensively as zero demand so the recompute
-    // is total — the post-state root check backstops any such anomaly.
-    let mut demand_by_key: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
+    // 1. Group admitted deploys by pool, summing Δ_s, AND collect the Split/Join
+    //    decompositions + every distinct channel (group + compound component) —
+    //    EXACTLY as `admit_by_funding` does, from the same `Cosigned` envelopes
+    //    (`build_candidate` → `envelope_sig` → the same `Sig::And`), so the
+    //    inputs to `compute_settlement_debits` are byte-identical to the play
+    //    side. A malformed term among the ADMITTED set cannot occur for a valid
+    //    block (the proposer never admits a malformed deploy), but is treated
+    //    defensively as zero demand so the recompute is total.
+    let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
+    let mut decompositions: Vec<Decomposition> = Vec::new();
+    let mut channels_by_key: BTreeMap<SigKey, Par> = BTreeMap::new();
+    let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
     for cosigned in admitted {
+        let envelope = accounting::envelope_sig(&cosigned);
         let candidate = build_candidate(cosigned);
         if candidate.malformed {
             continue;
         }
-        let entry = demand_by_key
+        channels_by_key
+            .entry(candidate.sig_key)
+            .or_insert_with(|| candidate.channel.clone());
+        // Record the envelope once per group so the decomposition collection
+        // (below) walks each compound exactly once — identical to the play-side
+        // per-group representative walk.
+        group_envelopes
+            .entry(candidate.sig_key)
+            .or_insert(envelope);
+        let entry = demand_by_group
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
         entry.1 = entry.1.saturating_add(candidate.demand.known_lower_bound);
     }
+    for envelope in group_envelopes.values() {
+        collect_decompositions(envelope, &mut decompositions, &mut channels_by_key);
+    }
 
-    // Restrict to PRESENT pools (absent ⇒ unenforced ⇒ no debit), mirroring the
-    // play-side presence gate. Read each pool's presence exactly once.
-    let mut debits: BTreeMap<SigKey, SettlementDebit> = BTreeMap::new();
-    for (key, (channel, amount)) in demand_by_key {
-        if amount == 0 {
-            continue;
-        }
-        match supply_reader.read_balance(&channel).await? {
-            Some(_present) => {
-                debits.insert(key, SettlementDebit { channel, amount });
+    // 2. Restrict the per-group demand to PRESENT pools (absent ⇒ unenforced ⇒
+    //    no debit), mirroring the play-side presence gate, AND read the RAW
+    //    balance of every distinct channel (group + component) exactly once —
+    //    the same `raw` map (absent ⇒ 0) the play side fed to the closure. The
+    //    group's OWN-pool presence governs whether it contributes demand; the
+    //    component balances feed the Split/Join draw split.
+    let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
+    let mut present: std::collections::BTreeSet<SigKey> = std::collections::BTreeSet::new();
+    for (key, chan) in &channels_by_key {
+        match supply_reader.read_balance(chan).await? {
+            Some(balance) => {
+                present.insert(*key);
+                raw.insert(*key, balance);
             }
             None => {
-                // Absent pool: the deploy was admitted unenforced on the play
-                // side (no debit). Skip.
+                raw.insert(*key, 0);
             }
         }
     }
-    Ok(debits)
+    let demand_by_group: BTreeMap<SigKey, (Par, i64)> = demand_by_group
+        .into_iter()
+        .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
+        .collect();
+
+    // 3. Settle the per-pool debit via the SAME shared function the play side
+    //    runs (combined-pool-first split + shared-component residual ledger).
+    //    Same inputs + same function ⇒ a BYTE-IDENTICAL debit map (fork safety).
+    Ok(compute_settlement_debits(
+        &demand_by_group,
+        &decompositions,
+        &raw,
+        &channels_by_key,
+    ))
 }
 
 /// Cost-Accounted Rho Stage D: REPLAY recompute of the per-block fee credit from
@@ -574,6 +752,16 @@ mod tests {
             let chan = supply::supply_channel(&envelope);
             self.balances.insert(chan.encode_to_vec(), balance);
         }
+
+        /// Set the balance of the pool a structured `Sig` (e.g. a compound
+        /// `Sig::And` or one of its components) maps to. Used by the #12
+        /// compound play↔replay byte-identity test to seed the compound +
+        /// component pools by the SAME `supply_channel` basis the gate reads.
+        fn set_sig(&mut self, sig: &Sig, balance: i64) {
+            use prost::Message;
+            let chan = supply::supply_channel(sig);
+            self.balances.insert(chan.encode_to_vec(), balance);
+        }
     }
 
     impl SupplyReader for MockSupplyReader {
@@ -621,6 +809,57 @@ mod tests {
     fn n_sends(n: usize) -> String {
         let one = "@0!(0)";
         std::iter::repeat(one).take(n).collect::<Vec<_>>().join(" | ")
+    }
+
+    // ── #12 compound settlement-debit helpers ──────────────────────────────
+
+    /// Two distinct ground-atom component signatures `(a, b)` and their
+    /// left-associated compound `Sig::And(a, b)` — the shape the runtime forms
+    /// for a 2-signer deploy. Returned together with their `SigKey`s and resolved
+    /// supply channels so a test can seed `raw`/`channels_by_key` and assert on
+    /// `compute_settlement_debits` directly (no `Cosigned`/crypto needed).
+    struct CompoundFixture {
+        a_key: SigKey,
+        b_key: SigKey,
+        compound_key: SigKey,
+        a_chan: Par,
+        b_chan: Par,
+        compound_chan: Par,
+        decomposition: Decomposition,
+    }
+
+    fn compound_fixture(a_tag: &[u8], b_tag: &[u8]) -> CompoundFixture {
+        let a = Sig::Ground(a_tag.to_vec());
+        let b = Sig::Ground(b_tag.to_vec());
+        let compound = Sig::And(Box::new(a.clone()), Box::new(b.clone()));
+        let a_key = delta_sigma::sig_key(&a);
+        let b_key = delta_sigma::sig_key(&b);
+        let compound_key = delta_sigma::sig_key(&compound);
+        CompoundFixture {
+            a_key,
+            b_key,
+            compound_key,
+            a_chan: supply::supply_channel(&a),
+            b_chan: supply::supply_channel(&b),
+            compound_chan: supply::supply_channel(&compound),
+            decomposition: Decomposition {
+                compound: compound_key,
+                left: a_key,
+                right: b_key,
+            },
+        }
+    }
+
+    impl CompoundFixture {
+        /// Build the `channels_by_key` the gate would have read (compound +
+        /// both components), keyed by `SigKey`.
+        fn channels_by_key(&self) -> BTreeMap<SigKey, Par> {
+            let mut m = BTreeMap::new();
+            m.insert(self.compound_key, self.compound_chan.clone());
+            m.insert(self.a_key, self.a_chan.clone());
+            m.insert(self.b_key, self.b_chan.clone());
+            m
+        }
     }
 
     /// Per-signature grouping + independence: two deploys SHARING a signature
@@ -774,5 +1013,337 @@ mod tests {
         );
         assert_eq!(outcome.rejected.len(), 1);
         assert!(outcome.debits.is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // #12 — EXACT per-component (Split/Join) compound settlement debit.
+    // The consensus bars for the multi-pool draw split + the cross-group
+    // shared-component residual ledger + play↔replay byte-identity.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// #12.1 — `Sig::And(a,b)`, `Σ⟦compound⟧=0`, `Σ⟦a⟧=Σ⟦b⟧=k`: the compound
+    /// group's whole demand `k` is settled from the component PAIR (combined pool
+    /// empty), so `Σ⟦a⟧ -= k` AND `Σ⟦b⟧ -= k`, with NO compound debit.
+    #[test]
+    fn compound_debit_splits_to_components() {
+        let fx = compound_fixture(b"alice", b"bob");
+        let k = 4_i64;
+
+        let mut raw = BTreeMap::new();
+        raw.insert(fx.compound_key, 0);
+        raw.insert(fx.a_key, k);
+        raw.insert(fx.b_key, k);
+
+        let mut demand = BTreeMap::new();
+        demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
+
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+        );
+
+        // Components each debited k; compound NOT present (draw_compound = 0).
+        assert_eq!(debits.get(&fx.a_key).map(|d| d.amount), Some(k), "Σ⟦a⟧ -= k");
+        assert_eq!(debits.get(&fx.b_key).map(|d| d.amount), Some(k), "Σ⟦b⟧ -= k");
+        assert!(
+            debits.get(&fx.compound_key).is_none(),
+            "empty combined pool ⇒ NO compound debit"
+        );
+        // The debited channels are the component channels.
+        assert_eq!(debits.get(&fx.a_key).map(|d| &d.channel), Some(&fx.a_chan));
+        assert_eq!(debits.get(&fx.b_key).map(|d| &d.channel), Some(&fx.b_chan));
+    }
+
+    /// #12.2 — combined-pool-first then component-pair: `Σ⟦compound⟧=1,
+    /// Σ⟦a⟧=Σ⟦b⟧=5, k=3` ⇒ `draw_compound=1, draw_pair=2`; compound-=1, a-=2, b-=2.
+    #[test]
+    fn compound_debit_prefers_combined_then_pair() {
+        let fx = compound_fixture(b"alice", b"bob");
+
+        let mut raw = BTreeMap::new();
+        raw.insert(fx.compound_key, 1);
+        raw.insert(fx.a_key, 5);
+        raw.insert(fx.b_key, 5);
+
+        let mut demand = BTreeMap::new();
+        demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
+
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+        );
+
+        assert_eq!(
+            debits.get(&fx.compound_key).map(|d| d.amount),
+            Some(1),
+            "combined pool drawn first: draw_compound = min(3,1) = 1"
+        );
+        assert_eq!(debits.get(&fx.a_key).map(|d| d.amount), Some(2), "draw_pair = 3-1 = 2");
+        assert_eq!(debits.get(&fx.b_key).map(|d| d.amount), Some(2), "draw_pair = 3-1 = 2");
+    }
+
+    /// #12.3 — underflow-safety at the funding boundary: for an admitted compound
+    /// (`k = Σ⟦compound⟧ + min(Σ⟦a⟧,Σ⟦b⟧)`, the exact effectiveΣ), no pool's debit
+    /// exceeds its raw balance ⇒ `post = pre − draw ≥ 0` on every pool.
+    #[test]
+    fn compound_component_pool_underflow_safe() {
+        let fx = compound_fixture(b"alice", b"bob");
+        let sigma_compound = 2_i64;
+        let sigma_a = 3_i64;
+        let sigma_b = 4_i64; // min(a,b) = 3
+        let k = sigma_compound + sigma_a.min(sigma_b); // = 5, the funding boundary
+
+        let mut raw = BTreeMap::new();
+        raw.insert(fx.compound_key, sigma_compound);
+        raw.insert(fx.a_key, sigma_a);
+        raw.insert(fx.b_key, sigma_b);
+
+        let mut demand = BTreeMap::new();
+        demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
+
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+        );
+
+        // draw_compound = min(5,2) = 2; draw_pair = min(3, 3, 4) = 3.
+        let d_compound = debits.get(&fx.compound_key).map(|d| d.amount).unwrap_or(0);
+        let d_a = debits.get(&fx.a_key).map(|d| d.amount).unwrap_or(0);
+        let d_b = debits.get(&fx.b_key).map(|d| d.amount).unwrap_or(0);
+        assert_eq!(d_compound, 2);
+        assert_eq!(d_a, 3);
+        assert_eq!(d_b, 3);
+        // No pool underflows: post = pre − draw ≥ 0.
+        assert!(sigma_compound - d_compound >= 0, "Σ⟦compound⟧ no underflow");
+        assert!(sigma_a - d_a >= 0, "Σ⟦a⟧ no underflow");
+        assert!(sigma_b - d_b >= 0, "Σ⟦b⟧ no underflow");
+        // And the total settled equals the demand (conservation: draws sum to k).
+        assert_eq!(d_compound + d_a.min(d_b), k, "draw_compound + draw_pair = k");
+    }
+
+    /// #12.4 — cross-group shared-component contention: two compound groups
+    /// `And(a,b)` and `And(a,c)` both draw the SHARED component `a`. The SUMMED
+    /// `a`-draw across both groups MUST be ≤ `Σ⟦a⟧` (the residual ledger bounds
+    /// the second group's pair-draw by `a`'s LIVE residual after the first).
+    #[test]
+    fn compound_shared_component_contention() {
+        // Components a, b, c; compounds ab = And(a,b), ac = And(a,c).
+        let a = Sig::Ground(b"shared-a".to_vec());
+        let b = Sig::Ground(b"only-b".to_vec());
+        let c = Sig::Ground(b"only-c".to_vec());
+        let ab = Sig::And(Box::new(a.clone()), Box::new(b.clone()));
+        let ac = Sig::And(Box::new(a.clone()), Box::new(c.clone()));
+
+        let a_key = delta_sigma::sig_key(&a);
+        let b_key = delta_sigma::sig_key(&b);
+        let c_key = delta_sigma::sig_key(&c);
+        let ab_key = delta_sigma::sig_key(&ab);
+        let ac_key = delta_sigma::sig_key(&ac);
+
+        // Σ⟦a⟧ = 3 (the contended pool); plenty of b, c; empty combined pools so
+        // ALL demand falls on the component pairs (maximizing contention on a).
+        let mut raw = BTreeMap::new();
+        raw.insert(a_key, 3);
+        raw.insert(b_key, 10);
+        raw.insert(c_key, 10);
+        raw.insert(ab_key, 0);
+        raw.insert(ac_key, 0);
+
+        let mut channels_by_key = BTreeMap::new();
+        channels_by_key.insert(a_key, supply::supply_channel(&a));
+        channels_by_key.insert(b_key, supply::supply_channel(&b));
+        channels_by_key.insert(c_key, supply::supply_channel(&c));
+        channels_by_key.insert(ab_key, supply::supply_channel(&ab));
+        channels_by_key.insert(ac_key, supply::supply_channel(&ac));
+
+        let decompositions = vec![
+            Decomposition { compound: ab_key, left: a_key, right: b_key },
+            Decomposition { compound: ac_key, left: a_key, right: c_key },
+        ];
+
+        // Each compound group demands 2 (so combined demand 4 on a's residual of 3).
+        let mut demand = BTreeMap::new();
+        demand.insert(ab_key, (supply::supply_channel(&ab), 2));
+        demand.insert(ac_key, (supply::supply_channel(&ac), 2));
+
+        let debits = compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key);
+
+        let a_draw = debits.get(&a_key).map(|d| d.amount).unwrap_or(0);
+        assert!(
+            a_draw <= 3,
+            "summed shared-component draw {} must not exceed Σ⟦a⟧ = 3",
+            a_draw
+        );
+
+        // play == replay: the same function over the same inputs is deterministic.
+        let debits_again =
+            compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key);
+        assert_eq!(debits, debits_again, "deterministic: play == replay");
+    }
+
+    /// #12.6 — back-compat: a SINGLE-SIGNATURE (non-compound) group produces a
+    /// byte-identical debit map to the pre-#12 single-pool path — one debit `k`
+    /// on its own pool, never residual-capped, no component split.
+    #[test]
+    fn single_signer_debit_byte_identical_to_pre_12() {
+        let sig = accounting::envelope_sig_single(b"solo");
+        let key = delta_sigma::sig_key(&sig);
+        let chan = supply::supply_channel(&sig);
+        let k = 7_i64;
+
+        let mut raw = BTreeMap::new();
+        raw.insert(key, 9);
+        let mut channels_by_key = BTreeMap::new();
+        channels_by_key.insert(key, chan.clone());
+        let mut demand = BTreeMap::new();
+        demand.insert(key, (chan.clone(), k));
+
+        // No decompositions ⇒ pure single-signer path.
+        let debits = compute_settlement_debits(&demand, &[], &raw, &channels_by_key);
+
+        assert_eq!(debits.len(), 1, "exactly one debit for the single group");
+        let d = debits.get(&key).expect("solo pool debited");
+        assert_eq!(d.amount, k, "amount = ΣΔ_admitted = k (NOT residual-capped)");
+        assert_eq!(d.channel, chan, "debit keyed to the group's own pool");
+    }
+
+    /// Build a REAL 2-signer compound `Cosigned<DeployData>` over `term` (two
+    /// fresh Secp256k1 keypairs both signing the canonical message hash), so the
+    /// gate's `envelope_sig` derives a genuine `Sig::And` (the compound shape).
+    /// Mirrors `multi_sig_fanout_bench::build_n_signers`.
+    fn compound_cosigned(term: &str, vabn: i64, ts: i64) -> Cosigned<DeployData> {
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigner, ToMessage};
+        use prost::Message;
+
+        let data = DeployData {
+            term: term.to_string(),
+            time_stamp: ts,
+            valid_after_block_number: vabn,
+            shard_id: String::new(),
+            expiration_timestamp: None,
+        };
+        let secp = Secp256k1;
+        let serialized = data.to_message().encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let signers: Vec<Cosigner> = (0..2)
+            .map(|_| {
+                let (sk, pk) = secp.new_key_pair();
+                let sig = Bytes::from(secp.sign(&hash, &sk.bytes));
+                Cosigner {
+                    pk,
+                    sig,
+                    sig_algorithm: Box::new(Secp256k1),
+                }
+            })
+            .collect();
+        Cosigned::from_signed_data(data, signers).expect("2-signer compound envelope")
+    }
+
+    /// #12.5 — THE FORK-SAFETY BAR: for a REAL compound (2-signer) deploy, the
+    /// play-side debit map (`admit_by_funding`) is BYTE-IDENTICAL to the replay
+    /// recompute (`recompute_settlement_debits`) over the SAME pre-state. Both
+    /// paths derive decompositions + raw balances from the same `Cosigned`
+    /// envelope and run the SAME `compute_settlement_debits`, so the maps must be
+    /// equal byte-for-byte — the property that prevents a play/replay fork.
+    #[tokio::test]
+    async fn compound_debit_play_replay_byte_identical() {
+        // A compound deploy `@0!(0) | @0!(0)` ⇒ Δ = 2.
+        let compound = compound_cosigned("@0!(0) | @0!(0)", 0, 10);
+        assert!(compound.is_compound(), "must be a true multi-sig envelope");
+
+        // The compound envelope `Sig::And(left, right)` the gate will derive.
+        let envelope = accounting::envelope_sig(&compound);
+        let (left, right) = match &envelope {
+            Sig::And(l, r) => ((**l).clone(), (**r).clone()),
+            other => panic!("expected Sig::And from a 2-signer cosigned, got {:?}", other),
+        };
+
+        // Seed: Σ⟦compound⟧ = 1, Σ⟦left⟧ = Σ⟦right⟧ = 5. effectiveΣ_compound =
+        // 1 + min(5,5) = 6 ≥ Δ=2 ⇒ admitted. Combined-first split:
+        // draw_compound = min(2,1) = 1, draw_pair = 1 ⇒ compound-=1, left-=1, right-=1.
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&envelope, 1);
+        reader.set_sig(&left, 5);
+        reader.set_sig(&right, 5);
+
+        // ---- PLAY: the gate's threaded debit map ----
+        let outcome = admit_by_funding(vec![compound.clone()], &reader, /* margin */ 0)
+            .await
+            .expect("gate must not error");
+        assert_eq!(outcome.admitted.len(), 1, "compound deploy admitted on effectiveΣ");
+        assert!(outcome.rejected.is_empty());
+
+        // ---- REPLAY: recompute from the admitted set over the SAME pre-state ----
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
+            .await
+            .expect("recompute must not error");
+
+        // THE BAR: byte-identical debit maps.
+        assert_eq!(
+            outcome.debits, recomputed,
+            "play-side debit map must equal the replay recompute byte-for-byte"
+        );
+
+        // And the split is the expected combined-first allocation.
+        let compound_key = delta_sigma::sig_key(&envelope);
+        let left_key = delta_sigma::sig_key(&left);
+        let right_key = delta_sigma::sig_key(&right);
+        assert_eq!(
+            outcome.debits.get(&compound_key).map(|d| d.amount),
+            Some(1),
+            "draw_compound = min(Δ=2, Σ⟦compound⟧=1) = 1"
+        );
+        assert_eq!(outcome.debits.get(&left_key).map(|d| d.amount), Some(1), "draw_pair = 1");
+        assert_eq!(outcome.debits.get(&right_key).map(|d| d.amount), Some(1), "draw_pair = 1");
+    }
+
+    /// #12.5b — compound play↔replay byte-identity in the COMPONENT-PAIR-ONLY
+    /// regime (`Σ⟦compound⟧ = 0`), so the whole demand is settled from the
+    /// component pools and there is NO compound debit on either path.
+    #[tokio::test]
+    async fn compound_debit_play_replay_identical_pair_only() {
+        let compound = compound_cosigned("@0!(0) | @0!(0) | @0!(0)", 0, 10); // Δ = 3
+        let envelope = accounting::envelope_sig(&compound);
+        let (left, right) = match &envelope {
+            Sig::And(l, r) => ((**l).clone(), (**r).clone()),
+            other => panic!("expected Sig::And, got {:?}", other),
+        };
+
+        // Σ⟦compound⟧ = 0 (PRESENT but drained), Σ⟦left⟧ = Σ⟦right⟧ = 4.
+        // effectiveΣ_compound = 0 + min(4,4) = 4 ≥ Δ=3 ⇒ admitted.
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&envelope, 0);
+        reader.set_sig(&left, 4);
+        reader.set_sig(&right, 4);
+
+        let outcome = admit_by_funding(vec![compound.clone()], &reader, 0)
+            .await
+            .expect("gate must not error");
+        assert_eq!(outcome.admitted.len(), 1, "admitted on component-pair credit");
+
+        let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader)
+            .await
+            .expect("recompute must not error");
+        assert_eq!(
+            outcome.debits, recomputed,
+            "play == replay byte-identical (pair-only regime)"
+        );
+
+        let compound_key = delta_sigma::sig_key(&envelope);
+        let left_key = delta_sigma::sig_key(&left);
+        let right_key = delta_sigma::sig_key(&right);
+        assert!(
+            outcome.debits.get(&compound_key).is_none(),
+            "empty combined pool ⇒ NO compound debit"
+        );
+        assert_eq!(outcome.debits.get(&left_key).map(|d| d.amount), Some(3), "Σ⟦left⟧ -= 3");
+        assert_eq!(outcome.debits.get(&right_key).map(|d| d.amount), Some(3), "Σ⟦right⟧ -= 3");
     }
 }
