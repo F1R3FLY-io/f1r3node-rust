@@ -147,7 +147,25 @@ async fn comput_state_should_charge_for_deploys() {
             .await
             .unwrap();
 
-            assert!(new_state_hash != gen_post_state && replay_state_hash == new_state_hash);
+            // DR-9/D3 (OD-2): the per-deploy escrow pre-charge / refund system
+            // deploys are REMOVED (casper `costacc/mod.rs`; `runtime.rs` "No
+            // pre-charge / refund fan-out"). Those writes to the payer's
+            // per-validator vault used to mutate the post-state hash. This
+            // deploy is otherwise side-effect-free (a registry lookup that
+            // binds `x` and discards it to `Nil`), so with the charge/refund
+            // gone the post-state hash now EQUALS the pre-state hash
+            // (verified: new == gen). The consensus-critical invariant the
+            // test guards — replay reproduces play EXACTLY — still holds
+            // (verified: replay == new), so there is NO replay divergence.
+            assert_eq!(
+                new_state_hash, gen_post_state,
+                "D3: with precharge/refund removed, a side-effect-free deploy leaves the \
+                 post-state hash unchanged"
+            );
+            assert_eq!(
+                replay_state_hash, new_state_hash,
+                "replay must reproduce play's post-state exactly (no divergence)"
+            );
         },
     )
     .await
@@ -2673,7 +2691,13 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                 None,
             )
             .unwrap();
-            let oop = construct_deploy::source_deploy_now_full(
+            // D3 (DR-9): `@1!(1)` is a SINGLE send = exactly ONE COMM. Under the
+            // pre-D3 per-op model a 1-phlo budget OOP'd this deploy; under D3
+            // one COMM exactly fits a 1-token budget, so it SUCCEEDS (it is no
+            // longer "oop"). The 1-token `phlo_limit` is advisory only —
+            // accepted deploys run unmetered-for-liveness — and is kept here
+            // purely to preserve the original mixed-budget fixture.
+            let single_comm = construct_deploy::source_deploy_now_full(
                 "@1!(1)".to_string(),
                 Some(1),
                 None,
@@ -2697,7 +2721,7 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
             let (play_state, processed_deploys, processed_system_deploys) = runtime_manager
                 .compute_state(
                     &gen_post_state,
-                    vec![success, oop],
+                    vec![success, single_comm],
                     Vec::new(),
                     block_data.clone(),
                     None,
@@ -2706,12 +2730,29 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                 .unwrap();
 
             assert_eq!(processed_deploys.len(), 2);
+            // D3 (DR-9): BOTH deploys succeed. Per-op metering is diagnostic and
+            // does not gate liveness; the only liveness gate is the per-COMM
+            // budget, and `@1!(1)` is one COMM under a 1-token budget (it fits).
+            // So no deploy is failed (pre-D3 this count was 1).
             assert_eq!(
                 processed_deploys
                     .iter()
                     .filter(|deploy| deploy.is_failed)
                     .count(),
-                1
+                0,
+                "D3: a single-COMM deploy under a 1-token budget no longer OOPs"
+            );
+            // The test's real intent — ISOLATED cost traces: each deploy carries
+            // its OWN per-COMM consensus cost, not a shared/summed total.
+            //   `@0!(0) | for(@0 <- @0){ Nil }` = 1 send + 1 receive = 2 COMMs.
+            //   `@1!(1)`                         = 1 send             = 1 COMM.
+            assert_eq!(
+                processed_deploys[0].cost.cost, 2,
+                "first deploy's isolated cost = its 2 COMMs"
+            );
+            assert_eq!(
+                processed_deploys[1].cost.cost, 1,
+                "second deploy's isolated cost = its 1 COMM (not contaminated by the first)"
             );
 
             let replay_state = runtime_manager

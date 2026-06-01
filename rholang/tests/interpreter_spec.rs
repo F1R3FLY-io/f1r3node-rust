@@ -209,19 +209,49 @@ async fn interpreter_should_capture_parsing_errors_without_token_charge() {
     .await
 }
 
+// D3 (DR-9, OD-3) RENAME: was `interpreter_should_exhaust_budget_on_first_metered_reduction`.
+// Under D3 per-op metering (Reduction/Primitive/Substitution weights in
+// costs.rs) is DIAGNOSTIC only and contributes ZERO to the liveness budget;
+// the budget is denominated in COMMs — a send/receive reduction costs exactly
+// ONE token (`reduce.rs::eval_send`/`eval_receive` -> `reserve_comm`), every
+// other reduction costs zero (`accounting/mod.rs::consensus_cost_unit`,
+// `reconcile_lane`). So a budget is NEVER exhausted "on the first metered
+// reduction"; it is exhausted only when the COMM COUNT exceeds the token
+// budget. This test now exercises that per-COMM gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_exhaust_budget_on_first_metered_reduction() {
-    with_runtime("metered-reduction-spec-", |mut runtime| async move {
-        let send_rho = "@{0}!(0)";
-        let initial_phlo = Cost::create(1, "single token budget");
-
-        let result = runtime
-            .evaluate_with_phlo(send_rho, initial_phlo.clone())
+async fn interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget() {
+    with_runtime("metered-comm-spec-", |mut runtime| async move {
+        // BOUNDARY (not exhaustion): a single send is exactly ONE COMM, so a
+        // 1-token budget admits it and DOES NOT OOP. Under the pre-D3 per-op
+        // model this same term exhausted the budget on its first reduction.
+        let one_comm = "@{0}!(0)";
+        let one_token = Cost::create(1, "single token budget");
+        let admitted = runtime
+            .evaluate_with_phlo(one_comm, one_token.clone())
             .await
             .unwrap();
+        assert!(
+            admitted.errors.is_empty(),
+            "D3: one COMM exactly fits a 1-token budget — no OOP (got {:?})",
+            admitted.errors
+        );
+        // Consensus cost = COMM count = 1 (`total_cost` == consumed_units).
+        assert_eq!(admitted.cost.value, 1);
 
-        assert!(!result.errors.is_empty());
-        assert_eq!(result.cost.value, initial_phlo.value);
+        // EXHAUSTION: two parallel sends are TWO COMMs; the second exceeds the
+        // 1-token budget, so reconcile_lane fires the OOP boundary
+        // (`cost_unit > 0 && next > initial`) -> OutOfPhlogistonsError.
+        let two_comms = "@{0}!(0) | @{1}!(1)";
+        let exhausted = runtime
+            .evaluate_with_phlo(two_comms, one_token.clone())
+            .await
+            .unwrap();
+        assert!(
+            !exhausted.errors.is_empty(),
+            "D3: a second COMM over a 1-token budget must OOP"
+        );
+        // On OOP, consumed_units is clamped UP to `initial` (the 1-token budget).
+        assert_eq!(exhausted.cost.value, one_token.value);
     })
     .await
 }

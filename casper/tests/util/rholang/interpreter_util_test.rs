@@ -1762,8 +1762,18 @@ async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all
         "Block should have exactly 1 deploy"
     );
 
+    // D3/DR-9 (OD-1): accepted deploys run UNMETERED-for-liveness — the
+    // acceptance gate (Σ_s ≥ Δ_s) proves fundedness, so the legacy per-deploy
+    // `phlo_limit` (3000) no longer caps execution. The deploy therefore runs
+    // to its ACTUAL per-COMM cost; it never "consumes all phlos" on
+    // insufficiency. Mirrors the sibling `replay_should_match_in_case_of_out_of_phlo_error`
+    // (this file, ~L1786): assert `0 < cost < limit`, not `cost == limit`.
     let deploy_cost = b.body.deploys[0].cost.cost;
-    assert_eq!(deploy_cost, 3000, "Deploy should consume all phlos (3000)");
+    assert!(
+        deploy_cost > 0 && deploy_cost < 3000,
+        "Under D3 unmetered-for-liveness the deploy runs to its actual cost ({deploy_cost}), \
+         not capped at the legacy phlo_limit (3000)"
+    );
 }
 
 const MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR: &str = r#"

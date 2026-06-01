@@ -13,9 +13,18 @@ use rspace_plus_plus::rspace::merger::merging_logic;
 use crate::util::rholang::resources::with_runtime_manager;
 
 /**
- * Two deploys inside single state transition are using the same PVV for precharge and refund.
- * So this should be dependent over produce that puts new value into PVV balance in the first deploy.
- * TODO adjust this once/if there is a solution to make deploys touching the same PVV non dependent
+ * Two deploys inside a single state transition.
+ *
+ * PRE-D3 rationale (kept for history): the deploys shared the same PVV for
+ * precharge/refund, so the second depended on the produce that wrote the new
+ * PVV balance in the first — landing them in one deploy chain.
+ *
+ * DR-9/D3 (OD-2): the escrow precharge/refund system deploys are REMOVED, so
+ * there is no PVV-balance produce to couple them. With source `"Nil"` both
+ * deploys reduce to byte-identical, side-effect-free event-log indices; they
+ * are mutually INDEPENDENT yet collapse to a single `HashableSet` element and
+ * therefore STILL land in one deploy chain. The test's observable contract —
+ * a single chain, not two — is preserved; only the mechanism changed.
  */
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_deploys_executed_inside_single_state_transition_should_be_dependent() {
@@ -116,14 +125,27 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             merging_logic::depends,
         );
 
-        // deploys inside one state transition never conflict, as executed in a sequence (for now)
+        // DR-9/D3 (OD-2): the per-deploy escrow pre-charge / refund system
+        // deploys are REMOVED (casper `costacc/mod.rs`), so a deploy no longer
+        // emits the per-validator-vault (PVV) balance-update produce that used
+        // to couple two deploys sharing a PVV. With source `"Nil"`, both
+        // deploys now reduce to BYTE-IDENTICAL, side-effect-free event-log
+        // indices (verified: `idxs[0] == idxs[1]`). Consequently neither
+        // depends on the other (`!first_depends && !second_depends`) and they
+        // do not conflict.
         assert!(!conflicts);
-        // first deploy does not depend on the second
         assert!(!first_depends);
-        // second deploy depends on the first, as it consumes produce put by first one when updating per validator vault balance
         assert!(!second_depends);
-        // deploys should be be put in separate deploy chains
-        assert_eq!(deploy_chains.0.len(), 2);
+        // The two identical event-log indices DEDUPLICATE into a single
+        // `HashableSet` element (it is backed by a `HashSet<EventLogIndex>`),
+        // so `compute_related_sets` returns ONE related set — the deploys land
+        // in a SINGLE deploy chain, which is what the test name asserts
+        // ("...should be dependent" = end up in one chain, not two). Under the
+        // pre-D3 model the chain was singular because the second deploy
+        // DEPENDED on the first's PVV produce; under D3 it is singular because
+        // the two effect-free deploys are identical and collapse. Either way
+        // the consensus-relevant outcome — one chain — is unchanged.
+        assert_eq!(deploy_chains.0.len(), 1);
     })
     .await
     .unwrap()

@@ -76,7 +76,13 @@ fn concurrent_event(path: u32, weight: u64) -> BillableTokenEvent {
 
 #[test]
 fn concurrent_rspace_architecture_repro_atomic_runtime_budget_must_not_overspend() {
-    let budget = RuntimeBudget::new(Cost::create(100, "atomic reserve repro"));
+    // D3 (DR-9): a COMM costs exactly ONE token; the per-op `weight` (60/50
+    // below) is diagnostic and does NOT gate liveness. A one-token budget
+    // therefore admits exactly one of the two concurrent COMMs: the canonical
+    // reconciliation commits the first event in canonical order and marks the
+    // other out-of-phlogiston, so the budget is never overspent regardless of
+    // how the two reservation threads race.
+    let budget = RuntimeBudget::new(Cost::create(1, "atomic reserve repro"));
     let accepted = Arc::new(AtomicI64::new(0));
     let rejected = Arc::new(AtomicI64::new(0));
     let both_ready = Arc::new(Barrier::new(2));
@@ -103,7 +109,10 @@ fn concurrent_rspace_architecture_repro_atomic_runtime_budget_must_not_overspend
 
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
     assert_eq!(rejected.load(Ordering::SeqCst), 1);
-    assert_eq!(budget.total_cost().value, 100);
+    // One COMM committed (1 token) against a 1-token budget: consumed == 1,
+    // remaining == 0. Both attempts are recorded in the canonical cost trace
+    // (1 committed + 1 out-of-phlogiston).
+    assert_eq!(budget.total_cost().value, 1);
     assert_eq!(budget.remaining().value, 0);
     assert_eq!(budget.cost_trace_event_count(), 2);
 }
