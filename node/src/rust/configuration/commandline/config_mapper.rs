@@ -783,6 +783,9 @@ mod tests {
                         casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
                     epoch_phlogiston:
                         casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                    // Task #13b: default EMPTY genesis client funding-slot list
+                    // (back-compat — no client `Σ⟦c⟧` seed unless configured).
+                    client_fuel_allocations: Vec::new(),
                     deploy_timestamp: None,
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),

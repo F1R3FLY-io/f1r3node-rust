@@ -99,6 +99,7 @@ async fn replay_compute_state(
             None,
             false,
             false, // strict_funding_enforcement (#13a)
+            &[], // client_fuel_allocations (#13b)
         )
         .await
 }
@@ -439,6 +440,8 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                     &std::collections::BTreeMap::new(),
                     // No Stage-D fee credit in this mint test.
                     &None,
+                    // #13b: no genesis client funding slots in this mint test.
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -465,6 +468,172 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
             assert_eq!(
                 play_balance, replay_balance,
                 "Σ⟦v⟧ balance diverged between play and replay"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// #13b consensus bar (a) + (c): the genesis-block-1 CLIENT funding-slot seed.
+/// CONSENSUS-CRITICAL. Plays a `CloseBlockDeploy` at the GENESIS-BLOCK-1 close
+/// (`block_number == 1`, the StageB genesis-bonded-set funding point) carrying a
+/// `client_fuel_allocations` list `[(client_pk, amount)]`; the play-side
+/// `post_eval` SEEDS each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))`
+/// with its amount (§5.7/§7.5 genesis/system write). It then replays the SAME
+/// block through the PRODUCTION `replay_block_system_deploy` path (which
+/// RECONSTRUCTS the close deploy with the SAME allocations and runs
+/// `post_eval_replay`, including the `ReplaySupplyMismatch` write-readback guard)
+/// and asserts the post-state root is BYTE-IDENTICAL — i.e. the Rust client-seed
+/// dual-write is play/replay-symmetric. Non-vacuous: it independently asserts
+/// `Σ⟦c⟧` carries the seeded balance in BOTH the play and replay post-states.
+///
+/// The (c) back-compat half is asserted INLINE: a SECOND close deploy with an
+/// EMPTY `client_fuel_allocations` at the SAME block-1 pre-state produces a
+/// post-state with NO `Σ⟦c⟧` datum for the client (the seed is purely additive,
+/// so an empty list leaves every client pool absent — byte-identical to pre-#13b).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn client_fuel_allocation_credits_sigma_c_at_genesis() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            // The close-block proposer (any genesis validator); its identity only
+            // seeds the close-deploy RNG, NOT the client pool under test.
+            let sender = genesis_context.validator_pks()[0].clone();
+            // A CLIENT public key that is NOT a genesis validator — so its `Σ⟦c⟧`
+            // is provisioned ONLY by the #13b client seed (never by the validator
+            // mint). Deterministic non-validator bytes.
+            let client_pk_bytes: Vec<u8> = vec![0xC1; 32];
+            const CLIENT_ALLOC: i64 = 750_000;
+
+            // GENESIS-BLOCK-1 close (the credit gate is `block_number == 1`).
+            let block_data = BlockData {
+                time_stamp: 0,
+                block_number: 1,
+                sender: sender.clone(),
+                seq_num: 0,
+            };
+
+            // ---- PLAY (with a populated client funding-slot list) ----
+            let play_runtime = runtime_manager.spawn_runtime().await;
+            play_runtime.set_block_data(block_data.clone()).await;
+            let mut play_ops = RuntimeOps::new(play_runtime);
+
+            let mut play_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            play_close.client_fuel_allocations = vec![(client_pk_bytes.clone(), CLIENT_ALLOC)];
+
+            let play_result = play_ops
+                .play_system_deploy(&start_state, &mut play_close)
+                .await
+                .unwrap();
+            let (final_play_state_hash, processed_system_deploy) = match play_result {
+                SystemDeployResult::PlaySucceeded {
+                    state_hash,
+                    processed_system_deploy,
+                    ..
+                } => (state_hash, processed_system_deploy),
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => panic!("close-block play failed: {:?}", processed_system_deploy),
+            };
+
+            // Non-vacuity: Σ⟦c⟧ for the client must carry EXACTLY the seeded amount.
+            let client_chan = supply::supply_channel(&Sig::Ground(client_pk_bytes.clone()));
+            play_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_play_state_hash))
+                .await
+                .unwrap();
+            let play_client_balance = supply::read_balance(&play_ops, &client_chan).await;
+            assert_eq!(
+                play_client_balance, CLIENT_ALLOC,
+                "Σ⟦c⟧ must hold exactly the seeded client allocation after block-1 close"
+            );
+
+            // ---- REPLAY (production path; SAME allocations threaded in) ----
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            replay_runtime.set_block_data(block_data.clone()).await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            replay_ops
+                .replay_block_system_deploy(
+                    &block_data,
+                    &processed_system_deploy,
+                    &std::collections::BTreeMap::new(),
+                    &None,
+                    // #13b: the SAME shard-constant client allocations the play
+                    // side used (the reconstructed close re-seeds Σ⟦c⟧ identically).
+                    &[(client_pk_bytes.clone(), CLIENT_ALLOC)],
+                )
+                .await
+                .unwrap();
+            let replay_checkpoint = replay_ops.runtime_ops.runtime.create_checkpoint().await;
+            let final_replay_state_hash = replay_checkpoint.root.to_bytes_prost();
+
+            // CONSENSUS-CRITICAL: byte-identical post-state (incl. Σ⟦c⟧).
+            assert_eq!(
+                final_play_state_hash, final_replay_state_hash,
+                "play and replay post-state hashes diverged on the #13b client funding-slot seed"
+            );
+            replay_ops
+                .runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
+                .await
+                .unwrap();
+            let replay_client_balance =
+                supply::read_balance(&replay_ops.runtime_ops, &client_chan).await;
+            assert_eq!(
+                play_client_balance, replay_client_balance,
+                "Σ⟦c⟧ balance diverged between play and replay"
+            );
+
+            // ---- (c) BACK-COMPAT: EMPTY allocations ⇒ no Σ⟦c⟧ datum ----
+            // The same block-1 close with an EMPTY client list must leave the
+            // client pool ABSENT (the seed is purely additive). `read_balance`
+            // folds absent ⇒ 0; `read_balance_present` distinguishes absent
+            // (`None`) from present-zero (`Some(0)`) — we assert ABSENT.
+            let empty_runtime = runtime_manager.spawn_runtime().await;
+            empty_runtime.set_block_data(block_data.clone()).await;
+            let mut empty_ops = RuntimeOps::new(empty_runtime);
+            let mut empty_close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            // client_fuel_allocations defaults EMPTY (new()).
+            assert!(empty_close.client_fuel_allocations.is_empty());
+            let empty_result = empty_ops
+                .play_system_deploy(&start_state, &mut empty_close)
+                .await
+                .unwrap();
+            let empty_state_hash = match empty_result {
+                SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
+                SystemDeployResult::PlayFailed { processed_system_deploy } => {
+                    panic!("empty-alloc close-block play failed: {:?}", processed_system_deploy)
+                }
+            };
+            empty_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&empty_state_hash))
+                .await
+                .unwrap();
+            let empty_client_present =
+                supply::read_balance_present(&empty_ops, &client_chan).await;
+            assert_eq!(
+                empty_client_present, None,
+                "empty client_fuel_allocations must leave Σ⟦c⟧ ABSENT (back-compat, no seed)"
             );
         },
     )
@@ -519,6 +688,8 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                 ),
                 settlement_debits: std::collections::BTreeMap::new(),
                 fee_credits: fee_credits.clone(),
+                // #13b: no genesis client funding slots in this fixture.
+                client_fuel_allocations: Vec::new(),
             };
             let play_result = play_ops
                 .play_system_deploy(&start_state, &mut play_close)
@@ -580,6 +751,8 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                     &processed_system_deploy,
                     &std::collections::BTreeMap::new(),
                     &replay_fee_credit,
+                    // #13b: no genesis client funding slots in this fixture.
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -675,6 +848,8 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
                     ),
                     settlement_debits: std::collections::BTreeMap::new(),
                     fee_credits: fee_credits.clone(),
+                    // #13b: no genesis client funding slots in this fixture.
+                    client_fuel_allocations: Vec::new(),
                 };
                 match ops.play_system_deploy(from_state, &mut close).await.unwrap() {
                     SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
@@ -852,6 +1027,8 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
                     &processed_slash,
                     &std::collections::BTreeMap::new(),
                     &None,
+                    // #13b: no genesis client funding slots in this slash fixture.
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1227,6 +1404,8 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
                     &processed_redeem,
                     &std::collections::BTreeMap::new(),
                     &None,
+                    // #13b: no genesis client funding slots in this redeem fixture.
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1677,6 +1856,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -1734,6 +1914,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2047,6 +2228,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2468,6 +2650,7 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await;
 
@@ -2540,6 +2723,7 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2646,6 +2830,7 @@ async fn joins_should_be_replayed_correctly() {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2731,6 +2916,7 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
                 None,
                 false,
                 false, // strict_funding_enforcement (#13a)
+                &[], // client_fuel_allocations (#13b)
             )
             .await;
 
@@ -4102,6 +4288,7 @@ async fn parallel_replay_determinism() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
+                    &[], // client_fuel_allocations (#13b)
                 )
                 .await;
 

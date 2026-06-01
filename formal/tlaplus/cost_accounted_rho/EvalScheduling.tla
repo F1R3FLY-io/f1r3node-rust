@@ -487,6 +487,31 @@ SupplyConservation ==
     gatePhase = "settled" => poolBalance + CumDemand(admittedLen) = PoolSupply
 
 (*--------------------------------------------------------------------------*)
+(* #13b: Inv_StrictRejectsAbsent — the spec-strict (§7.6 step 5) rejection of *)
+(* an underfunded deploy on an ABSENT pool. Task #13a switched the gate to its *)
+(* strict mode, where an ABSENT supply pool is treated as a present pool with  *)
+(* balance 0 (the paper's [supply(s) = 0] for an absent pool). This invariant   *)
+(* models that pool as [PoolSupply = 0] and asserts the consequence: once the   *)
+(* gate has run (phase "executing"/"settled"), NO admitted deploy has positive  *)
+(* demand — i.e. a [Δ > 0] deploy is never admitted against a zero (absent)     *)
+(* pool. (Task #13b SEEDS client pools at genesis precisely so a strict shard   *)
+(* does NOT reject the clients it intends to fund — making PoolSupply > 0.)     *)
+(*                                                                              *)
+(* This is the TLA+ analogue of the Rust strict branch                          *)
+(* ([acceptance.rs::admit_by_funding]: an absent pool's effective supply is 0,  *)
+(* so a [Δ>0] group fails [is_funded(_, 0, margin)] and is rejected) and of the *)
+(* Rocq corollary [strict_reject_when_underfunded] ([is_funded_balance 0 f =    *)
+(* false] when [delta_s f > 0]). It holds in EVERY phase: in "pregate"          *)
+(* [admittedLen = 0] so [AdmittedSet] is empty (vacuously true), and after the  *)
+(* gate the admitted prefix's cumulative demand is [<= PoolSupply = 0], which   *)
+(* (with non-negative per-deploy [Demand]) forces every admitted deploy's       *)
+(* demand to 0.                                                                  *)
+(*--------------------------------------------------------------------------*)
+Inv_StrictRejectsAbsent ==
+    PoolSupply = 0 =>
+        \A b \in AdmittedSet(admittedLen) : Demand[b] = 0
+
+(*--------------------------------------------------------------------------*)
 (* SupplyOnlyWrittenByMintOrFeeConvert (ACTION property): the per-validator    *)
 (* supply Σ⟦v⟧ is written ONLY by a mint step OR a Stage-D fee-convert step,    *)
 (* and the signature pool Σ⟦s⟧ ([poolBalance]) is written ONLY by the          *)

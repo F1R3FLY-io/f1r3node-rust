@@ -90,6 +90,10 @@ impl ReplayRuntimeOps {
         // Task #13a: shard-genesis spec-strict acceptance-gate mode, threaded
         // verbatim into the replay-side recompute (same constant as play).
         strict_funding_enforcement: bool,
+        // Task #13b: shard-genesis client funding-slot allocations, threaded
+        // verbatim onto the reconstructed block-1 close deploy (same constant as
+        // the play-side proposer used).
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
 
@@ -109,6 +113,7 @@ impl ReplayRuntimeOps {
             !is_genesis,
             block_data,
             strict_funding_enforcement,
+            client_fuel_allocations,
         )
         .await
     }
@@ -130,6 +135,13 @@ impl ReplayRuntimeOps {
         // validation caller so the replay-side recompute + re-verification use
         // the SAME constant as the play-side gate (replay determinism).
         strict_funding_enforcement: bool,
+        // Task #13b: the shard-genesis client funding-slot allocations
+        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes),
+        // threaded from the validation caller onto the reconstructed block-1
+        // `CloseBlockDeploy` so its `Σ⟦c⟧` seed is byte-identical to the play
+        // side. Same shard constant as the proposer used (replay determinism);
+        // empty on default shards.
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         // Time reset phase - Span[F].traceI("reset") from Scala
         let reset_start = Instant::now();
@@ -198,6 +210,7 @@ impl ReplayRuntimeOps {
                     &system_deploy,
                     &replay_debits,
                     &replay_fee_credit,
+                    client_fuel_allocations,
                 )
                 .await?;
             system_deploy_results.push(result);
@@ -480,6 +493,13 @@ impl ReplayRuntimeOps {
             crate::rust::util::rholang::acceptance::SettlementDebit,
         >,
         fee_credit: &Option<crate::rust::util::rholang::acceptance::FeeCredit>,
+        // Task #13b: the genesis client funding-slot allocations
+        // `[(client_pk_bytes, amount)]` reconstructed from the shard-genesis conf
+        // (the SAME constant the play-side proposer used), threaded onto the
+        // reconstructed `CloseBlockDeploy` so its block-1 `Σ⟦c⟧` seed is
+        // byte-identical to play. Empty on default shards (back-compat) and on
+        // every non-block-1 block (the credit is gated on `block_number == 1`).
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
@@ -569,6 +589,15 @@ impl ReplayRuntimeOps {
                     // seeds the SAME `(sender, count)` datum the play side did,
                     // making the closeBlock F_v credit byte-identical play↔replay.
                     fee_credits: fee_credit.clone(),
+                    // Task #13b: the genesis client funding-slot allocations,
+                    // reconstructed from the shard-genesis conf (the SAME constant
+                    // the play-side proposer read). `dual_write_supply` credits
+                    // each `Σ⟦c⟧` ONLY at the block-1 close (gated on
+                    // `block_number == 1`); the per-allocation `random_state` is
+                    // derived from this close deploy's replay-stable `initial_rand`
+                    // advanced by the SORTED-pk index — so the block-1 `Σ⟦c⟧` seed
+                    // is byte-identical to the play side. Empty ⇒ no credit.
+                    client_fuel_allocations: client_fuel_allocations.to_vec(),
                 };
 
                 // Capture the pre-close store root for the Stage-B supply

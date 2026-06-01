@@ -794,6 +794,13 @@ impl RuntimeManager {
         // no live snapshot pass their engine's shard-conf value (cost-accounting
         // is off for genesis, so the value is inert there).
         strict_funding_enforcement: bool,
+        // Task #13b: shard-genesis client funding-slot allocations
+        // (`CasperShardConf::client_fuel_allocations`, lowered to raw pk bytes).
+        // Threaded from the validation caller down to the reconstructed block-1
+        // close deploy so its `Σ⟦c⟧` seed is byte-identical to the play side.
+        // Genesis / historical-replay callers with no live snapshot pass their
+        // engine's shard-conf value (empty / inert there).
+        client_fuel_allocations: &[(Vec<u8>, i64)],
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
@@ -904,6 +911,7 @@ impl RuntimeManager {
                 Some(invalid_blocks),
                 is_genesis,
                 strict_funding_enforcement,
+                client_fuel_allocations,
             )
             .await?;
 

@@ -222,6 +222,9 @@ impl RhoReporterCasper {
             );
 
             let replay_result = runtime
+                // Task #13b: this is the reporting-LOCAL wrapper (4 args); it
+                // forwards to the `ReplayRuntimeOps` method below, which passes
+                // empty client allocations (a bare supply write, no report events).
                 .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_credit)
                 .await;
 
@@ -366,7 +369,11 @@ impl ReportingRuntime {
         // bare supply writes with no reduction events to report; they are
         // faithfully applied + verified only on the consensus replay path).
         replay_ops
-            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_credit)
+            // Task #13b: the client funding-slot credit is a bare supply write
+            // with no reduction events (faithfully applied + verified only on the
+            // consensus replay path), so the reporting path passes empty
+            // allocations — same rationale as the threaded debit/fee above.
+            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_credit, &[])
             .await?;
 
         // Update the runtime from replay_ops

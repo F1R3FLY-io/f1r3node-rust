@@ -284,6 +284,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 // OFF (`is_genesis = true`), so the strict flag is inert — the
                 // acceptance recompute is skipped entirely. Pass `false`.
                 false,
+                // Task #13b: genesis-candidate replay (block 0, cost-accounting
+                // OFF) performs no close-deploy client credit (the credit is
+                // gated on `block_number == 1` AND genesis runs no close
+                // post_eval), so the allocation list is inert here. Pass empty.
+                &[],
             )
             .await
             .map_err(|e| format!("Failed status during replay: {:?}.", e))?;

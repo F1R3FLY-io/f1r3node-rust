@@ -189,6 +189,9 @@ pub async fn equivocate_block(
         ),
         settlement_debits: Default::default(),
         fee_credits: close_fee_credits,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -342,6 +345,9 @@ pub async fn propose_with_explicit_justifications(
         ),
         settlement_debits: Default::default(),
         fee_credits: close_fee_credits,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -527,6 +533,9 @@ pub async fn propose_with_block_mutation(
         ),
         settlement_debits: Default::default(),
         fee_credits: close_fee_credits,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();
@@ -687,6 +696,9 @@ pub async fn propose_neglecting_block(
         ),
         settlement_debits: Default::default(),
         fee_credits: close_fee_credits,
+        // Task #13b: slashing-flow test fixtures provision no genesis client
+        // funding slots (these helpers exercise the slash path, not block 1).
+        client_fuel_allocations: Vec::new(),
     })];
 
     let invalid_blocks = snapshot.invalid_blocks.clone();

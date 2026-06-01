@@ -355,6 +355,19 @@ pub struct CasperShardConf {
     /// (`admit_by_funding`) and the replay recompute
     /// (`recompute_settlement_debits`) so play and replay agree.
     pub strict_funding_enforcement: bool,
+    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
+    /// `[(client_pk, amount)]` — the §5.7/§7.5 genesis/system write that SEEDS
+    /// each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))` so a
+    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
+    /// FUNDED clients. Wired from `CasperConf::client_fuel_allocations` at genesis
+    /// (default EMPTY ⇒ existing shards byte-identical). Shard-genesis constant
+    /// shared by every node ⇒ replay-deterministic (mirrors `min_phlo_price` /
+    /// `strict_funding_enforcement`). Threaded onto the genesis-block-1
+    /// `CloseBlockDeploy` on BOTH the play (`block_creator::create`) and replay
+    /// (`replay_block_system_deploy`) paths; the credit is performed once at the
+    /// block-1 close (gated on `block_number == 1`), mirroring the StageB
+    /// genesis-bonded-set `initialPhlogiston` funding.
+    pub client_fuel_allocations: Vec<(crypto::rust::public_key::PublicKey, i64)>,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
@@ -432,6 +445,11 @@ impl CasperShardConf {
             // `..CasperShardConf::new()`-spread literal, so this default
             // covers all such sites.
             strict_funding_enforcement: false,
+            // Task #13b: default EMPTY = no genesis client funding-slot seed
+            // (back-compat — the block-1 close performs no client credit, so
+            // existing shards stay byte-identical). Covers every
+            // `..CasperShardConf::new()`-spread literal (incl. test sites).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,

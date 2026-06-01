@@ -956,6 +956,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 // replays with cost-accounting OFF, so the value is inert here,
                 // but threading the real shard constant keeps the call uniform.
                 self.casper_shard_conf.strict_funding_enforcement,
+                // Task #13b: genesis (block 0) runs no close post_eval and the
+                // client credit is gated on `block_number == 1`, so the list is
+                // inert here. Pass empty (the block-1 credit lands in
+                // `replay_single_block`, which threads the real allocations).
+                &[],
             )
             .await;
 
@@ -1032,6 +1037,17 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 // shard constant the block was validated under, so the
                 // recompute is deterministic.
                 self.casper_shard_conf.strict_funding_enforcement,
+                // Task #13b: historical NON-genesis replay (this path includes
+                // block 1) MUST thread the SAME client funding-slot allocations
+                // the block was validated/created under, lowered to raw pk bytes,
+                // so the reconstructed block-1 close re-seeds each `Σ⟦c⟧`
+                // byte-identically. Empty on default shards.
+                &self
+                    .casper_shard_conf
+                    .client_fuel_allocations
+                    .iter()
+                    .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+                    .collect::<Vec<(Vec<u8>, i64)>>(),
             )
             .await;
 

@@ -43,6 +43,64 @@ def settle(demand, supply, margin):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# #13a/#13b — the spec-strict (§7.6 step 5) acceptance-gate activation, and the
+# #13b genesis client funding-slot seed that makes a strict shard usable.
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Task #13a added the shard-genesis `strict_funding_enforcement` flag. The D2
+# gate's TRANSITIONAL default admits a deploy whose supply pool is ABSENT (not
+# yet provisioned) UNENFORCED with no debit (pre-cost-accounting behavior). With
+# the flag ON the gate is SPEC-STRICT: an ABSENT pool is treated as present-zero
+# (effective supply 0), so an underfunded (Δ>0) deploy is REJECTED (no execution,
+# no state change, no debit) and only a Δ=0 deploy is admitted. Task #13b SEEDS
+# client pools at genesis (making them PRESENT and funded) precisely so a strict
+# shard does NOT reject the clients it intends to fund.
+#
+# `pool_present` distinguishes an ABSENT pool (None — no datum on Σ⟦c⟧) from a
+# PRESENT pool (an int balance, incl. a drained 0), mirroring
+# `supply::read_balance_present`. The EFFECTIVE supply the funding inequality
+# sees is 0 for an absent pool (the paper's supply(s) = 0).
+def strict_admit(demand, pool_present, strict, margin):
+    if demand < 0 or margin < 0:
+        return {"valid": False, "reason": "negative_input"}
+    if pool_present is not None and int(pool_present) < 0:
+        return {"valid": False, "reason": "negative_input"}
+    absent = pool_present is None
+    effective_supply = 0 if absent else int(pool_present)
+
+    # TRANSITIONAL early-admit: flag OFF + ABSENT pool ⇒ admit UNENFORCED, no
+    # debit (the `if !strict && !present { admit; continue }` branch). Otherwise
+    # the deploy falls through to the funding inequality at effective supply.
+    if (not strict) and absent:
+        admitted = True
+        enforced = False
+        funded = None  # not evaluated on the early-admit path
+        debit = 0
+    else:
+        enforced = True
+        funded = is_funded(demand, effective_supply, margin)
+        admitted = bool(funded)
+        debit = int(demand) if funded else 0
+
+    post = None if absent and not admitted else (effective_supply - debit)
+    return {
+        "valid": True,
+        "demand": int(demand),
+        "pool_present": (None if absent else int(pool_present)),
+        "effective_supply": int(effective_supply),
+        "strict": bool(strict),
+        "margin": int(margin),
+        "enforced": bool(enforced),
+        "admitted": bool(admitted),
+        "funded": (None if funded is None else bool(funded)),
+        # The single consensus decrement (0 for a rejected / early-admitted-absent
+        # deploy); for an admitted PRESENT pool it is exactly the per-COMM demand.
+        "settlement_debit": int(debit),
+        "supply_after": (None if post is None else int(post)),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # #12 — the EXACT per-component (Split/Join) compound settlement debit.
 # ════════════════════════════════════════════════════════════════════════════
 #
@@ -225,6 +283,27 @@ def records():
     multi_debit = sum(item.get("settlement_debit", 0) for item in multi if item["valid"])
     multi_supply_after = sum(item.get("supply_after", 0) for item in multi if item["valid"])
 
+    # #13a/#13b — spec-strict acceptance-gate activation + the #13b genesis
+    # client funding-slot seed. Three deterministic witnesses:
+    #   (1) STRICT + ABSENT pool + Δ>0 ⇒ REJECTED (effective supply 0 < Δ).
+    #   (2) flag-OFF + ABSENT pool + Δ>0 ⇒ ADMITTED-UNENFORCED (transitional).
+    #   (3) STRICT + PRESENT funded client pool (the #13b genesis seed) ⇒
+    #       ADMITTED + debited exactly Δ. This is the end-to-end #13b payoff:
+    #       seeding Σ⟦c⟧ at genesis makes the client pool present+funded, so a
+    #       strict shard ADMITS it (rather than rejecting it as underfunded).
+    strict_absent_reject = strict_admit(demand=5, pool_present=None, strict=True, margin=1)
+    flagoff_absent_admit = strict_admit(demand=5, pool_present=None, strict=False, margin=1)
+    strict_funded_client = strict_admit(demand=4, pool_present=10, strict=True, margin=1)
+    # The model's own consistency asserts (a regression flips classification).
+    assert strict_absent_reject["admitted"] is False and strict_absent_reject["settlement_debit"] == 0, \
+        "strict + absent + Δ>0 must be REJECTED with no debit"
+    assert flagoff_absent_admit["admitted"] is True and flagoff_absent_admit["enforced"] is False \
+        and flagoff_absent_admit["settlement_debit"] == 0, \
+        "flag-off + absent + Δ>0 must be ADMITTED-UNENFORCED with no debit"
+    assert strict_funded_client["admitted"] is True and strict_funded_client["settlement_debit"] == 4 \
+        and strict_funded_client["supply_after"] == 6, \
+        "strict + present funded client (#13b seed) must be ADMITTED + debited exactly Δ"
+
     # #12 — the EXACT per-component (Split/Join) compound settlement debit. The
     # bounded-EXHAUSTIVE sweep MUST find zero violations across every admissible
     # (Σ_comp, Σ1, Σ2, k) and every cross-group shared-component (k1, k2); surface
@@ -277,6 +356,36 @@ def records():
             canonical_scenario("drained_pool", settlement={"kind": "per_comm_settle", "demand": 3, "supply": 0, "margin": 0}, expected_classification="confirmed_safe"),
             drained,
             ["Rust: drained_present_pool_rejects"],
+        ),
+        record(
+            "settlement",
+            "confirmed_safe",
+            "sage_strict_absent_pool_rejects_positive_demand",
+            "#13a: with strict_funding_enforcement ON, an ABSENT pool (effective Sigma=0) REJECTS a Delta>0 deploy (§7.6 step 5: rejected without executing any part, no state change, no debit).",
+            canonical_scenario("strict_absent_reject", settlement={"kind": "strict_admit", "demand": 5, "pool_present": None, "strict": True, "margin": 1}, expected_classification="confirmed_safe"),
+            strict_absent_reject,
+            ["Rocq: strict_reject_when_underfunded / strict_absent_pool_rejects_positive_demand",
+             "TLA+: EvalScheduling Inv_StrictRejectsAbsent (EvalStrictAbsent.cfg)",
+             "Rust: strict_absent_pool_rejects"],
+        ),
+        record(
+            "settlement",
+            "confirmed_safe",
+            "sage_flagoff_absent_pool_admits_unenforced",
+            "#13a back-compat: with strict OFF, an ABSENT pool ADMITS the same Delta>0 deploy UNENFORCED with no debit (the transitional per-pool-presence early-admit) — byte-identical to pre-cost-accounting behavior.",
+            canonical_scenario("flagoff_absent_admit", settlement={"kind": "strict_admit", "demand": 5, "pool_present": None, "strict": False, "margin": 1}, expected_classification="confirmed_safe"),
+            flagoff_absent_admit,
+            ["Rust: absent_pool_admits_without_enforcement / strict_flag_off_is_byte_identical_to_transitional"],
+        ),
+        record(
+            "settlement",
+            "confirmed_safe",
+            "sage_strict_funded_client_admitted_and_debited",
+            "#13b end-to-end: a client whose Sigma_c was SEEDED at genesis (a PRESENT, funded pool) is, under strict mode, ADMITTED and debited exactly its demand (post = pre - Delta). Seeding the pool at genesis is what lets a strict shard admit the clients it intends to fund (rather than rejecting them as underfunded).",
+            canonical_scenario("strict_funded_client", settlement={"kind": "strict_admit", "demand": 4, "pool_present": 10, "strict": True, "margin": 1}, expected_classification="confirmed_safe"),
+            strict_funded_client,
+            ["Rust: client_fuel_allocation_credits_sigma_c_at_genesis / strict_mode_funded_client_admitted_and_replays",
+             "Rocq: funding_check_balance_sound", "TLA+: EvalScheduling acceptance gate"],
         ),
         record(
             "settlement",

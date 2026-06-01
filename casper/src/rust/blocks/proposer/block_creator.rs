@@ -1070,6 +1070,19 @@ pub async fn create(
         fee_deploy_count,
         validator_identity.public_key.bytes.to_vec(),
     );
+    // Task #13b: thread the genesis client funding-slot allocations onto the
+    // close deploy from the shard-genesis conf (the SAME constant replay reads).
+    // Credited only at the block-1 close (gated on `block_number == 1` inside
+    // `dual_write_supply`); on every other block it rides along but the gate
+    // skips the credit. Lowered to raw pk bytes (the basis `Sig::Ground` uses).
+    // Default-empty shards leave this empty ⇒ byte-identical to pre-#13b.
+    let client_fuel_allocations: Vec<(Vec<u8>, i64)> = casper_snapshot
+        .on_chain_state
+        .shard_conf
+        .client_fuel_allocations
+        .iter()
+        .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+        .collect();
     system_deploys_converted.push(SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
@@ -1077,6 +1090,7 @@ pub async fn create(
         ),
         settlement_debits,
         fee_credits,
+        client_fuel_allocations,
     }));
 
     // Use the adjusted `now_millis` captured at the start of create for block timestamp.

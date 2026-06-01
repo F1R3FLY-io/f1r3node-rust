@@ -340,6 +340,43 @@ pub fn fee_collect_random_state(close_rand: &crypto::rust::hash::blake2b512_rand
     close_rand.split_byte(FEE_COLLECT_RNG_PATH).to_bytes()
 }
 
+/// Deterministic per-ALLOCATION `random_state` for the Cost-Accounted Rho task
+/// #13b genesis-block-1 client funding-slot credit
+/// ([`CloseBlockDeploy::post_eval`] phase 4: the §5.7/§7.5 client `Σ⟦c⟧` seed),
+/// on a RNG path DISJOINT from the mint loop ([`mint_random_state`],
+/// `lo ∈ [0,127]`), the WD-D2 settlement debit ([`debit_random_state`],
+/// `-0x2b`), the slash zero ([`slash_random_state`], `-0x2c`), the fee-convert
+/// credit ([`fee_convert_random_state`], `-0x2d`), the fee-collect credit
+/// ([`fee_collect_random_state`], `-0x2e`), and the close-block mint-list channel
+/// (`0x2a`). The genesis-block-1 close may BOTH mint the genesis validator set
+/// into `Σ⟦v⟧` (the mint loop) AND seed the genesis client set into `Σ⟦c⟧` (this
+/// loop) in the SAME close block; routing the client credit through this distinct
+/// fixed `CLIENT_ALLOC_RNG_PATH` prefix split before the per-index splits
+/// guarantees the mint and the client-alloc produce DISTINCT datum identities
+/// even when (in principle) they target the same channel — so the
+/// read-modify-replace leaves a single, deterministic datum and the post-state
+/// trie root is byte-identical on play and replay.
+///
+/// Anchored to the same close-block deploy `initial_rand` the mint uses
+/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
+/// advanced by the allocation's position in the SORTED (pk-ascending) client set
+/// — so the derivation is independent of the genesis-config list order and
+/// byte-identical play/replay.
+pub fn client_alloc_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+    // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
+    // (-0x2c), fee-convert (-0x2d), fee-collect (-0x2e), and mint-list (0x2a)
+    // paths: a client-alloc credit can never alias a mint / debit / slash /
+    // fee produce even when they target the same channel.
+    const CLIENT_ALLOC_RNG_PATH: i8 = -0x2f;
+    let lo = (index & 0x7f) as i8;
+    let hi = ((index >> 7) & 0x7f) as i8;
+    close_rand
+        .split_byte(CLIENT_ALLOC_RNG_PATH)
+        .split_byte(lo)
+        .split_byte(hi)
+        .to_bytes()
+}
+
 /// Read the pre-state hash the supply read/write operate against. The supply
 /// channel read/write target the LIVE hot store, which for `post_eval` is the
 /// post-closeBlock state; the `pre_state_hash` is carried only for diagnostics
@@ -451,6 +488,35 @@ mod tests {
         assert_eq!(a0, a0_again, "same index ⇒ byte-identical random_state");
         assert_ne!(a0, a1, "distinct indices ⇒ distinct random_state");
         assert_ne!(a1, a200, "distinct indices past 127 ⇒ distinct random_state");
+    }
+
+    /// #13b — the genesis-block-1 client-allocation `random_state` is
+    /// deterministic, per-index distinct, AND on a RNG path DISJOINT from every
+    /// other supply produce stream (mint / debit / slash / fee-convert /
+    /// fee-collect). Disjointness is what lets a genesis-block-1 close BOTH mint
+    /// `Σ⟦v⟧` and seed `Σ⟦c⟧` without two produces aliasing the same datum
+    /// identity (which would break the single-datum read-modify-replace and the
+    /// play/replay post-state root equality).
+    #[test]
+    fn client_alloc_random_state_is_deterministic_distinct_and_disjoint() {
+        use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+        let rand = Blake2b512Random::create_from_bytes(&[7_u8; 128]);
+        let c0 = client_alloc_random_state(&rand, 0);
+        let c0_again = client_alloc_random_state(&rand, 0);
+        let c1 = client_alloc_random_state(&rand, 1);
+        let c200 = client_alloc_random_state(&rand, 200);
+        assert_eq!(c0, c0_again, "same index ⇒ byte-identical random_state");
+        assert_ne!(c0, c1, "distinct indices ⇒ distinct random_state");
+        assert_ne!(c1, c200, "distinct indices past 127 ⇒ distinct random_state");
+
+        // Disjoint from every sibling stream at the SAME index (the genesis
+        // block-1 close runs the mint loop and the client-alloc loop on the same
+        // close-block `initial_rand`).
+        assert_ne!(c0, mint_random_state(&rand, 0), "disjoint from mint");
+        assert_ne!(c0, debit_random_state(&rand, 0), "disjoint from settlement debit");
+        assert_ne!(c0, fee_convert_random_state(&rand, 0), "disjoint from fee-convert");
+        assert_ne!(c0, slash_random_state(&rand), "disjoint from slash zero");
+        assert_ne!(c0, fee_collect_random_state(&rand), "disjoint from fee-collect");
     }
 
     // Tiny helper to make a bare GInt par for the absent-is-zero test.

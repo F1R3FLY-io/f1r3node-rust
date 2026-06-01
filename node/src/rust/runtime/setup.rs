@@ -836,6 +836,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // Task #13a: thread the spec-strict gate flag onto this GC-path
             // shard conf from the same shard-genesis config (default OFF).
             strict_funding_enforcement: conf.casper.strict_funding_enforcement,
+            // Task #13b: this GC-path shard conf drives mergeable-channel GC
+            // sizing, NOT block creation, so the genesis client funding-slot list
+            // is inert here — default EMPTY (the authoritative wiring is in
+            // `casper_launch.rs`, which the block proposer/validator read).
+            client_fuel_allocations: Vec::new(),
             disable_late_block_filtering: conf.casper.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: conf.standalone,

@@ -313,6 +313,8 @@ Print Assumptions funding_decidable.
 Print Assumptions sigma_s_balance_eq_stack_count.
 Print Assumptions funding_check_balance_sound.
 Print Assumptions funding_check_balance_sound_against_stack.
+Print Assumptions strict_reject_when_underfunded.
+Print Assumptions strict_absent_pool_rejects_positive_demand.
 Print Assumptions competing_funding_at_most_one_succeeds.
 Print Assumptions admit_prefix_maximal.
 Print Assumptions reject_both_sound.

@@ -1201,6 +1201,86 @@ mod tests {
         assert!(outcome.debits.get(&drain_key).is_none(), "drained/rejected ⇒ no debit");
     }
 
+    /// #13b consensus bar (b) — STRICT-mode FUNDED client admitted + debited +
+    /// play==replay. This is the END-TO-END payoff of #13b: a client whose
+    /// supply pool `Σ⟦c⟧` was SEEDED at genesis (modeled here as a PRESENT,
+    /// funded pool) is, under `strict_funding_enforcement = true`, ADMITTED by
+    /// the play-side gate (`admit_by_funding`, strict) and assigned a settlement
+    /// debit of exactly its demand — and the replay-side recompute
+    /// (`recompute_settlement_debits`, strict) produces the BYTE-IDENTICAL debit
+    /// map AND does not reject (the strict re-verification only fires for an
+    /// admitted Δ>0 deploy on an ABSENT pool, which a funded client is not). So a
+    /// genesis-funded client bootstraps a strict shard: its deploy is admitted,
+    /// debited once, and the gate decision is play/replay-deterministic.
+    ///
+    /// This pairs with `client_fuel_allocation_credits_sigma_c_at_genesis` (which
+    /// proves the genesis seed itself is play/replay-symmetric): the seed makes
+    /// the pool PRESENT+funded, and this test proves a PRESENT+funded client pool
+    /// is admitted under strict mode with a deterministic debit.
+    #[tokio::test]
+    async fn strict_mode_funded_client_admitted_and_replays() {
+        // A client with demand Δ=4. Its Σ⟦c⟧ was seeded at genesis to 10 (≥ Δ +
+        // margin), so under STRICT it is admitted (PRESENT funded pool — the
+        // strict-absent rejection path does not apply).
+        const DEMAND: usize = 4;
+        const MARGIN: i64 = 1;
+        let client = cosigned(&n_sends(DEMAND), b"client", 0, 10);
+        let client_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"client"));
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"client", (DEMAND as i64) + MARGIN + 5); // present, comfortably funds Δ
+
+        // ---- PLAY gate (strict = true) ----
+        let play = admit_by_funding(
+            vec![client.clone()],
+            &reader,
+            MARGIN,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
+        assert_eq!(
+            play.admitted.len(),
+            1,
+            "strict + PRESENT funded client pool ⇒ admitted"
+        );
+        assert!(play.rejected.is_empty(), "funded client ⇒ not rejected");
+        assert_eq!(
+            play.debits.get(&client_key).map(|d| d.amount),
+            Some(DEMAND as i64),
+            "the admitted client pool is debited exactly its demand (post = pre − Δ)"
+        );
+
+        // ---- REPLAY recompute (strict = true) over the SAME admitted set ----
+        // The replay path reconstructs the admitted envelopes from the block and
+        // recomputes the debit map against the SAME pre-state pool. Under strict
+        // it ALSO re-verifies admission; a funded client passes (no rejection).
+        let recomputed = recompute_settlement_debits(
+            play.admitted.clone(),
+            &reader,
+            /* strict */ true,
+        )
+        .await
+        .expect("strict replay recompute must not reject a funded client");
+
+        // play == replay: the debit map is byte-identical (the consensus bar).
+        assert_eq!(
+            recomputed.len(),
+            play.debits.len(),
+            "replay recomputed the same number of pool debits as play"
+        );
+        assert_eq!(
+            recomputed.get(&client_key).map(|d| d.amount),
+            play.debits.get(&client_key).map(|d| d.amount),
+            "strict replay recompute is byte-identical to the play-side client debit"
+        );
+        assert_eq!(
+            recomputed.get(&client_key).map(|d| d.amount),
+            Some(DEMAND as i64),
+            "replayed client debit equals its demand"
+        );
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // #12 — EXACT per-component (Split/Join) compound settlement debit.
     // The consensus bars for the multi-pool draw split + the cross-group

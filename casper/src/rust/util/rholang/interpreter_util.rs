@@ -328,12 +328,26 @@ pub async fn validate_block_checkpoint(
                 // disjoint borrows don't trip the borrow checker.
                 let strict_funding_enforcement =
                     s.on_chain_state.shard_conf.strict_funding_enforcement;
+                // Task #13b: lower the shard-conf client funding-slot allocations
+                // (`Vec<(PublicKey, i64)>`) to raw pk bytes into an OWNED local
+                // before the `&mut s.dag` borrow below (disjoint-borrow hygiene,
+                // same reason as the strict flag). This is the SAME shard constant
+                // the play-side proposer read (replay determinism); empty on
+                // default shards. Threaded onto the reconstructed block-1 close.
+                let client_fuel_allocations: Vec<(Vec<u8>, i64)> = s
+                    .on_chain_state
+                    .shard_conf
+                    .client_fuel_allocations
+                    .iter()
+                    .map(|(pk, amount)| (pk.bytes.to_vec(), *amount))
+                    .collect();
                 let replay_result = replay_block(
                     incoming_pre_state_hash,
                     block,
                     &mut s.dag,
                     runtime_manager,
                     strict_funding_enforcement,
+                    &client_fuel_allocations,
                 )
                 .await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -356,6 +370,11 @@ async fn replay_block(
     // the validating snapshot's on-chain shard conf and threaded into the
     // replay-side recompute (same constant as the play-side gate).
     strict_funding_enforcement: bool,
+    // Task #13b: the shard-genesis client funding-slot allocations (lowered to
+    // raw pk bytes), read from the validating snapshot's on-chain shard conf and
+    // threaded onto the reconstructed block-1 close deploy (same constant as the
+    // play-side proposer used).
+    client_fuel_allocations: &[(Vec<u8>, i64)],
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
     // Extract deploys and system deploys from the block
     let internal_deploys = proto_util::deploys(block);
@@ -452,6 +471,7 @@ async fn replay_block(
                 Some(invalid_blocks.clone()),
                 is_genesis,
                 strict_funding_enforcement,
+                client_fuel_allocations,
             )
             .await;
 

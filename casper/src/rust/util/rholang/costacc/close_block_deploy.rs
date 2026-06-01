@@ -66,6 +66,24 @@ pub struct CloseBlockDeploy {
     /// SIBLING of `settlement_debits`: the fee (a transferred token) is DISTINCT
     /// from the cost (the burned settlement debit) — cost ≠ fee (D.0).
     pub fee_credits: Option<crate::rust::util::rholang::acceptance::FeeCredit>,
+    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
+    /// `[(client_pk_bytes, amount)]` — the §5.7/§7.5 genesis/system write that
+    /// SEEDS each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))` so a
+    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
+    /// FUNDED clients. Credited ONLY at the genesis-block-1 close (gated on
+    /// `block_number == 1` in `dual_write_supply`, mirroring the StageB
+    /// genesis-bonded-set `initialPhlogiston` funding which also lands on block 1).
+    ///
+    /// SHARD-GENESIS CONSTANT (DR-6), threaded from `CasperShardConf`
+    /// (`client_fuel_allocations`, wired from `CasperConf` at genesis) — the SAME
+    /// per-shard list on every node, NOT serialized into the block. PLAY: set by
+    /// `block_creator::create` from `on_chain_state.shard_conf`. REPLAY:
+    /// RECONSTRUCTED in `replay_block_system_deploy` from the SAME shard conf
+    /// (threaded through `replay_deploys`) — same list ⇒ byte-identical credit.
+    /// DEFAULT EMPTY (`new`): a shard with no client allocations is byte-identical
+    /// to pre-#13b (the block-1 close performs no client credit), so existing
+    /// shards stay bit-for-bit unchanged.
+    pub client_fuel_allocations: Vec<(Vec<u8>, i64)>,
 }
 
 impl CloseBlockDeploy {
@@ -80,6 +98,12 @@ impl CloseBlockDeploy {
             initial_rand,
             settlement_debits: std::collections::BTreeMap::new(),
             fee_credits: None,
+            // #13b: default EMPTY — only `block_creator::create` (play) and
+            // `replay_block_system_deploy` (replay) populate this from the shard
+            // conf. Every other construction site (genesis, slashing/merging test
+            // fixtures, replay-reconstructed non-block-1 closes) leaves it empty,
+            // so no client credit is performed there — byte-identical to pre-#13b.
+            client_fuel_allocations: Vec::new(),
         }
     }
 
@@ -166,7 +190,7 @@ impl CloseBlockDeploy {
     async fn dual_write_supply(
         &self,
         runtime_ops: &mut RuntimeOps,
-        _block_data: &BlockData,
+        block_data: &BlockData,
         _pre_state_hash: &StateHash,
         debits: &std::collections::BTreeMap<
             crate::rust::util::rholang::acceptance::SigKey,
@@ -367,6 +391,80 @@ impl CloseBlockDeploy {
                             readback_f,
                         ),
                     ));
+                }
+            }
+        }
+
+        // ── #13b genesis-block-1 CLIENT funding-slot seed (phase 4) ───────────
+        // The §5.7/§7.5 genesis/system write that SEEDS each client supply pool
+        // `Σ⟦c⟧ = from_sig(Ground(client_pk))` from the shard-genesis
+        // `client_fuel_allocations` list, so a spec-strict shard
+        // (`strict_funding_enforcement = true`) can bootstrap FUNDED clients.
+        //
+        // GATE: block_number == 1 ONLY. Genesis itself (block 0) has no
+        // close-block `post_eval` hook (`compute_genesis` runs only the blessed
+        // terms), so — exactly like the StageB genesis-bonded-set
+        // `initialPhlogiston` funding — the genesis client seed lands at the
+        // close of the FIRST post-genesis block (block 1). On every later block
+        // `client_fuel_allocations` is still threaded but the gate skips the
+        // credit, so the seed is a one-time genesis event (idempotent: it is NOT
+        // re-applied at block 2+).
+        //
+        // REPLAY SYMMETRY: `client_fuel_allocations` is the SAME shard constant on
+        // play and replay (block_creator reads it from `on_chain_state.shard_conf`;
+        // replay RECONSTRUCTS it from the same shard conf), and the per-allocation
+        // `random_state` is derived from the close-block deploy's replay-stable
+        // `initial_rand` advanced by the allocation's SORTED-pk index — so the
+        // produced datum identity (hence the post-state trie root) is
+        // byte-identical play↔replay. `is_replay` enables the
+        // `ReplaySupplyMismatch` write-readback guard, symmetric with the mint /
+        // debit / fee loops above.
+        //
+        // DEFAULT-EMPTY back-compat: an empty `client_fuel_allocations` (the
+        // default for every shard that does not configure client funding) makes
+        // this loop a no-op, so the block-1 close — and every block — is
+        // byte-identical to pre-#13b.
+        if block_data.block_number == 1 && !self.client_fuel_allocations.is_empty() {
+            // Canonical (pk-ascending) order so the per-allocation `random_state`
+            // index is independent of the genesis-config list order on both play
+            // and replay.
+            let mut allocations = self.client_fuel_allocations.clone();
+            allocations.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (index, (client_pk, amount)) in allocations.iter().enumerate() {
+                if *amount == 0 {
+                    // A zero-amount allocation is a no-op (provisioning an empty
+                    // pool would be observable as a PRESENT-zero pool, which under
+                    // strict mode rejects Δ>0 — but seeding zero conveys no funds,
+                    // so skip it and leave the channel untouched, matching the
+                    // debit loop's zero-skip and `produce_balance`'s single-datum
+                    // discipline). A negative amount is a genesis-config error;
+                    // `checked_add` below would not catch it, but the genesis
+                    // surface validates non-negativity before it reaches here.
+                    continue;
+                }
+                let chan = supply_channel(&Sig::Ground(client_pk.clone()));
+                let old_n = supply::read_balance(runtime_ops, &chan).await;
+                let new_n = old_n
+                    .checked_add(*amount)
+                    .expect("phlogiston supply overflow on #13b client funding-slot seed");
+                let random_state = supply::client_alloc_random_state(&close_rand, index as i64);
+                supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
+
+                if is_replay {
+                    // Write-readback integrity (Decision 6.3), symmetric with the
+                    // mint / debit / fee loops: the seeded balance must read back
+                    // as `new_n`, else play and replay diverged.
+                    let readback = supply::read_balance(runtime_ops, &chan).await;
+                    if readback != new_n {
+                        return Err(CasperError::ReplayFailure(
+                            ReplayFailure::replay_supply_mismatch(
+                                format!("clientAlloc:{}", hex::encode(client_pk)),
+                                new_n,
+                                readback,
+                            ),
+                        ));
+                    }
                 }
             }
         }

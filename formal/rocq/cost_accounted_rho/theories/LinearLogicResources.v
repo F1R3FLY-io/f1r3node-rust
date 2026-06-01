@@ -694,6 +694,64 @@ Proof.
   reflexivity.
 Qed.
 
+(* ─── #13b: spec-strict rejection of an underfunded deploy on an ABSENT pool ──
+
+   Task #13a switched the WD-D2 acceptance gate to its spec-strict mode (§7.6
+   step 5: an underfunded deploy MUST be rejected — no "admit-unenforced"
+   carve-out). In that mode an ABSENT supply pool is treated as a present pool
+   carrying the empty stack: its balance is [Σ_s = 0] (the paper's [supply(s) =
+   0] for an absent pool; realized in Rust by [supply::read_balance] folding an
+   absent channel to 0). Task #13b SEEDS client pools at genesis precisely so a
+   strict shard does NOT reject the clients it intends to fund.
+
+   The headline obligation [strict_reject_when_underfunded] is the formal content
+   of the strict reject property: under strict mode, a deploy whose demand is
+   POSITIVE ([delta_s f > 0]) against an absent pool (supply [0]) FAILS the gate's
+   boolean funding check — [is_funded_balance 0 f = false] — so it is rejected
+   (§7.6 step 5: rejected without executing any part, no state change, no tokens
+   consumed). This is an axiom-free COROLLARY of the Decision-8 soundness
+   biconditional [funding_check_balance_sound] (= [funding_decidable]'s boolean
+   witness): at [n = 0] the check is true iff [funds 0 (delta_s f)] i.e. iff
+   [delta_s f <= 0], which CONTRADICTS [delta_s f > 0]; hence the check is false.
+   It mirrors the Rust strict branch ([acceptance.rs::admit_by_funding]: an absent
+   pool's effective supply is 0, so a [Δ>0] group fails [is_funded(_, 0, margin)])
+   and the replay re-verification ([recompute_settlement_debits] under strict:
+   an admitted [Δ>0] deploy on an absent pool is a gate-bypass ⇒ invalid block). *)
+Theorem strict_reject_when_underfunded :
+  forall (f : ll_formula),
+    delta_s f > 0 ->
+    is_funded_balance 0 f = false.
+Proof.
+  intros f Hpos.
+  (* Reduce to the boolean: [is_funded_balance 0 f = (delta_s f <=? 0)]. A
+     boolean is [false] exactly when it is not [true]; rewrite [= true] via the
+     soundness biconditional, then derive the contradiction with [Hpos]. *)
+  apply Bool.not_true_is_false.
+  intro Htrue.
+  rewrite funding_check_balance_sound in Htrue.   (* Htrue : funds 0 (delta_s f) *)
+  unfold funds in Htrue.                            (* Htrue : delta_s f <= 0 *)
+  (* [delta_s f > 0] is [0 < delta_s f] i.e. [1 <= delta_s f]; with [delta_s f
+     <= 0] that forces [1 <= 0], absurd. *)
+  lia.
+Qed.
+
+(* Corollary [strict_absent_pool_rejects_positive_demand]: an ABSENT pool is the
+   depth-0 stack ([sig_stack a 0 = LLUnit], [sigma_s = 0] by
+   [sigma_s_balance_eq_stack_count]); the strict gate reading that pool's balance
+   rejects any positive demand. This states the property directly against the
+   stack representation the realization uses, closing the chain "absent pool ⇒
+   supply 0 ⇒ positive-demand deploy rejected" (the #13b motivation for seeding
+   client pools at genesis). *)
+Corollary strict_absent_pool_rejects_positive_demand :
+  forall (a : nat) (f : ll_formula),
+    delta_s f > 0 ->
+    is_funded_balance (sigma_s (sig_stack a 0)) f = false.
+Proof.
+  intros a f Hpos.
+  rewrite sigma_s_balance_eq_stack_count.
+  apply strict_reject_when_underfunded, Hpos.
+Qed.
+
 (* Remark 21 (cost-accounted-rho, "deployment acceptance as linear proof
    search"): two deployments competing for the same linear token are two proof
    obligations over the same linear hypothesis, and AT MOST ONE can succeed. The

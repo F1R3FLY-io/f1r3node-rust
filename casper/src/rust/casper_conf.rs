@@ -172,6 +172,29 @@ fn default_disable_late_block_filtering() -> bool { true }
 /// spec-strict §7.6-step-5 rejection at genesis by setting it `true`.
 fn default_strict_funding_enforcement() -> bool { false }
 
+/// Default for `client_fuel_allocations` (task #13b): EMPTY. Existing shards
+/// (which never set this key) perform NO genesis client funding-slot seed, so
+/// their genesis is byte-identical to pre-#13b. Operators opt into seeding
+/// client `Σ⟦c⟧` pools at genesis by listing `(public-key, amount)` entries.
+fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> { Vec::new() }
+
+/// A single Cost-Accounted Rho task #13b genesis client funding-slot allocation:
+/// the hex-encoded client `public-key` and the `amount` of phlogiston to SEED
+/// into its supply pool `Σ⟦c⟧` at the genesis-block-1 close. Lowered to a
+/// `(crypto::PublicKey, i64)` pair at `casper_launch` wiring (hex-decoded once at
+/// startup, so a malformed key fails fast). Mirrors the `(public_key, amount)`
+/// shape of the vault/wallet surface; a genesis SEED only (no rate, no policy).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientFuelAllocation {
+    /// Hex-encoded client public key. `Σ⟦c⟧ = from_sig(Ground(public_key_bytes))`.
+    #[serde(rename = "public-key")]
+    pub public_key: String,
+    /// Phlogiston to seed into the client's supply pool at genesis-block-1.
+    /// Must be `>= 0` (a negative seed is a config error; validated at wiring).
+    #[serde(rename = "amount")]
+    pub amount: i64,
+}
+
 fn default_enable_mergeable_channel_gc() -> bool { false }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
@@ -280,6 +303,24 @@ pub struct GenesisBlockData {
     #[serde(rename = "epoch-phlogiston", default = "default_epoch_phlogiston")]
     pub epoch_phlogiston: i64,
 
+    /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
+    /// — the §5.7/§7.5 genesis/system write that SEEDS each client supply pool
+    /// `Σ⟦c⟧ = from_sig(Ground(client_pk))` at the genesis-block-1 close, so a
+    /// spec-strict shard (`strict_funding_enforcement = true`) can bootstrap
+    /// FUNDED clients. SIBLING of `initial_phlogiston` (the validator bootstrap
+    /// grant) but for CLIENTS, applied at the block-1 close by the Rust
+    /// `supply::produce_balance` mirror (DR-13), not by a PoS substitution. Empty
+    /// by default (existing shards never set this key ⇒ their genesis is
+    /// byte-identical). A genesis funding-slot SEED only: no rate, no policy, no
+    /// business parameter — clients acquire MORE `Σ⟦c⟧` post-genesis via the
+    /// blessed `Exchange` (`rho:lang:exchange`). Shard-genesis constant
+    /// (immutable per DR-6).
+    #[serde(
+        rename = "client-fuel-allocations",
+        default = "default_client_fuel_allocations"
+    )]
+    pub client_fuel_allocations: Vec<ClientFuelAllocation>,
+
     /// Full display name of the native token. Substituted into the
     /// TokenMetadata Rholang contract at genesis and registered at
     /// `rho:system:tokenMetadata`. Immutable after genesis.
@@ -306,6 +347,35 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    /// Lower the serde-parsed task #13b client funding-slot allocations
+    /// (`[(hex public-key, amount)]`) to `[(crypto::PublicKey, amount)]`,
+    /// hex-decoding each key ONCE at startup so a malformed key or a negative
+    /// amount fails fast (loudly at launch) rather than being baked into genesis
+    /// or silently producing a degenerate `Σ⟦c⟧` seed. Empty in, empty out
+    /// (existing shards). The lowered list is wired into `CasperShardConf` and
+    /// then onto the genesis-block-1 `CloseBlockDeploy`.
+    pub fn lowered_client_fuel_allocations(
+        &self,
+    ) -> Result<Vec<(crypto::rust::public_key::PublicKey, i64)>, String> {
+        let mut out = Vec::with_capacity(self.client_fuel_allocations.len());
+        for alloc in &self.client_fuel_allocations {
+            if alloc.amount < 0 {
+                return Err(format!(
+                    "client-fuel-allocations: amount must be >= 0 for public-key {}; got {}",
+                    alloc.public_key, alloc.amount
+                ));
+            }
+            let bytes = hex::decode(&alloc.public_key).map_err(|e| {
+                format!(
+                    "client-fuel-allocations: public-key {:?} is not valid hex: {}",
+                    alloc.public_key, e
+                )
+            })?;
+            out.push((crypto::rust::public_key::PublicKey::from_bytes(&bytes), alloc.amount));
+        }
+        Ok(out)
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -585,6 +655,7 @@ mod native_token_validation_tests {
             max_cosigners_per_deploy: DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             initial_phlogiston: DEFAULT_INITIAL_PHLOGISTON,
             epoch_phlogiston: DEFAULT_EPOCH_PHLOGISTON,
+            client_fuel_allocations: Vec::new(),
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,

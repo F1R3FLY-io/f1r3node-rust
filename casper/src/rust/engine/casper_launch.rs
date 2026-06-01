@@ -162,6 +162,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // shard constant on every node ⇒ the gate verdict is
             // replay-deterministic (mirrors `min_phlo_price` directly above).
             strict_funding_enforcement: conf.strict_funding_enforcement,
+            // Task #13b: genesis client funding-slot allocations, wired from the
+            // shard-genesis `GenesisBlockData` (default EMPTY = back-compat) and
+            // hex-lowered once here so a malformed key fails fast at launch. Same
+            // shard constant on every node ⇒ the block-1 client seed is
+            // replay-deterministic (mirrors `strict_funding_enforcement` above).
+            client_fuel_allocations: conf
+                .genesis_block_data
+                .lowered_client_fuel_allocations()
+                .expect("invalid client-fuel-allocations in genesis-block-data"),
             // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
             // all validators) are included in merged state. Prevents deploy loss during network
             // partitions or validator catchup. Default is true (disabled).
