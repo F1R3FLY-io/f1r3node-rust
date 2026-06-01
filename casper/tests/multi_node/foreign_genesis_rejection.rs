@@ -6,6 +6,7 @@
 // false without ever reaching Casper validation. The block is buffered until
 // the stale TTL expires, but it never enters the main DAG.
 
+use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -34,7 +35,7 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
         .await
         .unwrap();
 
-    // Rogue genesis: 1 validator with fresh keys → genuinely different genesis block.
+    // Rogue genesis: 1 validator with fresh keys -> genuinely different genesis block.
     let (rogue_sk, rogue_pk) = ROGUE_SK_PK.clone();
     let rogue_bonds = GenesisBuilder::create_bonds(vec![rogue_pk.clone()]);
     let rogue_params =
@@ -71,10 +72,10 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
     .unwrap();
     let rogue_block = rogue_node.add_block_from_deploys(&[deploy]).await.unwrap();
 
-    // Phase 1: rogue → main.
+    // Phase 1: rogue -> main.
     // check_if_of_interest passes (same shard_id), well-formed check passes, then
     // check_dependencies_with_effects finds the parent (rogue genesis hash) missing
-    // from main's store → returns false → Either::Left(missing_blocks).
+    // from main's store -> returns false -> Either::Left(missing_blocks).
     let rogue_to_main_status = main_nodes[0]
         .process_block(rogue_block.clone())
         .await
@@ -86,7 +87,7 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
         rogue_to_main_status
     );
     assert!(
-        !main_nodes[0].contains(&rogue_block.block_hash),
+        !main_nodes[0].casper.dag_contains(&rogue_block.block_hash),
         "foreign block must not be present in the main network's DAG"
     );
 
@@ -117,7 +118,7 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
         main_to_rogue_status
     );
     assert!(
-        !rogue_node.contains(&main_block.block_hash),
+        !rogue_node.casper.dag_contains(&main_block.block_hash),
         "main-network block must not be present in the rogue node's DAG"
     );
 }
