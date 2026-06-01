@@ -4,7 +4,7 @@
 (* Three validators, each bonded with 100 stake; max seq number 2.          *)
 (****************************************************************************)
 
-EXTENDS SlashFlow, TLC
+EXTENDS SlashFlowConservation, TLC
 
 CONSTANTS v1, v2, v3
 

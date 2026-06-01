@@ -532,3 +532,81 @@ migration, and is intentionally not performed under the spec-minimal reconciliat
 
 **Cross-refs.** DR-1 (the `g`/`#P` axes the sugar signs over), DR-10 (the ILLE extension; `⊸` coexists with it
 as sugar). Spec §3.8/§3.2/§3.3/§3.5/§1.
+
+## DR-18 — Slashing Rocq tree axiom-gated (and the funext it caught); redemption un-halt invariant; Burned is terminal, which is spec-faithful
+
+**Status.** Settled (StageC formal hardening, task #14). **Spec law:** `cost-accounted-rho.tex` paragraph
+*Slashing* (tex:3027–3059) and *Stake vs.\ phlogiston* (tex:2359–2387): slashing's two effects (all phlogiston
+removed + no further minting; stake moved to a private channel pending adjudication), "Upon redemption,
+phlogiston minting resumes at the next epoch boundary", the stake outcomes (Returned / Partially redistributed
+/ Burned), and "minting … contingent on … good behaviour" (tex:2368–2369, 3108–3109).
+
+**(a) The slashing Rocq tree is now axiom-gated.** `scripts/check-cost-accounted-rho-proofs.sh` already
+compiled `formal/rocq/slashing/` (the validator-contract dependency, DR-12) but did NOT subject it to the
+axiom/hygiene gate the cost_accounted_rho + validator trees get. It now does, two ways: (i) the sanitized
+`Admitted`/`admit`/`Axiom`/`Conjecture`/`Parameter` + incompletion-marker scan covers `slashing__*` sources;
+(ii) a `Print Assumptions` block over the 73 headline theorems — the `MainTheorem.v` composition
+(`main_T1…main_T12`, the `main_T9_*` bug-fix family, the top-level `main_slashing_algorithm_correct`), the
+`ValidatorRedemption.v` redemption set (`redeem_vindicated_restores`, `redeem_guilty_redistributes`,
+`redeem_burned_conserves`, **`redeem_burned_stays_halted`**, `slash_then_redeem_conserves_total`, …), and the
+un-composed `BugFixAtomicBufferDagTransition.v` `t_9_20_*` — appended to the same assumptions file so the
+existing closed-count invariant requires every one to report "Closed under the global context". This catches
+both in-tree axioms (the regex scan) and IMPORTED (library) axioms (which only `Print Assumptions` reveals).
+
+**The axiom the gate caught on its first run.** `BugFixAtomicBufferDagTransition.v` (Bug Fix #17, T-9.20)
+declared itself axiom-free (its §1 note) yet `t_9_20_recon` and `t_9_20_step_idempotent_on_projection` pulled
+in `FunctionalExtensionality.functional_extensionality_dep`: a `HashSet` is modelled as a function
+`BlockHash -> bool`, and the two idempotence lemmas proved Leibniz function-equality `f = g`, which funext
+axiomatises. **Resolution:** restate the two lemmas (`set_insert_idempotent`, `step_idempotent_dag`) and the
+two T-9.20 theorems with POINTWISE equality (`forall x, f x = g x`) — the observational meaning of "same
+slashing projection", provable without funext — and drop the `FunctionalExtensionality` import. All four are
+leaf results (used only within their own file; not composed by `MainTheorem`), so the change is contained and
+proves the same observational property. The slashing tree is now wholly axiom-free (all 73 headline theorems
+Closed; proof gate green).
+
+**(b) Redemption un-halt TLA+ invariant.** `formal/tlaplus/slashing/SlashFlow.tla` gains
+`Inv_RedeemedValidatorUnhalted == \A v \in activeValidators : v \notin mintingHalted` (wired into
+`MC_SlashFlow.cfg`): the TLA image of "Upon redemption, phlogiston minting resumes." It FAILS if a
+Vindicated/Guilty `Redeem` re-activates an offender (`activeValidators \cup {o}`) but omits the un-halt
+`mintingHalted' = mintingHalted \ {o}`. Soundness rests on the model's `active => bond > 0` (Init bonds all
+positive; `ExecuteSlash` zeros-the-bond-and-deactivates atomically; `Redeem` restores a positive bond), so the
+`bond = 0` idempotent-slash branch never halts an ACTIVE validator.
+
+This safety invariant is established **DEDUCTIVELY by TLAPS**, not by model-checking: the full `MC_SlashFlow`
+reachable-state space is far too large to enumerate exhaustively (a memory-bounded TLC run passes tens of
+millions of distinct states without converging — which is exactly what made a naive full-enumeration attempt
+impractical and motivated the deductive route). The inductive invariant
+`IndInv == TypeOK /\ Inv_ActiveImpliesBonded /\ Inv_RedeemedValidatorUnhalted` is proved in
+`SlashFlowProofs.tla` (`Init => IndInv`; `IndInv /\ [Next]_vars => IndInv'` split across all seven actions + the
+stutter step; `THEOREM Spec => []Inv_RedeemedValidatorUnhalted`) — **199 obligations, NO state search (cannot
+OOM), proved for ALL parameter values**. The auxiliary `Inv_ActiveImpliesBonded == \A v \in activeValidators :
+bonds[v] > 0` is precisely what discharges the idempotent-slash case (it forces `o \notin activeValidators`
+when `bonds[o] = 0`, so adding `o` to `mintingHalted` cannot halt an active validator). The proof lives in a
+SEPARATE module `SlashFlowProofs.tla` because it must `EXTENDS TLAPS` (absent from the standalone TLC jar) and
+because `tlapm 1.5.0` aborts on `RECURSIVE` operators — so the TLC-only `RECURSIVE` conservation operators +
+`Inv_StakeConservation` were relocated verbatim to `SlashFlowConservation.tla`, with `MC_SlashFlow` re-pointed
+at it (TLC coverage unchanged; all four modules SANY-parse clean). Two constant-typing `ASSUME`s were added
+(`InitialBonds \in [Validators -> Nat]`, `MaxSeqNum \in Nat`) — the declared types of otherwise-untyped TLA+
+constants, matching the pre-existing `MintAmount` ASSUME and satisfied by every instantiation; they are model
+parameter well-formedness, not property-altering axioms. A tiny 2-validator / `MaxSeqNum=1` instance
+`MC_SlashFlowRedeem` (completes in < 1 s, 9480 distinct states, no error) is the bounded TLC cross-check. Both
+are wired into `scripts/ci/check-tla-invariants.sh` (`tlapm SlashFlowProofs.tla`, mirroring the cost-accounting
+gate's `tlapm Validator.tla`, plus the `MC_SlashFlowRedeem` TLC run). Verification is deductive ⇒ it cannot
+OOM the host regardless of model size — directly addressing the incident that motivated this work.
+
+**Burned is a TERMINAL state — and that is spec-faithful, not a deviation.** The spec lists Returned /
+Partially redistributed / Burned as dispositions of the *stake*; the StageC model keeps a Burned offender
+halted (`SlashFlow.tla` Burned branch; Rocq `redeem_burned_stays_halted`; `PoS.rhox` `redeemSlashed` Burned
+branch). A deep-dive of how a Burned validator is used downstream settles the apparent tension with "Upon
+redemption, minting resumes": a Burned validator **cannot mint** (epoch-mint eligibility is
+`active ∧ ¬halted ∧ ¬minted`; Burned fails both `active` and `¬halted` — `PoS.rhox:590–592`), **cannot
+re-bond** (`bond` rejects a pk already in `allBonds`, which slash left at 0 — `PoS.rhox:428`), and **cannot be
+re-redeemed** (redemption requires a quarantine record, which Burned clears — `PoS.rhox:934/1039`): it is
+permanently dead. So the spec's "Upon redemption, minting resumes" is realized by the **restorative**
+redemptions (Vindicated = proven right; Guilty = an arrangement, restored with a positive bond); Burned is the
+non-restorative case, and a burned validator's permanent halt is exactly "minting … contingent on … good
+behaviour" (tex:2368–2369, 3108–3109). The un-halt invariant therefore scopes to active (restored) validators
+and correctly excludes Burned (never active).
+
+**Cross-refs.** DR-3 (two-effect slashing + redemption), DR-7 (redemption authority = PoS multisig), DR-12
+(validator multi-prover contract). Spec paragraphs *Slashing* / *Stake vs.\ phlogiston*.

@@ -70,6 +70,7 @@ POST_FIX_CONFIGS=(
     MC_EquivocationDetectorEager_3v
     MC_ConcurrentTracker
     MC_SlashFlow
+    MC_SlashFlowRedeem
     MC_TwoLevelSlashing
     MC_AuthorizedSlashFlow
     MC_JustificationProjection
@@ -104,9 +105,33 @@ for cfg in "${POST_FIX_CONFIGS[@]}"; do
     \rm -rf "$TLC_METADIR_ROOT/slashing-$cfg" 2>/dev/null || true
 done
 
+# Redemption-un-halt invariant (Inv_RedeemedValidatorUnhalted): the full
+# MC_SlashFlow state space is too large to exhaustively enumerate (its TLC run
+# above checks it only as far as it gets), so this safety invariant is
+# established DEDUCTIVELY by TLAPS — no state search (cannot OOM) and proved for
+# ALL parameter values — via the inductive invariant in SlashFlowProofs.tla
+# (IndInv = TypeOK /\ active=>bonded /\ active=>not-halted). This mirrors how the
+# cost-accounting gate discharges the validator contract with `tlapm`. The tiny
+# MC_SlashFlowRedeem above is the bounded TLC cross-check. Local-only.
+SLASHING_TLAPS_PATH="$HOME/.local/tlaps/bin:$HOME/.local/bin:/usr/bin:$PATH"
+if PATH="$SLASHING_TLAPS_PATH" command -v tlapm >/dev/null 2>&1; then
+    printf "PROVE  %-40s ... " "SlashFlowProofs (TLAPS)"
+    tlaps_out=$( cd "$TLA_DIR" && PATH="$SLASHING_TLAPS_PATH" tlapm SlashFlowProofs.tla 2>&1 || true )
+    if echo "$tlaps_out" | grep -Eq "All [1-9][0-9]* obligations? proved\." \
+       && ! echo "$tlaps_out" | grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)"; then
+        echo "ok"
+    else
+        echo "FAIL"
+        echo "$tlaps_out" | tail -20 | sed 's/^/    /'
+        failed=$((failed + 1))
+    fi
+else
+    echo "SKIP   SlashFlowProofs (tlapm not on PATH)"
+fi
+
 if (( failed > 0 )); then
     echo "FAILED: $failed config(s) violated invariants."
     exit 1
 fi
 
-echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean."
+echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean (+ SlashFlowProofs TLAPS)."

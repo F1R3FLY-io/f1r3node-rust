@@ -59,7 +59,22 @@ vars == <<bonds, activeValidators, coopVaultBalance, slashedSet,
           noopSlashHashes,
           forkChoiceLatest>>
 
-ASSUME MintAmount \in Nat /\ MintAmount > 0
+ASSUME MintAmountType == MintAmount \in Nat /\ MintAmount > 0
+
+\* Constant-typing assumptions for InitialBonds and MaxSeqNum. These make
+\* explicit the types already DOCUMENTED on the CONSTANT declarations above
+\* (InitialBonds : "[Validators -> Nat]"; MaxSeqNum : a sequence-number bound,
+\* used as 1..MaxSeqNum / 0..MaxSeqNum) and supplied by every model instance
+\* (e.g. MC_InitialBonds, MC_MaxSeqNum). They are the well-formedness
+\* preconditions under which TypeOK is an inductive invariant — Init sets
+\* bonds = InitialBonds, so bonds \in [Validators -> Nat] holds iff InitialBonds
+\* does; and SignEquivocating records <<v, s-1>> with s \in 1..MaxSeqNum, so
+\* s-1 \in 0..MaxSeqNum needs MaxSeqNum \in Nat. They are exactly analogous to
+\* the MintAmount typing assumption directly above. These are constant-typing
+\* hypotheses, NOT property-altering axioms: each constrains only a model
+\* parameter, never the reachable state space.
+ASSUME InitialBondsType == InitialBonds \in [Validators -> Nat]
+ASSUME MaxSeqNumType    == MaxSeqNum \in Nat
 
 \* Block IDs are encoded as (validator, seqNum, blockNum) triples.
 BlockId == Validators \X (1..MaxSeqNum) \X (1..2)
@@ -359,26 +374,19 @@ Spec == Init /\ [][Next]_vars /\ \A h \in BlockId : WF_vars(ExecuteSlash(h))
 Inv_BondsZeroAfterSlash ==
     \A v \in slashedSet : bonds[v] = 0
 
-\* Recursive sum operator over a set, weighted by InitialBonds.
-RECURSIVE SumInitialBonds(_)
-SumInitialBonds(S) ==
-    IF S = {} THEN 0
-    ELSE LET v == CHOOSE x \in S : TRUE
-         IN  InitialBonds[v] + SumInitialBonds(S \ {v})
-
-\* Recursive sum operator over a set, weighted by current bonds.
-RECURSIVE SumBonds(_)
-SumBonds(S) ==
-    IF S = {} THEN 0
-    ELSE LET v == CHOOSE x \in S : TRUE
-         IN  bonds[v] + SumBonds(S \ {v})
-
-\* Recursive sum operator over a set, weighted by current quarantinedStake.
-RECURSIVE SumQuarantined(_)
-SumQuarantined(S) ==
-    IF S = {} THEN 0
-    ELSE LET v == CHOOSE x \in S : TRUE
-         IN  quarantinedStake[v] + SumQuarantined(S \ {v})
+\* NOTE (TLAPS compatibility): the recursive set-sum operators
+\* (SumInitialBonds / SumBonds / SumQuarantined) and the conservation invariant
+\* Inv_StakeConservation that uses them have been MOVED OUT of this module, into
+\* the TLC-only leaf module SlashFlowConservation.tla (which `EXTENDS SlashFlow`),
+\* with their definitions, names and comments preserved verbatim. They are still
+\* TLC-model-checked via MC_SlashFlow (which now `EXTENDS SlashFlowConservation`),
+\* so no model coverage is lost. The relocation is forced by a hard limitation of
+\* tlapm 1.5.0: it ABORTS THE ENTIRE MODULE at level-computation time on ANY
+\* `RECURSIVE` operator definition (this happens before any proof obligation is
+\* generated, so no proof step can work around it), and this abort propagates to
+\* every module that `EXTENDS`/`INSTANCE`s such a module. Keeping SlashFlow.tla
+\* RECURSIVE-free is therefore a prerequisite for the deductive TLAPS proof of
+\* Inv_RedeemedValidatorUnhalted below to be checkable by `tlapm SlashFlow.tla`.
 
 \* T-8C (replaces the legacy Inv_ForfeitedToCoopVault): the Stage-C two-effect
 \* slash does NOT transfer to the coop vault — it EARMARKS the offender's bond
@@ -405,17 +413,9 @@ Inv_SlashedRemoved ==
 Inv_BondsNonNegative ==
     \A v \in Validators : bonds[v] >= 0
 
-\* Total stake conservation (quarantine-inclusive, Stage-C): the initial stake
-\* is fully accounted across the four buckets it can occupy — currently bonded,
-\* the coop vault (Guilty penalties), the per-offender quarantine (slashed but
-\* not yet adjudicated), and burned (destroyed by a Burned redemption, now
-\* posVault protocol surplus). A slash moves bond → quarantine; a Vindicated
-\* redeem moves quarantine → bond; a Guilty redeem moves quarantine → coop; a
-\* Burned redeem moves quarantine → burned. Every transition conserves the sum.
-Inv_StakeConservation ==
-    SumBonds(Validators) + coopVaultBalance
-      + SumQuarantined(Validators) + burnedStake
-    = SumInitialBonds(Validators)
+\* (Inv_StakeConservation — the quarantine-inclusive total-stake conservation
+\* invariant — lives in the TLC-only leaf module SlashFlowConservation.tla; see
+\* the NOTE above. It is model-checked there via MC_SlashFlow.)
 
 Inv_PendingSlashHasEvidence ==
     pendingSlashDeploys \subseteq invalidBlocks
@@ -485,6 +485,60 @@ Inv_NoDoubleCreditUnderMerge ==
 Inv_SupplyOnlyFromMint ==
     \A v \in Validators :
         (supply[v] > 0) => (<<v, EpochIndex>> \in mintedEpochs /\ v \notin mintingHalted)
+
+\* Redemption un-halts (the RESTORATIVE outcomes). A validator that is back in
+\* activeValidators is NOT in mintingHalted, so the next-epoch mint can re-fund
+\* it. This is the TLA image of the spec's "Upon redemption, phlogiston minting
+\* resumes at the next epoch boundary" (cost-accounted-rho.tex, paragraph
+\* Slashing, around l.3043-3056) and the Rocq anchor
+\* ValidatorRedemption.redeem_vindicated_restores (Vindicated/Guilty clear
+\* mintingHalted + re-activate with a positive bond). It FAILS if a
+\* Vindicated/Guilty Redeem re-activates an offender (activeValidators \cup {o})
+\* yet omits the un-halt mintingHalted' = mintingHalted \ {o}.
+\*
+\* Burned is the spec's TERMINAL, non-restorative case (stake destroyed; minting
+\* "contingent on good behavior", tex l.2368-2369 / l.3108-3109): it leaves the
+\* offender BOTH unbonded and OUT of activeValidators, so it is correctly
+\* outside this invariant's scope. Soundness rests on the model's active=>bond>0
+\* (Init bonds are all positive; ExecuteSlash zeros-the-bond-and-deactivates
+\* atomically; Redeem restores a positive bond), so the bond=0 idempotent-slash
+\* branch never adds an ACTIVE validator to mintingHalted.
+Inv_RedeemedValidatorUnhalted ==
+    \A v \in activeValidators : v \notin mintingHalted
+
+(****************************************************************************)
+(* Inductive-invariant scaffold for the redemption-un-halt safety invariant.*)
+(*                                                                          *)
+(* Inv_RedeemedValidatorUnhalted is proved DEDUCTIVELY (TLAPS) — for ALL    *)
+(* parameter values, with no state enumeration (the full MC_SlashFlow state *)
+(* space is too large to model-check) — in the companion proof module       *)
+(* SlashFlowProofs.tla (THEOREM Safety). The proof lives in a SEPARATE       *)
+(* module because it must `EXTENDS TLAPS` (for the PTL temporal-logic        *)
+(* backend etc.), and the standalone tla2tools.jar that TLC uses does NOT    *)
+(* bundle the TLAPS standard module — so an `EXTENDS TLAPS` in THIS module   *)
+(* would break every TLC model that depends on it (MC_SlashFlow, the CI      *)
+(* invariant check, and the tiny MC_SlashFlowRedeem cross-check). Keeping    *)
+(* this module TLAPS-free preserves all existing TLC machinery byte-for-byte.*)
+(*                                                                          *)
+(* The two definitions below (the auxiliary inductive invariant and the      *)
+(* assembled IndInv) are plain TLA+ — TLC-checkable and shared by both the   *)
+(* TLC models and the TLAPS proof. The auxiliary invariant                  *)
+(* Inv_ActiveImpliesBonded is the crux of the deductive argument: it is what *)
+(* lets the bond=0 idempotent-slash branch of ExecuteSlash conclude that the *)
+(* (zero-bond) offender o is NOT among the active validators, so adding o to *)
+(* mintingHalted cannot violate "active validators are un-halted".          *)
+(****************************************************************************)
+
+\* Auxiliary inductive invariant: every active validator carries a positive
+\* bond. (Init bonds the active set with InitialBonds > 0; ExecuteSlash zeros
+\* the bond AND deactivates atomically; Redeem re-activates only with a
+\* positive restored/remainder bond. Burned/no-op leave both unchanged.)
+Inv_ActiveImpliesBonded ==
+    \A v \in activeValidators : bonds[v] > 0
+
+\* The full inductive invariant carried through the TLAPS proof
+\* (SlashFlowProofs.tla). Also a sound TLC invariant in its own right.
+IndInv == TypeOK /\ Inv_ActiveImpliesBonded /\ Inv_RedeemedValidatorUnhalted
 
 (****************************************************************************)
 (* Liveness: every detected equivocation eventually triggers slash.          *)

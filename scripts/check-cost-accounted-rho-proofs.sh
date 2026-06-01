@@ -26,6 +26,13 @@ done
 for proof in "$VALIDATOR_THEORIES"/*.v; do
   perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/validator__$(basename "$proof")"
 done
+# Slashing development (Stage-C two-effect slash + redemption; #14): the
+# validator-contract dependency compiled below. It was previously compiled but
+# NOT axiom-gated; subject its theories to the same Admitted/Axiom/incompletion
+# hygiene scan as the cost-accounted + validator trees.
+for proof in "$SLASHING_ROOT/theories"/*.v; do
+  perl -0pe 's/\(\*.*?\*\)//gs' "$proof" > "$SANITIZED_THEORIES/slashing__$(basename "$proof")"
+done
 
 assumptions="$(mktemp)"
 trap 'rm -rf "$SANITIZED_THEORIES"; rm -f "$assumptions"' EXIT
@@ -385,6 +392,101 @@ EOF
 then
   echo "error: failed to query validator contract assumptions" >&2
   sed -n '1,160p' "$assumptions" >&2
+  exit 1
+fi
+
+# Slashing development headline theorems (#14 StageC formal hardening). The
+# slashing tree was compiled above (validator-contract dependency) but not
+# axiom-gated. Print Assumptions its headline results — the MainTheorem.v
+# composition (T-1..T-12 + T-9.x, incl. the top-level
+# main_slashing_algorithm_correct), the ValidatorRedemption.v redemption set
+# (incl. redeem_burned_stays_halted, the spec's TERMINAL-Burned anchor: a burned
+# validator stays halted, faithful to "minting contingent on good behaviour",
+# cost-accounted-rho.tex l.2368-2369 / l.3108-3109), and the un-composed
+# BugFixAtomicBufferDagTransition.v T-9.20. Appended to the SAME $assumptions
+# file so the closed-count invariant below counts them. The in-tree hygiene scan
+# above rejects Admitted/Axiom in the slashing sources; these Print Assumptions
+# additionally reject any IMPORTED (library) axiom the regex cannot see.
+if ! rocq repl -Q "$SLASHING_ROOT/theories" Slashing >> "$assumptions" 2>&1 <<'EOF'
+From Slashing Require Import MainTheorem ValidatorRedemption BugFixAtomicBufferDagTransition.
+Print Assumptions main_T1_detection_sound.
+Print Assumptions main_T2_detection_complete.
+Print Assumptions main_T3_slashable_taxonomy.
+Print Assumptions main_T4_record_monotone.
+Print Assumptions main_T5_record_unique.
+Print Assumptions main_T7_slash_zeros_bond.
+Print Assumptions main_T9_slash_idempotent.
+Print Assumptions main_TIdem_zero_bond_noop.
+Print Assumptions main_T10_fork_choice_exclusion.
+Print Assumptions main_T9_1_ignorable.
+Print Assumptions main_T9_2_atomic.
+Print Assumptions main_T9_3_dispatch.
+Print Assumptions main_T9_4_transfer.
+Print Assumptions main_T9_5_stake_zero.
+Print Assumptions main_T9_6_self_regression.
+Print Assumptions main_T9_7_seqnum_density.
+Print Assumptions main_T9_7_seqnum_density_dense_subsumption.
+Print Assumptions main_T9_7_seqnum_density_same_branch_stability.
+Print Assumptions main_T9_7_seqnum_density_memoized_equivalent.
+Print Assumptions main_T9_8_unbonded.
+Print Assumptions main_T9_9_self_correcting.
+Print Assumptions main_T9_10_withdraw_transfer_failure.
+Print Assumptions main_T9_10_failure_preserves_total_funds.
+Print Assumptions main_T9_10_withdraw_independence.
+Print Assumptions main_T9_12_stale_evidence_not_authorized.
+Print Assumptions main_T9_13_unknown_slash_evidence_noop.
+Print Assumptions main_T9_13_zero_parent_bond_not_authorized.
+Print Assumptions main_T9_13_positive_parent_bond_authorizes_matching_candidate.
+Print Assumptions main_T9_13_parent_pre_state_authorizes_when_ambient_zero.
+Print Assumptions main_T9_13_parent_zero_rejects_even_if_ambient_positive.
+Print Assumptions main_T9_13_recoverable_rejected_slash_hashes_nodup.
+Print Assumptions main_T9_13_own_detected_hash_not_recovered.
+Print Assumptions main_T9_13_uncovered_rejected_hash_recovered.
+Print Assumptions main_T9_13_recoverable_rejected_slash_requires_current_evidence.
+Print Assumptions main_TAuth_invalid_token_noop.
+Print Assumptions main_TAuth_valid_token_equiv.
+Print Assumptions main_TSlash_seed_input_hash_injective.
+Print Assumptions main_TSlash_deploy_seed_uses_invalid_block_hash.
+Print Assumptions main_T9_14_checked_pred_positive.
+Print Assumptions main_T9_15_duplicate_justifications_rejected.
+Print Assumptions main_T12_bft_quorum.
+Print Assumptions main_T12_closure_depth_bound.
+Print Assumptions main_T12_evidence_monotone.
+Print Assumptions main_T12_no_seed_empty_closure.
+Print Assumptions main_T12_reports_do_not_suppress_direct.
+Print Assumptions main_T12_unreported_visible_edge_remains_active.
+Print Assumptions main_T12_report_growth_antitone.
+Print Assumptions main_T12_view_merge_overapproximates_left.
+Print Assumptions main_T12_view_merge_overapproximates_right.
+Print Assumptions main_T12_view_merge_commutative.
+Print Assumptions main_T12_validator_renaming_equiv.
+Print Assumptions main_T9_11_detector_traversal_fuel_bound.
+Print Assumptions main_T9_11_detector_branch_traversal_fixed_bound.
+Print Assumptions main_T12_temporal_retention_boundary.
+Print Assumptions main_T12_temporal_retention_under_window.
+Print Assumptions main_T9_2_n_threads.
+Print Assumptions main_T4_record_lifecycle_retains_hash.
+Print Assumptions main_T9_6_dag.
+Print Assumptions main_T6_detect_neglected_sound.
+Print Assumptions main_T6_detect_neglected_complete.
+Print Assumptions main_slashing_algorithm_correct.
+Print Assumptions redeem_vindicated_restores.
+Print Assumptions redeem_guilty_redistributes.
+Print Assumptions redeem_burned_conserves.
+Print Assumptions redeem_burned_stays_halted.
+Print Assumptions redeem_requires_quarantine.
+Print Assumptions redeem_authorized_only.
+Print Assumptions slash_then_redeem_conserves_total.
+Print Assumptions slash_then_redeem_burned_reduces_total_by_bond.
+Print Assumptions redeem_other_unchanged.
+Print Assumptions t_9_20_recon.
+Print Assumptions t_9_20_reconcile_idempotent.
+Print Assumptions t_9_20_step_idempotent_on_projection.
+Quit.
+EOF
+then
+  echo "error: failed to query slashing development assumptions" >&2
+  sed -n '1,200p' "$assumptions" >&2
   exit 1
 fi
 
