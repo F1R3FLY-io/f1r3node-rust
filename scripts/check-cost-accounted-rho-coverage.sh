@@ -37,16 +37,22 @@ mkdir -p "$OUT_DIR"
 # the cosigned + LL paths).
 echo "Running cargo llvm-cov (this can take 10+ minutes for full workspace)..."
 cargo llvm-cov clean --workspace
+# cargo-llvm-cov rejects --html together with --summary-only ("--summary-only
+# may not be used together with --html"). Use the idiomatic two-pass pattern:
+# run the instrumented tests ONCE with --no-report to collect the profdata,
+# then render the two reports separately from that same data — the textual
+# per-file summary (the threshold gate below parses it) and the browsable HTML.
+# This changes only HOW the reports are emitted, not WHAT is measured, so the
+# critical-file thresholds are unaffected by the fix itself.
 cargo llvm-cov \
     --workspace \
     --no-fail-fast \
     --release \
-    --html \
-    --output-dir "$OUT_DIR/html" \
-    --summary-only \
+    --no-report \
     -- \
-    --skip schnorr_secp256k1_experimental \
-    2>&1 | tee "$SUMMARY"
+    --skip schnorr_secp256k1_experimental
+cargo llvm-cov report --release --summary-only 2>&1 | tee "$SUMMARY"
+cargo llvm-cov report --release --html --output-dir "$OUT_DIR/html"
 
 echo
 echo "Coverage HTML: $OUT_DIR/html/index.html"

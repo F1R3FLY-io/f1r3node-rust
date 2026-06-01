@@ -148,7 +148,7 @@ run_smoke_nextest() {
   run cargo nextest run -p rholang generated_frontier_v13_runtime_metering_parallel_oracles_hold
   run cargo nextest run -p rholang generated_frontier_v13_casper_settlement_slashing_oracles_hold
   run cargo nextest run -p rholang generated_frontier_v13_coverage_adequacy_holds
-  run cargo nextest run -p rholang generated_frontier_v14_source_graph_oracles_hold
+  run cargo nextest run -p rholang generated_frontier_v14_mergeable_channel_oracles_hold
   run cargo nextest run -p rholang generated_frontier_v14_slashing_security_oracles_hold
   run cargo nextest run -p rholang generated_frontier_v14_node_security_oracles_hold
   run cargo nextest run -p rholang generated_frontier_v14_coverage_adequacy_holds
@@ -370,7 +370,7 @@ run_sage_horizon() {
   nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_runtime_metering_parallel_oracles_hold
   nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_casper_settlement_slashing_oracles_hold
   nextest_fixture "$horizon_v13-rust-fixtures.json" generated_frontier_v13_coverage_adequacy_holds
-  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_source_graph_oracles_hold
+  nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_mergeable_channel_oracles_hold
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_slashing_security_oracles_hold
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_node_security_oracles_hold
   nextest_fixture "$horizon_v14-rust-fixtures.json" generated_frontier_v14_coverage_adequacy_holds
