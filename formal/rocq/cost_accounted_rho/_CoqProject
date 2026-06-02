@@ -128,6 +128,10 @@ theories/CAStepDeterminism.v
 # (funded) deploys.
 theories/CACostDeterminism.v
 
+# Level 2g: the modulus — a funded reduction's length is bounded by its total
+# fuel (the paper's "stack consumption is the modulus", realised by running).
+theories/CAModulus.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
