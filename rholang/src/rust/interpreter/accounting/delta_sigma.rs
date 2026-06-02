@@ -821,6 +821,56 @@ mod tests {
         let sig = atom(7);
         assert_eq!(sig_key(&sig), sig.lane_hash());
     }
+
+    // ── #17 funding slots (§4.7): a slot signature flows through the SAME
+    //    generic demand / supply / keying machinery as any ground signature ──
+
+    #[test]
+    fn funding_slot_signature_flows_through_generic_demand_and_funding() {
+        // §4.7: a funding slot is a fresh unforgeable `new`-created name used AS
+        // a signature (`{for(y<-x)P}_{s₁ ⊸ slot}`). Under the s₀ collapse the slot
+        // is just another envelope `Sig`, so Δ_s counts the deploy's COMM nodes,
+        // funding is `Σ_slot ≥ Δ_slot + margin`, an ABSENT slot pool (Σ = 0)
+        // rejects a positive demand (§7.6 strict reject — "checks tokens on the
+        // slot"), and the slot is keyed by the SAME canonical `lane_hash`/`from_sig`
+        // basis as any ground signature. This pins the funding-slot path, which
+        // was previously only inferred from the generic machinery (not tested).
+        let slot = Sig::Ground(vec![0x5a; 32]); // a fresh slot name used as a signature
+        let other_slot = Sig::Ground(vec![0x5b; 32]);
+        let client = atom(1);
+        // `s₁ ⊸ slot` resolves, at the gate, to the compound envelope `s₁ ∘ slot`.
+        let compound = Sig::And(Box::new(client.clone()), Box::new(slot.clone()));
+
+        // K token-consuming COMM nodes (sends) in the desugared body.
+        let k: i64 = 3;
+        let par = par_with_sends(k as usize);
+
+        // Δ_slot counts the COMM nodes and is fully resolvable (no `*x`).
+        let d_slot = demand(&par, &slot);
+        assert_eq!(d_slot.known_lower_bound, k);
+        assert!(!d_slot.unknown);
+
+        // The compound slot envelope counts the SAME COMMs (whole-signature
+        // attribution, Def 7.4 — the envelope's structure does not change Δ).
+        let d_comp = demand(&par, &compound);
+        assert_eq!(d_comp.known_lower_bound, d_slot.known_lower_bound);
+        assert!(!d_comp.unknown);
+
+        // The funding judgment `Σ_slot ≥ Δ + margin` (the OSLF funds judgment)
+        // applies to the slot exactly as to any signature.
+        assert!(is_funded(&d_slot, k, 0)); // exactly funded
+        assert!(is_funded(&d_slot, k + 5, 2)); // funded with margin headroom
+        assert!(!is_funded(&d_slot, k - 1, 0)); // under-supplied ⇒ rejected
+        // An ABSENT / empty slot pool (Σ = 0) with positive demand is rejected.
+        assert!(!is_funded(&d_slot, 0, 0));
+
+        // The slot is keyed via the same canonical `lane_hash` basis as any
+        // ground signature, and distinct slots — and the compound — get distinct,
+        // collision-free keys (the slot is unforgeable).
+        assert_eq!(sig_key(&slot), slot.lane_hash());
+        assert_ne!(sig_key(&slot), sig_key(&other_slot));
+        assert_ne!(sig_key(&slot), sig_key(&compound));
+    }
 }
 
 #[cfg(kani)]
