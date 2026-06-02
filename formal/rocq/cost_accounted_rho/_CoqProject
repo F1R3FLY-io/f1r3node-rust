@@ -348,3 +348,8 @@ theories/CALocatedPurses.v
 # satisfy the same graded-HML formulae. Constructive (no Classical/funext/choice);
 # about the native ca_step's graded transitions, independent of the translation.
 theories/CAGradedAdequacy.v
+
+# CL5 — Adjunction I (Free ⊣ Forget): the cost apparatus is a detachable layer.
+# Free installs the unit grade, Forget strips it; Forget∘Free = id, Free∘Forget
+# alters (structure-preserving, behaviour-altering). Adjunction II is force-limited.
+theories/CAAdjunctions.v
