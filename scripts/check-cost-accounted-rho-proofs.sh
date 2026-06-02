@@ -148,6 +148,7 @@ Print Assumptions Split_closed.
 Print Assumptions Split_fires.
 Print Assumptions rho_reachable_par_l.
 Print Assumptions rule3_reachable.
+Print Assumptions rule4_reachable.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.

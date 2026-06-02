@@ -390,4 +390,59 @@ Proof.
   apply rr_refl.
 Qed.
 
+(* Rule 4 (SPLIT processes, COMBINED token; both signatures atomic) — the
+   receiver and sender are separately signed (s1, s2), the token is combined, so
+   it needs the Split mediator. Four COMMs: Split fires (combined → s1-token empty
+   + s2-token Tt t), the receiver gate fires on Nt s1 (empty token), the sender
+   gate fires on Nt s2 (Tt t), the released for|send fires. No Join (GAP-2: the
+   continuation keeps its own seal). The empty s1-token leaves an inert PNil. *)
+Lemma rule4_reachable : forall x T U s1 s2 t,
+  (forall a b, s1 <> SAnd a b) -> (forall a b, s2 <> SAnd a b) ->
+  rho_reachable
+    (PPar (St (STPar (STPar (STSigned (CPInput x T) s1) (STSigned (CPOutput x U) s2))
+                     (STStack (TGate (SAnd s1 s2) t))))
+          (Split s1 s2))
+    (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar PNil (Tt t))).
+Proof.
+  intros x T U s1 s2 t Hns1 Hns2.
+  assert (fire4 : forall ss1 ss2,
+    rho_reachable
+      (PPar (PPar (PPar (PInput (Nt ss1) (PPar (lift_proc 1 0 (PInput (Ct x) (St T))) (PDeref (NVar 0))))
+                        (PInput (Nt ss2) (PPar (lift_proc 1 0 (POutput (Ct x) (St U))) (PDeref (NVar 0)))))
+                  (POutput (Nt (SAnd ss1 ss2)) (Tt t)))
+            (Split ss1 ss2))
+      (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar PNil (Tt t)))).
+  { intros ss1 ss2.
+    (* Step 1: Split fires *)
+    eapply rr_step.
+    { eapply rs_struct.
+      - eapply se_trans. { apply se_par_comm. }
+        eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+        apply se_sym; apply se_par_assoc.
+      - apply rs_par_l. apply rs_comm.
+      - apply se_refl. }
+    rewrite split_body_subst.
+    (* Step 2: receiver gate (Nt ss1) | s1-token (empty) *)
+    eapply rr_step.
+    { eapply rs_struct.
+      - eapply se_trans. { apply se_par_cross. } apply se_par_cong; apply se_par_comm.
+      - apply rs_par_l. apply rs_comm.
+      - apply se_refl. }
+    rewrite gate_body_subst.
+    (* Step 3: sender gate (Nt ss2) | s2-token (Tt t) *)
+    eapply rr_step.
+    { apply rs_par_r. apply rs_comm. }
+    rewrite gate_body_subst.
+    (* Step 4: the released for|send *)
+    eapply rr_step.
+    { eapply rs_struct.
+      - apply se_par_cross.
+      - apply rs_par_l. apply rs_comm.
+      - apply se_refl. }
+    apply rr_refl. }
+  destruct s1 as [| b1 | b1 | a1 c1]; try (exfalso; eapply Hns1; reflexivity);
+  destruct s2 as [| b2 | b2 | a2 c2]; try (exfalso; eapply Hns2; reflexivity);
+  apply fire4.
+Qed.
+
 End CATranslationFaithfulnessSec.
