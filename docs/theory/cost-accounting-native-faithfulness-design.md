@@ -116,6 +116,35 @@ proceeds as a sequence of gate-green checkpoints, not one landing.
 - [ ] port `bisim` usage + `post_gate_bisim`/`multi_stuck_residue_bisim` native.
 - [ ] `ca_sim` cofixpoint; **Thm C** `ca_translation_strong_bisimilar` (headline).
 
+## 3a. The strong-bisimulation limit — a genuine semantic finding (force points)
+
+The progress theorem `ca_translation_progresses` (committed 47e9c0a6) — every `ca_step`
+makes real rho progress in a closed context — is the solid operational faithfulness
+result. The **strong** bisimulation `W ~bisim~ St S'` (Thm C), however, runs into a
+genuine, native-only obstruction at FORCE positions:
+
+- After a COMM, the per-rule witness exposes, at a `*x` (force) of the received term,
+  `lift_proc 1 0 (St U)` — the **gated** translation of the signed payload `U`.
+- The target `St (subst_st T 0 (CQuote U))` exposes `lift_proc 1 0 (Pt (st_to_proc U))`
+  — the payload with its gate **stripped** (the source's `subst_caproc … = st_to_proc U`
+  dequote runs the content, which was already metered by the firing COMM).
+- `St U = PInput (Nt s') (… Pt P' …)` is a **stuck receiver** (no token for `s'` is
+  present — `s'` was consumed by the outer firing), whereas `Pt (st_to_proc U) = Pt P'`
+  **runs**. By `PInput_alone_stuck` they have different transition behaviour, so they are
+  **NOT** strongly bisimilar in general.
+
+**Interpretation.** The native gate translation (`caname_tr (CQuote T) = Quote (st_tr T)`
+puts a fuel gate inside every quoted signed term) is right when the quote is used as a
+NAME/channel (metering), but **over-gates** when the quote is FORCED (`*x`) — the source
+strips-and-runs, the translation re-gates-and-stucks. The old model never saw this (its
+continuations were bare procs, already stripped). A fully faithful strong bisimulation
+needs a translation refinement at the force point (a "force cashes the signature" step
+that supplies the `s'`-token, or a two-level quote/force translation) — this is
+genuinely research-grade, NOT a mechanical port, and is recorded here as the precise
+obstruction. The progress theorem + the five per-rule reductions stand independently of
+it; the strong bisim holds cleanly only on the gate-free-continuation fragment
+(`T` with no nested `STSigned`).
+
 ## 4. Honest difficulty flags
 
 - **L3 is the only genuine research risk** — adopt depth-indexing from the start (do
