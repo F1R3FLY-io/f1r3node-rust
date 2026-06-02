@@ -287,3 +287,9 @@ theories/ContinuedGSLTCapstone.v
 # relabelled by the consumed signature (sound + complete relabelling), plus a
 # graded Hennessy-Milner modality over it. The basis of graded adequacy.
 theories/CAGradedTransition.v
+
+# Level 3-native: source-to-source translation of the native four-sort grammar
+# into pure rho (the carrier-split target). Mutually-recursive p_tr/caname_tr/
+# st_tr with the gate-body lifting; reuses N_tr/T_tr; closedness. Faithfulness
+# /bisimulation (the simulation theorems) build on this.
+theories/CATranslation.v

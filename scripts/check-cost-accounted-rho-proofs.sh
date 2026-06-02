@@ -84,7 +84,7 @@ echo "Compiling and checking the validator contract aggregation..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation.
 Print Assumptions cost_accounted_calculus_is_gslt_with_oslf_logic.
 Print Assumptions sig_monoid_comm.
 Print Assumptions sig_monoid_assoc.
@@ -118,6 +118,8 @@ Print Assumptions graded_step_sound.
 Print Assumptions graded_step_complete.
 Print Assumptions graded_iff_step.
 Print Assumptions gdia_complete.
+Print Assumptions N_tr_closed.
+Print Assumptions T_tr_closed.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.
