@@ -293,3 +293,9 @@ theories/CAGradedTransition.v
 # st_tr with the gate-body lifting; reuses N_tr/T_tr; closedness. Faithfulness
 # /bisimulation (the simulation theorems) build on this.
 theories/CATranslation.v
+
+# CL3 + CL4 — the Cost endofunctor 𝔠 and its monad structure, realised as the
+# writer monad over the product of the two monoids (sig × token grade). Functor
+# laws, η/μ naturality, the three monad laws (all from SignatureMonoid), and
+# non-idempotence (μ strictly accumulates the modulus). No funext; axiom-free.
+theories/CostMonad.v

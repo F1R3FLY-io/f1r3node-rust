@@ -84,7 +84,7 @@ echo "Compiling and checking the validator contract aggregation..."
 )
 
 if ! rocq repl -Q "$THEORIES" CostAccountedRho > "$assumptions" 2>&1 <<'EOF'
-From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation.
+From CostAccountedRho Require Import TranslationFaithfulness Bisimulation Replication Settlement SlashingComposition MergeableChannelAccounting RuntimeBudgetRefinement MultiSignerRefinement LinearLogicResources LLIdentities MintingInjection MintingHalt UseCaseAdequacy SystemStructEquiv SyntacticSugar WalletNaming ChannelSeparation TokenConservation FuelEventDecomposition Exchange GSLTOSLFCapstone Rule45ContinuationAdequacy CAReduction WrappingSubjectReduction SignatureMonoid CATokenConservation CAStrongNormalization CAConfluence CAStepDeterminism CACostDeterminism CAModulus ContinuedGSLTCapstone CAGradedTransition CATranslation CostMonad.
 Print Assumptions cost_accounted_calculus_is_gslt_with_oslf_logic.
 Print Assumptions sig_monoid_comm.
 Print Assumptions sig_monoid_assoc.
@@ -120,6 +120,14 @@ Print Assumptions graded_iff_step.
 Print Assumptions gdia_complete.
 Print Assumptions N_tr_closed.
 Print Assumptions T_tr_closed.
+Print Assumptions cost_map_id.
+Print Assumptions cost_map_compose.
+Print Assumptions cost_left_unit.
+Print Assumptions cost_right_unit.
+Print Assumptions cost_assoc.
+Print Assumptions cost_eta_natural.
+Print Assumptions cost_mu_natural.
+Print Assumptions cost_monad_not_idempotent.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.
