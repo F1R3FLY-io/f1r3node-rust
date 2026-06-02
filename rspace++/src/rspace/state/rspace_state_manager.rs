@@ -20,7 +20,9 @@ impl RSpaceStateManager {
     }
 
     /// Returns true if the RSpace has no root (is empty), false otherwise.
-    pub fn is_empty(&self) -> bool { self.has_root() }
+    pub fn is_empty(&self) -> bool {
+        self.has_root()
+    }
 
     /// Returns true if the exporter can successfully get a root, false if
     /// there's no root.

@@ -15,8 +15,8 @@ fn concurrent_rspace_architecture_repro_hot_store_must_not_wrap_dashmaps_in_glob
     let hot_store = source("src/rspace/hot_store.rs");
 
     assert!(
-        !hot_store.contains("Arc<Mutex<HotStoreState") &&
-            !hot_store.contains("Mutex<HotStoreState"),
+        !hot_store.contains("Arc<Mutex<HotStoreState")
+            && !hot_store.contains("Mutex<HotStoreState"),
         "HotStoreState is still protected by a global mutex, defeating the DashMap shard-level \
          concurrency"
     );
@@ -52,10 +52,10 @@ fn concurrent_rspace_architecture_repro_join_matching_must_have_channel_group_lo
     let rspace = source("src/rspace/rspace.rs");
 
     assert!(
-        rspace.contains("phase_a_locks") &&
-            rspace.contains("phase_b_locks") &&
-            rspace.contains("DashMap") &&
-            rspace.contains("Mutex<()>"),
+        rspace.contains("phase_a_locks")
+            && rspace.contains("phase_b_locks")
+            && rspace.contains("DashMap")
+            && rspace.contains("Mutex<()>"),
         "RSpace has no two-phase per-channel-group lock surface, so join matching cannot safely \
          maximize independent-channel parallelism"
     );

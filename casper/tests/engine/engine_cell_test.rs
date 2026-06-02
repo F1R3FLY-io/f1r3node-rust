@@ -26,7 +26,9 @@ impl TestEngine {
         }
     }
 
-    fn get_init_count(&self) -> usize { self.init_count.load(Ordering::SeqCst) }
+    fn get_init_count(&self) -> usize {
+        self.init_count.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait]

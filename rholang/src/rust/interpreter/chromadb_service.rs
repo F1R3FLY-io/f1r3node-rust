@@ -28,7 +28,9 @@ pub enum MetadataValue {
 pub struct Metadata(pub HashMap<String, MetadataValue>);
 
 impl<const N: usize> From<[(String, MetadataValue); N]> for Metadata {
-    fn from(x: [(String, MetadataValue); N]) -> Self { Self(HashMap::from(x)) }
+    fn from(x: [(String, MetadataValue); N]) -> Self {
+        Self(HashMap::from(x))
+    }
 }
 
 impl Into<Par> for MetadataValue {
@@ -241,9 +243,13 @@ impl ChromaDBService {
         }
     }
 
-    pub fn new_noop() -> Self { Self::NoOp }
+    pub fn new_noop() -> Self {
+        Self::NoOp
+    }
 
-    pub fn is_enabled(&self) -> bool { matches!(self, Self::Real(_)) }
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Real(_))
+    }
 
     /// Creates a collection with given name and metadata. Semantics follow [`ChromaHttpClient::create_collection`].
     /// Also see [`ChromaCollection::modify`]
@@ -533,7 +539,9 @@ impl ChromaDBService {
 pub type SharedChromaDBService = Arc<ChromaDBService>;
 
 /// Create a shared ChromaDB service
-pub fn create_chromadb_service() -> SharedChromaDBService { Arc::new(ChromaDBService::new_real()) }
+pub fn create_chromadb_service() -> SharedChromaDBService {
+    Arc::new(ChromaDBService::new_real())
+}
 
 /// Create a NoOp ChromaDB service
 pub fn create_noop_chromadb_service() -> SharedChromaDBService {

@@ -713,8 +713,9 @@ impl ProcessedDeploy {
                     )
                 })
             } else {
-                Cosigned::from_signed_data(self.deploy.data.clone(), signers)
-                    .map_err(|e| format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e))
+                Cosigned::from_signed_data(self.deploy.data.clone(), signers).map_err(|e| {
+                    format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e)
+                })
             }
         }
     }
@@ -869,21 +870,23 @@ impl SystemDeployData {
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
-            system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(redeem) => Ok(Self::Redeem {
-                validator_pk: redeem.validator_pk,
-                outcome_tag: redeem.outcome_tag,
-                penalty: redeem.penalty,
-                pos_multi_sig_public_keys: redeem.pos_multi_sig_public_keys,
-                pos_multi_sig_quorum: redeem.pos_multi_sig_quorum,
-                authorizations: redeem
-                    .authorizations
-                    .into_iter()
-                    .map(|a| RedemptionAuthorizationData {
-                        public_key: a.public_key,
-                        signature: a.signature,
-                    })
-                    .collect(),
-            }),
+            system_deploy_data_proto::SystemDeploy::RedeemSystemDeploy(redeem) => {
+                Ok(Self::Redeem {
+                    validator_pk: redeem.validator_pk,
+                    outcome_tag: redeem.outcome_tag,
+                    penalty: redeem.penalty,
+                    pos_multi_sig_public_keys: redeem.pos_multi_sig_public_keys,
+                    pos_multi_sig_quorum: redeem.pos_multi_sig_quorum,
+                    authorizations: redeem
+                        .authorizations
+                        .into_iter()
+                        .map(|a| RedemptionAuthorizationData {
+                            public_key: a.public_key,
+                            signature: a.signature,
+                        })
+                        .collect(),
+                })
+            }
         }
     }
 
@@ -2044,7 +2047,8 @@ mod tests {
         );
         // The retired phloPrice/phloLimit tag-7/8 bytes must NOT appear.
         assert!(
-            !hex::encode(&preimage).contains("3802") && !preimage.windows(2).any(|w| w == [0x40, 0x05]),
+            !hex::encode(&preimage).contains("3802")
+                && !preimage.windows(2).any(|w| w == [0x40, 0x05]),
             "retired phloPrice/phloLimit bytes must be absent from the D3 preimage"
         );
 

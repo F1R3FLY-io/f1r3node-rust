@@ -7,7 +7,9 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use models::rust::block::state_hash::StateHash;
 use rholang::rust::interpreter::accounting::Sig;
-use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoByteArray, RhoList, RhoNil, RhoNumber, RhoString, RhoTuple2};
+use rholang::rust::interpreter::rho_type::{
+    RhoBoolean, RhoByteArray, RhoList, RhoNil, RhoNumber, RhoString, RhoTuple2,
+};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -54,8 +56,10 @@ pub struct CloseBlockDeploy {
     /// NOT serialized into the block, so this defaults EMPTY for genesis /
     /// non-cost-accounted / replay-reconstructed close deploys and is filled in
     /// by the recompute before `post_eval_replay`.
-    pub settlement_debits:
-        std::collections::BTreeMap<crate::rust::util::rholang::acceptance::SigKey, crate::rust::util::rholang::acceptance::SettlementDebit>,
+    pub settlement_debits: std::collections::BTreeMap<
+        crate::rust::util::rholang::acceptance::SigKey,
+        crate::rust::util::rholang::acceptance::SettlementDebit,
+    >,
     /// Cost-Accounted Rho Stage D: the per-block FEE credit (the spec's
     /// `FeeExtract` — flat one token per processed deploy, tex:2509-2521),
     /// collected into the PROPOSING validator's fee channel `F_v`. `None` for
@@ -206,11 +210,7 @@ impl CloseBlockDeploy {
         // common non-epoch, non-block-1 path). Do NOT early-return here — the
         // WD-D2 settlement DEBIT loop below must still run even when nothing is
         // minted (a block with admitted user deploys but no epoch/genesis mint).
-        let mut mints = match published
-            .iter()
-            .rev()
-            .find_map(|p| RhoList::unapply(p))
-        {
+        let mut mints = match published.iter().rev().find_map(|p| RhoList::unapply(p)) {
             Some(list) => decode_mint_list(&list)?,
             None => Vec::new(),
         };
@@ -335,11 +335,7 @@ impl CloseBlockDeploy {
         // per-credit `random_state` index is fold-order-independent.
         let fee_list_chan = self.fee_convert_list_channel();
         let fee_published = runtime_ops.get_data_par(&fee_list_chan).await;
-        let mut eligible = match fee_published
-            .iter()
-            .rev()
-            .find_map(|p| RhoList::unapply(p))
-        {
+        let mut eligible = match fee_published.iter().rev().find_map(|p| RhoList::unapply(p)) {
             Some(list) => decode_mint_list(&list)?,
             None => Vec::new(),
         };
@@ -522,9 +518,13 @@ impl SystemDeployTrait for CloseBlockDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
+    fn rand(&self) -> Blake2b512Random {
+        self.initial_rand.clone()
+    }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
@@ -560,9 +560,8 @@ impl SystemDeployTrait for CloseBlockDeploy {
         runtime_ops: &'a mut RuntimeOps,
         block_data: &'a BlockData,
         pre_state_hash: &'a StateHash,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>>
+    {
         // PLAY-side invocation (RuntimeOps::play_system_deploy). The settlement
         // debits are threaded on `self.settlement_debits` (populated by the block
         // proposer's acceptance gate). The replay-side invocation

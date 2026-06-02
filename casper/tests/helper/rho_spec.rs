@@ -71,7 +71,9 @@ impl RhoSpec {
         }
     }
 
-    fn printer() -> PrettyPrinter { PrettyPrinter::new() }
+    fn printer() -> PrettyPrinter {
+        PrettyPrinter::new()
+    }
 
     pub fn mk_test(&self, _test_name: &str, test_attempts: &HashMap<i64, Vec<RhoTestAssertion>>) {
         assert!(

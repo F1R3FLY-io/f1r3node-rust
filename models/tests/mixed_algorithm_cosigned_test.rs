@@ -27,11 +27,7 @@ fn payload(time_stamp: i64) -> DeployData {
     }
 }
 
-fn sign_with(
-    data: &DeployData,
-    alg: &dyn SignaturesAlg,
-    sk: &PrivateKey,
-) -> Bytes {
+fn sign_with(data: &DeployData, alg: &dyn SignaturesAlg, sk: &PrivateKey) -> Bytes {
     let serialized = data.to_message().encode_to_vec();
     let hash = Signed::<DeployData>::signature_hash(&alg.name(), serialized);
     Bytes::from(alg.sign(&hash, &sk.bytes))
@@ -99,9 +95,8 @@ fn cosigned_threshold_mixed_algorithms_quorum_satisfied() {
         sig: Bytes::new(),
         sig_algorithm: Box::new(Secp256k1),
     };
-    let cosigned =
-        Cosigned::from_signed_data_threshold(data, vec![s1, s2, placeholder], 2)
-            .expect("2-of-3 mixed-algorithm threshold must verify");
+    let cosigned = Cosigned::from_signed_data_threshold(data, vec![s1, s2, placeholder], 2)
+        .expect("2-of-3 mixed-algorithm threshold must verify");
     assert_eq!(cosigned.signers().len(), 3);
     assert_eq!(cosigned.cosigner_threshold(), 2);
 }

@@ -23,7 +23,9 @@ pub enum PacketParseResult<T> {
 }
 
 impl<T> PacketParseResult<T> {
-    pub fn is_success(&self) -> bool { matches!(self, PacketParseResult::Success(_)) }
+    pub fn is_success(&self) -> bool {
+        matches!(self, PacketParseResult::Success(_))
+    }
 
     pub fn get(self) -> Result<T, String> {
         match self {
@@ -33,7 +35,9 @@ impl<T> PacketParseResult<T> {
     }
 
     pub fn map<U, F>(self, f: F) -> PacketParseResult<U>
-    where F: FnOnce(T) -> U {
+    where
+        F: FnOnce(T) -> U,
+    {
         match self {
             PacketParseResult::Success(value) => PacketParseResult::Success(f(value)),
             PacketParseResult::Failure(msg) => PacketParseResult::Failure(msg),

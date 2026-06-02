@@ -38,10 +38,10 @@ impl PartialEq for StateChange {
         // PartialEq
 
         // Check if maps have same size
-        if self.datums_changes.len() != other.datums_changes.len() ||
-            self.cont_changes.len() != other.cont_changes.len() ||
-            self.consume_channels_to_join_serialized_map.len() !=
-                other.consume_channels_to_join_serialized_map.len()
+        if self.datums_changes.len() != other.datums_changes.len()
+            || self.cont_changes.len() != other.cont_changes.len()
+            || self.consume_channels_to_join_serialized_map.len()
+                != other.consume_channels_to_join_serialized_map.len()
         {
             return false;
         }
@@ -70,9 +70,9 @@ impl PartialEq for StateChange {
                 let other_key = other_entry.key();
                 let other_value = other_entry.value();
 
-                key == other_key &&
-                    value.added == other_value.added &&
-                    value.removed == other_value.removed
+                key == other_key
+                    && value.added == other_value.added
+                    && value.removed == other_value.removed
             });
 
             if !found {
@@ -112,12 +112,12 @@ impl PartialOrd for StateChange {
         // For a real implementation, you'd need to define a sensible ordering
 
         // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len() +
-            self.cont_changes.len() +
-            self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len() +
-            other.cont_changes.len() +
-            other.consume_channels_to_join_serialized_map.len();
+        let self_total = self.datums_changes.len()
+            + self.cont_changes.len()
+            + self.consume_channels_to_join_serialized_map.len();
+        let other_total = other.datums_changes.len()
+            + other.cont_changes.len()
+            + other.consume_channels_to_join_serialized_map.len();
 
         self_total.partial_cmp(&other_total)
     }
@@ -255,12 +255,12 @@ impl Ord for StateChange {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Implement total ordering consistent with partial_cmp
         // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len() +
-            self.cont_changes.len() +
-            self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len() +
-            other.cont_changes.len() +
-            other.consume_channels_to_join_serialized_map.len();
+        let self_total = self.datums_changes.len()
+            + self.cont_changes.len()
+            + self.consume_channels_to_join_serialized_map.len();
+        let other_total = other.datums_changes.len()
+            + other.cont_changes.len()
+            + other.consume_channels_to_join_serialized_map.len();
 
         self_total.cmp(&other_total)
     }
@@ -354,21 +354,18 @@ impl StateChange {
                 let post = post_state_reader.get_joins(&history_pointer)?;
 
                 // find join which match channels
-                let join_opt = pre
-                    .into_iter()
-                    .chain(post)
-                    .find(|join| {
-                        let mut join_channels = join
-                            .iter()
-                            .map(|item| stable_hash_provider::hash(item))
-                            .collect::<Vec<_>>();
-                        // sorting is required because channels of a consume in event log and
-                        // channels of a join in history might not be
-                        // ordered the same way
-                        consume_channels.sort();
-                        join_channels.sort();
-                        *consume_channels == join_channels
-                    });
+                let join_opt = pre.into_iter().chain(post).find(|join| {
+                    let mut join_channels = join
+                        .iter()
+                        .map(|item| stable_hash_provider::hash(item))
+                        .collect::<Vec<_>>();
+                    // sorting is required because channels of a consume in event log and
+                    // channels of a join in history might not be
+                    // ordered the same way
+                    consume_channels.sort();
+                    join_channels.sort();
+                    *consume_channels == join_channels
+                });
 
                 // A consume can be "affected" by the event-log set algebra yet have ZERO net
                 // tuple-space effect (created-and-resolved within the block, or a peek /
@@ -385,8 +382,7 @@ impl StateChange {
                 // `HistoryError::MergeError` rather than a silent wrong state.
                 match join_opt {
                     Some(join) => {
-                        let raw_join =
-                            bincode::serialize(&join).expect("Unable to serialize join");
+                        let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
                         joins_map.insert(consume_channels, raw_join);
                     }
                     None => {

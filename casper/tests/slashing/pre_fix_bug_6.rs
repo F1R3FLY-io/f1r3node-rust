@@ -25,13 +25,16 @@ fn pre_fix_bug_6_self_regression_caught() {
     // justification points to b_high (later seq). Pre-fix this
     // slipped past validation.
     let regressing = b_high.wrapping_add(7000);
-    harness.dag.blocks.insert(regressing, BlockMeta {
-        hash: regressing,
-        sender: "v0".into(),
-        seq: 5,
-        justifications: vec![("v0".into(), b_high)],
-        slash_targets: vec![],
-    });
+    harness.dag.blocks.insert(
+        regressing,
+        BlockMeta {
+            hash: regressing,
+            sender: "v0".into(),
+            seq: 5,
+            justifications: vec![("v0".into(), b_high)],
+            slash_targets: vec![],
+        },
+    );
 
     let status = harness.dispatch(regressing);
     assert_eq!(

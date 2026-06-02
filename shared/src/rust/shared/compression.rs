@@ -66,7 +66,9 @@ pub trait CompressionOps {
 }
 
 impl CompressionOps for [u8] {
-    fn compress(&self) -> Vec<u8> { Compression::compress(self) }
+    fn compress(&self) -> Vec<u8> {
+        Compression::compress(self)
+    }
 
     fn decompress(&self, decompressed_length: usize) -> Option<Vec<u8>> {
         Compression::decompress(self, decompressed_length)
@@ -74,7 +76,9 @@ impl CompressionOps for [u8] {
 }
 
 impl CompressionOps for Vec<u8> {
-    fn compress(&self) -> Vec<u8> { Compression::compress(self) }
+    fn compress(&self) -> Vec<u8> {
+        Compression::compress(self)
+    }
 
     fn decompress(&self, decompressed_length: usize) -> Option<Vec<u8>> {
         Compression::decompress(self, decompressed_length)

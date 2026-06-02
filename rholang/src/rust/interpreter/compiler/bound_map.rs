@@ -18,7 +18,9 @@ impl<T: Clone> BoundMap<T> {
     }
 
     pub fn get(&self, name: &str) -> Option<BoundContext<T>>
-    where T: Clone {
+    where
+        T: Clone,
+    {
         self.index_bindings.get(name).map(|context| BoundContext {
             index: self.next_index - context.index - 1,
             typ: context.typ.clone(),
@@ -30,11 +32,14 @@ impl<T: Clone> BoundMap<T> {
     pub fn put_span(&self, binding: IdContextSpan<T>) -> BoundMap<T> {
         let (name, typ, source_span) = binding;
         let mut new_bindings = self.index_bindings.clone();
-        new_bindings.insert(name, BoundContext {
-            index: self.next_index,
-            typ,
-            source_span,
-        });
+        new_bindings.insert(
+            name,
+            BoundContext {
+                index: self.next_index,
+                typ,
+                source_span,
+            },
+        );
         BoundMap {
             next_index: self.next_index + 1,
             index_bindings: new_bindings,
@@ -71,11 +76,14 @@ impl<T: Clone> BoundMap<T> {
     pub fn absorb_free_span(&self, free_map: &FreeMap<T>) -> BoundMap<T> {
         let mut new_bindings = self.index_bindings.clone();
         for (name, context) in &free_map.level_bindings {
-            new_bindings.insert(name.clone(), BoundContext {
-                index: context.level + self.next_index,
-                typ: context.typ.clone(),
-                source_span: context.source_span,
-            });
+            new_bindings.insert(
+                name.clone(),
+                BoundContext {
+                    index: context.level + self.next_index,
+                    typ: context.typ.clone(),
+                    source_span: context.source_span,
+                },
+            );
         }
         BoundMap {
             next_index: self.next_index + free_map.next_level,
@@ -83,11 +91,15 @@ impl<T: Clone> BoundMap<T> {
         }
     }
 
-    pub fn get_count(&self) -> usize { self.next_index }
+    pub fn get_count(&self) -> usize {
+        self.next_index
+    }
 }
 
 impl<T: Clone> Default for BoundMap<T> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // Forward declaration for FreeMapSpan

@@ -137,7 +137,9 @@ where
 }
 
 fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
-where D: Serialize {
+where
+    D: Serialize,
+{
     let bytes = bincode::serialize(candidate).unwrap_or_default();
     Blake2b256Hash::new(&bytes)
 }
@@ -236,13 +238,17 @@ where
         Ok(unpack_option(&consume_res))
     }
 
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+        self.get_store().get_data(channel)
+    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }
 
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> {
+        self.get_store().get_joins(&channel)
+    }
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
         let len = self.get_store().get_data(channel).len();
@@ -266,9 +272,13 @@ where
         self.reset(&RadixHistory::empty_root_node_hash()).await
     }
 
-    async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
+    async fn get_root(&self) -> Blake2b256Hash {
+        self.get_history_repository().root()
+    }
 
-    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
+    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
+        self.get_store().to_map()
+    }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
@@ -406,7 +416,9 @@ where
         panic!("\nERROR: RSpace check_replay_data should not be called here");
     }
 
-    async fn is_replay(&self) -> bool { false }
+    async fn is_replay(&self) -> bool {
+        false
+    }
 
     async fn update_produce(&self, produce_ref: Produce) -> () {
         for event in self.event_log.lock().expect("event log lock").iter_mut() {
@@ -736,11 +748,15 @@ where
         self.log_produce(produce_ref, &channel, &data, persist);
 
         let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: data.clone(),
-            persist,
-            source: produce_ref.clone(),
-        });
+        let extracted = self.extract_produce_candidate(
+            grouped_channels,
+            channel.clone(),
+            Datum {
+                a: data.clone(),
+                persist,
+                source: produce_ref.clone(),
+            },
+        );
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
@@ -948,11 +964,14 @@ where
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
+        self.get_store().put_datum(
+            &channel,
+            Datum {
+                a: data,
+                persist,
+                source: produce_ref,
+            },
+        );
 
         None
     }
@@ -1033,23 +1052,25 @@ where
             match options {
                 None => {
                     if record_install {
-                        self.installs
-                            .lock()
-                            .unwrap()
-                            .insert(channels.clone(), Install {
+                        self.installs.lock().unwrap().insert(
+                            channels.clone(),
+                            Install {
                                 patterns: patterns.clone(),
                                 continuation: continuation.clone(),
-                            });
+                            },
+                        );
                     }
 
-                    self.get_store()
-                        .install_continuation(&channels, WaitingContinuation {
+                    self.get_store().install_continuation(
+                        &channels,
+                        WaitingContinuation {
                             patterns,
                             continuation,
                             persist: true,
                             peeks: BTreeSet::default(),
                             source: consume_ref,
-                        });
+                        },
+                    );
 
                     for channel in channels.iter() {
                         self.get_store().install_join(channel, &channels);
@@ -1117,9 +1138,10 @@ where
                     datum_index,
                 } = consume_candidate;
 
-                if *datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
+                if *datum_index >= 0
+                    && !persist
+                    && self
+                        .get_store()
                         .remove_datum(channel, *datum_index)
                         .is_err()
                 {
@@ -1187,7 +1209,9 @@ where
     }
 
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
-    where D: Serialize {
+    where
+        D: Serialize,
+    {
         let mut indexed_vec = t
             .into_iter()
             .enumerate()

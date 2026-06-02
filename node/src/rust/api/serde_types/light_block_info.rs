@@ -183,7 +183,9 @@ where
 
 /// Custom deserializer for LightBlockInfo
 pub fn deserialize_light_block_info<'de, D>(deserializer: D) -> Result<LightBlockInfo, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let json_block = LightBlockInfoSerde::deserialize(deserializer)?;
     json_block.try_into().map_err(serde::de::Error::custom)
 }

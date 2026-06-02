@@ -67,9 +67,12 @@ impl IntoResponse for AppError {
 }
 
 impl<E> From<E> for AppError
-where E: Into<eyre::Error>
+where
+    E: Into<eyre::Error>,
 {
-    fn from(err: E) -> Self { Self(err.into()) }
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
 }
 
 #[utoipa::path(

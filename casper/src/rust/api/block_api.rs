@@ -65,7 +65,9 @@ fn pad_hex_string(hash: &str) -> String {
 // Automatic error conversions for common error types used in this API
 // We can only implement From for our own types, so we implement for CasperError -> String
 impl From<CasperError> for String {
-    fn from(err: CasperError) -> String { err.to_string() }
+    fn from(err: CasperError) -> String {
+        err.to_string()
+    }
 }
 
 fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String> {
@@ -93,9 +95,13 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
 const DEPLOY_PROPOSE_MAX_ATTEMPTS: u32 = 4;
 const DEPLOY_PROPOSE_RETRY_DELAY_MS: u64 = 250;
 
-fn deploy_propose_max_attempts() -> u32 { DEPLOY_PROPOSE_MAX_ATTEMPTS }
+fn deploy_propose_max_attempts() -> u32 {
+    DEPLOY_PROPOSE_MAX_ATTEMPTS
+}
 
-fn deploy_propose_retry_delay() -> Duration { Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS) }
+fn deploy_propose_retry_delay() -> Duration {
+    Duration::from_millis(DEPLOY_PROPOSE_RETRY_DELAY_MS)
+}
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
@@ -201,7 +207,9 @@ impl std::fmt::Display for LatestBlockMessageError {
 impl std::error::Error for LatestBlockMessageError {}
 
 impl BlockAPI {
-    fn find_deploy_scan_depth() -> usize { 128 }
+    fn find_deploy_scan_depth() -> usize {
+        128
+    }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,
@@ -517,8 +525,7 @@ impl BlockAPI {
                                         tokio::time::sleep(retry_delay).await;
                                         continue;
                                     }
-                                    if let Some(msg) =
-                                        recoverable_propose_failure_message(&status)
+                                    if let Some(msg) = recoverable_propose_failure_message(&status)
                                     {
                                         tracing::info!("{} (seqNum {})", msg, seq_number);
                                     } else {
@@ -533,10 +540,7 @@ impl BlockAPI {
                                     tracing::debug!("Propose already in progress");
                                 }
                                 ProposerResult::Started(seq_number) => {
-                                    tracing::debug!(
-                                        "Propose started (seqNum {})",
-                                        seq_number
-                                    );
+                                    tracing::debug!("Propose started (seqNum {})", seq_number);
                                 }
                                 ProposerResult::Success(_, block) => {
                                     let block_hash_hex =

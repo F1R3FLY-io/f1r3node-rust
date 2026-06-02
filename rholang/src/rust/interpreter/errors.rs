@@ -345,11 +345,15 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        InterpreterError::RSpaceError(err)
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {
-    fn from(error: InterpreterError) -> Self { RSpaceError::InterpreterError(error.to_string()) }
+    fn from(error: InterpreterError) -> Self {
+        RSpaceError::InterpreterError(error.to_string())
+    }
 }
 
 impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
@@ -359,5 +363,7 @@ impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
 }
 
 impl From<std::io::Error> for InterpreterError {
-    fn from(error: std::io::Error) -> Self { InterpreterError::IoError(error.to_string()) }
+    fn from(error: std::io::Error) -> Self {
+        InterpreterError::IoError(error.to_string())
+    }
 }

@@ -40,10 +40,7 @@ fn tensor_associative_sanity() {
         Box::new(Sig::And(Box::new(a.clone()), Box::new(b.clone()))),
         Box::new(c.clone()),
     );
-    let rhs = Sig::And(
-        Box::new(a),
-        Box::new(Sig::And(Box::new(b), Box::new(c))),
-    );
+    let rhs = Sig::And(Box::new(a), Box::new(Sig::And(Box::new(b), Box::new(c))));
     assert!(channel_eq(&lhs, &rhs));
 }
 

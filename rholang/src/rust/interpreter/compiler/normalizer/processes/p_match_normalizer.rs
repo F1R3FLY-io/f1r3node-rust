@@ -83,12 +83,15 @@ pub fn normalize_p_match<'ast>(
             parser,
         )?;
 
-        init_acc.0.insert(0, MatchCase {
-            pattern: Some(pattern_result.par.clone()),
-            source: Some(case_body_result.par.clone()),
-            free_count: bound_count as i32,
-            guard: guard_result.as_ref().map(|gr| gr.par.clone()),
-        });
+        init_acc.0.insert(
+            0,
+            MatchCase {
+                pattern: Some(pattern_result.par.clone()),
+                source: Some(case_body_result.par.clone()),
+                free_count: bound_count as i32,
+                guard: guard_result.as_ref().map(|gr| gr.par.clone()),
+            },
+        );
         init_acc.1 = case_body_result.free_map;
         init_acc.2 = union(
             union(init_acc.2.clone(), pattern_result.par.locally_free.clone()),
@@ -205,13 +208,11 @@ mod tests {
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "x".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 

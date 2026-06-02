@@ -43,7 +43,9 @@ impl ProcVisitInputs {
 }
 
 impl Default for ProcVisitInputs {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Returns the update Par and an updated map of free variables.
@@ -812,11 +814,14 @@ mod tests {
         use std::collections::HashMap;
 
         let (base_inputs, _env) = proc_visit_inputs_and_env();
-        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(base_inputs, vec![
-            ("x".into(), ProcSort),
-            ("y".into(), ProcSort),
-            ("z".into(), ProcSort),
-        ]);
+        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(
+            base_inputs,
+            vec![
+                ("x".into(), ProcSort),
+                ("y".into(), ProcSort),
+                ("z".into(), ProcSort),
+            ],
+        );
 
         fn test_with_parser(
             inputs: ProcVisitInputs,

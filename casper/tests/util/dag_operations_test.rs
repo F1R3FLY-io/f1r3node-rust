@@ -128,9 +128,12 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         //          |
         //         genesis
 
-        let b1 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            genesis.block_hash.clone(),
-        ]);
+        let b1 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[genesis.block_hash.clone()],
+        );
 
         let b2 = create_block_with_meta_and_seq(
             &mut block_store,
@@ -148,36 +151,63 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             &[block_metadata_to_block_hash(&b1)],
         );
 
-        let b4 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b3),
-        ]);
+        let b4 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[block_metadata_to_block_hash(&b3)],
+        );
 
-        let b5 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b3),
-        ]);
+        let b5 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[block_metadata_to_block_hash(&b3)],
+        );
 
-        let b6 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b2),
-            block_metadata_to_block_hash(&b4),
-        ]);
+        let b6 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[
+                block_metadata_to_block_hash(&b2),
+                block_metadata_to_block_hash(&b4),
+            ],
+        );
 
-        let b7 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b4),
-            block_metadata_to_block_hash(&b5),
-        ]);
+        let b7 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[
+                block_metadata_to_block_hash(&b4),
+                block_metadata_to_block_hash(&b5),
+            ],
+        );
 
-        let b8 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b6),
-            block_metadata_to_block_hash(&b7),
-        ]);
+        let b8 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[
+                block_metadata_to_block_hash(&b6),
+                block_metadata_to_block_hash(&b7),
+            ],
+        );
 
-        let b9 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b8),
-        ]);
+        let b9 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[block_metadata_to_block_hash(&b8)],
+        );
 
-        let b10 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            block_metadata_to_block_hash(&b8),
-        ]);
+        let b10 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &[block_metadata_to_block_hash(&b8)],
+        );
 
         let dag = block_dag_storage
             .get_representation()

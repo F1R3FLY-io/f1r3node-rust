@@ -86,7 +86,9 @@ impl SeenCandidates {
         }
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool { self.set.contains(hash) }
+    fn contains(&self, hash: &BlockHash) -> bool {
+        self.set.contains(hash)
+    }
 
     fn insert(&mut self, hash: BlockHash) {
         if !self.set.insert(hash.clone()) {
@@ -103,7 +105,9 @@ impl SeenCandidates {
     }
 }
 
-fn genesis_seen_candidates_max_entries() -> usize { 4_096 }
+fn genesis_seen_candidates_max_entries() -> usize {
+    4_096
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// Scala equivalent: Constructor for `GenesisValidator` class
@@ -169,7 +173,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         self.seen_candidates.lock().unwrap().contains(hash)
     }
 
-    fn ack(&self, hash: BlockHash) { self.seen_candidates.lock().unwrap().insert(hash); }
+    fn ack(&self, hash: BlockHash) {
+        self.seen_candidates.lock().unwrap().insert(hash);
+    }
 
     /// Handle an ApprovedBlock that arrives while we're still in GenesisValidator state.
     ///
@@ -300,7 +306,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
-    async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+    async fn init(&self) -> Result<(), CasperError> {
+        Ok(())
+    }
 
     /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {

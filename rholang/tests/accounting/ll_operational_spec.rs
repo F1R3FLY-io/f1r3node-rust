@@ -187,10 +187,22 @@ fn threshold_changing_quorum_value_alone_preserves_channel() {
         Sig::Ground(vec![0xA2]),
         Sig::Ground(vec![0xA3]),
     ];
-    let one_of_four = Sig::Threshold { threshold: 1, members: members.clone() };
-    let two_of_four = Sig::Threshold { threshold: 2, members: members.clone() };
-    let three_of_four = Sig::Threshold { threshold: 3, members: members.clone() };
-    let four_of_four = Sig::Threshold { threshold: 4, members };
+    let one_of_four = Sig::Threshold {
+        threshold: 1,
+        members: members.clone(),
+    };
+    let two_of_four = Sig::Threshold {
+        threshold: 2,
+        members: members.clone(),
+    };
+    let three_of_four = Sig::Threshold {
+        threshold: 3,
+        members: members.clone(),
+    };
+    let four_of_four = Sig::Threshold {
+        threshold: 4,
+        members,
+    };
 
     // Channels coincide because reflection ignores `threshold`.
     assert!(channel_eq(&one_of_four, &two_of_four));
@@ -211,16 +223,16 @@ fn threshold_changing_quorum_value_alone_preserves_channel() {
 #[test]
 fn single_signer_compound_path_differs_from_legacy_via_domain_separation() {
     let sig: Vec<u8> = vec![0x55; 32];
-    let legacy = RuntimeBudget::new(
-        rholang::rust::interpreter::accounting::costs::Cost::create(100, "legacy"),
-    );
+    let legacy = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        100, "legacy",
+    ));
     legacy.set_deploy_signature(&sig);
     let legacy_id = legacy.deploy_id();
     let legacy_sig = legacy.signature();
 
-    let compound = RuntimeBudget::new(
-        rholang::rust::interpreter::accounting::costs::Cost::create(100, "compound"),
-    );
+    let compound = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        100, "compound",
+    ));
     compound.set_deploy_signatures(&[&sig]);
     let compound_id = compound.deploy_id();
     let compound_sig = compound.signature();

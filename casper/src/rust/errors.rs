@@ -83,23 +83,33 @@ impl fmt::Display for CasperError {
 }
 
 impl From<SlashAuthError> for CasperError {
-    fn from(error: SlashAuthError) -> Self { CasperError::SlashAuth(error) }
+    fn from(error: SlashAuthError) -> Self {
+        CasperError::SlashAuth(error)
+    }
 }
 
 impl From<InterpreterError> for CasperError {
-    fn from(error: InterpreterError) -> Self { CasperError::InterpreterError(error) }
+    fn from(error: InterpreterError) -> Self {
+        CasperError::InterpreterError(error)
+    }
 }
 
 impl From<KvStoreError> for CasperError {
-    fn from(error: KvStoreError) -> Self { CasperError::KvStoreError(error) }
+    fn from(error: KvStoreError) -> Self {
+        CasperError::KvStoreError(error)
+    }
 }
 
 impl From<ReplayFailure> for CasperError {
-    fn from(error: ReplayFailure) -> Self { CasperError::ReplayFailure(error) }
+    fn from(error: ReplayFailure) -> Self {
+        CasperError::ReplayFailure(error)
+    }
 }
 
 impl From<CommError> for CasperError {
-    fn from(error: CommError) -> Self { CasperError::CommError(error) }
+    fn from(error: CommError) -> Self {
+        CasperError::CommError(error)
+    }
 }
 
 /// Conversion from un-typed `String` errors. Used by `?` propagation
@@ -109,7 +119,9 @@ impl From<CommError> for CasperError {
 /// `.map_err(|e| CasperError::RuntimeError(e.to_string()))?` pattern it
 /// replaces, but without the per-site boilerplate.
 impl From<String> for CasperError {
-    fn from(error: String) -> Self { CasperError::RuntimeError(error) }
+    fn from(error: String) -> Self {
+        CasperError::RuntimeError(error)
+    }
 }
 
 /// Conversion from `std::time::SystemTimeError`. Wraps the underlying

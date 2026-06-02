@@ -12,19 +12,25 @@ pub struct VerifiableEdge {
 }
 
 impl VerifiableEdge {
-    pub fn new(from: String, to: String) -> Self { Self { from, to } }
+    pub fn new(from: String, to: String) -> Self {
+        Self { from, to }
+    }
 }
 
 // Equivalent to Scala's Show[VerifiableEdge]
 impl Display for VerifiableEdge {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult { write!(f, "{} {}", self.from, self.to) }
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{} {}", self.from, self.to)
+    }
 }
 
 pub struct MachineVerifiableDag;
 
 impl MachineVerifiableDag {
     pub fn apply<F>(toposort: TopoSort, fetch_parents: F) -> Vec<VerifiableEdge>
-    where F: Fn(BlockHash) -> Vec<BlockHash> {
+    where
+        F: Fn(BlockHash) -> Vec<BlockHash>,
+    {
         let mut result_parts = Vec::new();
 
         // Equivalent to toposort.foldM(List.empty[VerifiableEdge])

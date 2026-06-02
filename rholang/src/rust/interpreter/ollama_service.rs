@@ -151,7 +151,9 @@ impl OllamaService {
         }
     }
 
-    pub fn new_disabled() -> Self { Self::Disabled }
+    pub fn new_disabled() -> Self {
+        Self::Disabled
+    }
 
     pub fn from_config(config: &OllamaConfig) -> Self {
         if config.enabled {

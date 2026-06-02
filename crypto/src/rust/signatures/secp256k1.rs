@@ -20,7 +20,9 @@ use crate::rust::public_key::PublicKey;
 pub struct Secp256k1;
 
 impl Secp256k1 {
-    pub fn name() -> String { "secp256k1".to_string() }
+    pub fn name() -> String {
+        "secp256k1".to_string()
+    }
 
     /// Parse an encrypted PEM file and extract the private key
     /// Equivalent to Scala's parsePemFile method
@@ -181,13 +183,21 @@ impl SignaturesAlg for Secp256k1 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String { "secp256k1".to_string() }
+    fn name(&self) -> String {
+        "secp256k1".to_string()
+    }
 
-    fn sig_length(&self) -> usize { 32 }
+    fn sig_length(&self) -> usize {
+        32
+    }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
+        self.name() == other.name()
+    }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
+        Box::new(self.clone())
+    }
 }
 
 #[cfg(test)]

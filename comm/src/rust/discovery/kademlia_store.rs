@@ -27,11 +27,17 @@ impl<T: KademliaRPC> KademliaStore<T> {
         Ok(peers)
     }
 
-    pub fn sparseness(&self) -> Result<Vec<usize>, CommError> { self.table.sparseness() }
+    pub fn sparseness(&self) -> Result<Vec<usize>, CommError> {
+        self.table.sparseness()
+    }
 
-    pub fn lookup(&self, key: &Bytes) -> Result<Vec<PeerNode>, CommError> { self.table.lookup(key) }
+    pub fn lookup(&self, key: &Bytes) -> Result<Vec<PeerNode>, CommError> {
+        self.table.lookup(key)
+    }
 
-    pub fn find(&self, key: &Bytes) -> Result<Option<PeerNode>, CommError> { self.table.find(key) }
+    pub fn find(&self, key: &Bytes) -> Result<Option<PeerNode>, CommError> {
+        self.table.find(key)
+    }
 
     pub fn remove(&self, key: &Bytes) -> Result<(), CommError> {
         self.table.remove(key)?;

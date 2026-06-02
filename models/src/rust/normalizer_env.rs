@@ -135,9 +135,7 @@ pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String
 /// - `rho:system:cosigners` — full `List[DeployerId]` of every signer in
 ///   canonical order. This is the channel Rholang programs use to introspect
 ///   the full cosigner set.
-pub fn normalizer_env_from_cosigned_deploy(
-    deploy: &Cosigned<DeployData>,
-) -> HashMap<String, Par> {
+pub fn normalizer_env_from_cosigned_deploy(deploy: &Cosigned<DeployData>) -> HashMap<String, Par> {
     let mut env = HashMap::new();
     let primary = deploy.primary();
 
@@ -169,8 +167,7 @@ pub fn normalizer_env_from_cosigned_deploy(
         deployer_id_par,
     );
 
-    let cosigner_pks: Vec<&PublicKey> =
-        deploy.signers().iter().map(|c| &c.pk).collect();
+    let cosigner_pks: Vec<&PublicKey> = deploy.signers().iter().map(|c| &c.pk).collect();
     let cosigners_par = build_cosigners_list_par(&cosigner_pks);
     env.insert(SYSTEM_COSIGNERS_URI.to_string(), cosigners_par);
 
@@ -296,8 +293,7 @@ mod tests {
             sig: Bytes::from(sig2),
             sig_algorithm: Box::new(secp.clone()),
         };
-        let cosigned =
-            Cosigned::from_signed_data(data, vec![signer1, signer2]).expect("valid");
+        let cosigned = Cosigned::from_signed_data(data, vec![signer1, signer2]).expect("valid");
         let env = normalizer_env_from_cosigned_deploy(&cosigned);
 
         let cosigners_par = env
@@ -314,11 +310,9 @@ mod tests {
         let recovered_pks: Vec<Vec<u8>> = elist
             .ps
             .iter()
-            .map(|p| {
-                match &p.unforgeables[0].unf_instance {
-                    Some(UnfInstance::GDeployerIdBody(d)) => d.public_key.clone(),
-                    _ => panic!("expected GDeployerIdBody"),
-                }
+            .map(|p| match &p.unforgeables[0].unf_instance {
+                Some(UnfInstance::GDeployerIdBody(d)) => d.public_key.clone(),
+                _ => panic!("expected GDeployerIdBody"),
             })
             .collect();
         let expected_order: Vec<Vec<u8>> = cosigned
@@ -350,7 +344,11 @@ mod tests {
         let env_legacy = normalizer_env_from_deploy(&deploy);
         let env_cosigned = normalizer_env_from_cosigned_deploy(&cosigned);
 
-        for key in [SYSTEM_DEPLOY_ID_URI, SYSTEM_DEPLOYER_ID_URI, SYSTEM_COSIGNERS_URI] {
+        for key in [
+            SYSTEM_DEPLOY_ID_URI,
+            SYSTEM_DEPLOYER_ID_URI,
+            SYSTEM_COSIGNERS_URI,
+        ] {
             assert_eq!(
                 env_legacy.get(key),
                 env_cosigned.get(key),

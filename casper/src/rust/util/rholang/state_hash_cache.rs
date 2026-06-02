@@ -21,7 +21,9 @@ impl StateHashCache {
     }
 
     /// Create with default capacity (128 entries).
-    pub fn default_capacity() -> Self { Self::new(128) }
+    pub fn default_capacity() -> Self {
+        Self::new(128)
+    }
 
     /// Get the cached post-state hash for a given pre-state hash.
     pub fn get(&self, pre: &StateHash) -> Option<StateHash> {
@@ -57,7 +59,9 @@ impl StateHashCache {
 mod tests {
     use super::*;
 
-    fn make_hash(s: &str) -> StateHash { s.as_bytes().to_vec().into() }
+    fn make_hash(s: &str) -> StateHash {
+        s.as_bytes().to_vec().into()
+    }
 
     #[test]
     fn test_cache_and_retrieve() {

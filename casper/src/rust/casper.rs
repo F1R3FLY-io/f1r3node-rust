@@ -64,15 +64,21 @@ pub enum DeployError {
 }
 
 impl DeployError {
-    pub fn parsing_error(details: String) -> Self { DeployError::ParsingError(details) }
+    pub fn parsing_error(details: String) -> Self {
+        DeployError::ParsingError(details)
+    }
 
-    pub fn missing_user() -> Self { DeployError::MissingUser }
+    pub fn missing_user() -> Self {
+        DeployError::MissingUser
+    }
 
     pub fn unknown_signature_algorithm(alg: String) -> Self {
         DeployError::UnknownSignatureAlgorithm(alg)
     }
 
-    pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
+    pub fn signature_verification_failed() -> Self {
+        DeployError::SignatureVerificationFailed
+    }
 }
 
 impl Display for DeployError {
@@ -462,8 +468,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 32,
-            max_cosigners_per_deploy:
-                crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            max_cosigners_per_deploy: crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
@@ -561,11 +566,17 @@ pub mod test_helpers {
             Ok(self.snapshot.clone())
         }
 
-        fn contains(&self, _hash: &BlockHash) -> bool { false }
+        fn contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
-        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn dag_contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
-        fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn buffer_contains(&self, _hash: &BlockHash) -> bool {
+            false
+        }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             Err(CasperError::RuntimeError(
@@ -587,7 +598,9 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_version(&self) -> i64 { 1 }
+        fn get_version(&self) -> i64 {
+            1
+        }
 
         async fn validate(
             &self,
@@ -627,12 +640,16 @@ pub mod test_helpers {
             Ok(Vec::new())
         }
 
-        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
+        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait]
     impl MultiParentCasper for TestCasperWithSnapshot {
-        async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
+        async fn fetch_dependencies(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
 
         fn normalized_initial_fault(
             &self,
@@ -649,15 +666,21 @@ pub mod test_helpers {
             Ok(self.snapshot.dag.clone())
         }
 
-        fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+        fn block_store(&self) -> &KeyValueBlockStore {
+            &self.block_store
+        }
 
-        fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+        fn casper_shard_conf(&self) -> &CasperShardConf {
+            &self.snapshot.on_chain_state.shard_conf
+        }
 
         fn runtime_manager(&self) -> Arc<RuntimeManager> {
             unimplemented!("runtime_manager not needed for heartbeat tests")
         }
 
-        fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+        fn get_validator(&self) -> Option<ValidatorIdentity> {
+            None
+        }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             unimplemented!("get_history_exporter not needed for heartbeat tests")

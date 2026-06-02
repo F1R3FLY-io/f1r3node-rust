@@ -132,7 +132,9 @@ pub struct TransportLayerTestImpl {
 
 impl TransportLayerTestImpl {
     /// Create a new test transport layer with the given test network
-    pub fn new(test_network: test_network::TestNetwork) -> Self { Self { test_network } }
+    pub fn new(test_network: test_network::TestNetwork) -> Self {
+        Self { test_network }
+    }
 
     /// Create a new test transport layer with an empty test network
     pub fn empty() -> Self {
@@ -142,7 +144,9 @@ impl TransportLayerTestImpl {
     }
 
     /// Get access to the underlying test network for test setup
-    pub fn test_network(&self) -> &test_network::TestNetwork { &self.test_network }
+    pub fn test_network(&self) -> &test_network::TestNetwork {
+        &self.test_network
+    }
 }
 
 #[async_trait]
@@ -175,7 +179,9 @@ impl TransportLayer for TransportLayerTestImpl {
         self.broadcast(peers, &protocol_msg).await
     }
 
-    async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }
+    async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> {
+        Ok(())
+    }
 
     async fn get_channeled_peers(&self) -> Result<std::collections::HashSet<PeerNode>, CommError> {
         Ok(std::collections::HashSet::new())

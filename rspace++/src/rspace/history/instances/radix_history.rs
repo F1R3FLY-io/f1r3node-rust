@@ -36,7 +36,9 @@ impl RadixHistory {
         })
     }
 
-    pub fn create_store(store: Arc<dyn KeyValueStore>) -> Arc<dyn KeyValueStore> { store }
+    pub fn create_store(store: Arc<dyn KeyValueStore>) -> Arc<dyn KeyValueStore> {
+        store
+    }
 
     pub fn empty_root_node_hash() -> Blake2b256Hash {
         let node_hash_bytes = hash_node(&empty_node()).0;
@@ -95,7 +97,9 @@ impl History for RadixHistory {
         }
     }
 
-    fn root(&self) -> Blake2b256Hash { self.root_hash.clone() }
+    fn root(&self) -> Blake2b256Hash {
+        self.root_hash.clone()
+    }
 
     fn reset(&self, root: &Blake2b256Hash) -> Result<Box<dyn History>, HistoryError> {
         let imple = RadixTreeImpl::new(self.store.clone());

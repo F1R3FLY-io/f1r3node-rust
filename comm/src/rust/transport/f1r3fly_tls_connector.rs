@@ -132,7 +132,9 @@ impl F1r3flyTlsConnector {
     }
 
     /// Get the network ID for this connector
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 }
 
 /// F1r3fly TLS acceptor for server connections
@@ -219,7 +221,9 @@ impl F1r3flyTlsAcceptor {
     }
 
     /// Get the network ID for this acceptor
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 }
 
 /// Builder for F1r3fly TLS configurations
@@ -259,7 +263,9 @@ impl F1r3flyTlsBuilder {
     }
 
     /// Get the network ID
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 }
 
 #[cfg(test)]

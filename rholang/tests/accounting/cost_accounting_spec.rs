@@ -596,38 +596,17 @@ fn cost_trace_digest_canonicalizes_success_order() {
 #[test]
 fn cost_trace_digest_changes_when_descriptor_or_oop_boundary_changes() {
     let base = RuntimeBudget::new(Cost::create(5, "base trace"));
-    base.reserve_canonical(token_event_with(
-        1,
-        vec![0],
-        0,
-        0,
-        BillableKind::Comm,
-        2,
-    ))
-    .unwrap();
+    base.reserve_canonical(token_event_with(1, vec![0], 0, 0, BillableKind::Comm, 2))
+        .unwrap();
 
     let changed_weight = RuntimeBudget::new(Cost::create(5, "weight trace"));
     changed_weight
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0],
-            0,
-            0,
-            BillableKind::Comm,
-            3,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0], 0, 0, BillableKind::Comm, 3))
         .unwrap();
 
     let changed_deploy = RuntimeBudget::new(Cost::create(5, "deploy trace"));
     changed_deploy
-        .reserve_canonical(token_event_with(
-            2,
-            vec![0],
-            0,
-            0,
-            BillableKind::Comm,
-            2,
-        ))
+        .reserve_canonical(token_event_with(2, vec![0], 0, 0, BillableKind::Comm, 2))
         .unwrap();
 
     assert_ne!(base.cost_trace_digest(), changed_weight.cost_trace_digest());
@@ -651,15 +630,8 @@ fn cost_trace_digest_changes_when_descriptor_or_oop_boundary_changes() {
 #[test]
 fn cost_trace_digest_domain_separates_event_kind_path_redex_index_and_multiplicity() {
     let base = RuntimeBudget::new(Cost::create(20, "base descriptor trace"));
-    base.reserve_canonical(token_event_with(
-        1,
-        vec![0, 1],
-        2,
-        3,
-        BillableKind::Comm,
-        4,
-    ))
-    .unwrap();
+    base.reserve_canonical(token_event_with(1, vec![0, 1], 2, 3, BillableKind::Comm, 4))
+        .unwrap();
 
     let changed_kind = RuntimeBudget::new(Cost::create(20, "kind descriptor trace"));
     changed_kind
@@ -675,60 +647,25 @@ fn cost_trace_digest_domain_separates_event_kind_path_redex_index_and_multiplici
 
     let changed_path = RuntimeBudget::new(Cost::create(20, "path descriptor trace"));
     changed_path
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0, 2],
-            2,
-            3,
-            BillableKind::Comm,
-            4,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0, 2], 2, 3, BillableKind::Comm, 4))
         .unwrap();
 
     let changed_redex = RuntimeBudget::new(Cost::create(20, "redex descriptor trace"));
     changed_redex
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0, 1],
-            9,
-            3,
-            BillableKind::Comm,
-            4,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0, 1], 9, 3, BillableKind::Comm, 4))
         .unwrap();
 
     let changed_local_index = RuntimeBudget::new(Cost::create(20, "local index descriptor trace"));
     changed_local_index
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0, 1],
-            2,
-            8,
-            BillableKind::Comm,
-            4,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0, 1], 2, 8, BillableKind::Comm, 4))
         .unwrap();
 
     let duplicate = RuntimeBudget::new(Cost::create(20, "duplicate descriptor trace"));
     duplicate
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0, 1],
-            2,
-            3,
-            BillableKind::Comm,
-            4,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0, 1], 2, 3, BillableKind::Comm, 4))
         .unwrap();
     duplicate
-        .reserve_canonical(token_event_with(
-            1,
-            vec![0, 1],
-            2,
-            3,
-            BillableKind::Comm,
-            4,
-        ))
+        .reserve_canonical(token_event_with(1, vec![0, 1], 2, 3, BillableKind::Comm, 4))
         .unwrap();
 
     assert_ne!(base.cost_trace_digest(), changed_kind.cost_trace_digest());
@@ -880,7 +817,10 @@ fn batch_commit_charges_only_granted_execution_permits() {
 
     let permitted_weight: u64 = commit.permits.iter().map(|permit| permit.weight).sum();
 
-    assert_eq!(permitted_weight, 5, "diagnostic weight of the one granted COMM");
+    assert_eq!(
+        permitted_weight, 5,
+        "diagnostic weight of the one granted COMM"
+    );
     assert_eq!(commit.consumed_weight, 5);
     assert_eq!(budget.total_cost().value, 1, "consensus cost = 1 COMM");
     assert_eq!(budget.remaining().value, 0);
@@ -950,10 +890,8 @@ fn concurrent_runtime_budget_reservations_are_linearizable() {
         // bounded by the budget. With 16 COMMs and a budget below 16, at least
         // one thread is rejected. The per-op `weight` is diagnostic only and is
         // NOT bounded by the COMM budget.
-        let successful_count: u64 = outcomes
-            .iter()
-            .filter(|(_, result)| result.is_ok())
-            .count() as u64;
+        let successful_count: u64 =
+            outcomes.iter().filter(|(_, result)| result.is_ok()).count() as u64;
         let errors = outcomes
             .iter()
             .filter(|(_, result)| result.is_err())
@@ -1233,9 +1171,7 @@ fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
     let budget = RuntimeBudget::new(Cost::create(10, "typed event budget"));
     let machine = MeteredMachine::new(budget.clone());
 
-    machine
-        .reserve_comm(Cost::create(1, "send eval"))
-        .unwrap();
+    machine.reserve_comm(Cost::create(1, "send eval")).unwrap();
     machine
         .reserve_primitive(Cost::create(2, "method call"))
         .unwrap();
@@ -1936,8 +1872,16 @@ async fn consensus_cost_excludes_per_op_gas() {
     .await
     .0;
 
-    assert!(plain.errors.is_empty(), "plain term must run: {:?}", plain.errors);
-    assert!(heavy.errors.is_empty(), "heavy term must run: {:?}", heavy.errors);
+    assert!(
+        plain.errors.is_empty(),
+        "plain term must run: {:?}",
+        plain.errors
+    );
+    assert!(
+        heavy.errors.is_empty(),
+        "heavy term must run: {:?}",
+        heavy.errors
+    );
 
     // Both are exactly ONE COMM, so the consensus cost is identical (= 1),
     // regardless of the heavy term's much larger per-op diagnostic gas.
@@ -1946,7 +1890,10 @@ async fn consensus_cost_excludes_per_op_gas() {
         "per-op gas must NOT change the per-COMM consensus cost (plain={}, heavy={})",
         plain.cost.value, heavy.cost.value
     );
-    assert_eq!(plain.cost.value, 1, "a single send is exactly one COMM token");
+    assert_eq!(
+        plain.cost.value, 1,
+        "a single send is exactly one COMM token"
+    );
 }
 
 /// D3 (DR-9, OD-3): the CONSENSUS cost (`eval_result.cost`) is the per-COMM

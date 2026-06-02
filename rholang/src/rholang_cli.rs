@@ -304,7 +304,9 @@ async fn write_binary(file_name: &str, source: &str) -> Result<(), InterpreterEr
 
 /// Wait for evaluation result with timeout feedback, similar to Scala's waitForSuccess
 async fn wait_for_success<F, T>(mut future: std::pin::Pin<Box<F>>) -> Result<T, InterpreterError>
-where F: std::future::Future<Output = Result<T, InterpreterError>> {
+where
+    F: std::future::Future<Output = Result<T, InterpreterError>>,
+{
     loop {
         match tokio::time::timeout(Duration::from_secs(5), &mut future).await {
             Ok(result) => return result,

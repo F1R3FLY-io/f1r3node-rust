@@ -16,15 +16,21 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use rspace_plus_plus::rspace::rspace::RSpace;
 
-fn gdouble_par(value: f64) -> Par { Par::default().with_exprs(vec![new_gdouble_expr(value)]) }
+fn gdouble_par(value: f64) -> Par {
+    Par::default().with_exprs(vec![new_gdouble_expr(value)])
+}
 
-fn bigint_par(bytes: Vec<u8>) -> Par { Par::default().with_exprs(vec![new_gbigint_expr(bytes)]) }
+fn bigint_par(bytes: Vec<u8>) -> Par {
+    Par::default().with_exprs(vec![new_gbigint_expr(bytes)])
+}
 
 fn fixedpoint_par(unscaled: Vec<u8>, scale: u32) -> Par {
     Par::default().with_exprs(vec![new_gfixedpoint_expr(unscaled, scale)])
 }
 
-fn gint_par(value: i64) -> Par { Par::default().with_exprs(vec![new_gint_expr(value)]) }
+fn gint_par(value: i64) -> Par {
+    Par::default().with_exprs(vec![new_gint_expr(value)])
+}
 
 fn i64_to_tc(v: i64) -> Vec<u8> {
     let bytes = v.to_be_bytes();
@@ -62,7 +68,9 @@ fn rat_expr(num: i64, den: i64) -> Expr {
     new_gbigrat_expr(bigint_from_i64(num), bigint_from_i64(den))
 }
 
-fn fixed(unscaled: i64, scale: u32) -> Par { fixedpoint_par(bigint_from_i64(unscaled), scale) }
+fn fixed(unscaled: i64, scale: u32) -> Par {
+    fixedpoint_par(bigint_from_i64(unscaled), scale)
+}
 
 fn fixed_expr(unscaled: i64, scale: u32) -> Expr {
     new_gfixedpoint_expr(bigint_from_i64(unscaled), scale)

@@ -111,7 +111,9 @@ impl BlockMetadata {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> { self.to_proto().encode_to_vec() }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_proto().encode_to_vec()
+    }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let proto =
@@ -119,7 +121,9 @@ impl BlockMetadata {
         Self::from_proto(proto)
     }
 
-    fn bytes_ordering(left: &Bytes, right: &Bytes) -> Ordering { left.iter().cmp(right.iter()) }
+    fn bytes_ordering(left: &Bytes, right: &Bytes) -> Ordering {
+        left.iter().cmp(right.iter())
+    }
 
     pub fn ordering_by_num(left: &BlockMetadata, right: &BlockMetadata) -> Ordering {
         match left.block_number.cmp(&right.block_number) {

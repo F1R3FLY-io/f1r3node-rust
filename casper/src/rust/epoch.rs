@@ -50,11 +50,15 @@ pub struct Epoch(i64);
 
 impl Epoch {
     /// Construct an epoch from a raw integer at a protobuf boundary.
-    pub const fn new(value: i64) -> Self { Epoch(value) }
+    pub const fn new(value: i64) -> Self {
+        Epoch(value)
+    }
 
     /// Project back to the raw integer for protobuf serialization or
     /// comparisons with non-Epoch values.
-    pub const fn get(self) -> i64 { self.0 }
+    pub const fn get(self) -> i64 {
+        self.0
+    }
 
     /// Checked addition. Returns `None` on overflow (a hostile or
     /// malformed input could conceivably reach `i64::MAX` after enough
@@ -89,15 +93,21 @@ impl Epoch {
 }
 
 impl fmt::Display for Epoch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 impl From<i64> for Epoch {
-    fn from(value: i64) -> Self { Epoch(value) }
+    fn from(value: i64) -> Self {
+        Epoch(value)
+    }
 }
 
 impl From<i32> for Epoch {
-    fn from(value: i32) -> Self { Epoch(i64::from(value)) }
+    fn from(value: i32) -> Self {
+        Epoch(i64::from(value))
+    }
 }
 
 #[cfg(test)]

@@ -123,20 +123,26 @@ pub fn oracle_dispatch(
 pub fn oracle_slash(pos_state: &PoSState, validator: &str) -> (PoSState, SlashResult) {
     let mut new_state = pos_state.clone();
     if pos_state.slashed.contains(validator) {
-        return (new_state, SlashResult {
-            success: true,
-            error: None,
-        });
+        return (
+            new_state,
+            SlashResult {
+                success: true,
+                error: None,
+            },
+        );
     }
     let bond = pos_state.bond(validator);
     new_state.bonds.insert(validator.to_string(), 0);
     new_state.active.remove(validator);
     new_state.slashed.insert(validator.to_string());
     new_state.coop_vault += bond;
-    (new_state, SlashResult {
-        success: true,
-        error: None,
-    })
+    (
+        new_state,
+        SlashResult {
+            success: true,
+            error: None,
+        },
+    )
 }
 
 /// Mirrors `TwoLevelSlashing.neglect`: computes the closure of

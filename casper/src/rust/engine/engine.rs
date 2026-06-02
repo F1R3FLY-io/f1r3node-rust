@@ -99,13 +99,17 @@ pub fn noop() -> impl Engine {
 
     #[async_trait]
     impl Engine for NoopEngine {
-        async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+        async fn init(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
 
         async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
             Ok(())
         }
 
-        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+            None
+        }
     }
 
     NoopEngine

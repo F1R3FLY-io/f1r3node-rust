@@ -25,7 +25,9 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-    fn rand() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&[1, 2, 45, 65]) }
+    fn rand() -> Blake2b512Random {
+        Blake2b512Random::create_from_bytes(&[1, 2, 45, 65])
+    }
 
     fn hash_channel(channel_name: &str) -> Par {
         match channel_name {
@@ -36,9 +38,13 @@ mod tests {
         }
     }
 
-    fn ack_channel() -> Par { new_gstring_par("x".to_string(), Vec::new(), false) }
+    fn ack_channel() -> Par {
+        new_gstring_par("x".to_string(), Vec::new(), false)
+    }
 
-    fn empty_env() -> Env<Par> { Env::new() }
+    fn empty_env() -> Env<Par> {
+        Env::new()
+    }
 
     async fn assert_store_contains(
         runtime: RhoRuntimeImpl,
@@ -99,10 +105,14 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
-            pars: vec![expected],
-            random_state: rand().to_bytes(),
-        })
+        assert_store_contains(
+            runtime,
+            ack_channel(),
+            ListParWithRandom {
+                pars: vec![expected],
+                random_state: rand().to_bytes(),
+            },
+        )
         .await;
     }
 
@@ -130,10 +140,14 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
-            pars: vec![expected],
-            random_state: rand().to_bytes(),
-        })
+        assert_store_contains(
+            runtime,
+            ack_channel(),
+            ListParWithRandom {
+                pars: vec![expected],
+                random_state: rand().to_bytes(),
+            },
+        )
         .await;
     }
 
@@ -161,10 +175,14 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
-            pars: vec![expected],
-            random_state: rand().to_bytes(),
-        })
+        assert_store_contains(
+            runtime,
+            ack_channel(),
+            ListParWithRandom {
+                pars: vec![expected],
+                random_state: rand().to_bytes(),
+            },
+        )
         .await;
     }
 
@@ -214,10 +232,14 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
-            pars: vec![new_gbool_par(true, Vec::new(), false)],
-            random_state: rand().to_bytes(),
-        })
+        assert_store_contains(
+            runtime,
+            ack_channel(),
+            ListParWithRandom {
+                pars: vec![new_gbool_par(true, Vec::new(), false)],
+                random_state: rand().to_bytes(),
+            },
+        )
         .await;
     }
 
@@ -261,10 +283,14 @@ mod tests {
 
         runtime.inj(send, empty_env(), rand()).await.unwrap();
 
-        assert_store_contains(runtime, ack_channel(), ListParWithRandom {
-            pars: vec![new_gbool_par(true, Vec::new(), false)],
-            random_state: rand().to_bytes(),
-        })
+        assert_store_contains(
+            runtime,
+            ack_channel(),
+            ListParWithRandom {
+                pars: vec![new_gbool_par(true, Vec::new(), false)],
+                random_state: rand().to_bytes(),
+            },
+        )
         .await;
     }
 }

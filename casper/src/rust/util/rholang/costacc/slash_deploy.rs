@@ -10,7 +10,9 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::accounting::Sig;
-use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoByteArray, RhoNil, RhoString};
+use rholang::rust::interpreter::rho_type::{
+    Extractor, RhoBoolean, RhoByteArray, RhoNil, RhoString,
+};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -194,9 +196,13 @@ impl SystemDeployTrait for SlashDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
+    fn rand(&self) -> Blake2b512Random {
+        self.initial_rand.clone()
+    }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
@@ -241,9 +247,8 @@ impl SystemDeployTrait for SlashDeploy {
         runtime_ops: &'a mut RuntimeOps,
         block_data: &'a BlockData,
         pre_state_hash: &'a StateHash,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>>
+    {
         Box::pin(async move {
             self.zero_offender_supply(runtime_ops, block_data, pre_state_hash, false)
                 .await

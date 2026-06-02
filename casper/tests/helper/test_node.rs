@@ -115,9 +115,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -597,7 +595,9 @@ impl TestNode {
     }
 
     /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool {
+        self.casper.contains(block_hash)
+    }
 
     /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
@@ -616,7 +616,9 @@ impl TestNode {
     /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
     ///
     /// This is useful for simulating network partitions or node failures in tests.
-    pub fn shutoff(&self) -> Result<(), CommError> { self.tle.test_network().clear(&self.local) }
+    pub fn shutoff(&self) -> Result<(), CommError> {
+        self.tle.test_network().clear(&self.local)
+    }
 
     pub async fn handle_receive(&self) -> Result<(), CasperError> {
         let tle = self.tle.clone();
@@ -958,9 +960,7 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                std::sync::Arc::new(parking_lot::Mutex::new(
-                    std::collections::HashMap::new(),
-                )),
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1041,7 +1041,9 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
-            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
@@ -1128,7 +1130,9 @@ impl TestNode {
     }
 
     /// Creates an endpoint with the given port for both TCP and UDP
-    fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
+    fn endpoint(port: u32) -> Endpoint {
+        Endpoint::new("host".to_string(), port, port)
+    }
 
     /// Propagates messages across all nodes until all queues are empty (equivalent to Scala propagate, line 640-649).
     ///

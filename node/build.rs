@@ -40,12 +40,15 @@ fn main() {
         .btree_map(".")
         .message_attribute(".", "#[repr(C)]")
         .bytes(".")
-        .compile_protos(&proto_files, &[
-            proto_src_dir.clone(),
-            proto_src_models_dir.clone(),
-            manifest_dir.clone(),
-            scala_proto_base_dir.clone(),
-        ])
+        .compile_protos(
+            &proto_files,
+            &[
+                proto_src_dir.clone(),
+                proto_src_models_dir.clone(),
+                manifest_dir.clone(),
+                scala_proto_base_dir.clone(),
+            ],
+        )
         .expect("Failed to compile proto files");
 
     let git_hash = Command::new("git")

@@ -120,7 +120,9 @@ impl RhoTrieTraverser {
     }
 
     /// Serialize a Par to byte array using protobuf encoding
-    fn par_to_byte_array(p: &Par) -> Vec<u8> { p.encode_to_vec() }
+    fn par_to_byte_array(p: &Par) -> Vec<u8> {
+        p.encode_to_vec()
+    }
 
     /// Create a Keccak256 hash of a string wrapped as a Par
     ///

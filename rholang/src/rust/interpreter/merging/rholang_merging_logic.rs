@@ -216,7 +216,9 @@ impl RholangMergingLogic {
     pub fn convert_to_read_number<F>(
         get_data_func: F,
     ) -> impl Fn(&Blake2b256Hash) -> Result<Option<i64>, HistoryError>
-    where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+    where
+        F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
+    {
         move |hash: &Blake2b256Hash| {
             let data = get_data_func(hash)?;
             if data.len() > 1 {

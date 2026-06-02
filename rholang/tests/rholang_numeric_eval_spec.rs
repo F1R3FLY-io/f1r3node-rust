@@ -48,7 +48,9 @@ async fn channel_data(runtime: &RhoRuntimeImpl, channel_expr: ExprInstance) -> H
         .unwrap_or_default()
 }
 
-fn int_channel(n: i64) -> ExprInstance { ExprInstance::GInt(n) }
+fn int_channel(n: i64) -> ExprInstance {
+    ExprInstance::GInt(n)
+}
 
 fn has_par_with_bool(data: &HashSet<Par>, expected: bool) -> bool {
     data.iter().any(|p| {

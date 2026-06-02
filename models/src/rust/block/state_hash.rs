@@ -11,23 +11,31 @@ pub const LENGTH: usize = 32;
 pub struct StateHashSerde(pub StateHash);
 
 impl From<StateHash> for StateHashSerde {
-    fn from(state_hash: StateHash) -> Self { StateHashSerde(state_hash) }
+    fn from(state_hash: StateHash) -> Self {
+        StateHashSerde(state_hash)
+    }
 }
 
 impl From<StateHashSerde> for StateHash {
-    fn from(wrapper: StateHashSerde) -> Self { wrapper.0 }
+    fn from(wrapper: StateHashSerde) -> Self {
+        wrapper.0
+    }
 }
 
 impl Serialize for StateHashSerde {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         serde_bytes::serialize(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for StateHashSerde {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         Ok(StateHashSerde(serde_bytes::deserialize(deserializer)?))
     }
 }

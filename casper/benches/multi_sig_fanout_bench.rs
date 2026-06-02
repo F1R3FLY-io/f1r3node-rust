@@ -21,9 +21,7 @@ use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed, ToMessage};
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 use prost::Message;
-use rholang::rust::interpreter::accounting::{
-    costs::Cost, RuntimeBudget, Sig, SignatureChannel,
-};
+use rholang::rust::interpreter::accounting::{costs::Cost, RuntimeBudget, Sig, SignatureChannel};
 
 // D3 (DR-9): `phlo_limit` retained as an (ignored) param for caller stability.
 fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
@@ -81,25 +79,18 @@ fn bench_signature_channel_from_sig(c: &mut Criterion) {
         if depth == 0 {
             Sig::Ground(vec![0xCC])
         } else {
-            Sig::And(
-                Box::new(make_sig(depth - 1)),
-                Box::new(make_sig(depth - 1)),
-            )
+            Sig::And(Box::new(make_sig(depth - 1)), Box::new(make_sig(depth - 1)))
         }
     }
     let mut group = c.benchmark_group("SignatureChannel::from_sig");
     for depth in [1usize, 3, 5].iter().copied() {
         let sig = make_sig(depth);
-        group.bench_with_input(
-            BenchmarkId::new("And-tree", depth),
-            &sig,
-            |b, sig| {
-                b.iter(|| {
-                    let channel = SignatureChannel::from_sig(black_box(sig));
-                    black_box(channel);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("And-tree", depth), &sig, |b, sig| {
+            b.iter(|| {
+                let channel = SignatureChannel::from_sig(black_box(sig));
+                black_box(channel);
+            });
+        });
     }
     group.finish();
 }
@@ -108,18 +99,14 @@ fn bench_set_deploy_signatures(c: &mut Criterion) {
     let mut group = c.benchmark_group("RuntimeBudget::set_deploy_signatures");
     for n in [1usize, 4, 16, 64].iter().copied() {
         let sigs: Vec<Vec<u8>> = (0..n).map(|i| vec![0xCC + (i as u8); 32]).collect();
-        group.bench_with_input(
-            BenchmarkId::from_parameter(n),
-            &sigs,
-            |b, sigs| {
-                let refs: Vec<&[u8]> = sigs.iter().map(Vec::as_slice).collect();
-                b.iter(|| {
-                    let budget = RuntimeBudget::new(Cost::create(1024, "bench"));
-                    budget.set_deploy_signatures(black_box(&refs));
-                    black_box(budget.deploy_id());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(n), &sigs, |b, sigs| {
+            let refs: Vec<&[u8]> = sigs.iter().map(Vec::as_slice).collect();
+            b.iter(|| {
+                let budget = RuntimeBudget::new(Cost::create(1024, "bench"));
+                budget.set_deploy_signatures(black_box(&refs));
+                black_box(budget.deploy_id());
+            });
+        });
     }
     group.finish();
 }

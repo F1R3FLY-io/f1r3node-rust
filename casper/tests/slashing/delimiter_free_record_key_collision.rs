@@ -15,7 +15,9 @@ use std::collections::BTreeSet;
 
 use super::types::{EqRecord, EqRecordSet};
 
-fn delimiter_free_key(validator: &str, base_seq: u64) -> String { format!("{validator}{base_seq}") }
+fn delimiter_free_key(validator: &str, base_seq: u64) -> String {
+    format!("{validator}{base_seq}")
+}
 
 fn canonical_key(validator: &str, base_seq: u64) -> (String, u64) {
     (validator.to_string(), base_seq)

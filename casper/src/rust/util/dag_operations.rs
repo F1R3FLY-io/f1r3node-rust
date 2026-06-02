@@ -15,7 +15,9 @@ pub struct DagOperations;
 struct OrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for OrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Ord for OrderedBlockMetadata {
@@ -32,7 +34,9 @@ impl Ord for OrderedBlockMetadata {
 struct ReverseOrderedBlockMetadata(BlockMetadata);
 
 impl PartialOrd for ReverseOrderedBlockMetadata {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Ord for ReverseOrderedBlockMetadata {
@@ -85,7 +89,9 @@ impl DagOperations {
                 .collect::<Result<Vec<_>, _>>()
         }
 
-        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool { set == common_set }
+        fn is_common(set: &HashSet<u8>, common_set: &HashSet<u8>) -> bool {
+            set == common_set
+        }
 
         let init_map: HashMap<BlockMetadata, HashSet<u8>> = blocks
             .iter()

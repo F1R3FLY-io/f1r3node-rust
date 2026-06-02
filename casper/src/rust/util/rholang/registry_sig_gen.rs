@@ -19,7 +19,9 @@ use rholang::rust::interpreter::registry::registry::Registry;
 pub struct Hex(pub Vec<u8>);
 
 impl Hex {
-    pub fn from_slice(slice: &[u8]) -> Self { Self(slice.to_vec()) }
+    pub fn from_slice(slice: &[u8]) -> Self {
+        Self(slice.to_vec())
+    }
 }
 
 impl fmt::Display for Hex {

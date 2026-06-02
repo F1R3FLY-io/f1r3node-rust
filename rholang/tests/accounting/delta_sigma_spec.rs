@@ -50,10 +50,7 @@ fn envelope_sig() -> Sig {
 
 async fn fresh_runtime() -> RhoRuntimeImpl {
     let mut kvm = InMemoryStoreManager::new();
-    let store = kvm
-        .r_space_stores()
-        .await
-        .expect("in-memory rspace stores");
+    let store = kvm.r_space_stores().await.expect("in-memory rspace stores");
     let (runtime, _replay, _hist) = create_runtimes(store, false, &mut Vec::new()).await;
     runtime
 }
@@ -282,7 +279,11 @@ async fn gate_demand_equals_runtime_comm_count() {
 /// debit it then subtracts is `Δ`, the COMM count).
 #[tokio::test]
 async fn settlement_debit_equals_comm_count() {
-    for contract in [SEC_7_4_DEBIT_CREDIT, APP_B_HANDLER, r#"@"a"!(1) | @"b"!(2)"#] {
+    for contract in [
+        SEC_7_4_DEBIT_CREDIT,
+        APP_B_HANDLER,
+        r#"@"a"!(1) | @"b"!(2)"#,
+    ] {
         let par = normalized_par(contract);
         let analysis = demand(&par, &envelope_sig());
         let comm_count = comm_node_count(&par) as i64;
@@ -291,7 +292,10 @@ async fn settlement_debit_equals_comm_count() {
         // A supply that exactly meets the demand (margin 0) admits the deploy;
         // the debit then drives `post = pre − Δ = pre − comm_count`.
         let supply = analysis.known_lower_bound;
-        assert!(is_funded(&analysis, supply, 0), "Σ = Δ must admit at margin 0");
+        assert!(
+            is_funded(&analysis, supply, 0),
+            "Σ = Δ must admit at margin 0"
+        );
         let post = supply - analysis.known_lower_bound; // the settlement write.
         assert_eq!(post, 0, "post Σ⟦s⟧ = pre − COMM_count must be exact");
     }
@@ -314,7 +318,10 @@ async fn delta_s_equals_runtime_consumed_across_assorted_deploys() {
         let par = normalized_par(contract);
         let analysis = demand(&par, &envelope_sig());
         let runtime_consumed = runtime_consumed_token_count(contract).await;
-        assert!(!analysis.unknown, "contract should be resolvable: {contract}");
+        assert!(
+            !analysis.unknown,
+            "contract should be resolvable: {contract}"
+        );
         assert_eq!(
             analysis.known_lower_bound as usize, runtime_consumed,
             "Δ_s must equal runtime consumed for: {contract}"
@@ -336,7 +343,8 @@ async fn normalizer_already_desugars_sync_send() {
     // A `?!` synchronous send normalizes to `new ret in { chan!(ret,..) | for(..) }`
     // — so the normalized Par already contains a `new`, a send, and a receive.
     // `desugar_for_funding` is the identity on it (no double-expansion).
-    let par = normalized_par(r#"new s in { for(@v, r <= s){ r!(v) } | for(reply <- s!?(1)){ Nil } }"#);
+    let par =
+        normalized_par(r#"new s in { for(@v, r <= s){ r!(v) } | for(reply <- s!?(1)){ Nil } }"#);
     assert_eq!(desugar_for_funding(&par), par);
     // The desugared `Par` must contain at least one receive (the `?!`'s reply
     // for-comprehension) AND at least one send (the `?!`'s call send) — evidence
@@ -369,11 +377,14 @@ async fn effective_supply_closure_over_real_lane_hashes() {
     raw.insert(key_s2, 6_i64);
     raw.insert(key_compound, 10_i64);
 
-    let effective = effective_supply_with(&raw, &[Decomposition {
-        compound: key_compound,
-        left: key_s1,
-        right: key_s2,
-    }]);
+    let effective = effective_supply_with(
+        &raw,
+        &[Decomposition {
+            compound: key_compound,
+            left: key_s1,
+            right: key_s2,
+        }],
+    );
 
     // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14
     // effectiveΣ_{s1}    = 4 + 10        = 14

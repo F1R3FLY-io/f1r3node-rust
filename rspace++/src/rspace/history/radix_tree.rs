@@ -35,7 +35,9 @@ pub type Node = Vec<Item>;
 
 const NUM_ITEMS: usize = 256;
 
-pub fn empty_node() -> Node { vec![Item::EmptyItem; NUM_ITEMS] }
+pub fn empty_node() -> Node {
+    vec![Item::EmptyItem; NUM_ITEMS]
+}
 
 /// Binary codecs for serializing/deserializing Node in Radix tree.
 ///
@@ -204,7 +206,9 @@ pub fn decode(bv: ByteVector) -> Node {
     let max_size = bv.len();
 
     // If first bit 0 - return true, otherwise false.
-    fn is_leaf(second_byte: u8) -> bool { (second_byte & 0x80) == 0x00 }
+    fn is_leaf(second_byte: u8) -> bool {
+        (second_byte & 0x80) == 0x00
+    }
     // Decode each non-empty item in-place to avoid cloning the whole node per step.
     let mut node = empty_node();
     let mut pos0 = 0;
@@ -275,7 +279,9 @@ pub fn hash_node(node: &Node) -> (ByteVector, ByteVector) {
     (hash.bytes(), node_bytes)
 }
 
-fn byte_to_int(b: u8) -> usize { b as usize & 0xff }
+fn byte_to_int(b: u8) -> usize {
+    b as usize & 0xff
+}
 
 /**
  * Data returned after export
@@ -723,7 +729,9 @@ pub fn sequential_export(
         ExportData::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
-    fn empty_result() -> (ExportData, Option<ByteVector>) { (empty_export_data(), None) }
+    fn empty_result() -> (ExportData, Option<ByteVector>) {
+        (empty_export_data(), None)
+    }
 
     let do_export: Box<
         dyn Fn(ByteVector) -> Result<(ExportData, Option<ByteVector>), RadixTreeError>,

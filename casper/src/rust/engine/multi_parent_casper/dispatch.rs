@@ -77,7 +77,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::snapshot::estimator(self, dag).await
     }
 
-    fn get_version(&self) -> i64 { self.casper_shard_conf.casper_version }
+    fn get_version(&self) -> i64 {
+        self.casper_shard_conf.casper_version
+    }
 
     async fn validate(
         &self,
@@ -204,17 +206,25 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .map_err(Into::into)
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+    fn block_store(&self) -> &KeyValueBlockStore {
+        &self.block_store
+    }
 
-    fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
+    fn get_validator(&self) -> Option<ValidatorIdentity> {
+        self.validator_id.clone()
+    }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         self.runtime_manager.get_history_repo().exporter()
     }
 
-    fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
+    fn runtime_manager(&self) -> Arc<RuntimeManager> {
+        self.runtime_manager.clone()
+    }
 
-    fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
+    fn casper_shard_conf(&self) -> &CasperShardConf {
+        &self.casper_shard_conf
+    }
 
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
         let snapshot = self.get_snapshot().await?;

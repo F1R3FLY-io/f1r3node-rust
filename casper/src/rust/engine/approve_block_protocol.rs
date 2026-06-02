@@ -507,9 +507,15 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         }
     }
 
-    pub fn transport(&self) -> &Arc<T> { &self.transport }
+    pub fn transport(&self) -> &Arc<T> {
+        &self.transport
+    }
 
-    pub fn conf(&self) -> &Option<Arc<RPConf>> { &self.conf }
+    pub fn conf(&self) -> &Option<Arc<RPConf>> {
+        &self.conf
+    }
 
-    pub fn signature_count(&self) -> usize { self.sigs.lock().map(|sigs| sigs.len()).unwrap_or(0) }
+    pub fn signature_count(&self) -> usize {
+        self.sigs.lock().map(|sigs| sigs.len()).unwrap_or(0)
+    }
 }

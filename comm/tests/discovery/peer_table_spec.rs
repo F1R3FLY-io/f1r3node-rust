@@ -16,7 +16,9 @@ fn rand_bytes(nbytes: usize) -> Vec<u8> {
 }
 
 /// Helper function to create an endpoint for testing
-fn endpoint() -> Endpoint { Endpoint::new("".to_string(), 0, 0) }
+fn endpoint() -> Endpoint {
+    Endpoint::new("".to_string(), 0, 0)
+}
 
 /// Test implementation of KademliaRPC that always succeeds
 struct KademliaRPCStub;

@@ -8,7 +8,9 @@ use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use crate::rust::rholang::sorter::sortable::Sortable;
 
 // models/src/test/scala/coop/rchain/models/testUtils/TestUtils.scala
-pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term }
+pub fn sort(par: &Par) -> Par {
+    ParSortMatcher::sort_match(par).term
+}
 
 pub fn for_all_similar_a<A: Clone + std::fmt::Debug>(
     generator: BoxedStrategy<A>,

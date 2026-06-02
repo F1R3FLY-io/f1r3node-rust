@@ -196,11 +196,15 @@ impl Hash for ParWithRandom {
 }
 
 impl PartialEq for PCost {
-    fn eq(&self, other: &Self) -> bool { self.cost == other.cost }
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost
+    }
 }
 
 impl Hash for PCost {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.cost.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.cost.hash(state);
+    }
 }
 
 impl PartialEq for ListParWithRandom {
@@ -217,11 +221,15 @@ impl Hash for ListParWithRandom {
 }
 
 impl PartialEq for Var {
-    fn eq(&self, other: &Self) -> bool { self.var_instance == other.var_instance }
+    fn eq(&self, other: &Self) -> bool {
+        self.var_instance == other.var_instance
+    }
 }
 
 impl Hash for Var {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.var_instance.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.var_instance.hash(state);
+    }
 }
 
 impl PartialEq for VarInstance {
@@ -246,7 +254,9 @@ impl Hash for VarInstance {
 }
 
 impl PartialEq for WildcardMsg {
-    fn eq(&self, _other: &Self) -> bool { true }
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 impl Hash for WildcardMsg {
@@ -324,11 +334,15 @@ impl Hash for BindPattern {
 }
 
 impl PartialEq for ListBindPatterns {
-    fn eq(&self, other: &Self) -> bool { self.patterns == other.patterns }
+    fn eq(&self, other: &Self) -> bool {
+        self.patterns == other.patterns
+    }
 }
 
 impl Hash for ListBindPatterns {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.patterns.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.patterns.hash(state);
+    }
 }
 
 impl PartialEq for Receive {
@@ -426,11 +440,15 @@ impl Hash for If {
 }
 
 impl PartialEq for Expr {
-    fn eq(&self, other: &Self) -> bool { self.expr_instance == other.expr_instance }
+    fn eq(&self, other: &Self) -> bool {
+        self.expr_instance == other.expr_instance
+    }
 }
 
 impl Hash for Expr {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.expr_instance.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.expr_instance.hash(state);
+    }
 }
 
 impl PartialEq for expr::ExprInstance {
@@ -663,7 +681,9 @@ impl Hash for EMethod {
 }
 
 impl PartialEq for KeyValuePair {
-    fn eq(&self, other: &Self) -> bool { self.key == other.key && self.value == other.value }
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+    }
 }
 
 impl Hash for KeyValuePair {
@@ -674,31 +694,45 @@ impl Hash for KeyValuePair {
 }
 
 impl PartialEq for EVar {
-    fn eq(&self, other: &Self) -> bool { self.v == other.v }
+    fn eq(&self, other: &Self) -> bool {
+        self.v == other.v
+    }
 }
 
 impl Hash for EVar {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.v.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.v.hash(state);
+    }
 }
 
 impl PartialEq for ENot {
-    fn eq(&self, other: &Self) -> bool { self.p == other.p }
+    fn eq(&self, other: &Self) -> bool {
+        self.p == other.p
+    }
 }
 
 impl Hash for ENot {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.p.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.p.hash(state);
+    }
 }
 
 impl PartialEq for ENeg {
-    fn eq(&self, other: &Self) -> bool { self.p == other.p }
+    fn eq(&self, other: &Self) -> bool {
+        self.p == other.p
+    }
 }
 
 impl Hash for ENeg {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.p.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.p.hash(state);
+    }
 }
 
 impl PartialEq for EMult {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EMult {
@@ -709,7 +743,9 @@ impl Hash for EMult {
 }
 
 impl PartialEq for EDiv {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EDiv {
@@ -720,7 +756,9 @@ impl Hash for EDiv {
 }
 
 impl PartialEq for EMod {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EMod {
@@ -731,7 +769,9 @@ impl Hash for EMod {
 }
 
 impl PartialEq for EPlus {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EPlus {
@@ -742,7 +782,9 @@ impl Hash for EPlus {
 }
 
 impl PartialEq for EMinus {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EMinus {
@@ -753,7 +795,9 @@ impl Hash for EMinus {
 }
 
 impl PartialEq for ELt {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for ELt {
@@ -764,7 +808,9 @@ impl Hash for ELt {
 }
 
 impl PartialEq for ELte {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for ELte {
@@ -775,7 +821,9 @@ impl Hash for ELte {
 }
 
 impl PartialEq for EGt {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EGt {
@@ -786,7 +834,9 @@ impl Hash for EGt {
 }
 
 impl PartialEq for EGte {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EGte {
@@ -797,7 +847,9 @@ impl Hash for EGte {
 }
 
 impl PartialEq for EEq {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EEq {
@@ -808,7 +860,9 @@ impl Hash for EEq {
 }
 
 impl PartialEq for ENeq {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for ENeq {
@@ -819,7 +873,9 @@ impl Hash for ENeq {
 }
 
 impl PartialEq for EAnd {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EAnd {
@@ -830,7 +886,9 @@ impl Hash for EAnd {
 }
 
 impl PartialEq for EOr {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EOr {
@@ -854,7 +912,9 @@ impl Hash for EMatches {
 }
 
 impl PartialEq for EPercentPercent {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EPercentPercent {
@@ -865,7 +925,9 @@ impl Hash for EPercentPercent {
 }
 
 impl PartialEq for EPlusPlus {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EPlusPlus {
@@ -876,7 +938,9 @@ impl Hash for EPlusPlus {
 }
 
 impl PartialEq for EMinusMinus {
-    fn eq(&self, other: &Self) -> bool { self.p1 == other.p1 && self.p2 == other.p2 }
+    fn eq(&self, other: &Self) -> bool {
+        self.p1 == other.p1 && self.p2 == other.p2
+    }
 }
 
 impl Hash for EMinusMinus {
@@ -887,11 +951,15 @@ impl Hash for EMinusMinus {
 }
 
 impl PartialEq for Connective {
-    fn eq(&self, other: &Self) -> bool { self.connective_instance == other.connective_instance }
+    fn eq(&self, other: &Self) -> bool {
+        self.connective_instance == other.connective_instance
+    }
 }
 
 impl Hash for Connective {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.connective_instance.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.connective_instance.hash(state);
+    }
 }
 
 impl PartialEq for ConnectiveInstance {
@@ -928,7 +996,9 @@ impl Hash for ConnectiveInstance {
 }
 
 impl PartialEq for VarRef {
-    fn eq(&self, other: &Self) -> bool { self.index == other.index && self.depth == other.depth }
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.depth == other.depth
+    }
 }
 
 impl Hash for VarRef {
@@ -939,35 +1009,51 @@ impl Hash for VarRef {
 }
 
 impl PartialEq for ConnectiveBody {
-    fn eq(&self, other: &Self) -> bool { self.ps == other.ps }
+    fn eq(&self, other: &Self) -> bool {
+        self.ps == other.ps
+    }
 }
 
 impl Hash for ConnectiveBody {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.ps.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ps.hash(state);
+    }
 }
 
 impl PartialEq for DeployId {
-    fn eq(&self, other: &Self) -> bool { self.sig == other.sig }
+    fn eq(&self, other: &Self) -> bool {
+        self.sig == other.sig
+    }
 }
 
 impl Hash for DeployId {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.sig.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.sig.hash(state);
+    }
 }
 
 impl PartialEq for DeployerId {
-    fn eq(&self, other: &Self) -> bool { self.public_key == other.public_key }
+    fn eq(&self, other: &Self) -> bool {
+        self.public_key == other.public_key
+    }
 }
 
 impl Hash for DeployerId {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.public_key.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.public_key.hash(state);
+    }
 }
 
 impl PartialEq for GUnforgeable {
-    fn eq(&self, other: &Self) -> bool { self.unf_instance == other.unf_instance }
+    fn eq(&self, other: &Self) -> bool {
+        self.unf_instance == other.unf_instance
+    }
 }
 
 impl Hash for GUnforgeable {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.unf_instance.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.unf_instance.hash(state);
+    }
 }
 
 impl PartialEq for UnfInstance {
@@ -994,31 +1080,45 @@ impl Hash for UnfInstance {
 }
 
 impl PartialEq for GPrivate {
-    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
 }
 
 impl Hash for GPrivate {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.id.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl PartialEq for GDeployId {
-    fn eq(&self, other: &Self) -> bool { self.sig == other.sig }
+    fn eq(&self, other: &Self) -> bool {
+        self.sig == other.sig
+    }
 }
 
 impl Hash for GDeployId {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.sig.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.sig.hash(state);
+    }
 }
 
 impl PartialEq for GDeployerId {
-    fn eq(&self, other: &Self) -> bool { self.public_key == other.public_key }
+    fn eq(&self, other: &Self) -> bool {
+        self.public_key == other.public_key
+    }
 }
 
 impl Hash for GDeployerId {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.public_key.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.public_key.hash(state);
+    }
 }
 
 impl PartialEq for GSysAuthToken {
-    fn eq(&self, _other: &Self) -> bool { true }
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 impl Hash for GSysAuthToken {

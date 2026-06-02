@@ -23,10 +23,14 @@ pub fn gen_validator_id(max_idx: usize) -> impl Strategy<Value = ValidatorId> {
 /// Block hashes are 64-bit ints in `[1, max]`. `1` is reserved as the
 /// first allocated hash, so generators that interleave with the
 /// harness's auto-allocation should pass `max = u64::MAX`.
-pub fn gen_block_hash() -> impl Strategy<Value = BlockHash> { 1u64..=u64::MAX }
+pub fn gen_block_hash() -> impl Strategy<Value = BlockHash> {
+    1u64..=u64::MAX
+}
 
 /// Sequence numbers in `[0, max]`.
-pub fn gen_seq_num(max: SeqNum) -> impl Strategy<Value = SeqNum> { 0u64..=max }
+pub fn gen_seq_num(max: SeqNum) -> impl Strategy<Value = SeqNum> {
+    0u64..=max
+}
 
 /// Bonds map: every validator gets a positive stake in
 /// `[1, max_stake]`. Mirrors the post-fix #5 invariant
@@ -81,13 +85,16 @@ pub fn gen_linear_dag(validator_count: usize, depth: SeqNum) -> impl Strategy<Va
                     Some(&prev_hash) => vec![(sender.clone(), prev_hash)],
                     None => vec![],
                 };
-                dag.blocks.insert(hash, BlockMeta {
+                dag.blocks.insert(
                     hash,
-                    sender: sender.clone(),
-                    seq,
-                    justifications,
-                    slash_targets: vec![],
-                });
+                    BlockMeta {
+                        hash,
+                        sender: sender.clone(),
+                        seq,
+                        justifications,
+                        slash_targets: vec![],
+                    },
+                );
                 prev.insert(sender, hash);
             }
         }

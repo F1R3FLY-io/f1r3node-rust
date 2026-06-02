@@ -114,9 +114,13 @@ impl DetectorFixture {
     }
 }
 
-pub fn hash(byte: u8) -> Bytes { Bytes::from(vec![byte; 32]) }
+pub fn hash(byte: u8) -> Bytes {
+    Bytes::from(vec![byte; 32])
+}
 
-pub fn validator(byte: u8) -> Bytes { Bytes::from(vec![byte; 65]) }
+pub fn validator(byte: u8) -> Bytes {
+    Bytes::from(vec![byte; 65])
+}
 
 pub fn justification(validator: Bytes, latest_block_hash: Bytes) -> Justification {
     Justification {

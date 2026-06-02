@@ -44,9 +44,13 @@ fn vm_rss_kb() -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
+fn kb_to_mib(kb: usize) -> f64 {
+    kb as f64 / 1024.0
+}
 
-fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
+fn delta_kb_to_mib(delta_kb: isize) -> f64 {
+    delta_kb as f64 / 1024.0
+}
 
 fn delta_kb(curr: Option<usize>, prev: Option<usize>) -> isize {
     match (curr, prev) {
@@ -275,7 +279,7 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 &mut runtime_manager,
                 &mut block_store,
                 false,

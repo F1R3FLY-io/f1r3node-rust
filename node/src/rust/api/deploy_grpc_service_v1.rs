@@ -58,9 +58,13 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
 
-fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
+fn find_deploy_retry_interval_ms() -> u64 {
+    FIND_DEPLOY_RETRY_INTERVAL_MS
+}
 
-fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
+fn find_deploy_max_attempts() -> u8 {
+    FIND_DEPLOY_MAX_ATTEMPTS
+}
 
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
@@ -257,15 +261,16 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        let cosigned_deploy = match models::rust::casper::protocol::casper_message::DeployData::from_proto_cosigned(
-            request.into_inner(),
-        ) {
-            Ok(c) => c,
-            Err(err_msg) => {
-                let error = Self::create_service_error(err_msg);
-                return Self::create_error_deploy_response(error);
-            }
-        };
+        let cosigned_deploy =
+            match models::rust::casper::protocol::casper_message::DeployData::from_proto_cosigned(
+                request.into_inner(),
+            ) {
+                Ok(c) => c,
+                Err(err_msg) => {
+                    let error = Self::create_service_error(err_msg);
+                    return Self::create_error_deploy_response(error);
+                }
+            };
 
         match BlockAPI::deploy_cosigned(
             &self.engine_cell,

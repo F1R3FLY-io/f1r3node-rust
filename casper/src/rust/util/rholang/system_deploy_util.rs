@@ -260,8 +260,7 @@ mod tests {
         let invalid_block: BlockHash = Bytes::from(vec![0x55; 32]);
 
         let mint = generate_epoch_mint_deploy_random_seed(validator.clone(), seq_num);
-        let slash =
-            generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block);
+        let slash = generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block);
         let close = generate_close_deploy_random_seed_from_validator(validator, seq_num);
 
         assert_ne!(

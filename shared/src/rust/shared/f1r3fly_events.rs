@@ -73,10 +73,14 @@ impl F1r3flyEvents {
 
     /// Get a shared reference to the startup buffer.
     /// Pass this to AppState so the WebSocket handler can replay events.
-    pub fn startup_buffer(&self) -> StartupBuffer { self.startup_buffer.clone() }
+    pub fn startup_buffer(&self) -> StartupBuffer {
+        self.startup_buffer.clone()
+    }
 
     /// Publish a noop event
-    pub fn noop(&self) -> Result<(), String> { Ok(()) }
+    pub fn noop(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Get a stream to consume events
     pub fn consume(&self) -> EventStream {

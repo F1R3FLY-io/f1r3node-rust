@@ -79,7 +79,9 @@ impl AbstractTracker {
         self.inner.get(key).cloned().unwrap_or_default()
     }
 
-    fn len_at(&self, key: &(u8, u64)) -> usize { self.inner.get(key).map(|s| s.len()).unwrap_or(0) }
+    fn len_at(&self, key: &(u8, u64)) -> usize {
+        self.inner.get(key).map(|s| s.len()).unwrap_or(0)
+    }
 }
 
 /// Post-fix `record_evidence`: the entire read-modify-write runs

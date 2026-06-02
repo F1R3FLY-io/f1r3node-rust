@@ -128,7 +128,9 @@ impl DemandEntry {
     #[inline]
     fn combine(self, other: DemandEntry) -> DemandEntry {
         DemandEntry {
-            known_lower_bound: self.known_lower_bound.saturating_add(other.known_lower_bound),
+            known_lower_bound: self
+                .known_lower_bound
+                .saturating_add(other.known_lower_bound),
             unknown: self.unknown || other.unknown,
         }
     }
@@ -693,11 +695,14 @@ mod tests {
         raw.insert(s2, 6_i64);
         raw.insert(compound, 10_i64);
 
-        let effective = effective_supply_with(&raw, &[Decomposition {
-            compound,
-            left: s1,
-            right: s2,
-        }]);
+        let effective = effective_supply_with(
+            &raw,
+            &[Decomposition {
+                compound,
+                left: s1,
+                right: s2,
+            }],
+        );
 
         assert_eq!(effective.get(&compound), Some(&14));
         assert_eq!(effective.get(&s1), Some(&14));
@@ -715,11 +720,14 @@ mod tests {
         let mut raw = BTreeMap::new();
         raw.insert(compound, 8_i64);
 
-        let effective = effective_supply_with(&raw, &[Decomposition {
-            compound,
-            left: s1,
-            right: s2,
-        }]);
+        let effective = effective_supply_with(
+            &raw,
+            &[Decomposition {
+                compound,
+                left: s1,
+                right: s2,
+            }],
+        );
 
         assert_eq!(effective.get(&compound), Some(&8));
         assert_eq!(effective.get(&s1), Some(&8));
@@ -740,8 +748,16 @@ mod tests {
         for (k, v) in [(a, 2), (b, 3), (ab, 1), (c, 7), (d, 5), (cd, 4)] {
             raw.insert(k, v as i64);
         }
-        let decomposition_ab = Decomposition { compound: ab, left: a, right: b };
-        let decomposition_cd = Decomposition { compound: cd, left: c, right: d };
+        let decomposition_ab = Decomposition {
+            compound: ab,
+            left: a,
+            right: b,
+        };
+        let decomposition_cd = Decomposition {
+            compound: cd,
+            left: c,
+            right: d,
+        };
 
         let forward = effective_supply_with(&raw, &[decomposition_ab, decomposition_cd]);
         let backward = effective_supply_with(&raw, &[decomposition_cd, decomposition_ab]);
@@ -861,7 +877,7 @@ mod tests {
         assert!(is_funded(&d_slot, k, 0)); // exactly funded
         assert!(is_funded(&d_slot, k + 5, 2)); // funded with margin headroom
         assert!(!is_funded(&d_slot, k - 1, 0)); // under-supplied ⇒ rejected
-        // An ABSENT / empty slot pool (Σ = 0) with positive demand is rejected.
+                                                // An ABSENT / empty slot pool (Σ = 0) with positive demand is rejected.
         assert!(!is_funded(&d_slot, 0, 0));
 
         // The slot is keyed via the same canonical `lane_hash` basis as any

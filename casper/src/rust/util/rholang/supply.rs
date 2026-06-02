@@ -235,7 +235,10 @@ pub async fn produce_balance(
 /// advanced by `index` (the validator's position in the SORTED mint set). The
 /// sorted order makes the derivation independent of fold/iteration order, so it
 /// is byte-identical play/replay regardless of how the mint set was assembled.
-pub fn mint_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+pub fn mint_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+    index: i64,
+) -> Vec<u8> {
     // `split_byte` takes an i8 path tag; clamp the per-validator index into a
     // stable byte and fold the high bits into the seed via a second split so we
     // never alias two validators' produce random states even past 127 mints.
@@ -258,7 +261,10 @@ pub fn mint_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Bla
 /// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
 /// advanced by the debit's position in the SORTED debit set — so the derivation
 /// is independent of fold/iteration order and byte-identical play/replay.
-pub fn debit_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+pub fn debit_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+    index: i64,
+) -> Vec<u8> {
     // Fixed domain split distinct from the mint's index-derived first split
     // (lo ∈ [0, 127]) and from the mint-list channel path (0x2a = 42): a
     // negative tag is unreachable by the non-negative `index & 0x7f`, so the
@@ -284,7 +290,9 @@ pub fn debit_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Bl
 /// byte-identical play/replay for the same proposer + seq_num + invalid block
 /// hash), so the zeroed datum's identity — hence the post-state trie root — is
 /// byte-identical on play and replay (the consensus-critical symmetry).
-pub fn slash_random_state(slash_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random) -> Vec<u8> {
+pub fn slash_random_state(
+    slash_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+) -> Vec<u8> {
     // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), and
     // mint-list (0x2a) paths: a slash-zero produce can never alias a mint or
     // debit produce even when they target the same channel in different deploys.
@@ -311,7 +319,10 @@ pub fn slash_random_state(slash_rand: &crypto::rust::hash::blake2b512_random::Bl
 /// and advanced by the convert's position in the SORTED fee-convert set — so the
 /// derivation is independent of fold/iteration order and byte-identical
 /// play/replay.
-pub fn fee_convert_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+pub fn fee_convert_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+    index: i64,
+) -> Vec<u8> {
     // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
     // (-0x2c), and mint-list (0x2a) paths: a fee-convert credit can never alias
     // a mint / debit / slash produce even when they target the same channel.
@@ -335,7 +346,9 @@ pub fn fee_convert_random_state(close_rand: &crypto::rust::hash::blake2b512_rand
 /// `generate_close_deploy_random_seed_from_*` (byte-identical play/replay for the
 /// same proposer + seq_num), so the credited datum's identity — hence the
 /// post-state — is byte-identical on play and replay.
-pub fn fee_collect_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random) -> Vec<u8> {
+pub fn fee_collect_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+) -> Vec<u8> {
     const FEE_COLLECT_RNG_PATH: i8 = -0x2e;
     close_rand.split_byte(FEE_COLLECT_RNG_PATH).to_bytes()
 }
@@ -362,7 +375,10 @@ pub fn fee_collect_random_state(close_rand: &crypto::rust::hash::blake2b512_rand
 /// advanced by the allocation's position in the SORTED (pk-ascending) client set
 /// — so the derivation is independent of the genesis-config list order and
 /// byte-identical play/replay.
-pub fn client_alloc_random_state(close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random, index: i64) -> Vec<u8> {
+pub fn client_alloc_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+    index: i64,
+) -> Vec<u8> {
     // Fixed domain split distinct from the mint (lo≥0), debit (-0x2b), slash
     // (-0x2c), fee-convert (-0x2d), fee-collect (-0x2e), and mint-list (0x2a)
     // paths: a client-alloc credit can never alias a mint / debit / slash /
@@ -413,8 +429,7 @@ mod tests {
             Sig::Unit,
         ];
 
-        const SIGNATURE_LANE_DOMAIN: &[u8] =
-            b"f1r3node:cost-accounted-rho:signature-lane:v1";
+        const SIGNATURE_LANE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:signature-lane:v1";
 
         for s in &sigs {
             // (a) supply_channel == from_sig basis.
@@ -487,7 +502,10 @@ mod tests {
         let a200 = mint_random_state(&rand, 200);
         assert_eq!(a0, a0_again, "same index ⇒ byte-identical random_state");
         assert_ne!(a0, a1, "distinct indices ⇒ distinct random_state");
-        assert_ne!(a1, a200, "distinct indices past 127 ⇒ distinct random_state");
+        assert_ne!(
+            a1, a200,
+            "distinct indices past 127 ⇒ distinct random_state"
+        );
     }
 
     /// #13b — the genesis-block-1 client-allocation `random_state` is
@@ -507,16 +525,31 @@ mod tests {
         let c200 = client_alloc_random_state(&rand, 200);
         assert_eq!(c0, c0_again, "same index ⇒ byte-identical random_state");
         assert_ne!(c0, c1, "distinct indices ⇒ distinct random_state");
-        assert_ne!(c1, c200, "distinct indices past 127 ⇒ distinct random_state");
+        assert_ne!(
+            c1, c200,
+            "distinct indices past 127 ⇒ distinct random_state"
+        );
 
         // Disjoint from every sibling stream at the SAME index (the genesis
         // block-1 close runs the mint loop and the client-alloc loop on the same
         // close-block `initial_rand`).
         assert_ne!(c0, mint_random_state(&rand, 0), "disjoint from mint");
-        assert_ne!(c0, debit_random_state(&rand, 0), "disjoint from settlement debit");
-        assert_ne!(c0, fee_convert_random_state(&rand, 0), "disjoint from fee-convert");
+        assert_ne!(
+            c0,
+            debit_random_state(&rand, 0),
+            "disjoint from settlement debit"
+        );
+        assert_ne!(
+            c0,
+            fee_convert_random_state(&rand, 0),
+            "disjoint from fee-convert"
+        );
         assert_ne!(c0, slash_random_state(&rand), "disjoint from slash zero");
-        assert_ne!(c0, fee_collect_random_state(&rand), "disjoint from fee-collect");
+        assert_ne!(
+            c0,
+            fee_collect_random_state(&rand),
+            "disjoint from fee-collect"
+        );
     }
 
     // Tiny helper to make a bare GInt par for the absent-is-zero test.

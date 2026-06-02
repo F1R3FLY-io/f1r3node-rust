@@ -36,9 +36,13 @@ use crate::rust::web::version_info::get_version_info_str;
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 50;
 const FIND_DEPLOY_MAX_ATTEMPTS: u16 = 1;
 
-fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
+fn find_deploy_retry_interval_ms() -> u64 {
+    FIND_DEPLOY_RETRY_INTERVAL_MS
+}
 
-fn find_deploy_max_attempts() -> u16 { FIND_DEPLOY_MAX_ATTEMPTS }
+fn find_deploy_max_attempts() -> u16 {
+    FIND_DEPLOY_MAX_ATTEMPTS
+}
 
 /// Web API trait defining the interface for HTTP endpoints
 #[async_trait::async_trait]
@@ -1529,12 +1533,10 @@ fn to_cosigned_deploy(
         sig_algorithm: lookup_sig_algorithm(&request.sig_algorithm)?,
     });
     for (i, cs) in request.cosigners.iter().enumerate() {
-        let pk_bytes = hex::decode(&cs.pk).map_err(|e| {
-            eyre!("Cosigner {} public key is not valid base16: {}", i, e)
-        })?;
-        let sig_bytes = hex::decode(&cs.signature).map_err(|e| {
-            eyre!("Cosigner {} signature is not valid base16: {}", i, e)
-        })?;
+        let pk_bytes = hex::decode(&cs.pk)
+            .map_err(|e| eyre!("Cosigner {} public key is not valid base16: {}", i, e))?;
+        let sig_bytes = hex::decode(&cs.signature)
+            .map_err(|e| eyre!("Cosigner {} signature is not valid base16: {}", i, e))?;
         signers.push(Cosigner {
             pk: PublicKey::from_bytes(&pk_bytes),
             sig: sig_bytes.into(),

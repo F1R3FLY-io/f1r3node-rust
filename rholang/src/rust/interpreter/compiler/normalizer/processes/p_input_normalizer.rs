@@ -362,10 +362,13 @@ pub fn normalize_p_input<'ast>(
                             parser,
                         )?;
 
-                        fail_on_invalid_connective(&input, &NameVisitOutputs {
-                            par: par.clone(),
-                            free_map: updated_known_free.clone(),
-                        })?;
+                        fail_on_invalid_connective(
+                            &input,
+                            &NameVisitOutputs {
+                                par: par.clone(),
+                                free_map: updated_known_free.clone(),
+                            },
+                        )?;
 
                         vector_par.push(par.clone());
                         current_known_free = updated_known_free;

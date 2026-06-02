@@ -83,7 +83,9 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     }
 }
 
-fn is_empty_par(par: &Par) -> bool { par == &Par::default() }
+fn is_empty_par(par: &Par) -> bool {
+    par == &Par::default()
+}
 
 /// Evaluates a guard against the combined cross-bind variables.
 /// Returns true iff the guard reduces to GBool(true). Anything else

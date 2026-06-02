@@ -55,13 +55,21 @@ impl SignaturesAlg for Ed25519 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String { "ed25519".to_string() }
+    fn name(&self) -> String {
+        "ed25519".to_string()
+    }
 
-    fn sig_length(&self) -> usize { 64 }
+    fn sig_length(&self) -> usize {
+        64
+    }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
+        self.name() == other.name()
+    }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
+        Box::new(self.clone())
+    }
 }
 
 fn parse_public_key(pub_key: &[u8]) -> Result<VerifyingKey, &'static str> {

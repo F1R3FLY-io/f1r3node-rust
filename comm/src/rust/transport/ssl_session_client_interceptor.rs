@@ -25,7 +25,9 @@ impl SslSessionClientInterceptor {
     /// # Arguments
     /// * `network_id` - The expected network ID for validation
     #[inline]
-    pub fn new(network_id: String) -> Self { Self { network_id } }
+    pub fn new(network_id: String) -> Self {
+        Self { network_id }
+    }
 
     /// Validate TLResponse message
     ///
@@ -217,7 +219,9 @@ impl SslSessionClientInterceptor {
 
     /// Get the network ID for this interceptor
     #[inline]
-    pub fn network_id(&self) -> &str { &self.network_id }
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
 }
 
 impl Interceptor for SslSessionClientInterceptor {

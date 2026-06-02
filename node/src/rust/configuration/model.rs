@@ -227,7 +227,9 @@ pub struct Metrics {
     pub influxdb_endpoint: InfluxDbEndpoint,
 }
 
-fn default_tick_interval() -> Duration { Duration::from_secs(10) }
+fn default_tick_interval() -> Duration {
+    Duration::from_secs(10)
+}
 
 mod duration_secs {
     use std::time::Duration;
@@ -289,7 +291,9 @@ pub struct InfluxDbEndpoint {
     pub password: Option<String>,
 }
 
-fn default_influxdb_protocol() -> String { "http".to_string() }
+fn default_influxdb_protocol() -> String {
+    "http".to_string()
+}
 
 /// Development configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,9 +327,13 @@ pub struct OpenAIConf {
     pub validation_timeout_sec: u64,
 }
 
-fn default_validate_api_key() -> bool { true }
+fn default_validate_api_key() -> bool {
+    true
+}
 
-fn default_validation_timeout_sec() -> u64 { 15 }
+fn default_validation_timeout_sec() -> u64 {
+    15
+}
 
 impl Default for OpenAIConf {
     fn default() -> Self {
@@ -402,7 +410,9 @@ pub enum Command {
 
 // Accept integers (bytes) or strings like "256K", "16M", "2G".
 fn de_bytes<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error as _;
     use serde::Deserialize;
     #[derive(Deserialize)]

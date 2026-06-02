@@ -1923,7 +1923,10 @@ mod d0_lane_pool_tests {
         // All four events commit (the single COMM fits the 1-token budget; the
         // Reductions cost 0), and none is an OOP boundary.
         assert_eq!(rec.committed.len(), 4, "COMM + 3 Reductions all commit");
-        assert!(rec.oop.is_none(), "no OOP — only the COMM costs, and it fits");
+        assert!(
+            rec.oop.is_none(),
+            "no OOP — only the COMM costs, and it fits"
+        );
         // Consensus consumed cost is the COMM count = 1, NOT the weight sum.
         assert_eq!(rec.consumed_units, 1);
         assert_eq!(budget.total_cost().value, 1);
@@ -1949,7 +1952,10 @@ mod d0_lane_pool_tests {
         let rec = budget.reconcile();
         // The first COMM and the Reduction commit; the second COMM OOPs.
         assert_eq!(rec.committed.len(), 2);
-        assert!(rec.oop.is_some(), "the second COMM exceeds the 1-token budget");
+        assert!(
+            rec.oop.is_some(),
+            "the second COMM exceeds the 1-token budget"
+        );
         assert_eq!(rec.consumed_units, 1, "consumed clamps to the COMM budget");
     }
 
@@ -2183,10 +2189,7 @@ mod envelope_sig_extraction_tests {
         let h0 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s0);
         let h1 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s1);
         let h2 = quote_of(COMPOUND_DEPLOY_SIGNATURE_DOMAIN, s2);
-        let expected = Sig::And(
-            Box::new(Sig::And(Box::new(h0), Box::new(h1))),
-            Box::new(h2),
-        );
+        let expected = Sig::And(Box::new(Sig::And(Box::new(h0), Box::new(h1))), Box::new(h2));
         assert_eq!(envelope_sig_compound(&[s0, s1, s2]), expected);
     }
 

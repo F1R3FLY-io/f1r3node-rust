@@ -260,7 +260,9 @@ mod tests {
         }
     }
 
-    fn create_wildcard<'ast>() -> Name<'ast> { Name::NameVar(Var::Wildcard) }
+    fn create_wildcard<'ast>() -> Name<'ast> {
+        Name::NameVar(Var::Wildcard)
+    }
 
     fn create_id_var<'ast>(name: &'ast str) -> Name<'ast> {
         use rholang_parser::ast::Id;

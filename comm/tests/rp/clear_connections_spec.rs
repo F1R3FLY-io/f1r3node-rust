@@ -11,7 +11,9 @@ use comm::rust::test_instances::{NodeDiscoveryStub, TransportLayerStub, NETWORK_
 use prost::bytes::Bytes;
 
 /// Helper function to create a peer with given name and default host/port
-fn peer(name: &str) -> PeerNode { peer_with_host(name, "host") }
+fn peer(name: &str) -> PeerNode {
+    peer_with_host(name, "host")
+}
 
 /// Helper function to create a peer with given name and host
 fn peer_with_host(name: &str, host: &str) -> PeerNode {
@@ -71,14 +73,20 @@ impl TrackingNodeDiscovery {
         }
     }
 
-    fn get_removed_keys(&self) -> Vec<Bytes> { self.removed_keys.lock().unwrap().clone() }
+    fn get_removed_keys(&self) -> Vec<Bytes> {
+        self.removed_keys.lock().unwrap().clone()
+    }
 }
 
 #[async_trait::async_trait]
 impl comm::rust::discovery::node_discovery::NodeDiscovery for TrackingNodeDiscovery {
-    async fn discover(&self) -> Result<(), CommError> { Ok(()) }
+    async fn discover(&self) -> Result<(), CommError> {
+        Ok(())
+    }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(Vec::new()) }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
+        Ok(Vec::new())
+    }
 
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.removed_keys.lock().unwrap().push(peer.id.key.clone());

@@ -31,7 +31,9 @@ pub fn mk_temp_dir(prefix: &str) -> PathBuf {
 }
 
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
-where F: FnOnce(&Path) -> R {
+where
+    F: FnOnce(&Path) -> R,
+{
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()

@@ -53,9 +53,8 @@ fn capabilities_registry_included_in_default_system_public_keys() {
     // must be present so block-validation accepts deploys signed
     // by it.
     let secp = Secp256k1;
-    let sk = PrivateKey::from_bytes(
-        &hex::decode(standard_deploys::CAPABILITIES_REGISTRY_PK).unwrap(),
-    );
+    let sk =
+        PrivateKey::from_bytes(&hex::decode(standard_deploys::CAPABILITIES_REGISTRY_PK).unwrap());
     let expected_pk = secp.to_public(&sk);
 
     let system_pks = standard_deploys::system_public_keys();
@@ -246,7 +245,10 @@ fn capabilities_registry_rhox_template_contains_all_four_rpcs() {
     // The bundled contract source must implement all four RPC
     // methods declared in the Phase 3 capability registry design.
     let template = casper::rust::genesis::contracts::embedded_rho::CAPABILITIES_REGISTRY;
-    assert!(template.contains("\"register\""), "must declare register RPC");
+    assert!(
+        template.contains("\"register\""),
+        "must declare register RPC"
+    );
     assert!(template.contains("\"invoke\""), "must declare invoke RPC");
     assert!(template.contains("\"revoke\""), "must declare revoke RPC");
     assert!(template.contains("\"lookup\""), "must declare lookup RPC");

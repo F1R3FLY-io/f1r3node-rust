@@ -18,5 +18,7 @@ pub trait Match<P, A, K>: Send + Sync {
     /// always-true (no guard, no veto). Returning `false` rolls the
     /// consume back so the messages stay in the tuple space and the
     /// continuation stays installed.
-    fn check_commit(&self, _k: &K, _matched: &[A]) -> bool { true }
+    fn check_commit(&self, _k: &K, _matched: &[A]) -> bool {
+        true
+    }
 }

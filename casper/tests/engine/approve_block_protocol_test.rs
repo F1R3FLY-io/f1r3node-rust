@@ -119,14 +119,20 @@ impl TestFixture {
         actual_count == expected_count
     }
 
-    fn signature_count(&self) -> usize { self.protocol.signature_count() }
+    fn signature_count(&self) -> usize {
+        self.protocol.signature_count()
+    }
 
-    fn has_approved_block(&self) -> bool { self.last_approved_block.lock().unwrap().is_some() }
+    fn has_approved_block(&self) -> bool {
+        self.last_approved_block.lock().unwrap().is_some()
+    }
 }
 
 // Helper function to wait for an assertion to be true with a timeout
 async fn wait_for<F>(f: F, timeout_duration: Duration) -> bool
-where F: Fn() -> bool {
+where
+    F: Fn() -> bool,
+{
     let start = std::time::Instant::now();
     while start.elapsed() < timeout_duration {
         if f() {

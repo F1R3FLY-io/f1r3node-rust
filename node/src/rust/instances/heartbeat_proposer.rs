@@ -24,7 +24,9 @@ struct NotifyHeartbeatSignal {
 }
 
 impl HeartbeatSignal for NotifyHeartbeatSignal {
-    fn trigger_wake(&self) { self.notify.notify_one(); }
+    fn trigger_wake(&self) {
+        self.notify.notify_one();
+    }
 }
 
 /// Heartbeat proposer that periodically checks if a block

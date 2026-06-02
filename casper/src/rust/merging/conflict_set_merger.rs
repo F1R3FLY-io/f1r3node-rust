@@ -655,9 +655,8 @@ mod tests {
 
         let depends = |_a: &i32, _b: &i32| false;
         let cost = |_r: &i32| 1u64;
-        let state_changes = |_r: &i32| -> Result<StateChange, HistoryError> {
-            Ok(StateChange::empty())
-        };
+        let state_changes =
+            |_r: &i32| -> Result<StateChange, HistoryError> { Ok(StateChange::empty()) };
         let mergeable_channels = |r: &i32| -> NumberChannelsDiff {
             let mut diff = BTreeMap::new();
             // item 1 decrements channel, item 2 increments channel
@@ -667,9 +666,10 @@ mod tests {
         };
         let compute_trie_actions = |_state_change: StateChange,
                                     _channels: NumberChannelsDiff|
-         -> Result<Vec<HotStoreTrieAction<i32, i32, i32, i32>>, HistoryError> {
-            Ok(Vec::new())
-        };
+         -> Result<
+            Vec<HotStoreTrieAction<i32, i32, i32, i32>>,
+            HistoryError,
+        > { Ok(Vec::new()) };
         let apply_trie_actions = |_actions: Vec<HotStoreTrieAction<i32, i32, i32, i32>>| {
             Ok(Blake2b256Hash::from_bytes(vec![9u8; 32]))
         };

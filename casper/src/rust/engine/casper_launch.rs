@@ -79,7 +79,9 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+fn max_blocks_in_processing() -> usize {
+    MAX_BLOCKS_IN_PROCESSING
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance

@@ -264,7 +264,9 @@ impl RhoReporterCasper {
 }
 
 /// Factory function to create noop reporting casper
-pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
+pub fn noop() -> Arc<dyn ReportingCasper> {
+    Arc::new(NoopReportingCasper)
+}
 
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(

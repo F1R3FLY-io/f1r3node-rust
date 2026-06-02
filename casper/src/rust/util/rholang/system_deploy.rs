@@ -91,9 +91,8 @@ pub trait SystemDeployTrait: Send + Sync {
         runtime_ops: &'a mut RuntimeOps,
         block_data: &'a BlockData,
         pre_state_hash: &'a StateHash,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CasperError>> + Send + 'a>>
+    {
         Box::pin(async move { Ok(()) })
     }
 

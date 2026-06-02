@@ -230,7 +230,9 @@ impl RuntimeManager {
                             push_len_prefixed(&mut bytes, outcome_tag.as_bytes());
                             bytes.extend_from_slice(&penalty.to_le_bytes());
                             bytes.extend_from_slice(&(*pos_multi_sig_quorum).to_le_bytes());
-                            bytes.extend_from_slice(&(pos_multi_sig_public_keys.len() as u32).to_le_bytes());
+                            bytes.extend_from_slice(
+                                &(pos_multi_sig_public_keys.len() as u32).to_le_bytes(),
+                            );
                             for key in pos_multi_sig_public_keys {
                                 push_len_prefixed(&mut bytes, key.as_bytes());
                             }

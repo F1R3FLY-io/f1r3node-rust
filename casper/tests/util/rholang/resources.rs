@@ -181,7 +181,9 @@ pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueS
 ///
 /// Each test should use a unique scope ID to ensure database isolation
 /// within the shared LMDB environment.
-pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
+pub fn generate_scope_id() -> String {
+    Uuid::new_v4().to_string()
+}
 
 /// Returns the path to the shared LMDB environment.
 ///

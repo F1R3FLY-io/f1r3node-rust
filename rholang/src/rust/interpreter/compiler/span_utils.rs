@@ -83,7 +83,9 @@ impl SpanContext {
     }
 
     /// Extract position from Id (which has SourcePos)
-    pub fn extract_pos(id: &rholang_parser::ast::Id) -> rholang_parser::SourcePos { id.pos }
+    pub fn extract_pos(id: &rholang_parser::ast::Id) -> rholang_parser::SourcePos {
+        id.pos
+    }
 
     /// Convert SourcePos to SourceSpan (single point span)
     /// Useful for Id types that need to be used where spans are expected
@@ -147,10 +149,14 @@ impl SpanContext {
     }
 
     /// Extract end position from a span
-    pub fn span_end_pos(span: rholang_parser::SourceSpan) -> rholang_parser::SourcePos { span.end }
+    pub fn span_end_pos(span: rholang_parser::SourceSpan) -> rholang_parser::SourcePos {
+        span.end
+    }
 
     /// Check if a span represents a single position (start == end)
-    pub fn is_single_position(span: rholang_parser::SourceSpan) -> bool { span.start == span.end }
+    pub fn is_single_position(span: rholang_parser::SourceSpan) -> bool {
+        span.start == span.end
+    }
 
     // ============================================================================
     // LET NORMALIZATION SPAN HELPERS

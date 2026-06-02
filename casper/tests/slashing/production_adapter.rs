@@ -162,7 +162,9 @@ impl SlashingObserver for SlashingProductionAdapter {
             .unwrap_or(0)
     }
 
-    fn coop_vault(&self) -> i64 { self.coop_vault }
+    fn coop_vault(&self) -> i64 {
+        self.coop_vault
+    }
 
     fn is_active(&self, validator: &str) -> bool {
         self.label_index(validator)

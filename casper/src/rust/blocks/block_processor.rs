@@ -169,7 +169,9 @@ fn missing_dependency_quarantine_ms() -> u64 {
 }
 
 impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
-    pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
+    pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self {
+        Self { dependencies }
+    }
 
     /// check if block should be processed
     pub fn check_if_of_interest(
@@ -445,9 +447,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     }
 
     // Public getters for tests
-    pub fn transport(&self) -> &Arc<T> { &self.transport }
+    pub fn transport(&self) -> &Arc<T> {
+        &self.transport
+    }
 
-    pub fn casper_buffer(&self) -> &CasperBufferKeyValueStorage { &self.casper_buffer }
+    pub fn casper_buffer(&self) -> &CasperBufferKeyValueStorage {
+        &self.casper_buffer
+    }
 
     fn prune_casper_buffer_if_needed(&self) -> Result<(), CasperError> {
         let now_ms = SystemTime::now()

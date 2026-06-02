@@ -152,31 +152,49 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
-fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
+fn default_synchrony_recovery_stall_window() -> Duration {
+    Duration::from_secs(60)
+}
 
-fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
+fn default_synchrony_recovery_cooldown() -> Duration {
+    Duration::from_secs(20)
+}
 
-fn default_synchrony_recovery_max_bypasses() -> u32 { 2 }
+fn default_synchrony_recovery_max_bypasses() -> u32 {
+    2
+}
 
-fn default_synchrony_finalized_baseline_enabled() -> bool { true }
+fn default_synchrony_finalized_baseline_enabled() -> bool {
+    true
+}
 
-fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
+fn default_synchrony_finalized_baseline_max_distance() -> u64 {
+    2048
+}
 
-fn default_max_user_deploys_per_block() -> u32 { 32 }
+fn default_max_user_deploys_per_block() -> u32 {
+    32
+}
 
-fn default_disable_late_block_filtering() -> bool { true }
+fn default_disable_late_block_filtering() -> bool {
+    true
+}
 
 /// Default for `strict_funding_enforcement` (task #13a): OFF. Existing shards
 /// (which never set this key) keep the TRANSITIONAL per-pool-presence gate ⇒
 /// their replay is byte-identical to pre-#13a. Operators opt into the
 /// spec-strict §7.6-step-5 rejection at genesis by setting it `true`.
-fn default_strict_funding_enforcement() -> bool { false }
+fn default_strict_funding_enforcement() -> bool {
+    false
+}
 
 /// Default for `client_fuel_allocations` (task #13b): EMPTY. Existing shards
 /// (which never set this key) perform NO genesis client funding-slot seed, so
 /// their genesis is byte-identical to pre-#13b. Operators opt into seeding
 /// client `Σ⟦c⟧` pools at genesis by listing `(public-key, amount)` entries.
-fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> { Vec::new() }
+fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> {
+    Vec::new()
+}
 
 /// A single Cost-Accounted Rho task #13b genesis client funding-slot allocation:
 /// the hex-encoded client `public-key` and the `amount` of phlogiston to SEED
@@ -195,13 +213,17 @@ pub struct ClientFuelAllocation {
     pub amount: i64,
 }
 
-fn default_enable_mergeable_channel_gc() -> bool { false }
+fn default_enable_mergeable_channel_gc() -> bool {
+    false
+}
 
 fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
 }
 
-fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+fn default_mergeable_channels_gc_depth_buffer() -> i32 {
+    10
+}
 
 /// Default value for `max_cosigners_per_deploy`. 64 is generous
 /// defense-in-depth — real-world multi-sig wallets rarely exceed 10–15
@@ -210,7 +232,9 @@ fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
 /// rather than hardcoding `64` so the default has a single source of truth.
 pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
 
-fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
+fn default_max_cosigners_per_deploy() -> u32 {
+    DEFAULT_MAX_COSIGNERS_PER_DEPLOY
+}
 
 /// Default phlogiston minted into a validator's draw wallet `@W_v` when it
 /// first bonds (Cost-Accounted Rho, spec Appendix B; DR-13). An empty `@W_v`
@@ -221,7 +245,9 @@ fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY 
 /// `genesis.initial_phlogiston`. Must be `>= 0`.
 pub const DEFAULT_INITIAL_PHLOGISTON: i64 = 1_000_000;
 
-fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
+fn default_initial_phlogiston() -> i64 {
+    DEFAULT_INITIAL_PHLOGISTON
+}
 
 /// Default phlogiston minted into each active validator's draw wallet `@W_v`
 /// at every epoch boundary (Cost-Accounted Rho, spec Appendix B / §4.7;
@@ -229,7 +255,9 @@ fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
 /// `genesis.epoch_phlogiston`. Must be `>= 0`.
 pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
 
-fn default_epoch_phlogiston() -> i64 { DEFAULT_EPOCH_PHLOGISTON }
+fn default_epoch_phlogiston() -> i64 {
+    DEFAULT_EPOCH_PHLOGISTON
+}
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,7 +312,10 @@ pub struct GenesisBlockData {
     /// adversarial deploys with thousands of cosigners exhausting block
     /// resources. Default `64` (generous — real-world multi-sig wallets
     /// rarely exceed 10–15). Must be `>= 1`.
-    #[serde(rename = "max-cosigners-per-deploy", default = "default_max_cosigners_per_deploy")]
+    #[serde(
+        rename = "max-cosigners-per-deploy",
+        default = "default_max_cosigners_per_deploy"
+    )]
     pub max_cosigners_per_deploy: u32,
 
     /// Phlogiston minted into a validator's draw wallet `@W_v` when it first
@@ -371,7 +402,10 @@ impl GenesisBlockData {
                     alloc.public_key, e
                 )
             })?;
-            out.push((crypto::rust::public_key::PublicKey::from_bytes(&bytes), alloc.amount));
+            out.push((
+                crypto::rust::public_key::PublicKey::from_bytes(&bytes),
+                alloc.amount,
+            ));
         }
         Ok(out)
     }
@@ -476,11 +510,17 @@ impl Default for HeartbeatConf {
     }
 }
 
-fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
+fn default_self_propose_cooldown() -> Duration {
+    Duration::from_secs(15)
+}
 
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+fn default_stale_recovery_min_interval() -> Duration {
+    Duration::from_secs(12)
+}
 
-fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
+fn default_deploy_finalization_grace() -> Duration {
+    Duration::from_secs(25)
+}
 
 /// EXPERIMENTAL: tuning knobs for the heartbeat proposer's lag caps.
 ///
@@ -542,11 +582,17 @@ impl Default for HeartbeatAdvancedConf {
     }
 }
 
-fn default_frontier_chase_max_lag() -> i64 { 0 }
+fn default_frontier_chase_max_lag() -> i64 {
+    0
+}
 
-fn default_pending_deploy_max_lag() -> i64 { 20 }
+fn default_pending_deploy_max_lag() -> i64 {
+    20
+}
 
-fn default_deploy_recovery_max_lag() -> i64 { 64 }
+fn default_deploy_recovery_max_lag() -> i64 {
+    64
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizerConf {
@@ -587,16 +633,26 @@ impl Default for FinalizerConf {
     }
 }
 
-fn default_finalizer_work_budget() -> Duration { Duration::from_secs(8) }
+fn default_finalizer_work_budget() -> Duration {
+    Duration::from_secs(8)
+}
 
-fn default_finalizer_step_timeout() -> Duration { Duration::from_secs(1) }
+fn default_finalizer_step_timeout() -> Duration {
+    Duration::from_secs(1)
+}
 
-fn default_finalizer_catchup_work_budget() -> Duration { Duration::from_secs(8) }
+fn default_finalizer_catchup_work_budget() -> Duration {
+    Duration::from_secs(8)
+}
 
-fn default_finalizer_catchup_step_timeout() -> Duration { Duration::from_secs(1) }
+fn default_finalizer_catchup_step_timeout() -> Duration {
+    Duration::from_secs(1)
+}
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error as _;
     use serde::Deserialize;
     #[derive(Deserialize)]
@@ -624,7 +680,9 @@ where D: serde::Deserializer<'de> {
 /// proposer's comparison sites, but a negative value silently disables
 /// the corresponding code path — fail fast instead.
 fn de_non_negative_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error as _;
     use serde::Deserialize;
     let v = i64::deserialize(deserializer)?;
@@ -663,7 +721,9 @@ mod native_token_validation_tests {
     }
 
     #[test]
-    fn accepts_valid_baseline() { valid_genesis().validate_native_token().unwrap(); }
+    fn accepts_valid_baseline() {
+        valid_genesis().validate_native_token().unwrap();
+    }
 
     #[test]
     fn rejects_empty_name() {

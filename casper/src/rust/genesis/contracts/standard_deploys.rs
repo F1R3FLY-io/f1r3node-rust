@@ -253,28 +253,36 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(!pos.validators.is_empty());
 
     to_deploy(
-        CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[
-            ("minimumBond", &pos.minimum_bond.to_string()),
-            ("maximumBond", &pos.maximum_bond.to_string()),
-            (
-                "initialBonds",
-                &ProofOfStake::initial_bonds(&pos.validators),
-            ),
-            ("epochLength", &pos.epoch_length.to_string()),
-            ("quarantineLength", &pos.quarantine_length.to_string()),
-            (
-                "numberOfActiveValidators",
-                &pos.number_of_active_validators.to_string(),
-            ),
-            (
-                "posMultiSigPublicKeys",
-                &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
-            ),
-            ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
-            ("maxCosignersPerDeploy", &pos.max_cosigners_per_deploy.to_string()),
-            ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
-            ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
-        ]),
+        CompiledRholangTemplate::new(
+            "PoS.rhox",
+            embedded_rho::POS,
+            HashMap::new(),
+            &[
+                ("minimumBond", &pos.minimum_bond.to_string()),
+                ("maximumBond", &pos.maximum_bond.to_string()),
+                (
+                    "initialBonds",
+                    &ProofOfStake::initial_bonds(&pos.validators),
+                ),
+                ("epochLength", &pos.epoch_length.to_string()),
+                ("quarantineLength", &pos.quarantine_length.to_string()),
+                (
+                    "numberOfActiveValidators",
+                    &pos.number_of_active_validators.to_string(),
+                ),
+                (
+                    "posMultiSigPublicKeys",
+                    &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
+                ),
+                ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
+                (
+                    "maxCosignersPerDeploy",
+                    &pos.max_cosigners_per_deploy.to_string(),
+                ),
+                ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
+                ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
+            ],
+        ),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
         shard_id,
@@ -287,8 +295,8 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
 /// into the `CapabilitiesRegistry.rhox` template so the contract
 /// bundle is signed with a stable per-shard key.
 pub fn capabilities_registry(shard_id: &str) -> Signed<DeployData> {
-    use crypto::rust::private_key::PrivateKey;
     use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+    use crypto::rust::private_key::PrivateKey;
 
     let sk = PrivateKey::from_bytes(
         &hex::decode(CAPABILITIES_REGISTRY_PK).expect("Invalid CAPABILITIES_REGISTRY_PK hex"),
@@ -326,12 +334,10 @@ pub fn capabilities_registry(shard_id: &str) -> Signed<DeployData> {
 /// is content-addressed from the pubkey and is exposed as the
 /// `rho:lang:exchange` shorthand in `Registry.rho`.
 pub fn exchange(shard_id: &str) -> Signed<DeployData> {
-    use crypto::rust::private_key::PrivateKey;
     use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+    use crypto::rust::private_key::PrivateKey;
 
-    let sk = PrivateKey::from_bytes(
-        &hex::decode(EXCHANGE_PK).expect("Invalid EXCHANGE_PK hex"),
-    );
+    let sk = PrivateKey::from_bytes(&hex::decode(EXCHANGE_PK).expect("Invalid EXCHANGE_PK hex"));
     let args = Args::new(
         Some("Exchange".to_string()),
         Some(EXCHANGE_TIMESTAMP),

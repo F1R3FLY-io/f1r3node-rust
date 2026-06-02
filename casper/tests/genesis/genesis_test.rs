@@ -235,8 +235,7 @@ async fn from_input_files(
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
-            max_cosigners_per_deploy:
-                casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
             epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
@@ -286,12 +285,15 @@ async fn genesis_from_input_files_should_tell_when_bonds_file_does_not_exist() {
             // Path that does not exist - using a fake path, no need to create a real directory
             let non_existing_path = "/tmp/non_existing_test_path/not/a/real/file".to_string();
 
-            let result =
-                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
+            let result = from_input_files(
+                &mut runtime_manager,
+                &genesis_path,
+                FromInputFilesParams {
                     maybe_bonds_path: Some(&non_existing_path),
                     ..FromInputFilesParams::new()
-                })
-                .await;
+                },
+            )
+            .await;
 
             // BondsParser::parse_with_autogen logs warn "BONDS FILE NOT FOUND" and creates random bonds
             assert!(
@@ -313,12 +315,15 @@ async fn genesis_from_input_files_should_fail_with_error_when_bonds_file_cannot_
             writeln!(file, "xzy 1\nabc 123 7").expect("Failed to write bad bonds content");
 
             let bad_bonds_path = bad_bonds_file.to_str().unwrap().to_string();
-            let result =
-                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
+            let result = from_input_files(
+                &mut runtime_manager,
+                &genesis_path,
+                FromInputFilesParams {
                     maybe_bonds_path: Some(&bad_bonds_path),
                     ..FromInputFilesParams::new()
-                })
-                .await;
+                },
+            )
+            .await;
 
             assert!(result.is_err(), "Genesis creation should fail");
 
@@ -342,12 +347,15 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
             print_bonds(&bonds_file);
 
             let bonds_path = bonds_file.to_str().unwrap().to_string();
-            let result =
-                from_input_files(&mut runtime_manager, &genesis_path, FromInputFilesParams {
+            let result = from_input_files(
+                &mut runtime_manager,
+                &genesis_path,
+                FromInputFilesParams {
                     maybe_bonds_path: Some(&bonds_path),
                     ..FromInputFilesParams::new()
-                })
-                .await;
+                },
+            )
+            .await;
 
             assert!(result.is_ok(), "Genesis creation should succeed");
 

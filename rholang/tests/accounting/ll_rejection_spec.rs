@@ -81,11 +81,17 @@ fn enum_distinguishes_bang_from_whynot_from_inner() {
 fn legacy_vs_compound_set_deploy_signature_produces_distinct_deploy_ids() {
     let sig_bytes: Vec<u8> = (0..64).collect();
 
-    let legacy = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let legacy = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     legacy.set_deploy_signature(&sig_bytes);
     let legacy_id = legacy.deploy_id();
 
-    let compound = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let compound = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     compound.set_deploy_signatures(&[&sig_bytes]);
     let compound_id = compound.deploy_id();
 
@@ -107,11 +113,17 @@ fn compound_deploy_id_depends_on_signature_order() {
     let sig_a: Vec<u8> = vec![0x11; 32];
     let sig_b: Vec<u8> = vec![0x22; 32];
 
-    let ab = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let ab = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     ab.set_deploy_signatures(&[&sig_a, &sig_b]);
     let ab_id = ab.deploy_id();
 
-    let ba = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let ba = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     ba.set_deploy_signatures(&[&sig_b, &sig_a]);
     let ba_id = ba.deploy_id();
 
@@ -130,11 +142,17 @@ fn compound_deploy_id_depends_on_signature_order() {
 fn anti_contraction_duplicating_signature_yields_distinct_deploy_id() {
     let sig: Vec<u8> = vec![0xCC; 48];
 
-    let once = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let once = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     once.set_deploy_signatures(&[&sig]);
     let once_id = once.deploy_id();
 
-    let twice = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(1000, "test budget"));
+    let twice = RuntimeBudget::new(rholang::rust::interpreter::accounting::costs::Cost::create(
+        1000,
+        "test budget",
+    ));
     twice.set_deploy_signatures(&[&sig, &sig]);
     let twice_id = twice.deploy_id();
 

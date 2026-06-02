@@ -37,7 +37,9 @@ impl KeyValueStore for InMemoryKeyValueStore {
             .count())
     }
 
-    fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { todo!() }
+    fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
+        todo!()
+    }
 
     fn iterate_while(
         &self,
@@ -51,7 +53,9 @@ impl KeyValueStore for InMemoryKeyValueStore {
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn KeyValueStore> {
+        Box::new(self.clone())
+    }
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
         let mut map = BTreeMap::new();
@@ -75,7 +79,9 @@ impl KeyValueStore for InMemoryKeyValueStore {
         Ok(())
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.state.is_empty()) }
+    fn non_empty(&self) -> Result<bool, KvStoreError> {
+        Ok(!self.state.is_empty())
+    }
 }
 
 impl InMemoryKeyValueStore {
@@ -85,7 +91,11 @@ impl InMemoryKeyValueStore {
         }
     }
 
-    pub fn clear(&self) { self.state.clear(); }
+    pub fn clear(&self) {
+        self.state.clear();
+    }
 
-    pub fn num_records(&self) -> usize { self.state.len() }
+    pub fn num_records(&self) -> usize {
+        self.state.len()
+    }
 }

@@ -33,12 +33,15 @@ impl Sortable<If> for IfSortMatcher {
                 locally_free: i.locally_free.clone(),
                 connective_used: i.connective_used,
             },
-            score: Tree::<ScoreAtom>::create_node_from_i32(Score::IF, vec![
-                sorted_condition.score,
-                sorted_if_true.score,
-                sorted_if_false.score,
-                Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
-            ]),
+            score: Tree::<ScoreAtom>::create_node_from_i32(
+                Score::IF,
+                vec![
+                    sorted_condition.score,
+                    sorted_if_true.score,
+                    sorted_if_false.score,
+                    Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
+                ],
+            ),
         }
     }
 }

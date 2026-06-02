@@ -378,12 +378,15 @@ fn scored_term_should_sort_so_that_unequal_new_have_unequal_scores() {
         bind_count: 1,
         injections: {
             let mut injections = std::collections::BTreeMap::new();
-            injections.insert("key".to_string(), Par {
-                bundles: vec![],
-                sends: vec![],
-                receives: vec![],
-                ..Default::default()
-            });
+            injections.insert(
+                "key".to_string(),
+                Par {
+                    bundles: vec![],
+                    sends: vec![],
+                    receives: vec![],
+                    ..Default::default()
+                },
+            );
             injections
         },
         ..Default::default()

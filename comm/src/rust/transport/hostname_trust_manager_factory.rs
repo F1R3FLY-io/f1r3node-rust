@@ -258,7 +258,9 @@ impl HostnameTrustManagerFactory {
 pub struct HostnameTrustManager;
 
 impl HostnameTrustManager {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// Check client certificate trust
     pub fn check_client_trusted(

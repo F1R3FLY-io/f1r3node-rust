@@ -14,9 +14,13 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::with_runtime_manager;
 
-fn default_sec() -> PrivateKey { construct_deploy::DEFAULT_SEC.clone() }
+fn default_sec() -> PrivateKey {
+    construct_deploy::DEFAULT_SEC.clone()
+}
 
-fn default_sec2() -> PrivateKey { construct_deploy::DEFAULT_SEC2.clone() }
+fn default_sec2() -> PrivateKey {
+    construct_deploy::DEFAULT_SEC2.clone()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deployer_id_should_be_equal_to_the_deployers_public_key() {

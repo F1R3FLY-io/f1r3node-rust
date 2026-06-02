@@ -73,9 +73,7 @@ fn any_atom_payload() -> impl Strategy<Value = Vec<u8>> {
 
 /// Threshold-connective strategy: 1 ≤ threshold ≤ members.len(), with
 /// 1–4 members of the inner strategy.
-fn threshold_strategy(
-    inner: BoxedStrategy<Sig>,
-) -> impl Strategy<Value = Sig> {
+fn threshold_strategy(inner: BoxedStrategy<Sig>) -> impl Strategy<Value = Sig> {
     proptest::collection::vec(inner, 1..=4).prop_flat_map(|members| {
         let n = members.len();
         (1u32..=n as u32).prop_map(move |k| Sig::Threshold {

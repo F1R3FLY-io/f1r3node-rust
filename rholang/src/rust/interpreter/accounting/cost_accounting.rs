@@ -13,7 +13,11 @@ impl CostAccounting {
         }
     }
 
-    pub fn empty_cost() -> RuntimeBudget { RuntimeBudget::new(Self::empty()) }
+    pub fn empty_cost() -> RuntimeBudget {
+        RuntimeBudget::new(Self::empty())
+    }
 
-    pub fn unmetered_cost() -> RuntimeBudget { RuntimeBudget::unmetered() }
+    pub fn unmetered_cost() -> RuntimeBudget {
+        RuntimeBudget::unmetered()
+    }
 }

@@ -7,18 +7,24 @@ use std::iter::FromIterator;
 pub struct HashableSet<T>(pub HashSet<T>);
 
 impl<T: Eq + Hash> HashableSet<T> {
-    pub fn new() -> Self { Self(HashSet::new()) }
+    pub fn new() -> Self {
+        Self(HashSet::new())
+    }
 }
 
 impl<T: Eq + Hash> PartialEq for HashableSet<T> {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 
 impl<T: Eq + Hash> Eq for HashableSet<T> {}
 
 // Implement PartialOrd for HashableSet with T that implements Ord
 impl<T: Eq + Hash + Ord> PartialOrd for HashableSet<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 // Implement Ord for HashableSet with T that implements Ord
@@ -74,7 +80,9 @@ impl<T: Eq + Hash> IntoIterator for HashableSet<T> {
     type Item = T;
     type IntoIter = std::collections::hash_set::IntoIter<T>;
 
-    fn into_iter(self) -> Self::IntoIter { self.0.into_iter() }
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
 }
 
 // Implement IntoIterator for &HashableSet
@@ -82,7 +90,9 @@ impl<'a, T: Eq + Hash> IntoIterator for &'a HashableSet<T> {
     type Item = &'a T;
     type IntoIter = std::collections::hash_set::Iter<'a, T>;
 
-    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
 }
 
 // Implement FromIterator for HashableSet

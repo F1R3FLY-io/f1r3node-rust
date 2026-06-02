@@ -127,13 +127,21 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
-    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+    pub fn is_finished(&self) -> bool {
+        !self.d.values().any(|status| *status != ReqStatus::Done)
+    }
 
-    pub fn len(&self) -> usize { self.d.len() }
+    pub fn len(&self) -> usize {
+        self.d.len()
+    }
 
-    pub fn is_empty(&self) -> bool { self.d.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.d.is_empty()
+    }
 
-    pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
+    pub fn done_count(&self) -> usize {
+        self.d.values().filter(|s| **s == ReqStatus::Done).count()
+    }
 }
 
 /// Network operations needed by the horizon requester. Decoupled from
@@ -739,7 +747,9 @@ mod tests {
     }
 
     impl RSpaceImporter for NoopImporter {
-        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> { None }
+        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> {
+            None
+        }
     }
 
     /// Recording RSpaceImporter — captures every root passed to `set_root`.
@@ -770,7 +780,9 @@ mod tests {
     }
 
     impl RSpaceImporter for RecordingImporter {
-        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> { None }
+        fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> {
+            None
+        }
     }
 
     /// Mock HorizonRequesterOps: records every send and tracks max
@@ -841,7 +853,9 @@ mod tests {
 
     /// Helper to drain an `impl Stream` to its final `ST`.
     async fn drain<S>(stream: S) -> Option<ST<StatePartPath>>
-    where S: Stream<Item = ST<StatePartPath>> {
+    where
+        S: Stream<Item = ST<StatePartPath>>,
+    {
         let mut stream = Box::pin(stream);
         let mut last = None;
         while let Some(st) = stream.next().await {

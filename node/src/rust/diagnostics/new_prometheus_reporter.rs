@@ -47,7 +47,11 @@ impl NewPrometheusReporter {
         Ok(reporter)
     }
 
-    pub fn global() -> Option<Arc<Self>> { GLOBAL_REPORTER.get().map(Arc::clone) }
+    pub fn global() -> Option<Arc<Self>> {
+        GLOBAL_REPORTER.get().map(Arc::clone)
+    }
 
-    pub fn scrape_data(&self) -> String { self.prometheus_handle.render() }
+    pub fn scrape_data(&self) -> String {
+        self.prometheus_handle.render()
+    }
 }

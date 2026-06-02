@@ -896,11 +896,17 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
         joins
     }
 
-    fn get_data_proj(&self, _key: &C) -> Vec<Datum<A>> { todo!() }
+    fn get_data_proj(&self, _key: &C) -> Vec<Datum<A>> {
+        todo!()
+    }
 
-    fn get_continuations_proj(&self, _key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> { todo!() }
+    fn get_continuations_proj(&self, _key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+        todo!()
+    }
 
-    fn get_joins_proj(&self, _key: &C) -> Vec<Vec<C>> { todo!() }
+    fn get_joins_proj(&self, _key: &C) -> Vec<Vec<C>> {
+        todo!()
+    }
 }
 
 impl<C: Eq + Hash, P: Clone, A: Clone, K: Clone> TestHistory<C, P, A, K> {

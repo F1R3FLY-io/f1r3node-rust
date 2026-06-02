@@ -140,13 +140,11 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("add".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "add".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -231,13 +229,11 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("ret5".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "ret5".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 

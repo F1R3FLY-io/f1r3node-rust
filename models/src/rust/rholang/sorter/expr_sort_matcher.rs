@@ -47,9 +47,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                         ExprInstance::ENegBody(ENeg {
                             p: Some(sorted_par.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENEG, vec![
-                            sorted_par.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENEG,
+                            vec![sorted_par.score],
+                        ),
                     )
                 }
 
@@ -62,9 +63,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                         ExprInstance::EVarBody(EVar {
                             v: Some(sorted_var.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EVAR, vec![
-                            sorted_var.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EVAR,
+                            vec![sorted_var.score],
+                        ),
                     )
                 }
 
@@ -77,9 +79,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                         ExprInstance::ENotBody(ENot {
                             p: Some(sorted_par.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENOT, vec![
-                            sorted_par.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENOT,
+                            vec![sorted_par.score],
+                        ),
                     )
                 }
 
@@ -96,10 +99,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMULT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMULT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -116,10 +119,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EDIV, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EDIV,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -136,10 +139,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMOD, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMOD,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -156,10 +159,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPLUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPLUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -176,10 +179,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMINUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMINUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -196,10 +199,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ELT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ELT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -216,10 +219,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ELTE, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ELTE,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -236,10 +239,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EGT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EGT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -256,10 +259,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EGTE, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EGTE,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -276,10 +279,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EEQ, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EEQ,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -296,10 +299,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::ENEQ, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::ENEQ,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -316,10 +319,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EAND, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EAND,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -336,10 +339,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EOR, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EOR,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -360,10 +363,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             target: Some(sorted_target.term),
                             pattern: Some(sorted_pattern.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMATCHES, vec![
-                            sorted_target.score,
-                            sorted_pattern.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMATCHES,
+                            vec![sorted_target.score, sorted_pattern.score],
+                        ),
                     )
                 }
 
@@ -380,10 +383,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPERCENT, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPERCENT,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -400,10 +403,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EPLUSPLUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EPLUSPLUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -420,10 +423,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             p1: Some(sorted_par1.term),
                             p2: Some(sorted_par2.term),
                         }),
-                        Tree::<ScoreAtom>::create_node_from_i32(Score::EMINUSMINUS, vec![
-                            sorted_par1.score,
-                            sorted_par2.score,
-                        ]),
+                        Tree::<ScoreAtom>::create_node_from_i32(
+                            Score::EMINUSMINUS,
+                            vec![sorted_par1.score, sorted_par2.score],
+                        ),
                     )
                 }
 
@@ -707,23 +710,26 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::GString(gs) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::STRING, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_string(gs.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::STRING,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_string(gs.clone())],
+                    ),
                 },
 
                 ExprInstance::GUri(gu) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::URI, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_string(gu.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::URI,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_string(gu.clone())],
+                    ),
                 },
 
                 ExprInstance::GByteArray(ba) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::EBYTEARR, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(ba.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::EBYTEARR,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(ba.clone())],
+                    ),
                 },
 
                 ExprInstance::GDouble(bits) => ScoredTerm {
@@ -736,25 +742,32 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                 ExprInstance::GBigInt(bytes) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::BIG_INT,
+                        vec![Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.clone())],
+                    ),
                 },
 
                 ExprInstance::GBigRat(rat) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_RAT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::BIG_RAT,
+                        vec![
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
+                        ],
+                    ),
                 },
 
                 ExprInstance::GFixedPoint(fp) => ScoredTerm {
                     term: e.clone(),
-                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::FIXED_POINT, vec![
-                        Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
-                        Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
-                    ]),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::FIXED_POINT,
+                        vec![
+                            Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
+                            Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
+                        ],
+                    ),
                 },
             },
 

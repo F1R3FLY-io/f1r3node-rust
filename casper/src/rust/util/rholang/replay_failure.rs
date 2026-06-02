@@ -166,11 +166,7 @@ impl std::fmt::Display for ReplayFailure {
                     f,
                     "Replay admission mismatch: expected_admitted={}, replay_admitted={}, \
                      expected_rejected={}, replay_rejected={}; {}",
-                    expected_admitted,
-                    replay_admitted,
-                    expected_rejected,
-                    replay_rejected,
-                    detail
+                    expected_admitted, replay_admitted, expected_rejected, replay_rejected, detail
                 )
             }
             ReplayFailure::SystemDeployErrorMismatch {

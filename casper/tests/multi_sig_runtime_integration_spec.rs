@@ -19,14 +19,17 @@
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::{Cosigned, CosignedError, Cosigner, Signed, ToMessage};
-use models::rust::casper::protocol::casper_message::DeployData;
 use models::casper::CompoundSigner;
+use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 use prost::Message;
 
 // Helper: deterministic-but-fresh keypair (replay-determinism preserved
 // across runs because tests use independent state hashes).
-fn keypair() -> (crypto::rust::private_key::PrivateKey, crypto::rust::public_key::PublicKey) {
+fn keypair() -> (
+    crypto::rust::private_key::PrivateKey,
+    crypto::rust::public_key::PublicKey,
+) {
     let secp = Secp256k1;
     secp.new_key_pair()
 }
@@ -97,14 +100,14 @@ fn t3_pos_envelope_threshold_2_of_3_with_only_1_valid_sig_rejected() {
         sig: Bytes::new(),
         sig_algorithm: Box::new(Secp256k1),
     };
-    let err = Cosigned::from_signed_data_threshold(
-        data,
-        vec![valid, placeholder2, placeholder3],
-        2,
-    )
-    .expect_err("2-of-3 with only 1 valid sig must be rejected");
+    let err =
+        Cosigned::from_signed_data_threshold(data, vec![valid, placeholder2, placeholder3], 2)
+            .expect_err("2-of-3 with only 1 valid sig must be rejected");
     match err {
-        CosignedError::QuorumNotMet { threshold: 2, valid_signers: 1 } => {}
+        CosignedError::QuorumNotMet {
+            threshold: 2,
+            valid_signers: 1,
+        } => {}
         other => panic!("expected QuorumNotMet, got {:?}", other),
     }
 }
@@ -116,11 +119,17 @@ fn t4_pos_envelope_threshold_zero_or_overflow_rejected() {
 
     let err_zero = Cosigned::from_signed_data_threshold(data.clone(), vec![s1.clone()], 0)
         .expect_err("threshold=0 must be rejected");
-    assert!(matches!(err_zero, CosignedError::InvalidQuorumThreshold { .. }));
+    assert!(matches!(
+        err_zero,
+        CosignedError::InvalidQuorumThreshold { .. }
+    ));
 
     let err_over = Cosigned::from_signed_data_threshold(data, vec![s1], 5)
         .expect_err("threshold > n must be rejected");
-    assert!(matches!(err_over, CosignedError::InvalidQuorumThreshold { .. }));
+    assert!(matches!(
+        err_over,
+        CosignedError::InvalidQuorumThreshold { .. }
+    ));
 }
 
 // =====================================================================
@@ -201,8 +210,8 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
         sig_algebra: None,
     };
 
-    let cosigned = DeployData::from_proto_cosigned(proto)
-        .expect("2-of-3 with 2 valid sigs must decode");
+    let cosigned =
+        DeployData::from_proto_cosigned(proto).expect("2-of-3 with 2 valid sigs must decode");
     assert_eq!(cosigned.cosigner_threshold(), 2);
     assert_eq!(cosigned.signers().len(), 3);
 }

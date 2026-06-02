@@ -332,7 +332,9 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+fn max_blocks_in_processing() -> usize {
+    MAX_BLOCKS_IN_PROCESSING
+}
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
     pub fn new(

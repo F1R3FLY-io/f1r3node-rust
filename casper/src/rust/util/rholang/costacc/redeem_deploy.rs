@@ -248,9 +248,13 @@ impl SystemDeployTrait for RedeemDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
+    fn rand(&self) -> Blake2b512Random {
+        self.initial_rand.clone()
+    }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

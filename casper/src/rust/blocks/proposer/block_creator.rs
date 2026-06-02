@@ -70,7 +70,9 @@ const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
 /// used in operator-facing log messages. Previously inlined as
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
-fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
+fn deploy_sig_prefix(sig: &Bytes) -> String {
+    hex::encode(&sig[..std::cmp::min(8, sig.len())])
+}
 
 pub async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
@@ -421,7 +423,10 @@ fn reconstruct_cosigned(
         })
     } else {
         crypto::rust::signatures::signed::Cosigned::from_single_signer(signed).map_err(|e| {
-            CasperError::RuntimeError(format!("legacy uplift to Cosigned failed in proposer: {}", e))
+            CasperError::RuntimeError(format!(
+                "legacy uplift to Cosigned failed in proposer: {}",
+                e
+            ))
         })
     }
 }
@@ -668,7 +673,14 @@ pub async fn create(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
-    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
+    pending_cosigner_metadata: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<
+                prost::bytes::Bytes,
+                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+            >,
+        >,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
@@ -884,8 +896,10 @@ pub async fn create(
     // is rejected rather than admitted unenforced. The same shard constant is
     // threaded into the replay-side recompute, so play and replay agree.
     let gate_margin = casper_snapshot.on_chain_state.shard_conf.min_phlo_price;
-    let strict_funding_enforcement =
-        casper_snapshot.on_chain_state.shard_conf.strict_funding_enforcement;
+    let strict_funding_enforcement = casper_snapshot
+        .on_chain_state
+        .shard_conf
+        .strict_funding_enforcement;
     let gate_outcome = {
         let t = std::time::Instant::now();
         let reader = crate::rust::util::rholang::acceptance::RuntimeManagerSupplyReader {
@@ -1310,9 +1324,13 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 mod tests {
     use super::*;
 
-    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; 32]) }
+    fn validator(byte: u8) -> Validator {
+        Bytes::from(vec![byte; 32])
+    }
 
-    fn invalid_block_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
+    fn invalid_block_hash(byte: u8) -> BlockHash {
+        Bytes::from(vec![byte; 32])
+    }
 
     /// A bonded validator that PoS still considers active is slashable
     /// when their latest message is invalid. Baseline behavior.

@@ -57,13 +57,13 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
+use crate::rust::util::rholang::interpreter_util;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use crate::rust::util::rholang::system_deploy_user_error::{
     SystemDeployPlatformFailure, SystemDeployUserError,
 };
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::rholang::interpreter_util;
 use crate::rust::util::{construct_deploy, event_converter};
 
 pub struct RuntimeOps {
@@ -538,11 +538,10 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let cosigned =
-            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
-                })?;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!("legacy uplift to Cosigned failed: {e}"))
+            })?;
         self.play_deploy_with_cost_accounting_cosigned(cosigned)
             .await
     }
@@ -592,13 +591,12 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        let cosigned =
-            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "legacy uplift to Cosigned failed in process_deploy: {e}"
-                    ))
-                })?;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!(
+                    "legacy uplift to Cosigned failed in process_deploy: {e}"
+                ))
+            })?;
         self.process_deploy_cosigned(cosigned).await
     }
 
@@ -682,13 +680,12 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
-        let cosigned =
-            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
-            ))
-                })?;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|e| {
+                CasperError::RuntimeError(format!(
+                    "legacy uplift to Cosigned failed in process_deploy_with_mergeable_data: {e}"
+                ))
+            })?;
         self.process_deploy_with_mergeable_data_cosigned(cosigned)
             .await
     }
@@ -1281,12 +1278,13 @@ impl RuntimeOps {
         &mut self,
         deploy: &Signed<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
-        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy.clone())
-            .map_err(|e| {
-                CasperError::RuntimeError(format!(
-                    "legacy uplift to Cosigned failed in evaluate: {e}"
-                ))
-            })?;
+        let cosigned =
+            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy.clone())
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "legacy uplift to Cosigned failed in evaluate: {e}"
+                    ))
+                })?;
         self.evaluate_cosigned(&cosigned).await
     }
 

@@ -342,5 +342,7 @@ impl Estimator {
         }
     }
 
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
+    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool {
+        new_blocks == blocks
+    }
 }

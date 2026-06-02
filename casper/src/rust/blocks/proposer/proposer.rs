@@ -111,7 +111,9 @@ pub enum ProposerResult {
 }
 
 impl ProposerResult {
-    pub fn empty() -> Self { Self::Empty }
+    pub fn empty() -> Self {
+        Self::Empty
+    }
 
     pub fn success(status: ProposeStatus, block: BlockMessage) -> Self {
         Self::Success(status, block)
@@ -121,7 +123,9 @@ impl ProposerResult {
         Self::Failure(status, seq_number)
     }
 
-    pub fn started(seq_number: i32) -> Self { Self::Started(seq_number) }
+    pub fn started(seq_number: i32) -> Self {
+        Self::Started(seq_number)
+    }
 }
 
 pub struct Proposer<C, A, S, H, BC, BV, E>
@@ -514,7 +518,14 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
+    pending_cosigner_metadata: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<
+                prost::bytes::Bytes,
+                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+            >,
+        >,
+    >,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -624,7 +635,9 @@ pub struct ProductionHeightChecker {
 }
 
 impl ProductionHeightChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
+        Self { validator }
+    }
 }
 
 impl HeightChecker for ProductionHeightChecker {
@@ -644,7 +657,14 @@ pub struct ProductionBlockCreator {
     /// by `admit_deploy_cosigned` at submission and consulted by
     /// `block_creator::create` at proposal time to reconstruct full
     /// `Cosigned<DeployData>` envelopes for multi-sig deploys.
-    pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
+    pending_cosigner_metadata: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<
+                prost::bytes::Bytes,
+                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+            >,
+        >,
+    >,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -653,7 +673,14 @@ impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        pending_cosigner_metadata: Arc<parking_lot::Mutex<std::collections::HashMap<prost::bytes::Bytes, crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata>>>,
+        pending_cosigner_metadata: Arc<
+            parking_lot::Mutex<
+                std::collections::HashMap<
+                    prost::bytes::Bytes,
+                    crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
+                >,
+            >,
+        >,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {

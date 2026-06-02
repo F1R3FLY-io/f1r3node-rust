@@ -110,7 +110,9 @@ mod tests {
         })
     }
 
-    fn create_wildcard_var() -> Var<'static> { Var::Wildcard }
+    fn create_wildcard_var() -> Var<'static> {
+        Var::Wildcard
+    }
 
     #[test]
     fn p_var_should_compile_as_bound_var_if_its_in_env() {

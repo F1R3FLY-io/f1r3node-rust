@@ -36,7 +36,9 @@ fn should_retry_immediately_on_trigger(result: &ProposeResult, is_async: bool) -
     false
 }
 
-fn proposer_min_interval() -> Duration { PROPOSER_MIN_INTERVAL }
+fn proposer_min_interval() -> Duration {
+    PROPOSER_MIN_INTERVAL
+}
 
 /// Proposer instance that processes propose requests from a queue
 ///

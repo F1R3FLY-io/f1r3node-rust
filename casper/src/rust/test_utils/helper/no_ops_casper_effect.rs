@@ -132,7 +132,9 @@ impl NoOpsCasperEffect {
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
+    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
+        Ok(())
+    }
 
     fn normalized_initial_fault(
         &self,
@@ -149,17 +151,29 @@ impl MultiParentCasper for NoOpsCasperEffect {
         Ok(self.block_dag_storage.clone())
     }
 
-    fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+    fn block_store(&self) -> &KeyValueBlockStore {
+        &self.block_store
+    }
 
-    fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
+    fn casper_shard_conf(&self) -> &CasperShardConf {
+        &self.shard_conf
+    }
 
-    fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+    fn get_validator(&self) -> Option<ValidatorIdentity> {
+        None
+    }
 
-    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
+    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
+        todo!()
+    }
 
-    fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
+    fn runtime_manager(&self) -> Arc<RuntimeManager> {
+        self.runtime_manager.clone()
+    }
 
-    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
+    async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
+        Ok(false)
+    }
 }
 
 #[async_trait]
@@ -178,9 +192,13 @@ impl Casper for NoOpsCasperEffect {
         }
     }
 
-    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn dag_contains(&self, _hash: &BlockHash) -> bool {
+        false
+    }
 
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn buffer_contains(&self, _hash: &BlockHash) -> bool {
+        false
+    }
 
     fn deploy(
         &self,
@@ -196,9 +214,13 @@ impl Casper for NoOpsCasperEffect {
         Ok(self.estimator_func.clone())
     }
 
-    fn get_version(&self) -> i64 { 1 }
+    fn get_version(&self) -> i64 {
+        1
+    }
 
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
+    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
+        Ok(Vec::new())
+    }
 
     async fn validate(
         &self,

@@ -350,8 +350,9 @@ fn compute_settlement_debits(
     // (read as 0). Processed in `SigKey` order via the BTreeMap, deterministic
     // on play and replay.
     let mut residual: BTreeMap<SigKey, i64> = raw.clone();
-    let read_residual =
-        |residual: &BTreeMap<SigKey, i64>, key: &SigKey| -> i64 { *residual.get(key).unwrap_or(&0) };
+    let read_residual = |residual: &BTreeMap<SigKey, i64>, key: &SigKey| -> i64 {
+        *residual.get(key).unwrap_or(&0)
+    };
 
     // Accumulated draw amount per distinct channel (`SigKey`); summed across all
     // groups that touch a pool. A compound group emits up to THREE draws
@@ -472,7 +473,9 @@ pub async fn admit_by_funding(
     for cosigned in ordered {
         let candidate = build_candidate(cosigned);
         if candidate.malformed {
-            outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+            outcome
+                .rejected
+                .push(candidate.cosigned.primary().sig.clone());
         } else {
             candidates.push(candidate);
         }
@@ -531,10 +534,7 @@ pub async fn admit_by_funding(
     //    the SINGLE shared function replay also runs (byte-identity).
     let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     for (sig_key, group) in groups {
-        let channel = group
-            .first()
-            .map(|c| c.channel.clone())
-            .unwrap_or_default();
+        let channel = group.first().map(|c| c.channel.clone()).unwrap_or_default();
 
         // ACTIVATION (reported grounding refinement — see `supply::read_balance_present`):
         // a group whose pool is ABSENT is not yet under cost-accounting funding
@@ -572,9 +572,7 @@ pub async fn admit_by_funding(
         let mut group_debit: i64 = 0;
         let mut prefix_open = true;
         for candidate in group {
-            if prefix_open
-                && delta_sigma::is_funded(&candidate.demand, residual, margin)
-            {
+            if prefix_open && delta_sigma::is_funded(&candidate.demand, residual, margin) {
                 // Admit: consume the known lower bound from the residual and
                 // accumulate the debit. (`is_funded` already folded margin +
                 // the `unknown` over-approximation into the decision.)
@@ -585,7 +583,9 @@ pub async fn admit_by_funding(
                 // §7.7 reject-both: the FIRST unfunded candidate and ALL after
                 // it in the group are rejected.
                 prefix_open = false;
-                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                outcome
+                    .rejected
+                    .push(candidate.cosigned.primary().sig.clone());
             }
         }
 
@@ -676,9 +676,7 @@ pub async fn recompute_settlement_debits(
         // Record the envelope once per group so the decomposition collection
         // (below) walks each compound exactly once — identical to the play-side
         // per-group representative walk.
-        group_envelopes
-            .entry(candidate.sig_key)
-            .or_insert(envelope);
+        group_envelopes.entry(candidate.sig_key).or_insert(envelope);
         let entry = demand_by_group
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
@@ -879,7 +877,10 @@ mod tests {
     /// token-consuming COMM; see `delta_sigma::demand`).
     fn n_sends(n: usize) -> String {
         let one = "@0!(0)";
-        std::iter::repeat(one).take(n).collect::<Vec<_>>().join(" | ")
+        std::iter::repeat(one)
+            .take(n)
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     // ── #12 compound settlement-debit helpers ──────────────────────────────
@@ -948,17 +949,25 @@ mod tests {
         reader.set(b"alice", 3); // exactly one Δ=3 deploy fits
         reader.set(b"bob", 2); // the Δ=2 deploy fits
 
-        let outcome =
-            admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0, false)
-                .await
-                .expect("gate must not error");
+        let outcome = admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0, false)
+            .await
+            .expect("gate must not error");
 
         // Group A: canonical order is a0 (ts=10) before a1 (ts=20); a0 admitted,
         // a1 rejected (pool exhausted). Group B: b0 admitted independently.
-        let admitted_sigs: Vec<&[u8]> =
-            outcome.admitted.iter().map(|c| c.primary().sig.as_ref()).collect();
-        assert!(admitted_sigs.contains(&b"alice".as_ref()), "alice's first fits");
-        assert!(admitted_sigs.contains(&b"bob".as_ref()), "bob is independent");
+        let admitted_sigs: Vec<&[u8]> = outcome
+            .admitted
+            .iter()
+            .map(|c| c.primary().sig.as_ref())
+            .collect();
+        assert!(
+            admitted_sigs.contains(&b"alice".as_ref()),
+            "alice's first fits"
+        );
+        assert!(
+            admitted_sigs.contains(&b"bob".as_ref()),
+            "bob is independent"
+        );
         assert_eq!(outcome.admitted.len(), 2, "a0 + b0 admitted");
         assert_eq!(outcome.rejected.len(), 1, "a1 rejected (pool exhausted)");
         // Debits: alice pool -= 3, bob pool -= 2.
@@ -1055,11 +1064,20 @@ mod tests {
         // Δ = 5, but NO pool is set for "frank" ⇒ pool absent ⇒ admit, no debit.
         let f = cosigned(&n_sends(5), b"frank", 0, 10);
         let reader = MockSupplyReader::new(); // empty: every pool absent
-        // strict = false ⇒ the TRANSITIONAL early-admit path (back-compat).
-        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1, /* strict */ false)
-            .await
-            .expect("gate must not error");
-        assert_eq!(outcome.admitted.len(), 1, "absent pool ⇒ admitted unenforced");
+                                              // strict = false ⇒ the TRANSITIONAL early-admit path (back-compat).
+        let outcome = admit_by_funding(
+            vec![f],
+            &reader,
+            /* margin */ 1,
+            /* strict */ false,
+        )
+        .await
+        .expect("gate must not error");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "absent pool ⇒ admitted unenforced"
+        );
         assert!(outcome.rejected.is_empty(), "absent pool ⇒ never rejected");
         assert!(
             outcome.debits.is_empty(),
@@ -1107,14 +1125,23 @@ mod tests {
         // admits the identical deploy with strict = false.)
         let f = cosigned(&n_sends(5), b"frank", 0, 10);
         let reader = MockSupplyReader::new(); // empty: every pool absent
-        let outcome = admit_by_funding(vec![f], &reader, /* margin */ 1, /* strict */ true)
-            .await
-            .expect("gate must not error");
+        let outcome = admit_by_funding(
+            vec![f],
+            &reader,
+            /* margin */ 1,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
         assert!(
             outcome.admitted.is_empty(),
             "strict + absent pool + Δ>0 ⇒ rejected (effective supply 0)"
         );
-        assert_eq!(outcome.rejected.len(), 1, "the underfunded deploy is rejected");
+        assert_eq!(
+            outcome.rejected.len(),
+            1,
+            "the underfunded deploy is rejected"
+        );
         assert!(
             outcome.debits.is_empty(),
             "rejected ⇒ no settlement debit (no tokens consumed)"
@@ -1134,9 +1161,14 @@ mod tests {
         // A term with no sends/receives ⇒ Δ = 0 (Nil/new/par are not COMMs).
         let z = cosigned("Nil", b"zoe", 0, 10);
         let reader = MockSupplyReader::new(); // "zoe" pool absent
-        let outcome = admit_by_funding(vec![z], &reader, /* margin */ 0, /* strict */ true)
-            .await
-            .expect("gate must not error");
+        let outcome = admit_by_funding(
+            vec![z],
+            &reader,
+            /* margin */ 0,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
         assert_eq!(
             outcome.admitted.len(),
             1,
@@ -1167,7 +1199,7 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set(b"fund", 5); // present, funds Δ=2
         reader.set(b"drain", 0); // present, drained ⇒ rejects Δ=3
-        // "abs" intentionally unset ⇒ absent.
+                                 // "abs" intentionally unset ⇒ absent.
 
         let outcome = admit_by_funding(
             vec![absent.clone(), funded.clone(), drained.clone()],
@@ -1179,10 +1211,16 @@ mod tests {
         .expect("gate must not error");
 
         // Admitted: absent (unenforced) + funded. Rejected: drained.
-        let admitted_sigs: std::collections::BTreeSet<&[u8]> =
-            outcome.admitted.iter().map(|c| c.primary().sig.as_ref()).collect();
+        let admitted_sigs: std::collections::BTreeSet<&[u8]> = outcome
+            .admitted
+            .iter()
+            .map(|c| c.primary().sig.as_ref())
+            .collect();
         assert_eq!(outcome.admitted.len(), 2, "absent + funded admitted");
-        assert!(admitted_sigs.contains(&b"abs".as_ref()), "absent admitted unenforced");
+        assert!(
+            admitted_sigs.contains(&b"abs".as_ref()),
+            "absent admitted unenforced"
+        );
         assert!(admitted_sigs.contains(&b"fund".as_ref()), "funded admitted");
         assert_eq!(outcome.rejected.len(), 1, "drained rejected");
         assert_eq!(
@@ -1195,10 +1233,21 @@ mod tests {
         let abs_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"abs"));
         let fund_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"fund"));
         let drain_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"drain"));
-        assert_eq!(outcome.debits.len(), 1, "exactly one debit (the funded pool)");
-        assert_eq!(outcome.debits.get(&fund_key).map(|d| d.amount), Some(2), "funded -= 2");
+        assert_eq!(
+            outcome.debits.len(),
+            1,
+            "exactly one debit (the funded pool)"
+        );
+        assert_eq!(
+            outcome.debits.get(&fund_key).map(|d| d.amount),
+            Some(2),
+            "funded -= 2"
+        );
         assert!(outcome.debits.get(&abs_key).is_none(), "absent ⇒ no debit");
-        assert!(outcome.debits.get(&drain_key).is_none(), "drained/rejected ⇒ no debit");
+        assert!(
+            outcome.debits.get(&drain_key).is_none(),
+            "drained/rejected ⇒ no debit"
+        );
     }
 
     /// #13b consensus bar (b) — STRICT-mode FUNDED client admitted + debited +
@@ -1255,13 +1304,10 @@ mod tests {
         // The replay path reconstructs the admitted envelopes from the block and
         // recomputes the debit map against the SAME pre-state pool. Under strict
         // it ALSO re-verifies admission; a funded client passes (no rejection).
-        let recomputed = recompute_settlement_debits(
-            play.admitted.clone(),
-            &reader,
-            /* strict */ true,
-        )
-        .await
-        .expect("strict replay recompute must not reject a funded client");
+        let recomputed =
+            recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
+                .await
+                .expect("strict replay recompute must not reject a funded client");
 
         // play == replay: the debit map is byte-identical (the consensus bar).
         assert_eq!(
@@ -1303,16 +1349,20 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
-        let debits = compute_settlement_debits(
-            &demand,
-            &[fx.decomposition],
-            &raw,
-            &fx.channels_by_key(),
-        );
+        let debits =
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
 
         // Components each debited k; compound NOT present (draw_compound = 0).
-        assert_eq!(debits.get(&fx.a_key).map(|d| d.amount), Some(k), "Σ⟦a⟧ -= k");
-        assert_eq!(debits.get(&fx.b_key).map(|d| d.amount), Some(k), "Σ⟦b⟧ -= k");
+        assert_eq!(
+            debits.get(&fx.a_key).map(|d| d.amount),
+            Some(k),
+            "Σ⟦a⟧ -= k"
+        );
+        assert_eq!(
+            debits.get(&fx.b_key).map(|d| d.amount),
+            Some(k),
+            "Σ⟦b⟧ -= k"
+        );
         assert!(
             debits.get(&fx.compound_key).is_none(),
             "empty combined pool ⇒ NO compound debit"
@@ -1336,20 +1386,24 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
 
-        let debits = compute_settlement_debits(
-            &demand,
-            &[fx.decomposition],
-            &raw,
-            &fx.channels_by_key(),
-        );
+        let debits =
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
 
         assert_eq!(
             debits.get(&fx.compound_key).map(|d| d.amount),
             Some(1),
             "combined pool drawn first: draw_compound = min(3,1) = 1"
         );
-        assert_eq!(debits.get(&fx.a_key).map(|d| d.amount), Some(2), "draw_pair = 3-1 = 2");
-        assert_eq!(debits.get(&fx.b_key).map(|d| d.amount), Some(2), "draw_pair = 3-1 = 2");
+        assert_eq!(
+            debits.get(&fx.a_key).map(|d| d.amount),
+            Some(2),
+            "draw_pair = 3-1 = 2"
+        );
+        assert_eq!(
+            debits.get(&fx.b_key).map(|d| d.amount),
+            Some(2),
+            "draw_pair = 3-1 = 2"
+        );
     }
 
     /// #12.3 — underflow-safety at the funding boundary: for an admitted compound
@@ -1371,12 +1425,8 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
-        let debits = compute_settlement_debits(
-            &demand,
-            &[fx.decomposition],
-            &raw,
-            &fx.channels_by_key(),
-        );
+        let debits =
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
 
         // draw_compound = min(5,2) = 2; draw_pair = min(3, 3, 4) = 3.
         let d_compound = debits.get(&fx.compound_key).map(|d| d.amount).unwrap_or(0);
@@ -1390,7 +1440,11 @@ mod tests {
         assert!(sigma_a - d_a >= 0, "Σ⟦a⟧ no underflow");
         assert!(sigma_b - d_b >= 0, "Σ⟦b⟧ no underflow");
         // And the total settled equals the demand (conservation: draws sum to k).
-        assert_eq!(d_compound + d_a.min(d_b), k, "draw_compound + draw_pair = k");
+        assert_eq!(
+            d_compound + d_a.min(d_b),
+            k,
+            "draw_compound + draw_pair = k"
+        );
     }
 
     /// #12.4 — cross-group shared-component contention: two compound groups
@@ -1429,8 +1483,16 @@ mod tests {
         channels_by_key.insert(ac_key, supply::supply_channel(&ac));
 
         let decompositions = vec![
-            Decomposition { compound: ab_key, left: a_key, right: b_key },
-            Decomposition { compound: ac_key, left: a_key, right: c_key },
+            Decomposition {
+                compound: ab_key,
+                left: a_key,
+                right: b_key,
+            },
+            Decomposition {
+                compound: ac_key,
+                left: a_key,
+                right: c_key,
+            },
         ];
 
         // Each compound group demands 2 (so combined demand 4 on a's residual of 3).
@@ -1475,7 +1537,10 @@ mod tests {
 
         assert_eq!(debits.len(), 1, "exactly one debit for the single group");
         let d = debits.get(&key).expect("solo pool debited");
-        assert_eq!(d.amount, k, "amount = ΣΔ_admitted = k (NOT residual-capped)");
+        assert_eq!(
+            d.amount, k,
+            "amount = ΣΔ_admitted = k (NOT residual-capped)"
+        );
         assert_eq!(d.channel, chan, "debit keyed to the group's own pool");
     }
 
@@ -1528,7 +1593,10 @@ mod tests {
         let envelope = accounting::envelope_sig(&compound);
         let (left, right) = match &envelope {
             Sig::And(l, r) => ((**l).clone(), (**r).clone()),
-            other => panic!("expected Sig::And from a 2-signer cosigned, got {:?}", other),
+            other => panic!(
+                "expected Sig::And from a 2-signer cosigned, got {:?}",
+                other
+            ),
         };
 
         // Seed: Σ⟦compound⟧ = 1, Σ⟦left⟧ = Σ⟦right⟧ = 5. effectiveΣ_compound =
@@ -1543,7 +1611,11 @@ mod tests {
         let outcome = admit_by_funding(vec![compound.clone()], &reader, /* margin */ 0, false)
             .await
             .expect("gate must not error");
-        assert_eq!(outcome.admitted.len(), 1, "compound deploy admitted on effectiveΣ");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "compound deploy admitted on effectiveΣ"
+        );
         assert!(outcome.rejected.is_empty());
 
         // ---- REPLAY: recompute from the admitted set over the SAME pre-state ----
@@ -1566,8 +1638,16 @@ mod tests {
             Some(1),
             "draw_compound = min(Δ=2, Σ⟦compound⟧=1) = 1"
         );
-        assert_eq!(outcome.debits.get(&left_key).map(|d| d.amount), Some(1), "draw_pair = 1");
-        assert_eq!(outcome.debits.get(&right_key).map(|d| d.amount), Some(1), "draw_pair = 1");
+        assert_eq!(
+            outcome.debits.get(&left_key).map(|d| d.amount),
+            Some(1),
+            "draw_pair = 1"
+        );
+        assert_eq!(
+            outcome.debits.get(&right_key).map(|d| d.amount),
+            Some(1),
+            "draw_pair = 1"
+        );
     }
 
     /// #12.5b — compound play↔replay byte-identity in the COMPONENT-PAIR-ONLY
@@ -1592,7 +1672,11 @@ mod tests {
         let outcome = admit_by_funding(vec![compound.clone()], &reader, 0, false)
             .await
             .expect("gate must not error");
-        assert_eq!(outcome.admitted.len(), 1, "admitted on component-pair credit");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "admitted on component-pair credit"
+        );
 
         let recomputed = recompute_settlement_debits(vec![compound.clone()], &reader, false)
             .await
@@ -1609,7 +1693,15 @@ mod tests {
             outcome.debits.get(&compound_key).is_none(),
             "empty combined pool ⇒ NO compound debit"
         );
-        assert_eq!(outcome.debits.get(&left_key).map(|d| d.amount), Some(3), "Σ⟦left⟧ -= 3");
-        assert_eq!(outcome.debits.get(&right_key).map(|d| d.amount), Some(3), "Σ⟦right⟧ -= 3");
+        assert_eq!(
+            outcome.debits.get(&left_key).map(|d| d.amount),
+            Some(3),
+            "Σ⟦left⟧ -= 3"
+        );
+        assert_eq!(
+            outcome.debits.get(&right_key).map(|d| d.amount),
+            Some(3),
+            "Σ⟦right⟧ -= 3"
+        );
     }
 }

@@ -336,7 +336,9 @@ impl ParBuilderUtil {
     }
 
     // Helper for creating Name::Quote wrapping a proc
-    pub fn create_ast_quote_name<'ast>(proc: AnnProc<'ast>) -> Name<'ast> { Name::Quote(proc) }
+    pub fn create_ast_quote_name<'ast>(proc: AnnProc<'ast>) -> Name<'ast> {
+        Name::Quote(proc)
+    }
 
     // Helper for creating Wildcard proc
     pub fn create_ast_wildcard<'ast>(

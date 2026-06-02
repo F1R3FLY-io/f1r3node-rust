@@ -110,13 +110,11 @@ mod tests {
         fn test(method_name: String) {
             let parser = rholang_parser::RholangParser::new();
             let (mut inputs, env) = proc_visit_inputs_and_env();
-            inputs.bound_map_chain =
-                inputs
-                    .bound_map_chain
-                    .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
-                        line: 0,
-                        col: 0,
-                    }));
+            inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+                "x".to_string(),
+                VarSort::ProcSort,
+                SourcePos { line: 0, col: 0 },
+            ));
 
             // Create receiver: x (ProcVar)
             let receiver = ParBuilderUtil::create_ast_proc_var_from_var(

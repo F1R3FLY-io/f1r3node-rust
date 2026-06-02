@@ -287,11 +287,9 @@ impl ReplayRuntimeOps {
         // diagnostic + fails the block at the gate boundary, not deep in
         // closeBlock).
         for (sig_key, debit) in &debits {
-            let balance = crate::rust::util::rholang::supply::read_balance(
-                &self.runtime_ops,
-                &debit.channel,
-            )
-            .await;
+            let balance =
+                crate::rust::util::rholang::supply::read_balance(&self.runtime_ops, &debit.channel)
+                    .await;
             if debit.amount > balance {
                 return Err(CasperError::ReplayFailure(
                     ReplayFailure::replay_admission_mismatch(

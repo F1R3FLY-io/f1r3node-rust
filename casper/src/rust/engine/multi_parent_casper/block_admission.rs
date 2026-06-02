@@ -251,7 +251,9 @@ pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
     let primary_sig = legacy_signed.sig.clone();
 
     // Store in the legacy pool (selection-by-primary-signer semantics).
-    this.deploy_storage.lock().add(vec![legacy_signed.clone()])?;
+    this.deploy_storage
+        .lock()
+        .add(vec![legacy_signed.clone()])?;
 
     // Mirror cosigner extras into the sidecar map for proposer-side
     // reconstruction. Only populated for compound deploys; single-signer

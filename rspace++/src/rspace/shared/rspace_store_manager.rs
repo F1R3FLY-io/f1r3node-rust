@@ -74,7 +74,9 @@ pub fn get_or_create_rspace_store(
     }
 }
 
-pub fn close_rspace_store(rspace_store: RSpaceStore) { drop(rspace_store); }
+pub fn close_rspace_store(rspace_store: RSpaceStore) {
+    drop(rspace_store);
+}
 
 fn create_lmdb_store(
     lmdb_path: &str,

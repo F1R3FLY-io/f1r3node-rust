@@ -21,7 +21,9 @@ pub async fn create_test_space<T>() -> (
     impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     Arc<DebruijnInterpreter>,
 )
-where T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+where
+    T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+{
     let cost = CostAccounting::empty_cost();
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();

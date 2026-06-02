@@ -192,7 +192,9 @@ impl StreamObservable {
     }
 
     /// Check if the stream is complete
-    pub fn is_complete(&self) -> bool { self.subject.is_complete() }
+    pub fn is_complete(&self) -> bool {
+        self.subject.is_complete()
+    }
 
     /// Get a stream subscription
     pub fn subscribe(&mut self) -> Option<impl tokio_stream::Stream<Item = Stream> + Unpin> {
@@ -200,13 +202,19 @@ impl StreamObservable {
     }
 
     /// Get the peer this observable is associated with
-    pub fn peer(&self) -> &PeerNode { &self.peer }
+    pub fn peer(&self) -> &PeerNode {
+        &self.peer
+    }
 
     /// Get the buffer size
-    pub fn buffer_size(&self) -> usize { self.subject.buffer_size() }
+    pub fn buffer_size(&self) -> usize {
+        self.subject.buffer_size()
+    }
 
     /// Check if the stream is still active (not closed)
-    pub fn is_active(&self) -> bool { self.subject.is_active() }
+    pub fn is_active(&self) -> bool {
+        self.subject.is_active()
+    }
 }
 
 #[cfg(test)]
@@ -230,7 +238,9 @@ mod tests {
         }
     }
 
-    fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
+    fn create_test_cache() -> StreamCache {
+        Arc::new(DashMap::new())
+    }
 
     fn create_test_blob(sender: PeerNode, content: Vec<u8>) -> Blob {
         Blob {

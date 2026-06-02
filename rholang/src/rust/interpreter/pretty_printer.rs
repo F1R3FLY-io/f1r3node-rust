@@ -30,7 +30,9 @@ pub struct PrettyPrinter {
 }
 
 impl PrettyPrinter {
-    pub fn new() -> Self { PrettyPrinter::create(0, 0) }
+    pub fn new() -> Self {
+        PrettyPrinter::create(0, 0)
+    }
 
     fn create(free_shift: i32, bound_shift: i32) -> Self {
         PrettyPrinter {
@@ -53,11 +55,17 @@ impl PrettyPrinter {
         }
     }
 
-    fn indent_string(&self) -> String { String::from("  ") }
+    fn indent_string(&self) -> String {
+        String::from("  ")
+    }
 
-    fn bound_id(&self) -> String { self.rotate(self.base_id.clone()) }
+    fn bound_id(&self) -> String {
+        self.rotate(self.base_id.clone())
+    }
 
-    fn set_base_id(&self) -> String { self.increment(self.base_id.clone()) }
+    fn set_base_id(&self) -> String {
+        self.increment(self.base_id.clone())
+    }
 
     pub fn build_string_from_expr(&mut self, e: &Expr) -> String {
         // Instead of panicking on errors, return a fallback string
@@ -1027,7 +1035,9 @@ impl PrettyPrinter {
     }
 
     fn increment(&self, id: String) -> String {
-        fn inc_char(char_id: char) -> char { ((char_id as u8 + 1 - b'a') % 26 + b'a') as char }
+        fn inc_char(char_id: char) -> char {
+            ((char_id as u8 + 1 - b'a') % 26 + b'a') as char
+        }
 
         let new_id = inc_char(id.chars().last().unwrap());
 

@@ -8,15 +8,14 @@ use casper::rust::errors::CasperError;
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::acceptance;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::costacc::redeem_deploy::{RedeemDeploy, RedemptionOutcome};
 use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::util::rholang::acceptance;
 use casper::rust::util::rholang::supply;
-use rholang::rust::interpreter::accounting::{self, Sig};
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
 use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
@@ -29,6 +28,7 @@ use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -99,7 +99,7 @@ async fn replay_compute_state(
             None,
             false,
             false, // strict_funding_enforcement (#13a)
-            &[], // client_fuel_allocations (#13b)
+            &[],   // client_fuel_allocations (#13b)
         )
         .await
 }
@@ -481,8 +481,7 @@ async fn close_block_supply_mint_is_play_replay_deterministic() {
                 .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
                 .await
                 .unwrap();
-            let replay_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            let replay_balance = supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
             assert_eq!(
                 play_balance, replay_balance,
                 "Σ⟦v⟧ balance diverged between play and replay"
@@ -638,8 +637,13 @@ async fn client_fuel_allocation_credits_sigma_c_at_genesis() {
                 .unwrap();
             let empty_state_hash = match empty_result {
                 SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-                SystemDeployResult::PlayFailed { processed_system_deploy } => {
-                    panic!("empty-alloc close-block play failed: {:?}", processed_system_deploy)
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => {
+                    panic!(
+                        "empty-alloc close-block play failed: {:?}",
+                        processed_system_deploy
+                    )
                 }
             };
             empty_ops
@@ -647,8 +651,7 @@ async fn client_fuel_allocation_credits_sigma_c_at_genesis() {
                 .reset(&Blake2b256Hash::from_bytes_prost(&empty_state_hash))
                 .await
                 .unwrap();
-            let empty_client_present =
-                supply::read_balance_present(&empty_ops, &client_chan).await;
+            let empty_client_present = supply::read_balance_present(&empty_ops, &client_chan).await;
             assert_eq!(
                 empty_client_present, None,
                 "empty client_fuel_allocations must leave Σ⟦c⟧ ABSENT (back-compat, no seed)"
@@ -722,7 +725,10 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                 } => (state_hash, processed_system_deploy),
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy,
-                } => panic!("fee-convert close play failed: {:?}", processed_system_deploy),
+                } => panic!(
+                    "fee-convert close play failed: {:?}",
+                    processed_system_deploy
+                ),
             };
 
             // Non-vacuity: Σ⟦v⟧ for the proposing validator must be positive in the
@@ -793,8 +799,7 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                 .reset(&Blake2b256Hash::from_bytes_prost(&final_replay_state_hash))
                 .await
                 .unwrap();
-            let replay_balance =
-                supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
+            let replay_balance = supply::read_balance(&replay_ops.runtime_ops, &supply_chan).await;
             assert_eq!(
                 play_balance, replay_balance,
                 "Σ⟦v⟧ balance diverged between play and replay on the fee convert"
@@ -869,18 +874,36 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
                     // #13b: no genesis client funding slots in this fixture.
                     client_fuel_allocations: Vec::new(),
                 };
-                match ops.play_system_deploy(from_state, &mut close).await.unwrap() {
+                match ops
+                    .play_system_deploy(from_state, &mut close)
+                    .await
+                    .unwrap()
+                {
                     SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-                    SystemDeployResult::PlayFailed { processed_system_deploy } => {
+                    SystemDeployResult::PlayFailed {
+                        processed_system_deploy,
+                    } => {
                         panic!("epoch close play failed: {:?}", processed_system_deploy)
                     }
                 }
             }
 
-            let post_a =
-                play_close(&runtime_manager, &start_state, &block_data, &sender, &fee_credits).await;
-            let post_b =
-                play_close(&runtime_manager, &start_state, &block_data, &sender, &fee_credits).await;
+            let post_a = play_close(
+                &runtime_manager,
+                &start_state,
+                &block_data,
+                &sender,
+                &fee_credits,
+            )
+            .await;
+            let post_b = play_close(
+                &runtime_manager,
+                &start_state,
+                &block_data,
+                &sender,
+                &fee_credits,
+            )
+            .await;
 
             assert_eq!(
                 post_a, post_b,
@@ -988,7 +1011,9 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
             // ── Step 3: PLAY the slash ────────────────────────────────────────
             let play_runtime = runtime_manager.spawn_runtime().await;
             play_runtime.set_block_data(slash_block_data.clone()).await;
-            play_runtime.set_invalid_blocks(invalid_blocks.clone()).await;
+            play_runtime
+                .set_invalid_blocks(invalid_blocks.clone())
+                .await;
             let mut play_ops = RuntimeOps::new(play_runtime);
             let mut play_slash = SlashDeploy {
                 invalid_block_hash: invalid_block_hash.clone(),
@@ -1030,8 +1055,12 @@ async fn slash_zeros_supply_is_play_replay_deterministic() {
 
             // ── Step 4: REPLAY the slash (production path) ────────────────────
             let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime.set_block_data(slash_block_data.clone()).await;
-            replay_runtime.set_invalid_blocks(invalid_blocks.clone()).await;
+            replay_runtime
+                .set_block_data(slash_block_data.clone())
+                .await;
+            replay_runtime
+                .set_invalid_blocks(invalid_blocks.clone())
+                .await;
             let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
             replay_ops
                 .runtime_ops
@@ -1113,9 +1142,15 @@ async fn play_one_slash(
             invalid_block_hash,
         ),
     };
-    match ops.play_system_deploy(start_state, &mut slash).await.unwrap() {
+    match ops
+        .play_system_deploy(start_state, &mut slash)
+        .await
+        .unwrap()
+    {
         SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-        SystemDeployResult::PlayFailed { processed_system_deploy } => {
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => {
             panic!("setup slash failed: {:?}", processed_system_deploy)
         }
     }
@@ -1156,10 +1191,7 @@ async fn redeem_outcomes_and_multisig_gate() {
             mint_runtime.set_block_data(mint_block_data.clone()).await;
             let mut mint_ops = RuntimeOps::new(mint_runtime);
             let mut mint_close = CloseBlockDeploy::new(
-                system_deploy_util::generate_close_deploy_random_seed_from_pk(
-                    proposer.clone(),
-                    0,
-                ),
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(proposer.clone(), 0),
             );
             let funded_state = match mint_ops
                 .play_system_deploy(&start_state, &mut mint_close)
@@ -1228,7 +1260,9 @@ async fn redeem_outcomes_and_multisig_gate() {
             // Only 1 of 2 required signers ⇒ verify_multisig_quorum is false ⇒
             // redeemSlashed rejects with NO state change.
             let under_runtime = runtime_manager.spawn_runtime().await;
-            under_runtime.set_block_data(redeem_block_data.clone()).await;
+            under_runtime
+                .set_block_data(redeem_block_data.clone())
+                .await;
             let mut under_ops = RuntimeOps::new(under_runtime);
             let mut under_redeem = make_redeem(1, 2);
             assert!(
@@ -1269,8 +1303,13 @@ async fn redeem_outcomes_and_multisig_gate() {
                 .unwrap();
             let ok_post_state = match ok_result {
                 SystemDeployResult::PlaySucceeded { state_hash, .. } => state_hash,
-                SystemDeployResult::PlayFailed { processed_system_deploy } => {
-                    panic!("valid-quorum vindicated redeem failed: {:?}", processed_system_deploy)
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy,
+                } => {
+                    panic!(
+                        "valid-quorum vindicated redeem failed: {:?}",
+                        processed_system_deploy
+                    )
                 }
             };
             let ok_runtime2 = runtime_manager.spawn_runtime().await;
@@ -1395,7 +1434,10 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
                 } => (state_hash, processed_system_deploy),
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy,
-                } => panic!("vindicated redeem play failed: {:?}", processed_system_deploy),
+                } => panic!(
+                    "vindicated redeem play failed: {:?}",
+                    processed_system_deploy
+                ),
             };
 
             // offender un-halted on play
@@ -1408,7 +1450,9 @@ async fn redeem_vindicated_is_play_replay_deterministic() {
 
             // ── REPLAY the Vindicated redeem (production path) ────────────────
             let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-            replay_runtime.set_block_data(redeem_block_data.clone()).await;
+            replay_runtime
+                .set_block_data(redeem_block_data.clone())
+                .await;
             let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
             replay_ops
                 .runtime_ops
@@ -1567,10 +1611,7 @@ async fn gate_decision_replay_determinism() {
                 &mut seed_ops,
                 &funded_chan,
                 SEED_BALANCE,
-                supply::mint_random_state(
-                    &Blake2b512Random::create_from_bytes(&[123_u8; 1]),
-                    0,
-                ),
+                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[123_u8; 1]), 0),
             )
             .await
             .unwrap();
@@ -1593,7 +1634,8 @@ async fn gate_decision_replay_determinism() {
                 // strict = false: this test exercises the TRANSITIONAL gate
                 // (one present pool enforced + debited, one absent pool admitted
                 // unenforced) and the play↔replay symmetry of that path.
-                /* strict */ false,
+                /* strict */
+                false,
             )
             .await
             .unwrap();
@@ -1636,7 +1678,12 @@ async fn gate_decision_replay_determinism() {
                 .post_eval(&mut play_ops, &block_data, &seeded_state)
                 .await
                 .unwrap();
-            let play_post = play_ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+            let play_post = play_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
             play_ops
                 .runtime
                 .reset(&Blake2b256Hash::from_bytes_prost(&play_post))
@@ -1874,7 +1921,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -1932,7 +1979,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2246,7 +2293,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2668,7 +2715,7 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await;
 
@@ -2764,7 +2811,7 @@ async fn mixed_success_and_oop_deploys_keep_isolated_cost_traces() {
                     None,
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2871,7 +2918,7 @@ async fn joins_should_be_replayed_correctly() {
                     Some(invalid_blocks),
                     false,
                     false, // strict_funding_enforcement (#13a)
-                    &[], // client_fuel_allocations (#13b)
+                    &[],   // client_fuel_allocations (#13b)
                 )
                 .await
                 .unwrap();
@@ -2957,7 +3004,7 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
                 None,
                 false,
                 false, // strict_funding_enforcement (#13a)
-                &[], // client_fuel_allocations (#13b)
+                &[],   // client_fuel_allocations (#13b)
             )
             .await;
 
@@ -4861,9 +4908,13 @@ impl SystemDeployTrait for MintPhlogistonDeploy {
         Either::Right(value)
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+    fn rand(&self) -> Blake2b512Random {
+        self.rand.clone()
+    }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
@@ -5043,7 +5094,7 @@ async fn wallet_channel_derivation_is_order_independent() {
                     }
                   }
                 }"#
-                .to_string();
+            .to_string();
 
             let (results, _cost) = runtime_manager
                 .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash)

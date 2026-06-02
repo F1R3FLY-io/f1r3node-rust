@@ -74,7 +74,9 @@ pub struct GenesisBuilder {
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self { Self { vaults: None } }
+    pub fn new() -> Self {
+        Self { vaults: None }
+    }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
@@ -231,40 +233,44 @@ impl GenesisBuilder {
             }))
             .collect();
 
-        (validator_key_pairs, genesis_vaults, Genesis {
-            shard_id: "root".to_string(),
-            timestamp: 0,
-            proof_of_stake: ProofOfStake {
-                minimum_bond: 1,
-                maximum_bond: i64::MAX,
-                // Epoch length is set to large number to prevent trigger of epoch change
-                // in PoS close block method, which causes block merge conflicts
-                // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
-                epoch_length: 1000,
-                quarantine_length: 50000,
-                number_of_active_validators: 100,
-                validators: bonds
-                    .into_iter()
-                    .map(|(pk, stake)| Validator {
-                        pk: pk.clone(),
-                        stake: *stake,
-                    })
-                    .collect(),
-                pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
-                pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
-                max_cosigners_per_deploy:
-                    crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                initial_phlogiston: crate::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                epoch_phlogiston: crate::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+        (
+            validator_key_pairs,
+            genesis_vaults,
+            Genesis {
+                shard_id: "root".to_string(),
+                timestamp: 0,
+                proof_of_stake: ProofOfStake {
+                    minimum_bond: 1,
+                    maximum_bond: i64::MAX,
+                    // Epoch length is set to large number to prevent trigger of epoch change
+                    // in PoS close block method, which causes block merge conflicts
+                    // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
+                    epoch_length: 1000,
+                    quarantine_length: 50000,
+                    number_of_active_validators: 100,
+                    validators: bonds
+                        .into_iter()
+                        .map(|(pk, stake)| Validator {
+                            pk: pk.clone(),
+                            stake: *stake,
+                        })
+                        .collect(),
+                    pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
+                    pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+                    max_cosigners_per_deploy:
+                        crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                    initial_phlogiston: crate::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                    epoch_phlogiston: crate::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                },
+                vaults,
+                supply: i64::MAX,
+                block_number: 0,
+                version: 1,
+                native_token_name: "F1R3CAP".to_string(),
+                native_token_symbol: "F1R3".to_string(),
+                native_token_decimals: 8,
             },
-            vaults,
-            supply: i64::MAX,
-            block_number: 0,
-            version: 1,
-            native_token_name: "F1R3CAP".to_string(),
-            native_token_symbol: "F1R3".to_string(),
-            native_token_decimals: 8,
-        })
+        )
     }
 
     fn predefined_vault(pubkey: &PublicKey) -> Vault {

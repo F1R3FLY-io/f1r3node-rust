@@ -32,10 +32,9 @@ fn main() {
         .message_attribute(".", "#[repr(C)]")
         .enum_attribute(".", "#[repr(C)]")
         .bytes(".")
-        .compile_protos(&absolute_proto_files, &[
-            proto_src_dir,
-            manifest_dir,
-            scala_proto_base_dir,
-        ])
+        .compile_protos(
+            &absolute_proto_files,
+            &[proto_src_dir, manifest_dir, scala_proto_base_dir],
+        )
         .expect("Failed to compile proto files");
 }

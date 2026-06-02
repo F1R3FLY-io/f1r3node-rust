@@ -269,9 +269,13 @@ where
         self.replay_rspace.remove_all_continuations(channels).await
     }
 
-    async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }
+    async fn clear(&self) -> Result<(), RSpaceError> {
+        self.replay_rspace.clear().await
+    }
 
-    async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }
+    async fn get_root(&self) -> Blake2b256Hash {
+        self.replay_rspace.get_root().await
+    }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
         self.replay_rspace.reset(root).await
@@ -285,13 +289,17 @@ where
         self.replay_rspace.consume_result(channel, pattern).await
     }
 
-    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.replay_rspace.to_map().await }
+    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
+        self.replay_rspace.to_map().await
+    }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         ReportingRspace::create_soft_checkpoint(self).await.unwrap()
     }
 
-    async fn take_event_log(&self) -> Log { self.replay_rspace.take_event_log().await }
+    async fn take_event_log(&self) -> Log {
+        self.replay_rspace.take_event_log().await
+    }
 
     async fn revert_to_soft_checkpoint(
         &self,
@@ -337,13 +345,17 @@ where
         ReportingRspace::rig_and_reset(self, start_root, log).await
     }
 
-    async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.replay_rspace.rig(log).await }
+    async fn rig(&self, log: Log) -> Result<(), RSpaceError> {
+        self.replay_rspace.rig(log).await
+    }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
         self.replay_rspace.check_replay_data().await
     }
 
-    async fn is_replay(&self) -> bool { self.replay_rspace.is_replay().await }
+    async fn is_replay(&self) -> bool {
+        self.replay_rspace.is_replay().await
+    }
 
     async fn update_produce(&self, produce: Produce) -> () {
         self.replay_rspace.update_produce(produce).await

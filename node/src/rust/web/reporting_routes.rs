@@ -31,7 +31,9 @@ pub struct TraceQuery {
 pub type ReportingHttpRoutes = Router<AppState>;
 
 impl ReportingRoutes {
-    pub fn create_router() -> Router<AppState> { Router::new().route("/trace", get(trace_handler)) }
+    pub fn create_router() -> Router<AppState> {
+        Router::new().route("/trace", get(trace_handler))
+    }
 }
 
 #[utoipa::path(

@@ -133,10 +133,13 @@ async fn integration_t_neglected_invalid_block() {
     // Confirm b3 has no SlashDeploy.
     use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
     let has_slash_deploy = b3.body.system_deploys.iter().any(|sd| {
-        matches!(sd, ProcessedSystemDeploy::Succeeded {
-            system_deploy: SystemDeployData::Slash { .. },
-            ..
-        })
+        matches!(
+            sd,
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            }
+        )
     });
     assert!(
         !has_slash_deploy,

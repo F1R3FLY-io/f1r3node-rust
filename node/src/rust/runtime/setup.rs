@@ -43,9 +43,13 @@ type ProposerQueueEntry = (
     u8,
 );
 
-fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
+fn proposer_queue_max_pending() -> usize {
+    PROPOSER_QUEUE_MAX_PENDING
+}
 
-fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
+fn block_processor_queue_max_pending() -> usize {
+    BLOCK_PROCESSOR_QUEUE_MAX_PENDING
+}
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
@@ -356,9 +360,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // casper-side sidecar first and threads it through both sides;
             // this entry point creates the sidecar fresh for the proposer
             // and the casper engine receives the same Arc.
-            std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),

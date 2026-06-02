@@ -367,12 +367,8 @@ fn reconcile_two_disjoint_lanes_sum_is_schedule_independent() {
 
         // The pool total is the order-independent SUM over lanes — identical
         // under every loom-explored interleaving (and summed in either order).
-        let total_ab = rec_a
-            .consumed_units
-            .saturating_add(rec_b.consumed_units);
-        let total_ba = rec_b
-            .consumed_units
-            .saturating_add(rec_a.consumed_units);
+        let total_ab = rec_a.consumed_units.saturating_add(rec_b.consumed_units);
+        let total_ba = rec_b.consumed_units.saturating_add(rec_a.consumed_units);
         assert_eq!(total_ab, 12);
         assert_eq!(total_ab, total_ba);
     });

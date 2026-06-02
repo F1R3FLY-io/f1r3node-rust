@@ -67,7 +67,10 @@ fn exchange_pubkey_in_system_public_keys() {
 
     let system_pks = standard_deploys::system_public_keys();
     let found = system_pks.iter().any(|p| *p == &expected_pk);
-    assert!(found, "EXCHANGE_PUB_KEY must appear in system_public_keys()");
+    assert!(
+        found,
+        "EXCHANGE_PUB_KEY must appear in system_public_keys()"
+    );
 }
 
 #[test]
@@ -154,8 +157,7 @@ async fn exchange_resolves_and_swap_conserves_per_channel() {
             );
             // 1:1 conserving swap: cCarrier now holds the v-datum (11), vCarrier
             // the c-datum (7) — per-channel count preserved (one datum each).
-            let expected = ParBuilderUtil::mk_term("(11, 7)")
-                .expect("parse expected swapped pair");
+            let expected = ParBuilderUtil::mk_term("(11, 7)").expect("parse expected swapped pair");
             assert_eq!(
                 results[0], expected,
                 "swap must move each carrier's datum to the OTHER carrier (1:1 peg)"
@@ -216,7 +218,11 @@ async fn exchange_conserves_per_channel() {
                 .await
                 .expect("swap must execute");
 
-            assert_eq!(results.len(), 1, "the join fired exactly once (one datum consumed per carrier)");
+            assert_eq!(
+                results.len(),
+                1,
+                "the join fired exactly once (one datum consumed per carrier)"
+            );
             // Total conserved: the swapped pair is a permutation of the inputs —
             // {cAfter, vAfter} == {11, 7} as a multiset (nothing minted/destroyed).
             let swapped = ParBuilderUtil::mk_term("(11, 7)").expect("parse (11, 7)");

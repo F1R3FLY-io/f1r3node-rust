@@ -10,7 +10,9 @@ mod tests {
     use super::*;
 
     /// Helper function to create an endpoint with given host and port
-    fn endpoint(host: &str, port: u32) -> Endpoint { Endpoint::new(host.to_string(), port, port) }
+    fn endpoint(host: &str, port: u32) -> Endpoint {
+        Endpoint::new(host.to_string(), port, port)
+    }
 
     /// Helper function to create a peer with given name, host, and port
     fn peer(name: &str, host: Option<&str>, port: Option<u32>) -> PeerNode {
@@ -28,7 +30,9 @@ mod tests {
     }
 
     /// Helper function to create a peer with just name (uses default host and port)
-    fn peer_simple(name: &str) -> PeerNode { peer(name, None, None) }
+    fn peer_simple(name: &str) -> PeerNode {
+        peer(name, None, None)
+    }
 
     /// Helper function to create a peer with name, host, and port
     fn peer_with_endpoint(name: &str, host: &str, port: u32) -> PeerNode {

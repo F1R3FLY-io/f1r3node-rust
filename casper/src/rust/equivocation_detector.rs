@@ -574,9 +574,13 @@ mod tests {
 
     use super::*;
 
-    fn validator(id: u8) -> Validator { Bytes::from(vec![id]) }
+    fn validator(id: u8) -> Validator {
+        Bytes::from(vec![id])
+    }
 
-    fn hash(id: u8) -> BlockHash { Bytes::from(vec![id; block_hash::LENGTH]) }
+    fn hash(id: u8) -> BlockHash {
+        Bytes::from(vec![id; block_hash::LENGTH])
+    }
 
     fn block(
         sender: &Validator,

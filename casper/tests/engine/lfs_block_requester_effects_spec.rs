@@ -33,7 +33,9 @@ fn as_map(blocks: &[BlockMessage]) -> HashMap<BlockHash, BlockMessage> {
 }
 
 /// Create a hash from a string
-fn mk_hash(s: &str) -> BlockHash { Bytes::from(s.as_bytes().to_vec()) }
+fn mk_hash(s: &str) -> BlockHash {
+    Bytes::from(s.as_bytes().to_vec())
+}
 
 /// Create a BlockMessage with specified properties
 fn get_block(hash: BlockHash, number: i64, latest_messages: Vec<BlockHash>) -> BlockMessage {
@@ -162,7 +164,9 @@ impl TestST {
         self.blocks.extend(blocks);
     }
 
-    fn set_invalid(&mut self, invalid: HashSet<BlockHash>) { self.invalid = invalid; }
+    fn set_invalid(&mut self, invalid: HashSet<BlockHash>) {
+        self.invalid = invalid;
+    }
 }
 
 /// Test error types for mock operations
@@ -208,7 +212,9 @@ impl Mock {
     }
 
     /// Provides access to mutable test state for controlling mock behavior
-    pub fn setup(&self) -> Arc<Mutex<TestST>> { self.test_state.clone() }
+    pub fn setup(&self) -> Arc<Mutex<TestST>> {
+        self.test_state.clone()
+    }
 }
 
 /// Mock implementation of BlockRequesterOps for testing

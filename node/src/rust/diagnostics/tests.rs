@@ -56,10 +56,8 @@ mod tests {
                 pos_multi_sig_quorum: 0,
                 max_cosigners_per_deploy:
                     casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
-                initial_phlogiston:
-                    casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
-                epoch_phlogiston:
-                    casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
+                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
                 // Task #13b: default EMPTY genesis client funding-slot list.
                 client_fuel_allocations: Vec::new(),
                 native_token_name: "F1R3CAP".to_string(),
@@ -187,7 +185,9 @@ mod tests {
         conf
     }
 
-    fn create_test_node_conf_all_disabled() -> NodeConf { create_test_node_conf() }
+    fn create_test_node_conf_all_disabled() -> NodeConf {
+        create_test_node_conf()
+    }
 
     #[test]
     #[serial]
@@ -365,9 +365,10 @@ mod tests {
 
         assert_eq!(config.default_buckets.len(), 3);
         assert_eq!(config.custom_buckets.len(), 1);
-        assert_eq!(config.custom_buckets.get("my_metric").unwrap(), &vec![
-            1.0, 2.0, 3.0
-        ]);
+        assert_eq!(
+            config.custom_buckets.get("my_metric").unwrap(),
+            &vec![1.0, 2.0, 3.0]
+        );
     }
 
     #[test]

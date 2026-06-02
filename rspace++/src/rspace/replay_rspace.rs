@@ -214,13 +214,17 @@ where
         Ok(unpack_option(&consume_res))
     }
 
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+        self.get_store().get_data(channel)
+    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }
 
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> {
+        self.get_store().get_joins(&channel)
+    }
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
         let len = self.get_store().get_data(channel).len();
@@ -245,9 +249,13 @@ where
         self.reset(&RadixHistory::empty_root_node_hash()).await
     }
 
-    async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
+    async fn get_root(&self) -> Blake2b256Hash {
+        self.get_history_repository().root()
+    }
 
-    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
+    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
+        self.get_store().to_map()
+    }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
@@ -405,7 +413,9 @@ where
         }
     }
 
-    async fn is_replay(&self) -> bool { true }
+    async fn is_replay(&self) -> bool {
+        true
+    }
 
     async fn update_produce(&self, produce_ref: Produce) -> () {
         for event in self.event_log.lock().expect("event log lock").iter_mut() {
@@ -527,8 +537,8 @@ where
         .increment(1);
         let estimate = self
             .replay_waiting_continuations_estimate
-            .fetch_add(1, Ordering::Relaxed) +
-            1;
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
         metrics::gauge!(
             REPLAY_WAITING_CONTINUATIONS_ESTIMATE_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
@@ -583,8 +593,8 @@ where
     fn mark_replay_waiting_continuation_match(&self) {
         if self
             .replay_waiting_continuations_estimate
-            .load(Ordering::Relaxed) >
-            0
+            .load(Ordering::Relaxed)
+            > 0
         {
             self.dec_replay_waiting_continuations();
         }
@@ -906,8 +916,8 @@ where
 
     fn was_repeated_enough_times(&self, comm: COMM, datum: Datum<A>) -> bool {
         if !datum.persist {
-            let x = *comm.times_repeated.get(&datum.source).unwrap_or(&0) ==
-                self.get_produce_count(&datum.source);
+            let x = *comm.times_repeated.get(&datum.source).unwrap_or(&0)
+                == self.get_produce_count(&datum.source);
             x
         } else {
             true
@@ -1111,11 +1121,14 @@ where
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
+        self.get_store().put_datum(
+            &channel,
+            Datum {
+                a: data,
+                persist,
+                source: produce_ref,
+            },
+        );
 
         None
     }
@@ -1197,23 +1210,25 @@ where
             match options {
                 None => {
                     if record_install {
-                        self.installs
-                            .lock()
-                            .unwrap()
-                            .insert(channels.clone(), Install {
+                        self.installs.lock().unwrap().insert(
+                            channels.clone(),
+                            Install {
                                 patterns: patterns.clone(),
                                 continuation: continuation.clone(),
-                            });
+                            },
+                        );
                     }
 
-                    self.get_store()
-                        .install_continuation(&channels, WaitingContinuation {
+                    self.get_store().install_continuation(
+                        &channels,
+                        WaitingContinuation {
                             patterns,
                             continuation,
                             persist: true,
                             peeks: BTreeSet::default(),
                             source: consume_ref,
-                        });
+                        },
+                    );
 
                     for channel in channels.iter() {
                         self.get_store().install_join(channel, &channels);
@@ -1281,9 +1296,10 @@ where
                 } = consume_candidate;
 
                 let channels_clone = channels.clone();
-                if datum_index >= 0 &&
-                    !persist &&
-                    self.get_store()
+                if datum_index >= 0
+                    && !persist
+                    && self
+                        .get_store()
                         .remove_datum(&channel, datum_index)
                         .is_err()
                 {

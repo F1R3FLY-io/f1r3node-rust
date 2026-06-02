@@ -215,15 +215,21 @@ impl Par {
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - FreeMap
 pub type FreeMap = BTreeMap<i32, Par>;
-pub fn new_free_map() -> FreeMap { BTreeMap::new() }
+pub fn new_free_map() -> FreeMap {
+    BTreeMap::new()
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - runFirst
 // STUBBED OUT
-pub fn run_first<A>() -> Option<(FreeMap, A)> { None }
+pub fn run_first<A>() -> Option<(FreeMap, A)> {
+    None
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - attemptOpt
 // NOT FULLY IMPLEMENTED
-pub fn attempt_opt(operation: Option<()>) -> Option<()> { operation.map(|_| ()) }
+pub fn attempt_opt(operation: Option<()>) -> Option<()> {
+    operation.map(|_| ())
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - toSeq
 pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
@@ -249,7 +255,9 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
-pub fn no_frees(par: &Par) -> Par { par.with_exprs(no_frees_exprs(&par.exprs)) }
+pub fn no_frees(par: &Par) -> Par {
+    par.with_exprs(no_frees_exprs(&par.exprs))
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
 pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {

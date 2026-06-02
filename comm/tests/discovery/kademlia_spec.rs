@@ -37,7 +37,9 @@ impl KademliaRPCMock {
         }
     }
 
-    fn get_pinged_peers(&self) -> Vec<PeerNode> { self.pinged_peers.lock().unwrap().clone() }
+    fn get_pinged_peers(&self) -> Vec<PeerNode> {
+        self.pinged_peers.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -90,17 +92,29 @@ mod tests {
     use super::*;
 
     // Test peer definitions - these match the Scala version
-    fn local() -> PeerNode { create_peer("00000001") }
+    fn local() -> PeerNode {
+        create_peer("00000001")
+    }
 
-    fn peer0() -> PeerNode { create_peer("00000010") }
+    fn peer0() -> PeerNode {
+        create_peer("00000010")
+    }
 
-    fn peer1() -> PeerNode { create_peer("00001000") }
+    fn peer1() -> PeerNode {
+        create_peer("00001000")
+    }
 
-    fn peer2() -> PeerNode { create_peer("00001001") }
+    fn peer2() -> PeerNode {
+        create_peer("00001001")
+    }
 
-    fn peer3() -> PeerNode { create_peer("00001010") }
+    fn peer3() -> PeerNode {
+        create_peer("00001010")
+    }
 
-    fn peer4() -> PeerNode { create_peer("00001100") }
+    fn peer4() -> PeerNode {
+        create_peer("00001100")
+    }
 
     const DISTANCE_4: Option<usize> = Some(4);
     const DISTANCE_6: Option<usize> = Some(6);
@@ -168,11 +182,10 @@ mod tests {
                 table.update_last_seen(&peer2()).await.unwrap();
                 table.update_last_seen(&peer1()).await.unwrap();
                 table.update_last_seen(&peer3()).await.unwrap();
-                assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                    peer2(),
-                    peer1(),
-                    peer3()
-                ]);
+                assert_eq!(
+                    bucket_entries_at(DISTANCE_4, &table),
+                    vec![peer2(), peer1(), peer3()]
+                );
 
                 // when
                 let new_peer1 = PeerNode {
@@ -182,11 +195,10 @@ mod tests {
                 table.update_last_seen(&new_peer1).await.unwrap();
 
                 // then
-                assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                    peer2(),
-                    peer3(),
-                    new_peer1
-                ]);
+                assert_eq!(
+                    bucket_entries_at(DISTANCE_4, &table),
+                    vec![peer2(), peer3(), new_peer1]
+                );
             }
         }
 
@@ -200,20 +212,19 @@ mod tests {
                 let table = PeerTable::new(local().key().clone(), Some(3), None, ping.clone());
                 table.update_last_seen(&peer2()).await.unwrap();
                 table.update_last_seen(&peer3()).await.unwrap();
-                assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                    peer2(),
-                    peer3()
-                ]);
+                assert_eq!(
+                    bucket_entries_at(DISTANCE_4, &table),
+                    vec![peer2(), peer3()]
+                );
 
                 // when
                 table.update_last_seen(&peer1()).await.unwrap();
 
                 // then
-                assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                    peer2(),
-                    peer3(),
-                    peer1()
-                ]);
+                assert_eq!(
+                    bucket_entries_at(DISTANCE_4, &table),
+                    vec![peer2(), peer3(), peer1()]
+                );
             }
 
             #[tokio::test]
@@ -223,10 +234,10 @@ mod tests {
                 let table = PeerTable::new(local().key().clone(), Some(3), None, ping.clone());
                 table.update_last_seen(&peer2()).await.unwrap();
                 table.update_last_seen(&peer3()).await.unwrap();
-                assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                    peer2(),
-                    peer3()
-                ]);
+                assert_eq!(
+                    bucket_entries_at(DISTANCE_4, &table),
+                    vec![peer2(), peer3()]
+                );
 
                 // when
                 table.update_last_seen(&peer1()).await.unwrap();
@@ -267,11 +278,10 @@ mod tests {
                     table.update_last_seen(&peer4()).await.unwrap();
 
                     // then
-                    assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                        peer2(),
-                        peer3(),
-                        peer1()
-                    ]);
+                    assert_eq!(
+                        bucket_entries_at(DISTANCE_4, &table),
+                        vec![peer2(), peer3(), peer1()]
+                    );
                 }
             }
 
@@ -289,11 +299,10 @@ mod tests {
                     table.update_last_seen(&peer4()).await.unwrap();
 
                     // then
-                    assert_eq!(bucket_entries_at(DISTANCE_4, &table), vec![
-                        peer2(),
-                        peer3(),
-                        peer4()
-                    ]);
+                    assert_eq!(
+                        bucket_entries_at(DISTANCE_4, &table),
+                        vec![peer2(), peer3(), peer4()]
+                    );
                 }
             }
         }

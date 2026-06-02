@@ -16,10 +16,14 @@ fn rand_bytes(nbytes: usize) -> Vec<u8> {
 }
 
 /// Helper function to encode bytes as hex string (equivalent to Base16.encode)
-fn encode_hex(bytes: &[u8]) -> String { hex::encode(bytes) }
+fn encode_hex(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
 
 /// Helper function to create an endpoint for testing
-fn endpoint() -> Endpoint { Endpoint::new("".to_string(), 0, 0) }
+fn endpoint() -> Endpoint {
+    Endpoint::new("".to_string(), 0, 0)
+}
 
 /// Test implementation of KademliaRPC that always succeeds
 struct KademliaRPCStub;

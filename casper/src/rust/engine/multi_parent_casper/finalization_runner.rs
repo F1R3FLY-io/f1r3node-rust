@@ -45,7 +45,9 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 struct FinalizationGuard<'a>(&'a AtomicBool);
 
 impl Drop for FinalizationGuard<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Phase 8 (PO-3): bundles the 9 service handles + tuning flags that
