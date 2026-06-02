@@ -316,3 +316,8 @@ theories/CATranslationFaithfulness.v
 # four-sort grammar. Fee arithmetic reused (carrier-independent); the calculus
 # link is native fuel monotonicity on the hereditarily-funded fragment (HF).
 theories/CASettlement.v
+
+# Stage 5 — native minting-injection layering: re-homes MintingInjection.v's
+# core. Minting (STPar S (STStack t)) is exogenous token injection, never a
+# funded ca_step (which strictly decreases fuel) — so conservation/SN survive.
+theories/CAMintingInjection.v
