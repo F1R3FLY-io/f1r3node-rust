@@ -84,6 +84,17 @@ theories/StructEquivHeads.v
 theories/RhoReduction.v
 theories/CostAccountedSyntax.v
 
+# Level 1b: Native four-sort cost-accounted syntax (DR-21 Option B — the
+# faithful "signed terms pervade the syntax" grammar). Parallel modules during
+# the incremental migration; reuse [sig]/[token] from CostAccountedSyntax.
+# - CASyntax: the three native sorts caproc/caname/signed_term + scheme,
+#   eq_dec, lift, subst (with the dequote st_to_proc collapse), token-count.
+# - CABinding: the locally-nameless metatheory (subst_lift_*, closed_* family).
+# - CAStructEquiv: the 3-way congruence; signed-term commutative monoid (∥,()).
+theories/CASyntax.v
+theories/CABinding.v
+theories/CAStructEquiv.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
