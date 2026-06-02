@@ -312,6 +312,12 @@ theories/CATranslationLemmas.v
 # substitutions). Builds toward the per-rule simulations + the headline.
 theories/CATranslationFaithfulness.v
 
+# Stage 4b — native single-gate strong bisimulation (the analogue of the old
+# translation_strong_bisimilar_generic): firing {P}_s with a unit token yields a
+# residue strongly bisimilar to the released body p_tr P (no force-collapse — a
+# single gate, no inner signed-term substitution at a force position).
+theories/CABisimulation.v
+
 # Stage 5 — native post-evaluation fee settlement: re-homes Settlement.v onto the
 # four-sort grammar. Fee arithmetic reused (carrier-independent); the calculus
 # link is native fuel monotonicity on the hereditarily-funded fragment (HF).
