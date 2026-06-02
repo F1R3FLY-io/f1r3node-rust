@@ -321,3 +321,8 @@ theories/CASettlement.v
 # core. Minting (STPar S (STStack t)) is exogenous token injection, never a
 # funded ca_step (which strictly decreases fuel) — so conservation/SN survive.
 theories/CAMintingInjection.v
+
+# Stage 5 — native blessed Exchange: re-homes Exchange.v. The 1:1 swap
+# conservation is carrier-independent (re-exported); the native characterization
+# is "a swap is a funded ca_step, never a mint".
+theories/CAExchange.v
