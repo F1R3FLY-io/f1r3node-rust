@@ -61,12 +61,21 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   `lift_proc d 1 (lift_proc 1 0 Q) = lift_proc (S d) 0 Q` (general `lift_lift` on proc).
   **RhoSyntax does NOT provide it** (only `lift_zero_proc`); must be proved (mutual
   induction on proc/name, ~60 lines) before the depth-indexed bridge.
-- [ ] **st_tr_d** : depth-indexed mutual translation (caname_tr_d (CNVar k) = NVar (k+d);
-  gate binders increment d; NO internal lift_proc) + **bridge** `st_tr_d d X =
-  lift_proc d 0 (st_tr_d 0 X)` (needs the proc lift/lift lemma) + `St X = st_tr_d 0 X`.
-- [ ] **L3** depth-aware commute (=  on structural cases, ≡ at dequote) — **HIGH risk,
-  the crux**, ~250–400 lines; mutual depth-indexed induction + `subst_lift_strong` +
-  L1 (`lift_subst_ca`, done) + L2 (`subst_st_to_proc`, done).
+- [x] **st_trd (d,c)** : depth-indexed mutual translation (`p_trd`/`cn_trd`/`st_trd`,
+  threading a lift at cutoff c) + **bridge** `st_trd d c X = lift_proc d c (St X)`
+  (`trd_bridge`, via `lift_lift_comm_proc` at gates) + `st_trd_zero` (`St = st_trd 0 0`).
+  Committed 54701083. Also: `lift_lift_comm_proc`, `lift_lift_compose_proc`,
+  `lift_proc_S_compose` (committed cbe527d6/54701083).
+- [ ] **L3 / per-rule commutation — KEY FINDING (verified by hand on
+  `T = STSigned (CPDeref (CNVar 0)) SUnit`):** the commutation is **NOT a syntactic
+  equality** even at index 0. `subst_proc (St T) 0 (Quote (St U))` yields
+  `PDeref(Quote(St U))` (the *gated* translation, derefed) whereas
+  `St (subst_st T 0 (CQuote U))` yields `Pt(st_to_proc U)` (gates **stripped** by the
+  dequote-collapse). So there is no clean equational L3; the per-rule simulations are
+  **operational + coinductive**, reducing `PDeref(Quote(St U)) →/≡ St U` (deref-quote)
+  then `St U ~bisim~ Pt(st_to_proc U)` (L4). This confirms L4 is load-bearing for every
+  rule, and the per-rule proofs need RhoReduction's reduction rules + the `bisim`
+  coinductive — they are NOT discharged by the lift/subst equational layer (now complete).
 - [ ] **L4** dequote-collapse bisim (ports `multi_stuck_residue_bisim`; ~150 lines).
 - [ ] `rule1..5` per-rule simulations (Thm B). Step counts: r1 atomic **2** / SAnd **3**;
   r2 **3** (nested two-gate, no Split); r3 **5** (Split needed — combined token); r4 **5**
