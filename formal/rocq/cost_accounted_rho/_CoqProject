@@ -240,3 +240,10 @@ theories/GSLTOSLFCapstone.v
 # identical to the spec's receiver seal s1. Axiom-free; Closed under the global
 # context.
 theories/Rule45ContinuationAdequacy.v
+
+# ── Categorical layer for continued-gslt-cost-v2 (the Cost endofunctor / monad).
+# CL2 — SignatureMonoid: the two monoids the monad laws descend from, the
+# signature commutative monoid (Sig,*,()) up to ≡sig and the temporal token-stack
+# free monoid (token, tok_concat, ()). Depends only on CostAccountedSyntax, so it
+# is buildable ahead of the rest of the categorical layer.
+theories/SignatureMonoid.v
