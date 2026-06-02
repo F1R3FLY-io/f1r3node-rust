@@ -212,3 +212,12 @@ theories/Exchange.v
 # linear / no-contraction). Assembles already-proven Qed-closed results;
 # framework-independent (no MeTTaIL). Closed under the global context.
 theories/GSLTOSLFCapstone.v
+
+# Rule-4/5 continuation re-seal adequacy (GAP-2 / #7). Depends on RhoSyntax +
+# CostAccountedSyntax. Proves the Rocq model's re-seal of the bare-proc Rule-4/5
+# continuation under SAnd(s1,s2) is COST-BENIGN: a seal carries no fuel
+# (system_token_count (SSigned _ _) = 0), so the token count — the cost the cost
+# theorems and consensus meter — is independent of the continuation's seal, hence
+# identical to the spec's receiver seal s1. Axiom-free; Closed under the global
+# context.
+theories/Rule45ContinuationAdequacy.v
