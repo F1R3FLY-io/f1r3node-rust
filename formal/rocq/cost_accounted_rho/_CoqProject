@@ -109,6 +109,13 @@ theories/WrappingSubjectReduction.v
 # determinism are conditioned (the consensus-relevant fragment).
 theories/CATokenConservation.v
 
+# Level 2d: native strong normalization on the linearly-funded fragment. The
+# bridge lemma (linear substitution bounds fuel), funded_step_decreases (every
+# funded COMM strictly drops st_total_fuel), ca_SN_funded (well-foundedness),
+# and the divergence witness (off the fragment the measure can rise — SN is
+# genuinely conditional, matching the acceptance gate).
+theories/CAStrongNormalization.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
