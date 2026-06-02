@@ -4213,6 +4213,26 @@ the adequacy theorem already settle). Until that trigger is met, Option A
 discharges the paper's defining equations and the adequacy theorem proves the
 residual benign. (See DR-17, DR-20.)
 
+**Update — the native grammar is now realized (DR-21).** The Option-B migration
+above has been **executed**, triggered by the sibling paper
+`continued-gslt-cost-v2.tex` (whose "wrapping by construction" IS this native
+grammar). The cost-accounted source is now the four native sorts
+(`CASyntax.v` — `caproc`/`caname`/`signed_term`, continuations are signed terms),
+with the pure rho `proc` kept as the unchanged translation target (the carrier
+split). Natively the Rule-4/5 continuation keeps its own seal, so the `SAnd`
+re-seal is **absent** — GAP-2 is dissolved, not merely benign. The central claims
+of `continued-gslt-cost-v2` are discharged axiom-free by
+`continued_gslt_cost_capstone` (`ContinuedGSLTCapstone.v`): wrapping by
+construction (subject reduction / no-leak, `WrappingSubjectReduction.v`), the
+Cost monad laws (the two constituent monoids, `SignatureMonoid.v`), GAP-2
+dissolution, cost determinism on the funded fragment (`CACostDeterminism.v`), and
+the stack modulus (`CAModulus.v`). Native strong normalization is conditional on
+the linearly-funded fragment — the consensus-relevant class, since only funded
+deploys are admitted (`CAStrongNormalization.v`). The native re-statement of the
+translation/bisimulation stack — and the graded-HML adequacy and two adjunctions
+that rest on it — continues; the construct-by-construct map is in
+[cost-accounting-as-monad-correspondence.md](cost-accounting-as-monad-correspondence.md).
+
 **Implementation-delegated parameters.** Three constructs the paper uses but
 deliberately leaves to the implementation. (i) **The hash function** for
 crypto-quoting `#P` (§4.2): the paper specifies "a configurable hash function
