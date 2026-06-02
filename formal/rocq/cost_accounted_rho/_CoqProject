@@ -122,6 +122,12 @@ theories/CAStrongNormalization.v
 theories/CAConfluence.v
 theories/CAStepDeterminism.v
 
+# Level 2f: native cost determinism. Newman's lemma (Coquand, constructive) on
+# the hereditarily-funded fragment ⇒ confluence ⇒ unique normal forms ⇒ cost
+# determinism — the consensus-critical result, on exactly the class of admitted
+# (funded) deploys.
+theories/CACostDeterminism.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
