@@ -80,11 +80,23 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   (gates **stripped** by the source's `st_to_proc` force). These coincide except at
   `*x`-force positions, where the dequote-collapse (L4) relates them. So the per-rule
   match is exact away from forces; at forces it is up-to the L4 bisimilarity.
-- [ ] **L3 / per-rule for the remaining rules + atomic generalisation:** rule1 (general
-  atomic s), rule2 (nested two-gate, split tokens), rule5 (two separate gates, split
-  tokens) all fire **directly** (gate channel = token channel); rules 3/4 (combined token
-  `TGate (SAnd s1 s2) t`, channel `Nt (SAnd s1 s2)` ≠ gate channel `Nt s1`) need a **Split**
-  mediator (port of old `Translation.Split`). Each is operational over `rs_comm`.
+- [x] **ALL FIVE per-rule operational simulations — DONE** (rule1_reachable [general
+  atomic, 2 COMMs], rule2_reachable [nested gate, split tokens, 3 COMMs, no side condition],
+  rule3_reachable [combined token via Split, 4 COMMs], rule4_reachable [split processes +
+  combined token via Split, atomic sigs, 4 COMMs], rule5_reachable [fully split, atomic
+  sigs, 3 COMMs]). Committed 39662344 / 78b57310 / 8ce62196 / 91023f42 / 27eb1381. Plus the
+  native Split mediator (Split / Split_closed / Split_fires, 4322d607), the gate-firing
+  substitution helpers (gate_body_subst / nested_gate_subst / gate2_body_subst /
+  split_body_subst), and the reachability congruences rho_reachable_par_l/r.
+  **Token-handling is faithful** (subst's semantic deref releases stack tails live); the
+  ONLY residual is the payload dequote-collapse, for the bisimulation layer.
+- [ ] **General ∀-ca_step assembly** (`ca_translation_progresses` or the reachability
+  packaging): induction over ca_step's 5 leaf rules (each via its per-rule lemma, Ctx=PNil
+  for 1/2/5, Ctx=Split for 3/4; ca_rule1 destructs s into atomic→rule1 / SAnd→rule3) + the
+  ca_par_l/r congruence (lift the IH step through PPar via rs_struct, absorbing the
+  Ctx-rearrangement ≡). NOTE: ca_rule4/5 carry GENERAL s1,s2 in CAReduction, so nested-SAnd
+  sigs would need a RECURSIVE Split (port of old PersistentSplit); the atomic-leaf fragment
+  is covered. State as one-step progress (rho_step) to stay non-vacuous.
 - [ ] **L4** dequote-collapse bisim (ports `multi_stuck_residue_bisim`; ~150 lines).
 - [ ] `rule1..5` per-rule simulations (Thm B). Step counts: r1 atomic **2** / SAnd **3**;
   r2 **3** (nested two-gate, no Split); r3 **5** (Split needed — combined token); r4 **5**
