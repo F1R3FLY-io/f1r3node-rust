@@ -66,16 +66,25 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   (`trd_bridge`, via `lift_lift_comm_proc` at gates) + `st_trd_zero` (`St = st_trd 0 0`).
   Committed 54701083. Also: `lift_lift_comm_proc`, `lift_lift_compose_proc`,
   `lift_proc_S_compose` (committed cbe527d6/54701083).
-- [ ] **L3 / per-rule commutation — KEY FINDING (verified by hand on
-  `T = STSigned (CPDeref (CNVar 0)) SUnit`):** the commutation is **NOT a syntactic
-  equality** even at index 0. `subst_proc (St T) 0 (Quote (St U))` yields
-  `PDeref(Quote(St U))` (the *gated* translation, derefed) whereas
-  `St (subst_st T 0 (CQuote U))` yields `Pt(st_to_proc U)` (gates **stripped** by the
-  dequote-collapse). So there is no clean equational L3; the per-rule simulations are
-  **operational + coinductive**, reducing `PDeref(Quote(St U)) →/≡ St U` (deref-quote)
-  then `St U ~bisim~ Pt(st_to_proc U)` (L4). This confirms L4 is load-bearing for every
-  rule, and the per-rule proofs need RhoReduction's reduction rules + the `bisim`
-  coinductive — they are NOT discharged by the lift/subst equational layer (now complete).
+- [x] **rule1 (atomic SUnit) operational reachability — DONE (rule1_unit_reachable):**
+  `St(rule1 LHS) ⇝* PPar (subst_proc (St T) 0 (Quote (St U))) (Tt t)` in two COMMs.
+  **Corrected operational fact:** `subst_proc` performs SEMANTIC dereferencing —
+  `subst_proc (PDeref (NVar 0)) 0 (Quote Q) = Q` (NOT a stuck `PDeref(Quote Q)`; the
+  earlier "stuck residue" note was wrong). So the gate's `*t` releases the stack tail
+  `Tt t` **live**, and the per-rule result's token part matches `St(RHS)` **exactly**
+  (`gate_body_subst`). The token-handling worry is dissolved.
+- [ ] **The residual gap is purely the payload body** (verified on
+  `T = STSigned (CPDeref (CNVar 0)) SUnit`): `subst_proc (St T) 0 (Quote (St U))` exposes
+  `lift_proc 1 0 (St U)` at a force (`*x`) position, whereas `St (subst_st T 0 (CQuote U))`
+  exposes `lift_proc 1 0 (Pt (st_to_proc U))` — i.e. `St U` (gated) vs `Pt (st_to_proc U)`
+  (gates **stripped** by the source's `st_to_proc` force). These coincide except at
+  `*x`-force positions, where the dequote-collapse (L4) relates them. So the per-rule
+  match is exact away from forces; at forces it is up-to the L4 bisimilarity.
+- [ ] **L3 / per-rule for the remaining rules + atomic generalisation:** rule1 (general
+  atomic s), rule2 (nested two-gate, split tokens), rule5 (two separate gates, split
+  tokens) all fire **directly** (gate channel = token channel); rules 3/4 (combined token
+  `TGate (SAnd s1 s2) t`, channel `Nt (SAnd s1 s2)` ≠ gate channel `Nt s1`) need a **Split**
+  mediator (port of old `Translation.Split`). Each is operational over `rs_comm`.
 - [ ] **L4** dequote-collapse bisim (ports `multi_stuck_residue_bisim`; ~150 lines).
 - [ ] `rule1..5` per-rule simulations (Thm B). Step counts: r1 atomic **2** / SAnd **3**;
   r2 **3** (nested two-gate, no Split); r3 **5** (Split needed — combined token); r4 **5**

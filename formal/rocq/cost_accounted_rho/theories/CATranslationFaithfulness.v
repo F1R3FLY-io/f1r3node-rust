@@ -19,6 +19,7 @@ From Stdlib Require Import Lia.
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import RhoReduction.
 From CostAccountedRho Require Import CATranslation.
 From CostAccountedRho Require Import CATranslationLemmas.
 
@@ -146,5 +147,34 @@ Qed.
 (* St is the depth-zero translation. *)
 Lemma st_trd_zero : forall T, st_trd 0 0 T = St T.
 Proof. intro T. rewrite (proj2 (proj2 trd_bridge) T 0 0). apply lift_zero_proc. Qed.
+
+(* ── Per-rule operational simulation (forward reachability) ─────────────────
+   The gate-firing reduction: a gate body's bound token-variable is replaced by
+   the received (quoted) token; the lifted payload un-lifts (subst_lift_zero),
+   and the *t deref SEMANTICALLY DEREFERENCES the received quote (subst_proc on
+   PDeref (NVar 0) by Quote Q yields Q) — so the token Tt t is released live. *)
+
+Lemma gate_body_subst : forall A Q,
+  subst_proc (PPar (lift_proc 1 0 A) (PDeref (NVar 0))) 0 (Quote Q) = PPar A Q.
+Proof. intros A Q; simpl; rewrite subst_lift_zero; reflexivity. Qed.
+
+(* Rule 1 (atomic SUnit): the translated redex fires in two COMMs — the gate
+   COMM consumes the token (releasing the stack tail Tt t live), then the
+   released for|send COMM substitutes the payload. The token part Tt t matches
+   the target St(RHS) exactly; the only residual gap (payload body) is the
+   dequote-collapse handled by the bisimulation layer. *)
+Lemma rule1_unit_reachable : forall x T U t,
+  rho_reachable
+    (St (STPar (STSigned (CPPar (CPInput x T) (CPOutput x U)) SUnit) (STStack (TGate SUnit t))))
+    (PPar (subst_proc (St T) 0 (Quote (St U))) (Tt t)).
+Proof.
+  intros x T U t.
+  eapply rr_step.
+  { apply rs_comm. }
+  rewrite gate_body_subst.
+  eapply rr_step.
+  { apply rs_par_l. apply rs_comm. }
+  apply rr_refl.
+Qed.
 
 End CATranslationFaithfulnessSec.
