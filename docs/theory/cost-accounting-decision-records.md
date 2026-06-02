@@ -707,3 +707,61 @@ impl's choice is consistent with every behavioral law the paper fixes. Recorded 
 **Cross-refs.** DR-17 (the representation choice + Option A/B), DR-13 (per-signature balance datum), DR-16
 (G-parametric hash), DR-1 (g/#P axes). Spec §3.6/§3.8/§3.1/§4.2/§3.4/§4.6/§4.7.
 `Rule45ContinuationAdequacy.v`; verification §12.3.
+
+---
+
+## DR-21 — Option B EXECUTED: the native four-sort grammar; GAP-2 dissolved; native SN is conditional on the linearly-funded fragment
+
+**Status.** In progress (the `continued-gslt-cost-v2` alignment). The DR-17/DR-20 Option-B native-grammar
+migration — previously recorded-but-not-performed — is now being **executed**, triggered by the sibling paper
+`publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex` ("Continued Interactive GSLTs and the Cost
+Endofunctor"), whose central revision **"wrapping by construction"** (continuation slots sorted as wrapped
+terms 𝕋; no-leak a sorting invariant) IS the native four-sort grammar. The user directed full alignment with
+both papers, with full multi-prover rigor (Rocq + TLA+ + Sage + Lean). **Spec law:** cost-accounted-rho.tex
+§3.1 (four-sort grammar), §3.6 (Rules 1-5); continued-gslt-cost-v2.tex (the categorical construction).
+
+**(a) Carrier split (the migration's load-bearing design).** The pure rho calculus `proc`/`name` of
+`RhoSyntax.v` is kept UNCHANGED as the translation TARGET; the cost-accounted SOURCE is introduced as three
+new mutually-inductive sorts in `CASyntax.v` — `caproc` / `caname` / `signed_term` — reusing `sig` and the
+`token` stack (`() | s:S`) from `CostAccountedSyntax.v`. `for`/`send` (`CPInput`/`CPOutput`) carry
+`signed_term` continuations/payloads, so "signed terms pervade the syntax" is native and "every redex lies
+inside a wrapper" is a SORTING invariant. The wrapper is `STSigned` (the old `system` `SSigned` coexists
+during the incremental migration). This split is what keeps the erasure target signature-free and lets the
+proof gate stay green at every stage. The §3.8 sugars become native `signed_term` equalities.
+
+**(b) GAP-2 dissolves syntactically.** Because the native continuation `T` is a `signed_term` carrying its own
+seal, the COMM rules (`CAReduction.v`) yield `T{@U/y} = subst_st T 0 (CQuote U)` — the continuation keeps its
+own signature, with NO `SAnd s1 s2` re-seal in the split-process rules (old `ca_rule4`/`ca_rule5`). The
+re-seal GAP-2 (DR-20a) is simply absent; `gap2_split_{combined,split}_keeps_own_seal` witness it.
+`Rule45ContinuationAdequacy` (which proved the OLD re-seal cost-benign) remains valid for the old model and is
+retired when the old model is removed (a later stage).
+
+**(c) Native strong normalization is CONDITIONAL — a genuine finding.** The old `token_strictly_decreases`
+(every step strictly drops `system_token_count`) is **false** for the native model: a `for`-continuation that
+is a located purse (`STStack`) RELEASES spine fuel, and a non-linear continuation (a received quote
+dereferenced ≥2 times) DUPLICATES a token-bearing payload — so `st_total_fuel` can strictly INCREASE
+(`st_total_fuel_can_increase_off_funded` exhibits a concrete witness, 3→4). Native `ca_step` therefore does
+NOT strongly normalize unconditionally. SN holds on the **linearly-funded fragment** (`funded_linear`: every
+continuation forces its bound variable at most once — the term-level image of `LinearLogicResources`'
+no-contraction — and no continuation is a self-replenishing purse). There, every COMM strictly drops
+`st_total_fuel` by the consumed gate (`funded_step_decreases`), and `ca_SN_funded` follows by
+well-foundedness of `<`. **This conditioning is not a weakening: it MATCHES the operational acceptance gate** —
+only funded deploys are admitted (`strict_reject_when_underfunded`), so cost-determinism on the funded
+fragment is exactly the consensus-relevant statement. It is also faithful to the paper's "multiplicity is
+carried by the stack (linear token consumption), not by key distinctness" (continued-gslt-cost-v2.tex,
+"Duplication needs no fresh signatures"). Design decision (locked): the `funded_linear` clause for a bare
+`STStack` continuation is the restrictive, provably-sound one (terminal purses only); relax later only if a
+use-case requires it.
+
+**(d) Module inventory (committed, axiom-free, proof-gate green).** `CASyntax`, `CABinding`, `CAStructEquiv`
+(native grammar + locally-nameless metatheory + 3-way structural congruence); `CAReduction`,
+`WrappingSubjectReduction` (the five gated COMM rules + subject reduction / no-leak); `CATokenConservation`
+(`st_total_fuel`, spine-invariance, `funded_linear`); `CAStrongNormalization` (the bridge lemma, conditional
+SN, divergence witness); plus the categorical `SignatureMonoid` (the two monoids the Cost monad descends from)
+and the Sage witness `cost_monad_laws.sage`. Remaining stages (confluence/cost-determinism re-base on
+`ca_SN_funded`; translation/faithfulness/bisimulation re-mechanization; the categorical endofunctor/monad
+layer; TLA+ and Lean legs; the §12.3 verification-doc update) build on this foundation.
+
+**Cross-refs.** DR-17 (the Option A/B representation choice), DR-20 (GAP-1/GAP-2/GAP-3 + the Option-B
+trigger), DR-9 (per-COMM cost), DR-13 (per-signature balance). Spec §3.1/§3.6/§3.8; continued-gslt-cost-v2
+("wrapping by construction", "duplication needs no fresh signatures", "stack consumption is the modulus").
