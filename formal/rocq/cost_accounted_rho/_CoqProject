@@ -326,3 +326,9 @@ theories/CAMintingInjection.v
 # conservation is carrier-independent (re-exported); the native characterization
 # is "a swap is a funded ca_step, never a mint".
 theories/CAExchange.v
+
+# Stage 5 — native economic capstone: consolidates CASettlement/CAMintingInjection/
+# CAExchange into one funded-fragment guarantee (fuel conserved + settlement
+# balances + no mint). Documents that the remaining economic modules are
+# carrier-independent (hold for native verbatim).
+theories/CAEconomicCapstone.v
