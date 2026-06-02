@@ -158,23 +158,37 @@ Lemma gate_body_subst : forall A Q,
   subst_proc (PPar (lift_proc 1 0 A) (PDeref (NVar 0))) 0 (Quote Q) = PPar A Q.
 Proof. intros A Q; simpl; rewrite subst_lift_zero; reflexivity. Qed.
 
-(* Rule 1 (atomic SUnit): the translated redex fires in two COMMs — the gate
-   COMM consumes the token (releasing the stack tail Tt t live), then the
-   released for|send COMM substitutes the payload. The token part Tt t matches
-   the target St(RHS) exactly; the only residual gap (payload body) is the
-   dequote-collapse handled by the bisimulation layer. *)
-Lemma rule1_unit_reachable : forall x T U t,
+(* Rule 1 (any ATOMIC signature s — the gate channel Nt s equals the token
+   channel, so it fires directly; SAnd is excluded as it routes a combined token
+   and needs a Split mediator). The translated redex fires in two COMMs — the
+   gate COMM consumes the token (releasing the stack tail Tt t live, via
+   gate_body_subst), then the released for|send COMM substitutes the payload. The
+   token part Tt t matches the target St(RHS) exactly; the only residual gap
+   (payload body at *x-force positions) is the dequote-collapse handled by the
+   bisimulation layer. *)
+Lemma rule1_reachable : forall x T U s t,
+  (forall a b, s <> SAnd a b) ->
   rho_reachable
-    (St (STPar (STSigned (CPPar (CPInput x T) (CPOutput x U)) SUnit) (STStack (TGate SUnit t))))
+    (St (STPar (STSigned (CPPar (CPInput x T) (CPOutput x U)) s) (STStack (TGate s t))))
     (PPar (subst_proc (St T) 0 (Quote (St U))) (Tt t)).
 Proof.
-  intros x T U t.
-  eapply rr_step.
-  { apply rs_comm. }
-  rewrite gate_body_subst.
-  eapply rr_step.
-  { apply rs_par_l. apply rs_comm. }
-  apply rr_refl.
+  intros x T U s t Hns.
+  assert (fire : forall ss tt,
+    rho_reachable
+      (PPar (PInput (Nt ss)
+               (PPar (lift_proc 1 0 (Pt (CPPar (CPInput x T) (CPOutput x U)))) (PDeref (NVar 0))))
+            (POutput (Nt ss) (Tt tt)))
+      (PPar (subst_proc (St T) 0 (Quote (St U))) (Tt tt))).
+  { intros ss tt.
+    eapply rr_step. { apply rs_comm. }
+    rewrite gate_body_subst.
+    eapply rr_step. { apply rs_par_l; apply rs_comm. }
+    apply rr_refl. }
+  destruct s as [| bs | bs | a b].
+  - apply fire.
+  - apply fire.
+  - apply fire.
+  - exfalso; apply (Hns a b); reflexivity.
 Qed.
 
 End CATranslationFaithfulnessSec.

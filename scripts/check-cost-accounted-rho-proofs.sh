@@ -141,7 +141,7 @@ Print Assumptions Tt_lift_inv.
 Print Assumptions Tt_subst_inv.
 Print Assumptions trd_bridge.
 Print Assumptions st_trd_zero.
-Print Assumptions rule1_unit_reachable.
+Print Assumptions rule1_reachable.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.
