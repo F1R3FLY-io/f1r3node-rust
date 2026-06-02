@@ -75,6 +75,17 @@ CONTRACT_THEOREMS=(
   CostAccountedRho.token_split_zero
   CostAccountedRho.no_token_no_step
   CostAccountedRho.ca_step_one_token_example
+  # CostMonad — the cost monad's law substrate (continued-gslt-cost-v2; Rocq
+  #   SignatureMonoid + ContinuedGSLTCapstone Cost_Monad_Laws). The Lean leg.
+  CostAccountedRho.CostMonad.sig_monoid_comm
+  CostAccountedRho.CostMonad.sig_monoid_assoc
+  CostAccountedRho.CostMonad.sig_monoid_unit_l
+  CostAccountedRho.CostMonad.sig_monoid_unit_r
+  CostAccountedRho.CostMonad.stack_concat_assoc
+  CostAccountedRho.CostMonad.stack_concat_unit_r
+  CostAccountedRho.CostMonad.stack_size_concat
+  CostAccountedRho.CostMonad.stack_concat_not_commutative
+  CostAccountedRho.CostMonad.cost_monad_laws
   # P1 — slash-authorization soundness (BondMap slash taxonomy;
   #      Rocq slashing Validator.v 154-227) + the lifetime authorization kernel
   #      (Rocq ValidatorLifetime.v 17-54 / MainTheorem.v:210)
