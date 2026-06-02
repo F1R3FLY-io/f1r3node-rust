@@ -53,9 +53,20 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
 - [ ] **L5** gate-unwrap (atomic + SAnd) — old `rule1_unit_after_gate` shape.
 - [ ] `se_implies_bisim`, `bisim_par_l`/`bisim_par_r` congruence (small cofix).
 
-### `CATranslationFaithfulness.v`  (Section)
+### `CATranslationFaithfulness.v`  (Section)  — **Section + foundation committed (89737ab4)**
+- [x] Section over the audited hash/ground hypotheses; Local Notations Nt/Tt/Pt/Ct/St.
+- [x] in-Section closedness (Nt_closed/Tt_closed) + lift/subst invariance
+  (Nt_lift_inv/Nt_subst_inv/Tt_lift_inv/Tt_subst_inv) — closed images inert under COMM.
+- [ ] **PREREQUISITE (newly identified):** a proc-level lift/lift composition lemma
+  `lift_proc d 1 (lift_proc 1 0 Q) = lift_proc (S d) 0 Q` (general `lift_lift` on proc).
+  **RhoSyntax does NOT provide it** (only `lift_zero_proc`); must be proved (mutual
+  induction on proc/name, ~60 lines) before the depth-indexed bridge.
+- [ ] **st_tr_d** : depth-indexed mutual translation (caname_tr_d (CNVar k) = NVar (k+d);
+  gate binders increment d; NO internal lift_proc) + **bridge** `st_tr_d d X =
+  lift_proc d 0 (st_tr_d 0 X)` (needs the proc lift/lift lemma) + `St X = st_tr_d 0 X`.
 - [ ] **L3** depth-aware commute (=  on structural cases, ≡ at dequote) — **HIGH risk,
-  the crux**, ~250–400 lines; mutual depth-indexed induction + `subst_lift_strong`.
+  the crux**, ~250–400 lines; mutual depth-indexed induction + `subst_lift_strong` +
+  L1 (`lift_subst_ca`, done) + L2 (`subst_st_to_proc`, done).
 - [ ] **L4** dequote-collapse bisim (ports `multi_stuck_residue_bisim`; ~150 lines).
 - [ ] `rule1..5` per-rule simulations (Thm B). Step counts: r1 atomic **2** / SAnd **3**;
   r2 **3** (nested two-gate, no Split); r3 **5** (Split needed — combined token); r4 **5**
@@ -63,6 +74,13 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
 - [ ] `ca_par_l`/`ca_par_r` congruence.
 - [ ] **Thm A** `ca_translation_forward` (headline): `∀ S S', ca_step S S' → ∃ W,
   rho_reachable (tr S) W ∧ bisim W (tr S')`.
+
+**Progress note (this session):** the entire `CATranslationLemmas` module (L1/L2/
+lift_lift_comm) and the `CATranslationFaithfulness` Section + invariance foundation are
+committed and gate-green. The remaining items above form a layered development (proc
+lift/lift → st_tr_d + bridge → L3 → L4 → per-rule → Thm A → Thm C) whose crux (L3) is the
+genuinely-novel research step; each layer must compile axiom-free before the next, so it
+proceeds as a sequence of gate-green checkpoints, not one landing.
 
 ### `CABisimulation.v`  (Section)
 - [ ] port `bisim` usage + `post_gate_bisim`/`multi_stuck_residue_bisim` native.

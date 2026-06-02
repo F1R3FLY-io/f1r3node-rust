@@ -14,6 +14,7 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
 
@@ -175,4 +176,43 @@ Proof.
     intros T1 IH1 T2 IH2 d c n N Hle; simpl; f_equal; [ apply IH1 | apply IH2 ]; assumption.
   - (* STStack t *)
     intros t d c n N Hle; reflexivity.
+Qed.
+
+(* ── proc-level lift/lift composition (prerequisite for the depth-indexed
+   bridge in CATranslationFaithfulness; RhoSyntax provides only lift_zero_proc) ── *)
+
+Lemma lift_lift_compose_proc : forall P d2 c1 d1 c1',
+  c1' <= c1 -> c1 <= c1' + d1 ->
+  lift_proc d2 c1 (lift_proc d1 c1' P) = lift_proc (d1 + d2) c1' P.
+Proof.
+  apply (proc_ind_mut
+    (fun P => forall d2 c1 d1 c1', c1' <= c1 -> c1 <= c1' + d1 ->
+        lift_proc d2 c1 (lift_proc d1 c1' P) = lift_proc (d1 + d2) c1' P)
+    (fun x => forall d2 c1 d1 c1', c1' <= c1 -> c1 <= c1' + d1 ->
+        lift_name d2 c1 (lift_name d1 c1' x) = lift_name (d1 + d2) c1' x)).
+  - (* PNil *) intros; reflexivity.
+  - (* PInput x P' *) intros x IHx P' IHP d2 c1 d1 c1' H1 H2; simpl; f_equal; [ apply IHx | apply IHP ]; lia.
+  - (* POutput *) intros x IHx Q IHQ d2 c1 d1 c1' H1 H2; simpl; f_equal; [ apply IHx | apply IHQ ]; lia.
+  - (* PPar *) intros P1 IH1 P2 IH2 d2 c1 d1 c1' H1 H2; simpl; f_equal; [ apply IH1 | apply IH2 ]; lia.
+  - (* PDeref *) intros x IHx d2 c1 d1 c1' H1 H2; simpl; f_equal; apply IHx; lia.
+  - (* PReplicate *) intros P' IHP d2 c1 d1 c1' H1 H2; simpl; f_equal; apply IHP; lia.
+  - (* Quote *) intros P' IHP d2 c1 d1 c1' H1 H2; simpl; f_equal; apply IHP; lia.
+  - (* NVar k *)
+    intros k d2 c1 d1 c1' H1 H2.
+    repeat (simpl; match goal with |- context[?a <=? ?b] => destruct (a <=? b) eqn:?Hl end);
+    repeat match goal with
+           | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+           | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+           end;
+    try (f_equal; lia); try lia; try reflexivity.
+Qed.
+
+(* The instance the depth-indexed bridge needs: lift 1 at cutoff 0, then lift d
+   at cutoff 1, equals lift (S d) at cutoff 0. *)
+Lemma lift_proc_S_compose : forall Q d,
+  lift_proc d 1 (lift_proc 1 0 Q) = lift_proc (S d) 0 Q.
+Proof.
+  intros Q d.
+  rewrite (lift_lift_compose_proc Q d 1 1 0) by lia.
+  reflexivity.
 Qed.

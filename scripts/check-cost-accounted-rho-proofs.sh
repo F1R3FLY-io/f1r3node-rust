@@ -132,6 +132,8 @@ Print Assumptions lift_st_to_proc.
 Print Assumptions subst_st_to_proc.
 Print Assumptions lift_lift_comm.
 Print Assumptions lift_subst_ca.
+Print Assumptions lift_lift_compose_proc.
+Print Assumptions lift_proc_S_compose.
 Print Assumptions Nt_lift_inv.
 Print Assumptions Nt_subst_inv.
 Print Assumptions Tt_lift_inv.
