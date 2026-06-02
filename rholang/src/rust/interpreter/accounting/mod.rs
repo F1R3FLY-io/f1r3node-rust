@@ -1,3 +1,19 @@
+//! # Cost accounting — formal correspondence (continued-gslt-cost-v2)
+//!
+//! This runtime is the operational image of the Rocq Cost endofunctor/monad
+//! (`formal/rocq/cost_accounted_rho/`). The mapping is additive witnessing only —
+//! no behavioral change (see `docs/theory/cost-accounting-as-monad-correspondence.md`):
+//!  - η (unmetered embedding)   ↔ the system/unmetered budget mode
+//!    (`CostMonad.cost_eta`, `CAAdjunctions.cost_install`).
+//!  - μ (grade accumulation)    ↔ per-COMM charge accumulation; non-idempotent
+//!    (`CostMonad.cost_mu` / `cost_mu_modulus_accumulates`).
+//!  - located capabilities      ↔ the per-signature `DashMap` lanes, disjoint
+//!    (`CALocatedPurses.draw_disjoint` / `ChannelSeparation.lane_pool_disjoint`).
+//!  - graded transition ⟨a⟩_s   ↔ the signature key on billable events
+//!    (`CAGradedTransition.graded_step`).
+//!  - linear no-double-spend    ↔ the resource-logic / Δσ discipline
+//!    (`CATypeDiscipline.ca_linear_no_contraction`).
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
