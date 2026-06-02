@@ -646,3 +646,64 @@ of this decision (a pure O(AST) static analysis that needs no speculative result
 
 **Cross-refs.** DR-11 (acceptance gate; gate-before-speculate), `wd-d2-acceptance-gate.md` §D2.6. Spec §7.6
 accept-then-execute (tex 1726–1729).
+
+---
+
+## DR-20 — The Rule-4/5 continuation re-seal (GAP-2) is proved cost-benign; the native-model migration (GAP-1) trigger sharpened; spec-delegated parameters (GAP-3) enumerated
+
+**Status.** Settled (spec-ambiguity refresh, tasks #17/#20–22). **Spec law:** `cost-accounted-rho.tex` §3.6
+Rules 4–5 (tex:714–742), §3.8 uniform signing (tex:793–803), §3.1/§1 ("signed terms pervade the syntax",
+tex:162), §4.2 crypto-quoting (hash), §3.4 (name equality), §4.6/§4.7 (per-signature supply).
+
+**Context — the refresh.** A re-examination of the 38-entry spec-ambiguity catalog against the spec itself
+(behavioral induction: does the spec address each, explicitly or by how the construct is USED?) found the spec
+DETERMINES 28/38 and 6 are non-calculus; only **three** are genuine, and the only entry where impl↔spec
+faithfulness was not already locked was #7 (the Rule-4/5 continuation signing). This DR records the resolution
+of that residual and the precise remaining representation gaps.
+
+**(a) GAP-2 — the Rule-4/5 re-seal is proved COST-BENIGN (#7, closed).** The paper's Rule 4/5 RHS
+(`T{@U/y} ∥ S ∥ S'`, tex:714–742) seals the continuation under the RECEIVER's signature `s₁` (uniform signing,
+§3.8). The Rocq model (`ca_rule4`/`ca_rule5`, `CostAccountedReduction.v`) re-seals the bare-`proc` continuation
+under the COMPOUND `SAnd s₁ s₂` — a direct consequence of the proc-under-system representation (DR-17: a
+continuation is a bare `proc` with no seal of its own, so the rule supplies the consuming signatures). New
+`theories/Rule45ContinuationAdequacy.v` proves this re-seal cannot change the consensus-metered cost: a seal
+carries no fuel (`system_token_count (SSigned _ _) = 0`, `CostAccountedSyntax.v:208`), so
+
+- `signed_process_holds_no_fuel : system_token_count (SSigned P s) = 0`
+- `continuation_seal_is_cost_irrelevant : system_token_count (SSigned P s₁) = system_token_count (SSigned P s₂)`
+- `rule45_result_cost_independent_of_seal : count ((P)^seal ∥ t) = count ((P)^seal' ∥ t)`
+
+— the result has the same token count (hence the same `Δ_s`, a COMM count, and the same value under every cost
+theorem) under the compound `s₁∘s₂` as under the spec's receiver `s₁`. With `ca_cost_deterministic` (terminal
+cost of a fixed system is path-independent, `Confluence.v`) and the §5 s₀-limit bisimulation (at s₀ every
+signature is equal, so the distinction vanishes), the re-seal has NO consensus-observable effect. Both
+headlines are axiom-free ("Closed under the global context") and in the proof-hygiene gate. #7 is therefore
+**resolved in place** — the discrepancy is real at the calculus-model level but proved benign — without the
+Option-B refactor.
+
+**(b) GAP-1 — the native four-sort grammar migration trigger (sharpened).** GAP-2 is the operational face of
+the representation choice DR-17 records: `SSigned : proc → sig → system` carries a bare `proc`, so "signed
+terms pervade the syntax" (§1) is not native, and the §3.2/§3.5/§3.8 signed-term identities are discharged at
+the source/translation level (Option A, axiom-free; DR-17's obligation table). The faithful alternative — the
+native four-sort mutually-inductive grammar in which `for`/`send` bodies are signed terms and a continuation
+retains its own seal, dissolving the GAP-2 re-seal outright — remains the recorded Option-B migration (DR-17).
+This DR sharpens its trigger: **undertake Option B when, and only when, a required result must reason NATIVELY
+about a multi-signature continuation's own seal** (not merely its cost — Option A plus the (a) adequacy theorem
+already settle the cost). Option B proves no new cost theorem; until the trigger is met, Option A + (a) are the
+spec-faithful, spec-minimal discharge.
+
+**(c) GAP-3 — intentional spec delegations (enumerated, not bugs).** Three constructs the paper uses but
+explicitly leaves to the implementation: (i) **the hash function** for `#P` (§4.2, "a configurable hash
+function (SHA-256, Blake2b, …)") — mechanized as the `hash_process` parameter with the three
+structural/cryptographic hypotheses on it (§11.1/§12.1; the G-parametric realization is DR-16); (ii) **name
+equality `≡_N`** (§3.4) — used in the communication rules, never defined at its use site, realized as
+structural equality of the normalized quoted process (the runtime `normalize_preserves_struct_equiv`
+correspondence, verification §12.3); (iii) **the per-signature supply-pool runtime representation** (§4.6/§4.7)
+— behavior + injectivity fixed (the `Σ⟦s⟧` balance datum, DR-13; `lane_pool_disjoint`), the concrete container
+(`DashMap<Sig, AtomicI64>`) an unconstrained implementation choice. Each is intentional in the paper; the
+impl's choice is consistent with every behavioral law the paper fixes. Recorded in the verification doc §12.3
+("Implementation-delegated parameters").
+
+**Cross-refs.** DR-17 (the representation choice + Option A/B), DR-13 (per-signature balance datum), DR-16
+(G-parametric hash), DR-1 (g/#P axes). Spec §3.6/§3.8/§3.1/§4.2/§3.4/§4.6/§4.7.
+`Rule45ContinuationAdequacy.v`; verification §12.3.

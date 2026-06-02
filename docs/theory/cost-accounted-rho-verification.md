@@ -4185,6 +4185,53 @@ empirical adequacy evidence; any normative counterexample they expose
 must still be promoted into the Rocq/TLA+ proof layer before it changes
 the formal specification.
 
+**Native four-sort signed-term grammar.** The paper's §3.1 grammar is a
+*four-sort mutually-inductive* syntax in which the `for`/`send` continuation
+bodies are themselves **signed terms** ("signed terms pervade the syntax",
+§1/§3.1; Remark 3.8 requires a received term retain its signature/cost
+provenance). The mechanization instead uses a **proc-under-system**
+representation (`SSigned : proc → sig → system`, with `PInput`/`POutput` carrying
+bare-`proc` bodies; `CostAccountedSyntax.v`, `RhoSyntax.v`) and discharges the
+§3.2/§3.5/§3.8 signed-term identities at the **source/translation level**
+(Option A, `SyntacticSugar.v`, axiom-free). This is the representation choice
+recorded in DR-17. One consequence is visible in the operational model: because a
+continuation is a bare `proc` with no seal of its own, `ca_rule4`/`ca_rule5`
+(`CostAccountedReduction.v`) re-seal the Rule-4/5 result under the compound
+`SAnd s₁ s₂`, where the paper's Rule 4/5 RHS keeps the receiver's seal `s₁`
+(uniform signing, §3.8). `Rule45ContinuationAdequacy.v` proves this re-seal is
+**cost-benign** — a seal carries no fuel (`system_token_count (SSigned _ _) = 0`),
+so the token count (the consensus-metered cost) is identical under either seal —
+and the §5 s₀-limit bisimulation collapses the distinction entirely (at s₀ every
+signature is equal). The faithful alternative — a native four-sort
+mutually-inductive grammar in which continuations retain their own seal, which
+dissolves the re-seal outright — is a **scoped representation migration**
+(`RhoSyntax` + `CostAccountedSyntax` + `CostAccountedReduction` + every downstream
+proof re-mechanized; DR-17 Option B). It is governed by an explicit trigger: it is
+undertaken when, and only when, a required result must reason **natively** about a
+multi-signature continuation's own seal (rather than its cost, which Option A and
+the adequacy theorem already settle). Until that trigger is met, Option A
+discharges the paper's defining equations and the adequacy theorem proves the
+residual benign. (See DR-17, DR-20.)
+
+**Implementation-delegated parameters.** Three constructs the paper uses but
+deliberately leaves to the implementation. (i) **The hash function** for
+crypto-quoting `#P` (§4.2): the paper specifies "a configurable hash function
+(SHA-256, Blake2b, …)" and the mechanization parameterizes over it
+(`hash_process`, §12.1; the three structural/cryptographic hypotheses on it are
+the only non-trivial Section-hypotheses, §11.1; the G-parametric realization is
+DR-16). (ii) **Name equality** `≡_N` (§3.4): used in the communication rules to
+decide when a send and a receive share a channel, but never defined at its use
+site; the implementation realizes it as structural equality of the normalized
+quoted process — the runtime correspondence already recorded above
+(`normalize_preserves_struct_equiv`). (iii) **The per-signature supply-pool
+runtime representation** (§4.6/§4.7): the paper fixes the *behavior* (a token is a
+message resident on `Σ⟦s⟧`; supply is injective in the signature) and the
+mechanization fixes the *balance datum* (DR-13) and its disjointness
+(`lane_pool_disjoint`), but the concrete in-memory container (the runtime
+`DashMap<Sig, AtomicI64>`) is an implementation choice the paper does not
+constrain. Each delegation is intentional in the paper; the implementation's
+choice is consistent with every behavioral law the paper does fix. (See DR-20.)
+
 ---
 
 ## 13. References
