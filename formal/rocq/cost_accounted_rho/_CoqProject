@@ -338,3 +338,13 @@ theories/CAExchange.v
 # balances + no mint). Documents that the remaining economic modules are
 # carrier-independent (hold for native verbatim).
 theories/CAEconomicCapstone.v
+
+# CL8 — located capabilities: phlogiston capability is spatially located on
+# signature surfaces; local sufficiency composes to global, locations are disjoint
+# (the Rocq image of lane_pool_disjoint + the TLA+ LocatedPurse model).
+theories/CALocatedPurses.v
+
+# CL6 — graded Hennessy-Milner adequacy (soundness): graded-bisimilar states
+# satisfy the same graded-HML formulae. Constructive (no Classical/funext/choice);
+# about the native ca_step's graded transitions, independent of the translation.
+theories/CAGradedAdequacy.v
