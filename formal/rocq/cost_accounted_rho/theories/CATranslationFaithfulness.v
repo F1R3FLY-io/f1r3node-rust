@@ -23,6 +23,25 @@ From CostAccountedRho Require Import RhoReduction.
 From CostAccountedRho Require Import CATranslation.
 From CostAccountedRho Require Import CATranslationLemmas.
 
+(* Reachability is a congruence for parallel composition (RhoReduction provides
+   only the single-step rs_par_l/r); needed to lift sub-reductions (Split firing,
+   the ca_par congruence rules) under a parallel context. *)
+Lemma rho_reachable_par_l : forall P P' Q,
+  rho_reachable P P' -> rho_reachable (PPar P Q) (PPar P' Q).
+Proof.
+  intros P P' Q H. induction H.
+  - apply rr_refl.
+  - eapply rr_step; [ apply rs_par_l; eassumption | assumption ].
+Qed.
+
+Lemma rho_reachable_par_r : forall P Q Q',
+  rho_reachable Q Q' -> rho_reachable (PPar P Q) (PPar P Q').
+Proof.
+  intros P Q Q' H. induction H.
+  - apply rr_refl.
+  - eapply rr_step; [ apply rs_par_r; eassumption | assumption ].
+Qed.
+
 Section CATranslationFaithfulnessSec.
 
 Variable hash_process : list bool -> proc.
@@ -320,6 +339,54 @@ Proof.
   { apply rs_comm. }
   simpl.
   rewrite (Nt_subst_inv s1 0 (Quote Q)), (Nt_subst_inv s2 0 (Quote Q)).
+  apply rr_refl.
+Qed.
+
+Lemma split_body_subst : forall s1 s2 Q,
+  subst_proc (PPar (POutput (Nt s1) PNil) (POutput (Nt s2) (PDeref (NVar 0)))) 0 (Quote Q)
+  = PPar (POutput (Nt s1) PNil) (POutput (Nt s2) Q).
+Proof.
+  intros s1 s2 Q. simpl.
+  rewrite (Nt_subst_inv s1 0 (Quote Q)), (Nt_subst_inv s2 0 (Quote Q)).
+  reflexivity.
+Qed.
+
+(* Rule 3 (combined process gate signed SAnd, COMBINED token) — needs the Split
+   mediator (in parallel context). Four COMMs: Split fires (splitting the combined
+   token into an s1-token [empty] and an s2-token [carrying Tt t]); the outer gate
+   fires on Nt s1 with the empty token; the inner gate fires on Nt s2 with Tt t;
+   the released for|send fires. The empty s1-token leaves an inert PNil residue. *)
+Lemma rule3_reachable : forall x T U s1 s2 t,
+  rho_reachable
+    (PPar (St (STPar (STSigned (CPPar (CPInput x T) (CPOutput x U)) (SAnd s1 s2))
+                     (STStack (TGate (SAnd s1 s2) t))))
+          (Split s1 s2))
+    (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar PNil (Tt t))).
+Proof.
+  intros x T U s1 s2 t.
+  (* Step 1: Split fires (bring SPLIT|TOK adjacent, fire) *)
+  eapply rr_step.
+  { eapply rs_struct.
+    - eapply se_trans. { apply se_par_comm. }
+      eapply se_trans. { apply se_par_cong_r. apply se_par_comm. }
+      apply se_sym; apply se_par_assoc.
+    - apply rs_par_l. apply rs_comm.
+    - apply se_refl. }
+  rewrite split_body_subst.
+  (* Step 2: outer gate (Nt s1) | s1-token (empty) *)
+  eapply rr_step.
+  { eapply rs_struct.
+    - eapply se_trans. { apply se_par_comm. } apply se_sym; apply se_par_assoc.
+    - apply rs_par_l. apply rs_comm.
+    - apply se_refl. }
+  rewrite nested_gate_subst by (try apply Nt_closed; apply closed_PNil).
+  (* Step 3: inner gate (Nt s2) | s2-token (Tt t) — now adjacent *)
+  eapply rr_step.
+  { apply rs_comm. }
+  rewrite gate2_body_subst by apply closed_PNil.
+  (* Step 4: the released for|send *)
+  eapply rr_step.
+  { apply rs_par_l. apply rs_comm. }
   apply rr_refl.
 Qed.
 
