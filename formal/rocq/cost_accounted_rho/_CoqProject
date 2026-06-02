@@ -305,3 +305,9 @@ theories/CostMonad.v
 # general lift/lift permutation, and the native lift/subst commutation (L1) that
 # RhoSyntax lacks. Pure CASyntax facts; axiom-free.
 theories/CATranslationLemmas.v
+
+# Stage 4b — native translation faithfulness (forward simulation up to strong
+# bisimulation). Section over the audited hash/ground hypotheses. Foundation:
+# N_tr/T_tr lift/subst invariance (closed images are inert under COMM's
+# substitutions). Builds toward the per-rule simulations + the headline.
+theories/CATranslationFaithfulness.v
