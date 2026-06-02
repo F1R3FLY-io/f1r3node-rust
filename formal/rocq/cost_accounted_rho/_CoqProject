@@ -95,6 +95,14 @@ theories/CASyntax.v
 theories/CABinding.v
 theories/CAStructEquiv.v
 
+# Level 2b: Native cost-accounted reduction + the wrapping/no-leak invariant.
+# CAReduction's five gated COMM rules keep the continuation's OWN seal (GAP-2
+# dissolves — no SAnd re-seal); WrappingSubjectReduction proves subject
+# reduction (well-wrapping is a sorting invariant) and no-leak (a redex never
+# fires without a co-present token).
+theories/CAReduction.v
+theories/WrappingSubjectReduction.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
