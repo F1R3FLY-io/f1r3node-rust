@@ -353,3 +353,9 @@ theories/CAGradedAdequacy.v
 # Free installs the unit grade, Forget strips it; Forget∘Free = id, Free∘Forget
 # alters (structure-preserving, behaviour-altering). Adjunction II is force-limited.
 theories/CAAdjunctions.v
+
+# CL7 — OSLF linear-resource type discipline: phlogiston is linear (no
+# contraction / no double-spend) threaded through tensor/lolly/plus/with/bang/
+# whynot + the threshold quorum. Carrier-independent (LinearLogicResources holds
+# for native verbatim); re-exported here under native names.
+theories/CATypeDiscipline.v
