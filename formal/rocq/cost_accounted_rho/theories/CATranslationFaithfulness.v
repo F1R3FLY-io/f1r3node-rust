@@ -288,4 +288,39 @@ Proof.
   apply rr_refl.
 Qed.
 
+(* ── The Split mediator (for the combined-token rules 3 and 4) ──────────────
+   Split receives a token on the compound channel Nt (SAnd s1 s2) and produces an
+   s1-token with empty payload and an s2-token forwarding the received payload —
+   the native port of Translation.Split. The combined-token rules route their
+   token through Split (in parallel context) before the nested/split gates fire. *)
+
+Definition Split (s1 s2 : sig) : proc :=
+  PInput (Nt (SAnd s1 s2))
+    (PPar (POutput (Nt s1) PNil)
+          (POutput (Nt s2) (PDeref (NVar 0)))).
+
+Lemma Split_closed : forall s1 s2, closed_proc (Split s1 s2).
+Proof.
+  intros s1 s2. unfold Split. apply closed_PInput.
+  - apply Nt_closed.
+  - simpl. repeat split.
+    + apply closed_name_at_mono with (k := 0); [ lia | apply Nt_closed ].
+    + apply closed_name_at_mono with (k := 0); [ lia | apply Nt_closed ].
+    + simpl; lia.
+Qed.
+
+(* Split fires against a combined token, emitting the two component tokens (the
+   s1-token empty, the s2-token carrying the forwarded — dequoted — payload). *)
+Lemma Split_fires : forall s1 s2 Q,
+  rho_reachable
+    (PPar (Split s1 s2) (POutput (Nt (SAnd s1 s2)) Q))
+    (PPar (POutput (Nt s1) PNil) (POutput (Nt s2) Q)).
+Proof.
+  intros s1 s2 Q. unfold Split. eapply rr_step.
+  { apply rs_comm. }
+  simpl.
+  rewrite (Nt_subst_inv s1 0 (Quote Q)), (Nt_subst_inv s2 0 (Quote Q)).
+  apply rr_refl.
+Qed.
+
 End CATranslationFaithfulnessSec.
