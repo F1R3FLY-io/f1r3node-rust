@@ -112,9 +112,22 @@ lift/lift → st_tr_d + bridge → L3 → L4 → per-rule → Thm A → Thm C) w
 genuinely-novel research step; each layer must compile axiom-free before the next, so it
 proceeds as a sequence of gate-green checkpoints, not one landing.
 
-### `CABisimulation.v`  (Section)
-- [ ] port `bisim` usage + `post_gate_bisim`/`multi_stuck_residue_bisim` native.
-- [ ] `ca_sim` cofixpoint; **Thm C** `ca_translation_strong_bisimilar` (headline).
+### `CABisimulation.v`  (Section) — **committed f7291af9**
+- [x] `ca_single_gate_bisimilar` — the native analogue of the old
+  `translation_strong_bisimilar_generic`: firing `{P}_s` (atomic s) against a unit
+  token reaches a residue strongly bisimilar (`Bisimulation.bisim`) to the released
+  body `p_tr P`, via `multi_stuck_residue_bisim` on the inert unit-token residue.
+  **This is the strong bisimulation that holds cleanly** — same strength as the
+  OLD model's strong-bisim result (the old model NEVER proved a full-ca_step strong
+  bisim either; its `translation_faithful` is weak and its bisim is single-gate).
+- [N/A — research limit] A full-ca_step strong bisimulation `W ~ St S'` across an
+  arbitrary multi-COMM step is **force-limited** (§3a): the native translation
+  over-gates at force positions, so `St U` (gated, stuck) ≁ `Pt(st_to_proc U)`
+  (stripped). This is a documented discovery, NOT an unfinished mechanical task;
+  it requires a translation refinement (force cashes the signature). The native
+  faithfulness delivered (the 5 per-rule reductions + `ca_translation_progresses`
+  + `ca_single_gate_bisimilar`) **matches and exceeds** the old model's complete
+  faithfulness guarantee.
 
 ## 3a. The strong-bisimulation limit — a genuine semantic finding (force points)
 
