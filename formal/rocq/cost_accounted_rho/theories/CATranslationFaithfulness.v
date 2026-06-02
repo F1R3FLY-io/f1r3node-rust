@@ -233,4 +233,59 @@ Proof.
   apply fire5.
 Qed.
 
+(* The compound (SAnd) gate's OUTER firing: the outer gate consumes its token and
+   exposes the inner gate, the body's lift dropping 2→1 (subst_lift_two_one), the
+   first payload deref releasing the closed token Q1. *)
+Lemma nested_gate_subst : forall n2 A Q1,
+  closed_name n2 -> closed_proc Q1 ->
+  subst_proc (PInput n2 (PPar (lift_proc 2 0 A) (PPar (PDeref (NVar 1)) (PDeref (NVar 0))))) 0 (Quote Q1)
+  = PInput n2 (PPar (lift_proc 1 0 A) (PPar Q1 (PDeref (NVar 0)))).
+Proof.
+  intros n2 A Q1 Hn Hq. simpl.
+  rewrite (closed_name_subst_zero n2 0 (Quote Q1) Hn).
+  rewrite subst_lift_two_one.
+  rewrite (closed_proc_lift_zero Q1 1 0 Hq).
+  reflexivity.
+Qed.
+
+(* The compound gate's INNER firing: the inner gate consumes its token, the body's
+   lift dropping 1→0, the second payload deref releasing Q2; the already-released
+   first token R (closed) is inert. *)
+Lemma gate2_body_subst : forall A R Q2,
+  closed_proc R ->
+  subst_proc (PPar (lift_proc 1 0 A) (PPar R (PDeref (NVar 0)))) 0 (Quote Q2)
+  = PPar A (PPar R Q2).
+Proof.
+  intros A R Q2 HR. simpl.
+  rewrite subst_lift_zero.
+  rewrite (closed_proc_subst_zero R 0 (Quote Q2) HR).
+  reflexivity.
+Qed.
+
+(* Rule 2 (combined process gate signed SAnd s1 s2, but SPLIT tokens TGate s1 /
+   TGate s2). The nested two-gate fires against the two pre-split tokens — outer
+   on Nt s1, inner on Nt s2 — needing NO Split (the gate channels equal the split
+   token channels for any s1, s2), then the released for|send fires. Three COMMs. *)
+Lemma rule2_reachable : forall x T U s1 s2 t1 t2,
+  rho_reachable
+    (St (STPar (STPar (STSigned (CPPar (CPInput x T) (CPOutput x U)) (SAnd s1 s2))
+                      (STStack (TGate s1 t1)))
+               (STStack (TGate s2 t2))))
+    (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar (Tt t1) (Tt t2))).
+Proof.
+  intros x T U s1 s2 t1 t2.
+  (* Step 1: outer gate (Nt s1) | tok1, inside the inner PPar *)
+  eapply rr_step.
+  { apply rs_par_l. apply rs_comm. }
+  rewrite nested_gate_subst by (try apply Nt_closed; apply Tt_closed).
+  (* Step 2: inner gate (Nt s2) | tok2, now adjacent at the top PPar *)
+  eapply rr_step.
+  { apply rs_comm. }
+  rewrite gate2_body_subst by apply Tt_closed.
+  (* Step 3: the released for|send *)
+  eapply rr_step.
+  { apply rs_par_l. apply rs_comm. }
+  apply rr_refl.
+Qed.
+
 End CATranslationFaithfulnessSec.
