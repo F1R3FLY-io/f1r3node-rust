@@ -116,6 +116,12 @@ theories/CATokenConservation.v
 # genuinely conditional, matching the acceptance gate).
 theories/CAStrongNormalization.v
 
+# Level 2e: native confluence + step determinism. Local confluence (the diamond)
+# + per-rule determinism (unconditional); single-token step determinism +
+# unique reduction-path length (the single-deploy ordered-hashing justification).
+theories/CAConfluence.v
+theories/CAStepDeterminism.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
