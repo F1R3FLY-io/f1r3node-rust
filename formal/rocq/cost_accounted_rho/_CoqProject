@@ -276,3 +276,9 @@ theories/Rule45ContinuationAdequacy.v
 # free monoid (token, tok_concat, ()). Depends only on CostAccountedSyntax, so it
 # is buildable ahead of the rest of the categorical layer.
 theories/SignatureMonoid.v
+
+# ContinuedGSLT capstone — the cost-accounted rho calculus discharges the central
+# structural claims of continued-gslt-cost-v2 (wrapping by construction, the Cost
+# monad laws from the two monoids, GAP-2 dissolution, cost determinism, the stack
+# modulus) as a single axiom-free theorem. Assembles the native Stage 1-3 results.
+theories/ContinuedGSLTCapstone.v
