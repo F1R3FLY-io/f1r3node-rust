@@ -20,6 +20,7 @@ From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
 From CostAccountedRho Require Import RhoReduction.
+From CostAccountedRho Require Import CAReduction.
 From CostAccountedRho Require Import CATranslation.
 From CostAccountedRho Require Import CATranslationLemmas.
 
@@ -443,6 +444,89 @@ Proof.
   destruct s1 as [| b1 | b1 | a1 c1]; try (exfalso; eapply Hns1; reflexivity);
   destruct s2 as [| b2 | b2 | a2 c2]; try (exfalso; eapply Hns2; reflexivity);
   apply fire4.
+Qed.
+
+(* ── General faithfulness headline: every native ca_step's translation makes
+   progress (no deadlock) ─────────────────────────────────────────────────────
+   For each ca_step S S' there is a closed mediating context Ctx (PNil for the
+   directly-firing rules, the Split mediator for the combined-token rules; for a
+   compound-signed gate the Split is the one for that gate's outermost ∧) such
+   that the translated system PPar (St S) Ctx takes a real rho step. The
+   congruence rules lift the inner step through PPar via rs_struct. This packages
+   the five per-rule simulations into one theorem over the whole reduction
+   relation, axiom-free. *)
+Theorem ca_translation_progresses : forall S S',
+  ca_step S S' -> exists Ctx W, closed_proc Ctx /\ rho_step (PPar (St S) Ctx) W.
+Proof.
+  intros S S' H. induction H.
+  - (* ca_rule1: x T U s t *)
+    destruct s as [| bs | bs | a b].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + (* SAnd a b — Split mediator *)
+      exists (Split a b); eexists; split; [ apply Split_closed | ].
+      eapply rs_struct.
+      * eapply se_trans. { apply se_par_comm. }
+        eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+        apply se_sym; apply se_par_assoc.
+      * apply rs_par_l. apply rs_comm.
+      * apply se_refl.
+  - (* ca_rule2 — directly firing, no Split *)
+    exists PNil; eexists; split;
+      [ apply closed_PNil | apply rs_par_l; apply rs_par_l; apply rs_comm ].
+  - (* ca_rule3 — combined token, Split mediator *)
+    exists (Split s1 s2); eexists; split; [ apply Split_closed | ].
+    eapply rs_struct.
+    + eapply se_trans. { apply se_par_comm. }
+      eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+      apply se_sym; apply se_par_assoc.
+    + apply rs_par_l. apply rs_comm.
+    + apply se_refl.
+  - (* ca_rule4 — split processes, combined token, Split mediator *)
+    exists (Split s1 s2); eexists; split; [ apply Split_closed | ].
+    eapply rs_struct.
+    + eapply se_trans. { apply se_par_comm. }
+      eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+      apply se_sym; apply se_par_assoc.
+    + apply rs_par_l. apply rs_comm.
+    + apply se_refl.
+  - (* ca_rule5: split processes, split tokens — first step depends on s1 *)
+    destruct s1 as [| bs | bs | a b].
+    1-3: (exists PNil; eexists; split; [ apply closed_PNil | ];
+          eapply rs_struct;
+          [ eapply se_trans; [ apply se_par_nil | ];
+            eapply se_trans; [ apply se_par_assoc | ]; apply se_par_cross
+          | apply rs_par_l; apply rs_comm
+          | apply se_refl ]).
+    (* SAnd a b — the s1-token is itself compound; Split it. Bring Split|tok1
+       adjacent: (((g1|g2)|tok1)|tok2)|Split ≡ (Split|tok1)|((g1|g2)|tok2). *)
+    exists (Split a b); eexists; split; [ apply Split_closed | ].
+    eapply rs_struct.
+    + eapply se_trans. { apply se_par_comm. }
+      eapply se_trans.
+      { apply se_par_cong_r.
+        eapply se_trans. { apply se_par_cong_l; apply se_par_comm. }
+        apply se_par_assoc. }
+      apply se_sym; apply se_par_assoc.
+    + apply rs_par_l. apply rs_comm.
+    + apply se_refl.
+  - (* ca_par_l: S1 steps *)
+    destruct IHca_step as [Ctx1 [W1 [Hcl Hstep]]].
+    exists Ctx1; eexists; split; [ exact Hcl | ].
+    eapply rs_struct.
+    + eapply se_trans. { apply se_par_assoc. }
+      eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+      apply se_sym; apply se_par_assoc.
+    + apply rs_par_l. exact Hstep.
+    + apply se_refl.
+  - (* ca_par_r: S2 steps *)
+    destruct IHca_step as [Ctx2 [W2 [Hcl Hstep]]].
+    exists Ctx2; eexists; split; [ exact Hcl | ].
+    eapply rs_struct.
+    + apply se_par_assoc.
+    + apply rs_par_r. exact Hstep.
+    + apply se_refl.
 Qed.
 
 End CATranslationFaithfulnessSec.
