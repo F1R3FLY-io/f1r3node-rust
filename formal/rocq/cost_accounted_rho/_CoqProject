@@ -103,6 +103,12 @@ theories/CAStructEquiv.v
 theories/CAReduction.v
 theories/WrappingSubjectReduction.v
 
+# Level 2c: native fuel measures + conservation. st_total_fuel (all gates),
+# spine-invariance of substitution, the unconditional no-step-without-fuel fact,
+# and the linear-funding discipline (funded_linear) on which native SN/cost
+# determinism are conditioned (the consensus-relevant fragment).
+theories/CATokenConservation.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
