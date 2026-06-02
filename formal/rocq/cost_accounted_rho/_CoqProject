@@ -311,3 +311,8 @@ theories/CATranslationLemmas.v
 # N_tr/T_tr lift/subst invariance (closed images are inert under COMM's
 # substitutions). Builds toward the per-rule simulations + the headline.
 theories/CATranslationFaithfulness.v
+
+# Stage 5 — native post-evaluation fee settlement: re-homes Settlement.v onto the
+# four-sort grammar. Fee arithmetic reused (carrier-independent); the calculus
+# link is native fuel monotonicity on the hereditarily-funded fragment (HF).
+theories/CASettlement.v
