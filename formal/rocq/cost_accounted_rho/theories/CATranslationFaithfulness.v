@@ -191,4 +191,46 @@ Proof.
   - exfalso; apply (Hns a b); reflexivity.
 Qed.
 
+(* Rule 5 (split processes, split tokens; both signatures atomic). The two
+   separate gates each fire against their own token (no Split mediator needed —
+   each gate channel equals its token channel), then the released for|send fires.
+   Three COMMs, with ≡-rearrangement (se_par_assoc/se_par_cross) pairing each gate
+   with its token and then the receiver with the sender. *)
+Lemma rule5_reachable : forall x T U s1 s2 t1 t2,
+  (forall a b, s1 <> SAnd a b) -> (forall a b, s2 <> SAnd a b) ->
+  rho_reachable
+    (St (STPar (STPar (STPar (STSigned (CPInput x T) s1) (STSigned (CPOutput x U) s2))
+                      (STStack (TGate s1 t1)))
+               (STStack (TGate s2 t2))))
+    (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar (Tt t1) (Tt t2))).
+Proof.
+  intros x T U s1 s2 t1 t2 Hns1 Hns2.
+  assert (fire5 : forall n1 n2,
+    rho_reachable
+      (PPar (PPar (PPar (PInput n1 (PPar (lift_proc 1 0 (PInput (Ct x) (St T))) (PDeref (NVar 0))))
+                        (PInput n2 (PPar (lift_proc 1 0 (POutput (Ct x) (St U))) (PDeref (NVar 0)))))
+                  (POutput n1 (Tt t1)))
+            (POutput n2 (Tt t2)))
+      (PPar (subst_proc (St T) 0 (Quote (St U))) (PPar (Tt t1) (Tt t2)))).
+  { intros n1 n2.
+    eapply rr_step.
+    { eapply rs_struct.
+      - eapply se_trans. { apply se_par_assoc. } apply se_par_cross.
+      - apply rs_par_l. apply rs_comm.
+      - apply se_refl. }
+    rewrite gate_body_subst.
+    eapply rr_step.
+    { apply rs_par_r. apply rs_comm. }
+    rewrite gate_body_subst.
+    eapply rr_step.
+    { eapply rs_struct.
+      - apply se_par_cross.
+      - apply rs_par_l. apply rs_comm.
+      - apply se_refl. }
+    apply rr_refl. }
+  destruct s1 as [| b1 | b1 | a1 c1]; try (exfalso; eapply Hns1; reflexivity);
+  destruct s2 as [| b2 | b2 | a2 c2]; try (exfalso; eapply Hns2; reflexivity);
+  apply fire5.
+Qed.
+
 End CATranslationFaithfulnessSec.
