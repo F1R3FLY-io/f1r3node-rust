@@ -216,3 +216,34 @@ Proof.
   rewrite (lift_lift_compose_proc Q d 1 1 0) by lia.
   reflexivity.
 Qed.
+
+(* proc-level lift/lift COMMUTATION (cutoffs c2 ≤ c1), the proc analog of the
+   caproc lift_lift_comm; the depth-indexed bridge uses it to push a gate's
+   [lift_proc 1 0] body shift past the depth lift at the gate binder. *)
+Lemma lift_lift_comm_proc : forall P d1 c1 d2 c2,
+  c2 <= c1 ->
+  lift_proc d1 (c1 + d2) (lift_proc d2 c2 P) = lift_proc d2 c2 (lift_proc d1 c1 P).
+Proof.
+  apply (proc_ind_mut
+    (fun P => forall d1 c1 d2 c2, c2 <= c1 ->
+        lift_proc d1 (c1 + d2) (lift_proc d2 c2 P) = lift_proc d2 c2 (lift_proc d1 c1 P))
+    (fun x => forall d1 c1 d2 c2, c2 <= c1 ->
+        lift_name d1 (c1 + d2) (lift_name d2 c2 x) = lift_name d2 c2 (lift_name d1 c1 x))).
+  - (* PNil *) intros; reflexivity.
+  - (* PInput x P' *) intros x IHx P' IHP d1 c1 d2 c2 Hle; simpl; f_equal.
+    + apply IHx; assumption.
+    + replace (S (c1 + d2)) with ((S c1) + d2) by lia. apply IHP; lia.
+  - (* POutput *) intros x IHx Q IHQ d1 c1 d2 c2 Hle; simpl; f_equal; [ apply IHx | apply IHQ ]; assumption.
+  - (* PPar *) intros A IHA B IHB d1 c1 d2 c2 Hle; simpl; f_equal; [ apply IHA | apply IHB ]; assumption.
+  - (* PDeref *) intros x IHx d1 c1 d2 c2 Hle; simpl; f_equal; apply IHx; assumption.
+  - (* PReplicate *) intros P' IHP d1 c1 d2 c2 Hle; simpl; f_equal; apply IHP; assumption.
+  - (* Quote *) intros P' IHP d1 c1 d2 c2 Hle; simpl; f_equal; apply IHP; assumption.
+  - (* NVar k *)
+    intros k d1 c1 d2 c2 Hle.
+    repeat (simpl; match goal with |- context[?a <=? ?b] => destruct (a <=? b) eqn:?Hl end);
+    repeat match goal with
+           | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+           | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+           end;
+    try (f_equal; lia); try lia; try reflexivity.
+Qed.

@@ -134,10 +134,13 @@ Print Assumptions lift_lift_comm.
 Print Assumptions lift_subst_ca.
 Print Assumptions lift_lift_compose_proc.
 Print Assumptions lift_proc_S_compose.
+Print Assumptions lift_lift_comm_proc.
 Print Assumptions Nt_lift_inv.
 Print Assumptions Nt_subst_inv.
 Print Assumptions Tt_lift_inv.
 Print Assumptions Tt_subst_inv.
+Print Assumptions trd_bridge.
+Print Assumptions st_trd_zero.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
 Print Assumptions mint_inject_not_ca_step.

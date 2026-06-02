@@ -74,4 +74,77 @@ Proof. intros; apply closed_proc_lift_zero, Tt_closed. Qed.
 Lemma Tt_subst_inv : forall t k N, subst_proc (Tt t) k N = Tt t.
 Proof. intros; apply closed_proc_subst_zero, Tt_closed. Qed.
 
+(* ── The depth-indexed translation st_trd (d,c) ─────────────────────────────
+   Mirrors St but threads a lift (shift d at cutoff c) so the L3 commutation has
+   a clean structural IH. The bridge proves st_trd d c = lift_proc d c ∘ St — so
+   it is a proof device, with St (= st_trd 0 0 by lift_zero) the public form.   *)
+
+Fixpoint p_trd (d c : nat) (P : caproc) : proc :=
+  match P with
+  | CPNil        => PNil
+  | CPInput x T  => PInput (cn_trd d c x) (st_trd d (S c) T)
+  | CPOutput x U => POutput (cn_trd d c x) (st_trd d c U)
+  | CPPar A B    => PPar (p_trd d c A) (p_trd d c B)
+  | CPDeref x    => PDeref (cn_trd d c x)
+  end
+with cn_trd (d c : nat) (x : caname) : name :=
+  match x with
+  | CQuote T => Quote (st_trd d c T)
+  | CNVar k  => if c <=? k then NVar (k + d) else NVar k
+  end
+with st_trd (d c : nat) (T : signed_term) : proc :=
+  match T with
+  | STSigned P s =>
+      match s with
+      | SAnd s1 s2 =>
+          PInput (Nt s1) (PInput (Nt s2)
+            (PPar (lift_proc 2 0 (p_trd d c P))
+                  (PPar (PDeref (NVar 1)) (PDeref (NVar 0)))))
+      | _ =>
+          PInput (Nt s) (PPar (lift_proc 1 0 (p_trd d c P)) (PDeref (NVar 0)))
+      end
+  | STPar A B => PPar (st_trd d c A) (st_trd d c B)
+  | STStack t => Tt t
+  end.
+
+(* The bridge: the depth-indexed translation equals the lift of the plain one. *)
+Lemma trd_bridge :
+  (forall P d c, p_trd d c P = lift_proc d c (Pt P))
+  /\ (forall x d c, cn_trd d c x = lift_name d c (Ct x))
+  /\ (forall T d c, st_trd d c T = lift_proc d c (St T)).
+Proof.
+  apply ca_mutind.
+  - (* CPNil *) intros d c; reflexivity.
+  - (* CPInput x T *) intros x IHx T IHT d c; simpl; rewrite IHx, IHT; reflexivity.
+  - (* CPOutput x U *) intros x IHx U IHU d c; simpl; rewrite IHx, IHU; reflexivity.
+  - (* CPPar A B *) intros A IHA B IHB d c; simpl; rewrite IHA, IHB; reflexivity.
+  - (* CPDeref x *) intros x IHx d c; simpl; rewrite IHx; reflexivity.
+  - (* CQuote T *) intros T IHT d c; simpl; rewrite IHT; reflexivity.
+  - (* CNVar k *) intros k d c; reflexivity.
+  - (* STSigned P s *)
+    intros P IHP s d c; destruct s as [| bs | bs | s1 s2].
+    + (* SUnit — channel Quote PNil, closed by computation *)
+      simpl; rewrite IHP; f_equal; f_equal;
+      symmetry; replace (S c) with (c + 1) by lia; apply lift_lift_comm_proc; lia.
+    + (* SGround bs — channel Quote (ground_process bs) *)
+      simpl; rewrite (closed_proc_lift_zero (ground_process bs) d c (ground_process_closed bs));
+      rewrite IHP; f_equal; f_equal;
+      symmetry; replace (S c) with (c + 1) by lia; apply lift_lift_comm_proc; lia.
+    + (* SQuote bs — channel Quote (hash_process bs) *)
+      simpl; rewrite (closed_proc_lift_zero (hash_process bs) d c (hash_process_closed bs));
+      rewrite IHP; f_equal; f_equal;
+      symmetry; replace (S c) with (c + 1) by lia; apply lift_lift_comm_proc; lia.
+    + (* SAnd s1 s2 — nested two-gate, body lifted by 2 *)
+      simpl;
+      rewrite (Nt_lift_inv s1 d c), (Nt_lift_inv s2 d (S c));
+      rewrite IHP; f_equal; f_equal; f_equal;
+      symmetry; replace (S (S c)) with (c + 2) by lia; apply lift_lift_comm_proc; lia.
+  - (* STPar A B *) intros A IHA B IHB d c; simpl; rewrite IHA, IHB; reflexivity.
+  - (* STStack t *) intros t d c; simpl; symmetry; apply Tt_lift_inv.
+Qed.
+
+(* St is the depth-zero translation. *)
+Lemma st_trd_zero : forall T, st_trd 0 0 T = St T.
+Proof. intro T. rewrite (proj2 (proj2 trd_bridge) T 0 0). apply lift_zero_proc. Qed.
+
 End CATranslationFaithfulnessSec.
