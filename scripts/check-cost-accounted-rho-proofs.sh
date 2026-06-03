@@ -174,6 +174,9 @@ Print Assumptions ca_eta_is_weak_bisim_section.
 Print Assumptions graded_limit_adequacy.
 Print Assumptions graded_bisim_refines_approximants.
 Print Assumptions graded_bisim_implies_hml.
+Print Assumptions graded_bisim_n_monotone.
+Print Assumptions graded_coinductive_completeness_modulo.
+Print Assumptions graded_coinductive_hml_completeness_modulo.
 Print Assumptions gated_translation_stuck.
 Print Assumptions ca_force_overgating_separation.
 Print Assumptions ca_force_overgating_nonvacuous.
