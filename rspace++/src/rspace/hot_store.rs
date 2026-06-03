@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
@@ -157,6 +157,12 @@ where
     history_cache_continuations: DashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
     history_cache_datums: DashMap<C, Vec<Datum<A>>>,
     history_cache_joins: DashMap<C, Vec<Vec<C>>>,
+    // Atomic item counters for O(1) cache bounds checking.
+    // Updated on every insert/evict so enforce_history_cache_bounds never
+    // has to iterate the DashMaps (which was 44% of CPU per the flame graph).
+    history_cache_cont_items: AtomicUsize,
+    history_cache_data_items: AtomicUsize,
+    history_cache_joins_items: AtomicUsize,
     // Checkpoint path: acquired only by snapshot/changes/set_state/clear which
     // need a consistent view of all five maps at once. These are called at the
     // end of a deploy after all par-branches have joined, so the lock is never
@@ -613,6 +619,9 @@ where
         self.history_cache_continuations.clear();
         self.history_cache_datums.clear();
         self.history_cache_joins.clear();
+        self.history_cache_cont_items.store(0, Ordering::Relaxed);
+        self.history_cache_data_items.store(0, Ordering::Relaxed);
+        self.history_cache_joins_items.store(0, Ordering::Relaxed);
         for g in [
             HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC,
             HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC,
@@ -720,9 +729,9 @@ where
         if !Self::should_emit_metrics(&LAST_EMIT_AT_MS, Self::history_cache_metrics_update_interval_ms()) {
             return;
         }
-        let cont_items: usize = store.history_cache_continuations.iter().map(|e| e.value().len()).sum();
-        let data_items: usize = store.history_cache_datums.iter().map(|e| e.value().len()).sum();
-        let joins_items: usize = store.history_cache_joins.iter().map(|e| e.value().len()).sum();
+        let cont_items = store.history_cache_cont_items.load(Ordering::Relaxed);
+        let data_items = store.history_cache_data_items.load(Ordering::Relaxed);
+        let joins_items = store.history_cache_joins_items.load(Ordering::Relaxed);
         metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_continuations.len() as f64);
         metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_datums.len() as f64);
         metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_joins.len() as f64);
@@ -732,20 +741,27 @@ where
     }
 
     fn enforce_history_cache_bounds(&self) {
-        let cont_items: usize = self.history_cache_continuations.iter().map(|e| e.value().len()).sum();
-        if self.history_cache_continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES || cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS {
+        // O(1): read atomic counters instead of iterating DashMaps.
+        if self.history_cache_continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || self.history_cache_cont_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+        {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_CONT_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_continuations.clear();
+            self.history_cache_cont_items.store(0, Ordering::Relaxed);
         }
-        let data_items: usize = self.history_cache_datums.iter().map(|e| e.value().len()).sum();
-        if self.history_cache_datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES || data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS {
+        if self.history_cache_datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || self.history_cache_data_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_DATUMS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_datums.clear();
+            self.history_cache_data_items.store(0, Ordering::Relaxed);
         }
-        let joins_items: usize = self.history_cache_joins.iter().map(|e| e.value().len()).sum();
-        if self.history_cache_joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES || joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS {
+        if self.history_cache_joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
+            || self.history_cache_joins_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_JOINS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_joins.clear();
+            self.history_cache_joins_items.store(0, Ordering::Relaxed);
         }
     }
 
@@ -756,6 +772,7 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let ks = self.history_reader_base.get_continuations(&channels_vec);
+                self.history_cache_cont_items.fetch_add(ks.len(), Ordering::Relaxed);
                 v.insert(ks.clone());
                 ks
             }
@@ -770,6 +787,7 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let datums = self.history_reader_base.get_data(channel);
+                self.history_cache_data_items.fetch_add(datums.len(), Ordering::Relaxed);
                 v.insert(datums.clone());
                 datums
             }
@@ -784,6 +802,7 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let joins = self.history_reader_base.get_joins(channel);
+                self.history_cache_joins_items.fetch_add(joins.len(), Ordering::Relaxed);
                 v.insert(joins.clone());
                 joins
             }
@@ -815,6 +834,9 @@ impl HotStoreInstances {
             history_cache_continuations: DashMap::new(),
             history_cache_datums: DashMap::new(),
             history_cache_joins: DashMap::new(),
+            history_cache_cont_items: AtomicUsize::new(0),
+            history_cache_data_items: AtomicUsize::new(0),
+            history_cache_joins_items: AtomicUsize::new(0),
             checkpoint_lock: std::sync::Mutex::new(()),
             history_reader_base: history_reader,
         };
