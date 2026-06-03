@@ -108,6 +108,9 @@ Print Assumptions closed_deref_zero_ca.
 Print Assumptions deref_subst_closed_ca.
 Print Assumptions linear_subst_many_fuel_le.
 Print Assumptions extract_sends_join_sends.
+Print Assumptions signed_sends_injective.
+Print Assumptions signed_sends_fuel.
+Print Assumptions ca_step_join2_det.
 Print Assumptions ca_SN_funded.
 Print Assumptions st_total_fuel_can_increase_off_funded.
 Print Assumptions ca_local_confluence.

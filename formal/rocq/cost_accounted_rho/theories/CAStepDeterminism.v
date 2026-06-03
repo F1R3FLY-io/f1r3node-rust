@@ -64,6 +64,12 @@ Proof.
     match goal with
     | [ Hl : length xs = length Us |- _ ] => exact (ca_step_join1_det xs Us T s t T2 Hl Hstep2)
     end.
+  - (* ca_join2: single combined token, unique residual via ca_step_join2_det *)
+    subst snds. symmetry.
+    match goal with
+    | [ HU : length xs = length Us, Ht : length xs = length ts |- _ ] =>
+        exact (ca_step_join2_det xs Us ts T s1 t T2 HU Ht Hstep2)
+    end.
   - (* ca_par_l *)
     unfold single_token_st in Hsingle. simpl in Hsingle.
     assert (Hc1 : st_token_node_count S1 >= 1)

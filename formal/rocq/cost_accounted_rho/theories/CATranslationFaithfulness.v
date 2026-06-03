@@ -16,6 +16,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
@@ -461,6 +463,21 @@ Qed.
    congruence rules lift the inner step through PPar via rs_struct. This packages
    the five per-rule simulations into one theorem over the whole reduction
    relation, axiom-free. *)
+(* The combined J2 funding key is ∧-headed once any sender is present, so a Split
+   mediator can decompose it (the N=0 corner collapses the key to the receiver
+   seal s1). *)
+Lemma fold_left_SAnd_is_and : forall ts a b,
+  exists c d, fold_left (fun acc t => SAnd acc t) ts (SAnd a b) = SAnd c d.
+Proof.
+  induction ts as [| u us IH]; intros a b; simpl.
+  - exists a, b. reflexivity.
+  - apply IH.
+Qed.
+
+Lemma join_token_key_cons_and : forall s1 t ts,
+  exists a b, join_token_key s1 (t :: ts) = SAnd a b.
+Proof. intros s1 t ts. unfold join_token_key. simpl. apply fold_left_SAnd_is_and. Qed.
+
 Theorem ca_translation_progresses : forall S S',
   ca_step S S' -> exists Ctx W, closed_proc Ctx /\ rho_step (PPar (St S) Ctx) W.
 Proof.
@@ -528,6 +545,50 @@ Proof.
     + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
     + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
     + exists (Split a b); eexists; split; [ apply Split_closed | ].
+      eapply rs_struct.
+      * eapply se_trans. { apply se_par_comm. }
+        eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+        apply se_sym; apply se_par_assoc.
+      * apply rs_par_l. apply rs_comm.
+      * apply se_refl.
+  - (* ca_join2: the combined token (keyed s1 ∘ t1 ∘ … ∘ tN) is consumed atomically.
+       For N≥1 the key is ∧-headed → a Split mediator decomposes it (exactly the
+       ca_rule3 first step, with the receiver|senders block as the opaque blob). For
+       N=0 the key collapses to s1 and the receiver gate fires on its own seal. *)
+    subst snds. destruct ts as [| t0 ts0].
+    + (* N = 0: join_token_key s1 [] = s1 *)
+      unfold join_token_key; simpl. destruct s1 as [| bs | bs | a b].
+      * exists PNil; eexists; split; [ apply closed_PNil | ]. apply rs_par_l.
+        eapply rs_struct.
+        -- eapply se_trans. { apply se_par_assoc. }
+           eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+           apply se_sym; apply se_par_assoc.
+        -- apply rs_par_l. apply rs_comm.
+        -- apply se_refl.
+      * exists PNil; eexists; split; [ apply closed_PNil | ]. apply rs_par_l.
+        eapply rs_struct.
+        -- eapply se_trans. { apply se_par_assoc. }
+           eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+           apply se_sym; apply se_par_assoc.
+        -- apply rs_par_l. apply rs_comm.
+        -- apply se_refl.
+      * exists PNil; eexists; split; [ apply closed_PNil | ]. apply rs_par_l.
+        eapply rs_struct.
+        -- eapply se_trans. { apply se_par_assoc. }
+           eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+           apply se_sym; apply se_par_assoc.
+        -- apply rs_par_l. apply rs_comm.
+        -- apply se_refl.
+      * exists (Split a b); eexists; split; [ apply Split_closed | ].
+        eapply rs_struct.
+        -- eapply se_trans. { apply se_par_comm. }
+           eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+           apply se_sym; apply se_par_assoc.
+        -- apply rs_par_l. apply rs_comm.
+        -- apply se_refl.
+    + (* N ≥ 1: the combined key is ∧-headed — Split it (ca_rule3 first step) *)
+      destruct (join_token_key_cons_and s1 t0 ts0) as [a [b HK]]. rewrite HK.
+      exists (Split a b); eexists; split; [ apply Split_closed | ].
       eapply rs_struct.
       * eapply se_trans. { apply se_par_comm. }
         eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }

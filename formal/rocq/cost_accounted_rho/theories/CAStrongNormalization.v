@@ -255,6 +255,20 @@ Proof.
   - rewrite (IH Us' ltac:(lia)). lia.
 Qed.
 
+(* The fuel of the J2 separately-signed sender bundle: the channel fuels plus the
+   payload fuels (the per-sender seals carry no fuel — st_total_fuel ignores the
+   seal). Independent of the sender signatures ts. *)
+Lemma signed_sends_fuel : forall xs Us ts,
+  length xs = length Us -> length xs = length ts ->
+  st_total_fuel (signed_sends xs Us ts)
+    = fold_right (fun x acc => caname_total_fuel x + acc) 0 xs
+      + fold_right (fun U acc => st_total_fuel U + acc) 0 Us.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] [| tt ts'] HU Ht;
+    simpl in *; try discriminate; try reflexivity.
+  rewrite (IH Us' ts' ltac:(lia) ltac:(lia)). lia.
+Qed.
+
 (* Keystone (Risk R2): under a join continuation linear at every bound index and
    CLOSED payloads, the N-simultaneous substitution adds at most the payloads'
    total fuel — the N-ary image of [linear_subst_fuel_le]. List induction over the
@@ -308,6 +322,16 @@ Proof.
     | [ Hlen : length xs = length Us, Hcl : Forall closed_st Us |- _ ] =>
         rewrite (join_sends_fuel xs Us Hlen);
         rewrite Hlen in Hidx;
+        pose proof (linear_subst_many_fuel_le Us _ Hidx Hcl) as Hbound;
+        lia
+    end.
+  - (* ca_join2: combined token consumed forces the drop; the separately-signed
+       senders' fuel appears on both sides, payload fuel bounded by the keystone. *)
+    subst snds. destruct Hf as [[[Hidx _] _] _].
+    match goal with
+    | [ HU : length xs = length Us, Ht : length xs = length ts, Hcl : Forall closed_st Us |- _ ] =>
+        rewrite (signed_sends_fuel xs Us ts HU Ht);
+        rewrite HU in Hidx;
         pose proof (linear_subst_many_fuel_le Us _ Hidx Hcl) as Hbound;
         lia
     end.

@@ -56,6 +56,18 @@ Definition redex_pairs (A B : signed_term) : list (sig * signed_term) :=
                   [ (SAnd s1 s2, STPar (STPar (subst_st T 0 (CQuote U)) (STStack t1)) (STStack t)) ]
               | _, _, _ => []
               end
+          (* J2: separately-signed receiver (CPJoin) + sender bundle, combined token. *)
+          | STSigned (CPJoin xsj Tj) s1, snds =>
+              match Nat.eq_dec (length xsj) (length (sb_pays snds)),
+                    Nat.eq_dec (length xsj) (length (sb_sigs snds)),
+                    st_eq_dec snds (signed_sends xsj (sb_pays snds) (sb_sigs snds)),
+                    Forall_dec closed_st closed_st_dec (sb_pays snds),
+                    sig_eq_dec sg (join_token_key s1 (sb_sigs snds)) with
+              | left _, left _, left _, left _, left _ =>
+                  [ (join_token_key s1 (sb_sigs snds),
+                     STPar (subst_st_many Tj (sb_pays snds)) (STStack t)) ]
+              | _, _, _, _, _ => []
+              end
           | _, _ => []
           end
       | _ => []
@@ -122,6 +134,15 @@ Proof.
               destruct (sig_eq_dec sg s1b) as [H2 | ]; try contradiction.
               simpl in Hredex. destruct Hredex as [Heq | []].
               inversion Heq; subst. apply g_rule2.
+           ++ (* A1 = STSigned (CPJoin xsj Tj) s1' — J2 (separately-signed, combined token) *)
+              destruct (Nat.eq_dec (length xsj) (length (sb_pays A2))) as [HU | ]; try contradiction.
+              destruct (Nat.eq_dec (length xsj) (length (sb_sigs A2))) as [Ht | ]; try contradiction.
+              destruct (st_eq_dec A2 (signed_sends xsj (sb_pays A2) (sb_sigs A2))) as [Hrec | ];
+                try contradiction.
+              destruct (Forall_dec closed_st closed_st_dec (sb_pays A2)) as [Hcl | ]; try contradiction.
+              destruct (sig_eq_dec sg (join_token_key s1' (sb_sigs A2))) as [Hsg | ]; try contradiction.
+              simpl in Hredex. destruct Hredex as [Heq | []].
+              inversion Heq; subst. apply g_join2; [ exact Hrec | exact HU | exact Ht | exact Hcl ].
         -- destruct A11 as [P11 s1' | | ]; try contradiction.
            destruct P11 as [ | xf T1 | | | | ]; try contradiction.
            destruct A12 as [P12 s2' | | ]; try contradiction.
@@ -158,6 +179,16 @@ Proof.
       [| exfalso; apply NE; reflexivity].
     destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H1].
     sig_refl s. simpl. left; reflexivity.
+  - (* g_join2 — recover payloads/sigs from the bundle, discharge the firing decs *)
+    apply in_or_app. left. subst snds.
+    rewrite (sb_pays_signed_sends xs Us ts H0 H1).
+    rewrite (sb_sigs_signed_sends xs Us ts H0 H1).
+    destruct (Nat.eq_dec (length xs) (length Us)) as [_ | NE]; [| exfalso; apply NE; exact H0].
+    destruct (Nat.eq_dec (length xs) (length ts)) as [_ | NE]; [| exfalso; apply NE; exact H1].
+    destruct (st_eq_dec (signed_sends xs Us ts) (signed_sends xs Us ts)) as [_ | NE];
+      [| exfalso; apply NE; reflexivity].
+    destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H2].
+    sig_refl (join_token_key s1 ts). simpl. left; reflexivity.
   - apply in_or_app. right. apply in_or_app. left.
     apply in_map_iff. exists (g, S1'). split; [ reflexivity | exact IHHstep ].
   - apply in_or_app. right. apply in_or_app. right.

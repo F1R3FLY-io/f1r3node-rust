@@ -61,6 +61,16 @@ Inductive graded_step : signed_term -> sig -> signed_term -> Prop :=
         (STPar (STSigned (CPPar (CPJoin xs T) snds) s) (STStack (TGate s t)))
         s
         (STPar (subst_st_many T Us) (STStack t))
+  | g_join2 : forall xs Us ts T s1 t snds,
+      snds = signed_sends xs Us ts ->
+      length xs = length Us ->
+      length xs = length ts ->
+      Forall closed_st Us ->
+      graded_step
+        (STPar (STPar (STSigned (CPJoin xs T) s1) snds)
+               (STStack (TGate (join_token_key s1 ts) t)))
+        (join_token_key s1 ts)
+        (STPar (subst_st_many T Us) (STStack t))
   | g_par_l : forall S1 g S1' S2,
       graded_step S1 g S1' -> graded_step (STPar S1 S2) g (STPar S1' S2)
   | g_par_r : forall S1 g S2 S2',
@@ -76,6 +86,7 @@ Proof.
   - apply ca_rule4.
   - apply ca_rule5.
   - apply ca_join1; assumption.
+  - apply ca_join2; assumption.
   - apply ca_par_l; assumption.
   - apply ca_par_r; assumption.
 Qed.
@@ -89,6 +100,7 @@ Proof.
   - eexists; apply g_rule4.
   - eexists; apply g_rule5.
   - eexists; apply g_join1; eassumption.
+  - eexists; apply g_join2; eassumption.
   - destruct IHca_step as [g Hg]. exists g. apply g_par_l; assumption.
   - destruct IHca_step as [g Hg]. exists g. apply g_par_r; assumption.
 Qed.

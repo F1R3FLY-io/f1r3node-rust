@@ -23,18 +23,37 @@ Proof. intros a b Heq. apply (f_equal sig_size) in Heq; simpl in Heq; lia. Qed.
 Lemma SAnd_acyclic_right : forall a b, a <> SAnd a b.
 Proof. intros a b Heq. symmetry in Heq. revert Heq. apply SAnd_acyclic_left. Qed.
 
-(* Discharge impossible COMM-vs-PAR overlaps: a wrapped redex or a stack cannot
-   step in isolation, and a proper sub-signature cannot equal its SAnd parent. *)
+(* The separately-signed sender bundle (J2) has NO token within, so it cannot
+   step in isolation — defined here (ahead of [solve_no_substep]) so the tactic
+   can discharge the J2 receiver|senders block. *)
+Lemma signed_sends_no_step : forall xs Us ts S', ~ ca_step (signed_sends xs Us ts) S'.
+Proof.
+  induction xs as [| x xs' IH]; intros Us ts S' Hstep.
+  - simpl in Hstep. eapply no_leak_requires_token; eassumption.
+  - destruct Us as [| U Us']; destruct ts as [| tt ts']; simpl in Hstep;
+      try (eapply no_leak_requires_token; eassumption).
+    inversion Hstep; subst.
+    + eapply no_leak_requires_token; eassumption.
+    + eapply IH; eassumption.
+Qed.
+
+(* Discharge impossible COMM-vs-PAR overlaps: a wrapped redex, a stack, or a
+   separately-signed sender bundle cannot step in isolation, and a proper
+   sub-signature cannot equal its SAnd parent. *)
 Ltac solve_no_substep :=
   match goal with
   | [ H : ca_step (STSigned _ _) _ |- _ ] =>
       exfalso; eapply no_leak_requires_token; exact H
   | [ H : ca_step (STStack _) _ |- _ ] =>
       exfalso; eapply no_leak_stack_inert; exact H
+  | [ H : ca_step (signed_sends _ _ _) _ |- _ ] =>
+      exfalso; eapply signed_sends_no_step; exact H
   | [ H : SAnd ?a ?b = ?a |- _ ] =>
       exfalso; eapply SAnd_acyclic_left; exact H
   | [ H : ?a = SAnd ?a ?b |- _ ] =>
       exfalso; eapply SAnd_acyclic_right; exact H
+  | [ H : ca_step (STPar (STSigned (CPJoin _ _) _) _) _ |- _ ] =>
+      inversion H; subst; solve_no_substep
   | [ H : ca_step (STPar (STSigned _ _) (STSigned _ _)) _ |- _ ] =>
       inversion H; subst; solve_no_substep
   | [ H : ca_step (STPar (STSigned _ _) (STStack _)) _ |- _ ] =>
@@ -122,6 +141,52 @@ Proof.
     exfalso; eapply no_leak_stack_inert; eauto.
 Qed.
 
+(* ── J2 (separately-signed senders, combined token) determinism ─────────────
+   signed_sends is injective in payloads AND sender-signatures (given arities):
+   the redex structure pins both, hence the J2 residual is unique. *)
+Lemma signed_sends_injective : forall xs Us Us' ts ts',
+  length xs = length Us -> length xs = length Us' ->
+  length xs = length ts -> length xs = length ts' ->
+  signed_sends xs Us ts = signed_sends xs Us' ts' -> Us = Us' /\ ts = ts'.
+Proof.
+  induction xs as [| x xs' IH];
+    intros [| U Us0] [| U' Us0'] [| tt ts0] [| tt' ts0'] HU HU' Ht Ht' Heq;
+    simpl in *; try discriminate; try (split; reflexivity).
+  inversion Heq; subst.
+  destruct (IH Us0 Us0' ts0 ts0' ltac:(lia) ltac:(lia) ltac:(lia) ltac:(lia) H2)
+    as [HeU Hets].
+  subst. split; reflexivity.
+Qed.
+
+(* Determinism of the J2 firing: the separately-signed N-ary join with one combined
+   token has a unique residual (signed_sends injectivity pins the payloads). J2
+   holds ONE token cell, so this is a genuine determinism lemma (Risk R4). *)
+Lemma ca_step_join2_det : forall xs Us ts T s1 t Sb,
+  length xs = length Us -> length xs = length ts ->
+  ca_step (STPar (STPar (STSigned (CPJoin xs T) s1) (signed_sends xs Us ts))
+                 (STStack (TGate (join_token_key s1 ts) t))) Sb ->
+  Sb = STPar (subst_st_many T Us) (STStack t).
+Proof.
+  intros xs Us ts T s1 t Sb HU Ht H. inversion H; subst.
+  - (* ca_join2 — pin payloads via signed_sends injectivity *)
+    match goal with
+    | [ Heq : signed_sends xs Us ts = signed_sends xs ?Us0 ?ts0,
+        HU0 : length xs = length ?Us0, Ht0 : length xs = length ?ts0 |- _ ] =>
+        destruct (signed_sends_injective xs Us Us0 ts ts0 HU HU0 Ht Ht0 Heq) as [HeU Hets];
+        rewrite HeU; reflexivity
+    end.
+  - (* ca_par_l — the receiver|senders block has no token, cannot step *)
+    exfalso.
+    match goal with
+    | [ Hb : ca_step (STPar (STSigned (CPJoin _ _) _) (signed_sends _ _ _)) _ |- _ ] =>
+        inversion Hb; subst;
+        [ eapply no_leak_requires_token; eassumption
+        | eapply signed_sends_no_step; eassumption ]
+    end.
+  - (* ca_par_r — token-stack sub-step impossible *)
+    exfalso; eapply no_leak_stack_inert; eauto.
+Qed.
+
 (* ── local confluence (the diamond) — unconditional ─────────────────────── *)
 
 Lemma ca_local_confluence : forall S Sa Sb,
@@ -139,6 +204,12 @@ Proof.
     subst snds. left. symmetry.
     match goal with
     | [ Hl : length xs = length Us |- _ ] => exact (ca_step_join1_det xs Us T s t Sb Hl Hstep2)
+    end.
+  - (* ca_join2 — unique residual via ca_step_join2_det *)
+    subst snds. left. symmetry.
+    match goal with
+    | [ HU : length xs = length Us, Ht : length xs = length ts |- _ ] =>
+        exact (ca_step_join2_det xs Us ts T s1 t Sb HU Ht Hstep2)
     end.
   - (* ca_par_l *)
     inversion Hstep2; subst.

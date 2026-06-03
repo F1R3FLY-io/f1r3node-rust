@@ -50,6 +50,67 @@ Proof.
   - rewrite (IH Us' ltac:(lia)). reflexivity.
 Qed.
 
+(* ── J2: separately-signed senders + a single combined token (spec §4.8 J2) ──
+   The N senders of a J2 redex are SEPARATELY signed — ⟨x1!(U1)⟩_{t1} ∥ … ∥
+   ⟨xN!(UN)⟩_{tN} — built as a right-nested STPar terminated by the inert nil
+   signing (no token node, zero fuel, so the J2 redex still holds exactly ONE
+   token cell — admissible under single_token_st, unlike Rules 2/5). *)
+Fixpoint signed_sends (xs : list caname) (Us : list signed_term) (ts : list sig)
+  : signed_term :=
+  match xs, Us, ts with
+  | cons x xs', cons U Us', cons t ts' =>
+      STPar (STSigned (CPOutput x U) t) (signed_sends xs' Us' ts')
+  | _, _, _ => STSigned CPNil SUnit
+  end.
+
+(* The combined funding key s1 ∘ t1 ∘ … ∘ tN (the fusion of the receiver
+   authority with every sender authority), left-associated as the spec writes it. *)
+Definition join_token_key (s1 : sig) (ts : list sig) : sig :=
+  fold_left (fun acc t => SAnd acc t) ts s1.
+
+(* Recover the channels / payloads / sender-signatures from a separately-signed
+   bundle — the partial inverse of signed_sends, exact at matching arities. *)
+Fixpoint sb_chans (S : signed_term) : list caname :=
+  match S with
+  | STPar (STSigned (CPOutput x _) _) rest => x :: sb_chans rest
+  | _ => nil
+  end.
+Fixpoint sb_pays (S : signed_term) : list signed_term :=
+  match S with
+  | STPar (STSigned (CPOutput _ U) _) rest => U :: sb_pays rest
+  | _ => nil
+  end.
+Fixpoint sb_sigs (S : signed_term) : list sig :=
+  match S with
+  | STPar (STSigned (CPOutput _ _) t) rest => t :: sb_sigs rest
+  | _ => nil
+  end.
+
+Lemma sb_chans_signed_sends : forall xs Us ts,
+  length xs = length Us -> length xs = length ts ->
+  sb_chans (signed_sends xs Us ts) = xs.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] [| t ts'] HU Ht;
+    simpl in *; try discriminate; try reflexivity.
+  rewrite (IH Us' ts' ltac:(lia) ltac:(lia)). reflexivity.
+Qed.
+Lemma sb_pays_signed_sends : forall xs Us ts,
+  length xs = length Us -> length xs = length ts ->
+  sb_pays (signed_sends xs Us ts) = Us.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] [| t ts'] HU Ht;
+    simpl in *; try discriminate; try reflexivity.
+  rewrite (IH Us' ts' ltac:(lia) ltac:(lia)). reflexivity.
+Qed.
+Lemma sb_sigs_signed_sends : forall xs Us ts,
+  length xs = length Us -> length xs = length ts ->
+  sb_sigs (signed_sends xs Us ts) = ts.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] [| t ts'] HU Ht;
+    simpl in *; try discriminate; try reflexivity.
+  rewrite (IH Us' ts' ltac:(lia) ltac:(lia)). reflexivity.
+Qed.
+
 Reserved Notation "S '⤳ca' T" (at level 70, no associativity).
 
 Inductive ca_step : signed_term -> signed_term -> Prop :=
@@ -118,6 +179,25 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
       ca_step
         (STPar (STSigned (CPPar (CPJoin xs T) snds) s)
                (STStack (TGate s t)))
+        (STPar (subst_st_many T Us) (STStack t))
+
+  (* Join J2 — N-ary join, separately-signed participants, single COMBINED token
+     (spec §4.8 J2, the N-ary analogue of Rule 3 / eq:join-J2): the receiver join is
+     signed s1, each sender ⟨xi!(Ui)⟩ is signed ti independently, and ONE token keyed
+     to the fused signature s1 ∘ t1 ∘ … ∘ tN funds the whole join atomically (no
+     partial funding). The continuation keeps its own seal; N payloads substituted
+     simultaneously. Senders are the VARIABLE [snds] = signed_sends xs Us ts (the
+     snds-variable form keeps inversion terminating). Payloads CLOSED (capture-
+     correct N-fold subst). At N=1 this is Rule 3. *)
+  | ca_join2 : forall (xs : list caname) (Us : list signed_term) (ts : list sig)
+                      (T : signed_term) (s1 : sig) (t : token) (snds : signed_term),
+      snds = signed_sends xs Us ts ->
+      length xs = length Us ->
+      length xs = length ts ->
+      Forall closed_st Us ->
+      ca_step
+        (STPar (STPar (STSigned (CPJoin xs T) s1) snds)
+               (STStack (TGate (join_token_key s1 ts) t)))
         (STPar (subst_st_many T Us) (STStack t))
 
   (* PAR closure (spatial monoid), left and right. *)
