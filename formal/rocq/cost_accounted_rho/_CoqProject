@@ -368,3 +368,9 @@ theories/CAGradedImageFinite.v
 # CL6 completeness — grade-tagged successor enumeration: graded_succ_all with
 # graded_step S g S' <-> In (g, S') (graded_succ_all S). The dichotomy iterates it.
 theories/CAGradedSuccPairs.v
+
+# CL6 completeness — constructive graded Hennessy-Milner adequacy at every finite
+# modal depth: the dichotomy (graded_bisim_n n  ∨  distinguishing φ of depth ≤ n)
+# and graded_finitary_adequacy (depth-n bisimilarity ⟺ agreement on depth-≤-n HML).
+# No Classical/funext/choice — the converse of graded_adequacy_sound, constructively.
+theories/CAGradedCompleteness.v
