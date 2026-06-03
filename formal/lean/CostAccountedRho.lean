@@ -2,6 +2,7 @@ import CostAccountedRho.LinearLogicResources
 import CostAccountedRho.FuelGateSafety
 import CostAccountedRho.StepDeterminism
 import CostAccountedRho.CostMonad
+import CostAccountedRho.JoinConservation
 
 /-
   CostAccountedRho — Lean 4 mirror of the validator-scoped subset of the Rocq
