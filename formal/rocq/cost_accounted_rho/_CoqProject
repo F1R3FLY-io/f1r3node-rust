@@ -399,3 +399,8 @@ theories/CAForceSeparation.v
 # compound funding key under regrouping, the reverse-currying iso, partition
 # invariance, and the no-weakening corollary. Up to Permutation (SAnd is free).
 theories/CAJoinConservation.v
+theories/CategoryInterface.v
+theories/CACategory.v
+theories/CACostFunctor.v
+theories/CACostMonadCat.v
+theories/CAAdjunctionI.v
