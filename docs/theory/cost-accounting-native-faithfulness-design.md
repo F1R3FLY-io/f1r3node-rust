@@ -158,6 +158,21 @@ obstruction. The progress theorem + the five per-rule reductions stand independe
 it; the strong bisim holds cleanly only on the gate-free-continuation fragment
 (`T` with no nested `STSigned`).
 
+**This does NOT block Adjunction II.** The monad paper's Adjunction II (Prop. `adj2`,
+*Internalisation as an adjoint retraction*) claims only `Imp_G ∘ η_G ≈ id_G` **up to
+weak bisimulation** — the retraction along the **unit-grade, cost-free embedding** `η_G`.
+At the unit signature the gate fires against the *freely available unit token* (paper §
+"the unit signature … the freely available unit … without net resource"), so the gate
+firing is an **administrative reduction** the weak bisimulation absorbs, and the
+force-point over-gating — a property of the FULL metered translation at **arbitrary**
+grades — never arises. Adjunction II is therefore proven outright in
+`CAInternalisation.v` (`ca_internalisation_retraction`, the `s = SUnit` instance of
+`ca_single_gate_bisimilar`, axiom-free and fully general over the hash/ground encoders).
+The force-cashing refinement would be needed only for the **strictly stronger** claim of
+a full strong/weak bisimulation across an arbitrary metered `ca_step` — a statement the
+paper does not assert for the adjunction, and which remains the recorded §3a research
+obstruction.
+
 ## 4. Honest difficulty flags
 
 - **L3 is the only genuine research risk** — adopt depth-indexing from the start (do

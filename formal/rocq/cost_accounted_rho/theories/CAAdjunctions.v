@@ -10,9 +10,14 @@
    Cost (writer) monad of CostMonad.v. Axiom-free.
 
    Adjunction II (internalisation of Cost(G) into the Turing-complete base up to
-   weak bisimulation) rests on the translation faithfulness, whose STRONG/weak
-   bisimulation is force-limited (docs §3a); it is delivered at the achievable
-   strength by ca_translation_progresses + ca_single_gate_bisimilar.            *)
+   weak bisimulation, Prop. adj2) is delivered in CAInternalisation.v: the
+   retraction Imp_G ∘ η_G ≈ id_G up to weak bisimulation. Its claim is the
+   UNIT-grade (cost-free η_G) retraction — where the freely-available unit token
+   fires the gate as an administrative reduction — NOT the full metered
+   translation at arbitrary grades (whose strong bisimulation is force-limited,
+   docs §3a; that is a separate, stronger statement the paper does not assert for
+   Adjunction II). The operational faithfulness of the full metered translation
+   is ca_translation_progresses (CATranslationFaithfulness).                    *)
 
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import SignatureMonoid.

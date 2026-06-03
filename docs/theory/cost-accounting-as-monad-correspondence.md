@@ -47,22 +47,32 @@ monad-paper concepts:
 | Graded transitions (step labelled by consumed signature) | `BillableTokenEvent.sig_hash` |
 | Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
 
-## Honestly Rocq-primary / still in progress
+## Honestly Rocq-primary (now mechanized)
 
 Per the multi-prover allocation (DR-21 (d), and the design table): some claims are equational/logical and
 Rocq-primary, with TLA+/Sage/Lean carrying genuine content only where there is operational/algebraic substance
-(monad laws → Sage + Lean; located purses + modulus → TLA+). Two categorical claims rest on the **native
-translation / bisimulation** (the source-to-source erasure into pure rho), whose native re-mechanization is the
-remaining migration work:
+(monad laws → Sage + Lean; located purses + modulus → TLA+). The two categorical claims that rest on the
+**native translation / bisimulation** (the source-to-source erasure into pure rho) are now discharged
+axiom-free in the native four-sort grammar:
 
-- **Graded Hennessy–Milner adequacy** (graded-HML equivalence = quote-faithful bisimulation): requires the
-  graded LTS + the OSLF-generated graded logic over `Cost(G)`. Rocq-primary; the graded LTS is the
-  signature-labelled `ca_step`.
-- **The two adjunctions** — Free ⊣ Forget (structural) and the internalisation ℐ_G : Cost(G) → G over
-  Turing-complete bases (up to weak bisimulation). For the rho instance, internalisation is realized by the
-  source-to-source translation into pure rho (`Translation.v` / `TranslationFaithfulness.v` / `Bisimulation.v`),
-  whose native (four-sort) re-statement composes with the native `ca_step`.
+- **Graded Hennessy–Milner adequacy** (graded-HML equivalence = graded bisimulation over the
+  signature-labelled `graded_step`):
+  - *soundness* — `CAGradedAdequacy.graded_adequacy_sound` (graded-bisimilar ⇒ same graded-HML);
+  - *image-finiteness* — `CAGradedImageFinite.graded_image_finite` and `CAGradedSuccPairs.graded_image_finite_pairs`
+    (the explicit finite successor enumerations `graded_succ` / `graded_succ_all`);
+  - *completeness* — `CAGradedCompleteness.graded_finitary_adequacy`: at every finite modal depth `n`,
+    depth-`n` graded bisimilarity ⟺ agreement on all graded-HML formulae of modal depth ≤ `n`, via the
+    constructive `graded_dichotomy` (distinguishing-formula extraction). **No Classical / funext / Choice** —
+    image-finiteness removes the only non-constructive obstacle.
+- **The two adjunctions** — Free ⊣ Forget (structural) in `CAAdjunctions.v`
+  (`cost_forget_install`, `cost_install_forget_alters`, naturality), and the internalisation
+  ℐ_G ≡ `Imp_G : Cost(G) → G` over Turing-complete bases in `CAInternalisation.v`. The latter is the paper's
+  Prop. `adj2` (*internalisation as an adjoint retraction*): `ca_internalisation_retraction` proves
+  `Imp_G ∘ η_G ≈ id_G` **up to weak bisimulation** — the retraction along the cost-free unit embedding `η_G`,
+  where the freely-available unit token fires the gate as an administrative reduction (so the §3a force-point
+  over-gating, a property of the *full metered* translation at arbitrary grades, is not in scope of the claim).
+  Axiom-free and fully general over the hash/ground encoders.
 
-These are tracked as the continuation of the native migration; the central structural claims (wrapping,
-the cost monad, GAP-2 dissolution, cost determinism, the modulus) are discharged axiom-free by
-`continued_gslt_cost_capstone`.
+The central structural claims (wrapping, the cost monad, GAP-2 dissolution, cost determinism, the modulus) are
+discharged axiom-free by `continued_gslt_cost_capstone`; the graded adequacy and both adjunctions above complete
+the categorical layer (CL5–CL6) in the native grammar.

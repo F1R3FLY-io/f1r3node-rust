@@ -374,3 +374,10 @@ theories/CAGradedSuccPairs.v
 # and graded_finitary_adequacy (depth-n bisimilarity ⟺ agreement on depth-≤-n HML).
 # No Classical/funext/choice — the converse of graded_adequacy_sound, constructively.
 theories/CAGradedCompleteness.v
+
+# CL5 Adjunction II — internalise ⊣ include (Prop. adj2): the internalisation
+# retraction Imp_G ∘ η_G ≈ id_G up to weak bisimulation, exhibiting Cost(G) as a
+# behavioural retract of its Turing-complete base. The s=SUnit instance of the
+# single-gate bisimulation; the unit token is freely available so the force-point
+# obstruction (a property of the full metered translation, NOT this claim) is absent.
+theories/CAInternalisation.v
