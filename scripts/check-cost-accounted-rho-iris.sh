@@ -36,7 +36,7 @@ fi
 rm -rf "$(dirname "$probe")"
 
 if (cd "$(dirname "$V")" && coqc "$(basename "$V")") >/dev/null 2>&1; then
-  echo "  Iris: Reconcile.v type-checks (HeapLang program + logically-atomic spec well-formed)."
+  echo "  Iris: Reconcile.v verified (HeapLang debit program + WP Hoare-triple debit_spec)."
   echo "Iris reconciliation cross-witness passed."
   exit 0
 fi
