@@ -107,6 +107,10 @@ Fixpoint p_trd (d c : nat) (P : caproc) : proc :=
   | CPOutput x U => POutput (cn_trd d c x) (st_trd d c U)
   | CPPar A B    => PPar (p_trd d c A) (p_trd d c B)
   | CPDeref x    => PDeref (cn_trd d c x)
+  | CPJoin xs T  => lift_proc d c (Pt (CPJoin xs T))
+                    (* the join's depth-indexed image IS the lift of its plain
+                       translation (the bridge holds definitionally here; the join
+                       is not destructured by the per-rule reachability lemmas). *)
   end
 with cn_trd (d c : nat) (x : caname) : name :=
   match x with
@@ -140,6 +144,8 @@ Proof.
   - (* CPOutput x U *) intros x IHx U IHU d c; simpl; rewrite IHx, IHU; reflexivity.
   - (* CPPar A B *) intros A IHA B IHB d c; simpl; rewrite IHA, IHB; reflexivity.
   - (* CPDeref x *) intros x IHx d c; simpl; rewrite IHx; reflexivity.
+  - (* CPJoin xs T — bridge holds definitionally (p_trd join arm = lift of Pt) *)
+    intros xs T IHT d c; reflexivity.
   - (* CQuote T *) intros T IHT d c; simpl; rewrite IHT; reflexivity.
   - (* CNVar k *) intros k d c; reflexivity.
   - (* STSigned P s *)

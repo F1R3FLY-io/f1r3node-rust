@@ -76,23 +76,23 @@ Proof.
       destruct B as [PB sB | B1 B2 | tB]; try contradiction.
       destruct tB as [| sg t]; try contradiction.
       destruct A as [PA sA | A1 A2 | tA]; try contradiction.
-      * destruct PA as [ | xA TA | xA UA | PA1 PA2 | xA ]; try contradiction.
-        destruct PA1 as [ | xf Ti | | | ]; try contradiction.
-        destruct PA2 as [ | | xs Uo | | ]; try contradiction.
+      * destruct PA as [ | xA TA | xA UA | PA1 PA2 | xA | xsj Tj ]; try contradiction.
+        destruct PA1 as [ | xf Ti | | | | ]; try contradiction.
+        destruct PA2 as [ | | xs Uo | | | ]; try contradiction.
         destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
         destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
         simpl in Hredex. destruct Hredex as [Heq | []].
         inversion Heq; subst. apply g_rule1.
       * destruct A1 as [P1 s1' | A11 A12 | t1']; try contradiction.
-        -- destruct P1 as [ | xf T1 | xs U1 | P11 P12 | x1 ]; try contradiction.
+        -- destruct P1 as [ | xf T1 | xs U1 | P11 P12 | x1 | xsj Tj ]; try contradiction.
            ++ destruct A2 as [P2 s2' | | ]; try contradiction.
-              destruct P2 as [ | | xs U2 | | ]; try contradiction.
+              destruct P2 as [ | | xs U2 | | | ]; try contradiction.
               destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
               destruct (sig_eq_dec sg (SAnd s1' s2')) as [Hsg | ]; try contradiction.
               simpl in Hredex. destruct Hredex as [Heq | []].
               inversion Heq; subst. apply g_rule4.
-           ++ destruct P11 as [ | xf T2 | | | ]; try contradiction.
-              destruct P12 as [ | | xs U2 | | ]; try contradiction.
+           ++ destruct P11 as [ | xf T2 | | | | ]; try contradiction.
+              destruct P12 as [ | | xs U2 | | | ]; try contradiction.
               destruct s1' as [ | | | s1a s1b ]; try contradiction.
               destruct A2 as [ | | tA2 ]; try contradiction.
               destruct tA2 as [ | s1'' t1 ]; try contradiction.
@@ -102,9 +102,9 @@ Proof.
               simpl in Hredex. destruct Hredex as [Heq | []].
               inversion Heq; subst. apply g_rule2.
         -- destruct A11 as [P11 s1' | | ]; try contradiction.
-           destruct P11 as [ | xf T1 | | | ]; try contradiction.
+           destruct P11 as [ | xf T1 | | | | ]; try contradiction.
            destruct A12 as [P12 s2' | | ]; try contradiction.
-           destruct P12 as [ | | xs U2 | | ]; try contradiction.
+           destruct P12 as [ | | xs U2 | | | ]; try contradiction.
            destruct A2 as [ | | tA2 ]; try contradiction.
            destruct tA2 as [ | s1'' t1 ]; try contradiction.
            destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.

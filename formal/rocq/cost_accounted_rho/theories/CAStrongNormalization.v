@@ -15,6 +15,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From Stdlib Require Import Wf_nat.
 From Stdlib Require Import Wellfounded.
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -28,9 +30,12 @@ Lemma lift_fuel_inv :
   /\ (forall x d c, caname_total_fuel (lift_caname d c x) = caname_total_fuel x)
   /\ (forall T d c, st_total_fuel (lift_st d c T) = st_total_fuel T).
 Proof.
-  apply ca_mutind; intros; simpl;
+  apply ca_deep_ind; intros; simpl;
     repeat (match goal with H : forall _ _ : nat, _ = _ |- _ => rewrite H end);
     try reflexivity.
+  - (* CPJoin xs T: the channel fold matches via the caname Forall *)
+    f_equal. induction H as [| x xs' Hx HF IH]; simpl;
+      [ reflexivity | rewrite Hx, IH; reflexivity ].
   - destruct (c <=? n); reflexivity.   (* CNVar *)
 Qed.
 
@@ -56,7 +61,7 @@ Lemma subst_fuel_bound :
   /\ (forall T n N, st_total_fuel (subst_st T n N)
        <= st_total_fuel T + deref_count_st n T * caname_total_fuel N).
 Proof.
-  apply ca_mutind.
+  apply ca_deep_ind.
   - (* CPNil *) intros n N. simpl. lia.
   - (* CPInput x T *)
     intros x IHx T IHT n N. simpl.
@@ -83,6 +88,19 @@ Proof.
       * apply Nat.compare_gt_iff in Hcmp.
         assert (Nat.eqb k n = false) as Heq by (apply Nat.eqb_neq; lia).
         rewrite Heq. simpl. nia.
+  - (* CPJoin xs T: channels via the Forall fold-bound, continuation via the
+       N-shifted st IH (lift_caname_fuel_inv normalises the payload fuel). *)
+    intros xs HForall T IHT n N. simpl.
+    specialize (IHT (length xs + n) (lift_caname (length xs) 0 N)).
+    rewrite lift_caname_fuel_inv in IHT.
+    assert (Hchan : fold_right (fun x acc => caname_total_fuel x + acc) 0
+                      (map (fun x => subst_caname x n N) xs)
+                    <= fold_right (fun x acc => caname_total_fuel x + acc) 0 xs
+                       + fold_right (fun x acc => deref_count_caname n x + acc) 0 xs
+                         * caname_total_fuel N).
+    { clear IHT T. induction HForall as [| x xs' Hx HF IH]; simpl; [ lia | ].
+      specialize (Hx n N). rewrite Nat.mul_add_distr_r. nia. }
+    rewrite Nat.mul_add_distr_r. nia.
   - (* CQuote T *)
     intros T IHT n N. simpl. specialize (IHT n N). nia.
   - (* CNVar k *)

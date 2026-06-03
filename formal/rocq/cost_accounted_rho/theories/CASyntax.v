@@ -30,6 +30,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 
 (* ── Section 1: the three native mutually-inductive sorts ───────────────────
@@ -42,6 +44,10 @@ Inductive caproc : Type :=
   | CPOutput : caname -> signed_term -> caproc     (* x!(U): payload is 𝕋 *)
   | CPPar    : caproc -> caproc -> caproc          (* P | Q *)
   | CPDeref  : caname -> caproc                     (* *x *)
+  | CPJoin   : list caname -> signed_term -> caproc (* for(y1<-x1 & … & yN<-xN){T}
+                                                       — N-ary join (spec §4.8 Def 4.6);
+                                                       channels only (binders yi positional,
+                                                       de Bruijn yi := CNVar (N-i)). *)
 with caname : Type :=
   | CQuote   : signed_term -> caname               (* @T: quote of a signed term *)
   | CNVar    : nat -> caname                        (* bound name var (de Bruijn) *)
@@ -59,6 +65,75 @@ Scheme caproc_ind_mut := Induction for caproc Sort Prop
 
 Combined Scheme ca_mutind from caproc_ind_mut, caname_ind_mut, st_ind_mut.
 
+(* ── Section 2b: Forall-enriched deep induction ─────────────────────────────
+   The combined scheme treats the [CPJoin] channel list opaquely (no per-element
+   IH for [list caname]). This principle supplies [Forall Pn xs] in the join
+   case, so list-valued obligations (map over the channels) discharge by a
+   Forall-induction calling the [caname] IH. *)
+
+Section CADeepInd.
+  Variables (Pp : caproc -> Prop) (Pn : caname -> Prop) (Ps : signed_term -> Prop).
+  (* Interleaved (arg, IH, …) to mirror [ca_mutind] exactly, so existing
+     [ca_mutind] proofs become [ca_deep_ind] proofs with only a new CPJoin case. *)
+  Hypothesis Hnil   : Pp CPNil.
+  Hypothesis Hinp   : forall x, Pn x -> forall T, Ps T -> Pp (CPInput x T).
+  Hypothesis Hout   : forall x, Pn x -> forall U, Ps U -> Pp (CPOutput x U).
+  Hypothesis Hpar   : forall P1, Pp P1 -> forall P2, Pp P2 -> Pp (CPPar P1 P2).
+  Hypothesis Href   : forall c, Pn c -> Pp (CPDeref c).
+  Hypothesis Hjoin  : forall xs, Forall Pn xs -> forall T, Ps T -> Pp (CPJoin xs T).
+  Hypothesis Hquote : forall T, Ps T -> Pn (CQuote T).
+  Hypothesis Hnvar  : forall n, Pn (CNVar n).
+  Hypothesis Hsig   : forall P, Pp P -> forall s, Ps (STSigned P s).
+  Hypothesis Hstpar : forall T1, Ps T1 -> forall T2, Ps T2 -> Ps (STPar T1 T2).
+  Hypothesis Hstack : forall t, Ps (STStack t).
+
+  Fixpoint caproc_deep (P : caproc) : Pp P :=
+    match P with
+    | CPNil        => Hnil
+    | CPInput x T  => Hinp x (caname_deep x) T (st_deep T)
+    | CPOutput x U => Hout x (caname_deep x) U (st_deep U)
+    | CPPar P1 P2  => Hpar P1 (caproc_deep P1) P2 (caproc_deep P2)
+    | CPDeref x    => Href x (caname_deep x)
+    | CPJoin xs T  =>
+        Hjoin xs
+          ((fix lcn (l : list caname) : Forall Pn l :=
+              match l with
+              | nil       => Forall_nil Pn
+              | cons x l' => Forall_cons x (caname_deep x) (lcn l')
+              end) xs)
+          T (st_deep T)
+    end
+  with caname_deep (x : caname) : Pn x :=
+    match x with
+    | CQuote T => Hquote T (st_deep T)
+    | CNVar n  => Hnvar n
+    end
+  with st_deep (T : signed_term) : Ps T :=
+    match T with
+    | STSigned P s => Hsig P (caproc_deep P) s
+    | STPar T1 T2  => Hstpar T1 (st_deep T1) T2 (st_deep T2)
+    | STStack t    => Hstack t
+    end.
+End CADeepInd.
+
+Definition ca_deep_ind
+  (Pp : caproc -> Prop) (Pn : caname -> Prop) (Ps : signed_term -> Prop)
+  (Hnil : Pp CPNil)
+  (Hinp : forall x, Pn x -> forall T, Ps T -> Pp (CPInput x T))
+  (Hout : forall x, Pn x -> forall U, Ps U -> Pp (CPOutput x U))
+  (Hpar : forall P1, Pp P1 -> forall P2, Pp P2 -> Pp (CPPar P1 P2))
+  (Href : forall c, Pn c -> Pp (CPDeref c))
+  (Hjoin : forall xs, Forall Pn xs -> forall T, Ps T -> Pp (CPJoin xs T))
+  (Hquote : forall T, Ps T -> Pn (CQuote T))
+  (Hnvar : forall n, Pn (CNVar n))
+  (Hsig : forall P, Pp P -> forall s, Ps (STSigned P s))
+  (Hstpar : forall T1, Ps T1 -> forall T2, Ps T2 -> Ps (STPar T1 T2))
+  (Hstack : forall t, Ps (STStack t))
+  : (forall P, Pp P) /\ (forall x, Pn x) /\ (forall T, Ps T) :=
+  conj (caproc_deep Pp Pn Ps Hnil Hinp Hout Hpar Href Hjoin Hquote Hnvar Hsig Hstpar Hstack)
+  (conj (caname_deep Pp Pn Ps Hnil Hinp Hout Hpar Href Hjoin Hquote Hnvar Hsig Hstpar Hstack)
+        (st_deep Pp Pn Ps Hnil Hinp Hout Hpar Href Hjoin Hquote Hnvar Hsig Hstpar Hstack)).
+
 (* ── Section 3: decidable equality (reuses sig_eq_dec / token_eq_dec) ─────── *)
 
 Fixpoint caproc_eq_dec (P Q : caproc) : {P = Q} + {P <> Q}
@@ -66,6 +141,18 @@ with caname_eq_dec (x y : caname) : {x = y} + {x <> y}
 with st_eq_dec (T U : signed_term) : {T = U} + {T <> U}.
 Proof.
   - decide equality.
+    (* CPJoin leftover: list caname equality (decide equality auto-handles the
+       signed_term via st_eq_dec; only the channel list remains). *)
+    match goal with
+    | |- {?a = ?b} + {?a <> ?b} =>
+        revert b; induction a as [| h t IHt]; intros [| h' t'];
+          try (left; reflexivity); try (right; discriminate);
+          destruct (caname_eq_dec h h') as [Hh | Hh];
+            [ destruct (IHt t') as [Ht | Ht];
+              [ left; subst; reflexivity
+              | right; intro Heq; inversion Heq; contradiction ]
+            | right; intro Heq; inversion Heq; contradiction ]
+    end.
   - decide equality. apply Nat.eq_dec.
   - decide equality; [ apply sig_eq_dec | apply token_eq_dec ].
 Defined.
@@ -82,6 +169,8 @@ Fixpoint lift_caproc (d c : nat) (P : caproc) : caproc :=
   | CPOutput x U  => CPOutput (lift_caname d c x) (lift_st d c U)
   | CPPar P1 P2   => CPPar (lift_caproc d c P1) (lift_caproc d c P2)
   | CPDeref x     => CPDeref (lift_caname d c x)
+  | CPJoin xs T   => CPJoin (map (fun x => lift_caname d c x) xs)
+                            (lift_st d (length xs + c) T)
   end
 with lift_caname (d c : nat) (x : caname) : caname :=
   match x with
@@ -137,6 +226,9 @@ Fixpoint subst_caproc (P : caproc) (n : nat) (N : caname) : caproc :=
           end
       | CQuote T => CPDeref (CQuote (subst_st T n N))
       end
+  | CPJoin xs T   =>
+      CPJoin (map (fun x => subst_caname x n N) xs)
+             (subst_st T (length xs + n) (lift_caname (length xs) 0 N))
   end
 with subst_caname (x : caname) (n : nat) (N : caname) : caname :=
   match x with
@@ -174,13 +266,42 @@ Lemma lift_zero_ca :
   /\ (forall x c, lift_caname 0 c x = x)
   /\ (forall T c, lift_st 0 c T = T).
 Proof.
-  apply ca_mutind; intros; simpl;
+  apply ca_deep_ind; intros; simpl;
     repeat (match goal with H : forall _ : nat, _ = _ |- _ => rewrite H end);
     try reflexivity.
+  - (* CPJoin: the channel list via Forall *)
+    f_equal. induction H as [| x xs' Hx HF IH]; simpl;
+      [ reflexivity | rewrite Hx, IH; reflexivity ].
   - (* CNVar *) destruct (c <=? n) eqn:Hcn.
     + rewrite Nat.add_0_r. reflexivity.
     + reflexivity.
 Qed.
+
+(* ── Section 8b: N-simultaneous substitution for the join continuation ───────
+   [subst_st_many T Us] substitutes the quoted payloads @U1,…,@UN for the N
+   binders y1,…,yN of a join, as a RIGHT FOLD of the binary [subst_st]: each
+   step consumes the outermost binder (CNVar 0) and decrements the rest. So the
+   N-ary metatheory reduces to the binary lemma plus a list induction. *)
+
+Fixpoint subst_st_many (T : signed_term) (Us : list signed_term) : signed_term :=
+  match Us with
+  | nil       => T
+  | cons U Us' => subst_st_many (subst_st T 0 (CQuote U)) Us'
+  end.
+
+Lemma subst_st_many_nil : forall T, subst_st_many T nil = T.
+Proof. reflexivity. Qed.
+
+Lemma subst_st_many_singleton : forall T U,
+  subst_st_many T (cons U nil) = subst_st T 0 (CQuote U).
+Proof. reflexivity. Qed.
+
+(* Convention sanity (Risk R7): a concrete 2-ary fold is the nested double
+   substitution, outermost binder first. *)
+Example subst_st_many_two : forall T U1 U2,
+  subst_st_many T (cons U1 (cons U2 nil))
+    = subst_st (subst_st T 0 (CQuote U1)) 0 (CQuote U2).
+Proof. reflexivity. Qed.
 
 Example dequote_collapses :
   forall (U : signed_term),

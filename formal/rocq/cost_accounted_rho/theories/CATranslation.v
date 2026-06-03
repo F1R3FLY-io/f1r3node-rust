@@ -23,6 +23,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
@@ -57,6 +59,14 @@ Fixpoint T_tr (t : token) : proc :=
   | TGate s t'  => POutput (N_tr s) (T_tr t')
   end.
 
+(* An N-ary join erases to N nested unary for-comprehensions (the body lifted
+   past all N binders): for(y1<-x1 & … & yN<-xN){T} ↦ for(n1){…for(nN){body}}. *)
+Fixpoint iter_input (ns : list name) (body : proc) : proc :=
+  match ns with
+  | nil        => body
+  | cons n ns' => PInput n (iter_input ns' body)
+  end.
+
 (* ── native mutual translation: caproc / caname / signed_term ↦ pure rho ── *)
 
 Fixpoint p_tr (P : caproc) : proc :=
@@ -66,6 +76,7 @@ Fixpoint p_tr (P : caproc) : proc :=
   | CPOutput x U => POutput (caname_tr x) (st_tr U)
   | CPPar P1 P2  => PPar (p_tr P1) (p_tr P2)
   | CPDeref x    => PDeref (caname_tr x)
+  | CPJoin xs T  => iter_input (map caname_tr xs) (lift_proc (length xs) 0 (st_tr T))
   end
 with caname_tr (x : caname) : name :=
   match x with

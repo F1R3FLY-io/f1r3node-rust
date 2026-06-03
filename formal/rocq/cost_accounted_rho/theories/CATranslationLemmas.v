@@ -14,6 +14,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import RhoSyntax.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
@@ -48,7 +50,7 @@ Lemma lift_lift_comm :
   /\ (forall T d1 c1 d2 c2, c2 <= c1 ->
      lift_st d1 (c1 + d2) (lift_st d2 c2 T) = lift_st d2 c2 (lift_st d1 c1 T)).
 Proof.
-  apply ca_mutind.
+  apply ca_deep_ind.
   - (* CPNil *) intros; reflexivity.
   - (* CPInput x T *)
     intros x IHx T IHT d1 c1 d2 c2 Hle; simpl; f_equal.
@@ -62,6 +64,13 @@ Proof.
     intros P1 IH1 P2 IH2 d1 c1 d2 c2 Hle; simpl; f_equal; [ apply IH1 | apply IH2 ]; assumption.
   - (* CPDeref x *)
     intros x IHx d1 c1 d2 c2 Hle; simpl; f_equal; apply IHx; assumption.
+  - (* CPJoin xs T *)
+    intros xs HForall T IHT d1 c1 d2 c2 Hle; simpl; f_equal.
+    + rewrite !map_map. apply map_ext_Forall.
+      eapply Forall_impl; [| exact HForall]. intros a Ha. apply Ha; assumption.
+    + rewrite !length_map.
+      replace (length xs + (c1 + d2)) with ((length xs + c1) + d2) by lia.
+      apply IHT; lia.
   - (* CQuote T *)
     intros T IHT d1 c1 d2 c2 Hle; simpl; f_equal; apply IHT; assumption.
   - (* CNVar k *)
@@ -89,6 +98,15 @@ Proof.
   apply (proj1 (proj2 lift_lift_comm)). lia.
 Qed.
 
+(* The depth-N generalization, for the N binders of a join continuation. *)
+Lemma lift_lift_n_caname : forall x d c m,
+  lift_caname d (m + c) (lift_caname m 0 x) = lift_caname m 0 (lift_caname d c x).
+Proof.
+  intros x d c m.
+  replace (m + c) with (c + m) by lia.
+  apply (proj1 (proj2 lift_lift_comm)). lia.
+Qed.
+
 (* ── L1: the native lift/subst commutation (cutoff c ≤ index n) ──────────── *)
 
 Lemma lift_subst_ca :
@@ -99,7 +117,7 @@ Lemma lift_subst_ca :
   /\ (forall T d c n N, c <= n ->
      lift_st d c (subst_st T n N) = subst_st (lift_st d c T) (n + d) (lift_caname d c N)).
 Proof.
-  apply ca_mutind.
+  apply ca_deep_ind.
   - (* CPNil *) intros; reflexivity.
   - (* CPInput x T *)
     intros x IHx T IHT d c n N Hle; simpl; f_equal.
@@ -154,6 +172,13 @@ Proof.
           | H : Nat.compare _ _ = Gt |- _ => apply Nat.compare_gt_iff in H
           end;
         try (exfalso; lia); try (f_equal; f_equal; lia); try reflexivity; try lia.
+  - (* CPJoin xs T *)
+    intros xs HForall T IHT d c n N Hle; simpl; f_equal.
+    + rewrite !map_map. apply map_ext_Forall.
+      eapply Forall_impl; [| exact HForall]. intros a Ha. apply Ha; assumption.
+    + rewrite !length_map. rewrite IHT by lia.
+      replace (length xs + n + d) with (length xs + (n + d)) by lia.
+      rewrite lift_lift_n_caname. reflexivity.
   - (* CQuote T *)
     intros T IHT d c n N Hle; simpl; f_equal; apply IHT; assumption.
   - (* CNVar k *)

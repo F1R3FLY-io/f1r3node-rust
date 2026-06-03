@@ -12,8 +12,16 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+
+(* A map whose function is pointwise the identity on a list (witnessed by Forall)
+   leaves the list unchanged — the workhorse for the CPJoin channel-list cases. *)
+Lemma map_id_Forall {A} (f : A -> A) (xs : list A) :
+  Forall (fun x => f x = x) xs -> map f xs = xs.
+Proof. induction 1; simpl; [ reflexivity | rewrite H, IHForall; reflexivity ]. Qed.
 
 (* ── Section 1: lift 0 is the identity ──────────────────────────────────── *)
 (* (the conjunction [lift_zero_ca] is proved in CASyntax; project it here.) *)
@@ -32,7 +40,7 @@ Lemma subst_lift_cancel_ca :
   /\ (forall x c N, subst_caname (lift_caname 1 c x) c N = x)
   /\ (forall T c N, subst_st (lift_st 1 c T) c N = T).
 Proof.
-  apply ca_mutind; intros; simpl.
+  apply ca_deep_ind; intros; simpl.
   - (* CPNil *) reflexivity.
   - (* CPInput x T *) rewrite H. rewrite H0. reflexivity.
   - (* CPOutput x U *) rewrite H. rewrite H0. reflexivity.
@@ -52,6 +60,10 @@ Proof.
         assert (Hlt : Nat.compare k c0 = Lt)
           by (apply Nat.compare_lt_iff; lia).
         rewrite Hlt. reflexivity.
+  - (* CPJoin xs T *) simpl. f_equal.
+    + rewrite map_map. apply map_id_Forall.
+      eapply Forall_impl; [| exact H]. intros a Ha. apply Ha.
+    + rewrite length_map. apply H0.
   - (* CQuote T *) rewrite H. reflexivity.
   - (* CNVar k *)
     destruct (c <=? n) eqn:Hcn.
@@ -88,7 +100,7 @@ Lemma subst_lift_strong_ca :
   /\ (forall T d c k N, c <= k -> k < c + S d ->
      subst_st (lift_st (S d) c T) k N = lift_st d c T).
 Proof.
-  apply ca_mutind; intros.
+  apply ca_deep_ind; intros.
   - (* CPNil *) reflexivity.
   - (* CPInput *) simpl. rewrite H by lia. rewrite H0 by lia. reflexivity.
   - (* CPOutput *) simpl. rewrite H by lia. rewrite H0 by lia. reflexivity.
@@ -108,6 +120,10 @@ Proof.
         rewrite Hlt.
         destruct (c0 <=? k0) eqn:Hck0'; [apply Nat.leb_le in Hck0'; lia |].
         reflexivity.
+  - (* CPJoin xs T *) simpl. f_equal.
+    + rewrite map_map. apply map_ext_Forall.
+      eapply Forall_impl; [| exact H]. intros a Ha. apply Ha; assumption.
+    + rewrite length_map. apply H0; lia.
   - (* CQuote *) simpl. rewrite H by lia. reflexivity.
   - (* CNVar n *)
     destruct (Nat.leb_spec c n) as [Hcn | Hcn].
@@ -142,6 +158,9 @@ Fixpoint closed_caproc_at (k : nat) (P : caproc) : Prop :=
   | CPOutput x U  => closed_caname_at k x /\ closed_st_at k U
   | CPPar P1 P2   => closed_caproc_at k P1 /\ closed_caproc_at k P2
   | CPDeref x     => closed_caname_at k x
+  | CPJoin xs T   =>
+      fold_right (fun x acc => closed_caname_at k x /\ acc) True xs
+      /\ closed_st_at (length xs + k) T
   end
 with closed_caname_at (k : nat) (x : caname) : Prop :=
   match x with
@@ -159,17 +178,35 @@ Definition closed_caproc (P : caproc) : Prop := closed_caproc_at 0 P.
 Definition closed_caname (x : caname) : Prop := closed_caname_at 0 x.
 Definition closed_st (T : signed_term) : Prop := closed_st_at 0 T.
 
+(* The CPJoin channel-closedness (a guard-friendly fold_right) is the Forall the
+   binding lemmas reason with. *)
+Lemma fold_right_closed_Forall : forall k xs,
+  fold_right (fun x acc => closed_caname_at k x /\ acc) True xs
+  <-> Forall (closed_caname_at k) xs.
+Proof.
+  intros k xs. induction xs as [| x xs' IH]; simpl.
+  - split; [ intros _; constructor | reflexivity ].
+  - split.
+    + intros [Hh Ht]. constructor; [ exact Hh | apply IH; exact Ht ].
+    + intros HF. inversion HF; subst. split; [ assumption | apply IH; assumption ].
+Qed.
+
 Lemma closed_at_mono_ca :
   (forall P k k', k <= k' -> closed_caproc_at k P -> closed_caproc_at k' P)
   /\ (forall x k k', k <= k' -> closed_caname_at k x -> closed_caname_at k' x)
   /\ (forall T k k', k <= k' -> closed_st_at k T -> closed_st_at k' T).
 Proof.
-  apply ca_mutind; intros; simpl in *.
+  apply ca_deep_ind; intros; simpl in *.
   - exact I.
   - destruct H2. split; [eapply H; eauto | eapply H0; [|eassumption]; lia].
   - destruct H2. split; [eapply H; eauto | eapply H0; eauto].
   - destruct H2. split; [eapply H; eauto | eapply H0; eauto].
   - eapply H; eauto.
+  - (* CPJoin xs T *) destruct H2 as [HF HT]. apply fold_right_closed_Forall in HF. split.
+    + apply fold_right_closed_Forall.
+      rewrite Forall_forall in H, HF |- *. intros x Hx.
+      apply (H x Hx k k' H1). exact (HF x Hx).
+    + apply (H0 (length xs + k) (length xs + k')); [ lia | exact HT ].
   - eapply H; eauto.
   - lia.
   - eapply H; eauto.
@@ -194,7 +231,7 @@ Lemma closed_subst_ca :
   /\ (forall x k N, closed_caname_at k x -> subst_caname x k N = x)
   /\ (forall T k N, closed_st_at k T -> subst_st T k N = T).
 Proof.
-  apply ca_mutind; intros; simpl in *.
+  apply ca_deep_ind; intros; simpl in *.
   - reflexivity.
   - destruct H1. rewrite H by assumption. rewrite H0 by assumption. reflexivity.
   - destruct H1. rewrite H by assumption. rewrite H0 by assumption. reflexivity.
@@ -205,6 +242,10 @@ Proof.
       rewrite Hinner. reflexivity.
     + assert (Hlt : Nat.compare j k = Lt) by (apply Nat.compare_lt_iff; assumption).
       rewrite Hlt. reflexivity.
+  - (* CPJoin xs T *) destruct H1 as [HF HT]. apply fold_right_closed_Forall in HF. f_equal.
+    + apply map_id_Forall. rewrite Forall_forall in H, HF |- *.
+      intros x Hx. apply (H x Hx k N). exact (HF x Hx).
+    + apply H0. exact HT.
   - rewrite H by assumption. reflexivity.
   - assert (Hlt : Nat.compare n k = Lt) by (apply Nat.compare_lt_iff; assumption).
     rewrite Hlt. reflexivity.
@@ -223,12 +264,16 @@ Lemma closed_lift_ca :
   /\ (forall x d c, closed_caname_at c x -> lift_caname d c x = x)
   /\ (forall T d c, closed_st_at c T -> lift_st d c T = T).
 Proof.
-  apply ca_mutind; intros; simpl in *.
+  apply ca_deep_ind; intros; simpl in *.
   - reflexivity.
   - destruct H1. rewrite H by assumption. rewrite H0 by assumption. reflexivity.
   - destruct H1. rewrite H by assumption. rewrite H0 by assumption. reflexivity.
   - destruct H1. rewrite H by assumption. rewrite H0 by assumption. reflexivity.
   - rewrite H by assumption. reflexivity.
+  - (* CPJoin xs T *) destruct H1 as [HF HT]. apply fold_right_closed_Forall in HF. f_equal.
+    + apply map_id_Forall. rewrite Forall_forall in H, HF |- *.
+      intros x Hx. apply (H x Hx d c). exact (HF x Hx).
+    + apply H0. exact HT.
   - rewrite H by assumption. reflexivity.
   - assert (Hleb : c <=? n = false) by (apply Nat.leb_gt; assumption).
     rewrite Hleb. reflexivity.

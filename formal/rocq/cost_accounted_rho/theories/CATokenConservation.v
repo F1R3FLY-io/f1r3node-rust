@@ -21,6 +21,8 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
 From CostAccountedRho Require Import CAReduction.
@@ -34,6 +36,8 @@ Fixpoint caproc_total_fuel (P : caproc) : nat :=
   | CPOutput x U  => caname_total_fuel x + st_total_fuel U
   | CPPar P1 P2   => caproc_total_fuel P1 + caproc_total_fuel P2
   | CPDeref x     => caname_total_fuel x
+  | CPJoin xs T   => fold_right (fun x acc => caname_total_fuel x + acc) 0 xs
+                     + st_total_fuel T
   end
 with caname_total_fuel (x : caname) : nat :=
   match x with
@@ -83,6 +87,8 @@ Fixpoint deref_count_caproc (n : nat) (P : caproc) : nat :=
   | CPOutput x U  => deref_count_caname n x + deref_count_st n U
   | CPPar P1 P2   => deref_count_caproc n P1 + deref_count_caproc n P2
   | CPDeref x     => deref_count_caname n x
+  | CPJoin xs T   => fold_right (fun x acc => deref_count_caname n x + acc) 0 xs
+                     + deref_count_st (length xs + n) T
   end
 with deref_count_caname (n : nat) (x : caname) : nat :=
   match x with
@@ -112,6 +118,10 @@ Fixpoint funded_linear_caproc (P : caproc) : Prop :=
   | CPOutput x U  => funded_linear_caname x /\ funded_linear_st U
   | CPPar P1 P2   => funded_linear_caproc P1 /\ funded_linear_caproc P2
   | CPDeref x     => funded_linear_caname x
+  | CPJoin xs T   =>
+      (forall i, i < length xs -> deref_count_st i T <= 1)
+      /\ fold_right (fun x acc => funded_linear_caname x /\ acc) True xs
+      /\ funded_linear_st T
   end
 with funded_linear_caname (x : caname) : Prop :=
   match x with
