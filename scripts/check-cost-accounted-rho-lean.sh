@@ -114,6 +114,13 @@ CONTRACT_THEOREMS=(
   Validator.validator_contract_built_in_P1_order_independent
   Validator.validator_contract_built_in_P1_stale_evidence
   Validator.validator_contract_built_in_P3
+  # The simulation-bicategory FULL coherence (continued-gslt-cost-v2 §6/§9, Prop 9.3):
+  #   the interchange/pentagon/triangle equalities the axiom-free Rocq layer leaves as
+  #   a 2-truncation, completed here via Lean's definitional Prop proof-irrelevance.
+  CostAccountedRho.SimulationBicategory.simulation_bicategory_coherent
+  CostAccountedRho.SimulationBicategory.LocallyPosetalBicategory.interchange
+  CostAccountedRho.SimulationBicategory.LocallyPosetalBicategory.pentagon
+  CostAccountedRho.SimulationBicategory.LocallyPosetalBicategory.triangle
 )
 
 echo "Axiom gate: #print axioms must show no sorryAx and no user axiom..."
