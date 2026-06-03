@@ -1,0 +1,53 @@
+(* Cost-Accounted Rho — first-order cross-witness for the N-ary join conservation
+   algebra (spec §4.8 Prop 4.7 / §4.8.5), corroborating CAJoinConservation. A
+   signature is the free SAnd tensor over abstract atoms; [combined_key] mirrors
+   the Rocq fold. The two lemma functions establish, by structural induction
+   (discharged by Alt-Ergo / CVC4):
+     - sig_size_pos : every signature carries at least one atom,
+     - key_ge       : the combined key carries at least the receiver's atoms,
+   from which the goal [join_no_weakening] follows: a non-trivial combined key is
+   STRICTLY larger than the receiver authority alone — the first-order image of
+   CAJoinConservation.join_no_weakening (a compound token cannot be discharged as
+   the receiver authority alone; the sender authorities cannot be silently
+   dropped). A faithful arithmetic projection of the multiset conservation. *)
+module JoinConservation
+  use int.Int
+  use list.List
+
+  type atom
+  type sig = Leaf atom | And sig sig
+
+  function sig_size (s: sig) : int =
+    match s with
+    | Leaf _ -> 1
+    | And a b -> sig_size a + sig_size b
+    end
+
+  let rec lemma sig_size_pos (s: sig)
+    ensures { sig_size s >= 1 }
+    variant { s }
+  = match s with
+    | Leaf _ -> ()
+    | And a b -> sig_size_pos a; sig_size_pos b
+    end
+
+  (* combined_key s1 [t1;...;tN], mirroring CAJoinConservation.combined_key:
+     combined_key s1 (Cons t ts) = And (combined_key s1 ts) t. *)
+  function combined_key (s1: sig) (ts: list sig) : sig =
+    match ts with
+    | Nil -> s1
+    | Cons t ts' -> And (combined_key s1 ts') t
+    end
+
+  let rec lemma key_ge (s1: sig) (ts: list sig)
+    ensures { sig_size (combined_key s1 ts) >= sig_size s1 }
+    variant { ts }
+  = match ts with
+    | Nil -> ()
+    | Cons t ts' -> key_ge s1 ts'; sig_size_pos t
+    end
+
+  goal join_no_weakening:
+    forall s1: sig, t: sig, ts: list sig.
+      sig_size s1 < sig_size (combined_key s1 (Cons t ts))
+end
