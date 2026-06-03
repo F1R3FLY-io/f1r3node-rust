@@ -129,3 +129,6 @@ formal/rocq/*/.Makefile.d
 *.temp
 
 .pgmcp.toml
+
+# Apalache symbolic-checker scratch
+_apalache-out/
