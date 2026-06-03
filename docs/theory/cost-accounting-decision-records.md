@@ -910,8 +910,23 @@ misalignments — several in the DR-22-era / this-session additions themselves.
 - ◆ **(J-1) Operational join key bridged.** `ca_join2` gates on `join_token_key` (left fold) but the
   conservation theorems were stated about `combined_key` (right-nested); the bridge `join_key_atoms_perm`
   + `join_authority_conserved_operational` are ADDED (Phase 1).
-- ◆ **Impl.** The paper's overcharge-and-refund (§8) is realized as gate-on-conservative + exact-charge
-  (DR-5), net-equivalent; an explicit equivalence / no-stranding note is Phase 3.
+- ◆ **Impl (C-impl, Phase 3 — equivalence argument).** Paper §8 specifies overcharge-and-refund:
+  escrow the conservative demand Δ_c^max at acceptance, refund Δ_c^max − κ after the run (κ = tokens
+  actually forced) → **net charge κ**. The Rust (DR-5) instead does **gate-on-conservative + exact-
+  charge**: the acceptance gate (`delta_sigma::is_funded` / `effective_supply`) requires per-signature
+  supply ≥ Δ_c^max *before* executing; settlement then debits the EXACT κ (no escrow, no refund step) →
+  **net charge κ**. The two schemes are therefore **economically identical** (same net κ); they differ
+  only mechanistically (escrow-then-refund vs gate-then-exact-debit).
+  - *Net-charge equivalence* — formally witnessed: the refund scheme's conservation `charged + refund =
+    escrow` with `charged = κ` is `Settlement.charged_plus_refund_eq_escrow` (+ `refund_le_escrow`,
+    `refund_zero_when_exhausted`); the gate scheme's debit IS κ by construction. Both net to `charged = κ`.
+  - *No-stranding* (the property the paper's escrow exists to guarantee) — preserved WITHOUT escrow: the
+    acceptance gate establishes supply ≥ Δ_c^max ≥ κ *before any step fires*, so every statically-
+    reachable branch is fully funded and no accepted deploy can stall mid-execution. Under the block-
+    assembly gate (DR-11) the per-signature supply is committed at acceptance, so concurrent deploys in a
+    block are all gated against the committed supply — no TOCTOU window. The escrow's availability
+    guarantee is thus discharged by the acceptance-time commit + the static linear-resource proof, not by
+    holding funds in escrow. So the §8 divergence is sound and DR-5/DR-11-documented, not a defect.
 
 **Remediation status.** Phase 1 (D banner, F comments, J-1 bridge, B scope note, this DR + audit
 refresh): done, gate-green. Phase 2 (A simultaneous substitution, C `CICat` lift, E `internalisable`
