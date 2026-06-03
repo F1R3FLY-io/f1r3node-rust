@@ -847,3 +847,78 @@ cases is hopeless".
 the spec-alignment audit (§6 the gap, §3.3 the abstract-layer bound). Spec `cost-accounted-rho.tex`
 §4.8 (Def 4.6, Prop 4.7, J1/J2, §4.8.4/§4.8.5); `continued-gslt-cost-v2.tex` §6 (Prop 6.1/6.2), §7
 (Thm 7.1), §9 (Prop 9.1/9.2/9.3).
+
+---
+
+## DR-23 — Multi-prover completion + a deep cross-validation review (findings + remediation)
+
+**Status.** The DR-22 "honest bounds" are closed and the framing/bridge/scope remediations are done
+(gate-green, axiom-free); the substantive formal-gap remediations (A/C/E below) are in progress.
+
+**Context.** Two passes. (1) The DR-22 honest bounds were closed once the host toolchains became
+available. (2) A fresh, careful re-read of BOTH papers plus two independent arbitration passes over the
+Rocq sources cross-validated papers↔papers↔formal↔impl and surfaced previously-undocumented
+misalignments — several in the DR-22-era / this-session additions themselves.
+
+**(1) Bounds closed** (commits 4ddf9d50, 7b00eab4, 88eaac49, cf88bbe8, 94a04c2e).
+- Multi-prover arsenal now **8/8 VERIFY** on this host (was 6 verify + 2 skip): Tamarin loads (the
+  `libHSfgl` GHC lib was installed) and the gate auto-sets `MAUDE_LIB=/usr/share/maude` → 3 lemmas
+  verified; Verus's pinned rust `1.95.0` installed → "3 verified, 0 errors" (the gate runs verus in a
+  `mktemp` scratch dir so no build artifact lands in the repo).
+- **Iris**: `Reconcile.v` now proves the LOGICALLY-ATOMIC triple `debit_atomic_spec` (linearizability
+  under concurrent interference — `iLöb` + atomic-update + CAS-fail retry), not just the contention-free
+  `debit_spec`. The earlier syntax-error trap was importing `iris.bi.lib.atomic` instead of
+  `iris.program_logic.atomic`.
+- The DR-22 **2-truncation** of `CASimulationBicat`/`CAAdjunctionII` is **DISSOLVED in core Lean**
+  (`formal/lean/CostAccountedRho/SimulationBicategory.lean`): the full bicategory coherence
+  (interchange/pentagon/triangle) holds by Lean's DEFINITIONAL `Prop` proof-irrelevance — axiom-free
+  (`#print axioms` = none) — NOT via Mathlib/AFP (both still absent). That proof-irrelevance is precisely
+  the principle the axiom-free Rocq fragment lacks.
+- **Prop 9.1/9.2 records instantiated** (`CACostMonadInstances`): `cost_monad_instance : Monad GCat` and
+  `cost_kleisli_adjunction : Adjunction Free Forget` (the genuine Cost-generating resolution), on the
+  setoid category `GCat` — the grade-aware base the unit/assoc laws need (R-C).
+
+**(2) Cross-validation findings** (severity ▲ substantive / ◆ doc-framing / ○ cosmetic).
+- ◆ **Papers (REPORT-ONLY — read-only law).** Rule-count A↔B (Paper A's 5 concrete Rule 1–5 vs Paper B's
+  3 abstract R1–R3 over `K`) with no spelled-out bridge; the Adjunction-I prose ("Forget erases on the
+  nose / runs without friction") reads against its own Prop ("induced monad Forget∘Free is Cost"), though
+  the paper is internally consistent (cross-category composite); §4.8's join substitution is simultaneous
+  and unrestricted (no closed-payload condition).
+- ▲ **(D) Adjunction-I formal mislabel.** `CAAdjunctionI`/`CAAdjunctions` prove the install/strip
+  SECTION-RETRACTION `Forget∘Free = id` (the §9 "detachable layer" remark, `tex:1174-1184`), NOT the
+  Cost-generating resolution (`Forget∘Free = Cost`); the latter is the separately-added
+  `cost_kleisli_adjunction`. The banner overclaim is FIXED and cross-referenced (Phase 1).
+- ▲ **(C) Functor/monad on the wrong base.** `cost_is_endofunctor` (TypeCatL) and `cost_monad_instance`
+  (GCat setoids) are the writer-monad skeleton, NOT the concrete ciGSLT `CICat` — which sits disconnected
+  from Cost; the paper's load-bearing "`Cost(f)` preserves gated bisimulation + quote-faithfulness"
+  obligation (`tex:769-777`) is undischarged. → Phase 2 (lift Cost to `CICat`).
+- ▲ **(E) Adjunction-II omits Turing-completeness.** No `ciGSLTtc`, no general interpreter; the formal
+  proves an UNCONDITIONAL unit-grade single-gate retract for the one rho instance (via cross-sort `st_tr`
+  + a real COMM in `ca_single_gate_bisimilar`). Unit-grade IS faithful (`η_G(P)={P}_∅`). The
+  distinguishing "universal ⟺ folds back" claim is unmechanized. → Phase 2 (`internalisable` predicate).
+- ▲ **(A) Join closed-payload restriction.** `ca_join1`/`ca_join2` carry `Forall closed_st Us` (the
+  binary rules do NOT) — strictly narrower than Def 4.6/J1/J2, which allow open payloads — because
+  `subst_st_many` is iterated, not simultaneous, substitution. → Phase 2 (genuine simultaneous subst).
+- ◆ **(B) General schema only at conservation level.** Only the J1/J2 corners are reduction rules; the
+  general Def 4.6 partition schema is captured at the multiset level (Prop 4.7) only. Scope note ADDED
+  (Phase 1).
+- ▲ **(F) not-eso overclaim.** `U_not_eso` uses IMAGE-FINITENESS, which is NOT one of Paper B's three
+  not-eso reasons (unfactorable rewrites / undecidable ≡ / non-wrappable), and ciGSLT objects are not
+  image-finite in general — so `ci_realizable`'s `image_finite` is a sufficient-not-necessary proxy. The
+  comments are REFRAMED (Phase 1) to state it as a model-specific witness (W1 stack-inertness + W2
+  image-finiteness), NOT "the fully general Prop 6.1 not-eso". `U_not_full`/`U_faithful` DO match.
+- ◆ **(J-1) Operational join key bridged.** `ca_join2` gates on `join_token_key` (left fold) but the
+  conservation theorems were stated about `combined_key` (right-nested); the bridge `join_key_atoms_perm`
+  + `join_authority_conserved_operational` are ADDED (Phase 1).
+- ◆ **Impl.** The paper's overcharge-and-refund (§8) is realized as gate-on-conservative + exact-charge
+  (DR-5), net-equivalent; an explicit equivalence / no-stranding note is Phase 3.
+
+**Remediation status.** Phase 1 (D banner, F comments, J-1 bridge, B scope note, this DR + audit
+refresh): done, gate-green. Phase 2 (A simultaneous substitution, C `CICat` lift, E `internalisable`
+Adjunction II) + Phase 3 (impl equivalence note): in progress.
+
+**Cross-refs.** DR-22 (the bounds this supersedes), DR-5 (refund lifecycle), DR-11 (block-assembly
+acceptance gate), the spec-alignment audit. Arbitration evidence: `CAAdjunctions.v:33`,
+`CACostMonadInstances.v:106/156/167`, `CACostFunctor.v:47`, `CACategory.v:78`, `CAInternalisation.v:79`,
+`CAProperSubcategory.v` (`U_not_eso`), `CAReduction.v:178/197/200`. Spec: `cost-accounted-rho.tex` §4.8;
+`continued-gslt-cost-v2.tex` §6/§9 (Prop 6.1, prop:adj1/adj2, thm:functor).

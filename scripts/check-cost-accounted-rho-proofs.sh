@@ -188,6 +188,8 @@ Print Assumptions gated_translation_stuck.
 Print Assumptions ca_force_overgating_separation.
 Print Assumptions ca_force_overgating_nonvacuous.
 Print Assumptions join_authority_conserved.
+Print Assumptions join_key_atoms_perm.
+Print Assumptions join_authority_conserved_operational.
 Print Assumptions reverse_curry_iso.
 Print Assumptions join_demand_partition_invariant.
 Print Assumptions join_no_weakening.

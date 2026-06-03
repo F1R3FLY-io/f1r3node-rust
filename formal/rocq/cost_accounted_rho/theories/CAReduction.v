@@ -158,6 +158,18 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
                (STStack (TGate s2 t2)))
         (STPar (STPar (subst_st T 0 (CQuote U)) (STStack t1)) (STStack t2))
 
+  (* SCOPE (spec §4.8 join cost schema). The two rules below realize the J1 and J2
+     CORNERS of Def 4.6 — whole-join/single-seal/single-token, and separately-signed/
+     single-combined-token. The GENERAL partition schema of Def 4.6 (quantified over
+     arbitrary receiver-clause/send/token-presentation partitions π_C/π_B/π_A) is NOT
+     given a per-partition reduction constructor — a partition-indexed LHS would make
+     `inversion` over the join redex non-terminating and wreck the determinism/
+     confluence metatheory. The general schema's content is instead discharged at the
+     MULTISET level by CAJoinConservation (Prop 4.7 `join_authority_conserved` +
+     `join_authority_conserved_operational`): grouping along any axis never changes
+     the consumed authority multiset. So the OPERATIONAL join is the J1/J2 corners;
+     the GENERAL schema is the conservation invariant over them. *)
+
   (* Join J1 — N-ary whole-join, single funding signature (spec §4.8, the N-ary
      analogue of Rule 1): the join receiver and its N senders sit under one seal s,
      funded by one s-token; the continuation T keeps its own seal, N payloads

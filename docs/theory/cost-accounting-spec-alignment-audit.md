@@ -22,6 +22,20 @@ specification states) or is a deliberately-bounded scope item with a recorded re
 adversarial sweep found **exactly one** previously-undocumented genuine gap — the N-ary Join
 schema (`tex §4.8`, Def 4.6 / Prop 4.7) — which is being closed natively (see §6 and DR-22).
 
+**Update (DR-23, a deeper cross-validation pass).** (1) The DR-22 "scope-boundary" items in §3.3
+below are now CLOSED: the Adjunction-II / simulation-bicategory **2-truncation is dissolved in core
+Lean** (axiom-free, via definitional `Prop` proof-irrelevance — NOT Mathlib/AFP, both still absent);
+Tamarin + Verus now verify (8/8 provers); the Monad/Adjunction **records are instantiated**; Iris
+proves the **logically-atomic** triple; Prop 6.1 not-eso gained a general image-finiteness witness.
+(2) A careful re-read + two arbitration passes surfaced new, finer misalignments — most in the
+DR-22/this-session additions themselves: an Adjunction-I **mislabel** (the file named for it proves
+`Forget∘Free=id`, a section-retraction, not the Cost-generating resolution `cost_kleisli_adjunction`);
+the Cost endofunctor/monad are mechanized on **types/setoids, not the concrete `CICat`**; Adjunction II
+**omits the Turing-completeness/interpreter** content; the join rules carry a **closed-payload
+restriction** narrower than Def 4.6; and the general not-eso witness uses image-finiteness, **not** the
+paper's stated reasons. Full findings + remediation in **DR-23**; the rows below are annotated where a
+verdict changed.
+
 ---
 
 ## 1. Label reconciliation
@@ -91,11 +105,11 @@ decision record / the register · **C** = still-open scope-boundary.
 | Prop 9.1 (`tex:1064`) | Monad laws | `CostMonad.{cost_left_unit,cost_right_unit,cost_assoc}` | Sage; Lean `CostMonad` | A |
 | Rmk 9.1 (`tex:1086`) | Non-idempotent monad | `CostMonad.cost_monad_not_idempotent` | Sage (`mu_non_injective`) | A |
 | Thm 7.1 (`tex:763`) | `Cost` is an endofunctor on ciGSLT | **`CACostFunctor.cost_is_endofunctor`** + the `CostEndofunctor` `Functor` record (Component 3, landed DR-22) | Lean/Mathlib; Isabelle | A |
-| Prop 6.1 (`tex:659`) | `U` faithful, not full, not eso | **`CAProperSubcategory.proper_subcategory`** (faithful + not-full + not-eso bounded, landed DR-22) | Lean/Mathlib; Isabelle | A |
+| Prop 6.1 (`tex:659`) | `U` faithful, not full, not eso | **`CAProperSubcategory.proper_subcategory`** — faithful + not-full (key-collapse, matches paper) + not-eso via two model-specific witnesses (W1 stack-inertness, W2 image-finiteness) | Lean/Mathlib; Isabelle | A-minus (**DR-23 (F)**: the not-eso witnesses are model-specific; image-finiteness is NOT the paper's stated reason (undecidable ≡ / unfactorable / non-wrappable), so it is a sufficient witness, honestly scoped, not the paper's general statement) |
 | Prop 6.2 (`tex:740`) | Closure: `Cost(G) ∈ ciGSLT` | **`CACostFunctor.cost_obj_closure`** (landed DR-22) | — | A |
 | Prop 9.2 (`tex:1113`) | Adjunction I (Free ⊣ Forget) | `CAAdjunctions.cost_forget_install`/`cost_install_forget_alters`; **`CAAdjunctionI.free_forget_adjunction`** | Lean/Mathlib; Isabelle | A |
 | Thm 7.2 (`tex:792`) | Graded HM adequacy (sound **and** complete) | `CAGradedAdequacy.graded_adequacy_sound`; `CAGradedCompleteness.graded_finitary_adequacy`; `CAGradedLimit.graded_limit_adequacy` | mCRL2 modal-μ | A (exceeds) |
-| Prop 9.3 (`tex:1143`) | Adjunction II (internalisation as adjoint retraction) | `CAInternalisation.ca_internalisation_retraction` (retraction); **`CAAdjunctionII.internalisation_adjoint_retraction`** (counit-dissolution, intra-carrier, landed DR-22); full bicat coherence (2-truncation ceiling) → Lean/Mathlib + Isabelle | mCRL2 | A (Rocq 2-truncation; coherence routed, §3.3, §5) |
+| Prop 9.3 (`tex:1143`) | Adjunction II (internalisation as adjoint retraction) | `CAInternalisation.ca_internalisation_retraction` (unit-grade retraction, cross-sort `st_tr` + real COMM); `CAAdjunctionII.internalisation_adjoint_retraction` (counit-dissolution); full bicat coherence **delivered in core Lean** (DR-23, no longer a ceiling) | mCRL2 | A-minus (coherence delivered; **DR-23 (E)**: the Turing-complete/`ciGSLTtc` interpreter conditioning is a residual — Phase 2) |
 | Prop 12.1 (`tex:1434`) | Local sufficiency composes | `CALocatedPurses.local_sufficiency_composes`; `draw_disjoint` | TLA+ `LocatedPurse` | A |
 | §10.4 (`tex:1285`) | Located resource stacks | `CALocatedPurses`; `ChannelSeparation.lane_pool_disjoint` | Rust `Lane`/`DashMap` lanes; Sage `producer_routing` | A |
 | §11.2 (`tex:1337`) | Spatial/modal type connectives (linear/copyable/relevant) | `LLIdentities.{bang_weakening_admissible,whynot_weakening_admissible}`; `CATypeDiscipline.ca_linear_no_contraction` | — | A |
@@ -142,7 +156,7 @@ judgement calls. Load-bearing examples:
 | Item | Why it is a boundary, not a defect |
 |---|---|
 | **CCS / λ / ambient / interaction-category instances** | The monad paper presents them as *foils* illustrating the general construction; only the **rho** instance is an implementation target. Out of scope by construction. |
-| **Full bicategorical coherence of Adjunction II** (interchange, both triangle 2-cell equalities, associator/unitor) | Outside Rocq's axiom-free/no-funext fragment (a setoid bicategory's 2-cell coherence needs funext/UIP). Rocq ships the **2-categorical truncation** (Prop-valued `weak_match` 2-cells); the **full** coherence is completed classically in Lean/Mathlib + Isabelle/AFP (§5). So the *result* is not bounded — only the *Rocq* realization is. |
+| **Full bicategorical coherence of Adjunction II** (interchange, both triangle 2-cell equalities, associator/unitor) | **CLOSED (DR-23).** Outside Rocq's axiom-free/no-funext fragment (a setoid bicategory's 2-cell coherence needs funext/UIP), so Rocq ships the 2-truncation — but the **full** coherence is now delivered in **core Lean** (`formal/lean/CostAccountedRho/SimulationBicategory.lean`, interchange/pentagon/triangle by definitional `Prop` proof-irrelevance, `#print axioms` = none), NOT Mathlib/AFP (both absent). The result is delivered, not bounded. |
 | **Coinductive graded HM completeness** (the gfp, not the approximant limit) | Provably needs the infinite-pigeonhole / fan principle, isolated as the **named** hypothesis `image_finite_stabilization` (`CAGradedLimit`); the reduction *to* it is mechanized and the principle is assumed nowhere, so the development stays axiom-free. A metamathematical ceiling, not a missing proof. |
 | **Full metered-translation strong bisimulation at force points** | Proven **FALSE** for the naive translation: `CAForceSeparation.ca_force_overgating_separation` (+ `_nonvacuous`). A force-faithful translation is a different translation; neither spec asserts this bisimulation. Settled negative result. |
 | **Higher-order dequotation "configurable safety margin"** (`tex:2075`) | Spec-delegated to the implementation; pinned to `min_phlo_price` by DR-11. Genuinely a deployment parameter. |

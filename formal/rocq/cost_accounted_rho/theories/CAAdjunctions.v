@@ -9,6 +9,12 @@
    accumulated grade). Both functors are natural. Realised structurally on the
    Cost (writer) monad of CostMonad.v. Axiom-free.
 
+   NAME-OVERLOAD NOTE. The install/strip pair here (cost_install/cost_forget) is a
+   SECTION-RETRACTION (Forget∘Free = id) and is a DIFFERENT structure from the
+   identically-named Free/Forget of CACostMonadInstances.cost_kleisli_adjunction,
+   which is the Cost-GENERATING free resolution (Forget∘Free = Cost, Prop adj1).
+   Different functors, different categories; see CAAdjunctionI.v's header scope note.
+
    Adjunction II (internalisation of Cost(G) into the Turing-complete base up to
    weak bisimulation, Prop. adj2) is delivered in CAInternalisation.v: the
    retraction Imp_G ∘ η_G ≈ id_G up to weak bisimulation. Its claim is the

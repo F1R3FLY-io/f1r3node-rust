@@ -21,6 +21,9 @@ Import ListNotations.
 From Stdlib Require Import Sorting.Permutation.
 From Stdlib Require Import Lia.
 From CostAccountedRho Require Import CostAccountedSyntax.
+(* For [join_token_key], the LEFT-folded key the reduction rule ca_join2 actually
+   consumes — bridged to [combined_key] below. *)
+From CostAccountedRho Require Import CAReduction.
 
 (* The atoms of a signature: the leaves, flattening the free `SAnd` tensor. *)
 Fixpoint sig_atoms (s : sig) : list sig :=
@@ -106,3 +109,40 @@ Proof.
   rewrite app_length, app_length.
   pose proof (sig_atoms_nonempty t). lia.
 Qed.
+
+(* ── Bridge to the OPERATIONAL key (J-1) ─────────────────────────────────────
+   The conservation results above are stated about [combined_key] (right-nested),
+   but the reduction rule ca_join2 (CAReduction) gates on [join_token_key] (the
+   LEFT fold, exactly as the spec writes s1 ∘ t1 ∘ … ∘ tN). Since `SAnd` is FREE
+   these are DIFFERENT `sig` terms; this section proves they carry the SAME atom
+   multiset, so every conservation guarantee holds verbatim at the key the join
+   actually consumes. *)
+
+(* Conservation directly for the operational left-folded key. *)
+Lemma join_token_key_atoms : forall ts s1,
+  Permutation (sig_atoms (join_token_key s1 ts))
+              (sig_atoms s1 ++ concat (map sig_atoms ts)).
+Proof.
+  induction ts as [| t ts' IH]; intros s1; unfold join_token_key; simpl.
+  - rewrite app_nil_r. apply Permutation_refl.
+  - change (fold_left (fun acc t0 => SAnd acc t0) ts' (SAnd s1 t))
+      with (join_token_key (SAnd s1 t) ts').
+    eapply Permutation_trans; [ apply IH | ].
+    simpl. rewrite <- app_assoc. apply Permutation_refl.
+Qed.
+
+(* The operational key and the conservation key carry the same atom multiset. *)
+Theorem join_key_atoms_perm : forall s1 ts,
+  Permutation (sig_atoms (join_token_key s1 ts)) (sig_atoms (combined_key s1 ts)).
+Proof.
+  intros s1 ts.
+  eapply Permutation_trans; [ apply join_token_key_atoms | ].
+  apply Permutation_sym. apply join_authority_conserved.
+Qed.
+
+(* Prop 4.7 instantiated at the key ca_join2 consumes: conservation of authority
+   for the operational join. *)
+Corollary join_authority_conserved_operational : forall s1 ts,
+  Permutation (sig_atoms (join_token_key s1 ts))
+              (sig_atoms s1 ++ concat (map sig_atoms ts)).
+Proof. intros s1 ts. exact (join_token_key_atoms ts s1). Qed.

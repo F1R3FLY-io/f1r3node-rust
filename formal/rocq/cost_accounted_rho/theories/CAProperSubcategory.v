@@ -14,13 +14,25 @@
    - NOT FULL: an iGSLT morphism that collapses two behaviourally-identified states
      onto two distinct ones has NO ciGSLT lift — the lift's [mor_cong] would force
      [true = false], refuted by [discriminate]. (The R-D key-collapse obstruction.)
-   - NOT ESO: in TWO complementary forms.
-       (bounded) the ciGSLT transition [graded_step] provably NEVER fires from a bare
-       token stack (no_leak_stack_inert) — one precisely-named refuted clause; and
-       (GENERAL) every ciGSLT transition is IMAGE-FINITE (ca_ciGSLT_image_finite, from
-       CAGradedImageFinite.graded_image_finite), so the infinitely-branching iGSLT
-       object [Bad] is the forgetful image of NO ciGSLT object (U_not_eso) — a fully
-       general non-essential-surjectivity with no case enumeration.
+   - NOT ESO: via TWO witnesses, both SPECIFIC to the concrete cost model. NOTE on
+       alignment: continued-gslt-cost-v2 §6 (tex:676-684) states three not-eso REASONS
+       — (i) rewrites that do not factor as an interaction cut, (ii) an UNDECIDABLE
+       structural congruence (no computable section), (iii) a non-wrappable
+       contraction. The witnesses below do NOT mechanize those reasons (which would
+       need, e.g., a halting-problem reduction for (ii)); they are independent,
+       model-specific obstructions that also suffice to refute essential surjectivity:
+       (W1, stack-inertness) the concrete transition [graded_step] never fires from a
+         bare token stack (no_leak_stack_inert) — closest in spirit to clause (iii),
+         wrappability/no-leak; refutes one transition shape.
+       (W2, image-finiteness) the CONCRETE graded transition is image-finite
+         (ca_ciGSLT_image_finite, from graded_image_finite), so the infinitely-branching
+         iGSLT object [Bad] is the forgetful image of no IMAGE-FINITE transition system
+         (U_not_eso). CAVEAT: ciGSLT objects are NOT image-finite in general — the paper
+         admits infinite branching with a computable section — so [ci_realizable] below
+         (which REQUIRES image-finiteness) models "realizable by an image-finite system",
+         a SUFFICIENT-not-necessary proxy. U_not_eso is thus a genuine non-eso witness
+         against image-finite realizations / the concrete rho model, NOT a mechanization
+         of the paper's general decidability-based not-eso.
      Axiom-free.                                                                  *)
 
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -94,13 +106,17 @@ Proof.
   eapply no_leak_stack_inert. exact H.
 Qed.
 
-(* ── Not eso (FULLY GENERAL): the image-finiteness obstruction. ─────────────────
-   The bounded witness above refutes ONE transition shape. The general statement
-   uses the genuine structural property that distinguishes ciGSLT from iGSLT
-   objects: every ciGSLT transition is IMAGE-FINITE. We then exhibit an iGSLT object
-   (a bare transition system) whose branching is infinite, so it cannot be the
-   forgetful image of ANY ciGSLT object — U is not essentially surjective, with no
-   case enumeration. *)
+(* ── Not eso (W2): the image-finiteness obstruction (a model-specific witness). ──
+   W1 above refutes one transition shape. W2 is an INDEPENDENT obstruction: the
+   CONCRETE cost transition [graded_step] is image-finite, so an infinitely-branching
+   iGSLT object cannot be its forgetful image (nor that of any image-finite system).
+   This is NOT one of the paper's three not-eso reasons (clauses i/ii/iii are about
+   cut-factorisation, undecidable congruence, and wrappability — see the header), and
+   ciGSLT objects are NOT image-finite in general; so the predicate [ci_realizable]
+   below requires image-finiteness as a SUFFICIENT-not-necessary realizability proxy.
+   U_not_eso refutes essential surjectivity against image-finite realizations / the
+   concrete rho model — a genuine witness, honestly scoped, not the paper's general
+   decidability-based statement. *)
 
 (* An iGSLT object is a bare transition system (carrier + grade-labelled step). *)
 Record IGSys : Type := { ig_car : Type; ig_step : ig_car -> sig -> ig_car -> Prop }.
@@ -108,10 +124,11 @@ Record IGSys : Type := { ig_car : Type; ig_step : ig_car -> sig -> ig_car -> Pro
 Definition image_finite (B : IGSys) : Prop :=
   forall x g, exists L : list (ig_car B), forall x', ig_step B x g x' -> In x' L.
 
-(* The concrete ciGSLT transition IS image-finite: its successors are exactly the
+(* The CONCRETE cost transition is image-finite: its successors are exactly the
    finite enumeration [graded_succ] (CAGradedImageFinite.graded_image_finite). This
-   is what makes [image_finite] the faithful realizability constraint — the
-   forgetful image of a genuine ciGSLT object is always image-finite. *)
+   justifies [image_finite] as the realizability proxy below FOR THE CONCRETE MODEL —
+   it is NOT a property of every ciGSLT object (the paper admits infinite branching
+   with a computable section), so the proxy is sufficient, not necessary. *)
 Lemma ca_ciGSLT_image_finite :
   forall (S : signed_term) (g : sig),
     exists L, forall S', graded_step S g S' -> In S' L.
@@ -120,8 +137,10 @@ Proof.
   exact (proj1 (graded_image_finite S g S') H).
 Qed.
 
-(* [B] is ci-realizable when it is, up to a surjective step-reflecting map, the
-   forgetful image of an image-finite (i.e. genuine ciGSLT) transition system. *)
+(* [B] is "image-finitely realizable" when it is, up to a surjective step-reflecting
+   map, the forgetful image of an IMAGE-FINITE transition system. (For the concrete
+   cost model this coincides with ciGSLT-realizability — ca_ciGSLT_image_finite — but
+   in general image-finiteness is a sufficient-not-necessary proxy; see the header.) *)
 Definition ci_realizable (B : IGSys) : Prop :=
   exists (A : IGSys) (h : ig_car A -> ig_car B),
     image_finite A
@@ -160,8 +179,10 @@ Proof.
   apply Hn. rewrite <- Hx'n. apply in_map. exact (HL x' Hstep).
 Qed.
 
-(* Prop 6.1 — the proper-subcategory claim (faithful, not full, and not-eso in BOTH
-   the bounded structural form AND the fully general image-finiteness form). *)
+(* Prop 6.1 — the proper-subcategory claim: faithful, not full, and not essentially
+   surjective via two model-specific witnesses (W1 stack-inertness + W2 image-
+   finiteness; see the header for how these relate to — and differ from — the paper's
+   three stated not-eso reasons). *)
 Theorem proper_subcategory :
   (forall (G H : CIObj) (f g : CIMor G H),
      (forall x, igm_map (U_mor f) x = igm_map (U_mor g) x) -> mor_heq f g)
