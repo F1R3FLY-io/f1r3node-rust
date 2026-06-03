@@ -61,10 +61,10 @@ decision record / the register · **C** = still-open scope-boundary.
 | Rule 3 (`tex:876`) | Compound sig, combined token | `ca_rule3`; `rule3_reachable` | — | A |
 | Rule 4 (`tex:894`) | Split processes, split tokens | `ca_rule4`; `rule4_reachable` | Sage `exchange_conservation` | A |
 | Rule 5 (`tex:912`) | Split processes, combined token | `ca_rule5`; `rule5_reachable` | — | A |
-| §4.8 J1/J2 (`tex:995/1021`) | **N-ary join (Def 4.6)** | **`ca_join1`/`ca_join2`** (Component 2, in progress) | Apalache symbolic-N | C→A |
-| Prop 4.7 (`tex:1131`) | **Conservation of authority across partitions** | **`CAJoinConservation.join_authority_conserved`** (in progress) | Why3 cross-witness | C→A |
-| §4.8.4 (`tex:1149`) | Reverse-currying (Join/Split) regrouping | `Split`/`Join` mediators; `reverse_curry_iso` (in progress) | TLA+ token-conservation | C→A |
-| §4.8.5 (`tex:1175`) | No-weakening of composite tokens | `LinearLogicResources.ll_linear_no_weakening`; `join_no_weakening` (in progress) | — | A |
+| §4.8 J1/J2 (`tex:995/1021`) | **N-ary join (Def 4.6)** | **`ca_join1`/`ca_join2`** (Component 2, landed DR-22; full SN/confluence/determinism/graded/translation metatheory) | Apalache symbolic-N | A |
+| Prop 4.7 (`tex:1131`) | **Conservation of authority across partitions** | **`CAJoinConservation.join_authority_conserved`** (landed) | Why3 cross-witness | A |
+| §4.8.4 (`tex:1149`) | Reverse-currying (Join/Split) regrouping | `Split`/`Join` mediators; `CAJoinConservation.reverse_curry_iso` (landed) | TLA+ token-conservation | A |
+| §4.8.5 (`tex:1175`) | No-weakening of composite tokens | `LinearLogicResources.ll_linear_no_weakening`; `CAJoinConservation.join_no_weakening` (landed) | — | A |
 | §4.6 (`tex:1251/1273`) | Uniform-signing + linear-transfer `⊸` sugar | `SyntacticSugar.uniform_sugar_translation_equiv`, `lollipop_sugar_translation_equiv` | — | A |
 | §4.6 Rmk (`tex:1208`) | `⊸` is `∘`'s right adjoint (tensor–hom) — *"left to the sequel"* | **`LLIdentities.lolly_curry_isomorphism`** | — | A (exceeds) |
 | Def 4–6 (`tex:2002`) | Token demand Δ, supply Σ, funding obligation Σ≥Δ | `LinearLogicResources.{delta_s,sigma_s,funding_check_balance_sound}` | Sage `budget_admission_model` | A |
@@ -90,12 +90,12 @@ decision record / the register · **C** = still-open scope-boundary.
 | Construction 9.1 (`tex:1036`) | Unit η, multiplication μ | `CostMonad.{cost_eta,cost_mu}` | Sage `cost_monad_laws`; Lean | A |
 | Prop 9.1 (`tex:1064`) | Monad laws | `CostMonad.{cost_left_unit,cost_right_unit,cost_assoc}` | Sage; Lean `CostMonad` | A |
 | Rmk 9.1 (`tex:1086`) | Non-idempotent monad | `CostMonad.cost_monad_not_idempotent` | Sage (`mu_non_injective`) | A |
-| Thm 7.1 (`tex:763`) | `Cost` is an endofunctor on ciGSLT | **`CACostFunctor.cost_is_endofunctor`** (Component 3) | Lean/Mathlib; Isabelle | C→A |
-| Prop 6.1 (`tex:659`) | `U` faithful, not full, not eso | **`CAProperSubcategory.U_faithful_not_full_not_eso`** (Component 3) | Lean/Mathlib; Isabelle | C→A |
-| Prop 6.2 (`tex:740`) | Closure: `Cost(G) ∈ ciGSLT` | **`CACostFunctor.cost_obj_closure`** (Component 3) | — | C→A |
+| Thm 7.1 (`tex:763`) | `Cost` is an endofunctor on ciGSLT | **`CACostFunctor.cost_is_endofunctor`** + the `CostEndofunctor` `Functor` record (Component 3, landed DR-22) | Lean/Mathlib; Isabelle | A |
+| Prop 6.1 (`tex:659`) | `U` faithful, not full, not eso | **`CAProperSubcategory.proper_subcategory`** (faithful + not-full + not-eso bounded, landed DR-22) | Lean/Mathlib; Isabelle | A |
+| Prop 6.2 (`tex:740`) | Closure: `Cost(G) ∈ ciGSLT` | **`CACostFunctor.cost_obj_closure`** (landed DR-22) | — | A |
 | Prop 9.2 (`tex:1113`) | Adjunction I (Free ⊣ Forget) | `CAAdjunctions.cost_forget_install`/`cost_install_forget_alters`; **`CAAdjunctionI.free_forget_adjunction`** | Lean/Mathlib; Isabelle | A |
 | Thm 7.2 (`tex:792`) | Graded HM adequacy (sound **and** complete) | `CAGradedAdequacy.graded_adequacy_sound`; `CAGradedCompleteness.graded_finitary_adequacy`; `CAGradedLimit.graded_limit_adequacy` | mCRL2 modal-μ | A (exceeds) |
-| Prop 9.3 (`tex:1143`) | Adjunction II (internalisation as adjoint retraction) | `CAInternalisation.ca_internalisation_retraction` (retraction); **`CAAdjunctionII.internalisation_adjoint_retraction`** (counit, 2-truncation); **full coherence: Lean/Mathlib + Isabelle** | mCRL2 | A / C-bounded (see §3.3, §5) |
+| Prop 9.3 (`tex:1143`) | Adjunction II (internalisation as adjoint retraction) | `CAInternalisation.ca_internalisation_retraction` (retraction); **`CAAdjunctionII.internalisation_adjoint_retraction`** (counit-dissolution, intra-carrier, landed DR-22); full bicat coherence (2-truncation ceiling) → Lean/Mathlib + Isabelle | mCRL2 | A (Rocq 2-truncation; coherence routed, §3.3, §5) |
 | Prop 12.1 (`tex:1434`) | Local sufficiency composes | `CALocatedPurses.local_sufficiency_composes`; `draw_disjoint` | TLA+ `LocatedPurse` | A |
 | §10.4 (`tex:1285`) | Located resource stacks | `CALocatedPurses`; `ChannelSeparation.lane_pool_disjoint` | Rust `Lane`/`DashMap` lanes; Sage `producer_routing` | A |
 | §11.2 (`tex:1337`) | Spatial/modal type connectives (linear/copyable/relevant) | `LLIdentities.{bang_weakening_admissible,whynot_weakening_admissible}`; `CATypeDiscipline.ca_linear_no_contraction` | — | A |
@@ -116,7 +116,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | Weakening discipline (spatial forbids, temporal admits) informally stated | `ll_linear_no_weakening` (spatial) vs `bang_weakening_admissible`/`whynot_weakening_admissible` (the `!`/`?` modalities) — both directions mechanized. |
 | Subject reduction (Lem 3.1) given only as a sketch | `subject_reduction_wrapping`, axiom-free. |
 | Funding decidability (Thm 1) — proof sketch | `funding_decidable` + `funding_check_balance_sound`. |
-| Conservation across join partitions (Prop 4.7) core | (in progress) `join_authority_conserved`; the regrouping-invariance core is `MergeableChannelAccounting.mergeable_channel_bitmask_fold_permutation`. |
+| Conservation across join partitions (Prop 4.7) core | `CAJoinConservation.join_authority_conserved` (landed DR-22, up to `Permutation`); the regrouping-invariance core is `MergeableChannelAccounting.mergeable_channel_bitmask_fold_permutation`. |
 
 ### 3.2 (B) Resolved via a decision record or the ambiguity register
 
@@ -195,7 +195,7 @@ prover the document's own foundations do not fix:
 
 ---
 
-## 6. The one genuine gap, and its closure
+## 6. The one genuine gap — CLOSED (DR-22)
 
 The adversarial sweep found that the **N-ary Join schema** (`tex §4.8`: Def 4.6's
 `for(y₁←x₁ & … & yₙ←xₙ){P}` with cases J1/J2, and Prop 4.7's conservation of authority across
@@ -205,11 +205,14 @@ discharged by no theorem (the nearby binary `Split`/`Join` mediators, the `Excha
 and `mergeable_channel_bitmask_fold_permutation` each prove a strict sub-property). It was not
 covered by any decision record or register entry — a true gap, not a documented divergence.
 
-It is being closed **natively** (Tier-2): a `CPJoin` grammar former + `ca_join1`/`ca_join2`
-reduction rules (the N-ary analogues of Rules 1 and 3), the full metatheory re-proof
-(binding, token conservation, funded SN, confluence, determinism, translation faithfulness),
-and `CAJoinConservation` proving Prop 4.7 + the reverse-currying iso + the no-weakening
-corollary — all axiom-free. DR-22 records the finding, the realization, and the §4.8 label
+It has been closed **natively** (Tier-2, landed in DR-22): a `CPJoin` grammar former + `ca_join1`/
+`ca_join2` reduction rules (the N-ary analogues of Rules 1 and 3, with closed-payload premises for
+capture-correct N-simultaneous substitution), the full metatheory re-proof (binding, token
+conservation, funded SN via the keystone `linear_subst_many_fuel_le`, confluence + per-rule
+determinism, the graded transition + its image-finiteness enumeration, translation progress), and
+`CAJoinConservation` proving Prop 4.7 + the reverse-currying iso + the no-weakening corollary — all
+axiom-free, all behind the LOCAL-ONLY Rocq gate (every headline "Closed under the global context").
+DR-22 records the finding, the realization, the closed-payload design crux, and the §4.8 label
 correction.
 
 ---

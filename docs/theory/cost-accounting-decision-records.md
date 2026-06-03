@@ -765,3 +765,85 @@ layer; TLA+ and Lean legs; the §12.3 verification-doc update) build on this fou
 **Cross-refs.** DR-17 (the Option A/B representation choice), DR-20 (GAP-1/GAP-2/GAP-3 + the Option-B
 trigger), DR-9 (per-COMM cost), DR-13 (per-signature balance). Spec §3.1/§3.6/§3.8; continued-gslt-cost-v2
 ("wrapping by construction", "duplication needs no fresh signatures", "stack consumption is the modulus").
+
+---
+
+## DR-22 — N-ary Join landed natively (spec §4.8, Tier-2) + the abstract category-theory layer (§6–§9)
+
+**Status.** Done (gate-green, axiom-free). Closes the one genuine spec-vs-formalization gap the
+spec-alignment audit surfaced (`cost-accounting-spec-alignment-audit.md` §6) and mechanizes the
+abstract ciGSLT category-theory of `continued-gslt-cost-v2` §6–§9.
+
+**Finding.** The audit's adversarial sweep found the **N-ary Join schema** (`tex §4.8`: Def 4.6's
+`for(y₁←x₁ & … & yₙ←xₙ){P}` with the two named firing cases J1/J2, and Prop 4.7's conservation of
+authority across token-presentation partitions) was the only spec construct present in the law but
+absent from the formalization: the reduction relation had only the five **binary** gated COMM rules,
+no join former, no join desugaring, and Prop 4.7 was discharged by no theorem. (Label correction: the
+verification doc had numbered joins "§4.5"; the tex is **§4.8** — Def 4.6 `tex:1099`, Prop 4.7
+`tex:1131`, J1 `tex:995`, J2 `tex:1021`.)
+
+**Decision — Tier-2 native realization.** A first-class `CPJoin : list caname → signed_term → caproc`
+grammar former (CASyntax), with the full ~40-module metatheory swept to cover it, plus **two** native
+reduction rules — the two cases the spec names:
+- `ca_join1` (J1, eq:join-J1) — whole-join under one funding seal `s`, single `s`-token; the N-ary
+  analogue of Rule 1. N=1 is exactly Rule 1.
+- `ca_join2` (J2, eq:join-J2) — separately-signed receiver + N separately-signed senders, ONE combined
+  token keyed `s₁ ∘ t₁ ∘ … ∘ tₙ` (`join_token_key`), fired atomically; the N-ary analogue of Rule 3. A
+  J2 configuration is *stuck* without this rule (Prop 4.7 concerns authority multisets, not reduction),
+  so J2 is required for operational faithfulness, not gold-plating.
+
+The general partition schema (axes C/B/A, `tex:1073`) is deliberately NOT mechanized as a constructor
+(it wrecks the determinism/confluence inversions); its content — that grouping never changes the
+consumed authority — is captured as the multiset theorem **Prop 4.7** (`CAJoinConservation`:
+`join_authority_conserved`, `reverse_curry_iso` §4.8.4, `join_demand_partition_invariant`,
+`join_no_weakening` §4.8.5), all up to `Permutation`/`≡` since `SAnd` is a free constructor.
+
+Metatheory landed for both rules (axiom-free, behind the LOCAL-ONLY gate): subject reduction / no-leak
+(WrappingSubjectReduction), token conservation + funded strong normalization
+(`funded_step_decreases`, the keystone `linear_subst_many_fuel_le`), local confluence + per-rule
+determinism (`ca_step_join1_det`, `ca_step_join2_det`, `signed_sends_injective`,
+`ca_local_confluence`, `ca_step_deterministic`), the graded transition relabelling (`g_join1`,
+`g_join2`) and its image-finiteness enumeration (`graded_succ`/`graded_succ_all` + sound/complete), and
+translation progress (`ca_translation_progresses`). Newman/cost-determinism/modulus re-close unchanged
+(they consume the feeders generically).
+
+**Design crux — closed payloads.** `subst_st_many T Us` is iterated binary `subst_st … 0` with NO
+inter-step lifting, so for N≥2 an open payload's free de Bruijn 0 would be captured by the next
+substitution (visible in the `subst_st_many_two` example). Closed payloads (`Forall closed_st Us`,
+a premise on `ca_join1`/`ca_join2`) are therefore the precondition that makes the N-simultaneous
+substitution *capture-correct* — transmitted values are closed — and are exactly what the SN fuel
+bound needs (a closed payload injects no dereferences — `closed_deref_zero_ca`,
+`deref_subst_closed_ca` — so linearity propagates through the fold). The premise is local to the join
+rules; `ca_step_join{1,2}_det`'s interface (length + step) stays stable, so Confluence/Determinism
+needed no change, and the binary rules' funded proofs are untouched. The graded successor enumeration
+decides the premise with the boolean reflection `closed_st_dec`/`closed_stb_spec`.
+
+**Decision — abstract category-theory layer (§6–§9).** A bespoke axiom-free **hom-setoid** scaffold
+(`CategoryInterface`: `Category`/`Functor`/`NaturalTransformation`/`Monad`/`Adjunction` with a
+Prop-valued `heq` carrying its own refl/sym/trans + composition congruence; no field is a function
+equality, so no funext). On it: the concrete ciGSLT category `CACategory.CICat` (carrier `signed_term`,
+transition `graded_step`, hom-equality pointwise `graded_bisim`; `graded_bisim_trans` newly added);
+Thm 7.1 (`CACostFunctor`, Cost as a genuine `Functor` record + the law conjunction); Prop 6.2 closure;
+Prop 6.1 (`CAProperSubcategory`: faithful + not-full via a key-collapse `discriminate` + not-eso
+bounded by `no_leak_stack_inert`); Prop 9.1 (`CACostMonadCat`); Prop 9.2 (`CAAdjunctionI`); Prop 9.3
+(`CAAdjunctionII`) via the **counit-dissolution** — `Imp_G` is modelled as the *intra-carrier*
+gate-firing `graded_step` (not the cross-sort `st_tr` into `proc`), so the counit `η_G ∘ Imp_G ⇒ id`
+is typeable where the cross-sort version was not, and the force-obstruction
+(`CAForceSeparation.ca_force_overgating_separation`, a property of `st_tr` at force points) is absent
+intra-carrier; the capstone `CAAbstractCapstone.continued_gslt_cost_abstract_capstone` conjoins all.
+
+**Honest bound (stated, banned-word-free).** The Rocq deliverable for the simulation 2-cells
+(`CASimulationBicat`) and Adjunction II is the **2-truncation**: Prop-valued 2-cells (`weak_match`) with
+reflexive/transitive vertical composition. The full setoid-bicategory coherence (interchange +
+associator/unitor pentagon-and-triangle stated as *equalities of 2-cells*) compares `weak_match`
+witnesses in a Σ-type over Props, which needs UIP/funext on the 2-cell layer — outside the axiom-free,
+no-funext fragment the Rocq mandate permits. That coherence is therefore the truncation ceiling here
+and is routed to **Lean/Mathlib + Isabelle/AFP** (the foundations that permit it); the *result* is not
+bounded, only the *Rocq* realization is. Likewise Prop 6.1 not-eso is witnessed against ONE precisely
+reified clause (a stack-headed transition `graded_step` cannot exhibit), per the spec's "enumerating
+cases is hopeless".
+
+**Cross-refs.** DR-20 (the §4.8/GAP nomenclature), DR-21 (the native four-sort grammar this builds on),
+the spec-alignment audit (§6 the gap, §3.3 the abstract-layer bound). Spec `cost-accounted-rho.tex`
+§4.8 (Def 4.6, Prop 4.7, J1/J2, §4.8.4/§4.8.5); `continued-gslt-cost-v2.tex` §6 (Prop 6.1/6.2), §7
+(Thm 7.1), §9 (Prop 9.1/9.2/9.3).
