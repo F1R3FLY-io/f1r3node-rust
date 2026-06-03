@@ -364,3 +364,7 @@ theories/CATypeDiscipline.v
 # enumeration graded_succ with graded_step S g S' <-> In S' (graded_succ S g).
 # The constructive basis the Hennessy-Milner completeness direction needs.
 theories/CAGradedImageFinite.v
+
+# CL6 completeness — grade-tagged successor enumeration: graded_succ_all with
+# graded_step S g S' <-> In (g, S') (graded_succ_all S). The dichotomy iterates it.
+theories/CAGradedSuccPairs.v
