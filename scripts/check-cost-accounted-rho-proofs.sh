@@ -198,6 +198,7 @@ Print Assumptions cost_obj_closure.
 Print Assumptions cost_is_monad.
 Print Assumptions free_forget_adjunction.
 Print Assumptions proper_subcategory.
+Print Assumptions U_not_eso.
 Print Assumptions sim_2cells_form_setoid.
 Print Assumptions internalisation_adjoint_retraction.
 Print Assumptions continued_gslt_cost_abstract_capstone.
