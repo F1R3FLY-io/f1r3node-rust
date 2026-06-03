@@ -101,4 +101,35 @@ Proof.
   exists W. split; [ exact Hreach | split; [ exact Hbisim | apply ca_eta_cost_free ] ].
 Qed.
 
+(* ── On the counit and the triangle identities (Prop. adj2's bicategorical half) ──
+
+   Prop. adj2 also names a counit, the collapsing simulation η_G ∘ Imp_G ⇒
+   id_{Cost(G)}, with the triangle identities holding "up to the 2-cells witnessing
+   these weak bisimulations … an adjunction internal to the simulation bicategory".
+
+   That half is NOT mechanised here, for two precise (not vague) reasons:
+
+   (1) Carrier split — it is not even concretely TYPEABLE in the rho instance.
+       η_G : caproc → signed_term (ca_eta_embed) and Imp_G : signed_term → proc
+       (st_tr). Composing η_G ∘ Imp_G needs a map proc → caproc, an inverse
+       reflection of rho back into the source process sort. No such function exists
+       (proc and caproc are distinct inductive types, bridged ONLY by the forward
+       translation); the abstract bicategory identifies G's two presentations, the
+       concrete development keeps them apart. So the counit has no concrete type
+       without inventing a second (non-existent) translation.
+
+   (2) Scope — the plan fixed the categorical layer as "thin records + law-
+       predicates, no CT library", and scoped Adjunction II to REPACKAGING the
+       bisimulation results (the retraction), not to a simulation-bicategory with
+       1-cells/2-cells, vertical/horizontal composition, and coherence. The
+       triangle identities live in that excluded bicategory.
+
+   The behavioural CONTENT of the counit is moreover gated behind the SAME
+   force-point obstruction now PROVEN in CAForceSeparation.v
+   (ca_force_overgating_separation): re-internalising at unit grade re-introduces
+   the gates whose force behaviour the naive translation cannot match. So the
+   counit's hard half is the out-of-scope force-cashing redesign, and its formal
+   half is the out-of-scope bicategory — the concrete, in-scope deliverable is the
+   retraction/section above, which is proven. *)
+
 End CAInternalisationSec.
