@@ -404,6 +404,7 @@ theories/CACategory.v
 theories/CACostFunctor.v
 theories/CACostMonadCat.v
 theories/CAAdjunctionI.v
+theories/CACostMonadInstances.v
 theories/CASimulationBicat.v
 theories/CAAdjunctionII.v
 theories/CAProperSubcategory.v
