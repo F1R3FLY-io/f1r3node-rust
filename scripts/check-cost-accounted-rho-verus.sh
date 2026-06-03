@@ -25,7 +25,11 @@ if ! command -v verus >/dev/null 2>&1; then
   exit 0
 fi
 
-out="$(timeout 300 verus "$RS" 2>&1 || true)"
+# verus compiles by default, emitting a binary into the CWD; run it from a scratch
+# dir so no build artifact lands in the repo, then discard the dir.
+VERUS_OUT="$(mktemp -d)"
+out="$(cd "$VERUS_OUT" && timeout 300 verus "$RS" 2>&1 || true)"
+rm -rf "$VERUS_OUT"
 
 # A verus whose pinned rust toolchain is absent cannot run — treat as unavailable.
 if printf '%s\n' "$out" | grep -qiE 'required rust toolchain.*not found|toolchain .* not installed|rustup .* install'; then
