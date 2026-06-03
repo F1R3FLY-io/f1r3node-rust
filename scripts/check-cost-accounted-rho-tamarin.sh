@@ -32,6 +32,13 @@ if ! tamarin-prover --version >/dev/null 2>&1; then
   exit 0
 fi
 
+# Tamarin's Maude backend needs its prelude; point MAUDE_LIB at it if unset.
+if [ -z "${MAUDE_LIB:-}" ]; then
+  for d in /usr/share/maude /usr/lib/maude "$HOME/.local/share/maude"; do
+    if [ -f "$d/prelude.maude" ]; then export MAUDE_LIB="$d"; break; fi
+  done
+fi
+
 out="$(timeout 300 tamarin-prover --prove "$SPTHY" 2>&1 || true)"
 # Tamarin prints one "verified"/"falsified" verdict per lemma in its summary.
 falsified="$(printf '%s\n' "$out" | grep -c 'falsified' || true)"
