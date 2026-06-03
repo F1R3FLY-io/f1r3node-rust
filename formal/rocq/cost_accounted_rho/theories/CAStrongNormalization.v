@@ -273,16 +273,22 @@ Qed.
    CLOSED payloads, the N-simultaneous substitution adds at most the payloads'
    total fuel — the N-ary image of [linear_subst_fuel_le]. List induction over the
    payloads; each step is the binary lemma, with [deref_subst_closed_ca] carrying
-   the linearity hypothesis to the next index. *)
+   the linearity hypothesis to the next index. The one-step unfolding now goes
+   through the genuine simultaneous fold's cons equation [subst_st_many_cons]
+   (which lifts the tail payloads); under [Forall closed_st Us] that per-step lift
+   is the identity ([map_lift_closed_id]), so the recursive list collapses back to
+   [Us'] and the binary-lemma structure goes through verbatim. *)
 Lemma linear_subst_many_fuel_le : forall Us T,
   (forall i, i < length Us -> deref_count_st i T <= 1) ->
   Forall closed_st Us ->
   st_total_fuel (subst_st_many T Us)
     <= st_total_fuel T + fold_right (fun U acc => st_total_fuel U + acc) 0 Us.
 Proof.
-  induction Us as [| U Us' IH]; intros T Hlin Hclosed; simpl.
-  - lia.
+  induction Us as [| U Us' IH]; intros T Hlin Hclosed.
+  - simpl. rewrite subst_st_many_nil. lia.
   - inversion Hclosed as [| ? ? HU HUs' ]; subst.
+    rewrite subst_st_many_cons. rewrite (map_lift_closed_id Us' HUs').
+    simpl (fold_right _ _ (U :: Us')).
     assert (Hlin0 : deref_count_st 0 T <= 1) by (apply Hlin; simpl; lia).
     pose proof (linear_subst_fuel_le T U Hlin0) as Hstep.
     assert (Hlin' : forall i, i < length Us' ->
@@ -316,20 +322,28 @@ Proof.
     pose proof (linear_subst_fuel_le T U Hlin). lia.
   - (* ca_join1: closed payloads + linear continuation ⇒ the consumed gate forces
        the strict drop (N-ary analogue of ca_rule1; payload fuel bounded by the
-       keystone, the channel fuels appear on both sides). *)
-    subst snds. destruct Hf as [[[Hidx _] _] _].
+       keystone, the channel fuels appear on both sides). The payload closedness
+       [Hcl] is no longer a rule premise — it is EXTRACTED from the funded sender
+       bundle [Hsnds : funded_linear_caproc (join_sends xs Us)] via
+       [funded_join_sends_closed] (funded_linear's CPOutput clause carries it). *)
+    subst snds. destruct Hf as [[[Hidx _] Hsnds] _].
     match goal with
-    | [ Hlen : length xs = length Us, Hcl : Forall closed_st Us |- _ ] =>
+    | [ Hlen : length xs = length Us |- _ ] =>
+        pose proof (funded_join_sends_closed xs Us Hlen Hsnds) as Hcl;
         rewrite (join_sends_fuel xs Us Hlen);
         rewrite Hlen in Hidx;
         pose proof (linear_subst_many_fuel_le Us _ Hidx Hcl) as Hbound;
         lia
     end.
   - (* ca_join2: combined token consumed forces the drop; the separately-signed
-       senders' fuel appears on both sides, payload fuel bounded by the keystone. *)
-    subst snds. destruct Hf as [[[Hidx _] _] _].
+       senders' fuel appears on both sides, payload fuel bounded by the keystone.
+       Closedness [Hcl] is extracted from the funded separately-signed bundle
+       [Hsnds : funded_linear_st (signed_sends xs Us ts)] via
+       [funded_signed_sends_closed]. *)
+    subst snds. destruct Hf as [[[Hidx _] Hsnds] _].
     match goal with
-    | [ HU : length xs = length Us, Ht : length xs = length ts, Hcl : Forall closed_st Us |- _ ] =>
+    | [ HU : length xs = length Us, Ht : length xs = length ts |- _ ] =>
+        pose proof (funded_signed_sends_closed xs Us ts HU Ht Hsnds) as Hcl;
         rewrite (signed_sends_fuel xs Us ts HU Ht);
         rewrite HU in Hidx;
         pose proof (linear_subst_many_fuel_le Us _ Hidx Hcl) as Hbound;

@@ -177,17 +177,17 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
      VARIABLE [snds] constrained by an equation (snds = join_sends xs Us), NOT the
      Fixpoint embedded in the LHS pattern — this keeps `inversion` over the join
      redex clean (a Fixpoint index makes inversion non-terminating, Risk R3/R4).
-     The payloads are CLOSED ([Forall closed_st Us]): [subst_st_many] is iterated
-     binary [subst_st] at index 0 with NO inter-step lifting, so for N≥2 an open
-     payload's free de Bruijn 0 would be captured by the next substitution — closed
-     payloads are the precondition that makes the N-simultaneous substitution
-     capture-correct (transmitted values are closed). At N=1 this is vacuous and
-     [ca_join1] is exactly [ca_rule1]. *)
+     The join now fires for ARBITRARY (possibly-OPEN) payloads, matching the spec's
+     Def 4.6: [subst_st_many] is the GENUINE simultaneous substitution (per-step
+     lifting, [subst_st_many_cons]), so it is capture-free for open payloads too —
+     no closedness premise is needed on the operational rule. The closed-payload
+     condition is supplied, only where strong normalization needs it, by the funded
+     fragment (funded_linear's CPOutput clause carries [closed_st] of every send).
+     At N=1 this is exactly [ca_rule1]. *)
   | ca_join1 : forall (xs : list caname) (Us : list signed_term) (T : signed_term)
                       (s : sig) (t : token) (snds : caproc),
       snds = join_sends xs Us ->
       length xs = length Us ->
-      Forall closed_st Us ->
       ca_step
         (STPar (STSigned (CPPar (CPJoin xs T) snds) s)
                (STStack (TGate s t)))
@@ -199,14 +199,16 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
      to the fused signature s1 ∘ t1 ∘ … ∘ tN funds the whole join atomically (no
      partial funding). The continuation keeps its own seal; N payloads substituted
      simultaneously. Senders are the VARIABLE [snds] = signed_sends xs Us ts (the
-     snds-variable form keeps inversion terminating). Payloads CLOSED (capture-
-     correct N-fold subst). At N=1 this is Rule 3. *)
+     snds-variable form keeps inversion terminating). Like J1, this fires for
+     ARBITRARY (possibly-OPEN) payloads — [subst_st_many] is genuinely simultaneous
+     (per-step lifting), so capture-free without a closedness premise; closedness is
+     supplied where SN needs it by funded_linear's CPOutput clause. At N=1 this is
+     Rule 3. *)
   | ca_join2 : forall (xs : list caname) (Us : list signed_term) (ts : list sig)
                       (T : signed_term) (s1 : sig) (t : token) (snds : signed_term),
       snds = signed_sends xs Us ts ->
       length xs = length Us ->
       length xs = length ts ->
-      Forall closed_st Us ->
       ca_step
         (STPar (STPar (STSigned (CPJoin xs T) s1) snds)
                (STStack (TGate (join_token_key s1 ts) t)))

@@ -280,14 +280,33 @@ Qed.
 (* ── Section 8b: N-simultaneous substitution for the join continuation ───────
    [subst_st_many T Us] substitutes the quoted payloads @U1,…,@UN for the N
    binders y1,…,yN of a join, as a RIGHT FOLD of the binary [subst_st]: each
-   step consumes the outermost binder (CNVar 0) and decrements the rest. So the
-   N-ary metatheory reduces to the binary lemma plus a list induction. *)
+   step consumes the outermost binder (CNVar 0) and decrements the rest. The
+   tail payloads are lifted by one level before the recursive call — per-step
+   lifting keeps open payloads capture-free, so distinct binders are never
+   conflated and the substitution is genuinely SIMULTANEOUS (Def 4.6) even for
+   ARBITRARY, possibly-OPEN sent payloads. So the N-ary metatheory reduces to
+   the binary lemma plus a list induction.
 
-Fixpoint subst_st_many (T : signed_term) (Us : list signed_term) : signed_term :=
+   Coq's guard checker does not see [map f Us'] as a structural subterm of
+   [cons U Us'], so the naive [Fixpoint] recursing on the [map]ped tail is
+   rejected ("Cannot guess decreasing argument of fix"). We instead recurse on
+   the LITERAL tail [Us'] through the accumulator helper [subst_st_many_from k],
+   which carries the per-step lift COUNT [k] and lifts the head [k] times
+   ([Nat.iter k (lift_st 1 0)]) before substituting. [subst_st_many_cons] then
+   recovers the intended one-step [map]-form unfolding equation (via the
+   shift lemma [subst_st_many_from_lift]), so the metatheory reads exactly as
+   the simultaneous-substitution design intends. *)
+
+Fixpoint subst_st_many_from (k : nat) (T : signed_term) (Us : list signed_term)
+  {struct Us} : signed_term :=
   match Us with
   | nil       => T
-  | cons U Us' => subst_st_many (subst_st T 0 (CQuote U)) Us'
+  | cons U Us' =>
+      subst_st_many_from (S k) (subst_st T 0 (CQuote (Nat.iter k (lift_st 1 0) U))) Us'
   end.
+
+Definition subst_st_many (T : signed_term) (Us : list signed_term) : signed_term :=
+  subst_st_many_from 0 T Us.
 
 Lemma subst_st_many_nil : forall T, subst_st_many T nil = T.
 Proof. reflexivity. Qed.
@@ -297,11 +316,46 @@ Lemma subst_st_many_singleton : forall T U,
 Proof. reflexivity. Qed.
 
 (* Convention sanity (Risk R7): a concrete 2-ary fold is the nested double
-   substitution, outermost binder first. *)
+   substitution, outermost binder first, the tail payload lifted by one. *)
 Example subst_st_many_two : forall T U1 U2,
   subst_st_many T (cons U1 (cons U2 nil))
-    = subst_st (subst_st T 0 (CQuote U1)) 0 (CQuote U2).
+    = subst_st (subst_st T 0 (CQuote U1)) 0 (CQuote (lift_st 1 0 U2)).
 Proof. reflexivity. Qed.
+
+(* Shift lemma: starting the fold at count [S k] equals starting it at [k] with
+   every payload pre-lifted once. The bridge [Nat.iter (S k) f U =
+   Nat.iter k f (f U)] (one-more-application commutes) makes the substituted
+   heads coincide step by step. *)
+(* [Nat.iter] commutes with one extra application of its own function — the
+   general [Nat.iter (S n) f x] read two ways. *)
+Lemma iter_lift_commute : forall k U,
+  Nat.iter k (fun V => lift_st 1 0 V) (lift_st 1 0 U)
+    = lift_st 1 0 (Nat.iter k (fun V => lift_st 1 0 V) U).
+Proof.
+  intros k U. rewrite <- Nat.iter_succ_r. rewrite Nat.iter_succ. reflexivity.
+Qed.
+
+Lemma subst_st_many_from_lift : forall Us k T,
+  subst_st_many_from (S k) T Us
+    = subst_st_many_from k T (map (fun V => lift_st 1 0 V) Us).
+Proof.
+  induction Us as [| U Us' IH]; intros k T; simpl.
+  - reflexivity.
+  - (* both sides reduce to subst_st_many_from (S k) of the SAME substituted head:
+       the LHS head is Nat.iter (S k) f U; the RHS head is Nat.iter k f (f U).
+       Normalize the RHS head via iter_lift_commute + Nat.iter_succ, then IH. *)
+    rewrite iter_lift_commute. rewrite <- Nat.iter_succ. apply IH.
+Qed.
+
+(* The intended one-step unfolding: peel the outermost binder, lift the tail
+   payloads once (per-step lifting keeps open payloads capture-free), recurse. *)
+Lemma subst_st_many_cons : forall U Us' T,
+  subst_st_many T (cons U Us')
+    = subst_st_many (subst_st T 0 (CQuote U)) (map (fun V => lift_st 1 0 V) Us').
+Proof.
+  intros U Us' T. unfold subst_st_many. simpl.
+  rewrite subst_st_many_from_lift. reflexivity.
+Qed.
 
 Example dequote_collapses :
   forall (U : signed_term),

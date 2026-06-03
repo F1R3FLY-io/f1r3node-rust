@@ -56,7 +56,6 @@ Inductive graded_step : signed_term -> sig -> signed_term -> Prop :=
   | g_join1 : forall xs Us T s t snds,
       snds = join_sends xs Us ->
       length xs = length Us ->
-      Forall closed_st Us ->
       graded_step
         (STPar (STSigned (CPPar (CPJoin xs T) snds) s) (STStack (TGate s t)))
         s
@@ -65,7 +64,6 @@ Inductive graded_step : signed_term -> sig -> signed_term -> Prop :=
       snds = signed_sends xs Us ts ->
       length xs = length Us ->
       length xs = length ts ->
-      Forall closed_st Us ->
       graded_step
         (STPar (STPar (STSigned (CPJoin xs T) s1) snds)
                (STStack (TGate (join_token_key s1 ts) t)))

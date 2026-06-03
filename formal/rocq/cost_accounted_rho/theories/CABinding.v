@@ -311,6 +311,19 @@ Proof.
   eapply closed_st_at_mono; [| eassumption]. lia.
 Qed.
 
+(* On CLOSED payloads the per-step lift of [subst_st_many] is the identity, so
+   the simultaneous-substitution fold collapses to the naive one — this is how
+   strong normalization recovers its closedness from [funded_linear] (the funded
+   fragment sends closed payloads) rather than from a rule premise. *)
+Lemma map_lift_closed_id : forall Us,
+  Forall closed_st Us -> map (fun V => lift_st 1 0 V) Us = Us.
+Proof.
+  induction Us; intro H; simpl.
+  - reflexivity.
+  - inversion H; subst. rewrite closed_st_lift_zero by assumption.
+    f_equal; auto.
+Qed.
+
 (* ── Section 7: closedness introduction lemmas ──────────────────────────── *)
 
 Lemma closed_CPNil : closed_caproc CPNil.

@@ -33,15 +33,15 @@ Definition redex_succ (A B : signed_term) (g : sig) : list signed_term :=
           end
       (* N-ary join J1 (ca_join1): whole-join under one seal s, single s-token; the
          payloads are read back from the sender bundle and must reconstruct it
-         (caproc_eq_dec) at matching arity and be closed (the firing precondition). *)
+         (caproc_eq_dec) at matching arity. The join now fires for arbitrary
+         (possibly-open) payloads — no closedness gate on the successor. *)
       | STSigned (CPPar (CPJoin xsj Tj) snds) s =>
           match Nat.eq_dec (length xsj) (length (extract_sends snds)),
                 caproc_eq_dec snds (join_sends xsj (extract_sends snds)),
-                Forall_dec closed_st closed_st_dec (extract_sends snds),
                 sig_eq_dec s sg, sig_eq_dec g s with
-          | left _, left _, left _, left _, left _ =>
+          | left _, left _, left _, left _ =>
               [ STPar (subst_st_many Tj (extract_sends snds)) (STStack t) ]
-          | _, _, _, _, _ => []
+          | _, _, _, _ => []
           end
       | STPar A1 A2 =>
           match A1, A2 with
@@ -67,17 +67,17 @@ Definition redex_succ (A B : signed_term) (g : sig) : list signed_term :=
               end
           (* J2: separately-signed receiver (CPJoin) + sender bundle, one combined
              token keyed s1 ∘ t1 ∘ … ∘ tN. Recover payloads/sigs from the bundle,
-             require it to reconstruct (st_eq_dec) at matching arity, closed, and the
-             token key to be the fused key. *)
+             require it to reconstruct (st_eq_dec) at matching arity and the token
+             key to be the fused key. Fires for arbitrary (possibly-open) payloads —
+             no closedness gate on the successor. *)
           | STSigned (CPJoin xsj Tj) s1, snds =>
               match Nat.eq_dec (length xsj) (length (sb_pays snds)),
                     Nat.eq_dec (length xsj) (length (sb_sigs snds)),
                     st_eq_dec snds (signed_sends xsj (sb_pays snds) (sb_sigs snds)),
-                    Forall_dec closed_st closed_st_dec (sb_pays snds),
                     sig_eq_dec sg (join_token_key s1 (sb_sigs snds)), sig_eq_dec g sg with
-              | left _, left _, left _, left _, left _, left _ =>
+              | left _, left _, left _, left _, left _ =>
                   [ STPar (subst_st_many Tj (sb_pays snds)) (STStack t) ]
-              | _, _, _, _, _, _ => []
+              | _, _, _, _, _ => []
               end
           | _, _ => []
           end
@@ -124,11 +124,10 @@ Proof.
         -- (* CPJoin head — the whole-join (ca_join1 image) *)
            destruct (Nat.eq_dec (length xj) (length (extract_sends PA2))) as [Hlen | ]; try contradiction.
            destruct (caproc_eq_dec PA2 (join_sends xj (extract_sends PA2))) as [Hrec | ]; try contradiction.
-           destruct (Forall_dec closed_st closed_st_dec (extract_sends PA2)) as [Hcl | ]; try contradiction.
            destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
            destruct (sig_eq_dec g sA) as [Hg | ]; try contradiction.
            simpl in Hredex. destruct Hredex as [Heq | []].
-           subst. apply g_join1; [ exact Hrec | exact Hlen | exact Hcl ].
+           subst. apply g_join1; [ exact Hrec | exact Hlen ].
       * (* A = STPar A1 A2 — rules 2/4/5 *)
         destruct A1 as [P1 s1' | A11 A12 | t1']; try contradiction.
         -- (* A1 = STSigned P1 s1' *)
@@ -158,11 +157,10 @@ Proof.
               destruct (Nat.eq_dec (length xsj) (length (sb_sigs A2))) as [Ht | ]; try contradiction.
               destruct (st_eq_dec A2 (signed_sends xsj (sb_pays A2) (sb_sigs A2))) as [Hrec | ];
                 try contradiction.
-              destruct (Forall_dec closed_st closed_st_dec (sb_pays A2)) as [Hcl | ]; try contradiction.
               destruct (sig_eq_dec sg (join_token_key s1' (sb_sigs A2))) as [Hsg | ]; try contradiction.
               destruct (sig_eq_dec g sg) as [Hg | ]; try contradiction.
               simpl in Hredex. destruct Hredex as [Heq | []].
-              subst. apply g_join2; [ exact Hrec | exact HU | exact Ht | exact Hcl ].
+              subst. apply g_join2; [ exact Hrec | exact HU | exact Ht ].
         -- (* A1 = STPar A11 A12 — rule 5 *)
            destruct A11 as [P11 s1' | | ]; try contradiction.
            destruct P11 as [ | xf T1 | | | | ]; try contradiction.
@@ -217,7 +215,6 @@ Proof.
     destruct (Nat.eq_dec (length xs) (length Us)) as [_ | NE]; [| exfalso; apply NE; exact H0].
     destruct (caproc_eq_dec (join_sends xs Us) (join_sends xs Us)) as [_ | NE];
       [| exfalso; apply NE; reflexivity].
-    destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H1].
     sig_refl s. simpl. left; reflexivity.
   - (* g_join2 — recover payloads/sigs from the bundle, discharge the firing decs *)
     apply in_or_app. left. subst snds.
@@ -227,7 +224,6 @@ Proof.
     destruct (Nat.eq_dec (length xs) (length ts)) as [_ | NE]; [| exfalso; apply NE; exact H1].
     destruct (st_eq_dec (signed_sends xs Us ts) (signed_sends xs Us ts)) as [_ | NE];
       [| exfalso; apply NE; reflexivity].
-    destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H2].
     sig_refl (join_token_key s1 ts). simpl. left; reflexivity.
   - (* g_par_l *) apply in_or_app. right. apply in_or_app. left.
     apply in_map_iff. exists S1'. split; [ reflexivity | exact IHHstep ].
