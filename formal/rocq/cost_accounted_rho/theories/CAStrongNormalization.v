@@ -21,6 +21,7 @@ From Stdlib Require Import Wf_nat.
 From Stdlib Require Import Wellfounded.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CABinding.
 From CostAccountedRho Require Import CAReduction.
 From CostAccountedRho Require Import CATokenConservation.
 
@@ -137,6 +138,147 @@ Proof.
   lia.
 Qed.
 
+(* ── N-ary join bridge: closed payloads inject no dereferences ──────────────
+   A closed term forces no free de Bruijn name (every CPDeref is bound), so its
+   free-dereference count is 0 at every queried index — the quantitative image of
+   closedness used to propagate linearity through the N-fold join substitution. *)
+Lemma closed_deref_zero_ca :
+  (forall P k, closed_caproc_at k P -> forall j, k <= j -> deref_count_caproc j P = 0)
+  /\ (forall x k, closed_caname_at k x -> forall j, k <= j -> deref_count_caname j x = 0)
+  /\ (forall T k, closed_st_at k T -> forall j, k <= j -> deref_count_st j T = 0).
+Proof.
+  apply ca_deep_ind.
+  - (* CPNil *) intros k _ j _. reflexivity.
+  - (* CPInput x T *) intros x IHx T IHT k Hcl j Hkj. simpl in *.
+    destruct Hcl as [Hx HT]. rewrite (IHx k Hx j Hkj).
+    rewrite (IHT (S k) HT (S j) ltac:(lia)). reflexivity.
+  - (* CPOutput x U *) intros x IHx U IHU k Hcl j Hkj. simpl in *.
+    destruct Hcl as [Hx HU]. rewrite (IHx k Hx j Hkj). rewrite (IHU k HU j Hkj). reflexivity.
+  - (* CPPar P1 P2 *) intros P1 IH1 P2 IH2 k Hcl j Hkj. simpl in *.
+    destruct Hcl as [H1 H2]. rewrite (IH1 k H1 j Hkj). rewrite (IH2 k H2 j Hkj). reflexivity.
+  - (* CPDeref x *) intros x IHx k Hcl j Hkj. simpl in *. exact (IHx k Hcl j Hkj).
+  - (* CPJoin xs T *) intros xs Hxs T IHT k Hcl j Hkj. simpl in *.
+    destruct Hcl as [HF HT]. apply fold_right_closed_Forall in HF.
+    assert (Hcont : deref_count_st (length xs + j) T = 0)
+      by (apply (IHT (length xs + k) HT); lia).
+    rewrite Hcont, Nat.add_0_r. clear Hcont IHT HT.
+    revert HF. induction Hxs as [| x xs' Hx Htl IHtl]; intros HF; simpl; [ reflexivity | ].
+    inversion HF as [| ? ? HFx HFtl ]; subst.
+    rewrite (Hx k HFx j Hkj). simpl. apply IHtl. exact HFtl.
+  - (* CQuote T *) intros T IHT k Hcl j Hkj. simpl in *. exact (IHT k Hcl j Hkj).
+  - (* CNVar m *) intros m k Hcl j Hkj. simpl in *.
+    assert (Nat.eqb m j = false) as Heq by (apply Nat.eqb_neq; lia). rewrite Heq. reflexivity.
+  - (* STSigned P s *) intros P IHP s k Hcl j Hkj. simpl in *. exact (IHP k Hcl j Hkj).
+  - (* STPar T1 T2 *) intros T1 IH1 T2 IH2 k Hcl j Hkj. simpl in *.
+    destruct Hcl as [H1 H2]. rewrite (IH1 k H1 j Hkj). rewrite (IH2 k H2 j Hkj). reflexivity.
+  - (* STStack t *) intros t k _ j _. reflexivity.
+Qed.
+
+(* Substituting a CLOSED payload at index 0 (no inter-step lifting needed — a
+   closed term is lift-invariant) shifts every dereference count down by one:
+   [deref_count i] of the result = [deref_count (S i)] of the source, for i ≥ n.
+   The replaced occurrences become the closed (dereference-free) payload, and the
+   indices above n decrement. This is what propagates linearity through the fold. *)
+Lemma deref_subst_closed_ca : forall U, closed_st U ->
+  (forall P n i, n <= i ->
+     deref_count_caproc i (subst_caproc P n (CQuote U)) = deref_count_caproc (S i) P)
+  /\ (forall x n i, n <= i ->
+     deref_count_caname i (subst_caname x n (CQuote U)) = deref_count_caname (S i) x)
+  /\ (forall T n i, n <= i ->
+     deref_count_st i (subst_st T n (CQuote U)) = deref_count_st (S i) T).
+Proof.
+  intros U HU. apply ca_deep_ind.
+  - (* CPNil *) intros n i Hni. reflexivity.
+  - (* CPInput x T *) intros x IHx T IHT n i Hni. simpl.
+    rewrite (closed_st_lift_zero U 1 0 HU).
+    rewrite (IHx n i Hni). rewrite (IHT (S n) (S i) (le_n_S _ _ Hni)). reflexivity.
+  - (* CPOutput x U0 *) intros x IHx U0 IHU0 n i Hni. simpl.
+    rewrite (IHx n i Hni). rewrite (IHU0 n i Hni). reflexivity.
+  - (* CPPar P1 P2 *) intros P1 IH1 P2 IH2 n i Hni. simpl.
+    rewrite (IH1 n i Hni). rewrite (IH2 n i Hni). reflexivity.
+  - (* CPDeref x *) intros x IHx n i Hni. destruct x as [Ti | k].
+    + (* CQuote Ti *) simpl in *. exact (IHx n i Hni).
+    + (* CNVar k *) simpl. destruct (Nat.compare k n) eqn:Hcmp.
+      * apply Nat.compare_eq in Hcmp. subst k.
+        rewrite (proj1 closed_deref_zero_ca (st_to_proc U) 0
+                   (closed_st_to_proc U 0 HU) i (Nat.le_0_l i)).
+        simpl. assert (Nat.eqb n (S i) = false) as Heq by (apply Nat.eqb_neq; lia).
+        rewrite Heq. reflexivity.
+      * apply Nat.compare_lt_iff in Hcmp. simpl.
+        assert (Nat.eqb k i = false) as Ha by (apply Nat.eqb_neq; lia).
+        assert (Nat.eqb k (S i) = false) as Hb by (apply Nat.eqb_neq; lia).
+        rewrite Ha, Hb. reflexivity.
+      * apply Nat.compare_gt_iff in Hcmp. simpl.
+        destruct (Nat.eqb (k - 1) i) eqn:E1; destruct (Nat.eqb k (S i)) eqn:E2; try reflexivity.
+        -- apply Nat.eqb_eq in E1. apply Nat.eqb_neq in E2. lia.
+        -- apply Nat.eqb_neq in E1. apply Nat.eqb_eq in E2. lia.
+  - (* CPJoin xs T *) intros xs Hxs T IHT n i Hni. simpl.
+    rewrite (closed_st_lift_zero U (length xs) 0 HU).
+    rewrite length_map.
+    rewrite (IHT (length xs + n) (length xs + i) ltac:(lia)).
+    f_equal.
+    + (* channels *)
+      induction Hxs as [| x xs' Hx Htl IHtl]; simpl; [ reflexivity | ].
+      rewrite (Hx n i Hni). rewrite IHtl. reflexivity.
+    + (* continuation index arithmetic *)
+      f_equal. lia.
+  - (* CQuote T *) intros T IHT n i Hni. simpl. exact (IHT n i Hni).
+  - (* CNVar m *) intros m n i Hni. simpl. destruct (Nat.compare m n) eqn:Hcmp.
+    + apply Nat.compare_eq in Hcmp. subst m. simpl.
+      rewrite (proj2 (proj2 closed_deref_zero_ca) U 0 HU i (Nat.le_0_l i)).
+      assert (Nat.eqb n (S i) = false) as Heq by (apply Nat.eqb_neq; lia).
+      rewrite Heq. reflexivity.
+    + apply Nat.compare_lt_iff in Hcmp. simpl.
+      assert (Nat.eqb m i = false) as Ha by (apply Nat.eqb_neq; lia).
+      assert (Nat.eqb m (S i) = false) as Hb by (apply Nat.eqb_neq; lia).
+      rewrite Ha, Hb. reflexivity.
+    + apply Nat.compare_gt_iff in Hcmp. simpl.
+      destruct (Nat.eqb (m - 1) i) eqn:E1; destruct (Nat.eqb m (S i)) eqn:E2; try reflexivity.
+      -- apply Nat.eqb_eq in E1. apply Nat.eqb_neq in E2. lia.
+      -- apply Nat.eqb_neq in E1. apply Nat.eqb_eq in E2. lia.
+  - (* STSigned P s *) intros P IHP s n i Hni. simpl. exact (IHP n i Hni).
+  - (* STPar T1 T2 *) intros T1 IH1 T2 IH2 n i Hni. simpl.
+    rewrite (IH1 n i Hni). rewrite (IH2 n i Hni). reflexivity.
+  - (* STStack t *) intros t n i Hni. reflexivity.
+Qed.
+
+(* The fuel of the join's sender bundle x1!(U1) | … | xN!(UN): the channel fuels
+   plus the payload fuels (matching arities). *)
+Lemma join_sends_fuel : forall xs Us,
+  length xs = length Us ->
+  caproc_total_fuel (join_sends xs Us)
+    = fold_right (fun x acc => caname_total_fuel x + acc) 0 xs
+      + fold_right (fun U acc => st_total_fuel U + acc) 0 Us.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] Hlen; simpl in *; try discriminate.
+  - reflexivity.
+  - rewrite (IH Us' ltac:(lia)). lia.
+Qed.
+
+(* Keystone (Risk R2): under a join continuation linear at every bound index and
+   CLOSED payloads, the N-simultaneous substitution adds at most the payloads'
+   total fuel — the N-ary image of [linear_subst_fuel_le]. List induction over the
+   payloads; each step is the binary lemma, with [deref_subst_closed_ca] carrying
+   the linearity hypothesis to the next index. *)
+Lemma linear_subst_many_fuel_le : forall Us T,
+  (forall i, i < length Us -> deref_count_st i T <= 1) ->
+  Forall closed_st Us ->
+  st_total_fuel (subst_st_many T Us)
+    <= st_total_fuel T + fold_right (fun U acc => st_total_fuel U + acc) 0 Us.
+Proof.
+  induction Us as [| U Us' IH]; intros T Hlin Hclosed; simpl.
+  - lia.
+  - inversion Hclosed as [| ? ? HU HUs' ]; subst.
+    assert (Hlin0 : deref_count_st 0 T <= 1) by (apply Hlin; simpl; lia).
+    pose proof (linear_subst_fuel_le T U Hlin0) as Hstep.
+    assert (Hlin' : forall i, i < length Us' ->
+              deref_count_st i (subst_st T 0 (CQuote U)) <= 1).
+    { intros i Hi.
+      rewrite (proj2 (proj2 (deref_subst_closed_ca U HU)) T 0 i (Nat.le_0_l i)).
+      apply Hlin. simpl. lia. }
+    specialize (IH (subst_st T 0 (CQuote U)) Hlin' HUs'). lia.
+Qed.
+
 (* ── strict decrease on the funded fragment ─────────────────────────────── *)
 Theorem funded_step_decreases : forall T T',
   funded_linear T -> ca_step T T' -> st_total_fuel T' < st_total_fuel T.
@@ -158,6 +300,17 @@ Proof.
   - (* ca_rule5 *)
     destruct Hf as [[[[Hlin _] _] _] _].
     pose proof (linear_subst_fuel_le T U Hlin). lia.
+  - (* ca_join1: closed payloads + linear continuation ⇒ the consumed gate forces
+       the strict drop (N-ary analogue of ca_rule1; payload fuel bounded by the
+       keystone, the channel fuels appear on both sides). *)
+    subst snds. destruct Hf as [[[Hidx _] _] _].
+    match goal with
+    | [ Hlen : length xs = length Us, Hcl : Forall closed_st Us |- _ ] =>
+        rewrite (join_sends_fuel xs Us Hlen);
+        rewrite Hlen in Hidx;
+        pose proof (linear_subst_many_fuel_le Us _ Hidx Hcl) as Hbound;
+        lia
+    end.
   - (* ca_par_l *) destruct Hf as [Hf1 _]. specialize (IHHstep Hf1). lia.
   - (* ca_par_r *) destruct Hf as [_ Hf2]. specialize (IHHstep Hf2). lia.
 Qed.

@@ -91,6 +91,37 @@ Qed.
 
 Definition ca_terminal (T : signed_term) : Prop := forall T', ~ ca_step T T'.
 
+(* join_sends is injective in its payloads (given matching arities): the redex
+   structure pins the substituted payloads, hence the join RHS is unique. *)
+Lemma join_sends_injective : forall xs Us Us',
+  length xs = length Us -> length xs = length Us' ->
+  join_sends xs Us = join_sends xs Us' -> Us = Us'.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us0] [| U' Us0'] HlU HlU' Heq;
+    simpl in *; try discriminate; try reflexivity.
+  inversion Heq; subst. f_equal. apply (IH Us0 Us0'); [ lia | lia | assumption ].
+Qed.
+
+(* Determinism of the join firing: the N-ary whole-join LHS has a unique residual
+   (the snds-variable rule keeps this inversion terminating, Risk R3/R4 resolved). *)
+Lemma ca_step_join1_det : forall xs Us T s t Sb,
+  length xs = length Us ->
+  ca_step (STPar (STSigned (CPPar (CPJoin xs T) (join_sends xs Us)) s)
+                 (STStack (TGate s t))) Sb ->
+  Sb = STPar (subst_st_many T Us) (STStack t).
+Proof.
+  intros xs Us T s t Sb Hlen H. inversion H; subst.
+  - (* ca_join1 — pin the payloads via join_sends injectivity *)
+    match goal with
+    | [ Heq : join_sends xs Us = join_sends xs ?Us0, Hl0 : length xs = length ?Us0 |- _ ] =>
+        rewrite (join_sends_injective xs Us Us0 Hlen Hl0 Heq); reflexivity
+    end.
+  - (* ca_par_l — receiver-side sub-step impossible *)
+    exfalso; eapply no_leak_requires_token; eauto.
+  - (* ca_par_r — token-stack sub-step impossible *)
+    exfalso; eapply no_leak_stack_inert; eauto.
+Qed.
+
 (* ── local confluence (the diamond) — unconditional ─────────────────────── *)
 
 Lemma ca_local_confluence : forall S Sa Sb,
@@ -104,6 +135,11 @@ Proof.
   - left. symmetry. exact (ca_step_rule1_det _ _ _ _ _ _ Hstep2).
   - left. symmetry. exact (ca_step_rule4_det _ _ _ _ _ _ _ Hstep2).
   - left. symmetry. exact (ca_step_rule5_det _ _ _ _ _ _ _ _ Hstep2).
+  - (* ca_join1 — unique residual via ca_step_join1_det *)
+    subst snds. left. symmetry.
+    match goal with
+    | [ Hl : length xs = length Us |- _ ] => exact (ca_step_join1_det xs Us T s t Sb Hl Hstep2)
+    end.
   - (* ca_par_l *)
     inversion Hstep2; subst.
     all: try solve_no_substep.

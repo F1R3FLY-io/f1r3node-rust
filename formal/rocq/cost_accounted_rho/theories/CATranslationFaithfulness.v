@@ -517,6 +517,23 @@ Proof.
       apply se_sym; apply se_par_assoc.
     + apply rs_par_l. apply rs_comm.
     + apply se_refl.
+  - (* ca_join1: the whole-join fires its gate↔token COMM exactly as ca_rule1 (the
+       N=1 instance). The join body (CPJoin xs T | snds) sits INSIDE the gate and is
+       untouched by this first step, so progress is uniform in the body — atomic s
+       fires directly, compound s via the Split mediator. (Progress form: one real
+       rho_step; the full N-step rendezvous is the join's reduction-side metatheory,
+       CAReduction/CAStrongNormalization.) *)
+    destruct s as [| bs | bs | a b].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + exists PNil; eexists; split; [ apply closed_PNil | apply rs_par_l; apply rs_comm ].
+    + exists (Split a b); eexists; split; [ apply Split_closed | ].
+      eapply rs_struct.
+      * eapply se_trans. { apply se_par_comm. }
+        eapply se_trans. { apply se_par_cong_r; apply se_par_comm. }
+        apply se_sym; apply se_par_assoc.
+      * apply rs_par_l. apply rs_comm.
+      * apply se_refl.
   - (* ca_par_l: S1 steps *)
     destruct IHca_step as [Ctx1 [W1 [Hcl Hstep]]].
     exists Ctx1; eexists; split; [ exact Hcl | ].

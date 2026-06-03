@@ -9,8 +9,10 @@
 
 From Stdlib Require Import Lists.List.
 Import ListNotations.
+From Stdlib Require Import PeanoNat.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CABinding.
 From CostAccountedRho Require Import CAReduction.
 From CostAccountedRho Require Import CAGradedTransition.
 
@@ -23,6 +25,17 @@ Definition redex_pairs (A B : signed_term) : list (sig * signed_term) :=
           match caname_eq_dec xf xs, sig_eq_dec s sg with
           | left _, left _ => [ (s, STPar (subst_st T 0 (CQuote U)) (STStack t)) ]
           | _, _ => []
+          end
+      (* N-ary join J1 (ca_join1): grade is the single funding seal s; payloads read
+         back from the bundle, reconstructing it at matching arity, and closed. *)
+      | STSigned (CPPar (CPJoin xsj Tj) snds) s =>
+          match Nat.eq_dec (length xsj) (length (extract_sends snds)),
+                caproc_eq_dec snds (join_sends xsj (extract_sends snds)),
+                Forall_dec closed_st closed_st_dec (extract_sends snds),
+                sig_eq_dec s sg with
+          | left _, left _, left _, left _ =>
+              [ (s, STPar (subst_st_many Tj (extract_sends snds)) (STStack t)) ]
+          | _, _, _, _ => []
           end
       | STPar A1 A2 =>
           match A1, A2 with
@@ -77,12 +90,20 @@ Proof.
       destruct tB as [| sg t]; try contradiction.
       destruct A as [PA sA | A1 A2 | tA]; try contradiction.
       * destruct PA as [ | xA TA | xA UA | PA1 PA2 | xA | xsj Tj ]; try contradiction.
-        destruct PA1 as [ | xf Ti | | | | ]; try contradiction.
-        destruct PA2 as [ | | xs Uo | | | ]; try contradiction.
-        destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
-        destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
-        simpl in Hredex. destruct Hredex as [Heq | []].
-        inversion Heq; subst. apply g_rule1.
+        destruct PA1 as [ | xf Ti | | | | xj Tcont ]; try contradiction.
+        -- (* CPInput head — rules 1/3 *)
+           destruct PA2 as [ | | xs Uo | | | ]; try contradiction.
+           destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
+           destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
+           simpl in Hredex. destruct Hredex as [Heq | []].
+           inversion Heq; subst. apply g_rule1.
+        -- (* CPJoin head — the whole-join (ca_join1 image) *)
+           destruct (Nat.eq_dec (length xj) (length (extract_sends PA2))) as [Hlen | ]; try contradiction.
+           destruct (caproc_eq_dec PA2 (join_sends xj (extract_sends PA2))) as [Hrec | ]; try contradiction.
+           destruct (Forall_dec closed_st closed_st_dec (extract_sends PA2)) as [Hcl | ]; try contradiction.
+           destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
+           simpl in Hredex. destruct Hredex as [Heq | []].
+           inversion Heq; subst. apply g_join1; [ exact Hrec | exact Hlen | exact Hcl ].
       * destruct A1 as [P1 s1' | A11 A12 | t1']; try contradiction.
         -- destruct P1 as [ | xf T1 | xs U1 | P11 P12 | x1 | xsj Tj ]; try contradiction.
            ++ destruct A2 as [P2 s2' | | ]; try contradiction.
@@ -129,6 +150,14 @@ Proof.
   - apply in_or_app. left. caname_refl x. simpl. sig_refl s1. simpl. sig_refl s2. simpl. left; reflexivity.
   - apply in_or_app. left. caname_refl x. simpl. sig_refl s1. simpl. sig_refl s2. simpl. left; reflexivity.
   - apply in_or_app. left. caname_refl x. simpl. sig_refl s1. simpl. sig_refl s2. simpl. left; reflexivity.
+  - (* g_join1 — recover the payloads from the bundle, discharge the firing decs *)
+    apply in_or_app. left. subst snds.
+    rewrite (extract_sends_join_sends xs Us H0).
+    destruct (Nat.eq_dec (length xs) (length Us)) as [_ | NE]; [| exfalso; apply NE; exact H0].
+    destruct (caproc_eq_dec (join_sends xs Us) (join_sends xs Us)) as [_ | NE];
+      [| exfalso; apply NE; reflexivity].
+    destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H1].
+    sig_refl s. simpl. left; reflexivity.
   - apply in_or_app. right. apply in_or_app. left.
     apply in_map_iff. exists (g, S1'). split; [ reflexivity | exact IHHstep ].
   - apply in_or_app. right. apply in_or_app. right.

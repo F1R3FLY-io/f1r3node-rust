@@ -12,6 +12,7 @@
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Bool.
 From Stdlib Require Import Lists.List.
 Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -331,3 +332,102 @@ Lemma closed_STSigned : forall P s, closed_caproc P -> closed_st (STSigned P s).
 Proof. unfold closed_caproc, closed_st. intros. simpl. assumption. Qed.
 Lemma closed_STStack : forall t, closed_st (STStack t).
 Proof. unfold closed_st. intros. simpl. exact I. Qed.
+
+(* ── Section 8: dequotation preserves closedness ─────────────────────────────
+   [st_to_proc] only re-tags the process content of a closed term, so the
+   dequoted residue is closed at the same level. Used by the join's
+   strong-normalization bridge (a closed payload injects no free dereferences). *)
+Lemma closed_st_to_proc : forall U k, closed_st_at k U -> closed_caproc_at k (st_to_proc U).
+Proof.
+  induction U as [P s | U1 IH1 U2 IH2 | t]; intros k H; simpl in *.
+  - exact H.
+  - destruct H as [H1 H2]. split; [ apply IH1 | apply IH2 ]; assumption.
+  - exact I.
+Qed.
+
+(* ── Section 9: decidable (boolean) closedness ───────────────────────────────
+   A boolean mirror of [closed_*_at], guard-friendly (the channel list uses the
+   same inlined [fold_right] as the Prop predicate, NOT [forallb], to keep the
+   mutual fixpoint structurally decreasing). The reflection [closed_b_spec_ca]
+   lets the finite-image successor enumeration (CAGradedSuccPairs) DECIDE the
+   join's closed-payload side-condition. *)
+Fixpoint closed_caprocb (k : nat) (P : caproc) : bool :=
+  match P with
+  | CPNil         => true
+  | CPInput x T   => closed_canameb k x && closed_stb (S k) T
+  | CPOutput x U  => closed_canameb k x && closed_stb k U
+  | CPPar P1 P2   => closed_caprocb k P1 && closed_caprocb k P2
+  | CPDeref x     => closed_canameb k x
+  | CPJoin xs T   =>
+      fold_right (fun x acc => closed_canameb k x && acc) true xs
+      && closed_stb (length xs + k) T
+  end
+with closed_canameb (k : nat) (x : caname) : bool :=
+  match x with
+  | CQuote T => closed_stb k T
+  | CNVar j  => Nat.ltb j k
+  end
+with closed_stb (k : nat) (T : signed_term) : bool :=
+  match T with
+  | STSigned P _ => closed_caprocb k P
+  | STPar T1 T2  => closed_stb k T1 && closed_stb k T2
+  | STStack _    => true
+  end.
+
+(* The boolean channel-fold reflects the Prop channel-fold, element-wise. *)
+Lemma fold_right_closedb_iff : forall k xs,
+  (forall x, In x xs -> (closed_canameb k x = true <-> closed_caname_at k x)) ->
+  (fold_right (fun x acc => closed_canameb k x && acc) true xs = true
+   <-> fold_right (fun x acc => closed_caname_at k x /\ acc) True xs).
+Proof.
+  intros k xs Hx. induction xs as [| x xs' IH]; simpl.
+  - split; intros _; [ exact I | reflexivity ].
+  - rewrite andb_true_iff. rewrite (Hx x (or_introl eq_refl)).
+    rewrite IH by (intros y Hy; apply Hx; right; exact Hy). reflexivity.
+Qed.
+
+Lemma closed_b_spec_ca :
+  (forall P k, closed_caprocb k P = true <-> closed_caproc_at k P)
+  /\ (forall x k, closed_canameb k x = true <-> closed_caname_at k x)
+  /\ (forall T k, closed_stb k T = true <-> closed_st_at k T).
+Proof.
+  apply ca_deep_ind; intros; simpl.
+  - split; intros _; [ exact I | reflexivity ].
+  - rewrite andb_true_iff, H, H0. reflexivity.
+  - rewrite andb_true_iff, H, H0. reflexivity.
+  - rewrite andb_true_iff, H, H0. reflexivity.
+  - apply H.
+  - (* CPJoin xs T *) rewrite andb_true_iff, H0. rewrite fold_right_closedb_iff.
+    + reflexivity.
+    + rewrite Forall_forall in H. intros x Hin. apply H. exact Hin.
+  - apply H.
+  - apply Nat.ltb_lt.
+  - apply H.
+  - rewrite andb_true_iff, H, H0. reflexivity.
+  - split; intros _; [ exact I | reflexivity ].
+Qed.
+
+Lemma closed_stb_spec : forall T k, closed_stb k T = true <-> closed_st_at k T.
+Proof. apply closed_b_spec_ca. Qed.
+
+(* Whole-list closedness (level 0) reflects [Forall closed_st], for the join's
+   closed-payload enumeration side-condition. *)
+Lemma forallb_closed_st_iff : forall Us,
+  forallb (fun U => closed_stb 0 U) Us = true <-> Forall closed_st Us.
+Proof.
+  induction Us as [| U Us' IH]; simpl.
+  - split; [ intros _; constructor | reflexivity ].
+  - rewrite andb_true_iff, IH. unfold closed_st. rewrite closed_stb_spec.
+    split.
+    + intros [HU HUs]. constructor; assumption.
+    + intros HF. inversion HF; subst. split; assumption.
+Qed.
+
+(* Closedness is decidable — the side-condition the join's successor enumeration
+   (CAGradedSuccPairs) checks before emitting a [g_join1] transition. *)
+Lemma closed_st_dec : forall T, {closed_st T} + {~ closed_st T}.
+Proof.
+  intro T. unfold closed_st. destruct (closed_stb 0 T) eqn:E.
+  - left. apply closed_stb_spec. exact E.
+  - right. intro H. apply closed_stb_spec in H. rewrite H in E. discriminate.
+Qed.

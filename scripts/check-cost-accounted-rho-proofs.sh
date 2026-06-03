@@ -104,6 +104,10 @@ Print Assumptions gap2_split_split_keeps_own_seal.
 Print Assumptions st_token_count_subst_invariant.
 Print Assumptions ca_step_needs_fuel.
 Print Assumptions funded_step_decreases.
+Print Assumptions closed_deref_zero_ca.
+Print Assumptions deref_subst_closed_ca.
+Print Assumptions linear_subst_many_fuel_le.
+Print Assumptions extract_sends_join_sends.
 Print Assumptions ca_SN_funded.
 Print Assumptions st_total_fuel_can_increase_off_funded.
 Print Assumptions ca_local_confluence.

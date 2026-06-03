@@ -59,6 +59,11 @@ Proof.
   - (* ca_rule4 *) symmetry. exact (ca_step_rule4_det _ _ _ _ _ _ _ Hstep2).
   - (* ca_rule5: two STStack nodes — impossible *)
     unfold single_token_st in Hsingle. simpl in Hsingle. lia.
+  - (* ca_join1: single combined token, unique residual via ca_step_join1_det *)
+    subst snds. symmetry.
+    match goal with
+    | [ Hl : length xs = length Us |- _ ] => exact (ca_step_join1_det xs Us T s t T2 Hl Hstep2)
+    end.
   - (* ca_par_l *)
     unfold single_token_st in Hsingle. simpl in Hsingle.
     assert (Hc1 : st_token_node_count S1 >= 1)

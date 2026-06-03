@@ -13,8 +13,11 @@
    (complete). Phlogiston is thus the conserved grade — invariant under ≡,
    consumed along →, in the order the stack records. Axiom-free.               *)
 
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CABinding.
 From CostAccountedRho Require Import CAReduction.
 
 (* The graded transition relation: [ca_step] relabelled by the consumed grade. *)
@@ -50,6 +53,14 @@ Inductive graded_step : signed_term -> sig -> signed_term -> Prop :=
                (STStack (TGate s2 t2)))
         (SAnd s1 s2)
         (STPar (STPar (subst_st T 0 (CQuote U)) (STStack t1)) (STStack t2))
+  | g_join1 : forall xs Us T s t snds,
+      snds = join_sends xs Us ->
+      length xs = length Us ->
+      Forall closed_st Us ->
+      graded_step
+        (STPar (STSigned (CPPar (CPJoin xs T) snds) s) (STStack (TGate s t)))
+        s
+        (STPar (subst_st_many T Us) (STStack t))
   | g_par_l : forall S1 g S1' S2,
       graded_step S1 g S1' -> graded_step (STPar S1 S2) g (STPar S1' S2)
   | g_par_r : forall S1 g S2 S2',
@@ -64,6 +75,7 @@ Proof.
   - apply ca_rule3.
   - apply ca_rule4.
   - apply ca_rule5.
+  - apply ca_join1; assumption.
   - apply ca_par_l; assumption.
   - apply ca_par_r; assumption.
 Qed.
@@ -76,6 +88,7 @@ Proof.
   - eexists; apply g_rule3.
   - eexists; apply g_rule4.
   - eexists; apply g_rule5.
+  - eexists; apply g_join1; eassumption.
   - destruct IHca_step as [g Hg]. exists g. apply g_par_l; assumption.
   - destruct IHca_step as [g Hg]. exists g. apply g_par_r; assumption.
 Qed.

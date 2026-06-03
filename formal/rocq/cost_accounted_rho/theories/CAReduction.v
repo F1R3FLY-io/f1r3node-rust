@@ -24,6 +24,7 @@ From Stdlib Require Import Lists.List.
 Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CABinding.
 
 (* The N senders of a whole-join redex: x1!(U1) | … | xN!(UN). *)
 Fixpoint join_sends (xs : list caname) (Us : list signed_term) : caproc :=
@@ -31,6 +32,23 @@ Fixpoint join_sends (xs : list caname) (Us : list signed_term) : caproc :=
   | cons x xs', cons U Us' => CPPar (CPOutput x U) (join_sends xs' Us')
   | _, _ => CPNil
   end.
+
+(* Recover the payloads from a sender bundle — the partial inverse of join_sends,
+   exact on well-formed bundles (matching arities). The graded successor
+   enumeration uses it to read the N payloads back out of a join redex. *)
+Fixpoint extract_sends (P : caproc) : list signed_term :=
+  match P with
+  | CPPar (CPOutput _ U) rest => U :: extract_sends rest
+  | _ => nil
+  end.
+
+Lemma extract_sends_join_sends : forall xs Us,
+  length xs = length Us -> extract_sends (join_sends xs Us) = Us.
+Proof.
+  induction xs as [| x xs' IH]; intros [| U Us'] Hlen; simpl in *; try discriminate.
+  - reflexivity.
+  - rewrite (IH Us' ltac:(lia)). reflexivity.
+Qed.
 
 Reserved Notation "S '⤳ca' T" (at level 70, no associativity).
 
@@ -80,22 +98,27 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
         (STPar (STPar (subst_st T 0 (CQuote U)) (STStack t1)) (STStack t2))
 
   (* Join J1 — N-ary whole-join, single funding signature (spec §4.8, the N-ary
-     analogue of Rule 1). TEMPORARILY DISABLED (commented, not deleted): adding
-     this constructor makes the [ca_local_confluence] / determinism proofs'
-     `inversion` over the join LHS (whose pattern embeds the `join_sends` Fixpoint)
-     non-terminating. Landing it needs a dedicated determinism lemma built on
-     `join_sends` injectivity plus a non-looping inversion strategy (Stage B/D,
-     Risk R3/R4) — tracked separately so the metatheory sweep (Stage A) stays
-     gate-green. The grammar former CPJoin + subst_st_many + the full syntactic
-     metatheory are landed (committed); only the REDUCTION rule waits on R3/R4.
+     analogue of Rule 1): the join receiver and its N senders sit under one seal s,
+     funded by one s-token; the continuation T keeps its own seal, N payloads
+     substituted simultaneously (subst_st_many). N=1 is Rule 1. The senders are a
+     VARIABLE [snds] constrained by an equation (snds = join_sends xs Us), NOT the
+     Fixpoint embedded in the LHS pattern — this keeps `inversion` over the join
+     redex clean (a Fixpoint index makes inversion non-terminating, Risk R3/R4).
+     The payloads are CLOSED ([Forall closed_st Us]): [subst_st_many] is iterated
+     binary [subst_st] at index 0 with NO inter-step lifting, so for N≥2 an open
+     payload's free de Bruijn 0 would be captured by the next substitution — closed
+     payloads are the precondition that makes the N-simultaneous substitution
+     capture-correct (transmitted values are closed). At N=1 this is vacuous and
+     [ca_join1] is exactly [ca_rule1]. *)
   | ca_join1 : forall (xs : list caname) (Us : list signed_term) (T : signed_term)
-                      (s : sig) (t : token),
+                      (s : sig) (t : token) (snds : caproc),
+      snds = join_sends xs Us ->
       length xs = length Us ->
+      Forall closed_st Us ->
       ca_step
-        (STPar (STSigned (CPPar (CPJoin xs T) (join_sends xs Us)) s)
+        (STPar (STSigned (CPPar (CPJoin xs T) snds) s)
                (STStack (TGate s t)))
         (STPar (subst_st_many T Us) (STStack t))
-  *)
 
   (* PAR closure (spatial monoid), left and right. *)
   | ca_par_l : forall S1 S1' S2, ca_step S1 S1' -> ca_step (STPar S1 S2) (STPar S1' S2)

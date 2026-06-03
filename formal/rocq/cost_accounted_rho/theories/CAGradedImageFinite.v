@@ -11,8 +11,10 @@
 
 From Stdlib Require Import Lists.List.
 Import ListNotations.
+From Stdlib Require Import PeanoNat.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+From CostAccountedRho Require Import CABinding.
 From CostAccountedRho Require Import CAReduction.
 From CostAccountedRho Require Import CAGradedTransition.
 
@@ -28,6 +30,18 @@ Definition redex_succ (A B : signed_term) (g : sig) : list signed_term :=
           match caname_eq_dec xf xs, sig_eq_dec s sg, sig_eq_dec g s with
           | left _, left _, left _ => [ STPar (subst_st T 0 (CQuote U)) (STStack t) ]
           | _, _, _ => []
+          end
+      (* N-ary join J1 (ca_join1): whole-join under one seal s, single s-token; the
+         payloads are read back from the sender bundle and must reconstruct it
+         (caproc_eq_dec) at matching arity and be closed (the firing precondition). *)
+      | STSigned (CPPar (CPJoin xsj Tj) snds) s =>
+          match Nat.eq_dec (length xsj) (length (extract_sends snds)),
+                caproc_eq_dec snds (join_sends xsj (extract_sends snds)),
+                Forall_dec closed_st closed_st_dec (extract_sends snds),
+                sig_eq_dec s sg, sig_eq_dec g s with
+          | left _, left _, left _, left _, left _ =>
+              [ STPar (subst_st_many Tj (extract_sends snds)) (STStack t) ]
+          | _, _, _, _, _ => []
           end
       | STPar A1 A2 =>
           match A1, A2 with
@@ -83,15 +97,24 @@ Proof.
       destruct B as [PB sB | B1 B2 | tB]; try contradiction.
       destruct tB as [| sg t]; try contradiction.
       destruct A as [PA sA | A1 A2 | tA]; try contradiction.
-      * (* A = STSigned PA sA — rules 1/3 *)
+      * (* A = STSigned PA sA — rules 1/3 (CPInput head) or the N-ary join (CPJoin head) *)
         destruct PA as [ | xA TA | xA UA | PA1 PA2 | xA | xsj Tj ]; try contradiction.
-        destruct PA1 as [ | xf Ti | | | | ]; try contradiction.
-        destruct PA2 as [ | | xs Uo | | | ]; try contradiction.
-        destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
-        destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
-        destruct (sig_eq_dec g sA) as [Hg | ]; try contradiction.
-        simpl in Hredex. destruct Hredex as [Heq | []].
-        subst. apply g_rule1.
+        destruct PA1 as [ | xf Ti | | | | xj Tcont ]; try contradiction.
+        -- (* CPInput head — rules 1/3 *)
+           destruct PA2 as [ | | xs Uo | | | ]; try contradiction.
+           destruct (caname_eq_dec xf xs) as [Hx | ]; try contradiction.
+           destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
+           destruct (sig_eq_dec g sA) as [Hg | ]; try contradiction.
+           simpl in Hredex. destruct Hredex as [Heq | []].
+           subst. apply g_rule1.
+        -- (* CPJoin head — the whole-join (ca_join1 image) *)
+           destruct (Nat.eq_dec (length xj) (length (extract_sends PA2))) as [Hlen | ]; try contradiction.
+           destruct (caproc_eq_dec PA2 (join_sends xj (extract_sends PA2))) as [Hrec | ]; try contradiction.
+           destruct (Forall_dec closed_st closed_st_dec (extract_sends PA2)) as [Hcl | ]; try contradiction.
+           destruct (sig_eq_dec sA sg) as [Hs | ]; try contradiction.
+           destruct (sig_eq_dec g sA) as [Hg | ]; try contradiction.
+           simpl in Hredex. destruct Hredex as [Heq | []].
+           subst. apply g_join1; [ exact Hrec | exact Hlen | exact Hcl ].
       * (* A = STPar A1 A2 — rules 2/4/5 *)
         destruct A1 as [P1 s1' | A11 A12 | t1']; try contradiction.
         -- (* A1 = STSigned P1 s1' *)
@@ -164,6 +187,14 @@ Proof.
     caname_refl x. simpl. sig_refl s1. simpl. sig_refl s2. simpl. left; reflexivity.
   - (* g_rule5 *) apply in_or_app. left.
     caname_refl x. simpl. sig_refl s1. simpl. sig_refl s2. simpl. left; reflexivity.
+  - (* g_join1 — recover the payloads from the bundle, discharge the firing decs *)
+    apply in_or_app. left. subst snds.
+    rewrite (extract_sends_join_sends xs Us H0).
+    destruct (Nat.eq_dec (length xs) (length Us)) as [_ | NE]; [| exfalso; apply NE; exact H0].
+    destruct (caproc_eq_dec (join_sends xs Us) (join_sends xs Us)) as [_ | NE];
+      [| exfalso; apply NE; reflexivity].
+    destruct (Forall_dec closed_st closed_st_dec Us) as [_ | NE]; [| exfalso; apply NE; exact H1].
+    sig_refl s. simpl. left; reflexivity.
   - (* g_par_l *) apply in_or_app. right. apply in_or_app. left.
     apply in_map_iff. exists S1'. split; [ reflexivity | exact IHHstep ].
   - (* g_par_r *) apply in_or_app. right. apply in_or_app. right.
