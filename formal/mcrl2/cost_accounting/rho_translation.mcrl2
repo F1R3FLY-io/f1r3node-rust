@@ -1,0 +1,7 @@
+% The rho translation of the same instance: the gate<->token rendezvous and the
+% released continuation are extra INTERNAL (tau) steps. Branching-bisimilar to the
+% CA side (sequential taus are inert), the mCRL2 image of the translation being a
+% faithful relabelling up to internal computation.
+act tok, fire, settle;
+proc TR = tok . tau . fire . tau . settle . delta;
+init TR;

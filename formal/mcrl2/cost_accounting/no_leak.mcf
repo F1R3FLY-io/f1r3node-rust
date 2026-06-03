@@ -1,0 +1,3 @@
+% No-leak: a fire cannot occur without a preceding token (the modal-mu image of
+% no_leak_requires_token / "stack consumption is the modulus").
+[ (!tok)* . fire ] false
