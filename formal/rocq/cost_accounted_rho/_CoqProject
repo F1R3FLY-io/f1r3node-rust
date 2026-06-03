@@ -359,3 +359,8 @@ theories/CAAdjunctions.v
 # whynot + the threshold quorum. Carrier-independent (LinearLogicResources holds
 # for native verbatim); re-exported here under native names.
 theories/CATypeDiscipline.v
+
+# CL6 foundation — image-finiteness of the graded LTS: an explicit successor
+# enumeration graded_succ with graded_step S g S' <-> In S' (graded_succ S g).
+# The constructive basis the Hennessy-Milner completeness direction needs.
+theories/CAGradedImageFinite.v
