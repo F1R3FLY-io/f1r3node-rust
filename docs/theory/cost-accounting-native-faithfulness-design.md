@@ -170,8 +170,27 @@ grades — never arises. Adjunction II is therefore proven outright in
 `ca_single_gate_bisimilar`, axiom-free and fully general over the hash/ground encoders).
 The force-cashing refinement would be needed only for the **strictly stronger** claim of
 a full strong/weak bisimulation across an arbitrary metered `ca_step` — a statement the
-paper does not assert for the adjunction, and which remains the recorded §3a research
-obstruction.
+paper does not assert for the adjunction.
+
+**The obstruction is now a PROVEN theorem, not a remark** (`CAForceSeparation.v`):
+- `gated_translation_stuck` — for **every** signature `s`, `st_tr (STSigned P s)` is a lone
+  `PInput`, hence has **no** `rho_step` (via `PInput_alone_stuck`): the gated translation
+  of a signed term is operationally stuck as a standalone term.
+- `stuck_not_bisim_stepping` — a stuck process is never strongly bisimilar to one that can
+  step (immediate from the backward clause of `bisim`).
+- `ca_force_overgating_separation` — therefore, whenever the dequoted source force
+  `Pt (st_to_proc (STSigned P s)) = Pt P` can step, `St (STSigned P s) ≁ Pt P`;
+  `ca_force_overgating_nonvacuous` exhibits a concrete witness (a matching-COMM continuation
+  whose `Pt` fires via `rs_comm`), so this is an **actual** non-bisimilarity, not a
+  vacuously-satisfied implication.
+
+So the "full force bisimulation" is **FALSE for the naive translation** — a settled,
+machine-checked negative result, not an open task. A force-faithful translation is a
+*different* translation (the force-cashing / two-level quote refinement), outside this
+spec's committed scope: neither paper asserts this bisimulation, and the spec's faithfulness
+obligations (`ca_translation_progresses` + the unit-grade Adjunction II retraction +
+`ca_single_gate_bisimilar`) are all discharged. The strong bisim additionally holds cleanly
+on the gate-free-continuation fragment (`T` with no nested `STSigned`).
 
 ## 4. Honest difficulty flags
 

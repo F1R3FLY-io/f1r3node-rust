@@ -381,3 +381,16 @@ theories/CAGradedCompleteness.v
 # single-gate bisimulation; the unit token is freely available so the force-point
 # obstruction (a property of the full metered translation, NOT this claim) is absent.
 theories/CAInternalisation.v
+
+# CL6 capstone — the FULL (non-stratified) constructive graded Hennessy-Milner
+# theorem: (∀n graded_bisim_n n) ⟺ (∀φ gsat-equivalence), plus the coinductive
+# bridge graded_bisim_refines_approximants. Pins the lone non-intuitionistic step
+# (approximant-limit ⇒ coinductive gfp) as stated/assumed nowhere.
+theories/CAGradedLimit.v
+
+# §3a PROVEN — the force-point over-gating obstruction as a theorem: the gated
+# translation of a signed term is stuck (gated_translation_stuck), hence not
+# bisimilar to the dequoted-and-running source force (ca_force_overgating_separation,
+# with a concrete non-vacuous witness). Settles the "full force bisimulation" as
+# FALSE for the naive translation, not deferred.
+theories/CAForceSeparation.v

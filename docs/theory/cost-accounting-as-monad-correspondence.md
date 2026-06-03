@@ -64,6 +64,17 @@ axiom-free in the native four-sort grammar:
     depth-`n` graded bisimilarity ⟺ agreement on all graded-HML formulae of modal depth ≤ `n`, via the
     constructive `graded_dichotomy` (distinguishing-formula extraction). **No Classical / funext / Choice** —
     image-finiteness removes the only non-constructive obstacle.
+  - *full (non-stratified) HM theorem* — `CAGradedLimit.graded_limit_adequacy`: `(∀n, graded_bisim_n n S T)
+    ⟺ (∀φ, gsat S φ ↔ gsat T φ)` — approximant-limit graded bisimilarity = graded-HML equivalence, with no
+    depth bound. `graded_bisim_refines_approximants` bridges the coinductive gfp (`CAGradedAdequacy.graded_bisim`)
+    into the limit (`graded_bisim_implies_hml`). The one implication NOT proven — approximant-limit ⇒ coinductive
+    gfp — is exactly the image-finite infinite pigeonhole (a weak omniscience principle); it is stated and assumed
+    **nowhere**, so the whole stack stays axiom-free. This is the precise constructive ceiling, exhibited as theorems.
+  - *force-point obstruction, proven* — `CAForceSeparation.ca_force_overgating_separation` (+ `_nonvacuous`):
+    the gated translation `St (STSigned P s)` is stuck (`gated_translation_stuck`), so it is **not** strongly
+    bisimilar to the dequoted-and-running source force `Pt (st_to_proc (STSigned P s))`. The "full metered
+    bisimulation at force points" is thus a machine-checked **FALSE-for-the-naive-translation** result, not an
+    open task; a force-faithful translation is a different (out-of-scope) translation.
 - **The two adjunctions** — Free ⊣ Forget (structural) in `CAAdjunctions.v`
   (`cost_forget_install`, `cost_install_forget_alters`, naturality), and the internalisation
   ℐ_G ≡ `Imp_G : Cost(G) → G` over Turing-complete bases in `CAInternalisation.v`. The latter is the paper's
