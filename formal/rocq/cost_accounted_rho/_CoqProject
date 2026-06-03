@@ -402,6 +402,7 @@ theories/CAJoinConservation.v
 theories/CategoryInterface.v
 theories/CACategory.v
 theories/CACostFunctor.v
+theories/CACostFunctorCI.v
 theories/CACostMonadCat.v
 theories/CAAdjunctionI.v
 theories/CACostMonadInstances.v

@@ -8,10 +8,14 @@
    [cost_is_endofunctor] additionally records the identity/composition laws as the
    conjunction the spec states; [cost_obj_closure] (Prop 6.2) records closure of the
    grade carrier under the monoid operations, reusing the SignatureMonoid laws.
-   That the object-level [Cost] on the ciGSLT category coincides with this writer
-   presentation (re-sorting continuation slots) is the scope boundary the spec's
-   Construction 7.x leaves to the operational development; the abstract claim is
-   the functor laws. Axiom-free.                                                 *)
+   This module proves the functor laws on TypeCatL (the writer skeleton). The
+   companion CACostFunctorCI.v (DR-23) discharges Thm 7.1 ON THE CONCRETE ciGSLT
+   category CICat — a genuine [CostCI : Functor CICat CICat] whose morphism action
+   preserves the gated transition AND the behavioural equivalence
+   ([cost_ci_preserves_step]/[cost_ci_preserves_bisim]) — so the categorical
+   obligation is no longer merely the TypeCatL skeleton. Quote-faithfulness (the
+   second ciGSLT-morphism condition) remains CACategory's scope boundary (CIMor does
+   not reify it). Axiom-free.                                                    *)
 
 From CostAccountedRho Require Import CostMonad.
 From CostAccountedRho Require Import CategoryInterface.

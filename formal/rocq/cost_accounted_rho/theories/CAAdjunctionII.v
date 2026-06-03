@@ -15,10 +15,19 @@
    The retraction is delivered as: (i) the counit FIRES at unit grade for any
    internalised redex (one g_rule1 step); (ii) η_G is a SECTION up to weak match
    (the firing lands at the definite released residual); (iii) η_G is cost-free
-   (it introduces no token node). The full triangle identities as 2-cell
-   EQUALITIES in the simulation bicategory are the 2-truncation ceiling
-   (CASimulationBicat) routed to Lean/Isabelle; the Prop-valued retraction here is
-   a real counit the cross-sort st_tr development provably could not even type.
+   (it introduces no token node). The full triangle identities as 2-cell EQUALITIES
+   in the simulation bicategory are now DISCHARGED axiom-free in core Lean
+   (formal/lean/CostAccountedRho/SimulationBicategory.lean, DR-23, by definitional
+   Prop proof-irrelevance) — the Rocq 2-truncation (CASimulationBicat) is no longer a
+   standing ceiling; the Prop-valued retraction here is a real counit the cross-sort
+   st_tr development provably could not even type.
+
+   SCOPE (DR-23 (E)): Prop adj2 is gated on G ∈ ciGSLTtc. The theorems above prove the
+   retraction unconditionally for rho; [Internalisable] / [internalisation_retraction_param]
+   below make Prop adj2's hypothesis explicit (retraction FOR ANY internalisable
+   base), with [rho_internalisable] the witness. The ⟹ direction (Turing-complete ⟹
+   internalisable, via a universal interpreter) is the documented residual — rho
+   satisfies the condition concretely (its gate firing IS a base graded_step).
    Axiom-free.                                                                   *)
 
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -73,4 +82,56 @@ Proof.
   - exact internalisation_counit_unit_grade.
   - exact eta_is_section_2cell.
   - exact eta_cost_free.
+Qed.
+
+(* ── DR-23 (E): making Prop adj2's hypothesis explicit ───────────────────────
+   Prop adj2 is gated on G ∈ ciGSLTtc — the retraction holds ONLY when the base is
+   Turing-complete (so its metering apparatus is encodable in the base itself). The
+   theorems above prove the retraction UNCONDITIONALLY for the rho instance; this
+   block exposes the conditioning that makes that honest. [Internalisable] is Prop
+   adj2's hypothesis, abstracted to the structure the retraction consumes: a unit
+   embedding whose installed redexes are internalised by a unit-grade firing that
+   lands at the released residual, cost-free. The retraction
+   [internalisation_retraction_param] then holds FOR ANY internalisable base —
+   exactly the "for G ∈ ciGSLTtc" shape.
+
+   What is mechanized is the ⟸ direction (internalisable ⟹ retract) and the rho
+   WITNESS [rho_internalisable]. The ⟹ direction — that every Turing-complete base
+   IS internalisable, via the interpreter encoding the paper sketches (tokens→data,
+   gated rules→an interpreter loop, each forced step→a finite base run, tex:1132-
+   1141) — is the residual: it needs a universal-interpreter construction and is not
+   mechanized. rho satisfies the condition CONCRETELY (its unit-graded gate firing IS
+   a base graded_step — the apparatus is intra-calculus, needing no external
+   interpreter), which is why the rho retraction is unconditional above. *)
+
+Record Internalisable : Type := {
+  ii_eta : caproc -> signed_term;
+  ii_counit_fires : forall x T U, exists S',
+     graded_step (STPar (ii_eta (CPPar (CPInput x T) (CPOutput x U)))
+                        (STStack (TGate SUnit TUnit))) SUnit S';
+  ii_section : forall x T U, weak_match
+     (STPar (ii_eta (CPPar (CPInput x T) (CPOutput x U))) (STStack (TGate SUnit TUnit)))
+     (STPar (subst_st T 0 (CQuote U)) (STStack TUnit));
+  ii_cost_free : forall P, st_token_count (ii_eta P) = 0
+}.
+
+(* rho is internalisable — the concrete witness (a concretely-universal base). *)
+Definition rho_internalisable : Internalisable :=
+  {| ii_eta := eta_G;
+     ii_counit_fires := internalisation_counit_unit_grade;
+     ii_section := eta_is_section_2cell;
+     ii_cost_free := eta_cost_free |}.
+
+(* Prop adj2, properly conditioned: the adjoint retraction holds for ANY
+   internalisable base (the "for G ∈ ciGSLTtc" hypothesis). *)
+Theorem internalisation_retraction_param (I : Internalisable) :
+  (forall x T U, exists S',
+     graded_step (STPar (ii_eta I (CPPar (CPInput x T) (CPOutput x U)))
+                        (STStack (TGate SUnit TUnit))) SUnit S')
+  /\ (forall x T U, weak_match
+        (STPar (ii_eta I (CPPar (CPInput x T) (CPOutput x U))) (STStack (TGate SUnit TUnit)))
+        (STPar (subst_st T 0 (CQuote U)) (STStack TUnit)))
+  /\ (forall P, st_token_count (ii_eta I P) = 0).
+Proof.
+  split; [ apply ii_counit_fires | split; [ apply ii_section | apply ii_cost_free ] ].
 Qed.
