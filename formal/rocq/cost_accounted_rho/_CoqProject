@@ -394,3 +394,8 @@ theories/CAGradedLimit.v
 # with a concrete non-vacuous witness). Settles the "full force bisimulation" as
 # FALSE for the naive translation, not deferred.
 theories/CAForceSeparation.v
+
+# Join §4.8 conservation of authority (Prop 4.7) — multiset invariance of the
+# compound funding key under regrouping, the reverse-currying iso, partition
+# invariance, and the no-weakening corollary. Up to Permutation (SAnd is free).
+theories/CAJoinConservation.v
