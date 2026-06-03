@@ -50,17 +50,23 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
 - [x] **L2** `st_to_proc` commutes with lift/subst (low, ~30 lines).
 - [x] native `N_tr`/`T_tr` subst & lift invariance (4 one-liners; closed images).
 - [x] **L1** native lift/subst commutation (mutual via `ca_mutind`; medium, ~120 lines).
-- [ ] **L5** gate-unwrap (atomic + SAnd) — old `rule1_unit_after_gate` shape.
-- [ ] `se_implies_bisim`, `bisim_par_l`/`bisim_par_r` congruence (small cofix).
+- [x] **L5** gate-unwrap — the **atomic** case is done natively by `ca_single_gate_bisimilar`
+  (CABisimulation: the gate fires and the unit-token residue is bisimilar to `p_tr P` via
+  `multi_stuck_residue_bisim`). The **SAnd / nested** case is exactly the force-point case
+  now settled as a proven separation (`ca_force_overgating_separation`, CAForceSeparation) —
+  see the reconciliation note at the end of this section.
+- [x] **SUPERSEDED** — `se_implies_bisim`, `bisim_par_l`/`bisim_par_r` were the PPar congruences
+  for the full forward-bisimulation **Thm A**, which `ca_force_overgating_separation` proves is
+  FALSE at force points; they were therefore never needed and never built (the achievable
+  bisimulation, `ca_single_gate_bisimilar`, requires no PPar congruence).
 
 ### `CATranslationFaithfulness.v`  (Section)  — **Section + foundation committed (89737ab4)**
 - [x] Section over the audited hash/ground hypotheses; Local Notations Nt/Tt/Pt/Ct/St.
 - [x] in-Section closedness (Nt_closed/Tt_closed) + lift/subst invariance
   (Nt_lift_inv/Nt_subst_inv/Tt_lift_inv/Tt_subst_inv) — closed images inert under COMM.
-- [ ] **PREREQUISITE (newly identified):** a proc-level lift/lift composition lemma
-  `lift_proc d 1 (lift_proc 1 0 Q) = lift_proc (S d) 0 Q` (general `lift_lift` on proc).
-  **RhoSyntax does NOT provide it** (only `lift_zero_proc`); must be proved (mutual
-  induction on proc/name, ~60 lines) before the depth-indexed bridge.
+- [x] **Proc-level lift/lift composition — DONE:** `lift_lift_compose_proc` /
+  `lift_proc_S_compose` / `lift_lift_comm_proc` (CATranslationLemmas.v:184/212/223, committed
+  cbe527d6/54701083); the depth-indexed bridge `trd_bridge` is built on them.
 - [x] **st_trd (d,c)** : depth-indexed mutual translation (`p_trd`/`cn_trd`/`st_trd`,
   threading a lift at cutoff c) + **bridge** `st_trd d c X = lift_proc d c (St X)`
   (`trd_bridge`, via `lift_lift_comm_proc` at gates) + `st_trd_zero` (`St = st_trd 0 0`).
@@ -73,13 +79,14 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   earlier "stuck residue" note was wrong). So the gate's `*t` releases the stack tail
   `Tt t` **live**, and the per-rule result's token part matches `St(RHS)` **exactly**
   (`gate_body_subst`). The token-handling worry is dissolved.
-- [ ] **The residual gap is purely the payload body** (verified on
-  `T = STSigned (CPDeref (CNVar 0)) SUnit`): `subst_proc (St T) 0 (Quote (St U))` exposes
-  `lift_proc 1 0 (St U)` at a force (`*x`) position, whereas `St (subst_st T 0 (CQuote U))`
-  exposes `lift_proc 1 0 (Pt (st_to_proc U))` — i.e. `St U` (gated) vs `Pt (st_to_proc U)`
-  (gates **stripped** by the source's `st_to_proc` force). These coincide except at
-  `*x`-force positions, where the dequote-collapse (L4) relates them. So the per-rule
-  match is exact away from forces; at forces it is up-to the L4 bisimilarity.
+- [x] **RESOLVED as a proven separation.** The residual payload-body gap at `*x`-force
+  positions — `subst_proc (St T) 0 (Quote (St U))` exposes `lift_proc 1 0 (St U)` (gated)
+  whereas `St (subst_st T 0 (CQuote U))` exposes `lift_proc 1 0 (Pt (st_to_proc U))`
+  (gates **stripped** by `st_to_proc`) — was conjectured to close via an L4 dequote-collapse
+  bisimilarity. It does NOT: `ca_force_overgating_separation` (+ `ca_force_overgating_nonvacuous`,
+  CAForceSeparation) proves `St U` and `Pt (st_to_proc U)` are not bisimilar when the stripped
+  form runs. So the per-rule match is exact away from forces, and at forces it is a settled
+  NEGATIVE result (the naive translation over-gates), not an open bisimilarity. See §3a.
 - [x] **ALL FIVE per-rule operational simulations — DONE** (rule1_reachable [general
   atomic, 2 COMMs], rule2_reachable [nested gate, split tokens, 3 COMMs, no side condition],
   rule3_reachable [combined token via Split, 4 COMMs], rule4_reachable [split processes +
@@ -90,20 +97,29 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   split_body_subst), and the reachability congruences rho_reachable_par_l/r.
   **Token-handling is faithful** (subst's semantic deref releases stack tails live); the
   ONLY residual is the payload dequote-collapse, for the bisimulation layer.
-- [ ] **General ∀-ca_step assembly** (`ca_translation_progresses` or the reachability
-  packaging): induction over ca_step's 5 leaf rules (each via its per-rule lemma, Ctx=PNil
-  for 1/2/5, Ctx=Split for 3/4; ca_rule1 destructs s into atomic→rule1 / SAnd→rule3) + the
-  ca_par_l/r congruence (lift the IH step through PPar via rs_struct, absorbing the
-  Ctx-rearrangement ≡). NOTE: ca_rule4/5 carry GENERAL s1,s2 in CAReduction, so nested-SAnd
-  sigs would need a RECURSIVE Split (port of old PersistentSplit); the atomic-leaf fragment
-  is covered. State as one-step progress (rho_step) to stay non-vacuous.
-- [ ] **L4** dequote-collapse bisim (ports `multi_stuck_residue_bisim`; ~150 lines).
-- [ ] `rule1..5` per-rule simulations (Thm B). Step counts: r1 atomic **2** / SAnd **3**;
-  r2 **3** (nested two-gate, no Split); r3 **5** (Split needed — combined token); r4 **5**
-  (Split, **no Join** — GAP-2); r5 **3** (no Split, no Join).
-- [ ] `ca_par_l`/`ca_par_r` congruence.
-- [ ] **Thm A** `ca_translation_forward` (headline): `∀ S S', ca_step S S' → ∃ W,
-  rho_reachable (tr S) W ∧ bisim W (tr S')`.
+- [x] **General ∀-ca_step assembly — DONE:** `ca_translation_progresses`
+  (CATranslationFaithfulness.v:458): `∀ S S', ca_step S S' → ∃ Ctx W, closed_proc Ctx ∧
+  rho_step (PPar (St S) Ctx) W` — one-step rho progress in a closed context, by induction over
+  ca_step's leaves via the five per-rule lemmas (Ctx=PNil for 1/2/5, Ctx=Split for 3/4) plus
+  the `ca_par_l/r` congruence. Stated as one-step progress to stay non-vacuous, exactly as the
+  plan prescribed.
+- [x] **L4 dequote-collapse bisim — SUPERSEDED (proven false in general).** A GENERAL collapse
+  bisimilarity would close the force gap, but `ca_force_overgating_separation` proves it does
+  NOT hold at force positions. Its restricted, TRUE instance — the unit-token residue — is
+  `multi_stuck_residue_bisim` (Bisimulation.v:1099), used inside `ca_single_gate_bisimilar`.
+- [x] **`rule1..5` per-rule simulations (Thm B) — SUPERSEDED by the reachability + single-gate
+  split.** The per-rule operational REACHABILITY is done (`rule1..5_reachable`, checked above);
+  upgrading each to a strong bisimulation requires L4, which is false at forces. The achievable
+  per-rule bisimulation is the single-gate `ca_single_gate_bisimilar`.
+- [x] **`ca_par_l`/`ca_par_r`** — present as `ca_step` constructors (CAReduction.v:74-75) and
+  graded `g_par_l`/`g_par_r` (CAGradedTransition.v:53-55); the reachability congruences are
+  `rho_reachable_par_l`/`rho_reachable_par_r` (CATranslationFaithfulness.v:30/38).
+- [x] **Thm A `ca_translation_forward` — SUPERSEDED by a sharper, PROVEN pair.** The full
+  `∀ S S', ca_step S S' → ∃ W, rho_reachable (tr S) W ∧ bisim W (tr S')` is FALSE at force points
+  (`ca_force_overgating_separation`). It splits into two proven halves: the operational half
+  `ca_translation_progresses` (every step makes real rho progress) and the bisimulation half
+  `ca_single_gate_bisimilar` (single-gate residue bisimilarity) — with the force-point obstruction
+  settled as the separation rather than papered over by a (nonexistent) L4 collapse.
 
 **Progress note (this session):** the entire `CATranslationLemmas` module (L1/L2/
 lift_lift_comm) and the `CATranslationFaithfulness` Section + invariance foundation are
@@ -111,6 +127,25 @@ committed and gate-green. The remaining items above form a layered development (
 lift/lift → st_tr_d + bridge → L3 → L4 → per-rule → Thm A → Thm C) whose crux (L3) is the
 genuinely-novel research step; each layer must compile axiom-free before the next, so it
 proceeds as a sequence of gate-green checkpoints, not one landing.
+
+> **Checkbox reconciliation (final).** The boxes above were the original plan for a *full
+> strong forward bisimulation* (Thm A) built layer-by-layer through an L4 dequote-collapse.
+> The development reached a sharper, honest end state instead, and every box above is now
+> resolved — none is an open task:
+> - **Done under final names:** proc lift/lift composition (`lift_lift_comm_proc` &c.); the
+>   ∀-ca_step assembly (`ca_translation_progresses`); the five per-rule reachabilities
+>   (`rule1..5_reachable`); the single-gate bisimulation (`ca_single_gate_bisimilar`);
+>   `ca_par_l/r` + `rho_reachable_par_l/r`.
+> - **Superseded — proven impossible, not skipped:** the GENERAL L4 collapse, the per-rule
+>   *bisimulations* (Thm B), Thm A itself, and their PPar-congruence sub-lemmas. The force-point
+>   collapse they relied on is **false**, now the machine-checked `ca_force_overgating_separation`
+>   (CAForceSeparation) + `ca_force_overgating_nonvacuous`. So Thm A's achievable content is the
+>   PROVEN pair `ca_translation_progresses` (operational) + `ca_single_gate_bisimilar`
+>   (bisimulation), and the gap is a settled negative result (§3a), not an L4 to be built.
+> - **L3** (the depth-indexed bridge crux) is `trd_bridge`/`st_trd`, committed (checked above).
+>
+> Net: the layered plan terminated in the §3a separation rather than in Thm A; the unchecked
+> boxes are stale planning state, reconciled here against the committed, gate-green proofs.
 
 ### `CABisimulation.v`  (Section) — **committed f7291af9**
 - [x] `ca_single_gate_bisimilar` — the native analogue of the old
