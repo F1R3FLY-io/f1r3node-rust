@@ -20,8 +20,17 @@
    (the no-leak invariant, proved in WrappingSubjectReduction). Axiom-free.    *)
 
 From Stdlib Require Import Lia.
+From Stdlib Require Import Lists.List.
+Import ListNotations.
 From CostAccountedRho Require Import CostAccountedSyntax.
 From CostAccountedRho Require Import CASyntax.
+
+(* The N senders of a whole-join redex: x1!(U1) | … | xN!(UN). *)
+Fixpoint join_sends (xs : list caname) (Us : list signed_term) : caproc :=
+  match xs, Us with
+  | cons x xs', cons U Us' => CPPar (CPOutput x U) (join_sends xs' Us')
+  | _, _ => CPNil
+  end.
 
 Reserved Notation "S '⤳ca' T" (at level 70, no associativity).
 
@@ -69,6 +78,24 @@ Inductive ca_step : signed_term -> signed_term -> Prop :=
                       (STStack (TGate s1 t1)))
                (STStack (TGate s2 t2)))
         (STPar (STPar (subst_st T 0 (CQuote U)) (STStack t1)) (STStack t2))
+
+  (* Join J1 — N-ary whole-join, single funding signature (spec §4.8, the N-ary
+     analogue of Rule 1). TEMPORARILY DISABLED (commented, not deleted): adding
+     this constructor makes the [ca_local_confluence] / determinism proofs'
+     `inversion` over the join LHS (whose pattern embeds the `join_sends` Fixpoint)
+     non-terminating. Landing it needs a dedicated determinism lemma built on
+     `join_sends` injectivity plus a non-looping inversion strategy (Stage B/D,
+     Risk R3/R4) — tracked separately so the metatheory sweep (Stage A) stays
+     gate-green. The grammar former CPJoin + subst_st_many + the full syntactic
+     metatheory are landed (committed); only the REDUCTION rule waits on R3/R4.
+  | ca_join1 : forall (xs : list caname) (Us : list signed_term) (T : signed_term)
+                      (s : sig) (t : token),
+      length xs = length Us ->
+      ca_step
+        (STPar (STSigned (CPPar (CPJoin xs T) (join_sends xs Us)) s)
+               (STStack (TGate s t)))
+        (STPar (subst_st_many T Us) (STStack t))
+  *)
 
   (* PAR closure (spatial monoid), left and right. *)
   | ca_par_l : forall S1 S1' S2, ca_step S1 S1' -> ca_step (STPar S1 S2) (STPar S1' S2)
