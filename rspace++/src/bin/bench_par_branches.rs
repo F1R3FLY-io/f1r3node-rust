@@ -32,7 +32,7 @@ struct Cont;
 struct AlwaysMatch;
 
 impl Match<Wildcard, String> for AlwaysMatch {
-    fn get(&self, _: Wildcard, a: String) -> Option<String> { Some(a) }
+    fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
 type Space = RSpace<String, Wildcard, String, Cont>;

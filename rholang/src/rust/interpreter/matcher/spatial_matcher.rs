@@ -387,7 +387,7 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 // println!("\npassed calling spatial_match in Send, Send");
-                self.fold_match(target.data, pattern.data, None)
+                self.fold_match(&target.data, &pattern.data, None)
             });
 
         result.map(|_| ())
@@ -436,7 +436,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 })),
             ) => {
                 // println!("\n calling fold_match in ElistBody");
-                let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
+                let matched_rem = self.fold_match(&tlist, &plist, rem.clone())?;
                 // println!("\nmatched_rem: {:?}", matched_rem);
 
                 // println!("\ncurrent free_map: {:#?}", self.free_map);
@@ -469,7 +469,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     locally_free: _,
                     connective_used: _,
                 })),
-            ) => self.fold_match(tlist, plist, None).map(|_| ()),
+            ) => self.fold_match(&tlist, &plist, None).map(|_| ()),
 
             (
                 Some(ESetBody(
@@ -638,7 +638,7 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
 
         let result = self
             .spatial_match(target.target.unwrap(), pattern.target.unwrap())
-            .and_then(|_| self.fold_match(target.cases, pattern.cases, None));
+            .and_then(|_| self.fold_match(&target.cases, &pattern.cases, None));
 
         result.map(|_| ())
     }

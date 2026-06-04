@@ -17,30 +17,28 @@ unsafe impl Sync for Matcher {}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 impl Match<BindPattern, ListParWithRandom> for Matcher {
-    fn get(&self, pattern: BindPattern, data: ListParWithRandom) -> Option<ListParWithRandom> {
+    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
 
-        // println!("\npattern in get: {:?}", pattern);
-        // println!("\ndata in get: {:?}", data);
-
+        // Match against borrowed pattern/data — fold_match clones only the
+        // per-element head pairs it actually walks, not the whole vectors.
         let fold_match_result =
-            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder.clone());
+            spatial_matcher.fold_match(&data.pars, &pattern.patterns, pattern.remainder.clone());
         let match_result = match fold_match_result {
             Some(pars) => Some((spatial_matcher.free_map, pars)),
             None => None,
         };
 
-        // println!("\nmatch_result: {:?}", match_result);
-
-        // println!("\nresult: {:?}", result);
+        // Only on a successful match do we allocate the result (and clone the
+        // datum's random_state); failed probes allocate nothing.
         match match_result {
             Some((mut free_map, caught_rem)) => {
-                let remainder_map = match pattern.remainder {
+                let remainder_map = match &pattern.remainder {
                     Some(Var {
                         var_instance: Some(FreeVar(level)),
                     }) => {
                         free_map.insert(
-                            level,
+                            *level,
                             vector_par(Vec::new(), false).with_exprs(vec![new_elist_expr(
                                 caught_rem,
                                 Vec::new(),
@@ -54,7 +52,7 @@ impl Match<BindPattern, ListParWithRandom> for Matcher {
                 };
                 Some(ListParWithRandom {
                     pars: to_vec(remainder_map, pattern.free_count),
-                    random_state: data.random_state,
+                    random_state: data.random_state.clone(),
                 })
             }
             None => None,

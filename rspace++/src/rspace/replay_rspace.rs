@@ -833,7 +833,7 @@ where
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
-                let continuations = self.get_store().get_continuations(&channels);
+                let continuations = self.get_store().get_continuations_arc(&channels);
                 continuations
                     .into_iter()
                     .enumerate()
@@ -1283,7 +1283,7 @@ where
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;

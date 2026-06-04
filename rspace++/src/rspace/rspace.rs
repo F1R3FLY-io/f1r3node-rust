@@ -751,8 +751,10 @@ where
         data: Datum<A>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let fetch_matching_continuations =
-            |channels: Vec<C>| -> Vec<(WaitingContinuation<P, K>, i32)> {
-                let continuations = self.get_store().get_continuations(&channels);
+            |channels: Vec<C>| -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)> {
+                // Arc-shared fetch: probing continuations no longer deep-clones
+                // the continuation body on every produce.
+                let continuations = self.get_store().get_continuations_arc(&channels);
                 self.shuffle_with_index(continuations)
             };
 
@@ -1109,7 +1111,7 @@ where
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
@@ -1189,7 +1191,7 @@ mod tests {
     struct AlwaysMatch;
 
     impl Match<Wildcard, String> for AlwaysMatch {
-        fn get(&self, _: Wildcard, a: String) -> Option<String> { Some(a) }
+        fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
     }
 
     async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {

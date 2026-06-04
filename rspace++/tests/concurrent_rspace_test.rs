@@ -24,7 +24,7 @@ struct StringCont;
 struct AlwaysMatch;
 
 impl Match<WildcardPattern, String> for AlwaysMatch {
-    fn get(&self, _p: WildcardPattern, a: String) -> Option<String> { Some(a) }
+    fn get(&self, _p: &WildcardPattern, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
 type TestSpace = RSpace<String, WildcardPattern, String, StringCont>;

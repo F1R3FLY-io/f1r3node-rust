@@ -13,8 +13,8 @@ use crate::rust::interpreter::metrics_constants::{
 pub trait FoldMatch<T, P> {
     fn fold_match(
         &mut self,
-        tlist: Vec<T>,
-        plist: Vec<P>,
+        tlist: &[T],
+        plist: &[P],
         remainder: Option<Var>,
     ) -> Option<Vec<T>>;
 
@@ -24,8 +24,8 @@ pub trait FoldMatch<T, P> {
 impl FoldMatch<Par, Par> for SpatialMatcherContext {
     fn fold_match(
         &mut self,
-        tlist: Vec<Par>,
-        plist: Vec<Par>,
+        tlist: &[Par],
+        plist: &[Par],
         remainder: Option<Var>,
     ) -> Option<Vec<Par>> {
         // Iterative pair-walk over (tlist, plist) — index into the originals
@@ -87,8 +87,8 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
 impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
     fn fold_match(
         &mut self,
-        tlist: Vec<MatchCase>,
-        plist: Vec<MatchCase>,
+        tlist: &[MatchCase],
+        plist: &[MatchCase],
         remainder: Option<Var>,
     ) -> Option<Vec<MatchCase>> {
         // Iterative pair-walk; head-pair clone per iteration, no tail-vec clone.

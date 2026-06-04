@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 name = "rholang-cli"
 path = "src/rholang_cli.rs"
 
+[[bin]]
+name = "bench_par_reducer"
+path = "src/bin/bench_par_reducer.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
