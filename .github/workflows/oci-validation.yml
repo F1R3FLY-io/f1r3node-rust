@@ -121,9 +121,9 @@ jobs:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          mkdir -p ~/.oci
+          install -d -m 700 ~/.oci
+          umask 077
           printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
           cat > ~/.oci/config <<EOF
           [DEFAULT]
           user=$OCI_USER_OCID
@@ -160,6 +160,11 @@ jobs:
           fi
 
           echo "All 22 ephemeral runner VMs submitted."
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: rm -rf ~/.oci
 
   oci_validation:
     name: Run OCI Validation
