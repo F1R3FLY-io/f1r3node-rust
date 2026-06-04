@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -457,6 +457,107 @@ mod tests {
         assert!(
             found_approved_block_request,
             "recovery should request an approved block from peers; requests: {:?}",
+            requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_validator_should_stay_running_without_approved_block_request() {
+        let fixture = TestFixture::new().await;
+        let engine_cell = Arc::new(EngineCell::init());
+
+        fixture.transport_layer.reset();
+        fixture
+            .transport_layer
+            .set_responses(|_peer, _protocol| Ok(()));
+
+        let mut fresh_block = fixture.genesis.clone();
+        fresh_block.block_hash = Bytes::from_static(b"fresh-validator-block");
+        fresh_block.sender = fixture.validator_id.public_key.bytes.clone();
+        fresh_block.header.timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let mut casper = fixture.casper.clone();
+        casper.insert_block(fresh_block, false);
+
+        let approved_block = ApprovedBlock {
+            candidate: ApprovedBlockCandidate {
+                block: fixture.genesis.clone(),
+                required_sigs: 0,
+            },
+            sigs: Vec::new(),
+        };
+
+        let running = Running::new(
+            fixture.block_processing_queue_tx.clone(),
+            fixture.blocks_in_processing.clone(),
+            Arc::new(ValidatorAwareNoOpsCasper {
+                inner: casper,
+                validator_id: fixture.validator_id.clone(),
+            }) as Arc<dyn MultiParentCasper + Send + Sync>,
+            approved_block,
+            Arc::new(|| {
+                Box::pin(async { Ok(()) })
+                    as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+            }),
+            false,
+            fixture.transport_layer.clone(),
+            fixture.rp_conf_ask.clone(),
+            fixture.block_retriever.clone(),
+            Some(RunningRecoveryContext {
+                connections_cell: fixture.connections_cell.clone(),
+                last_approved_block: fixture.last_approved_block.clone(),
+                block_store: fixture.block_store.clone(),
+                block_dag_storage: fixture.block_dag_storage.clone(),
+                deploy_storage: fixture.deploy_storage.clone(),
+                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
+                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
+                rspace_state_manager: fixture.rspace_state_manager.clone(),
+                event_publisher: fixture.event_publisher.clone(),
+                engine_cell: engine_cell.clone(),
+                runtime_manager: fixture.runtime_manager.clone(),
+                estimator: fixture.estimator.clone(),
+                casper_shard_conf: fixture.casper_shard_conf.clone(),
+                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+            }),
+        );
+        engine_cell.set(Arc::new(running)).await;
+
+        update_fork_choice_tips_if_stuck(
+            &engine_cell,
+            &fixture.transport_layer,
+            &fixture.connections_cell,
+            &fixture.rp_conf_ask,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+
+        let engine = engine_cell.get().await;
+        assert!(
+            engine.with_casper().is_some(),
+            "fresh validator should remain in Running"
+        );
+
+        let expected_proto = ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        };
+        let expected_content = Bytes::from(expected_proto.encode_to_vec());
+        let requests = fixture.transport_layer.get_all_requests();
+        let found_approved_block_request = requests.iter().any(|req| {
+            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
+                packet.content == expected_content
+            } else {
+                false
+            }
+        });
+
+        assert!(
+            !found_approved_block_request,
+            "fresh validator should not request an approved block; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
     }

@@ -17,7 +17,6 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
-use models::casper::ApprovedBlockRequestProto;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -449,28 +448,9 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             return Ok(false);
         }
 
-        let transport = Arc::clone(&self.transport);
-        let conf = self.conf.clone();
-        let connections = recovery_context.connections_cell.clone();
-        let init = Arc::new(move || {
-            let transport = Arc::clone(&transport);
-            let conf = conf.clone();
-            let connections = connections.clone();
-
-            Box::pin(async move {
-                transport
-                    .send_message_to_peers(
-                        &connections,
-                        &conf,
-                        Arc::new(ApprovedBlockRequestProto {
-                            identifier: "".to_string(),
-                            trim_state: true,
-                        }),
-                        None,
-                    )
-                    .await?;
-                Ok(())
-            }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        let init = Arc::new(|| {
+            Box::pin(async { Ok(()) })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
 
         tracing::warn!(
