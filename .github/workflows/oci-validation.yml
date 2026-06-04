@@ -45,8 +45,15 @@ jobs:
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ github.event.inputs.head_sha }}
           SYSTEM_INTEGRATION_REF: ${{ github.event.inputs.system_integration_ref }}
+          ACTOR: ${{ github.actor }}
         shell: bash -euo pipefail {0}
         run: |
+          actor_permission=$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq '.permission')
+          if [ "$actor_permission" != "admin" ] && [ "$actor_permission" != "maintain" ]; then
+            echo "${ACTOR} has ${actor_permission} permission; Full OCI Validation requires maintain or admin permission."
+            exit 1
+          fi
+
           pr_json=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
           state=$(jq -r '.state' <<< "$pr_json")
           head_repo=$(jq -r '.head.repo.full_name' <<< "$pr_json")
@@ -94,14 +101,14 @@ jobs:
           persist-credentials: false
 
       - name: Install OCI CLI
-        shell: bash -ex {0}
+        shell: bash -e {0}
         run: |
           python3 -m pip install --user 'oci-cli==3.85.0'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/oci" --version
 
       - name: Configure OCI auth from secrets
-        shell: bash -ex {0}
+        shell: bash -e {0}
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -125,7 +132,7 @@ jobs:
           oci iam region list >/dev/null && echo "OCI auth OK"
 
       - name: Launch 11 amd64 + 11 arm64 ephemeral runners
-        shell: bash -ex {0}
+        shell: bash -e {0}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           GH_REPO: ${{ github.repository }}
@@ -200,5 +207,5 @@ jobs:
               -f state="$state" \
               -f context="Full OCI Validation" \
               -f target_url="$RUN_URL" \
-              -f description="$description" || true
+              -f description="$description" || echo "Warning: failed to update commit status"
           fi

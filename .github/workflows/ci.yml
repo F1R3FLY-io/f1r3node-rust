@@ -6,10 +6,14 @@ on:
     branches:
       - dev
       - master
+      - staging
+      - trying
   pull_request:
     branches:
       - dev
       - master
+      - staging
+      - trying
       - "feature/**"
 
 concurrency:
@@ -18,13 +22,17 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
+  SYSTEM_INTEGRATION_REF: 322712fd672fbf6a76f843b97fa9c2d8365a73fd
+
+permissions:
+  contents: read
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,6 +76,7 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -118,3 +127,180 @@ jobs:
           name: test-logs-${{ matrix.crate }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  oci_context:
+    name: OCI Validation Context
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full_validation: ${{ steps.context.outputs.full_validation }}
+      head_repo: ${{ steps.context.outputs.head_repo }}
+      head_sha: ${{ steps.context.outputs.head_sha }}
+    steps:
+      - name: Resolve trusted validation context
+        id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          full_validation=false
+          head_repo="$REPOSITORY"
+          head_sha="$SHA"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            head_repo="$PR_HEAD_REPO"
+            head_sha="$PR_HEAD_SHA"
+            if [ "$PR_HEAD_REPO" = "$REPOSITORY" ]; then
+              full_validation=true
+            fi
+          elif [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            full_validation=true
+          fi
+
+          {
+            echo "full_validation=${full_validation}"
+            echo "head_repo=${head_repo}"
+            echo "head_sha=${head_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  launch_ephemeral_runners:
+    name: Launch Ephemeral OCI Runners
+    needs: oci_context
+    if: needs.oci_context.outputs.full_validation == 'true'
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Clone trusted system-integration launcher
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI
+        shell: bash -e {0}
+        run: |
+          python3 -m pip install --user 'oci-cli==3.85.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/oci" --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0}
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Launch 11 amd64 + 11 arm64 ephemeral runners
+        shell: bash -e {0}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          cd system-integration/ci/oci-runners
+          pids=()
+          for _ in $(seq 1 11); do ./launch-runner.sh amd64 & pids+=("$!"); done
+          for _ in $(seq 1 11); do ./launch-runner.sh arm64 & pids+=("$!"); done
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
+
+          echo "All 22 ephemeral runner VMs submitted."
+
+  oci_validation:
+    name: Run OCI Validation
+    needs: [oci_context, launch_ephemeral_runners]
+    if: needs.oci_context.outputs.full_validation == 'true'
+    uses: ./.github/workflows/reusable-oci-validation.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      head_repo: ${{ needs.oci_context.outputs.head_repo }}
+      head_sha: ${{ needs.oci_context.outputs.head_sha }}
+      system_integration_ref: 322712fd672fbf6a76f843b97fa9c2d8365a73fd
+
+  build_docker_image_amd64:
+    name: Build Docker Image (amd64)
+    needs: [oci_context, oci_validation]
+    if: always() && needs.oci_context.outputs.full_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check reusable OCI validation result
+        env:
+          OCI_RESULT: ${{ needs.oci_validation.result }}
+        run: test "$OCI_RESULT" = "success"
+
+  build_docker_image_arm64:
+    name: Build Docker Image (arm64)
+    needs: [oci_context, oci_validation]
+    if: always() && needs.oci_context.outputs.full_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check reusable OCI validation result
+        env:
+          OCI_RESULT: ${{ needs.oci_validation.result }}
+        run: test "$OCI_RESULT" = "success"
+
+  integration_tests_amd64:
+    name: Integration Tests (amd64)
+    needs: [oci_context, oci_validation]
+    if: always() && needs.oci_context.outputs.full_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check reusable OCI validation result
+        env:
+          OCI_RESULT: ${{ needs.oci_validation.result }}
+        run: test "$OCI_RESULT" = "success"
+
+  integration_tests_arm64:
+    name: Integration Tests (arm64)
+    needs: [oci_context, oci_validation]
+    if: always() && needs.oci_context.outputs.full_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check reusable OCI validation result
+        env:
+          OCI_RESULT: ${{ needs.oci_validation.result }}
+        run: test "$OCI_RESULT" = "success"
