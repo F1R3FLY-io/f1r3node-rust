@@ -7,18 +7,16 @@ on:
         description: Pull request number to validate
         required: true
       head_sha:
-        description: Expected pull request head SHA
+        description: Expected pull request head SHA reviewed by the maintainer
+        required: true
+      system_integration_ref:
+        description: Trusted system-integration ref used for OCI launch and tests
         required: false
+        default: 322712fd672fbf6a76f843b97fa9c2d8365a73fd
 
 concurrency:
   group: full-oci-validation-${{ github.event.inputs.pr_number }}
   cancel-in-progress: false
-
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C target-feature=+aes,+sse2"
-  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
-  SUPPRESS_LABEL_WARNING: "True"
 
 permissions:
   contents: read
@@ -38,7 +36,6 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       head_ref: ${{ steps.pr.outputs.head_ref }}
       base_ref: ${{ steps.pr.outputs.base_ref }}
-      pr_title: ${{ steps.pr.outputs.pr_title }}
     steps:
       - name: Validate pull request
         id: pr
@@ -47,6 +44,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ github.event.inputs.head_sha }}
+          SYSTEM_INTEGRATION_REF: ${{ github.event.inputs.system_integration_ref }}
         shell: bash -euo pipefail {0}
         run: |
           pr_json=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
@@ -55,15 +53,18 @@ jobs:
           head_sha=$(jq -r '.head.sha' <<< "$pr_json")
           head_ref=$(jq -r '.head.ref' <<< "$pr_json")
           base_ref=$(jq -r '.base.ref' <<< "$pr_json")
-          pr_title=$(jq -r '.title' <<< "$pr_json")
-
           if [ "$state" != "open" ]; then
             echo "PR ${PR_NUMBER} is ${state}; only open PRs can be validated."
             exit 1
           fi
 
-          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
+          if [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
             echo "Expected head SHA ${EXPECTED_HEAD_SHA}, but PR ${PR_NUMBER} currently points to ${head_sha}."
+            exit 1
+          fi
+
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "system_integration_ref must be a trusted 40-character commit SHA."
             exit 1
           fi
 
@@ -72,7 +73,6 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "head_ref=${head_ref}"
             echo "base_ref=${base_ref}"
-            echo "pr_title=${pr_title}"
           } >> "$GITHUB_OUTPUT"
 
   launch_ephemeral_runners:
@@ -80,25 +80,25 @@ jobs:
     needs: validate_pr
     runs-on: ubuntu-latest
     environment: ephemeral-launch
+    timeout-minutes: 10
     permissions:
       actions: write
       contents: read
-    timeout-minutes: 10
     steps:
-      - name: Clone system-integration
+      - name: Clone trusted system-integration launcher
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: fix/test-stability
+          ref: ${{ github.event.inputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
       - name: Install OCI CLI
         shell: bash -ex {0}
         run: |
-          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
-            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
-          oci --version
+          python3 -m pip install --user 'oci-cli==3.85.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/oci" --version
 
       - name: Configure OCI auth from secrets
         shell: bash -ex {0}
@@ -108,6 +108,7 @@ jobs:
           OCI_REGION: ${{ secrets.OCI_REGION }}
           OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           mkdir -p ~/.oci
           printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
@@ -128,505 +129,47 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           cd system-integration/ci/oci-runners
-          for _ in $(seq 1 11); do ./launch-runner.sh amd64 & done
-          for _ in $(seq 1 11); do ./launch-runner.sh arm64 & done
-          wait
+          pids=()
+          for _ in $(seq 1 11); do ./launch-runner.sh amd64 & pids+=("$!"); done
+          for _ in $(seq 1 11); do ./launch-runner.sh arm64 & pids+=("$!"); done
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
+
           echo "All 22 ephemeral runner VMs submitted."
 
-  build_docker_image:
-    name: Build Docker Image (${{ matrix.arch }})
+  oci_validation:
+    name: Run OCI Validation
     needs: [validate_pr, launch_ephemeral_runners]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner:
-              [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
-            arch: amd64
-          - platform: linux/arm64
-            runner:
-              [
-                self-hosted,
-                linux,
-                arm64,
-                f1r3fly-rust-ci-ephemeral,
-                oracle-cloud,
-              ]
-            arch: arm64
-    steps:
-      - name: Checkout pull request head
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.validate_pr.outputs.head_repo }}
-          ref: ${{ needs.validate_pr.outputs.head_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Enable Containerd Image Store
-        shell: bash -ex {0}
-        run: |
-          sudo mkdir -p /etc/docker
-          DESIRED='{"features": {"containerd-snapshotter": true}}'
-          CURRENT=$(cat /etc/docker/daemon.json 2>/dev/null || echo '{}')
-          if [ "$CURRENT" != "$DESIRED" ]; then
-            echo "$DESIRED" | sudo tee /etc/docker/daemon.json | jq
-            sudo systemctl restart docker
-          fi
-
-      - name: Build Docker Image
-        shell: bash -ex {0}
-        run: |
-          docker context use default
-          VERSION="$(git describe --tags --always)"
-          docker buildx build \
-            --platform ${{ matrix.platform }} \
-            --file node/Dockerfile \
-            --build-arg VERSION="${VERSION}" \
-            --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
-            --load \
-            .
-
-      - name: Export Docker Image
-        shell: bash -ex {0}
-        run: |
-          docker image save ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
-              | gzip > /tmp/rust-node-docker.tar.gz
-
-      - name: Save Docker Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-docker-${{ matrix.arch }}
-          path: /tmp/rust-node-docker.tar.gz
-
-  integration_tests:
-    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
-    needs: [validate_pr, launch_ephemeral_runners, build_docker_image]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-    steps:
-      - name: Checkout pull request head
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.validate_pr.outputs.head_repo }}
-          ref: ${{ needs.validate_pr.outputs.head_sha }}
-          persist-credentials: false
-
-      - name: Clone system-integration
-        uses: actions/checkout@v4
-        with:
-          repository: F1R3FLY-io/system-integration
-          ref: fix/test-stability
-          path: system-integration
-          persist-credentials: false
-
-      - name: Load Docker Image
-        uses: actions/download-artifact@v4
-        with:
-          name: artifacts-docker-${{ matrix.arch }}
-          path: /tmp
-
-      - name: Import Docker Image
-        shell: bash -ex {0}
-        run: |
-          zcat /tmp/rust-node-docker.tar.gz | docker image load
-          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
-
-      - name: Extract rnode binary from image
-        if: matrix.provider == 'subprocess'
-        shell: bash -ex {0}
-        run: |
-          docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
-          docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
-          chmod +x /tmp/rnode
-          docker rm extract-rnode
-          /tmp/rnode --version 2>/dev/null || true
-          ldd /tmp/rnode
-
-      - name: Install system-integration dependencies
-        shell: bash -ex {0}
-        run: |
-          cd system-integration
-          poetry lock --no-update
-          poetry install --with integration
-
-      - name: Run Integration Tests
-        shell: bash -ex {0}
-        env:
-          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
-          F1R3FLY_NODE_BINARY: /tmp/rnode
-          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
-        run: |
-          cd system-integration
-          SCALE_FLAG=""
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            SCALE_FLAG="--timeout-scale=1.5"
-          fi
-          poetry run pytest \
-            integration-tests/test/tests/shared/ \
-            integration-tests/test/tests/custom/ \
-            integration-tests/test/tests/standalone/ \
-            --deselect integration-tests/test/tests/custom/test_load.py \
-            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
-            --deselect integration-tests/test/tests/custom/test_asymmetric_bonds.py::test_finalization_asymmetric_bonds \
-            --deselect integration-tests/test/tests/shared/test_convergence.py::test_ft_convergence \
-            --deselect integration-tests/test/tests/shared/test_bonding_validators.py \
-            --deselect integration-tests/test/tests/custom/test_joiner_self_proposes_at_epoch_boundary.py \
-            --deselect integration-tests/test/tests/shared/test_observer_lfs_sync.py \
-            --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
-            --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
-            --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
-            --provider=${{ matrix.provider }} \
-            -v --tb=short --instafail --maxfail=10 \
-            -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
-
-      - name: Upload Integration Test Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
-          path: system-integration/integration-tests/
-          retention-days: 7
-
-  integration_tests_amd64:
-    name: Integration Tests (amd64)
-    needs: integration_tests
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    uses: ./.github/workflows/reusable-oci-validation.yml
     permissions:
       actions: read
-    steps:
-      - name: Check amd64 matrix slots
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash -e {0}
-        run: |
-          failures=$(gh api \
-            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
-            --paginate \
-            --jq '.jobs[] | select(.name | startswith("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
-          if [ -n "$failures" ]; then
-            echo "amd64 integration test failures:"
-            echo "$failures"
-            exit 1
-          fi
-          echo "All amd64 integration test slots succeeded"
-
-  integration_tests_arm64:
-    name: Integration Tests (arm64)
-    needs: integration_tests
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-    steps:
-      - name: Check arm64 matrix slots
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash -e {0}
-        run: |
-          failures=$(gh api \
-            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
-            --paginate \
-            --jq '.jobs[] | select(.name | startswith("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
-          if [ -n "$failures" ]; then
-            echo "arm64 integration test failures:"
-            echo "$failures"
-            exit 1
-          fi
-          echo "All arm64 integration test slots succeeded"
+      contents: read
+    with:
+      head_repo: ${{ needs.validate_pr.outputs.head_repo }}
+      head_sha: ${{ needs.validate_pr.outputs.head_sha }}
+      system_integration_ref: ${{ github.event.inputs.system_integration_ref }}
 
   report_result:
     name: Report OCI Validation Result
-    needs:
-      [
-        validate_pr,
-        launch_ephemeral_runners,
-        build_docker_image,
-        integration_tests_amd64,
-        integration_tests_arm64,
-      ]
+    needs: [validate_pr, launch_ephemeral_runners, oci_validation]
     if: always() && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      issues: write
       pull-requests: write
       statuses: write
     steps:
@@ -639,19 +182,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           VALIDATE_RESULT: ${{ needs.validate_pr.result }}
           LAUNCH_RESULT: ${{ needs.launch_ephemeral_runners.result }}
-          BUILD_RESULT: ${{ needs.build_docker_image.result }}
-          AMD64_RESULT: ${{ needs.integration_tests_amd64.result }}
-          ARM64_RESULT: ${{ needs.integration_tests_arm64.result }}
+          OCI_RESULT: ${{ needs.oci_validation.result }}
         shell: bash -euo pipefail {0}
         run: |
-          result=success
-          for job_result in "$VALIDATE_RESULT" "$LAUNCH_RESULT" "$BUILD_RESULT" "$AMD64_RESULT" "$ARM64_RESULT"; do
-            if [ "$job_result" != "success" ]; then
-              result=failure
-            fi
-          done
-
-          if [ "$result" = "success" ]; then
+          if [ "$VALIDATE_RESULT" = "success" ] && [ "$LAUNCH_RESULT" = "success" ] && [ "$OCI_RESULT" = "success" ]; then
             state=success
             description="Full OCI validation passed"
           else
