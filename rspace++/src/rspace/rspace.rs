@@ -14,7 +14,6 @@ use std::time::Instant;
 pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
@@ -62,8 +61,11 @@ pub struct RSpace<C, P, A, K> {
     event_log: Arc<std::sync::Mutex<Log>>,
     produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A>>>,
-    phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
+    // 256 pre-allocated mutexes, channel hash % 256 → stripe index.
+    // No DashMap entry() → no parking_lot shard contention per produce/consume.
+    phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -85,20 +87,20 @@ where
     }
 
     async fn acquire_locks(
-        lock_map: &DashMap<u64, Arc<tokio::sync::Mutex<()>>>,
+        stripes: &[Arc<tokio::sync::Mutex<()>>],
         keys: &[u64],
     ) -> ChannelLockGuard {
-        let mut sorted_keys: Vec<u64> = keys.to_vec();
-        sorted_keys.sort();
-        sorted_keys.dedup();
+        // Map channel hashes to stripe indices, sort to prevent deadlocks,
+        // dedup so two channels in the same stripe are only locked once.
+        let mut indices: Vec<usize> = keys.iter()
+            .map(|k| (*k as usize) % stripes.len())
+            .collect();
+        indices.sort();
+        indices.dedup();
 
-        let mut held: Vec<HeldLock> = Vec::with_capacity(sorted_keys.len());
-        for k in &sorted_keys {
-            let lock = lock_map
-                .entry(*k)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone();
-            let guard = lock.lock_owned().await;
+        let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
+        for idx in indices {
+            let guard = stripes[idx].clone().lock_owned().await;
             held.push(HeldLock { _guard: guard });
         }
 
@@ -125,6 +127,10 @@ where
 
         let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
+    }
+
+    fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
+        Arc::new((0..256).map(|_| Arc::new(tokio::sync::Mutex::new(()))).collect())
     }
 
     pub fn get_history_repository(
@@ -210,8 +216,8 @@ where
         *self.event_log.lock().expect("event log lock") = Vec::new();
         *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
 
-        self.phase_a_locks.clear();
-        self.phase_b_locks.clear();
+        // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
+        // clear on reset — they are reused across checkpoints.
 
         let history_reader = self.get_history_repository().get_history_reader(root)?;
         self.create_new_hot_store(history_reader);
@@ -459,8 +465,8 @@ where
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            phase_a_locks: Arc::new(DashMap::new()),
-            phase_b_locks: Arc::new(DashMap::new()),
+            phase_a_locks: Self::new_striped_locks(),
+            phase_b_locks: Self::new_striped_locks(),
         }
     }
 
