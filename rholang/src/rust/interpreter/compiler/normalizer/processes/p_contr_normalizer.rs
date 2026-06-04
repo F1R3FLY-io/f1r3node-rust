@@ -346,6 +346,8 @@ contract @"service_id-notify-listeners"(@payload) = {
             panic!("expected var body");
         };
 
+        // Inner `listeners`, recursive `loop`, and surrounding `new` shift the
+        // outer `payload` to index 3.
         assert_eq!(
             var.v.as_ref().and_then(|v| v.var_instance.as_ref()),
             Some(&VarInstance::BoundVar(3))

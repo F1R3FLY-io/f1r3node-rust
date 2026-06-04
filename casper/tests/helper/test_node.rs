@@ -765,6 +765,34 @@ impl TestNode {
             max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
             max_parent_depth,
             with_read_only_size.unwrap_or(0),
+            None,
+            test_network,
+        )
+        .await
+    }
+
+    pub async fn create_network_with_bootstrap_index(
+        genesis: GenesisContext,
+        network_size: usize,
+        bootstrap_index: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size)
+            .collect();
+
+        Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            Some(bootstrap_index),
             test_network,
         )
         .await
@@ -778,6 +806,7 @@ impl TestNode {
         max_number_of_parents: i32,
         max_parent_depth: Option<i32>,
         with_read_only_size: usize,
+        bootstrap_index: Option<usize>,
         test_network: TestNetwork,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
@@ -802,6 +831,7 @@ impl TestNode {
             .iter()
             .map(|name| Self::peer_node(name, 40400))
             .collect();
+        let bootstrap_peer = bootstrap_index.and_then(|index| peers.get(index).cloned());
 
         // Create nodes
         let mut nodes = Vec::new();
@@ -822,6 +852,7 @@ impl TestNode {
                 is_readonly,
                 test_network.clone(),
                 &genesis_context,
+                bootstrap_peer.clone(),
             )
             .await;
             nodes.push(node);
@@ -857,6 +888,7 @@ impl TestNode {
         is_read_only: bool,
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
+        bootstrap_peer: Option<PeerNode>,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -928,7 +960,10 @@ impl TestNode {
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
-        let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        let mut rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        if let Some(bootstrap_peer) = bootstrap_peer {
+            rp_conf.bootstrap = Some(bootstrap_peer);
+        }
         let event_publisher = F1r3flyEvents::new();
         // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
         let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
