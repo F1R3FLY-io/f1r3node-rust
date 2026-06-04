@@ -56,9 +56,11 @@ CI for fork-based pull requests requires maintainer approval every time. This pr
 
 Approval to run CI is not approval to merge. Maintainers may review the code, ask for local validation output, or request changes before approving expensive CI.
 
-Full OCI-backed validation runs only after an owner or maintainer approves the pull request for full validation. Maintainers may ask a trusted contributor to move work to an upstream branch, or may mirror/cherry-pick reviewed work into an upstream branch before running the full pipeline.
+Full OCI-backed validation runs only after an owner or maintainer approves the pull request for full validation. For fork pull requests, maintainers use the trusted `Full OCI Validation` workflow from the default branch and provide the pull request number plus the reviewed head SHA. The workflow validates that the SHA still matches the pull request before launching OCI capacity.
 
-Untrusted fork code must not run on persistent self-hosted runners. Project-managed compute for untrusted code should use disposable or ephemeral runners.
+Maintainers may alternatively ask a trusted contributor to move work to an upstream branch, or may mirror/cherry-pick reviewed work into an upstream branch before running the full pipeline.
+
+Untrusted fork code must not run on persistent self-hosted runners. Project-managed compute for untrusted code should use disposable or ephemeral runners. Secret-bearing launcher jobs must use trusted workflow code only; fork code may run only in downstream jobs without project secrets.
 
 The project expects to evolve toward a contributor trust and reputation process. Until that process is formalized, maintainers decide when a contributor is trusted enough for upstream branch access and full CI use.
 
