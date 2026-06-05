@@ -200,6 +200,7 @@ Print Assumptions cost_obj_closure.
 Print Assumptions CostCI.
 Print Assumptions cost_ci_preserves_bisim.
 Print Assumptions cost_ci_preserves_step.
+Print Assumptions cost_ci_preserves_quote_faithful.
 Print Assumptions cost_is_monad.
 Print Assumptions cost_monad_instance.
 Print Assumptions free_forget_adjunction.

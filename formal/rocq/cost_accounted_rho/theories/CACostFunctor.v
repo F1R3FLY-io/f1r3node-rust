@@ -12,10 +12,9 @@
    companion CACostFunctorCI.v (DR-23) discharges Thm 7.1 ON THE CONCRETE ciGSLT
    category CICat — a genuine [CostCI : Functor CICat CICat] whose morphism action
    preserves the gated transition AND the behavioural equivalence
-   ([cost_ci_preserves_step]/[cost_ci_preserves_bisim]) — so the categorical
-   obligation is no longer merely the TypeCatL skeleton. Quote-faithfulness (the
-   second ciGSLT-morphism condition) remains CACategory's scope boundary (CIMor does
-   not reify it). Axiom-free.                                                    *)
+   ([cost_ci_preserves_step]/[cost_ci_preserves_bisim]) and carries the
+   quote-faithful signature map ([cost_ci_preserves_quote_faithful]) — so the
+   categorical obligation is no longer merely the TypeCatL skeleton. Axiom-free.  *)
 
 From CostAccountedRho Require Import CostMonad.
 From CostAccountedRho Require Import CategoryInterface.

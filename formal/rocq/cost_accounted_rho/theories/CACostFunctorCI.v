@@ -17,10 +17,8 @@
    writer: Cost(G) adjoins to each state the accumulated spatial signature, and a
    transition appends its consumed signature via the free `SAnd` tensor — the
    spatial monoid ∘ of the calculus, read at the abstract transition-system level.
-   Quote-faithfulness (the second ciGSLT-morphism condition) is not a field of the
-   skeletal CIMor (CACategory scopes the §6 object to the fragment the abstract
-   proofs touch), so it remains that module's standing scope boundary; the
-   bisimulation-preservation half — the part the review flagged as missing — is here.
+   The signature map and quote-faithfulness obligations are carried by CIMor, so
+   CostCI preserves them with the same map it uses for transition grades.
    Axiom-free.                                                                    *)
 
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -34,17 +32,27 @@ Definition CostObj (G : CIObj) : CIObj :=
   {| carrier := (carrier G * sig)%type;
      cstep   := fun p s p' => cstep G (fst p) s (fst p') /\ snd p' = SAnd (snd p) s;
      cbisim  := fun p q => cbisim G (fst p) (fst q);
+     reachable_sig := reachable_sig G;
+     cstep_reachable_sig := fun p s p' Hs => cstep_reachable_sig G (fst p) s (fst p') (proj1 Hs);
      cbisim_refl  := fun p => cbisim_refl G (fst p);
      cbisim_sym   := fun p q H => cbisim_sym G _ _ H;
      cbisim_trans := fun p q r H1 H2 => cbisim_trans G _ _ _ H1 H2 |}.
 
-(* ── Cost on morphisms: act on the base state by f, carry the grade unchanged.
+(* ── Cost on morphisms: act on the base state and accumulated signature by f.
    The result is a CIMor — it preserves transitions (mor_pres f on the base + the
    grade bookkeeping transfers verbatim) and bisimulation (mor_cong f). *)
 Definition CostMor {G H : CIObj} (f : CIMor G H) : CIMor (CostObj G) (CostObj H) :=
   @Build_CIMor (CostObj G) (CostObj H)
-    (fun p => (mor_map f (fst p), snd p))
-    (fun p s p' Hs => conj (mor_pres f (proj1 Hs)) (proj2 Hs))
+    (fun p => (mor_map f (fst p), mor_sig_map f (snd p)))
+    (mor_sig_map f)
+    (mor_sig_unit f)
+    (mor_sig_and f)
+    (fun s Hs => mor_sig_reachable f Hs)
+    (fun s t Hs Ht Heq => mor_quote_faithful f Hs Ht Heq)
+    (fun p s p' Hs =>
+       conj (mor_pres f (proj1 Hs))
+            (eq_trans (f_equal (mor_sig_map f) (proj2 Hs))
+                      (mor_sig_and f (snd p) s)))
     (fun p q Hb => mor_cong f Hb).
 
 (* ── Thm 7.1 (on CICat): Cost is an endofunctor on the concrete ciGSLT category. *)
@@ -69,8 +77,17 @@ Theorem cost_ci_preserves_step :
   forall (G H : CIObj) (f : CIMor G H) (p : carrier (CostObj G)) (s : sig)
          (p' : carrier (CostObj G)),
     cstep (CostObj G) p s p' ->
-    cstep (CostObj H) (mor_map (CostMor f) p) s (mor_map (CostMor f) p').
+    cstep (CostObj H) (mor_map (CostMor f) p) (mor_sig_map (CostMor f) s)
+          (mor_map (CostMor f) p').
 Proof. intros G H f p s p' Hs. exact (mor_pres (CostMor f) Hs). Qed.
+
+Theorem cost_ci_preserves_quote_faithful :
+  forall (G H : CIObj) (f : CIMor G H) (s t : sig),
+    reachable_sig (CostObj G) s ->
+    reachable_sig (CostObj G) t ->
+    mor_sig_map (CostMor f) s = mor_sig_map (CostMor f) t ->
+    s = t.
+Proof. intros G H f s t Hs Ht Heq. exact (mor_quote_faithful (CostMor f) Hs Ht Heq). Qed.
 
 (* Non-vacuity: Cost applied to the concrete rho ciGSLT object is a live CICat
    object (the re-metered rho calculus, state = signed_term × accumulated sig). *)

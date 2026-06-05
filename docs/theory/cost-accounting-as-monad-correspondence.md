@@ -26,6 +26,7 @@ wrapper" is a sorting invariant — the paper's *wrapping by construction*. The 
 | **Cost monad** (η, μ); laws **descend from the two monoids** | `SignatureMonoid.v` — `sig_monoid_comm/assoc/unit_l/unit_r` (`(Sig,*,())` up to ≡sig), `tok_concat_assoc/unit_l/unit_r` (free monoid); assembled in `ContinuedGSLTCapstone.v` `Cost_Monad_Laws` | **Sage** `cost_monad_laws.sage` (bounded-exhaustive); **Lean** `CostAccountedRho/CostMonad.lean` `cost_monad_laws` |
 | Two monoids: spatial `K` (AC) vs temporal cons (free, never commutative) | `SignatureMonoid.v` `tok_concat_not_commutative`; spatial monoid `CAStructEquiv.v`/`SystemStructEquiv.v` | **Sage** `stack_concat_commutative_FAILS`; **Lean** `stack_concat_not_commutative` |
 | μ non-idempotent (flatten forgets the boundary) | (the merge is genuine; witnessed bounded-exhaustively) | **Sage** `mu_non_injective_forgets_boundary` |
+| Cost endofunctor on concrete ciGSLT | `CACostFunctorCI.v` — `CostCI`, `cost_ci_preserves_step`, `cost_ci_preserves_bisim`, `cost_ci_preserves_quote_faithful` | — |
 | Section of the ≡-quotient (`# = digest ∘ cf`) | `SystemStructEquiv.v` — `proc_encode` / `hash_preimage_encode` (canonical-form section); `crypto_quote` | runtime hash (DR-16 G-parametric; DR-20 (i)) |
 | **GAP-2 dissolved** (split-process COMM keeps the continuation's own seal) | `CAReduction.v` `ca_rule4`/`ca_rule5` (no `SAnd` re-seal); `WrappingSubjectReduction.v` `gap2_split_{combined,split}_keeps_own_seal`; capstone `GAP2_Dissolved` | DR-21 (b) |
 | **Cost determinism** (terminal cost unique) | `CACostDeterminism.v` — `newman_funded` → `ca_normal_form_unique_funded` → `ca_cost_deterministic_funded` (on the funded fragment) | runtime per-COMM cost (DR-9) |
@@ -45,7 +46,13 @@ monad-paper concepts:
 | Lazy metering (charge when forced, not exposed) | per-COMM charge in `reduce.rs` / `metering.rs` (DR-9) |
 | Located purses / disjoint per-surface pools | `accounting/mod.rs` per-signature `DashMap<Sig,…>` lane pool |
 | Graded transitions (step labelled by consumed signature) | `BillableTokenEvent.sig_hash` |
+| Generic GSLT/OSLF funding boundary | `accounting/resource_logic.rs` `GsltPresentation`, `ResourceSignature`, `OslfResourceLogic<G>`; native specialization `RhoGslt` |
 | Two monoids (spatial vs temporal) | spatial `Par` (unordered) vs temporal `SourcePath` (ordered) |
+
+MeTTaIL is not a Rust runtime dependency in this design. When `mettail-rust` is ready, integration should be
+an adapter that implements the generic `GsltPresentation`/`ResourceSignature`/`OslfResourceLogic<G>` surface
+and plugs into the injected acceptance/replay entry points. The native node remains coupled to the
+specification-level GSLT/OSLF interface, not to a specific MeTTaIL implementation.
 
 ## Honestly Rocq-primary (now mechanized)
 

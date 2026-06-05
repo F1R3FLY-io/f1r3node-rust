@@ -2,9 +2,10 @@
    CACategory.v — the concrete ciGSLT category, reified skeletally-but-honestly
    (continued-gslt-cost-v2 §6). A [CIObj] carries exactly the structure the
    abstract §6-§9 proofs touch: a state carrier, an intra-carrier graded
-   transition [cstep], and a behavioural equivalence [cbisim] (with carried
-   reflexivity/symmetry/transitivity). Morphisms are transition-preserving,
-   equivalence-respecting carrier maps; the hom-equality [mor_heq f g := ∀x,
+   transition [cstep], a behavioural equivalence [cbisim] (with carried
+   reflexivity/symmetry/transitivity), and the reachable signature fragment.
+   Morphisms are transition-preserving, quote-faithful, equivalence-respecting
+   carrier/signature maps; the hom-equality [mor_heq f g := ∀x,
    cbisim (f x)(g x)] is POINTWISE behavioural equality, so the hom-setoid needs
    no functional extensionality. The concrete rho object [Rho_ciGSLT] (carrier
    [signed_term], transition [graded_step], equivalence [graded_bisim]) is the
@@ -43,21 +44,36 @@ Record CIObj : Type := {
   carrier : Type;
   cstep   : carrier -> sig -> carrier -> Prop;
   cbisim  : carrier -> carrier -> Prop;
+  reachable_sig : sig -> Prop;
+  cstep_reachable_sig : forall x g x', cstep x g x' -> reachable_sig g;
   cbisim_refl  : forall x, cbisim x x;
   cbisim_sym   : forall x y, cbisim x y -> cbisim y x;
   cbisim_trans : forall x y z, cbisim x y -> cbisim y z -> cbisim x z
 }.
 
-(* Morphisms: transition-preserving (a forward simulation on the interacting
-   sort) and equivalence-respecting carrier maps. [mor_cong] is what makes
+(* Morphisms: signature-map/transition-preserving (a forward simulation on the
+   interacting sort) and equivalence-respecting carrier maps. [mor_cong] is what makes
    composition a congruence for the hom-setoid (R-B). *)
 Record CIMor (G H : CIObj) : Type := {
   mor_map  : carrier G -> carrier H;
-  mor_pres : forall x g x', cstep G x g x' -> cstep H (mor_map x) g (mor_map x');
+  mor_sig_map : sig -> sig;
+  mor_sig_unit : mor_sig_map SUnit = SUnit;
+  mor_sig_and : forall s t, mor_sig_map (SAnd s t) =
+                            SAnd (mor_sig_map s) (mor_sig_map t);
+  mor_sig_reachable : forall s, reachable_sig G s -> reachable_sig H (mor_sig_map s);
+  mor_quote_faithful : forall s t,
+      reachable_sig G s -> reachable_sig G t -> mor_sig_map s = mor_sig_map t -> s = t;
+  mor_pres : forall x g x',
+      cstep G x g x' -> cstep H (mor_map x) (mor_sig_map g) (mor_map x');
   mor_cong : forall x y, cbisim G x y -> cbisim H (mor_map x) (mor_map y)
 }.
 
 Arguments mor_map {G H} _ _.
+Arguments mor_sig_map {G H} _ _.
+Arguments mor_sig_unit {G H} _.
+Arguments mor_sig_and {G H} _ _ _.
+Arguments mor_sig_reachable {G H} _ {s} _.
+Arguments mor_quote_faithful {G H} _ {s t} _ _ _.
 Arguments mor_pres {G H} _ {x g x'} _.
 Arguments mor_cong {G H} _ {x y} _.
 
@@ -66,11 +82,26 @@ Definition mor_heq {G H} (f g : CIMor G H) : Prop :=
 
 Definition CIMor_id (G : CIObj) : CIMor G G :=
   {| mor_map := fun x => x;
+     mor_sig_map := fun s => s;
+     mor_sig_unit := eq_refl;
+     mor_sig_and := fun s t => eq_refl;
+     mor_sig_reachable := fun s H => H;
+     mor_quote_faithful := fun s t _ _ H => H;
      mor_pres := fun x g x' H => H;
      mor_cong := fun x y H => H |}.
 
 Definition CIMor_comp {G H K} (f : CIMor H K) (g : CIMor G H) : CIMor G K :=
   {| mor_map := fun x => mor_map f (mor_map g x);
+     mor_sig_map := fun s => mor_sig_map f (mor_sig_map g s);
+     mor_sig_unit := eq_trans (f_equal (mor_sig_map f) (mor_sig_unit g)) (mor_sig_unit f);
+     mor_sig_and := fun s t =>
+       eq_trans
+         (f_equal (mor_sig_map f) (mor_sig_and g s t))
+         (mor_sig_and f (mor_sig_map g s) (mor_sig_map g t));
+     mor_sig_reachable := fun s Hs => mor_sig_reachable f (mor_sig_reachable g Hs);
+     mor_quote_faithful := fun s t Hs Ht Heq =>
+       mor_quote_faithful g Hs Ht
+         (mor_quote_faithful f (mor_sig_reachable g Hs) (mor_sig_reachable g Ht) Heq);
      mor_pres := fun x gr x' Hs => mor_pres f (mor_pres g Hs);
      mor_cong := fun x y Hb => mor_cong f (mor_cong g Hb) |}.
 
@@ -99,6 +130,8 @@ Definition Rho_ciGSLT : CIObj :=
   {| carrier := signed_term;
      cstep   := graded_step;
      cbisim  := graded_bisim;
+     reachable_sig := fun _ => True;
+     cstep_reachable_sig := fun _ _ _ _ => I;
      cbisim_refl  := graded_bisim_refl;
      cbisim_sym   := graded_bisim_sym;
      cbisim_trans := graded_bisim_trans |}.

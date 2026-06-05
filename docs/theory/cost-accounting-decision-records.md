@@ -822,8 +822,10 @@ decides the premise with the boolean reflection `closed_st_dec`/`closed_stb_spec
 (`CategoryInterface`: `Category`/`Functor`/`NaturalTransformation`/`Monad`/`Adjunction` with a
 Prop-valued `heq` carrying its own refl/sym/trans + composition congruence; no field is a function
 equality, so no funext). On it: the concrete ciGSLT category `CACategory.CICat` (carrier `signed_term`,
-transition `graded_step`, hom-equality pointwise `graded_bisim`; `graded_bisim_trans` newly added);
-Thm 7.1 (`CACostFunctor`, Cost as a genuine `Functor` record + the law conjunction); Prop 6.2 closure;
+transition `graded_step`, reachable signature fragment, hom-equality pointwise `graded_bisim`;
+`graded_bisim_trans` newly added); Thm 7.1 (`CACostFunctor`, Cost as a genuine `Functor` record + the
+law conjunction; `CACostFunctorCI.CostCI` as the concrete `CICat` lift preserving graded transition,
+graded bisimulation, and quote-faithfulness); Prop 6.2 closure;
 Prop 6.1 (`CAProperSubcategory`: faithful + not-full via a key-collapse `discriminate` + not-eso
 bounded by `no_leak_stack_inert`); Prop 9.1 (`CACostMonadCat`); Prop 9.2 (`CAAdjunctionI`); Prop 9.3
 (`CAAdjunctionII`) via the **counit-dissolution** — `Imp_G` is modelled as the *intra-carrier*
@@ -853,7 +855,7 @@ the spec-alignment audit (§6 the gap, §3.3 the abstract-layer bound). Spec `co
 ## DR-23 — Multi-prover completion + a deep cross-validation review (findings + remediation)
 
 **Status.** The DR-22 "honest bounds" are closed and the framing/bridge/scope remediations are done
-(gate-green, axiom-free); the substantive formal-gap remediations (A/C/E below) are in progress.
+(gate-green, axiom-free). The C `CICat` lift is closed by DR-24; A/E remain separately tracked.
 
 **Context.** Two passes. (1) The DR-22 honest bounds were closed once the host toolchains became
 available. (2) A fresh, careful re-read of BOTH papers plus two independent arbitration passes over the
@@ -889,9 +891,11 @@ misalignments — several in the DR-22-era / this-session additions themselves.
   Cost-generating resolution (`Forget∘Free = Cost`); the latter is the separately-added
   `cost_kleisli_adjunction`. The banner overclaim is FIXED and cross-referenced (Phase 1).
 - ▲ **(C) Functor/monad on the wrong base.** `cost_is_endofunctor` (TypeCatL) and `cost_monad_instance`
-  (GCat setoids) are the writer-monad skeleton, NOT the concrete ciGSLT `CICat` — which sits disconnected
-  from Cost; the paper's load-bearing "`Cost(f)` preserves gated bisimulation + quote-faithfulness"
-  obligation (`tex:769-777`) is undischarged. → Phase 2 (lift Cost to `CICat`).
+  (GCat setoids) are the writer-monad skeleton, NOT the concrete ciGSLT `CICat`. Closed by DR-24:
+  `CACostFunctorCI.CostCI` lifts Cost to `CICat`, `CIMor` carries signature maps and quote-faithfulness
+  over reachable signatures, and `cost_ci_preserves_step`/`cost_ci_preserves_bisim`/
+  `cost_ci_preserves_quote_faithful` discharge the paper's load-bearing `Cost(f)` obligation
+  (`tex:769-777`).
 - ▲ **(E) Adjunction-II omits Turing-completeness.** No `ciGSLTtc`, no general interpreter; the formal
   proves an UNCONDITIONAL unit-grade single-gate retract for the one rho instance (via cross-sort `st_tr`
   + a real COMM in `ca_single_gate_bisimilar`). Unit-grade IS faithful (`η_G(P)={P}_∅`). The
@@ -929,11 +933,44 @@ misalignments — several in the DR-22-era / this-session additions themselves.
     holding funds in escrow. So the §8 divergence is sound and DR-5/DR-11-documented, not a defect.
 
 **Remediation status.** Phase 1 (D banner, F comments, J-1 bridge, B scope note, this DR + audit
-refresh): done, gate-green. Phase 2 (A simultaneous substitution, C `CICat` lift, E `internalisable`
-Adjunction II) + Phase 3 (impl equivalence note): in progress.
+refresh): done, gate-green. Phase 2 C (`CICat` lift) is done by DR-24. Phase 2 A (simultaneous
+substitution) and E (`internalisable` Adjunction II) remain separately tracked; Phase 3 impl equivalence
+note is documented by DR-5/DR-11 and the audit.
 
 **Cross-refs.** DR-22 (the bounds this supersedes), DR-5 (refund lifecycle), DR-11 (block-assembly
 acceptance gate), the spec-alignment audit. Arbitration evidence: `CAAdjunctions.v:33`,
 `CACostMonadInstances.v:106/156/167`, `CACostFunctor.v:47`, `CACategory.v:78`, `CAInternalisation.v:79`,
 `CAProperSubcategory.v` (`U_not_eso`), `CAReduction.v:178/197/200`. Spec: `cost-accounted-rho.tex` §4.8;
 `continued-gslt-cost-v2.tex` §6/§9 (Prop 6.1, prop:adj1/adj2, thm:functor).
+
+---
+
+## DR-24 — Generic GSLT/OSLF boundary; MeTTaIL is an adapter, not a dependency
+
+**Decision.** The node exposes the cost-accounting resource checker through the specification-level
+GSLT/OSLF boundary, not through `mettail-rust` or any other concrete theorem-engine runtime. Rust now names
+that boundary in `rholang/src/rust/interpreter/accounting/resource_logic.rs`:
+`GsltPresentation`, `ResourceSignature`, and `OslfResourceLogic<G>`. The current native implementation is
+the specialization `RhoGslt + DefaultResourceLogic`; existing `ResourceLogic` remains a compatibility alias
+for that specialization.
+
+**Implementation consequence.** The Casper D2 admission and replay-settlement paths have injected variants
+(`admit_by_funding_with_logic`, `recompute_settlement_debits_with_logic`) that consume an
+`OslfResourceLogic<RhoGslt>` and otherwise preserve the public default entry points. Candidate construction
+uses `RhoGslt.canonicalize_for_funding`, `ResourceSignature::key`, and
+`ResourceSignature::split_join_decompositions`; the channel encoding remains the native Rholang supply
+realization (`Σ⟦s⟧ = from_sig(s)`). This keeps per-signature accounting local, associative, and mergeable:
+independent signature pools still settle through `BTreeMap`/`DashMap` keyed by the same canonical lane basis,
+with no global MeTTaIL coordination point.
+
+**Formal consequence.** The concrete ciGSLT category now reifies reachable signatures and quote-faithful
+signature maps in `CIMor`; `CACostFunctorCI.CostCI` maps both state and accumulated signature, and
+`cost_ci_preserves_quote_faithful` is checked with the existing `CostCI` transition and bisimulation
+preservation obligations. This closes the DR-23 C finding for Thm 7.1 on the concrete `CICat`, while leaving
+the writer skeleton (`CACostFunctor.cost_is_endofunctor`) as the algebraic presentation.
+
+**MeTTaIL boundary.** When MeTTaIL is ready, the integration should be a crate or module that implements the
+generic traits for its presentation and proof checker, then opts into the injected admission/replay entry
+points. It should not become a required dependency of `rholang` or `casper`, and `mettail-rust` is guarded
+against accidental workspace Cargo dependency introduction. This keeps MeTTaIL folded into the design as a
+supported use case rather than coupling cost-accounted Rholang to one implementation.

@@ -3,10 +3,10 @@
    not full, not essentially surjective), continued-gslt-cost-v2 §6.
 
    Model: objects are the reified [CIObj] (CACategory); an iGSLT morphism [IGMor]
-   is a transition-preserving carrier map (it forgets the behavioural-congruence
-   obligation), while a ciGSLT morphism [CIMor] ADDITIONALLY respects [cbisim]
-   (the [mor_cong] field — the quote/grading congruence). U keeps the underlying
-   map and forgets [mor_cong].
+   is a transition-preserving carrier/signature map (it forgets the
+   behavioural-congruence obligation), while a ciGSLT morphism [CIMor]
+   ADDITIONALLY respects [cbisim] and quote-faithfulness. U keeps the underlying
+   maps and forgets [mor_cong]/quote-faithfulness.
 
    - FAITHFUL: U keeps the map, so two ciGSLT morphisms with equal images are
      equal in the hom-setoid (a Leibniz map equality forces [mor_heq] by [cbisim]
@@ -49,15 +49,19 @@ Import ListNotations.
 (* iGSLT morphism: transition-preserving, but NOT required to respect cbisim. *)
 Record IGMor (G H : CIObj) : Type := {
   igm_map  : carrier G -> carrier H;
-  igm_pres : forall x g x', cstep G x g x' -> cstep H (igm_map x) g (igm_map x')
+  igm_sig_map : sig -> sig;
+  igm_pres : forall x g x', cstep G x g x' -> cstep H (igm_map x) (igm_sig_map g) (igm_map x')
 }.
 
 Arguments igm_map {G H} _ _.
+Arguments igm_sig_map {G H} _ _.
 
 (* The forgetful action on morphisms: a ciGSLT morphism IS an iGSLT morphism
-   (forget the [mor_cong] congruence field). *)
+   (forget the [mor_cong] congruence and quote-faithfulness fields). *)
 Definition U_mor {G H : CIObj} (f : CIMor G H) : IGMor G H :=
-  {| igm_map := mor_map f; igm_pres := fun x g x' => mor_pres f |}.
+  {| igm_map := mor_map f;
+     igm_sig_map := mor_sig_map f;
+     igm_pres := fun x g x' => mor_pres f |}.
 
 (* ── Faithful: equal images ⇒ equal in the hom-setoid. ─────────────────────── *)
 Theorem U_faithful : forall (G H : CIObj) (f g : CIMor G H),
@@ -70,6 +74,8 @@ Qed.
 Definition obj_triv : CIObj :=
   {| carrier := bool; cstep := fun _ _ _ => False;
      cbisim := fun _ _ => True;
+     reachable_sig := fun _ => True;
+     cstep_reachable_sig := fun _ _ _ H => match H with end;
      cbisim_refl := fun _ => I;
      cbisim_sym := fun _ _ _ => I;
      cbisim_trans := fun _ _ _ _ _ => I |}.
@@ -77,13 +83,15 @@ Definition obj_triv : CIObj :=
 Definition obj_eq : CIObj :=
   {| carrier := bool; cstep := fun _ _ _ => False;
      cbisim := @eq bool;
+     reachable_sig := fun _ => True;
+     cstep_reachable_sig := fun _ _ _ H => match H with end;
      cbisim_refl := @eq_refl bool;
      cbisim_sym := fun x y (H : x = y) => eq_sym H;
      cbisim_trans := fun x y z (H1 : x = y) (H2 : y = z) => eq_trans H1 H2 |}.
 
 Definition h_collapse : IGMor obj_triv obj_eq.
 Proof.
-  refine (@Build_IGMor obj_triv obj_eq (fun b => b) _).
+  refine (@Build_IGMor obj_triv obj_eq (fun b => b) (fun s => s) _).
   intros x g x' H. simpl in H. destruct H.
 Defined.
 

@@ -61,11 +61,14 @@ use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
-use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
 // Re-exported (NOT a private `use`) so settlement-debit consumers
 // (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
 // basis (`Sig::lane_hash`) without reaching into rholang internals.
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
+use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
+use rholang::rust::interpreter::accounting::resource_logic::{
+    DefaultResourceLogic, GsltPresentation, OslfResourceLogic, ResourceSignature, RhoGslt,
+};
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 
@@ -230,20 +233,22 @@ pub fn canonical_sort(deploys: &mut [Cosigned<DeployData>]) {
 /// ONE shared `accounting::envelope_sig`, the supply key + channel from it, and
 /// the static demand `Δ_s` from the desugared term. A term whose
 /// `source_to_adt` fails is flagged `malformed` (⇒ rejected).
-fn build_candidate(cosigned: Cosigned<DeployData>) -> Candidate {
+fn build_candidate_with_logic<L>(cosigned: Cosigned<DeployData>, logic: &L) -> Candidate
+where L: OslfResourceLogic<RhoGslt> {
+    let gslt = RhoGslt;
     let envelope: Sig = accounting::envelope_sig(&cosigned);
-    let sig_key = delta_sigma::sig_key(&envelope);
+    let sig_key = envelope.key();
     let channel = supply::supply_channel(&envelope);
 
     match Compiler::source_to_adt(&cosigned.data().term) {
         Ok(par) => {
-            let desugared = delta_sigma::desugar_for_funding(&par);
+            let desugared = gslt.canonicalize_for_funding(&par);
             // D3 (DR-9): `demand` is now the per-COMM count (send/receive only;
             // new/match/if are diagnostic Reductions). `known_lower_bound`
             // therefore equals the runtime's consumed per-COMM `total_cost()`,
             // so gate demand == runtime consumed == settlement debit, all
             // per-COMM (the D1→D3 handoff completed in lockstep).
-            let demand = delta_sigma::demand(&desugared, &envelope);
+            let demand = logic.demand(&desugared, &envelope);
             Candidate {
                 cosigned,
                 sig_key,
@@ -274,15 +279,24 @@ fn collect_decompositions(
     out: &mut Vec<Decomposition>,
     component_channels: &mut BTreeMap<SigKey, Par>,
 ) {
+    let mut decompositions = Vec::new();
+    envelope.split_join_decompositions(&mut decompositions);
+    out.extend(
+        decompositions
+            .into_iter()
+            .map(|decomposition| Decomposition {
+                compound: decomposition.compound,
+                left: decomposition.left,
+                right: decomposition.right,
+            }),
+    );
+    collect_component_channels(envelope, component_channels);
+}
+
+fn collect_component_channels(envelope: &Sig, component_channels: &mut BTreeMap<SigKey, Par>) {
     if let Sig::And(left, right) = envelope {
-        let compound = delta_sigma::sig_key(envelope);
-        let left_key = delta_sigma::sig_key(left);
-        let right_key = delta_sigma::sig_key(right);
-        out.push(Decomposition {
-            compound,
-            left: left_key,
-            right: right_key,
-        });
+        let left_key = left.key();
+        let right_key = right.key();
         component_channels
             .entry(left_key)
             .or_insert_with(|| supply::supply_channel(left));
@@ -291,8 +305,8 @@ fn collect_decompositions(
             .or_insert_with(|| supply::supply_channel(right));
         // Recurse so a left-associated n≥3 fold yields one decomposition per
         // internal `And` node.
-        collect_decompositions(left, out, component_channels);
-        collect_decompositions(right, out, component_channels);
+        collect_component_channels(left, component_channels);
+        collect_component_channels(right, component_channels);
     }
 }
 
@@ -462,6 +476,20 @@ pub async fn admit_by_funding(
     margin: i64,
     strict: bool,
 ) -> Result<AdmissionOutcome, CasperError> {
+    let logic = DefaultResourceLogic;
+    admit_by_funding_with_logic(deploys, supply_reader, margin, strict, &logic).await
+}
+
+pub async fn admit_by_funding_with_logic<L>(
+    deploys: Vec<Cosigned<DeployData>>,
+    supply_reader: &dyn SupplyReader,
+    margin: i64,
+    strict: bool,
+    logic: &L,
+) -> Result<AdmissionOutcome, CasperError>
+where
+    L: OslfResourceLogic<RhoGslt>,
+{
     // 1. Canonicalize the (nondeterministically-ordered) input.
     let mut ordered = deploys;
     canonical_sort(&mut ordered);
@@ -471,7 +499,7 @@ pub async fn admit_by_funding(
     let mut outcome = AdmissionOutcome::default();
     let mut candidates: Vec<Candidate> = Vec::with_capacity(ordered.len());
     for cosigned in ordered {
-        let candidate = build_candidate(cosigned);
+        let candidate = build_candidate_with_logic(cosigned, logic);
         if candidate.malformed {
             outcome
                 .rejected
@@ -572,7 +600,7 @@ pub async fn admit_by_funding(
         let mut group_debit: i64 = 0;
         let mut prefix_open = true;
         for candidate in group {
-            if prefix_open && delta_sigma::is_funded(&candidate.demand, residual, margin) {
+            if prefix_open && logic.is_funded(&candidate.demand, residual, margin) {
                 // Admit: consume the known lower bound from the residual and
                 // accumulate the debit. (`is_funded` already folded margin +
                 // the `unknown` over-approximation into the decision.)
@@ -652,6 +680,19 @@ pub async fn recompute_settlement_debits(
     supply_reader: &dyn SupplyReader,
     strict: bool,
 ) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
+    let logic = DefaultResourceLogic;
+    recompute_settlement_debits_with_logic(admitted, supply_reader, strict, &logic).await
+}
+
+pub async fn recompute_settlement_debits_with_logic<L>(
+    admitted: Vec<Cosigned<DeployData>>,
+    supply_reader: &dyn SupplyReader,
+    strict: bool,
+    logic: &L,
+) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError>
+where
+    L: OslfResourceLogic<RhoGslt>,
+{
     // 1. Group admitted deploys by pool, summing Δ_s, AND collect the Split/Join
     //    decompositions + every distinct channel (group + compound component) —
     //    EXACTLY as `admit_by_funding` does, from the same `Cosigned` envelopes
@@ -666,7 +707,7 @@ pub async fn recompute_settlement_debits(
     let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
     for cosigned in admitted {
         let envelope = accounting::envelope_sig(&cosigned);
-        let candidate = build_candidate(cosigned);
+        let candidate = build_candidate_with_logic(cosigned, logic);
         if candidate.malformed {
             continue;
         }
@@ -795,12 +836,14 @@ mod tests {
     //! unfunded boundary. A [`MockSupplyReader`] supplies canned per-channel
     //! balances so the verdict depends only on the pure analyzer + the gate
     //! algorithm (no live runtime needed).
-    use super::*;
+    use std::collections::HashMap;
+
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::DeployData;
-    use std::collections::HashMap;
+
+    use super::*;
 
     /// A canned per-channel supply reader keyed by the channel's wire encoding.
     struct MockSupplyReader {
@@ -975,6 +1018,77 @@ mod tests {
         let bob_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"bob"));
         assert_eq!(outcome.debits.get(&alice_key).map(|d| d.amount), Some(3));
         assert_eq!(outcome.debits.get(&bob_key).map(|d| d.amount), Some(2));
+    }
+
+    struct DenyLogic;
+
+    impl OslfResourceLogic<RhoGslt> for DenyLogic {
+        fn demand(&self, canonical: &Par, deploy_sig: &Sig) -> DemandEntry {
+            delta_sigma::demand(canonical, deploy_sig)
+        }
+
+        fn is_funded(
+            &self,
+            _analysis: &DemandEntry,
+            _effective_supply_s: i64,
+            _margin: i64,
+        ) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_uses_injected_oslf_resource_logic() {
+        let deploy = cosigned(&n_sends(1), b"oslf-gate", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"oslf-gate", 10);
+
+        let default = admit_by_funding(vec![deploy.clone()], &reader, 0, false)
+            .await
+            .expect("default gate must not error");
+        let denied =
+            admit_by_funding_with_logic(vec![deploy.clone()], &reader, 0, false, &DenyLogic)
+                .await
+                .expect("injected gate must not error");
+
+        assert_eq!(default.admitted.len(), 1);
+        assert!(default.rejected.is_empty());
+        assert!(denied.admitted.is_empty());
+        assert_eq!(denied.rejected, vec![deploy.primary().sig.clone()]);
+        assert!(denied.debits.is_empty());
+    }
+
+    struct ZeroDemandLogic;
+
+    impl OslfResourceLogic<RhoGslt> for ZeroDemandLogic {
+        fn demand(&self, _canonical: &Par, _deploy_sig: &Sig) -> DemandEntry { DemandEntry::ZERO }
+
+        fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
+            delta_sigma::is_funded(analysis, effective_supply_s, margin)
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_recompute_uses_injected_oslf_demand() {
+        let deploy = cosigned(&n_sends(2), b"oslf-replay", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"oslf-replay", 10);
+        let key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"oslf-replay"));
+
+        let default = recompute_settlement_debits(vec![deploy.clone()], &reader, false)
+            .await
+            .expect("default recompute must not error");
+        let injected = recompute_settlement_debits_with_logic(
+            vec![deploy.clone()],
+            &reader,
+            false,
+            &ZeroDemandLogic,
+        )
+        .await
+        .expect("injected recompute must not error");
+
+        assert_eq!(default.get(&key).map(|debit| debit.amount), Some(2));
+        assert!(injected.is_empty());
     }
 
     /// §7.7 reject-both / no-partial: when the FIRST candidate in a group does
