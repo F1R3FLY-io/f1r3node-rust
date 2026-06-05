@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 // TODO: Port InfluxDB HTTP reporter from Scala implementation
-// See: node/src/main/scala/coop/rchain/node/diagnostics/BatchInfluxDBReporter.
-// scala The InfluxDB reporter requires proper integration with
-// metrics-exporter-influx crate and may need custom implementation to match the
-// Scala behavior.
+// See: node/src/main/scala/coop/rchain/node/diagnostics/BatchInfluxDBReporter.scala
+// The InfluxDB reporter requires proper integration with metrics-exporter-influx crate
+// and may need custom implementation to match the Scala behavior.
 
 pub fn create_batch_influx_db_reporter(
     _host: String,

@@ -1,0 +1,118 @@
+# =================================================================
+# F1R3FLY RUST NODE - DISTRIBUTED SHARD, VPS-2 (FOLLOWERS)
+# =================================================================
+# Runs 2 validators + 1 read-only observer. Connects to the bootstrap
+# on VPS-1 via BOOTSTRAP_HOST:40400.
+#
+# Each node on VPS-2 uses a distinct port-band in its -remote.conf so
+# they can share the same public IP without collision:
+#   validator1: 40410-40415 (protocol 40410, discovery 40414)
+#   validator2: 40420-40425 (protocol 40420, discovery 40424)
+#   readonly:   40450-40455 (protocol 40450, discovery 40454)
+#
+# Usage (on VPS-2, env from .env.remote):
+#   docker compose --env-file .env.remote -f shard.vps2.yml up -d
+#   docker compose --env-file .env.remote -f shard.vps2.yml logs -f
+#   docker compose --env-file .env.remote -f shard.vps2.yml down
+#
+# All three nodes advertise VPS2_PUBLIC_HOST with their assigned port
+# range, so peers on VPS-1 can reach each of them independently.
+
+x-rnode-env: &rnode-env
+  OPENAI_ENABLED: ${OPENAI_ENABLED:-false}
+  OPENAI_SCALA_CLIENT_API_KEY: ${OPENAI_SCALA_CLIENT_API_KEY:-}
+  MALLOC_ARENA_MAX: "2"
+  MALLOC_TRIM_THRESHOLD_: "131072"
+  MALLOC_MMAP_THRESHOLD_: "131072"
+
+services:
+  validator1:
+    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    container_name: rnode.validator1
+    environment: *rnode-env
+    command:
+      - run
+      - --host=${VPS2_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR1_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR1_PRIVATE_KEY}
+      - --genesis-validator
+    ports:
+      - "40410:40410"
+      - "40411:40411"
+      - "40412:40412"
+      - "40413:40413"
+      - "40414:40414/udp"
+      - "40415:40415"
+    volumes:
+      - validator1-data:/var/lib/rnode/
+      - ./conf/validator1-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  validator2:
+    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    container_name: rnode.validator2
+    environment: *rnode-env
+    command:
+      - run
+      - --host=${VPS2_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR2_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR2_PRIVATE_KEY}
+      - --genesis-validator
+    ports:
+      - "40420:40420"
+      - "40421:40421"
+      - "40422:40422"
+      - "40423:40423"
+      - "40424:40424/udp"
+      - "40425:40425"
+    volumes:
+      - validator2-data:/var/lib/rnode/
+      - ./conf/validator2-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  readonly:
+    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    container_name: rnode.readonly
+    environment: *rnode-env
+    command:
+      - run
+      - --host=${VPS2_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --no-upnp
+    ports:
+      - "40450:40450"
+      - "40451:40451"
+      - "40452:40452"
+      - "40453:40453"
+      - "40454:40454/udp"
+      - "40455:40455"
+    volumes:
+      - readonly-data:/var/lib/rnode/
+      - ./conf/readonly-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+
+volumes:
+  validator1-data:
+  validator2-data:
+  readonly-data:

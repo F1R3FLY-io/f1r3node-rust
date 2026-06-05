@@ -22,7 +22,7 @@ async fn execute(
     runtime.evaluate_with_term(term).await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_set_subtrie_at_prefix() {
     with_runtime("set-subtrie-prefix-", |mut runtime| async move {
         let rho_code = r#"
@@ -42,7 +42,7 @@ async fn test_set_subtrie_at_prefix() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_set_subtrie_at_root() {
     with_runtime("set-subtrie-root-", |mut runtime| async move {
         let rho_code = r#"
@@ -62,7 +62,7 @@ async fn test_set_subtrie_at_root() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_set_subtrie_empty_source() {
     with_runtime("set-subtrie-empty-", |mut runtime| async move {
         let rho_code = r#"
@@ -82,7 +82,7 @@ async fn test_set_subtrie_empty_source() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_set_subtrie_requires_write_zipper() {
     with_runtime("set-subtrie-error-", |mut runtime| async move {
         let rho_code = r#"
@@ -104,7 +104,7 @@ async fn test_set_subtrie_requires_write_zipper() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_set_subtrie_multi_level_paths() {
     with_runtime("set-subtrie-multi-level-", |mut runtime| async move {
         let rho_code = r#"

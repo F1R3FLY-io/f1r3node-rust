@@ -1,6 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/api/BlocksResponseAPITest.scala
-// See [[/docs/casper/images/
-// no_finalizable_block_mistake_with_no_disagreement_check.png]]
+// See [[/docs/casper/images/no_finalizable_block_mistake_with_no_disagreement_check.png]]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,8 +44,7 @@ fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond
     (v1, v2, v3, v1_bond, v2_bond, v3_bond, bonds)
 }
 
-// Helper function to create storage components (similar to Scala's
-// BlockDagStorageFixture)
+// Helper function to create storage components (similar to Scala's BlockDagStorageFixture)
 async fn create_storage(_prefix: &str) -> IndexedBlockDagStorage {
     let scope_id = generate_scope_id();
     let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
@@ -285,7 +283,7 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(), // shared kvm!
@@ -332,7 +330,7 @@ async fn get_blocks_should_return_all_blocks() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),
@@ -377,7 +375,7 @@ async fn get_blocks_should_return_until_depth() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),
@@ -427,7 +425,7 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         Some(tips.tips),
-        Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+        Arc::new(runtime_manager),
         block_store.clone(),
         dag.clone(),
         shared_kvm_data.clone(),

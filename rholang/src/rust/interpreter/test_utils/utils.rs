@@ -39,8 +39,7 @@ pub fn collection_proc_visit_inputs_and_env() -> (ProcVisitInputs, HashMap<Strin
                 (
                     "P".to_string(),
                     ProcSort,
-                    SourcePos { line: 1, col: 1 }, /* Use 1-based indexing consistent with
-                                                    * rholang-rs */
+                    SourcePos { line: 1, col: 1 }, // Use 1-based indexing consistent with rholang-rs
                 ),
                 ("x".to_string(), NameSort, SourcePos { line: 1, col: 1 }),
             ])

@@ -1,6 +1,5 @@
-// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.
-// scala See comm/src/test/scala/coop/rchain/comm/transport/
-// TcpTransportLayerSpec.scala
+// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.scala
+// See comm/src/test/scala/coop/rchain/comm/transport/TcpTransportLayerSpec.scala
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -377,8 +376,7 @@ impl TestProtocolDispatcher {
         }
     }
 
-    /// Convert to the required DispatchFn type for
-    /// TransportLayerServer::handle_receive
+    /// Convert to the required DispatchFn type for TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,
@@ -451,8 +449,7 @@ impl TestStreamDispatcher {
         }
     }
 
-    /// Convert to the required HandleStreamedFn type for
-    /// TransportLayerServer::handle_receive
+    /// Convert to the required HandleStreamedFn type for TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,

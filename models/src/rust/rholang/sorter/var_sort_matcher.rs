@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/VarSortMatcher.scala
 
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
 use super::sortable::Sortable;
@@ -13,7 +12,7 @@ impl Sortable<Var> for VarSortMatcher {
         match &v.var_instance {
             Some(var) => match var {
                 VarInstance::BoundVar(level) => ScoredTerm {
-                    term: *v,
+                    term: v.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                         Score::BOUND_VAR as i64,
                         *level as i64,
@@ -21,7 +20,7 @@ impl Sortable<Var> for VarSortMatcher {
                 },
 
                 VarInstance::FreeVar(level) => ScoredTerm {
-                    term: *v,
+                    term: v.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                         Score::FREE_VAR as i64,
                         *level as i64,
@@ -29,7 +28,7 @@ impl Sortable<Var> for VarSortMatcher {
                 },
 
                 VarInstance::Wildcard(_) => ScoredTerm {
-                    term: *v,
+                    term: v.clone(),
                     score: Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::WILDCARD as i64]),
                 },
             },

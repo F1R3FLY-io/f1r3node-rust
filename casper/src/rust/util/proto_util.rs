@@ -204,8 +204,7 @@ pub fn weight_from_validator(
     // Get weight from validator (from parent or current block)
     let weight = match maybe_main_parent {
         Some(parent) => weight_map(&parent).get(validator).cloned().unwrap_or(0),
-        None => weight_map(b).get(validator).cloned().unwrap_or(0), /* No parents means genesis -
-                                                                     * use itself */
+        None => weight_map(b).get(validator).cloned().unwrap_or(0), // No parents means genesis - use itself
     };
 
     Ok(weight)
@@ -369,7 +368,7 @@ pub fn unsigned_block_proto(
     };
 
     let hash = hash_block(&block);
-    block.block_hash = hash;
+    block.block_hash = hash.into();
     block
 }
 
@@ -381,12 +380,12 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
         .to_proto()
         .encode_to_vec()
         .into_iter()
-        .chain(block.body.to_proto().encode_to_vec())
-        .chain(block.sender.clone())
-        .chain(block.sig_algorithm.as_bytes().to_vec())
-        .chain(block.seq_num.to_le_bytes())
-        .chain(block.shard_id.as_bytes().to_vec())
-        .chain(block.extra_bytes.clone())
+        .chain(block.body.to_proto().encode_to_vec().into_iter())
+        .chain(block.sender.clone().into_iter())
+        .chain(block.sig_algorithm.as_bytes().to_vec().into_iter())
+        .chain(block.seq_num.to_le_bytes().into_iter())
+        .chain(block.shard_id.as_bytes().to_vec().into_iter())
+        .chain(block.extra_bytes.clone().into_iter())
         .collect();
 
     Blake2b256::hash(bytes).into()
@@ -440,8 +439,8 @@ pub fn unseen_block_hashes(
     let dags_latest_messages = dag.latest_messages()?;
     let blocks_latest_messages = to_latest_message(&block.justifications, dag)?;
 
-    // From input block perspective we want to find what latest messages are not
-    // seen  that are in the DAG latest messages.
+    // From input block perspective we want to find what latest messages are not seen
+    //  that are in the DAG latest messages.
     // - if validator is not in the justification of the block
     // - if justification contains validator's newer latest message
     let unseen_latest_messages =

@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch1/
-// MultiParentCasperSmokeSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperSmokeSpec.scala
 
 use casper::rust::util::construct_deploy;
 

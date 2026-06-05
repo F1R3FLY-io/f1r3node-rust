@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/
-// RefundDeploy.scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/costacc/RefundDeploy.scala
 
 use std::collections::HashMap;
 

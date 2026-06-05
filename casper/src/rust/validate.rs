@@ -7,6 +7,10 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+#[cfg(feature = "schnorr_secp256k1_experimental")]
+use crypto::rust::signatures::{
+    frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
+};
 use models::casper::Signature as ProtoSignature;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -48,6 +52,22 @@ impl Validate {
             Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
                 let secp256k1 = Secp256k1;
                 secp256k1.verify(data, signature, pub_key)
+            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
+        );
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        map.insert(
+            SchnorrSecp256k1::name(),
+            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+                let schnorr = SchnorrSecp256k1;
+                schnorr.verify(data, signature, pub_key)
+            }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
+        );
+        #[cfg(feature = "schnorr_secp256k1_experimental")]
+        map.insert(
+            FrostSecp256k1::name(),
+            Box::new(|data: &Vec<u8>, signature: &Vec<u8>, pub_key: &Vec<u8>| {
+                let frost = FrostSecp256k1;
+                frost.verify(data, signature, pub_key)
             }) as Box<dyn Fn(&Data, &Signature, &PublicKey) -> bool>,
         );
         map
@@ -222,99 +242,225 @@ impl Validate {
         shard_id: &str,
         expiration_threshold: i32,
         max_number_of_parents: i32,
+        max_parent_depth: i32,
+        depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
+        use crate::rust::metrics_constants::*;
+        macro_rules! __step {
+            ($metric:ident, $body:expr) => {{
+                let __t0 = std::time::Instant::now();
+                let __r = $body;
+                metrics::histogram!($metric, "source" => CASPER_METRICS_SOURCE)
+                    .record(__t0.elapsed().as_secs_f64());
+                __r
+            }};
+        }
+
         tracing::debug!(target: "f1r3fly.casper", "before-block-hash-validation");
-        match Self::block_hash(block) {
+        match __step!(
+            BLOCK_VALIDATION_BLOCK_HASH_TIME_METRIC,
+            Self::block_hash(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-timestamp-validation");
-        match Self::timestamp(block, block_store) {
+        match __step!(
+            BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC,
+            Self::timestamp(block, block_store)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-shard-identifier-validation");
-        match Self::shard_identifier(block, shard_id) {
+        match __step!(
+            BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC,
+            Self::shard_identifier(block, shard_id)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-deploys-shard-identifier-validation");
-        match Self::deploys_shard_identifier(block, shard_id) {
+        match __step!(
+            BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC,
+            Self::deploys_shard_identifier(block, shard_id)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
-        match Self::repeat_deploy(block, s, block_store, expiration_threshold) {
+        match __step!(
+            BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
+            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-block-number-validation");
-        match Self::block_number(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC,
+            Self::block_number(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-future-transaction-validation");
-        match Self::future_transaction(block) {
+        match __step!(
+            BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC,
+            Self::future_transaction(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
-        match Self::transaction_expiration(block, expiration_threshold) {
+        match __step!(
+            BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
+            Self::transaction_expiration(block, expiration_threshold)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-time-based-expiration-validation");
-        match Self::time_based_expiration(block) {
+        match __step!(
+            BLOCK_VALIDATION_TIME_BASED_EXPIRATION_TIME_METRIC,
+            Self::time_based_expiration(block)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-justification-follows-validation");
-        match Self::justification_follows(block, block_store) {
+        match __step!(
+            BLOCK_VALIDATION_JUSTIFICATION_FOLLOWS_TIME_METRIC,
+            Self::justification_follows(block, block_store)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-parents-validation");
-        match Self::parents(
-            block,
-            genesis,
-            s,
-            max_number_of_parents,
-            disable_validator_progress_check,
+        match __step!(
+            BLOCK_VALIDATION_PARENTS_TIME_METRIC,
+            Self::parents(
+                block,
+                genesis,
+                s,
+                max_number_of_parents,
+                max_parent_depth,
+                depth_buffer,
+                disable_validator_progress_check,
+            )
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-sequence-number-validation");
-        match Self::sequence_number(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_SEQUENCE_NUMBER_TIME_METRIC,
+            Self::sequence_number(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-justification-regression-validation");
-        match Self::justification_regressions(block, s) {
+        match __step!(
+            BLOCK_VALIDATION_JUSTIFICATION_REGRESSIONS_TIME_METRIC,
+            Self::justification_regressions(block, s)
+        ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
 
-        // Equivalent to Scala's "} yield s).value" - return ValidBlock if all
-        // validations passed
+        // Equivalent to Scala's "} yield s).value" - return ValidBlock if all validations passed
         Either::Right(ValidBlock::Valid)
     }
 
     /// Validate no deploy with the same sig has been produced in the chain
-    /// Agnostic of non-parent justifications
+    /// Agnostic of non-parent justifications.
+    ///
+    /// Recovery exemption: sigs present in `s.rejected_in_scope` (rejected
+    /// by a descendant merge within deploy_lifespan) may be legitimate
+    /// recovery candidates — the rejected-deploy buffer pipeline re-includes
+    /// them so their effects can land in canonical state. Without this
+    /// exemption, every recovery-path block would fail `InvalidRepeatDeploy`.
+    ///
+    /// The exemption is gated on the sig's current finalization status. A
+    /// sig in `rejected_in_scope` falls into one of two cases:
+    ///
+    ///   - `Pending` / `Expired` / `Failed`: the deploy's effects are NOT
+    ///     in canonical state (no clean canonical inclusion that survived
+    ///     descendant rejection). Re-inclusion is the only way to land
+    ///     them. Exempt from the repeat check.
+    ///
+    ///   - `Finalized`: the deploy has a clean canonical inclusion that
+    ///     was NOT invalidated by a canonical-descendant rejection. Its
+    ///     effects ARE already in canonical state. Re-inclusion would be
+    ///     double-execution, not recovery. Do NOT exempt — let the
+    ///     ancestor scan find the canonical inclusion and flag the
+    ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
+    ///     is the primary defense against this; the validator-side
+    ///     check is the second line of defense.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
+        use crate::rust::api::deploy_finalization_status::{
+            resolve as resolve_finalization_status, DeployFinalizationState,
+        };
+
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .map(|deploy| deploy.deploy.sig.to_vec())
+            .filter(|pd| {
+                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
+                    return true; // not rejected — must check
+                }
+                // Sig is in rejected_in_scope. Apply the exemption only if
+                // the sig is NOT Finalized — otherwise re-inclusion is
+                // double-execution and the repeat check must catch it.
+                match resolve_finalization_status(
+                    &s.dag,
+                    block_store,
+                    expiration_threshold as i64,
+                    &pd.deploy.sig,
+                ) {
+                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
+                        let canonical_block_str = status
+                            .latest_block_hash
+                            .as_ref()
+                            .map(|h| PrettyPrinter::build_string_bytes(h))
+                            .unwrap_or_else(|| "<none>".to_string());
+                        tracing::warn!(
+                            "repeat_deploy: sig {} is in rejected_in_scope but \
+                             resolves to Finalized (clean canonical inclusion at \
+                             {}); declining the recovery exemption to prevent \
+                             double-execution",
+                            hex::encode(&pd.deploy.sig),
+                            canonical_block_str,
+                        );
+                        true // keep in check set so the ancestor scan finds the repeat
+                    }
+                    Ok(_) => false, // status != Finalized → exempt (recovery)
+                    Err(err) => {
+                        // Resolver failures are conservative-fail: keep the sig
+                        // in the check set so an inconsistency surfaces as
+                        // InvalidRepeatDeploy rather than being silently
+                        // exempted as a recovery candidate.
+                        tracing::warn!(
+                            "repeat_deploy: deploy_finalization_status::resolve \
+                             failed for sig {}: {} — keeping sig in check set \
+                             rather than granting recovery exemption",
+                            hex::encode(&pd.deploy.sig),
+                            err,
+                        );
+                        true
+                    }
+                }
+            })
+            .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
@@ -350,34 +496,33 @@ impl Validate {
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-            let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
-            let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
-            let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
+      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
+      let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
+      let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
 
-            let duplicated_deploys = proto_util::deploys(&duplicated_block);
-            let duplicated_deploy = duplicated_deploys
-                .iter()
-                .map(|processed_deploy| &processed_deploy.deploy)
-                .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-                .expect("Duplicated deploy should exist");
+      let duplicated_deploys = proto_util::deploys(&duplicated_block);
+      let duplicated_deploy = duplicated_deploys
+        .iter()
+        .map(|processed_deploy| &processed_deploy.deploy)
+        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
+        .expect("Duplicated deploy should exist");
 
-            let term = &duplicated_deploy.data.term;
-            let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-            let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
+      let term = &duplicated_deploy.data.term;
+      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
+      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
 
-            let message = format!(
-                "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the \
-                 block {} as current block {}",
-                term,
-                &deployer_string,
-                timestamp_string,
-                block_hash_string,
-                current_block_hash_string
-            );
+      let message = format!(
+        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
+        term,
+        &deployer_string,
+        timestamp_string,
+        block_hash_string,
+        current_block_hash_string
+      );
 
-            tracing::warn!("{}", Self::ignore(block, &message));
-            BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-        });
+      tracing::warn!("{}", Self::ignore(block, &message));
+      BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
+    });
 
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
@@ -411,8 +556,7 @@ impl Validate {
                 Self::ignore(
                     b,
                     &format!(
-                        "block timestamp {} is not between latest parent block time and current \
-                         time.",
+                        "block timestamp {} is not between latest parent block time and current time.",
                         timestamp
                     )
                 )
@@ -522,10 +666,9 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
-    /// Validates that the block does not contain deploys that have expired
-    /// based on their expirationTimestamp field. A deploy is time-expired
-    /// if its expirationTimestamp is set (> 0) and the block's timestamp
-    /// exceeds the expirationTimestamp.
+    /// Validates that the block does not contain deploys that have expired based on their
+    /// expirationTimestamp field. A deploy is time-expired if its expirationTimestamp is
+    /// set (> 0) and the block's timestamp exceeds the expirationTimestamp.
     pub fn time_based_expiration(b: &BlockMessage) -> ValidBlockProcessing {
         let block_timestamp = b.header.timestamp;
         let processed_deploys = proto_util::deploys(b);
@@ -540,8 +683,7 @@ impl Validate {
 
         let maybe_error = maybe_time_expired_deploy.map(|expired_deploy| {
             let message = format!(
-                "block contains a time-expired deploy with expirationTimestamp={:?} but block \
-                 timestamp is {}: {}",
+                "block contains a time-expired deploy with expirationTimestamp={:?} but block timestamp is {}: {}",
                 expired_deploy.data.expiration_timestamp.unwrap_or(0),
                 block_timestamp,
                 expired_deploy.data.term
@@ -554,11 +696,10 @@ impl Validate {
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
     }
 
-    /// Works with either efficient justifications or full explicit
-    /// justifications. Specifically, with efficient justifications, if a
-    /// block B doesn't update its creator justification, this check will
-    /// fail as expected. The exception is when B's creator justification is
-    /// the genesis block.
+    /// Works with either efficient justifications or full explicit justifications.
+    /// Specifically, with efficient justifications, if a block B doesn't update its
+    /// creator justification, this check will fail as expected. The exception is when
+    /// B's creator justification is the genesis block.
     pub fn sequence_number(b: &BlockMessage, s: &mut CasperSnapshot) -> ValidBlockProcessing {
         let creator_justification_seq_number =
             match proto_util::creator_justification_block_message(b) {
@@ -634,8 +775,7 @@ impl Validate {
         }
     }
 
-    // TODO: Scala message -> Double check this validation isn't shadowed by the
-    // blockSignature validation
+    // TODO: Scala message -> Double check this validation isn't shadowed by the blockSignature validation
     pub fn block_hash(b: &BlockMessage) -> ValidBlockProcessing {
         let block_hash_computed = proto_util::hash_block(b);
         if b.block_hash == block_hash_computed {
@@ -659,22 +799,21 @@ impl Validate {
 
     /// Validates that a validator has made progress since their previous block.
     ///
-    /// Rule: If validator V produced block B_prev, then V's next block B_new
-    /// must have at least one parent that was not known to V when creating
-    /// B_prev.
+    /// Rule: If validator V produced block B_prev, then V's next block B_new must have
+    /// at least one parent that was not known to V when creating B_prev.
     ///
-    /// Exception: Blocks containing user deploys are ALWAYS valid regardless of
-    /// parent status. Users pay for their deploys, so validators must
-    /// provide service immediately.
+    /// Exception: Blocks containing user deploys are ALWAYS valid regardless of parent status.
+    /// Users pay for their deploys, so validators must provide service immediately.
     ///
-    /// This ensures validators only propose empty blocks when they have
-    /// received new information, preventing spam while allowing immediate
-    /// service for paying users.
+    /// This ensures validators only propose empty blocks when they have received new information,
+    /// preventing spam while allowing immediate service for paying users.
     pub fn parents(
         b: &BlockMessage,
         genesis: &BlockMessage,
         s: &mut CasperSnapshot,
         max_number_of_parents: i32,
+        max_parent_depth: i32,
+        depth_buffer: i32,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         // Check if block contains user deploys (non-system deploys)
@@ -699,9 +838,8 @@ impl Validate {
         };
 
         // Check maxNumberOfParents constraint
-        // Note: We use -1 as "unlimited" here (matching config file convention) rather
-        // than Estimator::UNLIMITED_PARENTS (i32::MAX) since this value comes
-        // from config parsing.
+        // Note: We use -1 as "unlimited" here (matching config file convention) rather than
+        // Estimator::UNLIMITED_PARENTS (i32::MAX) since this value comes from config parsing.
         const UNLIMITED_PARENTS: i32 = -1;
         if max_number_of_parents != UNLIMITED_PARENTS
             && parent_hashes.len() > max_number_of_parents as usize
@@ -713,6 +851,50 @@ impl Validate {
             );
             tracing::warn!("{}", Self::ignore(b, &message));
             return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+        }
+
+        // Parent-depth enforcement: symmetric to proposer-side `Estimator::filterDeepParents`.
+        // Reject any block whose parents fall outside the consensus-permitted horizon
+        // (depth from highest tip > max_parent_depth + depth_buffer). An honest proposer
+        // already drops these parents before signing; this check rejects blocks from
+        // buggy or malicious proposers that would otherwise hit `UnknownRootError` on
+        // joiners that don't carry pre-horizon rspace history.
+        //
+        // Sentinel: `max_parent_depth == i32::MAX` disables the check (matches the
+        // proposer-side convention in `multi_parent_casper_impl.rs::create_block`).
+        //
+        // Genesis is exempt: validators justify back to genesis as the ultimate ancestor,
+        // and on a long-running chain genesis would always exceed the depth horizon.
+        // We compare by hash to the passed `genesis` BlockMessage rather than to
+        // `block_number == 0` so this works correctly regardless of how the chain's
+        // genesis ended up indexed (test fixtures may assign genesis a non-zero
+        // block_number; production assigns 0).
+        if max_parent_depth != i32::MAX {
+            let max_allowed_depth = (max_parent_depth as i64) + (depth_buffer as i64);
+            let highest_tip_height = s.dag.latest_block_number();
+            for parent_hash in &parent_hashes {
+                if parent_hash == &genesis.block_hash {
+                    continue; // genesis exempt
+                }
+                let parent_meta = match s.dag.lookup_unsafe(parent_hash) {
+                    Ok(meta) => meta,
+                    Err(_) => continue, // missing-parent handled by dependency gate, not here
+                };
+                let depth = highest_tip_height - parent_meta.block_number;
+                if depth > max_allowed_depth {
+                    let message = format!(
+                        "parent {} at block_number {} is at depth {} from highest tip {} \
+                         (exceeds max_parent_depth + depth_buffer = {})",
+                        PrettyPrinter::build_string_bytes(parent_hash),
+                        parent_meta.block_number,
+                        depth,
+                        highest_tip_height,
+                        max_allowed_depth
+                    );
+                    tracing::warn!("{}", Self::ignore(b, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents));
+                }
+            }
         }
 
         let validator = &b.sender;
@@ -743,13 +925,11 @@ impl Validate {
                 };
 
                 // Special case: if previous block is genesis (no parents), allow proposal
-                // This breaks the deadlock after genesis ceremony when all validators are at
-                // genesis
+                // This breaks the deadlock after genesis ceremony when all validators are at genesis
                 let is_genesis = prev_block_meta.parents.is_empty();
 
                 // BFS traverse to get ancestor closure of previous block
-                // Stop traversal at finalized blocks to prevent unbounded traversal on long
-                // chains
+                // Stop traversal at finalized blocks to prevent unbounded traversal on long chains
                 let ancestor_hashes: Vec<BlockHash> =
                     dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
                         match s.dag.lookup(hash) {
@@ -762,8 +942,7 @@ impl Validate {
                 // Check if at least one parent is new (not in ancestor closure)
                 let has_new_parent = parent_hashes.iter().any(|p| !ancestor_set.contains(p));
                 // Heartbeat-empty block: no user deploys and only CloseBlock system deploy.
-                // Allow these to keep liveness when cluster is stale and parent frontier does
-                // not move.
+                // Allow these to keep liveness when cluster is stale and parent frontier does not move.
                 let is_heartbeat_empty_block = !has_user_deploys
                     && b.body.system_deploys.len() == 1
                     && matches!(
@@ -796,9 +975,9 @@ impl Validate {
                         .join(",");
                     let prev_block_string = PrettyPrinter::build_string_bytes(&prev_block_hash);
                     let message = format!(
-                        "validator {} has not made progress. Empty block parents [{}] are all \
-                         ancestors of previous block {}. Validator must receive new blocks before \
-                         proposing empty blocks.",
+                        "validator {} has not made progress. \
+                         Empty block parents [{}] are all ancestors of previous block {}. \
+                         Validator must receive new blocks before proposing empty blocks.",
                         PrettyPrinter::build_string_bytes(validator),
                         parents_string,
                         prev_block_string
@@ -856,15 +1035,14 @@ impl Validate {
     }
 
     /// Justification regression check.
-    /// Compares justifications that has been already used by sender and
-    /// recorded in the DAG with justifications used by the same sender in
-    /// new block `b` and assures that there is no regression.
+    /// Compares justifications that has been already used by sender and recorded in the DAG with
+    /// justifications used by the same sender in new block `b` and assures that there is no
+    /// regression.
     ///
-    /// When we switch between equivocation forks for a slashed validator, we
-    /// will potentially get a justification regression that is valid. We
-    /// cannot ignore this as the creator only drops the justification block
-    /// created by the equivocator on the following block. Hence, we ignore
-    /// justification regressions involving the block's sender and
+    /// When we switch between equivocation forks for a slashed validator, we will potentially get a
+    /// justification regression that is valid. We cannot ignore this as the creator only drops the
+    /// justification block created by the equivocator on the following block.
+    /// Hence, we ignore justification regressions involving the block's sender and
     /// let checkEquivocations handle it instead.
     // TODO double check this logic
     pub fn justification_regressions(
@@ -918,8 +1096,7 @@ impl Validate {
                             let no_sender_in_cur_lms = !cur_lms.contains_key(sender);
 
                             if no_sender_in_cur_lms {
-                                // If there is no justification to compare with - regression is not
-                                // possible
+                                // If there is no justification to compare with - regression is not possible
                                 remaining_lms = tail.to_vec();
                                 continue;
                             }
@@ -933,7 +1110,7 @@ impl Validate {
                                     Err(e) => {
                                         return Either::Left(BlockError::BlockException(
                                             CasperError::from(e),
-                                        ));
+                                        ))
                                     }
                                 };
                             let cur_justification =
@@ -942,7 +1119,7 @@ impl Validate {
                                     Err(e) => {
                                         return Either::Left(BlockError::BlockException(
                                             CasperError::from(e),
-                                        ));
+                                        ))
                                     }
                                 };
 
@@ -962,8 +1139,7 @@ impl Validate {
                                 regression
                             };
 
-                            // Exit when regression detected, or continue to check remaining Latest
-                            // Messages
+                            // Exit when regression detected, or continue to check remaining Latest Messages
                             if regression_detected {
                                 return Either::Left(BlockError::Invalid(
                                     InvalidBlock::JustificationRegression,
@@ -981,9 +1157,8 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B
-    /// is still bonded, return a RejectableBlock. Otherwise, return an
-    /// IncludeableBlock.
+    /// If block contains an invalid justification block B and the creator of B is still bonded,
+    /// return a RejectableBlock. Otherwise, return an IncludeableBlock.
     pub fn neglected_invalid_block(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1011,8 +1186,8 @@ impl Validate {
             }
         });
 
-        // Recovery path: if this block carries slash system deploys, allow it through
-        // so validators can converge by slashing the offending branch.
+        // Recovery path: if this block carries slash system deploys, allow it through so
+        // validators can converge by slashing the offending branch.
         let has_slash_system_deploys = block.body.system_deploys.iter().any(|system_deploy| {
             matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
                 system_deploy: SystemDeployData::Slash { .. },

@@ -1,5 +1,4 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/
-// SslSessionClientInterceptor.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/SslSessionClientInterceptor.scala
 
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use hex;
@@ -11,11 +10,10 @@ use tonic::{Request, Response, Status};
 
 /// SSL Session Client Interceptor for validating TLS sessions and certificates
 ///
-/// This interceptor validates gRPC responses to ensure they come from trusted
-/// peers in the correct network. It performs two main validations:
+/// This interceptor validates gRPC responses to ensure they come from trusted peers
+/// in the correct network. It performs two main validations:
 /// 1. Network ID validation - ensures responses are from the expected network
-/// 2. Certificate validation - verifies the sender's identity using TLS
-///    certificates
+/// 2. Certificate validation - verifies the sender's identity using TLS certificates
 #[derive(Clone, Debug)]
 pub struct SslSessionClientInterceptor {
     network_id: String,
@@ -192,8 +190,7 @@ impl SslSessionClientInterceptor {
         let public_key_info = cert.public_key();
         let public_key_bytes = &public_key_info.subject_public_key.data;
 
-        // Validate secp256r1 uncompressed format (0x04 + 32-byte x + 32-byte y = 65
-        // bytes)
+        // Validate secp256r1 uncompressed format (0x04 + 32-byte x + 32-byte y = 65 bytes)
         if public_key_bytes.len() == 65 && public_key_bytes[0] == 0x04 {
             PublicKey::from_sec1_bytes(public_key_bytes).map_err(|e| {
                 tracing::warn!("Failed to parse secp256r1 public key: {}", e);

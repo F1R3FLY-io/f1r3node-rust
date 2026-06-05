@@ -4,10 +4,14 @@
 
 set -e
 
-# Configuration (matching build.sbt)
+# Configuration
 DOCKER_REPOSITORY="f1r3flyindustries"
-IMAGE_NAME="f1r3fly-rust-node"
+IMAGE_NAME="f1r3fly-rust"
 FULL_IMAGE_NAME="${DOCKER_REPOSITORY}/${IMAGE_NAME}"
+# Auto-detect version from Cargo.toml if not set via env
+if [ -z "${VERSION:-}" ]; then
+    VERSION=$(grep '^version = ' node/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+fi
 VERSION="${VERSION:-latest}"
 
 # Build the Docker image
@@ -20,6 +24,7 @@ docker_build() {
         docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:latest" \
             --push \
@@ -28,6 +33,7 @@ docker_build() {
         echo "Building single-architecture image..."
         docker build \
             --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:${VERSION}" \
             --tag "${FULL_IMAGE_NAME}:latest" \
             .
@@ -40,6 +46,7 @@ docker_build_local() {
     echo "Building Docker image for local use..."
     docker build \
         --file node/Dockerfile \
+        --build-arg VERSION="${VERSION}" \
         --tag "${IMAGE_NAME}:local" \
         --tag "${FULL_IMAGE_NAME}:local" \
         .

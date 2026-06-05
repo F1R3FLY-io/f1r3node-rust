@@ -191,8 +191,7 @@ impl StreamHandler {
     }
 
     /// Initialize a new streaming operation
-    /// Creates a cache entry with "packet_send/" prefix and returns a new
-    /// Streamed instance.
+    /// Creates a cache entry with "packet_send/" prefix and returns a new Streamed instance.
     pub fn init(cache: &StreamCache) -> Result<Streamed, CommError> {
         let key = PacketOps::create_cache_entry("packet_send", cache)?;
         Ok(Streamed::new(key))
@@ -200,9 +199,8 @@ impl StreamHandler {
 
     /// Handle a stream of chunks with proper resource management
     ///
-    /// This method processes a stream of chunks using the circuit breaker
-    /// pattern and provides proper cleanup in all scenarios (success,
-    /// failure, errors).
+    /// This method processes a stream of chunks using the circuit breaker pattern
+    /// and provides proper cleanup in all scenarios (success, failure, errors).
     pub async fn handle_stream<S>(
         stream: S,
         circuit_breaker: CircuitBreaker,
@@ -374,8 +372,8 @@ impl StreamHandler {
 
     /// Restore a blob from cache using a StreamMessage
     ///
-    /// Retrieves the cached data, decompresses if necessary, and creates a
-    /// Blob. Cleans up the cache entry after processing.
+    /// Retrieves the cached data, decompresses if necessary, and creates a Blob.
+    /// Cleans up the cache entry after processing.
     pub async fn restore(msg: &StreamMessage, cache: &StreamCache) -> Result<Blob, CommError> {
         // Read data from cache
         let content = match cache.get(&msg.key) {

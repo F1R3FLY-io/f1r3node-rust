@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/
-// ReceiveSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ReceiveSortMatcher.scala
 
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
@@ -50,7 +49,7 @@ impl ReceiveSortMatcher {
                 vec![sorted_channel.score]
                     .into_iter()
                     .chain(sorted_patterns.into_iter().map(|p| p.score))
-                    .chain(vec![sorted_remainder.score])
+                    .chain(vec![sorted_remainder.score].into_iter())
                     .collect(),
             ),
         }
@@ -65,7 +64,7 @@ impl Sortable<Receive> for ReceiveSortMatcher {
             .binds
             .clone()
             .into_iter()
-            .map(ReceiveSortMatcher::sort_bind)
+            .map(|rb| ReceiveSortMatcher::sort_bind(rb))
             .collect();
 
         let persistent_score: i64 = if r.persistent { 1 } else { 0 };

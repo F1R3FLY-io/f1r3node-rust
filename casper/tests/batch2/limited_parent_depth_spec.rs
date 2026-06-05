@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch2/LimitedParentDepthSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/batch2/LimitedParentDepthSpec.scala
 
 use casper::rust::errors::CasperError;
 use casper::rust::util::construct_deploy;
@@ -114,10 +113,9 @@ async fn estimator_should_obey_absent_parent_depth_limitation() {
         .await
         .unwrap();
 
-    // With multi-parent merging, all validators' latest blocks are included as
-    // parents. Genesis has 4 validators, only 2 nodes create blocks, so
-    // validators 2 and 3 still have genesis as their latest message. This
-    // results in 3 unique parents:
+    // With multi-parent merging, all validators' latest blocks are included as parents.
+    // Genesis has 4 validators, only 2 nodes create blocks, so validators 2 and 3 still
+    // have genesis as their latest message. This results in 3 unique parents:
     // - b1 (from validator 0)
     // - b5 (from validator 1)
     // - genesis (from validators 2 and 3 who haven't created blocks)

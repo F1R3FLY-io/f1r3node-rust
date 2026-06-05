@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/
-// CasperInvalidBlocksContract.scala
+// See casper/src/test/scala/coop/rchain/casper/helper/CasperInvalidBlocksContract.scala
 
 use models::rhoapi::{ListParWithRandom, Par};
 use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};

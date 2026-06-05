@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/helper/SysAuthTokenContract.scala
 
 use models::rhoapi::{ListParWithRandom, Par};
 use models::rust::utils::new_gsys_auth_token_par;

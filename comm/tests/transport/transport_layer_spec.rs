@@ -254,12 +254,10 @@ async fn sending_message_to_unavailable_peer_should_fail_with_peer_unavailable()
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection
-    // error)
+    // Should fail with some error (could be PeerUnavailable or other connection error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as
-    // different errors
+    // Accept any communication error type since dead peer can manifest as different errors
 }
 
 #[tokio::test]
@@ -283,12 +281,10 @@ async fn streaming_to_unavailable_peer_should_fail_with_peer_unavailable() {
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection
-    // error)
+    // Should fail with some error (could be PeerUnavailable or other connection error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as
-    // different errors
+    // Accept any communication error type since dead peer can manifest as different errors
 }
 
 // **Edge Cases and Boundary Tests**
@@ -415,8 +411,7 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                         let local = &local;
                         let remote = &remote;
                         async move {
-                            // Use packet with unique content to avoid RecentHashFilter
-                            // deduplication
+                            // Use packet with unique content to avoid RecentHashFilter deduplication
                             let packet = models::routing::Packet {
                                 content: prost::bytes::Bytes::from(format!("concurrent_msg_{}", i)),
                                 type_id: "test".to_string(),

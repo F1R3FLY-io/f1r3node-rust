@@ -158,8 +158,7 @@ mod tests {
             // then
             assert!(result.is_ok());
 
-            // Should have attempted to connect to only A and C (not B, since we're already
-            // connected)
+            // Should have attempted to connect to only A and C (not B, since we're already connected)
             let called_peers = test_state.get_called_peers();
             assert_eq!(called_peers.len(), 2);
             assert!(called_peers.contains(&peer("A")));

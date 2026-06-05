@@ -27,9 +27,8 @@ fn should_create_dag_for_simple_two_blocks_with_one_merge_block() {
     let result: Vec<VerifiableEdge> = MachineVerifiableDag::apply(toposort, fetch);
 
     // then
-    // Note: We use PrettyPrinter::build_string_bytes instead of .show() as Scala
-    // does because BlockHash (prost::bytes::Bytes) doesn't implement Display
-    // trait in Rust
+    // Note: We use PrettyPrinter::build_string_bytes instead of .show() as Scala does
+    // because BlockHash (prost::bytes::Bytes) doesn't implement Display trait in Rust
     assert_eq!(
         result[0],
         VerifiableEdge::new(

@@ -17,8 +17,7 @@ impl KeyUtil {
     pub fn write_keys<P: AsRef<Path>>(
         private_key: &PrivateKey,
         public_key: &PublicKey,
-        sig_algorithm: Box<dyn SignaturesAlg>, /* Added for compatibility with Scala, while it
-                                                * is not used anywhere in the code */
+        sig_algorithm: Box<dyn SignaturesAlg>, // Added for compatibility with Scala, while it is not used anywhere in the code
         password: &str,
         private_key_pem_path: P,
         public_key_pem_path: P,
@@ -74,8 +73,7 @@ impl KeyUtil {
     ) -> Result<()> {
         let path = path.as_ref();
 
-        // Export as encrypted PEM using AES-256-CBC (matching Scala's
-        // JcePEMEncryptorBuilder)
+        // Export as encrypted PEM using AES-256-CBC (matching Scala's JcePEMEncryptorBuilder)
         let encrypted_pem = pkey
             .private_key_to_pem_pkcs8_passphrase(
                 openssl::symm::Cipher::aes_256_cbc(),

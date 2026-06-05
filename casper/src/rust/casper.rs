@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -10,6 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
@@ -93,11 +95,10 @@ pub trait Casper {
         snapshot: &mut CasperSnapshot,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
 
-    /// Validate a self-created block, skipping the expensive checkpoint replay
-    /// and bonds_cache steps since both were already computed during
-    /// `block_creator::create`. All other validation steps (block_summary,
-    /// neglected_invalid_block, phlo_price, equivocation checks,
-    /// block-index computation) still run.
+    /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
+    /// steps since both were already computed during `block_creator::create`.
+    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
+    /// equivocation checks, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -142,7 +143,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>>;
+    /// Read-only access to the shard configuration. Used by APIs that need
+    /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
+    /// finalization status.
+    fn casper_shard_conf(&self) -> &CasperShardConf;
+
+    fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
 
@@ -151,9 +157,8 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// Check if pending deploys exist in storage (not yet included in blocks).
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError>;
 
-    /// Check if pending deploys exist in storage using an already computed
-    /// snapshot. Default fallback uses the legacy method and may compute a
-    /// fresh snapshot.
+    /// Check if pending deploys exist in storage using an already computed snapshot.
+    /// Default fallback uses the legacy method and may compute a fresh snapshot.
     async fn has_pending_deploys_in_storage_for_snapshot(
         &self,
         _snapshot: &CasperSnapshot,
@@ -165,11 +170,12 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
-    runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
     casper_shard_conf: CasperShardConf,
@@ -184,6 +190,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(Mutex::new(deploy_storage)),
+        rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -198,9 +205,9 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
 }
 
 /**
- * Casper snapshot is a state that is changing in discrete manner with each
- * new block added. This class represents full information about the state.
- * It is required for creating new blocks as well as for validating blocks.
+ * Casper snapshot is a state that is changing in discrete manner with each new block added.
+ * This class represents full information about the state. It is required for creating new blocks
+ * as well as for validating blocks.
  */
 #[derive(Clone)]
 pub struct CasperSnapshot {
@@ -212,9 +219,13 @@ pub struct CasperSnapshot {
     pub justifications: DashSet<Justification>,
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     /// Signatures of deploys seen in ancestry window.
-    /// Keeping signatures avoids retaining full deploy payloads in long-lived
-    /// snapshots.
+    /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
     pub deploys_in_scope: Arc<DashSet<Bytes>>,
+    /// Signatures of deploys that appeared in a merge block's rejected_deploys list
+    /// within the ancestry window. Intersects with `deploys_in_scope` when a deploy
+    /// was executed in one block and rejected during a descendant merge; the block
+    /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
+    pub rejected_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
     pub max_seq_nums: DashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -231,6 +242,7 @@ impl CasperSnapshot {
             justifications: DashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: DashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
@@ -275,22 +287,30 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
-    /// Disable late block filtering in DagMerger (for testing or special
-    /// configurations)
+    /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
     /// Disable validator progress check (for standalone mode)
     pub disable_validator_progress_check: bool,
     /// Enable background garbage collection for mergeable channels.
-    /// When enabled, uses safe reachability-based GC (required for multi-parent
-    /// mode). When disabled (default), mergeable data is retained.
+    /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
+    /// When disabled (default), mergeable data is retained.
     pub enable_mergeable_channel_gc: bool,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
-}
-
-impl Default for CasperShardConf {
-    fn default() -> Self { Self::new() }
+    pub finalizer_conf: crate::rust::casper_conf::FinalizerConf,
+    pub synchrony_recovery_stall_window: Duration,
+    pub synchrony_recovery_cooldown: Duration,
+    pub synchrony_recovery_max_bypasses: u32,
+    pub synchrony_finalized_baseline_enabled: bool,
+    pub synchrony_finalized_baseline_max_distance: u64,
+    pub max_user_deploys_per_block: u32,
+    /// Native token metadata baked into the TokenMetadata contract at genesis.
+    /// Present on every node (joiner, validator, ceremony master, observer, standalone)
+    /// so each path can log the effective values at startup.
+    pub native_token_name: String,
+    pub native_token_symbol: String,
+    pub native_token_decimals: u32,
 }
 
 impl CasperShardConf {
@@ -316,12 +336,22 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            finalizer_conf: crate::rust::casper_conf::FinalizerConf::default(),
+            synchrony_recovery_stall_window: Duration::from_secs(60),
+            synchrony_recovery_cooldown: Duration::from_secs(20),
+            synchrony_recovery_max_bypasses: 2,
+            synchrony_finalized_baseline_enabled: true,
+            synchrony_finalized_baseline_max_distance: 2048,
+            max_user_deploys_per_block: 32,
+            native_token_name: "F1R3CAP".to_string(),
+            native_token_symbol: "F1R3".to_string(),
+            native_token_decimals: 8,
         }
     }
 }
 
-// TODO(#325): Move test_helpers to a #[cfg(test)] module or separate test-utils
-// crate to avoid including test code in production binaries.
+// TODO(#325): Move test_helpers to a #[cfg(test)] module or separate test-utils crate
+// to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
 pub mod test_helpers {
     use async_trait::async_trait;
@@ -329,8 +359,7 @@ pub mod test_helpers {
 
     use super::*;
 
-    /// A test implementation of MultiParentCasper that returns a configurable
-    /// snapshot and LFB.
+    /// A test implementation of MultiParentCasper that returns a configurable snapshot and LFB.
     pub struct TestCasperWithSnapshot {
         snapshot: CasperSnapshot,
         lfb: BlockMessage,
@@ -498,7 +527,9 @@ pub mod test_helpers {
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-        fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
+        fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+        fn runtime_manager(&self) -> Arc<RuntimeManager> {
             unimplemented!("runtime_manager not needed for heartbeat tests")
         }
 

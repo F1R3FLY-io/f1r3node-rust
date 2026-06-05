@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
-// Moved from casper/tests/helper/block_generator.rs to
-// casper/src/rust/test_utils/helper/block_generator.rs All imports fixed for
-// library crate context
+// Moved from casper/tests/helper/block_generator.rs to casper/src/rust/test_utils/helper/block_generator.rs
+// All imports fixed for library crate context
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -74,6 +73,7 @@ async fn compute_block_checkpoint(
         runtime_manager,
         BlockData::from_block(block),
         HashMap::new(),
+        None,
     )
     .await?;
 

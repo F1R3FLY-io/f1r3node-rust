@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/
-// LfsStateRequesterEffectsSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/LfsStateRequesterEffectsSpec.scala
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
@@ -29,12 +28,10 @@ pub enum TestError {
 }
 
 /// Create an ApprovedBlock from a BlockMessage with specific state hash
-/// Scala equivalent: def createApprovedBlock(block: BlockMessage):
-/// ApprovedBlock
+/// Scala equivalent: def createApprovedBlock(block: BlockMessage): ApprovedBlock
 fn create_approved_block_with_state_hash(state_hash: Blake2b256Hash) -> ApprovedBlock {
     // Create a block with the specified post state hash
-    // Scala equivalent: blockImplicits.getRandomBlock(setPostStateHash =
-    // historyHash1.toByteString.some)
+    // Scala equivalent: blockImplicits.getRandomBlock(setPostStateHash = historyHash1.toByteString.some)
     let block = get_random_block(
         None,
         None,
@@ -64,8 +61,7 @@ fn create_approved_block_with_state_hash(state_hash: Blake2b256Hash) -> Approved
 }
 
 /// Create hash from hex string (padding to 32 bytes)
-/// Scala equivalent: def createHash(s: String) =
-/// Blake2b256Hash.fromHex(s.padTo(64, '0'))
+/// Scala equivalent: def createHash(s: String) = Blake2b256Hash.fromHex(s.padTo(64, '0'))
 fn create_hash(s: &str) -> Blake2b256Hash {
     // Pad the string to 64 hex characters (32 bytes) by adding '0's at the end
     let padded = format!("{:0<64}", s);
@@ -73,8 +69,7 @@ fn create_hash(s: &str) -> Blake2b256Hash {
 }
 
 /// Create request tuple from state path
-/// Scala equivalent: def mkRequest(path: StatePartPath) = (path,
-/// LfsTupleSpaceRequester.pageSize)
+/// Scala equivalent: def mkRequest(path: StatePartPath) = (path, LfsTupleSpaceRequester.pageSize)
 fn mk_request(path: StatePartPath) -> (StatePartPath, i32) { (path, PAGE_SIZE) }
 
 /// Approved block state (start of the state)
@@ -88,13 +83,11 @@ const HISTORY_HASH_2_STR: &str = "2a";
 /// Chunk 3
 
 /// Invalid test data
-/// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"),
-/// ByteString.EMPTY))
+/// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"), ByteString.EMPTY))
 const INVALID_HASH_STR: &str = "666aaaaa";
 
 /// Individual test data constants - matching Scala version structure
-/// Scala equivalent: Multiple val declarations for historyPath1, history1,
-/// data1, etc.
+/// Scala equivalent: Multiple val declarations for historyPath1, history1, data1, etc.
 
 /// Get approved block state (start of the state)
 /// Scala equivalent: val historyHash1 = createHash("1a")
@@ -103,8 +96,7 @@ fn history_hash_1() -> Blake2b256Hash { create_hash(HISTORY_HASH_1_STR) }
 /// Scala equivalent: val historyPath1 = List((historyHash1, None))
 fn history_path_1() -> StatePartPath { vec![(history_hash_1(), None)] }
 
-/// Scala equivalent: val history1 = Seq((createHash("1a1"), ByteString.EMPTY),
-/// (createHash("1a2"), ByteString.EMPTY))
+/// Scala equivalent: val history1 = Seq((createHash("1a1"), ByteString.EMPTY), (createHash("1a2"), ByteString.EMPTY))
 fn history_1() -> Vec<(Blake2b256Hash, Bytes)> {
     vec![
         (create_hash("1a1"), Bytes::new()),
@@ -125,8 +117,7 @@ fn history_path_2() -> StatePartPath { vec![(history_hash_2(), None)] }
 /// Scala equivalent: val history2 = Seq((createHash("2a1"), ByteString.EMPTY))
 fn history_2() -> Vec<(Blake2b256Hash, Bytes)> { vec![(create_hash("2a1"), Bytes::new())] }
 
-/// Scala equivalent: val data2 = Seq((createHash("2b1"), ByteString.EMPTY),
-/// (createHash("2b2"), ByteString.EMPTY))
+/// Scala equivalent: val data2 = Seq((createHash("2b1"), ByteString.EMPTY), (createHash("2b2"), ByteString.EMPTY))
 fn data_2() -> Vec<(Blake2b256Hash, Bytes)> {
     vec![
         (create_hash("2b1"), Bytes::new()),
@@ -135,13 +126,11 @@ fn data_2() -> Vec<(Blake2b256Hash, Bytes)> {
 }
 
 /// Chunk 3
-/// Scala equivalent: val historyPath3 = List((historyHash2, None)) - Note:
-/// reuses hash2
+/// Scala equivalent: val historyPath3 = List((historyHash2, None)) - Note: reuses hash2
 fn history_path_3() -> StatePartPath { vec![(history_hash_2(), None)] }
 
 /// Invalid test data
-/// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"),
-/// ByteString.EMPTY))
+/// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"), ByteString.EMPTY))
 fn invalid_history() -> Vec<(Blake2b256Hash, Bytes)> {
     vec![(create_hash(INVALID_HASH_STR), Bytes::new())]
 }
@@ -154,8 +143,7 @@ type SavedStoreItems = Vec<(Blake2b256Hash, Bytes)>;
 /// Scala equivalent: The anonymous Mock[F] implementation in createMock
 pub struct MockImpl {
     /// Channel sender to simulate receiving store items from external source
-    /// Scala equivalent:
-    /// responseQueue.enqueue(Stream.emits(msgs)).compile.drain
+    /// Scala equivalent: responseQueue.enqueue(Stream.emits(msgs)).compile.drain
     store_items_sender: mpsc::Sender<StoreItemsMessage>,
 
     /// Channel receiver to observe outgoing state chunk requests
@@ -175,8 +163,7 @@ pub struct MockImpl {
     validation_state: Arc<Mutex<ValidationState>>,
 
     /// The actual LFS tuple space requester stream
-    /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] =
-    /// processingStream
+    /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] = processingStream
     stream: Option<mpsc::UnboundedReceiver<ST<StatePartPath>>>,
 }
 
@@ -216,8 +203,7 @@ impl MockImpl {
     fn setup(&self) -> Arc<Mutex<ValidationState>> { self.validation_state.clone() }
 
     /// Get the next state from the processing stream
-    /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] =
-    /// processingStream
+    /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] = processingStream
     async fn next_stream_state(&mut self) -> Option<ST<StatePartPath>> {
         match &mut self.stream {
             Some(receiver) => receiver.recv().await,
@@ -250,8 +236,8 @@ impl MockTupleSpaceRequesterOps {
 
 #[async_trait]
 impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
-    /// Send request for state chunk - captures the operation for test
-    /// observation Scala equivalent: requestQueue.enqueue1(_, _) call
+    /// Send request for state chunk - captures the operation for test observation
+    /// Scala equivalent: requestQueue.enqueue1(_, _) call
     async fn request_for_store_item(
         &self,
         path: &StatePartPath,
@@ -319,8 +305,7 @@ pub struct ValidationState {
     should_fail_validation: bool,
 
     /// Invalid items that should trigger validation failure
-    /// Scala equivalent: val invalidItems = invalidHistory.map(_.map(bv =>
-    /// ByteVector(bv.toByteArray)))
+    /// Scala equivalent: val invalidItems = invalidHistory.map(_.map(bv => ByteVector(bv.toByteArray)))
     invalid_items: Vec<(Blake2b256Hash, Bytes)>,
 }
 
@@ -333,16 +318,14 @@ impl ValidationState {
     }
 
     /// Set items that should trigger validation failure
-    /// Scala equivalent: Matching against invalidHistory in
-    /// mockValidateStateChunk
+    /// Scala equivalent: Matching against invalidHistory in mockValidateStateChunk
     fn set_invalid_items(&mut self, items: Vec<(Blake2b256Hash, Bytes)>) {
         self.invalid_items = items;
         self.should_fail_validation = true;
     }
 
     /// Check if given items should trigger validation failure
-    /// Scala equivalent: if (historyItems != invalidItems) ().pure[F] else
-    /// exceptionInvalidState.raiseError
+    /// Scala equivalent: if (historyItems != invalidItems) ().pure[F] else exceptionInvalidState.raiseError
     fn should_fail(&self, history_items: &[(Blake2b256Hash, Bytes)]) -> bool {
         self.should_fail_validation && history_items == self.invalid_items.as_slice()
     }
@@ -379,8 +362,7 @@ impl MockRSpaceImporter {
             .lock()
             .map_err(|_| CasperError::StreamError("Validation state lock error".to_string()))?;
 
-        // Scala equivalent: if (historyItems != invalidItems) ().pure[F] else
-        // exceptionInvalidState.raiseError
+        // Scala equivalent: if (historyItems != invalidItems) ().pure[F] else exceptionInvalidState.raiseError
         if validation_state.should_fail(&history_items) {
             return Err(CasperError::StreamError(
                 "Fake invalid state received.".to_string(),
@@ -419,8 +401,7 @@ impl TrieImporter for MockRSpaceImporter {
     }
 
     /// Set root - no-op for testing
-    /// Scala equivalent: override def setRoot(key: KeyHash): F[Unit] =
-    /// ().pure[F]
+    /// Scala equivalent: override def setRoot(key: KeyHash): F[Unit] = ().pure[F]
     fn set_root(&self, _key: &KeyHash) {
         // No-op for testing
     }
@@ -430,8 +411,7 @@ impl TrieImporter for MockRSpaceImporter {
 /// Scala equivalent: The mock importer get method
 impl RSpaceImporter for MockRSpaceImporter {
     /// Get history item - returns dummy data for testing
-    /// Scala equivalent: getFromHistory: Blake2b256Hash =>
-    /// F[Option[ByteVector]]
+    /// Scala equivalent: getFromHistory: Blake2b256Hash => F[Option[ByteVector]]
     fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> {
         // For testing, always return Some with dummy data
         // This prevents the UnexpectedEof error we're seeing
@@ -440,8 +420,7 @@ impl RSpaceImporter for MockRSpaceImporter {
 }
 
 /// Creates test setup
-/// Scala equivalent: def createMock[F[_]: Concurrent: Time:
-/// Log](requestTimeout: FiniteDuration)(test: Mock[F] => F[Unit]): F[Unit]
+/// Scala equivalent: def createMock[F[_]: Concurrent: Time: Log](requestTimeout: FiniteDuration)(test: Mock[F] => F[Unit]): F[Unit]
 pub async fn create_mock<F, Fut>(
     request_timeout: std::time::Duration,
     test_fn: F,
@@ -451,14 +430,11 @@ where
     Fut: std::future::Future<Output = Result<(), TestError>>,
 {
     // Create approved block with initial root hash of the state
-    // Scala equivalent: val approvedBlock =
-    // createApprovedBlock(blockImplicits.getRandomBlock(setPostStateHash =
-    // historyHash1.toByteString.some))
+    // Scala equivalent: val approvedBlock = createApprovedBlock(blockImplicits.getRandomBlock(setPostStateHash = historyHash1.toByteString.some))
     let approved_block = create_approved_block_with_state_hash(history_hash_1());
 
     // Create channels for test observation
-    // Scala equivalent: Queue.unbounded[F, StoreItemsMessage], Queue.unbounded[F,
-    // (StatePartPath, Int)], etc.
+    // Scala equivalent: Queue.unbounded[F, StoreItemsMessage], Queue.unbounded[F, (StatePartPath, Int)], etc.
 
     // Queue for received store messages
     let (store_items_tx, store_items_rx) = mpsc::channel::<StoreItemsMessage>(1024);
@@ -504,8 +480,7 @@ where
     let (stream_tx, stream_rx) = mpsc::unbounded_channel::<ST<StatePartPath>>();
 
     // Spawn the stream processing task
-    // This runs the stream in the background and forwards states to our test
-    // channel
+    // This runs the stream in the background and forwards states to our test channel
     let stream_task = tokio::spawn(async move {
         use futures::StreamExt;
 
@@ -543,13 +518,10 @@ where
 }
 
 /// Test runner utilities
-/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean,
-/// requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]):
-/// Unit
+/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]): Unit
 
 /// Creates a bootstrap test with configurable stream processing
-/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean,
-/// requestTimeout: FiniteDuration = 10.days)
+/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)
 pub async fn create_bootstrap_test<F, Fut>(
     run_processing_stream: bool,
     request_timeout: std::time::Duration,
@@ -566,13 +538,11 @@ where
             test_fn(mock).await
         } else {
             // Run test function concurrently with processing stream
-            // Scala equivalent: else (Stream.eval(test(mock)) concurrently
-            // mock.stream).compile.drain
+            // Scala equivalent: else (Stream.eval(test(mock)) concurrently mock.stream).compile.drain
 
-            // In this case, the stream is already running in the background from
-            // create_mock() We just need to run the test function
-            // The stream processing happens automatically via the spawned task in
-            // create_mock()
+            // In this case, the stream is already running in the background from create_mock()
+            // We just need to run the test function
+            // The stream processing happens automatically via the spawned task in create_mock()
             test_fn(mock).await
         }
     })
@@ -580,15 +550,14 @@ where
 }
 
 /// Convenience function for bootstrap test with stream processing enabled
-/// Scala equivalent: val bootstrapTest =
-/// createBootstrapTest(runProcessingStream = true) _
+/// Scala equivalent: val bootstrapTest = createBootstrapTest(runProcessingStream = true) _
 pub async fn bootstrap_test<F, Fut>(test_fn: F) -> Result<(), TestError>
 where
     F: FnOnce(MockImpl) -> Fut,
     Fut: std::future::Future<Output = Result<(), TestError>>,
 {
-    // Default request timeout is set to large value to disable re-request messages
-    // if CI is slow Scala equivalent: requestTimeout: FiniteDuration = 10.days
+    // Default request timeout is set to large value to disable re-request messages if CI is slow
+    // Scala equivalent: requestTimeout: FiniteDuration = 10.days
     let default_timeout = std::time::Duration::from_secs(10 * 24 * 3600); // 10 days
 
     create_bootstrap_test(true, default_timeout, test_fn).await
@@ -667,8 +636,8 @@ pub async fn drain_requests(mock: &mut MockImpl, count: usize) -> Result<(), Tes
     Ok(())
 }
 
-/// Helper function to assert no emissions (equivalent to Scala's should
-/// notEmit) Scala equivalent: sentRequests should notEmit
+/// Helper function to assert no emissions (equivalent to Scala's should notEmit)
+/// Scala equivalent: sentRequests should notEmit
 pub async fn assert_no_requests(mock: &mut MockImpl, timeout_ms: u64) -> Result<(), TestError> {
     match tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
@@ -741,9 +710,8 @@ mod tests {
     use super::*;
     use crate::init_logger;
 
-    /// Tests that the LFS tuple space requester sends initial request for the
-    /// next state chunk Scala equivalent: "send request for next state
-    /// chunk"
+    /// Tests that the LFS tuple space requester sends initial request for the next state chunk
+    /// Scala equivalent: "send request for next state chunk"
     #[tokio::test]
     async fn should_send_request_for_next_state_chunk() {
         init_logger();
@@ -763,8 +731,7 @@ mod tests {
             );
 
             // Receives store items message
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2,
-            // history1, data1))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2, history1, data1))
             let store_message = StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_2(),
@@ -777,15 +744,13 @@ mod tests {
             // Scala equivalent: reqs <- sentRequests.take(1).compile.toList
             let reqs2 = collect_requests(&mut mock, 1).await?;
 
-            // After first chunk received, next chunk should be requested (end of previous
-            // chunk) Scala equivalent: _ = reqs shouldBe
-            // List(mkRequest(historyPath2))
+            // After first chunk received, next chunk should be requested (end of previous chunk)
+            // Scala equivalent: _ = reqs shouldBe List(mkRequest(historyPath2))
             let expected_request2 = mk_request(history_path_2());
             assert_eq!(
                 reqs2,
                 vec![expected_request2],
-                "After first chunk received, next chunk should be requested (end of previous \
-                 chunk)"
+                "After first chunk received, next chunk should be requested (end of previous chunk)"
             );
 
             Ok(())
@@ -794,8 +759,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that received state chunks are properly saved (imported) to
-    /// storage Scala equivalent: "save (import) received state chunk"
+    /// Tests that received state chunks are properly saved (imported) to storage
+    /// Scala equivalent: "save (import) received state chunk"
     #[tokio::test]
     async fn should_save_received_state_chunk() {
         init_logger();
@@ -806,8 +771,7 @@ mod tests {
             drain_requests(&mut mock, 1).await?;
 
             // Receives store items message
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2,
-            // history1, data1))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2, history1, data1))
             let store_message = StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_2(),
@@ -842,9 +806,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that unrequested messages are ignored and do not trigger new
-    /// requests Scala equivalent: "not request next chunk if message is not
-    /// requested"
+    /// Tests that unrequested messages are ignored and do not trigger new requests
+    /// Scala equivalent: "not request next chunk if message is not requested"
     #[tokio::test]
     async fn should_not_request_next_chunk_if_message_not_requested() {
         init_logger();
@@ -864,8 +827,7 @@ mod tests {
             );
 
             // Receives store items message which is not requested
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath2, historyPath3,
-            // history2, data2))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath2, historyPath3, history2, data2))
             let unrequested_message = StoreItemsMessage {
                 start_path: history_path_2(),
                 last_path: history_path_3(),
@@ -896,8 +858,7 @@ mod tests {
             drain_requests(&mut mock, 1).await?;
 
             // Receives store items message which is not requested
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath2, historyPath3,
-            // history2, data2))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath2, historyPath3, history2, data2))
             let unrequested_message = StoreItemsMessage {
                 start_path: history_path_2(),
                 last_path: history_path_3(),
@@ -920,8 +881,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that the stream stops with error when invalid state chunk is
-    /// received Scala equivalent: "stop if invalid state chunk received"
+    /// Tests that the stream stops with error when invalid state chunk is received
+    /// Scala equivalent: "stop if invalid state chunk received"
     #[tokio::test]
     async fn should_stop_if_invalid_state_chunk_received() {
         init_logger();
@@ -953,8 +914,7 @@ mod tests {
             assert_no_requests(&mut mock, 50).await?;
 
             // Receives store items message with invalid history
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2,
-            // invalidHistory, data1))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2, invalidHistory, data1))
             let invalid_message = StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_2(),
@@ -977,21 +937,13 @@ mod tests {
             match final_state {
                 Ok(Some(state)) => {
                     // Stream emitted final state - verify it shows incomplete processing
-                    tracing::info!(
-                        "Received final stream state after validation error: finished={}",
-                        state.is_finished()
-                    );
+                    tracing::info!("Received final stream state after validation error: finished={}", state.is_finished());
                     // The state should NOT be finished since validation failed
-                    assert!(
-                        !state.is_finished(),
-                        "Stream should not be marked as finished after validation error"
-                    );
+                    assert!(!state.is_finished(), "Stream should not be marked as finished after validation error");
                 }
                 Ok(None) => {
                     // Stream terminated immediately - also acceptable
-                    tracing::info!(
-                        "Stream properly terminated due to validation failure (immediate)"
-                    );
+                    tracing::info!("Stream properly terminated due to validation failure (immediate)");
                 }
                 Err(_) => {
                     // Timeout occurred - stream stopped processing due to validation error
@@ -1015,10 +967,7 @@ mod tests {
                     tracing::info!("Stream properly stopped - timeout on additional states");
                 }
                 Ok(Some(_)) => {
-                    panic!(
-                        "Stream should have stopped after validation error, but continued \
-                         emitting states"
-                    );
+                    panic!("Stream should have stopped after validation error, but continued emitting states");
                 }
             }
 
@@ -1030,16 +979,11 @@ mod tests {
                     tracing::info!("No additional requests sent after validation failure");
                 }
                 Err(TestError::ChannelClosed) => {
-                    tracing::info!(
-                        "Request channel closed after stream termination - this is expected"
-                    );
+                    tracing::info!("Request channel closed after stream termination - this is expected");
                 }
             }
 
-            tracing::info!(
-                "Invalid state chunk validation test completed - stream properly failed on \
-                 invalid state"
-            );
+            tracing::info!("Invalid state chunk validation test completed - stream properly failed on invalid state");
 
             Ok(())
         })
@@ -1047,9 +991,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that the stream finishes when the last chunk is received (start
-    /// path equals end path) Scala equivalent: "finish after last chunk
-    /// received"
+    /// Tests that the stream finishes when the last chunk is received (start path equals end path)
+    /// Scala equivalent: "finish after last chunk received"
     #[tokio::test]
     async fn should_finish_after_last_chunk_received() {
         init_logger();
@@ -1072,8 +1015,7 @@ mod tests {
             assert_no_requests(&mut mock, 50).await?;
 
             // Receives store items message where start path equals end path (last chunk)
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath1,
-            // history1, data1))
+            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath1, history1, data1))
             let last_chunk_message = StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_1(), // Same as start path indicates last chunk
@@ -1094,26 +1036,17 @@ mod tests {
             // Scala equivalent: _ = state.isFinished shouldBe true
             match final_state {
                 Ok(Some(state)) => {
-                    tracing::info!(
-                        "Received final stream state: finished={}",
-                        state.is_finished()
-                    );
+                    tracing::info!("Received final stream state: finished={}", state.is_finished());
                     assert!(
                         state.is_finished(),
-                        "Stream should be marked as finished after receiving last chunk \
-                         (start_path == last_path)"
+                        "Stream should be marked as finished after receiving last chunk (start_path == last_path)"
                     );
                 }
                 Ok(None) => {
-                    panic!(
-                        "Expected final stream state but stream terminated without emitting state"
-                    );
+                    panic!("Expected final stream state but stream terminated without emitting state");
                 }
                 Err(_) => {
-                    panic!(
-                        "Timeout waiting for final stream state - stream may not have processed \
-                         last chunk"
-                    );
+                    panic!("Timeout waiting for final stream state - stream may not have processed last chunk");
                 }
             }
 
@@ -1133,12 +1066,8 @@ mod tests {
                     tracing::info!("Stream properly completed - timeout on additional states");
                 }
                 Ok(Some(_)) => {
-                    tracing::info!(
-                        "Stream emitted additional state after completion - this may be normal \
-                         finalization"
-                    );
-                    // This is actually acceptable - the stream may emit final
-                    // cleanup states
+                    tracing::info!("Stream emitted additional state after completion - this may be normal finalization");
+                    // This is actually acceptable - the stream may emit final cleanup states
                 }
             }
 
@@ -1149,15 +1078,11 @@ mod tests {
                     tracing::info!("No additional requests sent after stream completion");
                 }
                 Err(TestError::ChannelClosed) => {
-                    tracing::info!(
-                        "Request channel closed after stream completion - this is expected"
-                    );
+                    tracing::info!("Request channel closed after stream completion - this is expected");
                 }
             }
 
-            tracing::info!(
-                "Last chunk completion test completed - stream properly finished on final chunk"
-            );
+            tracing::info!("Last chunk completion test completed - stream properly finished on final chunk");
 
             Ok(())
         })
@@ -1165,8 +1090,8 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that requests are resent after timeout when no response is
-    /// received Scala equivalent: "re-send request after timeout"
+    /// Tests that requests are resent after timeout when no response is received
+    /// Scala equivalent: "re-send request after timeout"
     #[tokio::test]
     async fn should_resend_request_after_timeout() {
         init_logger();
@@ -1174,8 +1099,7 @@ mod tests {
         let short_timeout = std::time::Duration::from_millis(200);
         bootstrap_test_no_stream(short_timeout, |mut mock| async move {
             // Process initial stream state to start the stream processing
-            // Scala equivalent: _ <-
-            // stream.compile.drain.timeout(300.millis).onErrorHandle(_ => ())
+            // Scala equivalent: _ <- stream.compile.drain.timeout(300.millis).onErrorHandle(_ => ())
             let initial_state = mock.next_stream_state().await;
             assert!(
                 initial_state.is_some(),
@@ -1211,32 +1135,25 @@ mod tests {
                 Ok(Some(req)) => req,
                 Ok(None) => panic!("Request channel closed unexpectedly during timeout test"),
                 Err(_) => {
-                    panic!(
-                        "Timeout resend functionality failed - no resend request received within \
-                         expected timeframe"
-                    );
+                    panic!("Timeout resend functionality failed - no resend request received within expected timeframe");
                 }
             };
 
             // Both requests should be the same (original + resend)
-            // Scala equivalent: _ = reqs.sorted shouldBe List(mkRequest(historyPath1),
-            // mkRequest(historyPath1)).sorted
+            // Scala equivalent: _ = reqs.sorted shouldBe List(mkRequest(historyPath1), mkRequest(historyPath1)).sorted
             assert_eq!(
                 timeout_request, expected_request,
                 "Should resend the same request after timeout"
             );
 
-            tracing::info!(
-                "Successfully received initial request and one timeout resend for history_path_1"
-            );
+            tracing::info!("Successfully received initial request and one timeout resend for history_path_1");
 
             // Verify we got exactly 2 requests for the same path (original + resend)
-            // Scala equivalent: Both requests should be identical indicating proper resend
-            // behavior
+            // Scala equivalent: Both requests should be identical indicating proper resend behavior
 
             // Check that no additional unexpected requests arrive in short period
-            // This should be shorter than the timeout period to avoid triggering another
-            // resend Scala equivalent: _ = sentRequests should notEmit
+            // This should be shorter than the timeout period to avoid triggering another resend
+            // Scala equivalent: _ = sentRequests should notEmit
             match tokio::time::timeout(
                 std::time::Duration::from_millis(150), // Shorter than timeout period (200ms)
                 mock.next_request(),
@@ -1246,28 +1163,17 @@ mod tests {
                 Ok(Some(unexpected_req)) => {
                     // Additional timeout-triggered requests may arrive due to continued timeout
                     // This is expected behavior but we log it for verification
-                    tracing::warn!(
-                        "Additional request received (may be expected due to continued timeout): \
-                         {:?}",
-                        unexpected_req
-                    );
-                    // The main goal is achieved: we verified timeout resending
-                    // works
+                    tracing::warn!("Additional request received (may be expected due to continued timeout): {:?}", unexpected_req);
+                    // The main goal is achieved: we verified timeout resending works
                 }
                 Ok(None) => panic!("Request channel closed unexpectedly"),
                 Err(_) => {
-                    // Timeout is expected and preferred - no additional requests in the immediate
-                    // period
-                    tracing::info!(
-                        "No additional requests in short period - timeout behavior working \
-                         correctly"
-                    );
+                    // Timeout is expected and preferred - no additional requests in the immediate period
+                    tracing::info!("No additional requests in short period - timeout behavior working correctly");
                 }
             }
 
-            tracing::info!(
-                "Timeout resend test completed - timeout resend mechanism verified successfully"
-            );
+            tracing::info!("Timeout resend test completed - timeout resend mechanism verified successfully");
 
             Ok(())
         })

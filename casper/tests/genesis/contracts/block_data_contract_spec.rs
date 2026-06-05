@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// BlockDataContractSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/BlockDataContractSpec.scala
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -10,8 +9,9 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn block_data_contract_spec() {
-    let test_object = CompiledRholangSource::load_source("BlockDataContractTest.rho")
-        .expect("Failed to load BlockDataContractTest.rho");
+    let test_object =
+        crate::util::rholang::test_rho_loader::load_test_rho("BlockDataContractTest.rho")
+            .expect("Failed to load BlockDataContractTest.rho");
 
     let compiled = CompiledRholangSource::new(
         test_object,

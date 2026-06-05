@@ -6,7 +6,7 @@ use shared::rust::{Byte, ByteVector};
 
 use crate::rspace::errors::RootError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::radix_tree::{sequential_export, ExportData, ExportDataSettings};
+use crate::rspace::history::radix_tree::{ExportData, ExportDataSettings, sequential_export};
 use crate::rspace::shared::trie_exporter::{KeyHash, TrieExporter, TrieNode};
 
 pub trait RSpaceExporter: TrieExporter + Send + Sync {
@@ -37,15 +37,10 @@ impl RSpaceExporterInstance {
             } else {
                 // Max prefix length = 127 bytes.
                 // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of prefix).
-                assert!(
-                    prefix_vec.len() >= 5,
-                    "RSpace Exporter: Invalid path during export"
-                );
+                assert!(prefix_vec.len() >= 5, "RSpace Exporter: Invalid path during export");
 
-                let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) = (
-                    prefix_vec[0].bytes()[0] as usize & 0xff,
-                    prefix_vec[1..].to_vec(),
-                );
+                let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =
+                    (prefix_vec[0].bytes()[0] as usize & 0xff, prefix_vec[1..].to_vec());
 
                 let mut prefix128 = vec[0].bytes();
                 prefix128.extend(vec[1].bytes());
@@ -121,10 +116,8 @@ impl RSpaceExporterInstance {
         } else {
             let path_vec: Vec<Blake2b256Hash> =
                 start_path.iter().map(|path| path.0.clone()).collect();
-            let (root_hash, prefix_vec) = (
-                path_vec.first().unwrap(),
-                path_vec.split_first().map(|(_, tail)| tail).unwrap(),
-            );
+            let (root_hash, prefix_vec) =
+                (path_vec.first().unwrap(), path_vec.split_first().map(|(_, tail)| tail).unwrap());
 
             let last_prefix = create_last_prefix(prefix_vec.to_vec());
             // println!("\nroot_hash bytes: {:?}", root_hash.bytes());

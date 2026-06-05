@@ -58,6 +58,11 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     /// can find it via `validate_and_set_current_root`. This is needed during
     /// LFS bootstrap to register `emptyStateHashFixed` before genesis replay.
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError>;
+
+    /// Pure lookup: returns true if the root is recorded in the store.
+    /// Companion to `record_root` for joiner-side LFS sync to check whether
+    /// a root has already been imported before fetching from peers.
+    fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError>;
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
@@ -85,9 +90,7 @@ where
     > {
         // Roots store
         let roots_repository = RootRepository {
-            roots_store: Box::new(RootsStoreInstances::roots_store(
-                roots_key_value_store.clone(),
-            )),
+            roots_store: Box::new(RootsStoreInstances::roots_store(roots_key_value_store.clone())),
         };
 
         let current_root = roots_repository.current_root()?;

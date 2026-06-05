@@ -5,11 +5,11 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, ListParWithRandom, PCost, Par, ParWithRandom, TaggedContinuation,
 };
+use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash;
 use shared::rust::ByteString;
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
 #[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
 pub struct Cost {
     pub value: i64,
@@ -65,8 +65,7 @@ impl Cost {
         }
     }
 
-    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/
-    // Chargeable.scala
+    // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Chargeable.scala
     pub fn create_from_generic<A: prost::Message, S>(term: A, operation: S) -> Cost
     where S: Into<Cow<'static, str>> {
         Cost {
@@ -264,8 +263,7 @@ pub fn byte_array_append_cost(left: ByteString) -> Cost {
 // According to scala doc Vector#append is eC so it's n*eC.
 pub fn list_append_cost(right: Vec<Par>) -> Cost { Cost::create(right.len() as i64, "list append") }
 
-// String append creates a char[] of size n + m and then copies all elements to
-// it.
+// String append creates a char[] of size n + m and then copies all elements to it.
 pub fn string_append_cost(n: i64, m: i64) -> Cost { Cost::create(n + m, "string append") }
 
 // To interpolate we traverse whole base string and for each placeholder
@@ -283,9 +281,9 @@ pub fn to_byte_array_cost(message: &impl prost::Message) -> Cost {
 
 pub fn size_method_cost(size: i64) -> Cost { Cost::create(size, "size") }
 
-// slice(from, to) needs to drop `from` elements and then append `to - from`
-// elements we charge proportionally to `to` and fail if the method call is
-// incorrect, for example if underlying string is shorter then the `to` value.
+// slice(from, to) needs to drop `from` elements and then append `to - from` elements
+// we charge proportionally to `to` and fail if the method call is incorrect, for example
+// if underlying string is shorter then the `to` value.
 pub fn slice_cost(to: i64) -> Cost { Cost::create(to, "slice") }
 
 pub fn take_cost(to: i64) -> Cost { Cost::create(to, "take") }
@@ -312,9 +310,8 @@ pub fn receive_eval_cost() -> Cost { Cost::create(11, "receive eval") }
 
 pub fn channel_eval_cost() -> Cost { Cost::create(11, "channel eval") }
 
-// The idea is that evaluation of `new x1, x2, …, xn in { }` should be charged
-// depending on the # of bindings and constant cost of evaluating `new … in  { …
-// }` construct
+// The idea is that evaluation of `new x1, x2, …, xn in { }` should be charged depending
+// on the # of bindings and constant cost of evaluating `new … in  { … }` construct
 pub fn new_binding_cost() -> Cost { Cost::create(2, "new binding") }
 
 pub fn new_eval_cost() -> Cost { Cost::create(10, "new eval") }
@@ -329,30 +326,26 @@ pub fn new_bindings_cost(n: i64) -> Cost {
 pub fn match_eval_cost() -> Cost { Cost::create(12, "match eval") }
 
 pub fn storage_cost_consume(
-    channels: Vec<Par>,
-    patterns: Vec<BindPattern>,
-    continuation: TaggedContinuation,
+    channels: &[Par],
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
 ) -> Cost {
-    let body_cost = Some(continuation).and_then(|cont| {
-        if let Some(TaggedCont::ParBody(ParWithRandom { body, .. })) = cont.tagged_cont {
-            Some(storage_cost(&[body.unwrap()]))
-        } else {
-            None
-        }
-    });
+    let body_cost = match continuation.tagged_cont.as_ref() {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => body.encoded_len() as i64,
+        _ => 0,
+    };
 
-    let total_cost = storage_cost(&channels).value
-        + storage_cost(&patterns).value
-        + body_cost.unwrap_or(Cost::create(0, "")).value;
+    let total_cost = storage_cost(channels).value + storage_cost(patterns).value + body_cost;
 
     Cost::create(total_cost, "consume storage")
 }
 
-pub fn storage_cost_produce(channel: Par, data: ListParWithRandom) -> Cost {
-    Cost::create(
-        storage_cost(&[channel]).value + storage_cost(&data.pars).value,
-        "produces storage",
-    )
+pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
+    let channel_cost = channel.encoded_len() as i64;
+    let data_cost: i64 = data.pars.iter().map(|p| p.encoded_len() as i64).sum();
+    Cost::create(channel_cost + data_cost, "produces storage")
 }
 
 pub fn comm_event_storage_cost(channels_involved: i64) -> Cost {

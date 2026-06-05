@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/
-// BlockApproverProtocolTest.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/BlockApproverProtocolTest.scala
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -11,6 +10,7 @@ use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockMessage, UnapprovedBlock,
 };
+use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
 use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
@@ -57,9 +57,8 @@ impl TestContext {
         let mut nodes =
             TestNode::create_network(genesis_context, 1, None, None, None, None).await?;
 
-        // Note: Using remove(0) instead of referencing nodes[0] because TestNode
-        // doesn't implement Clone and we need an owned value. This is
-        // acceptable since networkSize=1 (only one element).
+        // Note: Using remove(0) instead of referencing nodes[0] because TestNode doesn't implement Clone
+        // and we need an owned value. This is acceptable since networkSize=1 (only one element).
         let node = nodes.remove(0);
 
         let protocol = BlockApproverProtocol::new(
@@ -75,6 +74,9 @@ impl TestContext {
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
+            genesis_params.native_token_name.clone(),
+            genesis_params.native_token_symbol.clone(),
+            genesis_params.native_token_decimals,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -88,6 +90,7 @@ impl TestContext {
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_respond_to_valid_approved_block_candidates() {
     // In Rust, we use TestContext struct to hold both protocol and node.
     let mut ctx = TestContext::create_protocol().await.unwrap();
@@ -105,10 +108,9 @@ async fn block_approver_protocol_should_respond_to_valid_approved_block_candidat
         .await
         .unwrap();
 
-    // Note: Add log validation when LogStub mechanism from Scala is implemented in
-    // Rust Scala: node.logEff.infos.exists(_.contains("Approval sent in
-    // response")) should be(true) Scala: node.logEff.warns.isEmpty should
-    // be(true)
+    // Note: Add log validation when LogStub mechanism from Scala is implemented in Rust
+    // Scala: node.logEff.infos.exists(_.contains("Approval sent in response")) should be(true)
+    // Scala: node.logEff.warns.isEmpty should be(true)
 
     let queue = ctx
         .node
@@ -117,9 +119,8 @@ async fn block_approver_protocol_should_respond_to_valid_approved_block_candidat
         .peer_queue(&ctx.node.local)
         .unwrap();
 
-    // Depending on transport self-loop behavior, approval may or may not be
-    // enqueued when peer==local. Both outcomes are acceptable as long as no
-    // error is returned.
+    // Depending on transport self-loop behavior, approval may or may not be enqueued
+    // when peer==local. Both outcomes are acceptable as long as no error is returned.
     assert!(
         queue.len() <= 1,
         "Expected at most one approval message in local queue, got {}",
@@ -128,6 +129,7 @@ async fn block_approver_protocol_should_respond_to_valid_approved_block_candidat
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block_candidates() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -163,9 +165,8 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
         .await
         .unwrap();
 
-    // Note: Add log validation when LogStub mechanism from Scala is implemented in
-    // Rust Scala: node.logEff.warns.count(_.contains("Received unexpected
-    // genesis block candidate")) should be(2)
+    // Note: Add log validation when LogStub mechanism from Scala is implemented in Rust
+    // Scala: node.logEff.warns.count(_.contains("Received unexpected genesis block candidate")) should be(2)
 
     let queue = ctx
         .node
@@ -178,13 +179,13 @@ async fn block_approver_protocol_should_log_a_warning_for_invalid_approved_block
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_successfully_validate_correct_candidate() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
-    // Scala: BlockApproverProtocol.validateCandidate[Effect](...) - static method
-    // call
+    // Scala: BlockApproverProtocol.validateCandidate[Effect](...) - static method call
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
         &mut ctx.node.runtime_manager,
         &unapproved.candidate,
@@ -200,6 +201,9 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -207,6 +211,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -230,6 +235,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -237,6 +245,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
@@ -260,6 +269,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 
@@ -273,13 +285,13 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
 }
 
 #[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_contracts() {
     let mut ctx = TestContext::create_protocol().await.unwrap();
 
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
-    // Scala: validateCandidate with incorrect genesis params (minimumBond + 1,
-    // maximumBond - 1, etc.)
+    // Scala: validateCandidate with incorrect genesis params (minimumBond + 1, maximumBond - 1, etc.)
     let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
         &mut ctx.node.runtime_manager,
         &unapproved.candidate,
@@ -295,6 +307,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
     )
     .await;
 

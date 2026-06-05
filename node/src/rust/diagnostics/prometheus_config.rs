@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 // Prometheus histogram bucket definitions
-// These values are taken from Kamon's default Prometheus configuration to
-// maintain compatibility with the Scala implementation in
-// NewPrometheusReporter.scala Source: kamon-prometheus library defaults
-// (buckets.default-buckets, buckets.time-buckets, buckets.information-buckets)
+// These values are taken from Kamon's default Prometheus configuration to maintain
+// compatibility with the Scala implementation in NewPrometheusReporter.scala
+// Source: kamon-prometheus library defaults (buckets.default-buckets, buckets.time-buckets, buckets.information-buckets)
 
 // Time-based buckets (milliseconds to seconds)
 const BUCKET_1MS: f64 = 0.001;

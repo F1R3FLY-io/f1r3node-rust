@@ -12,23 +12,20 @@ use super::rho_runtime::RhoISpace;
  *
  * The unapply returns (Producer, Seq[Par]).
  *
- * The Producer is the function with the signature (Seq[Par], Par) =>
- * F[Unit] which can be used to send a message through a channel. The first
- * argument with type Seq[Par] is the content of the message and the second
- * argument is the channel.
+ * The Producer is the function with the signature (Seq[Par], Par) => F[Unit] which can be used to send a message
+ * through a channel. The first argument with type Seq[Par] is the content of the message and the second argument is
+ * the channel.
  *
- * Note that the random generator and the sequence number extracted from the
- * incoming message are required for sending messages back to the caller so
- * they are given as the first argument list to the produce function.
+ * Note that the random generator and the sequence number extracted from the incoming message are required for sending
+ * messages back to the caller so they are given as the first argument list to the produce function.
  *
- * The Seq[Par] returned by unapply contains the message content and can be
- * further unapplied as needed to match the required signature.
+ * The Seq[Par] returned by unapply contains the message content and can be further unapplied as needed to match the
+ * required signature.
  *
  * @param space the rspace instance
  * @param dispatcher the dispatcher
  *
- * See rholang/src/main/scala/coop/rchain/rholang/interpreter/ContractCall.
- * scala
+ * See rholang/src/main/scala/coop/rchain/rholang/interpreter/ContractCall.scala
  */
 pub struct ContractCall {
     pub space: RhoISpace,
@@ -49,7 +46,6 @@ impl ContractCall {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Option<(Producer, bool, Vec<Par>, Vec<Par>)> {
-        // println!("\ncontract_call unapply");
         if contract_args.0.len() == 1 {
             let (args, rand, is_replay, previous) = (
                 contract_args.0[0].pars.clone(),
@@ -67,21 +63,18 @@ impl ContractCall {
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
                 Box::pin(async move {
-                    let mut space_lock = space.try_lock().unwrap();
-                    // println!("\nhit produce in contract_call, values: {:?}", values_vec);
-                    let produce_result = space_lock.produce(
-                        ch_cloned,
-                        ListParWithRandom {
-                            pars: values_vec,
-                            random_state: rand,
-                        },
-                        false,
-                    )?;
+                    let produce_result = space
+                        .produce(
+                            ch_cloned,
+                            ListParWithRandom {
+                                pars: values_vec,
+                                random_state: rand,
+                            },
+                            false,
+                        )
+                        .await?;
 
-                    let is_replay = space_lock.is_replay();
-                    drop(space_lock);
-
-                    // println!("\nproduce_result in contract_call: {:?}", produce_result);
+                    let is_replay = space.is_replay().await;
 
                     let dispatch_result = match produce_result {
                         Some((cont, channels, produce)) => {

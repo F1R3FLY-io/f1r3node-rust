@@ -74,8 +74,7 @@ impl<T: Clone> FreeMap<T> {
         new_free_map
     }
 
-    /// Returns the new map, and a list of the shadowed variables with their
-    /// spans
+    /// Returns the new map, and a list of the shadowed variables with their spans
     pub fn merge(
         &self,
         free_map: FreeMap<T>,
@@ -101,7 +100,7 @@ impl<T: Clone> FreeMap<T> {
         );
 
         let mut new_wildcards = self.wildcards.clone();
-        new_wildcards.extend(free_map.wildcards);
+        new_wildcards.extend(free_map.wildcards.into_iter());
         let mut new_connectives = self.connectives.clone();
         new_connectives.extend(free_map.connectives);
 

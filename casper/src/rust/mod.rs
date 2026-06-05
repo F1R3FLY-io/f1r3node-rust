@@ -54,8 +54,7 @@ pub type BlockProcessing<A> = Either<BlockError, A>;
 
 pub type ValidBlockProcessing = BlockProcessing<ValidBlock>;
 
-// Async function that takes Arc<dyn MultiParentCasper> by value and boolean,
-// returns Future of ProposerResult
+// Async function that takes Arc<dyn MultiParentCasper> by value and boolean, returns Future of ProposerResult
 pub type ProposeFunction = dyn Fn(
         Arc<dyn MultiParentCasper + Send + Sync>,
         bool,

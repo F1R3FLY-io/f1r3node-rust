@@ -48,16 +48,14 @@ impl JsonEncoder {
     /// Deserialize ParMap from JSON array of pairs (matches Scala decodeParMap)
     pub fn decode_par_map(json: &str) -> Result<ParMap, serde_json::Error> { Self::from_json(json) }
 
-    /// Serialize Blake2b512Random to JSON as null (matches Scala
-    /// encodeBlake2b512Random)
+    /// Serialize Blake2b512Random to JSON as null (matches Scala encodeBlake2b512Random)
     pub fn encode_blake2b512_random(
         _random: &Blake2b512Random,
     ) -> Result<String, serde_json::Error> {
         Self::to_json(&())
     }
 
-    /// Deserialize Blake2b512Random from JSON null (matches Scala
-    /// decodeDummyBlake2b512Random)
+    /// Deserialize Blake2b512Random from JSON null (matches Scala decodeDummyBlake2b512Random)
     pub fn decode_blake2b512_random(json: &str) -> Result<Blake2b512Random, serde_json::Error> {
         let _: () = Self::from_json(json)?;
         Ok(Blake2b512Random::create_from_bytes(&[1]))
