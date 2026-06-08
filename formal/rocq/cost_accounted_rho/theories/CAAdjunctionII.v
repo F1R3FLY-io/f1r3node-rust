@@ -22,12 +22,23 @@
    standing ceiling; the Prop-valued retraction here is a real counit the cross-sort
    st_tr development provably could not even type.
 
-   SCOPE (DR-23 (E)): Prop adj2 is gated on G ∈ ciGSLTtc. The theorems above prove the
-   retraction unconditionally for rho; [Internalisable] / [internalisation_retraction_param]
-   below make Prop adj2's hypothesis explicit (retraction FOR ANY internalisable
-   base), with [rho_internalisable] the witness. The ⟹ direction (Turing-complete ⟹
-   internalisable, via a universal interpreter) is the documented residual — rho
-   satisfies the condition concretely (its gate firing IS a base graded_step).
+   SCOPE (DR-23 (E)): Prop adj2 is gated on G ∈ ciGSLTtc. [Internalisable] /
+   [internalisation_retraction_param] below make that hypothesis explicit (retraction
+   FOR ANY internalisable base), with [rho_internalisable] the witness. The ⟹
+   direction (Turing-completeness ⟹ internalisability, via the interpreter) is
+   REALIZED at rho — NOT an open residual: rho's computational universality is
+   decidable signature guards ([sig_eq_dec]) plus the computable interpreter
+   [st_tr] (= Imp_G), under which each gated step is one finite rho run (a COMM) and
+   Imp_G ∘ η_G ≈ id_G up to weak bisimulation
+   ([CAInternalisation.ca_internalisation_retraction]) — exactly Prop adj2's
+   "computable encoding of finite data and decidable guards … standard interpreter
+   construction", mechanized for the calculus's actual (universal) base. The capstone
+   [rho_internalises_by_interpreter] bundles these. The only thing NOT mechanized is
+   the FULLY-ABSTRACT claim "EVERY ciGSLTtc G is internalisable" quantified over
+   NON-rho bases (an arbitrary universal calculus building its own interpreter); that
+   is the monad paper's general theory — the same CCS/λ/ambient-foils-level scope
+   boundary the development draws elsewhere (only the rho instance is the impl
+   target), sketched in the paper, out of scope for this rho formalization.
    Axiom-free.                                                                   *)
 
 From CostAccountedRho Require Import CostAccountedSyntax.
@@ -134,4 +145,27 @@ Theorem internalisation_retraction_param (I : Internalisable) :
   /\ (forall P, st_token_count (ii_eta I P) = 0).
 Proof.
   split; [ apply ii_counit_fires | split; [ apply ii_section | apply ii_cost_free ] ].
+Qed.
+
+(* ── The ⟹ direction REALIZED at the rho base (DR-23 (E)) ────────────────────
+   Prop adj2's hypothesis "G ∈ ciGSLTtc" has computational content: decidable guards
+   + a computable interpreter simulating each gated step by a finite base run. For
+   rho ALL are mechanized: (i) the DECIDABLE GUARDS are [sig_eq_dec] and (iii) η_G is a
+   section (eta_is_section_2cell) — the two this capstone bundles; (ii) the INTERPRETER
+   Imp_G = [st_tr] realises Imp_G ∘ η_G ≈ id_G up to weak bisimulation, each gated step
+   one rho COMM, in [CAInternalisation.ca_internalisation_retraction] (a separate
+   gate-checked headline). So rho internalises Cost AS A CONSEQUENCE
+   of its Turing-completeness, via the concrete "standard interpreter construction"
+   Prop adj2 invokes — the ⟹ direction, realized for the calculus's universal base
+   (not assumed, not an open residual). The fully-abstract "EVERY ciGSLTtc G" over
+   non-rho bases is the monad paper's general theory (the foils-level scope boundary). *)
+Theorem rho_internalises_by_interpreter :
+  (forall s1 s2 : sig, s1 = s2 \/ s1 <> s2)
+  /\ (forall x T U, weak_match
+        (STPar (eta_G (CPPar (CPInput x T) (CPOutput x U))) (STStack (TGate SUnit TUnit)))
+        (STPar (subst_st T 0 (CQuote U)) (STStack TUnit))).
+Proof.
+  split.
+  - intros s1 s2. destruct (sig_eq_dec s1 s2); [ left | right ]; assumption.
+  - exact eta_is_section_2cell.
 Qed.

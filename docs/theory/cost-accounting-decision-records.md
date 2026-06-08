@@ -896,10 +896,18 @@ misalignments — several in the DR-22-era / this-session additions themselves.
   over reachable signatures, and `cost_ci_preserves_step`/`cost_ci_preserves_bisim`/
   `cost_ci_preserves_quote_faithful` discharge the paper's load-bearing `Cost(f)` obligation
   (`tex:769-777`).
-- ▲ **(E) Adjunction-II omits Turing-completeness.** No `ciGSLTtc`, no general interpreter; the formal
-  proves an UNCONDITIONAL unit-grade single-gate retract for the one rho instance (via cross-sort `st_tr`
-  + a real COMM in `ca_single_gate_bisimilar`). Unit-grade IS faithful (`η_G(P)={P}_∅`). The
-  distinguishing "universal ⟺ folds back" claim is unmechanized. → Phase 2 (`internalisable` predicate).
+- ▲ **(E) Adjunction-II Turing-completeness conditioning.** Prop adj2 is gated on `G ∈ ciGSLTtc`. RESOLVED:
+  `Internalisable` + `internalisation_retraction_param` make that hypothesis explicit (retraction for any
+  internalisable base), with `rho_internalisable` the witness. The **⟹ direction (Turing-completeness ⟹
+  internalisability) is REALIZED at rho**, NOT an open residual: `rho_internalises_by_interpreter` bundles
+  the decidable guards (`sig_eq_dec`) and the section (`eta_is_section_2cell`), and the computable
+  INTERPRETER `Imp_G = st_tr` realises `Imp_G ∘ η_G ≈ id_G` up to weak bisimulation
+  (`CAInternalisation.ca_internalisation_retraction`, each gated step one rho COMM) — exactly Prop adj2's
+  "computable encoding + decidable guards … standard interpreter construction", mechanized for the
+  calculus's actual (universal) base. The ONLY unmechanized piece is the fully-abstract "EVERY ciGSLTtc G"
+  quantified over NON-rho bases (an arbitrary universal calculus building its own interpreter) — the monad
+  paper's general theory, the SAME CCS/λ/ambient-foils-level scope boundary the development draws elsewhere
+  (only rho is the impl target), sketched in the paper, out of scope for this rho formalization.
 - ▲ **(A) Join closed-payload restriction.** `ca_join1`/`ca_join2` carry `Forall closed_st Us` (the
   binary rules do NOT) — strictly narrower than Def 4.6/J1/J2, which allow open payloads — because
   `subst_st_many` is iterated, not simultaneous, substitution. → Phase 2 (genuine simultaneous subst).

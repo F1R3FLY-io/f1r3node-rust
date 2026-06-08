@@ -211,6 +211,7 @@ Print Assumptions sim_2cells_form_setoid.
 Print Assumptions internalisation_adjoint_retraction.
 Print Assumptions internalisation_retraction_param.
 Print Assumptions rho_internalisable.
+Print Assumptions rho_internalises_by_interpreter.
 Print Assumptions continued_gslt_cost_abstract_capstone.
 Print Assumptions consumed_fuel_count_eq_token_drop.
 Print Assumptions consumed_comm_count_determined_by_endpoints.
