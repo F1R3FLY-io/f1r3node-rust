@@ -132,6 +132,12 @@ theories/CACostDeterminism.v
 # fuel (the paper's "stack consumption is the modulus", realised by running).
 theories/CAModulus.v
 
+# Level 2g-bis: the untyped-λ "R1-only" cost instance (the cost-endofunctor
+# genericity witness; DR-25). Standalone — its own host syntax (lterm) + fuel
+# wrapper (lsys); reuses sig/token only; ONE β-R1 contact rule. Shows rigid K ⇒
+# R1 only, a funded run-bound, and UNCONDITIONAL funded SN (the Ω halting seam).
+theories/CAUntypedLambda.v
+
 # Level 2: Cost-accounted reduction (depends on Level 0-1)
 theories/CostAccountedReduction.v
 
@@ -403,6 +409,11 @@ theories/CategoryInterface.v
 theories/CACategory.v
 theories/CACostFunctor.v
 theories/CACostFunctorCI.v
+
+# Level 6-bis: the untyped-λ instance as a SECOND object under the cost
+# endofunctor (Lambda_ciGSLT, beside Rho_ciGSLT). DR-25; depends on the core
+# witness CAUntypedLambda + the ciGSLT category/functor.
+theories/CAUntypedLambdaCI.v
 theories/CACostMonadCat.v
 theories/CAAdjunctionI.v
 theories/CACostMonadInstances.v

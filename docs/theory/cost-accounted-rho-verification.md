@@ -859,6 +859,54 @@ Plus contextual closure under system parallel composition:
     ────────────────────       ────────────────────
     S₁ ∥ S₂  ⤳  S₁' ∥ S₂       S₁ ∥ S₂  ⤳  S₁ ∥ S₂'
 
+#### 4.2.1 λ instance — R1 only (rigid contact, degenerate environment)
+
+The five-rule family above is what the generic cost transform emits for rho's
+associative-commutative contact `∣`. For a calculus whose contact K is **rigid**
+(the interaction head sits in no equation and is not associative-commutative)
+and whose environment-introduction is **degenerate**, the transform emits only
+**Rule 1**: the compound-signature rules (2/3) and the split-process rules (4/5)
+have no instance, because a rigid host has no associative-commutative operator
+to conjoin signatures and no independent environment-introduction (output) sort
+to sign separately. The untyped λ-calculus is the canonical such instance — its
+contact is application / β-reduction.
+
+This instance is mechanized standalone and axiom-free in
+`theories/CAUntypedLambda.v` (host syntax `lterm`; fuel wrapper `lsys` reusing
+`sig`/`token`; the single contact rule `lca_beta_r1`,
+`{(App (Abs M) N)}_s ∣ s:T ⤳ {M[N/0]}_s ∣ T`, the exact analogue of `ca_rule1`):
+
+| Calculus  | Contact K     | Rules emitted | Rocq witness |
+|-----------|---------------|---------------|--------------|
+| rho / π   | `∣` (AC)      | 1–5 (all)     | `CAReduction.ca_step` |
+| untyped λ | `App` (rigid) | 1 only        | `CAUntypedLambda.lca_only_beta_r1` |
+
+Key results (each `Closed under the global context`):
+
+- **R1-only** — `lca_only_beta_r1`: every step is the β-R1 contact (or a
+  parallel-context lift of one); `lca_contact_requires_token` /
+  `lca_stack_inert`: a lone wrapper is stuck and a lone stack is inert;
+  `lca_funded_nonredex_stuck`: even when funded, a non-redex does not fire (the
+  rigid contact reduces only the β-redex shape).
+- **Funded modulus** — `lca_step_decreases` (every step strictly drops the fuel
+  measure) and `lca_funded_run_bounded` (a run is no longer than the initial
+  token-stack height).
+- **Funded strong normalization** — `lca_SN_funded`: every funded configuration
+  is `Acc`-strongly-normalizing. Here SN is **unconditional** (a λ wrapper
+  carries no fuel-bearing subterm, so the measure can never rise), in contrast
+  to rho where SN holds on the linearly-funded fragment. The seam is exhibited
+  by Ω = (λx.x x)(λx.x x): `omega_pure_diverges` shows pure-λ Ω β-reduces to
+  itself, yet `lca_omega_funded_one_step` shows that, funded with one gate, the
+  configuration takes exactly one metered step and then halts.
+- **Erasure** — `lca_beta_r1_erasure`: the metered β-R1 step projects to a pure
+  untyped-λ β-contraction (the gate is administrative; Cost decorates pure λ
+  faithfully).
+- **Abstract layer** — `CAUntypedLambdaCI.Lambda_ciGSLT_nonvacuous`: the metered
+  λ calculus is a second object `Lambda_ciGSLT` of the ciGSLT category `CICat`
+  under the cost endofunctor `CostCI`, beside `Rho_ciGSLT`. Cost's genericity is
+  thus witnessed by two concrete contacts — AC (rho ⇒ five rules) and rigid
+  (λ ⇒ R1 only). See DR-25.
+
 ### 4.3 Token Conservation
 
 > **Theorem** (`token_monotone_step`,

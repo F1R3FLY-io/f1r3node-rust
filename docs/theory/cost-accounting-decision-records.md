@@ -982,3 +982,44 @@ generic traits for its presentation and proof checker, then opts into the inject
 points. It should not become a required dependency of `rholang` or `casper`, and `mettail-rust` is guarded
 against accidental workspace Cargo dependency introduction. This keeps MeTTaIL folded into the design as a
 supported use case rather than coupling cost-accounted Rholang to one implementation.
+
+---
+
+## DR-25 — Untyped-λ "R1-only" instance mechanized (the cost-endofunctor genericity witness)
+
+**Status.** Done (gate-green, axiom-free). 2026-06-08.
+
+**Decision.** Mechanize the untyped-λ instance of the generic cost transform as a standalone, axiom-free Rocq
+witness. `theories/CAUntypedLambda.v` defines a host λ-calculus (`lterm`, de Bruijn) and a fuel wrapper
+(`lsys`, reusing `sig`/`token` only), with ONE β-R1 contact rule `lca_beta_r1` — the exact analogue of
+`CAReduction.ca_rule1` — and proves: R1-only (`lca_only_beta_r1`, `lca_contact_requires_token`,
+`lca_stack_inert`, `lca_funded_nonredex_stuck`), the funded run-bound (`lca_step_decreases`,
+`lca_funded_run_bounded`), unconditional funded strong normalization (`lca_SN_funded`) including the Ω
+divergence/halting seam (`omega_pure_diverges`, `lca_omega_funded_one_step`), and erasure to pure β
+(`lca_beta_r1_erasure`). `theories/CAUntypedLambdaCI.v` exhibits the metered λ calculus as a second object
+`Lambda_ciGSLT` of the ciGSLT category under the cost endofunctor `CostCI` (`Lambda_ciGSLT_nonvacuous`),
+beside `Rho_ciGSLT`.
+
+**Spec basis.** The cost-endofunctor paper (`continued-gslt-cost-v2.tex` §8) gives λ-calculus, CCS, and
+ambient foils as worked examples of cost-accounting over a rigid (free) contact; `cost-accounted-rho.tex`
+§3.6 is the R1 shape. The companion `mettail-rust` `cost-decoration` prototype emits one metered rule
+(`Beta_R1`) for its untyped-λ reification (rigid `App`, in no equation, not a comm-collection) versus all five
+for its communication calculus (`Par` is a comm-collection ⇒ AC). This DR supplies the formal λ instance of
+that genericity, which DR-24 framed at the GSLT/OSLF boundary level.
+
+**Rationale.** "Rigid K ⇒ R1 only" is forced, not stipulated: the λ host has no associative-commutative
+operator (so signatures never conjoin across independently-signed participants ⇒ no Rules 2/3) and no
+independent environment-introduction/output sort (so there is no second signed process to bring into contact
+⇒ no Rules 4/5). The instance is also where the cost discipline's force is sharpest: untyped λ is
+Turing-complete and Ω is non-normalizing in pure λ, yet a finitely-funded configuration is unconditionally
+strongly normalizing — λ wrappers carry no fuel-bearing subterm, so the fuel measure can never rise, in
+honest contrast to the rho fragment, where native SN is conditional on the linearly-funded fragment (DR-21,
+witnessed by `CAStrongNormalization.st_total_fuel_can_increase_off_funded`).
+
+**Artifacts.** `theories/CAUntypedLambda.v`, `theories/CAUntypedLambdaCI.v` (registered in `_CoqProject`); 16
+headline theorems gated by `scripts/check-cost-accounted-rho-proofs.sh` (each `Closed under the global
+context`); the correspondence row and verification §4.2.1; this DR.
+
+**Cross-refs.** DR-21 (the native four-sort grammar + the conditional-SN finding this contrasts with), DR-22
+(the abstract §6–§9 category-theory layer; `Lambda_ciGSLT` is a second object under `CostCI`), DR-24 (the
+generic GSLT/OSLF boundary and the MeTTaIL adapter — DR-25 is the formal λ instance of that genericity).

@@ -6,5 +6,6 @@ Rocq proof certificates are build products for the cost-accounted rho formal mod
 - Rocq version used during migration: `9.1.0`
 - Logical namespace: `-Q theories CostAccountedRho`
 - Proof entry point: `CostAccountedRho.UseCaseAdequacy`
+- λ "R1-only" cost instance (DR-25): `CostAccountedRho.CAUntypedLambda` (core: R1-only, funded run-bound, unconditional funded SN including the Ω halting seam, erasure to pure β) and `CostAccountedRho.CAUntypedLambdaCI` (`Lambda_ciGSLT`, a second object under `CostCI`); 16 headline theorems queried for axiom-free closure by the verification script
 
 Run `scripts/check-cost-accounted-rho-proofs.sh` from the repository root to rebuild the local certificates, run `rocqchk`, and query the assumptions of the headline theorems. Local `*.vo`, `*.vos`, `*.vok`, `.aux`, `.glob`, dependency, and cache files remain ignored.
