@@ -96,15 +96,53 @@ impl RholangMergingLogic {
         HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         HistoryError,
     > {
-        // Read initial value of number channel from base state.
-        // None = channel doesn't exist yet (treat as 0); Err = invariant
-        // violation (non-numeric or multi-value pre-state) — propagate so the
-        // merge is rejected rather than silently substituting 0.
+        let ch_hex = hex::encode(channel_hash.bytes());
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %ch_hex,
+            merge_type = ?merge_type,
+            diff,
+            added_len = changes.added.len(),
+            removed_len = changes.removed.len(),
+            "number-channel merge fold entry"
+        );
+
+        let ch_hex = hex::encode(channel_hash.bytes());
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %ch_hex,
+            merge_type = ?merge_type,
+            diff,
+            added_len = changes.added.len(),
+            removed_len = changes.removed.len(),
+            "number-channel merge fold entry"
+        );
+
         let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
         let new_val = match merge_type {
             MergeType::IntegerAdd => init_num.wrapping_add(diff),
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
         };
+
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %ch_hex,
+            merge_type = ?merge_type,
+            init_num,
+            diff,
+            new_val,
+            "number-channel merge fold result"
+        );
+
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %ch_hex,
+            merge_type = ?merge_type,
+            init_num,
+            diff,
+            new_val,
+            "number-channel merge fold result"
+        );
 
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {

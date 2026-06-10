@@ -1209,6 +1209,23 @@ impl Validate {
         let bonds = proto_util::bonds(b);
         let tuplespace_hash = proto_util::post_state_hash(b);
 
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            block = %hex::encode(&b.block_hash),
+            post_state = %hex::encode(&tuplespace_hash),
+            block_bonds_count = bonds.len(),
+            "bonds cache validate entry",
+        );
+        for bond in bonds.iter() {
+            tracing::trace!(
+                target: "f1r3fly.casper.bonds_validation",
+                block = %hex::encode(&b.block_hash),
+                validator = %hex::encode(&bond.validator),
+                stake = bond.stake,
+                "bonds-cache block bond",
+            );
+        }
+
         match runtime_manager.compute_bonds(&tuplespace_hash).await {
             Ok(computed_bonds) => {
                 let bonds_set: HashSet<_> = bonds
@@ -1220,17 +1237,42 @@ impl Validate {
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
 
+                tracing::debug!(
+                    target: "f1r3fly.casper.bonds_validation",
+                    block = %hex::encode(&b.block_hash),
+                    computed_bonds_count = computed_bonds.len(),
+                    "computed bonds",
+                );
                 if bonds_set == computed_bonds_set {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.bonds_validation",
+                        block = %hex::encode(&b.block_hash),
+                        "bonds cache match",
+                    );
                     Either::Right(ValidBlock::Valid)
                 } else {
                     tracing::warn!(
                         "Bonds in proof of stake contract do not match block's bond cache."
+                    );
+                    tracing::warn!(
+                        target: "f1r3fly.casper.bonds_validation",
+                        block = %hex::encode(&b.block_hash),
+                        post_state = %hex::encode(&tuplespace_hash),
+                        block_count = bonds_set.len(),
+                        computed_count = computed_bonds_set.len(),
+                        "bonds cache mismatch (InvalidBondsCache)",
                     );
                     Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
                 }
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                tracing::warn!(
+                    target: "f1r3fly.casper.bonds_validation",
+                    block = %hex::encode(&b.block_hash),
+                    error = %ex,
+                    "compute bonds failed",
+                );
                 Either::Left(BlockError::BlockException(ex))
             }
         }

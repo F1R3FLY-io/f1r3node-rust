@@ -329,6 +329,10 @@ impl RuntimeOps {
         let deploy_pk = deploy.pk.bytes.clone();
         let deploy_pk_hex = hex::encode(&deploy_pk);
         let deploy_sig_hex = hex::encode(&deploy.sig);
+        self.runtime
+            .reducer
+            .space
+            .set_current_deploy_sig(deploy.sig.to_vec());
         let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
         let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
 

@@ -396,6 +396,19 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
 
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "entry",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            sender = %hex::encode(&block_data.sender.bytes),
+            seq_num = block_data.seq_num,
+            block_number = block_data.block_number,
+            time_stamp = block_data.time_stamp,
+            user_deploys = terms.len(),
+            "compute-state entry",
+        );
+
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -497,6 +510,16 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
         }
 
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "exit",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            post_state = %hex::encode(&state_hash),
+            sender = %hex::encode(&sender.bytes),
+            seq_num,
+            "compute-state exit",
+        );
         Ok((state_hash, usr_processed, sys_processed, bonds))
     }
 
@@ -542,6 +565,19 @@ impl RuntimeManager {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "replay_entry",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            sender = %hex::encode(&sender.bytes),
+            seq_num,
+            block_number = block_data.block_number,
+            user_deploys = terms.len(),
+            system_deploys = system_deploys.len(),
+            "replay-compute-state entry",
+        );
 
         // Step 1: Check state-hash cache.
         //
@@ -619,6 +655,14 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                tracing::debug!(
+                    target: "f1r3fly.rspace.replay.cache",
+                    event = "hit",
+                    sender_seq = seq_num,
+                    post_state = %hex::encode(&entry.post_state),
+                    event_log_count = entry.event_log.len(),
+                    "replay cache hit; returning without save_mergeable_channels",
+                );
 
                 // Rig the replay runtime with cached event log
                 let replay_runtime = self.spawn_replay_runtime().await;
@@ -710,7 +754,18 @@ impl RuntimeManager {
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            state = %hex::encode(hash),
+            "compute_bonds entry",
+        );
         if let Some(cached) = self.bonds_cache.get(hash) {
+            tracing::debug!(
+                target: "f1r3fly.casper.bonds_validation",
+                state = %hex::encode(hash),
+                bonds_count = cached.len(),
+                "compute_bonds cache hit",
+            );
             Self::touch_cache_key(&self.bonds_cache_order, hash);
             return Ok(cached.clone());
         }
@@ -718,6 +773,21 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            state = %hex::encode(hash),
+            bonds_count = computed.len(),
+            "compute_bonds runtime",
+        );
+        for bond in computed.iter() {
+            tracing::trace!(
+                target: "f1r3fly.casper.bonds_validation",
+                state = %hex::encode(hash),
+                validator = %hex::encode(&bond.validator),
+                stake = bond.stake,
+                "computed bond",
+            );
+        }
 
         let max_entries = Self::max_bonds_cache_entries();
         if self.bonds_cache.len() >= max_entries {
@@ -951,12 +1021,41 @@ impl RuntimeManager {
         key_bytes: Vec<u8>,
         value_bytes: Vec<u8>,
     ) -> Result<(), CasperError> {
+        tracing::debug!(
+            target: "f1r3fly.rspace.lfs_import",
+            key_bytes_len = key_bytes.len(),
+            value_bytes_len = value_bytes.len(),
+            "lfs put mergeable entry",
+        );
         if value_bytes.is_empty() {
+            tracing::debug!(
+                target: "f1r3fly.rspace.lfs_import",
+                "lfs put mergeable entry empty (peer had no entry)",
+            );
             return Ok(());
         }
         let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
             CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
         })?;
+        let total_channels: usize = value.iter().map(|d| d.channels.len()).sum();
+        tracing::debug!(
+            target: "f1r3fly.rspace.lfs_import",
+            deploys = value.len(),
+            total_channels,
+            "lfs mergeable entry decoded",
+        );
+        for (deploy_idx, d) in value.iter().enumerate() {
+            for ch in d.channels.iter() {
+                tracing::trace!(
+                    target: "f1r3fly.rspace.lfs_import",
+                    deploy_idx,
+                    channel = %hex::encode(ch.hash.bytes()),
+                    merge_type = ?ch.merge_type,
+                    diff = ch.diff,
+                    "lfs mergeable channel",
+                );
+            }
+        }
         self.mergeable_store
             .put_one(key_bytes, value)
             .map_err(CasperError::KvStoreError)

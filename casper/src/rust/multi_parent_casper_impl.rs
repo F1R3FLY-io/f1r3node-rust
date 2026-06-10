@@ -122,7 +122,18 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         let dag = self.block_dag_storage.get_representation();
 
-        // Parent selection: Use latest block from EACH bonded validator.
+        let self_validator_hex = self
+            .validator_id
+            .as_ref()
+            .map(|v| hex::encode(&v.public_key.bytes))
+            .unwrap_or_default();
+        tracing::debug!(
+            target: "f1r3fly.casper.parent_selection",
+            self_validator = %self_validator_hex,
+            finalization_in_progress = self.finalization_in_progress.load(Ordering::SeqCst),
+            "snapshot entry",
+        );
+
         // Every block should have one parent per validator to ensure all deploy effects
         // are included in the merged state. Apply maxNumberOfParents and maxParentDepth limits.
         let latest_msgs_hashes: HashMap<Validator, BlockHash> = dag
@@ -138,13 +149,37 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .filter(|(validator, _)| !invalid_latest_msgs.contains_key(*validator))
             .map(|(validator, hash): (&Validator, &BlockHash)| (validator.clone(), hash.clone()))
             .collect();
-        // Deduplicate: multiple validators may have the same latest block (e.g., genesis)
+        for (validator, hash) in latest_msgs_hashes.iter() {
+            let block_number = dag
+                .lookup_unsafe(hash)
+                .map(|meta| meta.block_number)
+                .unwrap_or(-1);
+            tracing::trace!(
+                target: "f1r3fly.casper.parent_selection",
+                validator = %hex::encode(validator),
+                hash = %hex::encode(hash),
+                block_number,
+                "latest message",
+            );
+        }
+
         let unique_parent_hashes: HashSet<BlockHash> =
             valid_latest_msgs.values().cloned().collect();
         let parent_blocks_list: Vec<BlockMessage> = unique_parent_hashes
             .iter()
             .filter_map(|hash| self.block_store.get(hash).ok().flatten())
             .collect();
+
+        for b in parent_blocks_list.iter() {
+            tracing::trace!(
+                target: "f1r3fly.casper.parent_selection",
+                hash = %hex::encode(&b.block_hash),
+                block_number = b.body.state.block_number,
+                sender = %hex::encode(&b.sender),
+                bonds_count = b.body.state.bonds.len(),
+                "parent candidate",
+            );
+        }
 
         // Sort parents deterministically with a near-tip tolerance:
         // - if both parents are near the maximum parent height, order by hash only to keep
@@ -204,10 +239,56 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 .bonds
                 .clone();
 
-            sorted_parents_list
+            let (kept, dropped): (Vec<BlockMessage>, Vec<BlockMessage>) = sorted_parents_list
                 .into_iter()
-                .filter(|block| block.body.state.bonds == reference_bonds)
-                .collect()
+                .partition(|block| block.body.state.bonds == reference_bonds);
+            if !dropped.is_empty() {
+                let ref_str = reference_bonds
+                    .iter()
+                    .map(|v| {
+                        format!(
+                            "{}:{}",
+                            hex::encode(&v.validator[..v.validator.len().min(4)]),
+                            v.stake
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let dropped_str = dropped
+                    .iter()
+                    .map(|b| {
+                        let bm = b
+                            .body
+                            .state
+                            .bonds
+                            .iter()
+                            .map(|v| {
+                                format!(
+                                    "{}:{}",
+                                    hex::encode(&v.validator[..v.validator.len().min(4)]),
+                                    v.stake
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{}@{}=[{}]",
+                            hex::encode(&b.block_hash[..b.block_hash.len().min(4)]),
+                            b.body.state.block_number,
+                            bm
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                tracing::info!(
+                    target: "f1r3fly.casper.parent_selection",
+                    reference_bonds = %ref_str,
+                    dropped_count = dropped.len(),
+                    dropped_parents = %dropped_str,
+                    "bonds-equality parent filter dropped differently-bonded parents",
+                );
+            }
+            kept
         };
 
         let unfiltered_parents_count = unfiltered_parents.len();
@@ -272,7 +353,6 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
         let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
-        // Log parent selection for debugging
         tracing::debug!(
             "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} parents",
             latest_msgs_hashes.len(),
@@ -280,6 +360,28 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             valid_latest_msgs.len(),
             unfiltered_parents_count,
             parents.len()
+        );
+
+        for (rank, b) in parents.iter().enumerate() {
+            tracing::trace!(
+                target: "f1r3fly.casper.parent_selection",
+                rank,
+                hash = %hex::encode(&b.block_hash),
+                block_number = b.body.state.block_number,
+                sender = %hex::encode(&b.sender),
+                bonds_count = b.body.state.bonds.len(),
+                "final parent",
+            );
+        }
+        tracing::debug!(
+            target: "f1r3fly.casper.parent_selection",
+            self_validator = %self_validator_hex,
+            latest_msgs = latest_msgs_hashes.len(),
+            invalid = invalid_latest_msgs.len(),
+            valid = valid_latest_msgs.len(),
+            candidates = unfiltered_parents_count,
+            final_parents = parents.len(),
+            "parent selection summary",
         );
 
         let on_chain_state = self
@@ -605,6 +707,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 return Ok(Either::Left(block_error));
             }
             if let Either::Right(None) = validate_block_checkpoint_result {
+                tracing::warn!(
+                    target: "f1r3fly.casper.divergence",
+                    block = %hex::encode(&block.block_hash),
+                    sender = %hex::encode(&block.sender),
+                    block_number = block.body.state.block_number,
+                    declared_post_state = %hex::encode(&block.body.state.post_state_hash),
+                    declared_pre_state = %hex::encode(&block.body.state.pre_state_hash),
+                    "invalid transaction post-state",
+                );
                 return Ok(Either::Left(BlockError::Invalid(
                     InvalidBlock::InvalidTransaction,
                 )));
@@ -1640,6 +1751,30 @@ async fn compute_last_finalized_block(
         read_started.elapsed().as_millis(),
         lfb_lookup_started.elapsed().as_millis(),
         new_lfb_found
+    );
+    let finalized_bonds_str = block_message
+        .body
+        .state
+        .bonds
+        .iter()
+        .map(|v| {
+            format!(
+                "{}:{}",
+                hex::encode(&v.validator[..v.validator.len().min(4)]),
+                v.stake
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::info!(
+        target: "f1r3fly.finalizer.decision",
+        old_lfb_height = last_finalized_block_height,
+        new_lfb_height = block_message.body.state.block_number,
+        new_lfb_found,
+        new_lfb_hash = %hex::encode(&final_lfb_hash),
+        finalized_bonds = %finalized_bonds_str,
+        finalizer_ms,
+        "lfb advance",
     );
     Ok(block_message)
 }

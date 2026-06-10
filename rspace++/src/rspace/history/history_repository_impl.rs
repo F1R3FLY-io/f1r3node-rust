@@ -130,6 +130,22 @@ where
     ) -> (ColdAction, HistoryAction) {
         match action {
             HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
+                tracing::trace!(
+                    target: "f1r3fly.rspace.trie_write",
+                    action = "TrieInsertProduce",
+                    channel = %hex::encode(i.hash.bytes()),
+                    data_len = i.data.len(),
+                    "trie insert",
+                );
+                if i.data.len() > 1 {
+                    tracing::warn!(
+                        target: "f1r3fly.rspace.multidatum",
+                        site = "trie_write",
+                        channel = %hex::encode(i.hash.bytes()),
+                        data_len = i.data.len(),
+                        "multi-datum write to trie",
+                    );
+                }
                 let data = encode_datums(&i.data);
                 let data_leaf = DataLeaf { bytes: data };
                 let data_leaf_encoded = bincode::serialize(&data_leaf)
@@ -342,6 +358,13 @@ where
         &self,
         trie_actions: Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static> {
+        tracing::debug!(
+            target: "f1r3fly.rspace.checkpoint",
+            path = "history",
+            phase = "entry",
+            trie_actions_count = trie_actions.len(),
+            "do_checkpoint entry",
+        );
         if trie_actions.is_empty() {
             return self.checkpoint_noop_clone();
         }
@@ -406,6 +429,13 @@ where
         };
 
         let new_root = new_history.root();
+        tracing::debug!(
+            target: "f1r3fly.rspace.checkpoint",
+            path = "history",
+            phase = "exit",
+            new_root = %hex::encode(new_root.bytes()),
+            "do_checkpoint exit",
+        );
         store_root(&new_root).expect("History Repository Impl: Unable to store root");
 
         ();

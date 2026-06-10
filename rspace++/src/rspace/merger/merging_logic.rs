@@ -630,12 +630,30 @@ where
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        n_branches = n,
+        pc_keys = produces_consumed_by_branches.len(),
+        pm_keys = produces_mergeable_by_branches.len(),
+        cp_keys = consumes_produced_by_branches.len(),
+        cm_keys = consumes_mergeable_by_branches.len(),
+        "conflict map built"
+    );
+
     // Collect conflict pairs (i, j) with i < j; duplicate insertions into
     // the result HashSets are idempotent so we don't dedupe pairs upfront.
     let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     // #1 race on produces_consumed.
     for (produce, branches_set) in &produces_consumed_by_branches {
+        tracing::trace!(
+            target: "f1r3fly.merge.dag",
+            channel = %hex::encode(produce.channel_hash.bytes()),
+            produce_hash = %hex::encode(produce.hash.bytes()),
+            persistent = produce.persistent,
+            branch_count = branches_set.len(),
+            "conflict-map produce branch count"
+        );
         if produce.persistent || branches_set.len() < 2 {
             continue;
         }

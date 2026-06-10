@@ -420,6 +420,14 @@ impl Finalizer {
                     fault_tolerance,
                     fault_tolerance_threshold
                 );
+                tracing::debug!(
+                    target: "f1r3fly.finalizer.decision",
+                    height = message.block_number,
+                    hash = %hex::encode(&message.block_hash),
+                    fault_tolerance,
+                    threshold = fault_tolerance_threshold,
+                    "finalizer candidate rejected",
+                );
             }
         }
         tracing::debug!(
@@ -454,6 +462,23 @@ impl Finalizer {
             agreement_record_phase_ns,
             parent_lookup_phase_ns,
             next_layer_push_phase_ns
+        );
+        tracing::debug!(
+            target: "f1r3fly.finalizer.decision",
+            curr_lfb_height,
+            threshold = fault_tolerance_threshold,
+            latest_messages = latest_messages_count,
+            agreements = agreements_count,
+            majority_candidates = filtered_agreements_count,
+            upper_bound_pruned = upper_bound_pruned_count,
+            upper_bound_passed = upper_bound_passed_count,
+            max_ft_upper_bound,
+            clique_evals = clique_eval_count,
+            budget_exhausted,
+            lfb_lag,
+            catchup_mode,
+            found_new_lfb = lfb_result.is_some(),
+            "finalizer decision",
         );
         metrics::histogram!(
             crate::rust::metrics_constants::FINALIZER_RUN_TIME_METRIC,

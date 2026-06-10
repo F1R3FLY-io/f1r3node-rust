@@ -97,8 +97,14 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
             }
         }
 
-        // If stuck, request fork choice tips
         let stuck = !has_recent_latest_message;
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            stuck,
+            has_recent = has_recent_latest_message,
+            num_latest = latest_messages.len(),
+            "staleness probe",
+        );
         if stuck {
             tracing::info!(
                 "Requesting tips update as newest latest message is more than {:?} old. Might be network is faulty.",
