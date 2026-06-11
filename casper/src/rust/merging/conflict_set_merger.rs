@@ -654,22 +654,25 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first branch
-        // Use sorted branches and min element for deterministic tie-breaking
+        // Third criterion: full lexicographic comparison over the options' sorted
+        // branches. This must be a TOTAL order on distinct options: the selection
+        // below is consensus-critical (every node must reject the same branches),
+        // and any two options left Equal here fall back to HashSet iteration
+        // order, which differs across processes. Comparing only the first
+        // branch's minimum element is not total — sibling options sharing their
+        // first branch compare Equal.
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
         b_branches.sort_by(|x, y| compare_branches(x, y));
 
-        let a_first = a_branches.first().and_then(|branch| branch.0.iter().min());
-        let b_first = b_branches.first().and_then(|branch| branch.0.iter().min());
-
-        match (a_first, b_first) {
-            (Some(a_item), Some(b_item)) => a_item.cmp(b_item),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
+        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+            let ord = compare_branches(a_branch, b_branch);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
         }
+        a_branches.len().cmp(&b_branches.len())
     });
 
     options_vec
@@ -861,6 +864,30 @@ mod tests {
         });
 
         assert_eq!(chosen, option_a);
+    }
+
+    #[test]
+    fn optimal_rejection_is_total_order_when_options_share_first_branch() {
+        // Equal cost (constant 0), equal total size, and an IDENTICAL first
+        // sorted branch {1,2}: the comparator must still order the options
+        // (by the second branch: {3,4} < {3,5}) for EVERY insertion order.
+        // A comparator that inspects only the first branch leaves these Equal,
+        // and the winner then follows HashSet iteration order — divergent
+        // across processes.
+        let shared = branch(&[1, 2]);
+        let option_a = rejection_option(&[shared.clone(), branch(&[3, 4])]);
+        let option_b = rejection_option(&[shared, branch(&[3, 5])]);
+
+        for options in [
+            HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
+            HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
+        ] {
+            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            assert_eq!(
+                chosen, option_a,
+                "tie-break must resolve identically regardless of insertion order"
+            );
+        }
     }
 
     #[test]
